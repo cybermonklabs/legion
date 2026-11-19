@@ -47,11 +47,7 @@ func census(ctx context.Context, databaseURL string, fsys fs.FS, options pgmigra
 // with each row (pgmigrate.CheckVersions). It holds one connection of its own, in a read-only
 // transaction, and writes nothing.
 func CheckVersions(ctx context.Context, databaseURL string) (*pgmigrate.VersionCheck, error) {
-	return checkVersions(ctx, databaseURL, migrationFiles)
-}
-
-func checkVersions(ctx context.Context, databaseURL string, fsys fs.FS) (*pgmigrate.VersionCheck, error) {
-	migrations, err := pgmigrate.Load(fsys, "migrations")
+	migrations, err := pgmigrate.Load(migrationFiles, "migrations")
 	if err != nil {
 		return nil, fmt.Errorf("migrations refused: %w", err)
 	}

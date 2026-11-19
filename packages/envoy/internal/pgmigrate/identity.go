@@ -15,11 +15,15 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Identity is what a runner records, beside a version, of the file it applied under that
-// version: the file's name as Load gives it, with no directory, and the sha256 of its whole text in
-// lower-case hex. A version alone cannot tell the file a database ran from another file that took
-// the same number on another branch, or from an edit of that file made after it ran; the version
-// with its identity can.
+// Identity names a migration file: its name as Load gives it, with no directory, and the sha256
+// of its whole text in lower-case hex (Checksum). A runner records two facts of the file it applies
+// under a version. The first is the identity of the version's first file, which every later edit
+// of the file declares in its first replaces line (Migration.RecordedIdentity): it tells another
+// branch's new file of the same number apart, and stays the same across edits, so the release
+// before an edit still accepts the row. The second is the sha256 of the text it applied
+// (Recorded.Applied): it tells apart an edit of the file that the database did not run, such as
+// another branch's edit, or an earlier commit's, of a migration the database applied from that
+// text. A version alone tells neither.
 type Identity struct {
 	Name     string
 	Checksum string
@@ -36,8 +40,7 @@ func (m Migration) Identity() Identity { return Identity{Name: m.Name, Checksum:
 // where it declares none. Each edit of a shipped file keeps the replaces lines before it, in their
 // order, and adds its own after them (CheckEdits holds a change to that), so the first line names
 // the version's first file, and every release whose file of the version is in the chain accepts
-// what any of them records: a database a later release created or filled still boots the release
-// before it, as a rollback and the two-builds tests need.
+// the identity any of them records.
 func (m Migration) RecordedIdentity() Identity {
 	if len(m.Replaces) > 0 {
 		return m.Replaces[0]
@@ -45,8 +48,15 @@ func (m Migration) RecordedIdentity() Identity {
 	return m.Identity()
 }
 
-// checksumOf is the sha256 of text in lower-case hex.
-func checksumOf(text []byte) string {
+// acceptsText says whether checksum is the sha256 of the migration's own text or of a text one of
+// its replaces lines names: the texts a database may have applied under its version and still boot
+// with this file.
+func (m Migration) acceptsText(checksum string) bool {
+	return checksum == m.Checksum || slices.ContainsFunc(m.Replaces, func(replaced Identity) bool { return replaced.Checksum == checksum })
+}
+
+// Checksum is the sha256 of text in lower-case hex: a migration file's, as a runner records it.
+func Checksum(text []byte) string {
 	sum := sha256.Sum256(text)
 	return hex.EncodeToString(sum[:])
 }
@@ -57,7 +67,8 @@ func checksumOf(text []byte) string {
 const replacesMarker = "replaces:"
 
 // replacesForm is the one form a replaces line takes: the comment alone on its line, from the
-// line's first byte, naming a forward migration's file and its sha256 in lower-case hex.
+// line's first byte, naming a forward migration's file and its sha256 in lower-case hex. A line
+// ending is not part of it: readReplaces reads the comment without a trailing carriage return.
 var replacesForm = regexp.MustCompile(`^-- replaces: ([^\s/]+\.up\.sql) sha256:([0-9a-f]{64})$`)
 
 // isReplacesComment says whether text, from a -- on, reads as a replaces line, well formed or not.
@@ -65,11 +76,25 @@ func isReplacesComment(text string) bool {
 	return strings.HasPrefix(text, "--") && hasPrefixFold(strings.TrimLeft(text[2:], " \t\f\v"), replacesMarker)
 }
 
+// replacesLineFor is the replaces line that declares id for a file of version, and whether Load
+// accepts it: an identity with an empty name or a checksum that is not 64 lower-case hex digits,
+// which only a row written by hand records, or that names a file of another version, has none.
+func replacesLineFor(id Identity, version int) (string, bool) {
+	line := "-- replaces: " + id.String()
+	match := replacesForm.FindStringSubmatch(line)
+	if match == nil {
+		return "", false
+	}
+	named, err := parseVersion(strings.TrimSuffix(match[1], ".up.sql"))
+	return line, err == nil && named == version
+}
+
 // readReplaces reads the replaces lines of the forward migration name, of version version and
 // text sql: each -- comment that declares the identity of an earlier file the migration replaces
-// (Migration.Replaces). It reads the text as Postgres reads it (scanSQL). It refuses a line that
-// is not of replacesForm, and one that names a file of another version: a runner judges the row
-// of a version against the file of that version alone, so such a line could never match. It
+// (Migration.Replaces). It reads the text as Postgres reads it (scanSQL), and reads a line that
+// ends in a carriage return, as a file with CRLF line endings has, without it. It refuses a line
+// that is not of replacesForm, and one that names a file of another version: a runner judges the
+// row of a version against the file of that version alone, so such a line could never match. It
 // also refuses a line that reads as a replaces line but where Postgres reads no comment of its
 // own: inside a string literal or a dollar-quoted body, or between the parts of a continued
 // string ('a' <newline> -- … <newline> 'b'), whose comments the string's token holds. Read as
@@ -83,7 +108,7 @@ func readReplaces(name string, version int, sql string) ([]Identity, error) {
 	var problems []error
 	replacesCommentStarts := map[int]bool{}
 	_ = scanSQL(sql, func(token sqlToken) error {
-		text := sql[token.start:token.end]
+		text := strings.TrimSuffix(sql[token.start:token.end], "\r")
 		if token.kind != sqlComment || !isReplacesComment(text) {
 			return nil
 		}
@@ -141,10 +166,14 @@ func hasPrefixFold(s, prefix string) bool {
 	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
 }
 
-// IdentityColumns are the columns of a version table that hold an applied migration's identity,
-// as each runner creates its table with them: nullable text with no default, so a row an earlier
-// runner wrote, and one an earlier release still writes while it rolls, records no name.
-const IdentityColumns = "name text, checksum text"
+// IdentityColumnNames are the columns of a version table that hold what a runner records of an
+// applied migration: the name and checksum of its RecordedIdentity, and the checksum of the text it
+// applied. Each is nullable text with no default, so a row an earlier runner wrote, and one an
+// earlier release still writes while it rolls, records none of them.
+var IdentityColumnNames = []string{"name", "checksum", "applied_checksum"}
+
+// IdentityColumns is IdentityColumnNames as a create table statement declares them.
+var IdentityColumns = strings.Join(IdentityColumnNames, " text, ") + " text"
 
 // VersionTableColumns reads the data type of each column of table, in the schema the runner
 // creates its tables in (current_schema()); none where the table is not there.
@@ -165,32 +194,49 @@ func VersionTableColumns(ctx context.Context, q Querier, table string) (map[stri
 	return columns, nil
 }
 
-// AddIdentityColumns is the alter table clauses that give a version table of columns the identity
-// columns it lacks (IdentityColumns): none for a table a runner created with them. A runner reads
-// the columns first and alters only when a clause is owed, because ALTER TABLE takes ACCESS
-// EXCLUSIVE on the table even where IF NOT EXISTS would leave it as it is.
-func AddIdentityColumns(columns map[string]string) []string {
+// EnsureIdentityColumns gives the version table table on q, where it exists, the identity columns
+// it lacks (IdentityColumnNames), and the clauses extra answers for its columns, nil for none, in
+// one ALTER TABLE. It reads the columns first and alters only where a clause is owed, because
+// ALTER TABLE takes ACCESS EXCLUSIVE on the table even where IF NOT EXISTS would leave it as it
+// is. Where the table does not exist it does nothing.
+func EnsureIdentityColumns(ctx context.Context, q versionTable, table string, extra func(columns map[string]string) []string) error {
+	columns, err := VersionTableColumns(ctx, q, table)
+	if err != nil || len(columns) == 0 {
+		return err
+	}
 	var clauses []string
-	for _, column := range []string{"name", "checksum"} {
+	for _, column := range IdentityColumnNames {
 		if _, ok := columns[column]; !ok {
 			clauses = append(clauses, "add column "+column+" text")
 		}
 	}
-	return clauses
+	if extra != nil {
+		clauses = append(clauses, extra(columns)...)
+	}
+	if len(clauses) == 0 {
+		return nil
+	}
+	if _, err := q.Exec(ctx, "alter table "+pgx.Identifier{table}.Sanitize()+" "+strings.Join(clauses, ", ")); err != nil {
+		return fmt.Errorf("alter %s (%s): %w", table, strings.Join(clauses, ", "), err)
+	}
+	return nil
 }
 
 // Recorded is one row of a runner's version table. Unnamed is true where the row's name is null:
 // every row a runner wrote before the runners recorded identities, and one written by hand. A
-// name that is not null, the empty string included, is an identity like any other.
+// name that is not null, the empty string included, is an identity like any other. Applied is
+// the sha256 of the text the runner applied under the version, empty where the row records none:
+// a row an earlier runner wrote, and one a runner filled, since nothing says which text ran.
 type Recorded struct {
 	Version  int
 	Identity Identity
 	Unnamed  bool
+	Applied  string
 }
 
-// recordedRow is the row of version whose name and checksum columns read name and checksum, nil
+// recordedRow is the row of version whose identity columns read name, checksum and applied, nil
 // for a null.
-func recordedRow(version int, name, checksum *string) Recorded {
+func recordedRow(version int, name, checksum, applied *string) Recorded {
 	row := Recorded{Version: version, Unnamed: name == nil}
 	if name != nil {
 		row.Identity.Name = *name
@@ -198,12 +244,15 @@ func recordedRow(version int, name, checksum *string) Recorded {
 	if checksum != nil {
 		row.Identity.Checksum = *checksum
 	}
+	if applied != nil {
+		row.Applied = *applied
+	}
 	return row
 }
 
 // Fix is a write a runner makes to one row of its version table before it applies anything: the
 // row of Version recorded no name, and the runner records To, the identity it records of the set's
-// file of that version (Migration.RecordedIdentity).
+// file of that version (Migration.RecordedIdentity). It records no applied text.
 type Fix struct {
 	Version int
 	To      Identity
@@ -218,78 +267,99 @@ type Fix struct {
 //     rollback does, records versions the earlier set does not hold;
 //   - backfilled where its name is null, with the identity a runner records of the file
 //     (Migration.RecordedIdentity). Nothing says which file wrote it, so it is never refused;
-//   - left as it is where it records the file's own identity;
-//   - left as it is where it records, name and checksum both, an identity the file declares it
-//     replaces (Migration.Replaces). The row keeps the identity it records, so the release that
-//     recorded it still finds its own file's identity there and boots, as a rolling update and a
-//     rollback need; each later edit of the file adds a replaces line, so a chain of them covers
-//     every identity a database may hold;
-//   - refused otherwise, by a *Refusal.
+//   - refused, by a *Refusal, where it records an identity other than the file's own and other
+//     than any the file declares it replaces (Migration.Replaces);
+//   - refused, by a *Refusal, where it records the text it applied and that text is neither the
+//     file's own nor one a replaces line names: the database ran an edit of the file this build does
+//     not hold, such as another branch's, or a later release's when that release created it;
+//   - left as it is otherwise. A row that records an identity the file replaces keeps it, so the
+//     release that recorded it still finds its own file's identity there and boots, as a rolling
+//     update and a rollback need.
 //
 // The refusals come back joined, each a *Refusal, which IsRefusal finds.
 func Reconcile(migrations []Migration, recorded []Recorded) ([]Fix, error) {
-	fixes, _, refusals := judge(migrations, recorded)
-	if len(refusals) > 0 {
-		return nil, errors.Join(refusals...)
+	check := judge(migrations, recorded)
+	if len(check.Refusals) > 0 {
+		return nil, errors.Join(check.Refusals...)
 	}
-	return fixes, nil
+	return check.Backfills, nil
 }
 
-// judge is Reconcile's reading, which answers apart, for CheckVersions, the fixes, the rows a
-// replaces line accepts and the refusals.
-func judge(migrations []Migration, recorded []Recorded) (fixes []Fix, replaced []Recorded, refusals []error) {
+// judge is Reconcile's rule, read into a VersionCheck: Reconcile takes its fills and refusals, and
+// CheckVersions all of it.
+func judge(migrations []Migration, recorded []Recorded) *VersionCheck {
 	byVersion := make(map[int]*Migration, len(migrations))
 	for i := range migrations {
 		byVersion[migrations[i].Version] = &migrations[i]
 	}
+	check := &VersionCheck{Recorded: len(recorded)}
 	for _, row := range recorded {
 		migration, ok := byVersion[row.Version]
-		if !ok {
-			continue
-		}
-		own := migration.Identity()
 		switch {
+		case !ok:
+			check.NoFile = append(check.NoFile, row.Version)
 		case row.Unnamed:
-			fixes = append(fixes, Fix{Version: row.Version, To: migration.RecordedIdentity()})
-		case row.Identity == own:
-		case slices.Contains(migration.Replaces, row.Identity):
-			replaced = append(replaced, row)
+			check.Backfills = append(check.Backfills, Fix{Version: row.Version, To: migration.RecordedIdentity()})
+		case row.Identity != migration.Identity() && !slices.Contains(migration.Replaces, row.Identity):
+			check.Refusals = append(check.Refusals, &Refusal{Recorded: row, File: *migration})
+		case row.Applied != "" && !migration.acceptsText(row.Applied):
+			check.Refusals = append(check.Refusals, &Refusal{Recorded: row, File: *migration, Text: true})
+		case row.Identity == migration.RecordedIdentity():
+			check.Matching++
 		default:
-			refusals = append(refusals, &Refusal{Recorded: row, File: migration.Identity(), Replaces: migration.Replaces})
+			check.Replaced = append(check.Replaced, row)
 		}
 	}
-	return fixes, replaced, refusals
+	return check
 }
 
-// Refusal is Reconcile's refusal of one recorded row: the row records an identity other than its
-// file's own and other than any the file replaces. Its message names the version, both identities
-// and the remedies: a database that ran another branch's or an earlier commit's migration is
-// reset, and an intended edit declares the recorded identity in a replaces line, offered only where
-// the recorded identity is one a replaces line can name (replacesForm), since Load refuses any
-// other line.
+// Refusal is Reconcile's refusal of one recorded row against File, the set's file of its
+// version. Where Text is false the row records an identity other than the file's own and other
+// than any it replaces; where it is true the row's identity passes, but the text the row says the
+// runner applied is neither the file's own nor one it replaces. Its message names the version,
+// what the row records, the file and the remedies: a database that ran another branch's or an
+// earlier commit's migration is reset, and an intended edit declares what the row records in a
+// replaces line, offered only where the row records something a replaces line can name
+// (replacesLineFor), since Load refuses any other line.
 type Refusal struct {
 	Recorded Recorded
-	File     Identity
-	Replaces []Identity
+	File     Migration
+	Text     bool
 }
 
 func (r *Refusal) Error() string {
+	version, file := r.Recorded.Version, r.File
 	declared := ""
-	if len(r.Replaces) > 0 {
-		names := make([]string, len(r.Replaces))
-		for i, replaced := range r.Replaces {
+	if len(file.Replaces) > 0 {
+		names := make([]string, len(file.Replaces))
+		for i, replaced := range file.Replaces {
 			names[i] = replaced.String()
 		}
 		declared = ", whose replaces lines name only " + strings.Join(names, ", ")
 	}
 	reset := "if this database ran another branch's or an earlier commit's migration, reset it (drop it, create it empty and let the server migrate it)"
-	line := "-- replaces: " + r.Recorded.Identity.String()
-	if replacedVersion, err := parseVersion(strings.TrimSuffix(r.Recorded.Identity.Name, ".up.sql")); !replacesForm.MatchString(line) || err != nil || replacedVersion != r.Recorded.Version {
-		return fmt.Sprintf("version %d is recorded as %q sha256 %q, and this build's file of version %d is %s%s: %s; no replaces line can name what this row records, so a reset is the one remedy",
-			r.Recorded.Version, r.Recorded.Identity.Name, r.Recorded.Identity.Checksum, r.Recorded.Version, r.File, declared, reset)
+	if r.Text {
+		line, ok := replacesLineFor(Identity{Name: file.Name, Checksum: r.Recorded.Applied}, version)
+		head := fmt.Sprintf("version %d is recorded as %s, which this build's file of version %d, %s%s, accepts, but the text applied under it has sha256 %s, which neither that file nor its replaces lines name: %s, which is also the remedy where a later release created this database from empty",
+			version, r.Recorded.Identity, version, file.Identity(), declared, r.Recorded.Applied, reset)
+		if !ok {
+			return head + "; no replaces line can name that text, so a reset is the one remedy"
+		}
+		if first := file.RecordedIdentity(); first == file.Identity() {
+			// The file declares nothing yet. Any line changes its text, so the identity the row
+			// records, its own until now, must come first.
+			firstLine, _ := replacesLineFor(first, version)
+			return fmt.Sprintf("%s; if this build's file is meant to accept that text, add these two lines to %s, in this order: %s and %s", head, file.Name, firstLine, line)
+		}
+		return fmt.Sprintf("%s; if this build's file is meant to accept that text, add this line to %s, after its replaces lines: %s", head, file.Name, line)
 	}
-	return fmt.Sprintf("version %d is recorded as %s, and this build's file of version %d is %s%s: %s; if the edit is intended, add this line to %s: %s",
-		r.Recorded.Version, r.Recorded.Identity, r.Recorded.Version, r.File, declared, reset, r.File.Name, line)
+	line, ok := replacesLineFor(r.Recorded.Identity, version)
+	if !ok {
+		return fmt.Sprintf("version %d is recorded as %q sha256 %q, and this build's file of version %d is %s%s: %s; no replaces line can name what this row records, so a reset is the one remedy",
+			version, r.Recorded.Identity.Name, r.Recorded.Identity.Checksum, version, file.Identity(), declared, reset)
+	}
+	return fmt.Sprintf("version %d is recorded as %s, and this build's file of version %d is %s%s: %s; if the edit is intended, add this line to %s, after the replaces lines it has (its first replaces line names the identity version %d first shipped with): %s",
+		version, r.Recorded.Identity, version, file.Identity(), declared, reset, file.Name, version, line)
 }
 
 // IsRefusal says whether err holds a *Refusal: a recorded row the set refuses, rather than a
@@ -317,40 +387,34 @@ type versionTable interface {
 	execer
 }
 
-// ReadRecorded reads every row of the version table table on q, in version order, resolving the
-// name through q's search_path as the runner's own statements do. A table without the name and
-// checksum columns, as every runner before identities left it, reads as rows that record no name,
-// and a table that does not exist reads as no row, so a read-only check can read any database;
-// the runners add the columns before they read (each store's migrate).
+// ReadRecorded reads every row of the version table table on q, in version order, in the schema
+// the runner creates its tables in (VersionTableColumns). A table without an identity column, as
+// every runner before identities left it, reads null for that column, so its rows record no name,
+// and a table that does not exist reads as no row, so a read-only check can read any database; the
+// runners add the columns before they read (each store's migrate).
 func ReadRecorded(ctx context.Context, q Querier, table string) ([]Recorded, error) {
-	var exists, hasName, hasChecksum bool
-	if err := q.QueryRow(ctx, `select r is not null,
-			exists(select 1 from pg_attribute where attrelid = r and attname = 'name' and attnum > 0 and not attisdropped),
-			exists(select 1 from pg_attribute where attrelid = r and attname = 'checksum' and attnum > 0 and not attisdropped)
-		from to_regclass($1::text) r`, table).Scan(&exists, &hasName, &hasChecksum); err != nil {
-		return nil, fmt.Errorf("look for %s: %w", table, err)
+	columns, err := VersionTableColumns(ctx, q, table)
+	if err != nil || len(columns) == 0 {
+		return nil, err
 	}
-	if !exists {
-		return nil, nil
+	selected := make([]string, len(IdentityColumnNames))
+	for i, column := range IdentityColumnNames {
+		selected[i] = "null::text"
+		if _, ok := columns[column]; ok {
+			selected[i] = column
+		}
 	}
-	name, checksum := "null::text", "null::text"
-	if hasName {
-		name = "name"
-	}
-	if hasChecksum {
-		checksum = "checksum"
-	}
-	rows, err := q.Query(ctx, "select version, "+name+", "+checksum+" from "+pgx.Identifier{table}.Sanitize()+" order by version")
+	rows, err := q.Query(ctx, "select version, "+strings.Join(selected, ", ")+" from "+pgx.Identifier{table}.Sanitize()+" order by version")
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", table, err)
 	}
 	recorded, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Recorded, error) {
 		var version int
-		var name, checksum *string
-		if err := row.Scan(&version, &name, &checksum); err != nil {
+		var name, checksum, applied *string
+		if err := row.Scan(&version, &name, &checksum, &applied); err != nil {
 			return Recorded{}, err
 		}
-		return recordedRow(version, name, checksum), nil
+		return recordedRow(version, name, checksum, applied), nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", table, err)
@@ -388,10 +452,11 @@ func ReconcileRecorded(ctx context.Context, q versionTable, table string, migrat
 // judged again against migrations, the runner's whole set (ReconcileRecorded), and a refusal of
 // any of them is the error: no migration is applied while the table records a version under an
 // identity the set refuses. Either way a fix is written and answered, for LogFixes once q's
-// transaction commits.
+// transaction commits. Its statements cast the version, because pgx encodes a parameter for the
+// column it finds, and Dispatch's column can be an integer until the boot that widens it.
 func RecheckRecorded(ctx context.Context, q versionTable, table string, migrations []Migration, migration Migration) (applied bool, fixes []Fix, err error) {
-	var name, checksum *string
-	err = q.QueryRow(ctx, "select name, checksum from "+pgx.Identifier{table}.Sanitize()+" where version = $1::bigint", migration.Version).Scan(&name, &checksum)
+	var name, checksum, text *string
+	err = q.QueryRow(ctx, "select name, checksum, applied_checksum from "+pgx.Identifier{table}.Sanitize()+" where version = $1::bigint", migration.Version).Scan(&name, &checksum, &text)
 	if errors.Is(err, pgx.ErrNoRows) {
 		_, fixes, err = ReconcileRecorded(ctx, q, table, migrations)
 		return false, fixes, err
@@ -399,7 +464,7 @@ func RecheckRecorded(ctx context.Context, q versionTable, table string, migratio
 	if err != nil {
 		return false, nil, fmt.Errorf("read what %s records of migration %s: %w", table, migration.Name, err)
 	}
-	fixes, err = Reconcile([]Migration{migration}, []Recorded{recordedRow(migration.Version, name, checksum)})
+	fixes, err = Reconcile([]Migration{migration}, []Recorded{recordedRow(migration.Version, name, checksum, text)})
 	if err != nil {
 		return true, nil, err
 	}
@@ -420,14 +485,13 @@ func writeFixes(ctx context.Context, q versionTable, table string, fixes []Fix) 
 	return nil
 }
 
-// Record inserts migration's version and the identity a runner records of it (RecordedIdentity)
-// into table on q, once the runner has applied it. The version is cast because pgx encodes a
-// parameter for the column it finds, and Dispatch's column can be an integer until the boot that
-// widens it.
+// Record inserts into table on q, once the runner has applied migration, its version, the identity
+// a runner records of it (RecordedIdentity) and the checksum of the text it applied. The version
+// is cast as RecheckRecorded casts it.
 func Record(ctx context.Context, q versionTable, table string, migration Migration) error {
 	recorded := migration.RecordedIdentity()
-	if _, err := q.Exec(ctx, "insert into "+pgx.Identifier{table}.Sanitize()+" (version, name, checksum) values ($1::bigint, $2, $3)",
-		migration.Version, recorded.Name, recorded.Checksum); err != nil {
+	if _, err := q.Exec(ctx, "insert into "+pgx.Identifier{table}.Sanitize()+" (version, name, checksum, applied_checksum) values ($1::bigint, $2, $3, $4)",
+		migration.Version, recorded.Name, recorded.Checksum, migration.Checksum); err != nil {
 		return fmt.Errorf("record migration %s: %w", migration.Name, err)
 	}
 	return nil
@@ -443,17 +507,18 @@ func LogFixes(table string, fixes []Fix) {
 }
 
 // VersionCheck is what CheckVersions reads of a database's version table against a set, writing
-// nothing: what the runner would do with each row at its next boot.
+// nothing: what the runner would do with each row at its next boot (judge).
 type VersionCheck struct {
 	Table string
 	// Recorded is the number of rows the table holds.
 	Recorded int
-	// Matching is the number of rows that record their file's own identity.
+	// Matching is the number of rows that record what this build's runner records of their file
+	// (Migration.RecordedIdentity), the state of a database this build migrated or filled.
 	Matching int
 	// Backfills are the rows that record no name, which the next boot fills from the set's file.
 	Backfills []Fix
-	// Replaced are the rows that record an identity their file declares it replaces, which the
-	// next boot accepts and leaves as they are.
+	// Replaced are the rows that record another identity their file accepts, its own where it
+	// declares a first identity, or another it replaces, which the next boot leaves as they are.
 	Replaced []Recorded
 	// NoFile is each recorded version no file of the set has, which the runner leaves as it is.
 	NoFile []int
@@ -478,10 +543,10 @@ func (c *VersionCheck) Write(w io.Writer) {
 		fmt.Fprintln(w, "versions: NOT OK")
 		return
 	}
-	fmt.Fprintf(w, "versions: %s records %d versions: %d record their file's own identity, %d record no name and are filled from this build's file at the next boot, %d record an identity their file replaces and are accepted as they are, %d have no file, %d refuse\n",
+	fmt.Fprintf(w, "versions: %s records %d versions: %d record what this build records of their file, %d record no name and are filled from this build's file at the next boot, %d record another identity their file accepts and are left as they are, %d have no file, %d refuse\n",
 		c.Table, c.Recorded, c.Matching, len(c.Backfills), len(c.Replaced), len(c.NoFile), len(c.Refusals))
 	for _, row := range c.Replaced {
-		fmt.Fprintf(w, "versions: version %d records %s, which its file replaces\n", row.Version, row.Identity)
+		fmt.Fprintf(w, "versions: version %d records %s, which its file accepts\n", row.Version, row.Identity)
 	}
 	for _, version := range c.NoFile {
 		fmt.Fprintf(w, "versions: NO FILE version %d: this build has no migration of that version; the database ran one this build does not hold\n", version)
@@ -523,22 +588,11 @@ func CheckVersions(ctx context.Context, conn *pgx.Conn, migrations []Migration, 
 	if err != nil {
 		return nil, err
 	}
-	check := &VersionCheck{Table: table, Recorded: len(recorded)}
-	check.Backfills, check.Replaced, check.Refusals = judge(migrations, recorded)
-	files := make(map[int]Identity, len(migrations))
-	for _, migration := range migrations {
-		files[migration.Version] = migration.Identity()
-	}
+	check := judge(migrations, recorded)
+	check.Table = table
 	versions := make(map[int]bool, len(recorded))
 	for _, row := range recorded {
 		versions[row.Version] = true
-		own, ok := files[row.Version]
-		switch {
-		case !ok:
-			check.NoFile = append(check.NoFile, row.Version)
-		case row.Identity == own:
-			check.Matching++
-		}
 	}
 	for _, migration := range migrations {
 		if !versions[migration.Version] {

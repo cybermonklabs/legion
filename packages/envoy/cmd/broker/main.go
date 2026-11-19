@@ -853,8 +853,8 @@ func fatal(err error) {
 // minted from that configuration, so it is loaded before the database is opened; awsAlso asks for
 // it where the database does not, for the Secrets Manager and KMS clients of the AWS store, and
 // with neither the answer is the zero aws.Config. It migrates nothing: the server migrates after
-// this, and the end-sessions subcommand must not. Both of them open the store here, so the
-// subcommand reaches the same database and signs in to it the same way as the server.
+// this, and the end-sessions and versions subcommands must not. All three open the store here, so
+// each subcommand reaches the same database and signs in to it the same way as the server.
 func openStore(ctx context.Context, cfg config.Config, awsAlso bool) (*store.Store, aws.Config, error) {
 	var awsCfg aws.Config
 	var err error
@@ -1564,7 +1564,7 @@ const (
 // runSubcommand runs the subcommand args name and answers its exit code. It is every argument
 // this binary takes: an unknown name, a missing or malformed argument to a name it knows, is
 // refused with 2 and a usage line, never a fall-through to serving. There are three names, so a
-// switch still reads as one thing (cmd/dispatch/subcommands.go keeps a table for its nine).
+// switch still reads as one thing (cmd/dispatch/subcommands.go keeps a table for its eleven).
 func runSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case endSessionsCommand:

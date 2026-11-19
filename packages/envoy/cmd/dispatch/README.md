@@ -1644,53 +1644,69 @@ What no directive embeds, such as a symlink, a `.git` or a hidden name Go's modu
 Versions are applied by their number, not by file name, and the store's tests require every file on disk to be embedded (`TestEveryMigrationFileIsEmbedded`) and the identifiers to be the numbered migrations 1 to the number the series closed at (recorded once in `migrationid`), each taken once with none above it, and a real UTC instant above them (`TestMigrationSetTakesNumbersThenTimestamps`, `migrationid.Check`), both reading file names alone.
 
 **A recorded version under another file.**
-`schema_migrations` records each applied migration's version and its identity: the file's name, without its directory, in `name`, and the sha256 of its whole text, in lower-case hex, in `checksum`.
-For a file that declares `-- replaces:` lines, the identity recorded, when the runner applies it or fills a row for it, is the one its first line names, the version's first file (`pgmigrate.Migration.RecordedIdentity`), so a database a later release created or filled still boots every release before it in the chain.
-The runner adds the two nullable columns itself to a table an earlier runner made, in the locked transaction that creates the table (`prepareVersionTable`), reading the columns first so that the `alter table` runs once per database:
+`schema_migrations` records three facts of each applied migration beside its version.
+`name` and `checksum` hold an identity: a file's name, without its directory, and the sha256 of its whole text, in lower-case hex.
+For a file with no `-- replaces:` line that identity is the file's own; for one with them it is the one its first line names, the version's first file (`pgmigrate.Migration.RecordedIdentity`), so every release whose file of the version is in the chain accepts it.
+`applied_checksum` holds the sha256 of the text the runner applied, so a database that ran an edit of the file this build does not hold, such as another branch's, is told apart from one that ran this build's text.
+A row the runner fills, which an earlier runner wrote, records no applied text, since nothing says which text ran.
+The runner adds the nullable columns itself to a table an earlier runner made, in the locked transaction that creates the table (`prepareVersionTable`), reading the columns first so that the `alter table` runs once per database:
 it takes `ACCESS EXCLUSIVE` on `schema_migrations`, and its wait is bounded by `pgmigrate.LockTimeout`, five seconds.
-Adding the two columns is a catalog change that rewrites no row; where the same boot also widens the version column (above), once, for a table from before the timestamps, the one statement does both, and the widen rewrites the table's few hundred rows.
+A wait that outlasts it, behind a `pg_dump` or a census, rolls the transaction back and tries it again, up to `pgmigrate.LockTimeoutAttempts` times with a pause between, as a migration is tried (`pgmigrate.RetryVersionTableLockTimeouts`); a holder that outlives every attempt fails the boot with the lock-timeout error, not a refusal.
+Adding the columns is a catalog change that rewrites no row; where the same boot also widens the version column (above), once, for a table from before the timestamps, the one statement does both, and the widen rewrites the table's few hundred rows.
 Every statement the release before it sends on the table names its columns, so that release serves beside it while it rolls, and the rows it writes record no name.
 In the same transaction, before it applies anything, the runner reads every row and judges it against this build's file of the row's version (`pgmigrate.Reconcile`):
 
-- A row whose name is null, which is every row a runner before this one wrote, and one written by hand, is filled with that recorded identity and never refused; a name that is not null, the empty string included, is judged like any other.
+- A row whose name is null, which is every row a runner before this one wrote, and one written by hand, is filled with the recorded identity and never refused; a name that is not null, the empty string included, is judged like any other.
   Each fill logs `pgmigrate: recorded the identity of a migration applied before the runners recorded identities` at INFO, with the table, the version, the name and the checksum.
 
-- A row that records the file's own identity passes.
+- A row whose identity is neither the file's own nor one its replaces lines name is refused.
 
-- A row that records, name and checksum both, an identity the file declares in a `-- replaces: <name> sha256:<hex>` line passes, and is left as it is: the release that recorded it still finds its own file's identity there and boots, as a rolling update, the auto-deployer's version-only rollback and the two-build tests (`TestTheReleaseBeforeBootsOverADatabaseTheNextReleaseBootedWithAReplacedFile`) need.
-  A second edit of the same file keeps the first replaces line first and adds one naming the first edit's identity after it, so the chain covers every identity a database may hold and the recorded identity stays the version's first.
+- A row whose identity passes, but whose applied text is neither the file's own text nor one its replaces lines name, is refused: the database ran an edit of the file this build does not hold.
+
+- Any other row passes and is left as it is: the release that recorded it still finds what it records there and boots, as a rolling update, the auto-deployer's version-only rollback and the two-build tests (`TestTheReleaseBeforeBootsOverADatabaseTheNextReleaseBootedWithAReplacedFile`) need.
+  A second edit of the same file keeps the first replaces line first and adds one naming the first edit's identity after it, so the chain covers every text a database may have applied, and the recorded identity stays the version's first.
 
 - A version no file of the build has is left as it is, as before: an image rolled back meets the versions a later one recorded.
-
-- Any other row refuses the boot, and the runner applies nothing.
 
 The refusal names the version, what the database records and what the build's file is, and both ways out:
 
 ```text
-migrations refused, none applied: version 20261117022936 is recorded as 20261117022936_legion_current.up.sql sha256:<recorded>, and this build's file of version 20261117022936 is 20261117022936_legion_current.up.sql sha256:<file>: if this database ran another branch's or an earlier commit's migration, reset it (drop it, create it empty and let the server migrate it); if the edit is intended, add this line to 20261117022936_legion_current.up.sql: -- replaces: 20261117022936_legion_current.up.sql sha256:<recorded>
+migrations refused, none applied: version 20261117022936 is recorded as 20261117022936_legion_current.up.sql sha256:<recorded>, and this build's file of version 20261117022936 is 20261117022936_legion_current.up.sql sha256:<file>: if this database ran another branch's or an earlier commit's migration, reset it (drop it, create it empty and let the server migrate it); if the edit is intended, add this line to 20261117022936_legion_current.up.sql, after the replaces lines it has (its first replaces line names the identity version 20261117022936 first shipped with): -- replaces: 20261117022936_legion_current.up.sql sha256:<recorded>
 ```
 
 A file whose replaces lines name other identities adds `, whose replaces lines name only <identity>` after its own.
+A refusal of the applied text reads `version <v> is recorded as <identity>, which this build's file of version <v>, <file>, accepts, but the text applied under it has sha256 <text>, which neither that file nor its replaces lines name`, and offers the lines that would accept that text.
 The runner gives the key back between that judgment and each migration, so another process can record any version in between: before it applies a migration, the runner judges every row again against its whole set, and applies nothing while any row is refused, in either apply mode.
 Such a refusal reads `apply migration <version>: check migration: version …`, and the migrations the boot applied before it stay applied.
+A lock timeout, or a failed read or write of the table, reads `read or record what schema_migrations records, none applied: …` instead, and asks for no reset.
 What the operator does:
 
-- A database that ran another branch's or an earlier commit's migration, such as a development database or a preview stack's, holds a schema this build never wrote: reset it, by dropping the database, creating it empty, and starting the server, which migrates it from the first file.
+- A database that ran another branch's or an earlier commit's migration, or an edit of one, such as a development database or a preview stack's, holds a schema this build never wrote: reset it, by dropping the database, creating it empty, and starting the server, which migrates it from the first file.
 
-- A file edited or renamed on purpose, whose schema the database already holds, takes the line the refusal names, alone on a line of its own and outside every literal; in a `-- pgmigrate:non-transactional` file it goes after the marker, which stays the first line.
-  If the file already carries replaces lines, the new one goes after them, in their order; the next boot accepts the row as it is.
+- A file edited or renamed on purpose, whose schema the database already holds, takes the line the refusal names, alone on a line of its own and outside every literal; in a `-- pgmigrate:non-transactional` file it goes after the marker, which stays the first line, and the loader refuses a file whose marker stands on any other line, naming it, since such a file would run in a transaction.
+  The first replaces line names the identity the version first shipped with, and a later line goes after the ones there, in their order; the next boot accepts the row as it is.
   The line names a `<version>_<name>.up.sql` of the file's own version and 64 lower-case hex digits, and the loader refuses the whole set, naming the file and line, for a line that begins `-- replaces:` and is written any other way, and for one that Postgres reads as part of a string literal, a dollar-quoted body or a continued string, where it would declare nothing.
-  A file may carry several, one for each identity a database may record.
-  Before the merge, the `envoy-go-checks` job compares every migration the base already holds with the head's file of the same version (`go run ./internal/pgmigrate/cmd/edited-migrations --base <commit>`), and fails a file whose text or name changed and that declares no replaces line naming the base's identity, or whose first replaces line is no longer the base's first, so the pull request that edits an applied migration, a comment included, meets the refusal before any database does.
+  A line ending in a carriage return, as a file with CRLF line endings has, is read without it.
+  Before the merge, the `envoy-go-checks` job compares every migration the base already holds with the head's file of the same version (`go run ./internal/pgmigrate/cmd/edited-migrations --base <commit>`).
+  The base is the first parent of the commit the run tests, on a pull request and in the merge queue; on the bypass check's run at main's tip (`main-bypass-check.yaml`, whose push can carry several commits) it is the commit main pointed at before that push, passed as ci.yaml's `migration-base` input, and a dispatch that names none fails the check.
+  It fails a head file whose first replaces line is not the base's first identity, a head file that accepts no text of the base's, and a base file whose version the head no longer has a file of, each naming the lines to add, so the pull request that edits an applied migration, a comment included, meets the refusal before any database does.
+  A revert of an edit is refused there too, since a database the edited release created applied the edit's text: the revert keeps the replaces lines.
 
-Every row a runner before this one wrote has a null name, so a database's first boot of this runner fills each from the file the release ships and refuses none.
-A migration edited in place that reaches a database before this runner does is filled with its edited identity there; one edited after this runner's first boot needs its replaces line.
+**The limit.**
+A release cannot accept a text it has never seen, so the release before an edit refuses a database that a release carrying the edit created from empty: the applied text there is the edit's.
+That is the same row a development database leaves when it ran another branch's edit, and refusing it is what this check is for.
+A production database is created once and booted by every later release, so a rollback onto it, and a rolling update over it, still boot: a later release applies no version the earlier one holds, and leaves each row's applied text as it was.
+The two-build tests boot the previous release on a database cloned at this tree's schema, so a pull request that edits a migration the previous release holds meets this refusal there.
+
+Every row a runner before this one wrote has a null name, so a database's first boot of this runner fills each one with the identity this runner records of its file, and refuses none.
+A migration edited in place after this runner's first release needs its replaces line, which the pre-merge check requires.
 `DATABASE_URL=<url> envoy-dispatch versions`, run as a one-off task of the image about to roll out, reads in a read-only transaction what that image's next boot would do with each row, and exits 1 when a recorded version has no file, a row would be refused, or the table records nothing on the connection's `search_path`, which it reports as `NOTHING CHECKED` rather than as a clean check (`pgmigrate.CheckVersions`); a `search_path` that names no schema is an error, exit 2.
 `envoy-broker versions` is the broker's, signing in as a broker pod does (`docs/site/src/content/docs/broker/operate.md`).
 The pre-deploy census (`envoy-dispatch census`) reads only which versions are recorded, and judges no identity.
 
 A file whose first line is exactly `-- pgmigrate:non-transactional` runs outside a transaction (`pgmigrate.ExecNonTransactional`).
 The loader accepts that marker only on one non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` statement, parsed as PostgreSQL parses it; UNIQUE indexes, multiple statements and other commands refuse the whole set.
+It refuses, naming the line, a file that holds the marker as a comment of its own on any other line, as one does with a replaces line written above it: that file would run in a transaction, and its concurrent index would fail on a fresh database.
 The runner owns and closes that connection and holds the session-level advisory lock on the same migration key through the build and its separate version insert, excluding transactional runners and schema-version readers too.
 Every runner takes that key by polling `pg_try_advisory_lock` as statements of its own, with nothing open between two tries, and never by a blocking call: a backend blocked on a lock keeps the snapshot its statement took, and a concurrent index build waits for every older snapshot, so a blocking wait and the build that holds the key deadlock (SQLSTATE 40P01, measured on PostgreSQL 18.6).
 That holds at each of the three places a boot waits for the key (`prepareVersionTable`, `applyMigrationOnce`, `applyNonTransactionalMigration`) and at the auto-deployer's schema read.

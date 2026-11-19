@@ -8,8 +8,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -17,23 +15,22 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
 // editedMigration is the shipped migration the next release edits in place.
 const editedMigration = "0001_init.up.sql"
 
 // sha256Hex is the checksum a runner records of text.
-func sha256Hex(text []byte) string {
-	sum := sha256.Sum256(text)
-	return hex.EncodeToString(sum[:])
-}
+func sha256Hex(text []byte) string { return pgmigrate.Checksum(text) }
 
 // Release N is this tree. Release N+1 is this tree with editedMigration edited in place, declaring
 // N's identity of the file in a replaces line; it is built with go build -overlay, so the tree is
-// not changed. N+1 boots over a database N's runner migrated and accepts N's row as it is, so N,
-// and the release before this change, boot over that database again. The control writes the row
-// N+1's runner would have written had it moved the row to the file's own identity, the earlier
-// design: N then refuses the row and exits 1, naming it, which is the boot this row exists to keep.
+// not changed. N+1 boots over a database N's runner migrated, which records N's identity and N's
+// text as applied, and accepts the row as it is, so N, and the release before this change, boot
+// over that database again. The control writes the row N+1's runner would have written had it
+// moved the row to the file's own identity, the earlier design: N then refuses the row and exits
+// 1, naming it, which is the boot this row exists to keep.
 func TestTheReleaseBeforeBootsOverADatabaseTheNextReleaseBootedWithAReplacedFile(t *testing.T) {
 	b := newTwoBuilds(t)
 	ctx := context.Background()
@@ -60,12 +57,18 @@ func TestTheReleaseBeforeBootsOverADatabaseTheNextReleaseBootedWithAReplacedFile
 		t.Fatal(err)
 	}
 	next := cmdtest.BuildCommand(t, cmdtest.Command{Name: "envoy-dispatch-next", Flags: []string{"-overlay", overlayFile}})
-	recorded := func() (name, checksum string) {
+	// recorded reads what version 1's row records: its identity, and the text applied, which a
+	// database storetest cloned at this tree's schema records as this tree's (N's) text.
+	recorded := func() (name, checksum, applied string) {
 		t.Helper()
-		if err := b.database.Pool.QueryRow(ctx, "select name, checksum from schema_migrations where version = 1").Scan(&name, &checksum); err != nil {
+		var text *string
+		if err := b.database.Pool.QueryRow(ctx, "select name, checksum, applied_checksum from schema_migrations where version = 1").Scan(&name, &checksum, &text); err != nil {
 			t.Fatalf("read the row of version 1: %v", err)
 		}
-		return name, checksum
+		if text != nil {
+			applied = *text
+		}
+		return name, checksum, applied
 	}
 	boot := func(binary, which string) {
 		t.Helper()
@@ -76,12 +79,13 @@ func TestTheReleaseBeforeBootsOverADatabaseTheNextReleaseBootedWithAReplacedFile
 		stop(t, p)
 		t.Logf("%s booted and stopped", which)
 	}
-	if name, checksum := recorded(); name != editedMigration || checksum != sha256Hex(original) {
-		t.Fatalf("version 1 records %s sha256:%s before N+1 boots; want N's own %s sha256:%s", name, checksum, editedMigration, sha256Hex(original))
+	name, checksum, applied := recorded()
+	if name != editedMigration || checksum != sha256Hex(original) || (applied != "" && applied != sha256Hex(original)) {
+		t.Fatalf("version 1 records %s sha256:%s, applied %q, before N+1 boots; want N's own %s sha256:%s and N's text or none", name, checksum, applied, editedMigration, sha256Hex(original))
 	}
 	boot(next, "release N+1, whose file declares N's identity,")
-	if name, checksum := recorded(); name != editedMigration || checksum != sha256Hex(original) {
-		t.Errorf("after N+1 booted, version 1 records %s sha256:%s; want N's %s sha256:%s left as it was", name, checksum, editedMigration, sha256Hex(original))
+	if n, c, a := recorded(); n != name || c != checksum || a != applied {
+		t.Errorf("after N+1 booted, version 1 records %s sha256:%s, applied %q; want the row left as it was", n, c, a)
 	}
 	boot(b.binary, "release N, this tree,")
 	options := b.options(nil)

@@ -526,20 +526,25 @@ starting together take turns, so a migration runs once. Each migration waits at 
 for a lock. When something holds the table longer, the start fails and names the migration and
 what it waited on; end the holder, or let it finish, and start again.
 
-Dispatch records each migration it applies with the file's name and the sha256 of its text. At
-every start, before it applies anything, it compares each recorded migration with the file of the
-same version in the release it runs. A migration recorded before this check, with no name, takes
-the file's name and checksum and is never refused, so the first start of the release that brings
-the check refuses nothing. When the database records another file, or another text, under a
-version, the start fails before it applies any migration, and the log names the version, what the
-database records and what the release's file is. Dispatch judges every recorded migration again
-before each one it applies, so a start that finds such a row only then, because another server
-recorded it meanwhile, stops before that migration and keeps the ones it applied. A database that
-ran another branch's or an earlier commit's migration, such as a test or preview database, is
-reset: drop it, create it empty, and
-start Dispatch, which migrates it from the first file. A migration edited or renamed on purpose
-takes the `-- replaces: <name> sha256:<hex>` line the refusal gives, and the next start records
-the new file. To see what a start would do, without changing the database, run
+Dispatch records each migration it applies: the name and sha256 of the file the version first
+shipped with, which a later edit of the file names in its first `-- replaces:` line, and the sha256
+of the text it applied. At every start, before it applies anything, it compares each recorded
+migration with the file of the same version in the release it runs. A migration recorded before
+this check, with no name, takes the identity the release records of the file and is never
+refused, so the first start of the release that brings the check refuses nothing. When the
+database records another file under a version, or a text of it the release's file does not name,
+as a database that ran another branch's edit does, the start fails before it applies any
+migration, and the log names the version, what the database records and what the release's file
+is. Dispatch judges every recorded migration again before each one it applies, so a start that
+finds such a row only then, because another server recorded it meanwhile, stops before that
+migration and keeps the ones it applied. A database that ran another branch's or an earlier
+commit's migration, or an edit of one, such as a test or preview database, is reset: drop it,
+create it empty, and start Dispatch, which migrates it from the first file. A migration edited or
+renamed on purpose takes the `-- replaces: <name> sha256:<hex>` line the refusal gives, after the
+replaces lines it has, and the next start accepts the recorded row as it is. A release cannot
+accept a text it has never seen, so the release before an edit refuses a database that a release
+with the edit created from empty; the production database, created once, still rolls back. To see
+what a start would do, without changing the database, run
 `DATABASE_URL='<your database URL>' envoy-dispatch versions` with the image you mean to roll
 out, as you run its census.
 

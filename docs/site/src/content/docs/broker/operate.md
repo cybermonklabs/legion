@@ -1655,44 +1655,62 @@ the broker cannot take back a value it released.
 
 ## A migration recorded under another file
 
-The broker records each migration it applies in `broker_schema_migrations` with its version, the
-file's name and the sha256 of the file's text; for a file that declares `-- replaces:` lines, the
-name and sha256 its first line names, the version's first file, so a database a later image made
-still starts the images before it. At every start, before it applies anything, it compares each
-recorded version with the file of that version in its own image:
+The broker records each migration it applies in `broker_schema_migrations`: its version, the
+name and sha256 of the file the version first shipped with (the file itself, or for one that
+declares `-- replaces:` lines, the one its first line names), and the sha256 of the text it
+applied. At every start, before it applies anything, it compares each recorded version with the
+file of that version in its own image:
 
 - A version recorded with no name, as every one a broker before this check wrote, takes the
   identity the broker records of the file, and the broker logs
   `pgmigrate: recorded the identity of a migration applied before the runners recorded identities`
   for each. It is never refused. The first start of the release that brings the check writes one
   such line for each migration, and refuses none.
-- A version recorded under the file's own name and checksum passes.
-- A version recorded under a name and checksum that the file names in a
-  `-- replaces: <name> sha256:<hex>` line passes, and is left as it is, so a pod of the release that
-  recorded it still starts beside this one and after a rollback.
+- A version recorded under a name and sha256 that is neither the file's own nor one its
+  `-- replaces: <name> sha256:<hex>` lines name stops the start.
+- A version whose applied text is neither the file's own text nor one its replaces lines name
+  stops the start too: the database ran an edit of the file this image does not hold, such as
+  another branch's.
 - A version no file of the image has is left as it is, as an image rolled back finds them.
-- Any other version stops the start: the broker applies nothing, logs `broker: fatal` and exits 1.
+- Any other version passes and is left as it is, so a pod of the release that recorded it still
+  starts beside this one and after a rollback.
+
+A start that stops applies nothing, logs `broker: fatal` and exits 1. On a database a broker
+before this check created, the start first adds the identity columns in a transaction of its own,
+and that catalog change stands even when the rows are then refused: the columns are nullable and
+the release before ignores them.
 
 The refusal names the version, what the database records and what the image's file is:
 
 ```text
-migrations refused, none applied: version 32 is recorded as 0032_another_branch.up.sql sha256:<recorded>, and this build's file of version 32 is 0032_oauth_pod_sessions_binding.up.sql sha256:<file>: if this database ran another branch's or an earlier commit's migration, reset it (drop it, create it empty and let the server migrate it); if the edit is intended, add this line to 0032_oauth_pod_sessions_binding.up.sql: -- replaces: 0032_another_branch.up.sql sha256:<recorded>
+migrations refused, none applied: version 32 is recorded as 0032_another_branch.up.sql sha256:<recorded>, and this build's file of version 32 is 0032_oauth_pod_sessions_binding.up.sql sha256:<file>: if this database ran another branch's or an earlier commit's migration, reset it (drop it, create it empty and let the server migrate it); if the edit is intended, add this line to 0032_oauth_pod_sessions_binding.up.sql, after the replaces lines it has (its first replaces line names the identity version 32 first shipped with): -- replaces: 0032_another_branch.up.sql sha256:<recorded>
 ```
+
+A refusal of the applied text says so instead (`the text applied under it has sha256 …`), and
+offers the lines that would accept that text. A lock timeout, or a failed read or write of the
+table, reads `read or record what broker_schema_migrations records, none applied: …`, and is no
+reason to reset anything.
 
 What you do depends on how the database came to hold another file:
 
-- **It ran another branch's or an earlier commit's migration** (a development, test or preview
-  database): its schema is not the one this image's files make. Reset it: drop the database,
-  create it empty, and start the broker, which migrates it from the first file. Never reset the
-  production database this way; a refusal there is a release to stop and investigate.
+- **It ran another branch's or an earlier commit's migration, or an edit of one** (a development,
+  test or preview database): its schema is not the one this image's files make. Reset it: drop
+  the database, create it empty, and start the broker, which migrates it from the first file.
+  Never reset the production database this way; a refusal there is a release to stop and
+  investigate.
 - **The file was edited or renamed on purpose**, and the database already holds the schema it
   means: add the line the refusal names, alone on a line of its own and outside every quoted
-  string or function body, to the file, and ship it. The next start accepts the row as it is. A
-  later edit of the same file keeps that line first and adds one naming the edit before it. The line
-  names a file of the same version and 64 lower-case hex digits; a line that begins `-- replaces:`
-  and is written any other way, or that sits inside a quoted string or a function body, stops
-  every start, naming the file and the line. A pull request that edits a migration main already
-  holds without such a line fails CI's `envoy-go-checks` job before it merges.
+  string or function body, to the file, after the replaces lines it has, and ship it. The next
+  start accepts the row as it is. The first replaces line names the identity the version first
+  shipped with; a later edit of the same file keeps it first and adds one naming the edit before
+  it. The line names a file of the same version and 64 lower-case hex digits; a line that begins
+  `-- replaces:` and is written any other way, or that sits inside a quoted string or a function
+  body, stops every start, naming the file and the line. A pull request that edits a migration
+  main already holds without such lines fails CI's `envoy-go-checks` job before it merges.
+
+An image cannot accept a text it has never seen, so the image before an edit refuses a database
+that an image with the edit created from empty. The production database is created once, so a
+rollback onto it still starts.
 
 A start fills the rows that record no name as it judges them. `envoy-broker versions` makes the
 same judgment without changing the database: it reads the broker's own configuration and signs in

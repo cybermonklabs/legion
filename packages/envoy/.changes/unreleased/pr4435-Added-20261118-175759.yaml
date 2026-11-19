@@ -1,17 +1,19 @@
 kind: Added
 body: |-
     Dispatch and the secrets broker refuse to start, before they apply any migration, when their
-    database records a migration's version under another file's name or another text than the
-    release's own file of that version: a database that ran another branch's or an earlier
-    commit's migration was booted before without that migration applied, and said nothing.
+    database records a migration's version under another file's name, or a text of it the
+    release's own file of that version does not name, as a database that ran another branch's
+    edit does: such a database was booted before without that migration applied, and said nothing.
     Dispatch judges again before each migration it applies, and stops there, keeping the ones it
-    applied, when another server recorded such a version meanwhile. The refusal
-    names the version, what the database records and what the release's file is, and both ways
-    out: reset a database that ran another branch's or commit's migration (drop it, create it
-    empty and let the server migrate it), or, for an edit or rename made on purpose, add the
-    `-- replaces: <name> sha256:<hex>` line it names to the file, after which a start accepts the
-    recorded row as it is, so the release before still boots over the database. Before the merge,
-    `envoy-go-checks` fails a change that edits a migration its base holds without such a line.
+    applied, when another server recorded such a version meanwhile. The refusal names the version,
+    what the database records and what the release's file is, and both ways out: reset a database
+    that ran another branch's or commit's migration (drop it, create it empty and let the server
+    migrate it), or, for an edit or rename made on purpose, add the
+    `-- replaces: <name> sha256:<hex>` line it names to the file, after the replaces lines it has,
+    after which a start accepts the recorded row as it is, so the release before still boots over
+    the database. An image cannot accept a text it has never seen, so the image before an edit
+    refuses a database that an image with the edit created from empty. Before the merge,
+    `envoy-go-checks` fails a change that edits a migration its base holds without such lines.
     `envoy-dispatch versions` and `envoy-broker versions` read without writing what the image's
     next start would do with each recorded migration.
 time: 2026-11-18T17:57:59.259752309Z

@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"path"
 	"strings"
+	"testing/fstest"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
@@ -72,29 +73,31 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// checkStore reads the base's forward migrations of dir and this tree's set of dir, and compares
-// them.
+// checkStore loads the base's set of dir, every file of dir as the base commit holds it, and this
+// tree's, both with pgmigrate.Load, and compares them. The base's set was merged, so Load accepts
+// it; a refusal of it is reported, as a check that could not be taken.
 func checkStore(repository, base, store, dir string) (*pgmigrate.EditCheck, error) {
 	listing, err := git("-C", repository, "ls-tree", "-z", "--name-only", base+":"+dir)
 	if err != nil {
 		return nil, fmt.Errorf("list %s at %s: %w", dir, base, err)
 	}
-	var files []pgmigrate.BaseFile
+	files := fstest.MapFS{}
 	for _, name := range strings.Split(strings.TrimRight(string(listing), "\x00"), "\x00") {
-		if !strings.HasSuffix(name, ".up.sql") {
-			continue
-		}
 		text, err := git("-C", repository, "cat-file", "blob", base+":"+path.Join(dir, name))
 		if err != nil {
 			return nil, fmt.Errorf("read %s at %s: %w", name, base, err)
 		}
-		files = append(files, pgmigrate.BaseFile{Name: name, Text: text})
+		files[path.Join(dir, name)] = &fstest.MapFile{Data: text}
+	}
+	baseSet, err := pgmigrate.Load(files, dir)
+	if err != nil {
+		return nil, fmt.Errorf("load the base's %s: %w", dir, err)
 	}
 	head, err := pgmigrate.Load(os.DirFS(repository), dir)
 	if err != nil {
 		return nil, fmt.Errorf("load this tree's %s: %w", dir, err)
 	}
-	return pgmigrate.CheckEdits(store, files, head)
+	return pgmigrate.CheckEdits(store, baseSet, head), nil
 }
 
 // git runs git with args and answers its standard output, or an error carrying its standard error.

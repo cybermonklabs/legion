@@ -1,6 +1,7 @@
 package pgmigrate
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 )
@@ -9,7 +10,32 @@ import (
 // function body or a later comment. The loader validates the statement before accepting it.
 func nonTransactionalHeader(sql string) bool {
 	line, _, _ := strings.Cut(sql, "\n")
-	return strings.TrimSuffix(line, "\r") == "-- pgmigrate:non-transactional"
+	return strings.TrimSuffix(line, "\r") == nonTransactionalMarker
+}
+
+// nonTransactionalMarker is the first-line marker nonTransactionalHeader reads.
+const nonTransactionalMarker = "-- pgmigrate:non-transactional"
+
+// misplacedMarker refuses a migration name of text sql that holds the non-transactional marker as
+// a comment of its own anywhere but its first line, naming the line: the author meant the marker,
+// and nonTransactionalHeader reads the first line alone, so the file would run in a transaction,
+// which a CREATE INDEX CONCURRENTLY it holds then fails on a fresh database with an error that
+// names neither the marker nor the line above it. A replaces line written above the marker is the
+// usual way to get there. The marker's words inside a literal, or as part of a longer comment, are
+// text and declare nothing.
+func misplacedMarker(name, sql string) error {
+	var misplaced error
+	_ = scanSQL(sql, func(token sqlToken) error {
+		if misplaced != nil || token.kind != sqlComment || token.start == 0 ||
+			strings.TrimSuffix(sql[token.start:token.end], "\r") != nonTransactionalMarker {
+			return nil
+		}
+		misplaced = fmt.Errorf(
+			"migration %s line %d: the %s marker is read on the first line alone, so this file would run in a transaction: put the marker on its first line, and any replaces line after it",
+			name, 1+strings.Count(sql[:token.start], "\n"), nonTransactionalMarker)
+		return nil
+	})
+	return misplaced
 }
 
 // The scanner here reads SQL text as Postgres 18 reads it. It does not reason about the grammar:

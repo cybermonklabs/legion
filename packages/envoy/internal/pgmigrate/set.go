@@ -66,7 +66,8 @@ type Migration struct {
 //   - an entry is named any other way: a runner reading only *.up.sql would never see it, while
 //     whoever wrote it believes it runs;
 //   - a -- pgmigrate:non-transactional first-line marker does not hold exactly one
-//     non-unique CREATE INDEX CONCURRENTLY IF NOT EXISTS statement (concurrentIndex);
+//     non-unique CREATE INDEX CONCURRENTLY IF NOT EXISTS statement (concurrentIndex), or the
+//     marker stands, as a comment of its own, on any other line (misplacedMarker);
 //   - a rollback script or a census has no forward migration of its name;
 //   - a census is not one select, holds a Unicode escape, or names pg_terminate_backend,
 //     pg_cancel_backend, pg_sleep, an advisory-lock function or a function that runs a query
@@ -143,8 +144,12 @@ func Load(fsys fs.FS, dir string) ([]Migration, error) {
 			problems = append(problems, fmt.Errorf("read migration %s: %w", name, err))
 			continue
 		}
-		migration := Migration{Version: version, Name: name, SQL: string(sql), Checksum: checksumOf(sql)}
+		migration := Migration{Version: version, Name: name, SQL: string(sql), Checksum: Checksum(sql)}
 		if migration.Replaces, err = readReplaces(name, version, migration.SQL); err != nil {
+			problems = append(problems, err)
+			continue
+		}
+		if err := misplacedMarker(name, migration.SQL); err != nil {
 			problems = append(problems, err)
 			continue
 		}

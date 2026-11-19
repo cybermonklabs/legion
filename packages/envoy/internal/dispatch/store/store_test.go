@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"reflect"
@@ -817,7 +818,7 @@ func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 	// appliedCheck is the runner's own statement text, which it prepared and cached on the pooled
 	// connection as it applied the set (applyMigrationOnce, pgmigrate.RecheckRecorded). Its text
 	// must match byte for byte, so pgx finds it in the connection's statement cache.
-	const appliedCheck = `select name, checksum from "schema_migrations" where version = $1::bigint`
+	const appliedCheck = `select name, checksum, applied_checksum from "schema_migrations" where version = $1::bigint`
 	var held []*pgxpool.Conn
 	for i := range poolSize {
 		conn, err := store.Pool.Acquire(ctx)
@@ -827,8 +828,8 @@ func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 		held = append(held, conn)
 	}
 	for _, conn := range held {
-		var name, checksum *string
-		if err := conn.QueryRow(ctx, appliedCheck, int64(1)).Scan(&name, &checksum); err != nil {
+		var name, checksum, applied *string
+		if err := conn.QueryRow(ctx, appliedCheck, int64(1)).Scan(&name, &checksum, &applied); err != nil {
 			t.Errorf("the runner's cached statement failed on a connection it reset: %v", err)
 		}
 	}
@@ -839,22 +840,30 @@ func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 
 // prepareVersionTable pins its transaction (pgmigrate.Pin), so the ALTER TABLE that gives an
 // earlier runner's schema_migrations the identity columns, and widens an integer version, takes
-// its ACCESS EXCLUSIVE lock within LockTimeout. Here another connection holds ACCESS SHARE on such
-// a table in an open transaction, so the alter must wait for it. With the pin it gives up after
-// LockTimeout with a lock-timeout error (SQLSTATE 55P03) rather than waiting without limit. Each
-// row is one table an earlier runner left: an integer version from before the timestamps, under a
-// set that holds one, which the alter widens and gives the columns; and a bigint version, which it
-// gives the columns alone.
+// its ACCESS EXCLUSIVE lock within LockTimeout, and tries it again on a timeout, as a migration is
+// tried (pgmigrate.RetryVersionTableLockTimeouts). Here another connection holds ACCESS SHARE on
+// such a table in an open transaction, so the alter must wait for it. A holder that stays gives
+// every attempt up after LockTimeout, and the boot fails with a lock-timeout error (SQLSTATE 55P03)
+// after LockTimeoutAttempts of them rather than waiting without limit; a holder that ends after the
+// first attempt, as a pg_dump does, lets the next attempt through, and the boot goes on. The first
+// two rows are tables an earlier runner left: an integer version from before the timestamps,
+// under a set that holds one, which the alter widens and gives the columns; and a bigint version,
+// which it gives the columns alone.
 //
 // Control: remove the pgmigrate.Pin call from prepareVersionTable's callback and the alter waits
-// without limit; the context deadline below fires and the error is not a lock timeout.
+// without limit; the context deadline below fires and the error is not a lock timeout. Remove the
+// retry, and the third row fails on the first attempt's timeout.
 func TestMigratePrepareVersionTableBoundsItsAlterLock(t *testing.T) {
+	attempts := time.Duration(pgmigrate.LockTimeoutAttempts)
+	bound := attempts*pgmigrate.LockTimeout + (attempts-1)*pgmigrate.LockTimeoutRetryPause
 	for name, tc := range map[string]struct {
 		versionType string
 		set         []pgmigrate.Migration
+		release     bool
 	}{
-		"widen and add the identity columns": {"integer", []pgmigrate.Migration{{Version: 20261030120000, Name: "20261030120000_stamped.up.sql"}}},
-		"add the identity columns":           {"bigint", nil},
+		"widen and add the identity columns":         {"integer", []pgmigrate.Migration{{Version: 20261030120000, Name: "20261030120000_stamped.up.sql"}}, false},
+		"add the identity columns":                   {"bigint", nil, false},
+		"a holder that ends after the first attempt": {"bigint", nil, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			store := openIsolatedStoreWithPool(t, 4)
@@ -866,19 +875,42 @@ func TestMigratePrepareVersionTableBoundsItsAlterLock(t *testing.T) {
 			if _, err := holder.Exec(setup, "begin; lock table schema_migrations in access share mode"); err != nil {
 				t.Fatalf("hold a lock on schema_migrations: %v", err)
 			}
-			t.Cleanup(func() { _, _ = holder.Exec(context.Background(), "rollback") })
+			released := make(chan struct{})
+			if tc.release {
+				go func() {
+					defer close(released)
+					time.Sleep(pgmigrate.LockTimeout + pgmigrate.LockTimeoutRetryPause/2)
+					_, _ = holder.Exec(context.Background(), "rollback")
+				}()
+			} else {
+				close(released)
+				t.Cleanup(func() { _, _ = holder.Exec(context.Background(), "rollback") })
+			}
+			t.Cleanup(func() { <-released })
 
-			ctx, cancel := context.WithTimeout(setup, pgmigrate.LockTimeout+10*time.Second)
+			ctx, cancel := context.WithTimeout(setup, bound+10*time.Second)
 			defer cancel()
 			started := time.Now()
 			err := store.prepareVersionTable(ctx, tc.set)
 			elapsed := time.Since(started)
-			var pgErr *pgconn.PgError
-			if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
-				t.Fatalf("prepareVersionTable returned %v after %v; want a lock-timeout error (SQLSTATE 55P03): the alter was not bounded", err, elapsed)
+			if tc.release {
+				if err != nil {
+					t.Fatalf("prepareVersionTable returned %v after %v; want the attempt after the holder ended to go through", err, elapsed)
+				}
+				if elapsed < pgmigrate.LockTimeout {
+					t.Errorf("prepareVersionTable returned after %v; want it to have waited out the first attempt (%v)", elapsed, pgmigrate.LockTimeout)
+				}
+				return
 			}
-			if elapsed > pgmigrate.LockTimeout+5*time.Second {
-				t.Errorf("prepareVersionTable returned after %v; want about LockTimeout (%v): it waited past its bound", elapsed, pgmigrate.LockTimeout)
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) || pgErr.Code != "55P03" || !strings.Contains(err.Error(), fmt.Sprintf("after %d attempts", pgmigrate.LockTimeoutAttempts)) {
+				t.Fatalf("prepareVersionTable returned %v after %v; want a lock-timeout error (SQLSTATE 55P03) after %d attempts: the alter was not bounded", err, elapsed, pgmigrate.LockTimeoutAttempts)
+			}
+			if pgmigrate.IsRefusal(err) {
+				t.Errorf("prepareVersionTable = %v; a lock timeout reads as a refusal of the recorded rows", err)
+			}
+			if elapsed < attempts*pgmigrate.LockTimeout || elapsed > bound+5*time.Second {
+				t.Errorf("prepareVersionTable returned after %v; want about %v, every attempt's LockTimeout and the pauses between", elapsed, bound)
 			}
 		})
 	}
