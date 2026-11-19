@@ -319,14 +319,16 @@ load_label() {
   # unreviewed (packages/pi-envoy/README.md, "The time limit"): an askgate run would then score the
   # timeout, not the rule. The model route installers set the limit in the profile's settings
   # (scripts/e2e/lib/install-model-gateway.sh, install-key-file-model-route.sh); a profile built
-  # before they did is refused here. A check that cannot answer (a settings file bun cannot read or
-  # parse, or a bun that does not start) leaves its own error on stderr and is refused as that, not
-  # read as a missing limit.
-  local settings=$P/home/.omp/profiles/$profile/agent/config.yml limit
-  limit=$(bun -e 'const v = Bun.YAML.parse(await Bun.file(process.argv[1]).text())?.extensionHandlers?.toolCallTimeoutMs; console.log(typeof v === "number" && v >= 120000 ? "set" : "unset")' "$settings") ||
-    fail "label $1's profile settings $settings could not be checked: bun failed with the error above"
-  [ "$limit" = set ] ||
-    fail "label $1's profile settings $settings do not set extensionHandlers.toolCallTimeoutMs to 120000 or more, so AskGate's review would often time out: remove $P and run \`rig.sh profile $1 <checkout>\` from a checkout whose model route installer sets it"
+  # before they did is refused here. The read is bun's, which exits 0 where the key is set and 3
+  # where it is not: any other exit is a bun that could not run or could not read the settings,
+  # refused with bun's own words and never as a missing key.
+  local settings=$P/home/.omp/profiles/$profile/agent/config.yml said read=0
+  said=$(bun -e 'const v = Bun.YAML.parse(await Bun.file(process.argv[1]).text())?.extensionHandlers?.toolCallTimeoutMs; process.exit(typeof v === "number" && v >= 120000 ? 0 : 3)' "$settings" 2>&1) || read=$?
+  case $read in
+    0) ;;
+    3) fail "label $1's profile settings $settings do not set extensionHandlers.toolCallTimeoutMs to 120000 or more, so AskGate's review would often time out: remove $P and run \`rig.sh profile $1 <checkout>\` from a checkout whose model route installer sets it" ;;
+    *) fail "label $1: bun could not read the profile settings $settings: $said" ;;
+  esac
 }
 
 # install_model_route CHECKOUT PROFILE DIR installs the model route of the profile whose HOME is

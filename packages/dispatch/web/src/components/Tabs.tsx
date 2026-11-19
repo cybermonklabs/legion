@@ -1,9 +1,12 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useRef } from "react";
 
+import { observeStrip } from "../hooks/observe-strip";
+import { useScrollFadeTrailing } from "../hooks/useScrollFadeTrailing";
 import {
   activeTabIndicatorBorder,
   activeTabIndicatorText,
   borderDefault,
+  scrollFadeTrailingPx,
   textSecondaryOnCanvas,
 } from "../theme/classes";
 import { Pill } from "./Pill";
@@ -21,10 +24,14 @@ export function tabButtonId(idPrefix: string, id: string): string {
   return `${idPrefix}-${id}-tab`;
 }
 
-/** A tablist may be narrower than its tabs (a phone); a tab focused from the keyboard or
- *  selected must be fully visible, which Chromium's `focus()` alone does not guarantee. Only the
- *  tablist scrolls: `scrollIntoView` would also move the page, undoing the per-tab scroll
- *  position IssuePage restores when a panel comes back. */
+/** A tablist may be narrower than its tabs (a phone, or the issue page beside its comment
+ *  margin); a tab focused from the keyboard or selected must be fully visible, which Chromium's
+ *  `focus()` alone does not guarantee. Only the tablist scrolls: `scrollIntoView` would also move
+ *  the page, undoing the per-tab scroll position IssuePage restores when a panel comes back.
+ *
+ *  While tabs lie past its trailing edge, the tablist's last `scrollFadeTrailingPx` wear the
+ *  trailing fade, so a tab is whole only clear of it: the tab stops that far inside the edge. A
+ *  tab too near the end of the scroll for that stops at the end instead, where the fade is off. */
 function revealTab(node: HTMLElement | null | undefined): void {
   const list = node?.parentElement;
   if (node === null || node === undefined || list === null || list === undefined) {
@@ -32,10 +39,11 @@ function revealTab(node: HTMLElement | null | undefined): void {
   }
   const listBox = list.getBoundingClientRect();
   const box = node.getBoundingClientRect();
+  const visibleRight = listBox.right - scrollFadeTrailingPx;
   if (box.left < listBox.left) {
     list.scrollLeft += box.left - listBox.left;
-  } else if (box.right > listBox.right) {
-    list.scrollLeft += box.right - listBox.right;
+  } else if (box.right > visibleRight) {
+    list.scrollLeft += box.right - visibleRight;
   }
 }
 
@@ -60,6 +68,7 @@ export function Tabs<Id extends string>({
 }): ReactNode {
   const tabRefs = useRef<Partial<Record<Id, HTMLButtonElement | null>>>({});
   const pointerCapturedScroll = useRef(false);
+  const tablistFade = useScrollFadeTrailing();
 
   const selectTab = (tab: Id) => {
     if (!pointerCapturedScroll.current) {
@@ -94,15 +103,27 @@ export function Tabs<Id extends string>({
     revealTab(node);
   };
 
+  // Reveal the selected tab when it is chosen, when the list narrows (the comment margin opens
+  // or the window narrows), when a tab's width changes (a live count grows), and when a tab is
+  // added or taken away (the project's Architecture tab arriving before Issues). A preceding tab
+  // can move the selection under the fade without changing the list's or selected tab's width.
   useEffect(() => {
-    revealTab(tabRefs.current[activeTab]);
+    const selected = tabRefs.current[activeTab];
+    revealTab(selected);
+    const list = selected?.parentElement;
+    if (list === null || list === undefined) {
+      return;
+    }
+    return observeStrip(list, () => revealTab(selected), { childList: true });
   }, [activeTab]);
 
   const tabMinHeight = compact ? "min-h-11 md:min-h-9" : "min-h-11";
   // Compact tabs sit tighter on phones, which is what keeps the shorter tablists on one line. The
-  // issue's nine tabs, one carrying a count pill, no longer fit a 390 px viewport: there the
-  // tablist scrolls sideways, as it already did at 360 px, and `revealTab` keeps the focused or
-  // selected tab fully visible. Every tab stays reachable and keeps its 44 px target.
+  // issue's ten tabs, one carrying a count pill, no longer fit a 390 px viewport, nor the issue
+  // page at 1440 px beside its comment margin: there the tablist scrolls sideways, as it already
+  // did at 360 px, wears the trailing fade while tabs lie past its edge, and `revealTab` keeps the
+  // focused or selected tab fully visible and clear of the fade. Every tab stays reachable and
+  // keeps its 44 px target.
   const tabPadding = compact ? "px-1.5 md:px-2" : "px-3";
   const tabGap = compact ? "gap-0 md:gap-1" : "gap-1";
 
@@ -112,7 +133,8 @@ export function Tabs<Id extends string>({
     >
       <div
         aria-label={ariaLabel}
-        className={`flex min-w-0 ${tabGap} overflow-x-auto [scrollbar-width:thin]`}
+        className={`flex min-w-0 ${tabGap} overflow-x-auto [scrollbar-width:thin] ${tablistFade.fade}`}
+        ref={tablistFade.ref}
         role="tablist"
       >
         {tabs.map((tab) => (

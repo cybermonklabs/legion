@@ -646,6 +646,19 @@ test("the collaborators tab owns its path, its reference and its short form", ()
   ).toEqual(route);
 });
 
+test("the steps tab owns its path, its reference and its short form", () => {
+  const route = { key: "CORE-1", kind: "steps" as const };
+
+  expect(parseDispatchReference("dispatch://CORE-1/steps")).toEqual(route);
+  expect(buildDispatchReference(route)).toBe("dispatch://CORE-1/steps");
+  expect(shortForm(route)).toBe("CORE-1 steps");
+  expect(parseIssuePath("/issues/CORE-1/steps")).toEqual(route);
+  expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/steps"));
+  expect(
+    referenceRouteFromHref("https://dispatch.test/issues/CORE-1/steps", "https://dispatch.test")
+  ).toEqual(route);
+});
+
 test("the verification tab owns its path, its reference and its short form", () => {
   const route = { key: "CORE-1", kind: "verification" as const };
 

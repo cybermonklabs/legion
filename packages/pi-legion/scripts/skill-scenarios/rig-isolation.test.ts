@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -170,6 +171,30 @@ put(
   [
     "#!/usr/bin/env bash",
     'env | grep "^DISPATCH_" | sort >"$SKILL_SCENARIO_RUN/agent-env.txt"',
+    "",
+  ].join("\n"),
+  0o755
+);
+// bun: the Bun that runs this file, so the rig's `bun` (load_label's read of the profile settings,
+// the server and the seeds) does not depend on how the caller installed one. On a devbox bun is a
+// mise shim, which finds its version in mise's global config under the developer's home, not under
+// the HOME below: there the shim exits 1 ("No version is set for shim: bun"), and load_label reads
+// that as settings without the handler limit. The link is here, not a directory added to PATH,
+// because python3 is a mise shim there too, and mise drops its install directories from the PATH
+// of what a shim runs, which is the rig.
+stagings.push(() => symlinkSync(process.execPath, path.join(bin, "bun")));
+// A bun that cannot run, as a mise shim with no version set answers: the stand-in the row below
+// puts ahead of the link above. It answers `--version` with the pinned release, so the rig's check
+// of the release (rig.sh, "refusing to run under Bun") passes and the row reaches load_label's
+// read of the settings, and fails every other call as the shim does.
+const brokenBun = path.join(scratch, "broken-bun");
+put(
+  path.join(brokenBun, "bun"),
+  [
+    "#!/usr/bin/env bash",
+    `if [ "$*" = --version ]; then echo ${readFileSync(path.join(root, ".bun-version"), "utf8").trim()}; exit 0; fi`,
+    'echo "No version is set for shim: bun" >&2',
+    "exit 1",
     "",
   ].join("\n"),
   0o755
@@ -414,8 +439,8 @@ test.skipIf(withoutPython)(
   async () => {
     const { code, stderr } = await runRig(["run", "askgate", "broken", "1", "5", start]);
     expect(code).toBe(1);
+    expect(stderr).toContain("label broken: bun could not read the profile settings");
     expect(stderr).toContain("YAML Parse error");
-    expect(stderr).toContain("could not be checked: bun failed with the error above");
     expect(stderr).not.toContain("do not set extensionHandlers.toolCallTimeoutMs");
     expect(existsSync(path.join(work, "runs", "askgate-facts-broken-1"))).toBe(false);
   }
@@ -450,6 +475,29 @@ test.skipIf(withoutPython)(
     expect(stderr).toContain(`(${otherBun}/bun is the one found)`);
     expect(lines(path.join(stub, "other-bun.log"))).toEqual(["--version"]);
     expect(existsSync(path.join(work, "runs", "askgate-facts-on-7"))).toBe(false);
+  }
+);
+
+// The read of a profile's settings is bun's, and a bun that cannot run says nothing of the key: the
+// rig names bun's failure and its error, and never the key, for a profile that sets the limit and
+// for one that does not. The second is the control of the row above, whose refusal names the key
+// only where bun read the settings.
+test.skipIf(withoutPython)(
+  "a run whose bun cannot read the profile settings is refused, naming bun's failure and not the key",
+  async () => {
+    for (const [name, index] of [
+      ["on", "4"],
+      ["stale", "5"],
+    ]) {
+      const { code, stderr } = await runRig(["run", "askgate", name, "9", index, start], {
+        PATH: `${brokenBun}:${env.PATH}`,
+      });
+      expect(code).toBe(1);
+      expect(stderr).toContain(`label ${name}: bun could not read the profile settings`);
+      expect(stderr).toContain("No version is set for shim: bun");
+      expect(stderr).not.toContain("extensionHandlers.toolCallTimeoutMs to 120000 or more");
+      expect(existsSync(path.join(work, "runs", `askgate-facts-${name}-9`))).toBe(false);
+    }
   }
 );
 
