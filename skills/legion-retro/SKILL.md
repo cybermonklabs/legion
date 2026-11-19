@@ -112,19 +112,14 @@ Dispatch message (step 5) is for a finished retro only.
    writes no handoff and makes no commit. In the workspace retro changes nothing; outside it, it
    writes only step 4's `mktemp -d` directory, the PR body and the Dispatch comment and message.
    It sets no GitHub or Dispatch label: Legion keeps phase state in the daemon, not in labels.
-   In the same call, the agent that does the retro rates the plan the issue ran.
-   The plan is the issue's steps and the role that worked each, not the planner's `plan.md`.
-   `plan_rating` is a whole number from 1 (the plan cost the work) to 5 (the plan fit the work), and
-   `plan_reason` is one sentence of why, from the evidence step 1 read.
-   Send the two together: the daemon refuses this completion without them from a tool that takes
-   them (`PLAN_RATING_REQUIRED`) and records nothing, so complete again with both.
-   The daemon also refuses a rating outside 1 to 5, one of the two without the other, or a reason
-   that is blank or longer than 2,000 characters (`PLAN_RATING_INPUT`), again recording nothing.
-   Only this completion carries the two: the daemon refuses both on any other completion
-   (`PLAN_RATING_UNEXPECTED`), and one of them alone on any completion (`PLAN_RATING_INPUT`).
-   A `legion` tool whose `handoff_complete` takes neither `plan_rating` nor `plan_reason` is a
-   plugin of the release before the rating: send neither, complete the retro with the summary
-   alone, and the daemon takes that retro with no rating.
+   In the same call, rate the plan the issue ran: its steps and the role that worked each, not the
+   planner's `plan.md`. Send both or neither of `plan_rating`, a whole number from 1 (the plan cost
+   the work) to 5 (the plan fit the work), and `plan_reason`, one sentence of why from step 1's
+   evidence. The daemon refuses this completion without them (`PLAN_RATING_REQUIRED`), one alone,
+   a rating off that scale or a reason blank or over 2,000 characters (`PLAN_RATING_INPUT`), and
+   both on any other completion (`PLAN_RATING_UNEXPECTED`). A refusal records nothing, so complete
+   again. A `legion` tool whose `handoff_complete` takes neither field is the release before the
+   rating: send neither.
 
 ## Before you complete
 
