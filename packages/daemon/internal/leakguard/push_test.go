@@ -384,14 +384,15 @@ func TestAFailedGitReadQuotesItsCappedStandardErrorAlone(t *testing.T) {
 		}
 	})
 	t.Run("a standard error past the cap, its reason last", func(t *testing.T) {
-		guard := failingGit(t, "yes 'warning: refname is ambiguous' | head -n 4000 >&2\necho 'fatal: unable to read tree' >&2")
+		const reason = "fatal: unable to read tree"
+		guard := failingGit(t, "yes 'warning: refname is ambiguous' | head -n 4000 >&2\necho '"+reason+"' >&2")
 		_, err := guard.git(bound(t), t.TempDir(), "diff-tree", "HEAD")
 		if err == nil {
 			t.Fatal("git = nil, want its failure")
 		}
 		said := strings.TrimPrefix(err.Error(), "git diff-tree exited 1: ")
-		if !strings.HasPrefix(said, "(") || !strings.Contains(said, " bytes left out) …") || !strings.HasSuffix(said, "\nfatal: unable to read tree") ||
-			len(said) > gitErrorBytes+len("(200000 bytes left out) …") {
+		count, kept, found := strings.Cut(said, " bytes left out) …")
+		if !found || !strings.HasPrefix(count, "(") || len(kept) > gitErrorBytes || !strings.HasSuffix(kept, "\n"+reason) {
 			t.Errorf("git quoted %d bytes, from %q to %q, want the count of the bytes left out and at most the last %d bytes of its standard error, its reason included",
 				len(said), said[:min(len(said), 40)], said[max(0, len(said)-40):], gitErrorBytes)
 		}
@@ -400,7 +401,15 @@ func TestAFailedGitReadQuotesItsCappedStandardErrorAlone(t *testing.T) {
 	t.Run("a cut inside a character moves to the next one", func(t *testing.T) {
 		said := gitSaid(strings.Repeat("é", gitErrorBytes) + "x")
 		if want := "(4098 bytes left out) …" + strings.Repeat("é", gitErrorBytes/2-1) + "x"; said != want {
-			t.Errorf("gitSaid = %q…, want %q…: whole characters after the count", said[:min(len(said), 40)], want[:40])
+			t.Errorf("gitSaid = %d bytes ending %q, want %d bytes ending %q: whole characters after the count",
+				len(said), said[max(0, len(said)-24):], len(want), want[len(want)-24:])
+		}
+	})
+	// Bytes that start no character still leave gitErrorBytes of them quoted, never none.
+	t.Run("a run that starts no character keeps the whole cap", func(t *testing.T) {
+		said := gitSaid(strings.Repeat("\x80", gitErrorBytes+10))
+		if want := "(10 bytes left out) …" + strings.Repeat("\x80", gitErrorBytes); said != want {
+			t.Errorf("gitSaid = %d bytes, want %d: the count of 10 and the last %d bytes", len(said), len(want), gitErrorBytes)
 		}
 	})
 }
