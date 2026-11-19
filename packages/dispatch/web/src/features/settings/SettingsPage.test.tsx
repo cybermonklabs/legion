@@ -260,6 +260,8 @@ const mapping: RepoProject = {
 /** The repository mapping routes over rows a test holds (`mappingServer`). */
 interface MappingServer {
   answer(): void;
+  /** Makes `repo` its project's default, as another browser's save does. */
+  elsewhere(repo: string): void;
   holdReads(): void;
   list(): Promise<RepoProject[]>;
   put(repo: string, input: Parameters<typeof api.putRepoProject>[1]): Promise<RepoProject>;
@@ -269,17 +271,46 @@ interface MappingServer {
 }
 
 /** The repository mapping routes' server state as the Settings page reaches it, with every write
- *  held until the row answers it (`answer`): the write reaches the rows only then. Once
- *  `holdReads` is called, each read answers the rows as they stood when it was asked, but only as
- *  the row lets it go - the oldest first (`releaseRead`), or all (`releaseReads`, which also ends
- *  the holding) - as a read Dispatch took before a write and answers after it does. */
-function mappingServer(initial: readonly RepoProject[]): MappingServer {
+ *  held until the row answers it (`answer`): the write reaches the rows only then, or, with
+ *  `savedFirst`, at once, its answer alone held. Once `holdReads` is called, each read answers
+ *  the rows as they stood when it was asked, but only as the row lets it go - the oldest first
+ *  (`releaseRead`), or all (`releaseReads`, which also ends the holding) - as a read Dispatch
+ *  took before a write and answers after it does. */
+function mappingServer(
+  initial: readonly RepoProject[],
+  { savedFirst = false }: { readonly savedFirst?: boolean } = {}
+): MappingServer {
   let rows = initial.map((row) => ({ ...row }));
   const answer = Promise.withResolvers<void>();
   const heldReads: (() => void)[] = [];
   let holding = false;
+  // As the server decides it: the body's default, else the mapping's own while its project is
+  // unchanged, else not the default; one default per project.
+  const save = (repo: string, input: Parameters<typeof api.putRepoProject>[1]): RepoProject => {
+    const existing = rows.find((row) => row.repo === repo);
+    const saved: RepoProject = {
+      ...mapping,
+      default: input.default ?? (existing?.project === input.project ? existing.default : false),
+      project: input.project,
+      renamed_to: existing?.renamed_to ?? null,
+      repo,
+    };
+    rows = [
+      ...rows
+        .filter((row) => row.repo !== repo)
+        .map((row) =>
+          saved.default && row.project === saved.project ? { ...row, default: false } : row
+        ),
+      saved,
+    ];
+    return { ...saved };
+  };
   return {
     answer: () => answer.resolve(),
+    elsewhere: (repo) => {
+      const row = rows.find((candidate) => candidate.repo === repo);
+      if (row !== undefined) save(repo, { default: true, project: row.project });
+    },
     holdReads: () => {
       holding = true;
     },
@@ -292,30 +323,17 @@ function mappingServer(initial: readonly RepoProject[]): MappingServer {
       }
       return listed;
     },
-    // As the server decides it: the body's default, else the mapping's own while its project is
-    // unchanged, else not the default; one default per project.
     put: async (
       repo: string,
       input: Parameters<typeof api.putRepoProject>[1]
     ): Promise<RepoProject> => {
+      if (savedFirst) {
+        const saved = save(repo, input);
+        await answer.promise;
+        return saved;
+      }
       await answer.promise;
-      const existing = rows.find((row) => row.repo === repo);
-      const saved: RepoProject = {
-        ...mapping,
-        default: input.default ?? (existing?.project === input.project ? existing.default : false),
-        project: input.project,
-        renamed_to: existing?.renamed_to ?? null,
-        repo,
-      };
-      rows = [
-        ...rows
-          .filter((row) => row.repo !== repo)
-          .map((row) =>
-            saved.default && row.project === saved.project ? { ...row, default: false } : row
-          ),
-        saved,
-      ];
-      return { ...saved };
+      return save(repo, input);
     },
     releaseRead: () => heldReads.shift()?.(),
     releaseReads: () => {
@@ -393,6 +411,62 @@ async function mapThrough(user: UserEvent, project: string) {
   await user.selectOptions(screen.getByLabelText("Project"), project);
   await user.click(screen.getByRole("button", { name: "Add mapping" }));
 }
+
+/** Whether the page's Default radio for `repo` of CORE is set. */
+function isDefault(repo: string): boolean {
+  return screen.getByRole<HTMLInputElement>("radio", {
+    name: `Default repository of CORE: ${repo}`,
+  }).checked;
+}
+
+// Dispatch saves this page's Default pick at once, and another browser then makes the first
+// repository the default again, which this page hears (an event refreshes the mappings) and shows
+// while its own pick's answer is still on the way. That read is asked after Dispatch took the
+// pick, so it answers the newer default; held back for the pick's answer, it would show the pick
+// until then. Once the late answer lands, the page reads the mappings again rather than put the
+// pick back.
+test("a default another browser sets while this page's pick is out shows at once, and the pick's late answer does not undo it", async () => {
+  const user = userEvent.setup();
+  const other: RepoProject = { ...mapping, default: false, repo: "owner/other" };
+  const server = mappingServer([mapping, other], { savedFirst: true });
+  const page = await renderMappings(server);
+
+  try {
+    expect(isDefault("owner/repo")).toBe(true);
+    await user.click(
+      screen.getByRole("radio", { name: "Default repository of CORE: owner/other" })
+    );
+    await waitFor(() =>
+      expect(page.putRepoProject).toHaveBeenCalledWith(
+        "owner/other",
+        { default: true, project: "CORE" },
+        keyedAttempt
+      )
+    );
+    expect(isDefault("owner/other")).toBe(true);
+
+    // The other browser's save, and the event's refresh of this page's mappings.
+    server.elsewhere("owner/repo");
+    await act(async () => {
+      void page.queryClient.invalidateQueries({ queryKey: ["repo-projects"] });
+      await settle();
+    });
+    await waitFor(() => expect(isDefault("owner/repo")).toBe(true));
+    expect(isDefault("owner/other")).toBe(false);
+
+    const asked = page.listRepoProjects.mock.calls.length;
+    await act(async () => {
+      server.answer();
+    });
+    await waitFor(() => expect(page.listRepoProjects.mock.calls.length).toBeGreaterThan(asked));
+    await waitFor(() => expect(page.queryClient.isFetching()).toBe(0));
+    await waitFor(() => expect(page.queryClient.isMutating()).toBe(0));
+    expect(isDefault("owner/repo")).toBe(true);
+    expect(isDefault("owner/other")).toBe(false);
+  } finally {
+    page.restore();
+  }
+});
 
 // A read of the mappings asked while a mapping's save is out - an event's refresh, another
 // surface - can reach Dispatch before the save does, and would answer the project from before
