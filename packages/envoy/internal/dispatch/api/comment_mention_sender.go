@@ -86,7 +86,12 @@ type mentionSend struct {
 	// the rule having failed, behind none; heldBy is the earlier event it last waited behind, and
 	// heldSince when it first waited behind one, both zero until it has; warned is that a park
 	// logged its WARN (mentionSender.park, reportLate). A send that waited reads the rule again
-	// for heldFor, alone, before it tries once more (sendCommentMention).
+	// for heldFor, alone, before it tries once more (sendCommentMention). heldFor is the target the
+	// send's last whole delivery resolved, so for a role: mention whose role has moved since, it
+	// names the role's previous holder: the lone read then waits on events owed to that session,
+	// and a WARN may name it. The send can wait longer for that, but it never goes early, since only
+	// the whole delivery sends, and it resolves the target again and asks the rule for the one it
+	// finds.
 	heldFor   string
 	heldBy    model.MentionCopyHolder
 	heldSince time.Time

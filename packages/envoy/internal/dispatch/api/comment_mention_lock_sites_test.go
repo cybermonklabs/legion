@@ -57,14 +57,15 @@ const parkLockSite = "park"
 // (mentionSender.mu), reached through any value of the sender's type or through a local variable
 // that holds the mutex, and no other name. A lock whose frame the model reads under no function's
 // name - one in a function literal or in the body of a range over a function, whose frame is the
-// literal's own (funcN, F-rangeN), or one deferred or started on a goroutine, whose frame is the
-// compiler's wrapper - fails it too, and so do the mutex handed anywhere the guard cannot follow
-// and a mu selected on a value whose type it cannot read. A miss would otherwise make the model
-// panic, and only in the claim model's own job, which the full-ci label gates. The controls in the
-// same run read the same source with one fault planted each - claimKnown renamed; a lock through
-// a local alias; one in a function literal inside a listed method; one in a plain function; the
-// mutex handed to a helper that locks it; a lock in a range over a function; a deferred lock; and
-// a lock on a value whose type rests on an import - and the guard must name each.
+// literal's own (funcN, F-rangeN), one in a generic function, whose frame is F[...], or one
+// deferred or started on a goroutine, whose frame is the compiler's wrapper - fails it too, and so
+// do the mutex handed anywhere the guard cannot follow and a mu selected on a value whose type it
+// cannot read. A miss would otherwise make the model panic, and only in the claim model's own job,
+// which the full-ci label gates. The controls in the same run read the same source with one fault
+// planted each - claimKnown renamed; a lock through a local alias; one in a function literal
+// inside a listed method; one in a plain function; the mutex handed to a helper that locks it; a
+// lock in a range over a function; a deferred lock; one in a generic function; and a lock on a
+// value whose type rests on an import - and the guard must name each.
 func TestTheLockSiteListNamesTheSendersLocks(t *testing.T) {
 	sources := map[string][]byte{}
 	for _, name := range goFilesOfThisPackage(t) {
@@ -122,6 +123,9 @@ func TestTheLockSiteListNamesTheSendersLocks(t *testing.T) {
 		{name: "a deferred lock", file: "planted_defer.go",
 			source: "package api\n\nfunc (m *mentionSender) plantedDefer() {\n\tdefer m.mu.Lock()\n}\n",
 			want:   "a deferred Lock in plantedDefer runs in the compiler's wrapper frame"},
+		{name: "a lock in a generic function", file: "planted_generic.go",
+			source: "package api\n\nfunc plantedGeneric[T any](m *mentionSender, _ T) {\n\tm.mu.Lock()\n\tm.mu.Unlock()\n}\n",
+			want:   "a generic function, plantedGeneric, takes the sender's lock: its frame is named plantedGeneric[...]"},
 		{name: "a lock on a value whose type rests on an import", file: "planted_unread.go",
 			source: "package api\n\nimport \"slices\"\n\nfunc plantedUnread(senders []*mentionSender) {\n\tfor _, m := range slices.Values(senders) {\n\t\tm.mu.Lock()\n\t}\n}\n",
 			want:   "mu is selected on a value whose type the guard cannot read"},
@@ -354,6 +358,11 @@ func lockSiteProblems(t *testing.T, sources map[string][]byte) []string {
 						"which runs as a function of its own (" + declared(node) + "-rangeN); take the lock in a named function"
 				}
 			case *ast.FuncDecl:
+				if node.Type.TypeParams.NumFields() > 0 {
+					return "", "a generic function, " + node.Name.Name + ", takes the sender's lock: its frame is named " +
+						node.Name.Name + "[...], which the claim model reads as ] (cmCaller), names no function, and panics; " +
+						"take the lock in a function that is not generic"
+				}
 				return node.Name.Name, ""
 			}
 		}
