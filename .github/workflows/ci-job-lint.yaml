@@ -99,8 +99,8 @@ jobs:
         run: .github/scripts/check-fireevent-reasons.sh
 
       # A message that states a length in characters counts characters, or names no unit, or names
-      # the unit it counts. The check reads every Go, TypeScript, Python and shell source of the
-      # tree, so it runs here, on every change; its eight controls run first, each run.
+      # the unit it counts. The check reads every file git lists and names each one it leaves out,
+      # so it runs here, on every change; its planted controls run first, each run.
       - name: Check no message states a length in characters that its counter does not count as characters
         run: .github/scripts/check-character-counts.sh
 
