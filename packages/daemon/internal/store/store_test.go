@@ -29,8 +29,9 @@ import (
 // imports this one, to migrate the template its Clone copies, so an import of it here would be a
 // cycle in this package's test binary. internal/testpg's own skip message holds the pinned
 // Postgres image to start, and testdb.Drop, which waits an autovacuum worker out, is the one
-// copy of that wait: internal/testpg/testdb imports nothing of this module, so this package's own
-// tests can take it where they cannot take internal/testpg.
+// copy of that wait: internal/testpg/testdb imports no package of this module except
+// internal/testwait, which imports none, so this package's own tests can take it where they
+// cannot take internal/testpg.
 func testDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
