@@ -82,12 +82,13 @@ func encodeKeyDER(key *ecdsa.PrivateKey) (string, error) {
 
 // LoadMachineFile reads the machine login at path. A file that is not there is an error matching
 // os.ErrNotExist; one whose mode grants its group or anyone else any access, or that this user
-// does not own, is refused, naming the fix, since it holds the machine's key and refresh token;
-// one that is there but is not exactly one whole machine login (unreadable JSON, anything after
-// the object, a missing value, a key that is not a P-256 PKCS#8 key) is an error. Each names the
-// file as MachineFileNamed, and none holds path or the parser's words about the file's content.
-// A field this release does not know is ignored, so a rollback past a release that added one still
-// starts on the file that release wrote.
+// does not own, is refused, naming the fix (chmod 600), since it holds the machine's key and
+// refresh token; one that is there but is not exactly one whole machine login (unreadable JSON,
+// anything after the object, a missing value, a key that is not a P-256 PKCS#8 key) is an error.
+// Each names the file as MachineFileNamed, by its setting and never by path, and none holds the
+// parser's words about the file's content. serve stops on any of them but the first, before it
+// listens (Broker.Start). A field this release does not know is ignored, so a rollback past a
+// release that added one still starts on the file that release wrote.
 func LoadMachineFile(path string) (*MachineFile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

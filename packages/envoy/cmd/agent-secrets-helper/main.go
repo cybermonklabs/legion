@@ -399,7 +399,8 @@ func signInAuthority(cfg config, log *slog.Logger) helper.SignIns {
 // (one started before helpers took the claim) is refused the same way, since unlinking it would
 // leave that helper's sessions on a helper nobody reaches; and a socket that refuses connections
 // (a helper that died) is stale and removed. Any other dial failure (a timeout, a full accept
-// queue) refuses too: only a definite refusal proves nothing listens.
+// queue) refuses too: only a definite refusal proves nothing listens. serve exits 2 on any of
+// these refusals, before it resumes or refreshes the kept machine login.
 func claimSocket(sock string) (*os.File, error) {
 	lock, err := os.OpenFile(sock+".lock", os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
@@ -423,7 +424,8 @@ func claimSocket(sock string) (*os.File, error) {
 // path+".lock" (0600, beside it, its directory created 0700 if absent), which the returned file
 // holds until it is closed or the process exits. Another helper holding it, whatever its socket,
 // refuses the start, naming the machine file by its setting (helper.MachineFileNamed): the lock's
-// path is the machine file's own with ".lock" after it, so no error here holds either path.
+// path is the machine file's own with ".lock" after it, so no error here holds either path. serve
+// exits 2 on that refusal, before it resumes or refreshes the kept machine login.
 func claimMachineFile(path string) (*os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("make the directory of %s: %w", helper.MachineFileNamed, redact.File(err))

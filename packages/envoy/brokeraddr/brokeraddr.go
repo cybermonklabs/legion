@@ -77,7 +77,8 @@ const WordsNotPrinted = "(not printed: the broker's address is not clean)"
 // can repeat the credential the address carries in any text of its answer, so a message made
 // from such an answer prints its status and WordsNotPrinted, and no other part of it. A caller
 // that tells answers apart by their text reads that text as it came, never what Words answers,
-// and prints it nowhere.
+// and prints it nowhere. A decoder's error for an answer the helper or `agent-secrets enroll --pod`
+// cannot read prints through Words as well, since the decoder quotes the answer's text.
 func (a Address) Words(text string) string {
 	if a.Clean() {
 		return redact.OneLine(text)
@@ -112,5 +113,8 @@ func (a Address) Cause(err error) error { return redact.Cause(err, a.Raw()) }
 
 // Named is redact.Named with the address as the base: err, from a request built from Raw, named
 // by name, the caller's own words for the call, for a request URL that ends in what a caller typed.
-// Neither Error nor Cause of the result names that URL again.
+// No Error, Cause or Class of the result names that URL again. The helper's revoke is the case:
+// its route ends in the enrollment id it was handed, which `unenroll --enrollment` takes as typed
+// and the broker never accepted, so its failure names the route without the id, and neither
+// UNENROLL_FAILED nor UNENROLL_OUTCOME_UNKNOWN prints the request URL.
 func (a Address) Named(err error, name string) error { return redact.Named(err, a.Raw(), name) }

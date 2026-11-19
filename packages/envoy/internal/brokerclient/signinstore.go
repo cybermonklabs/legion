@@ -178,7 +178,9 @@ func (s SignInStore) List() ([]SignInRecord, error) {
 
 // Choose is the sign-in a session acts under, by the rules the file comment states. person is
 // what PersonVar says, empty when it says nothing. It is the one place those rules are applied,
-// so the sign-in command, the signer and every refusal agree.
+// so the sign-in command, the signer and every refusal agree. A person nobody signed in here is
+// refused naming PersonVar and never its value, since a value this variable names nobody by is
+// where a credential pasted into the wrong variable shows up.
 func (s SignInStore) Choose(person string) (SignInRecord, error) {
 	records, err := s.List()
 	if err != nil {
@@ -194,8 +196,6 @@ func (s SignInStore) Choose(person string) (SignInRecord, error) {
 				return record, nil
 			}
 		}
-		// Not the value itself: a value this variable names nobody by is where a credential
-		// pasted into the wrong variable shows up, so the refusal names the variable alone.
 		return SignInRecord{}, WithHint(fmt.Errorf("%s names nobody signed in on this machine; signed in here: %s",
 			PersonVar, namesOf(records)), FailureNoSignIn)
 	case len(records) == 1:

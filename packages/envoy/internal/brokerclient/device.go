@@ -216,7 +216,9 @@ func (d *DeviceFlow) Wait(ctx context.Context, authorization *oauth2.DeviceAuthR
 // grant at Google, or it expired. It is a sentinel because it is as final as a revoke the
 // broker records — no retry and no other caller cures it — so every reader of a sign-in falls
 // back to this machine's own authority on it rather than asking the issuer again at every
-// enrolment (SignInAuthority.Current).
+// enrolment (SignInAuthority.Current). Refresh returns it, with the command to sign in again
+// (FailureSignInRefused), for a refresh the issuer refuses invalid_grant, and no other text of
+// that answer prints.
 var ErrSignInEnded = errors.New("the issuer no longer honours this sign-in")
 
 // Refresh mints a fresh ID token from a kept refresh token, with no step by the person. A

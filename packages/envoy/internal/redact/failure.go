@@ -17,12 +17,13 @@ import (
 // "the request failed"), and none of err's own text, except words an earlier Error, Cause or Named
 // already gave. net/url quotes the whole value it could not parse, net/http's *url.Error leaves a
 // user name, a query and a fragment in the URL it names, and x/oauth2 keeps the body of an answer,
-// so a server a setting names - the metadata server,
-// Google's token services, a sign-in issuer - is reported by its class, beside the server as the
-// message itself names it. An OAuth answer's class carries its error code where that code is a
-// registered one (answerCodes), which this package spells, never the server; a failure already put
-// in words (a classified) keeps those words alone, with no code added to them again. It unwraps to
-// err, so errors.Is and errors.As still classify it.
+// so a server a setting names is reported by its class, beside the server as the message itself
+// names it: the sign-in client (brokerclient's DeviceFlow) prints each failure of a request to the
+// sign-in issuer, or to an endpoint its discovery document names, this way. An OAuth answer's
+// class carries its error code where that code is a registered one (answerCodes), which this
+// package spells, never the server; a failure already put in words (a classified) keeps those
+// words alone, with no code added to them again. It unwraps to err, so errors.Is and errors.As
+// still classify it.
 func Class(err error) error {
 	if err == nil {
 		return nil
@@ -83,7 +84,9 @@ func BrokerAnswer(err error) (*oauth2.RetrieveError, bool) {
 // Google API error's status (`{"error":{"status":"PERMISSION_DENIED"}}`). Nothing else of body
 // prints: a server writes what it likes in a description, a message and a code of its own, an
 // echo of the request that carried a credential among them, and a Google error body has carried
-// a token before.
+// a token before. The sign-in client prints an issuer's refusal of its discovery document this
+// way, from the status its transport recorded (brokerclient's statusOf), since go-oidc's own error
+// quotes the issuer and the body.
 func Answered(status int, body []byte) string {
 	text := fmt.Sprintf("the server answered HTTP %d", status)
 	var answer struct {
@@ -127,9 +130,15 @@ var answerCodes = map[string]bool{
 // operation and the system's reason ("open: no such file or directory"), and never the path it
 // was handed, which the error of every *fs.PathError and *os.LinkError repeats. A setting that
 // names a secret's file is where a person who pasted the secret itself puts it, so a message
-// names that setting rather than its value. An error that holds no system errno prints as the
-// operation and "failed", and one that is no file call's as "the call failed". It unwraps to err,
-// so errors.Is(err, fs.ErrNotExist) still holds.
+// names that setting rather than its value: the files AGENT_SECRETS_MACHINE_TOKEN_FILE and
+// AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE name, the sign-in store (AGENT_SECRETS_SIGNIN_DIR),
+// enroll's key.pem and key directory (--out or AGENT_SECRETS_KEY_DIR), --pod-token-file, and the
+// helper's machine file, identity key, operator file and session records
+// (AGENT_SECRETS_STATE_FILE, whose records hold each session's private key). A file whose content
+// does not parse is refused by its caller in fixed text, never with the parser's error, since
+// encoding/json's, time's and x509's errors quote the value they could not read. An error that
+// holds no system errno prints as the operation and "failed", and one that is no file call's as
+// "the call failed". It unwraps to err, so errors.Is(err, fs.ErrNotExist) still holds.
 func File(err error) error {
 	if err == nil {
 		return nil

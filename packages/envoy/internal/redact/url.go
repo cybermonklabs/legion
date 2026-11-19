@@ -70,6 +70,12 @@ const NotPrinted = "(not printed: the value carries a credential or is not a pla
 // https://xxxxx@host: a value whose password holds an '@' and that names no host at all
 // (https://user:p@ssword) would print the password's tail as the host, and no check on the text
 // can tell the two apart.
+//
+// agent-secrets prints each URL setting through URL, beside the variable that names it, so a
+// value URL withholds still says where to look: the sign-in issuer as
+// "(AGENT_SECRETS_SIGNIN_ISSUER names <URL>)", the approval page beside AGENT_SECRETS_APPROVE_URL,
+// and the metadata identity's audience as "<URL> (AGENT_SECRETS_MACHINE_AUDIENCE)" where it is
+// clean and as "the audience AGENT_SECRETS_MACHINE_AUDIENCE names" otherwise.
 func URL(raw string) string {
 	if raw == "" || clean(raw) {
 		return raw
