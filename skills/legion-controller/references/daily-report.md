@@ -52,7 +52,7 @@ post when its `Events:` show no `message.created` from today.
 
 ## What
 
-One `dispatch message --issue <report KEY> --body-file -` of at most 2,000 UTF-16 code units, because a
+One `dispatch message --issue <report KEY> --body-file -` of at most 2,000 characters (Unicode code points), because a
 person reads every report in their Inbox. Write it as `skill://dispatch-writing-specs`'s "Rules for the text" say:
 every issue by its `dispatch://` link and what it does for the reader, every pull request by its URL.
 
