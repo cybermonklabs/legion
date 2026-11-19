@@ -80,6 +80,10 @@ func TestTheVisibilityOfAnOwnerLegionGhDoesNotServeIsReadWithNoCredential(t *tes
 				OnVisibility: func(source VisibilitySource) { sources = append(sources, source) },
 				Env:          append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir(), "LEGION_GH_OWNERS_DIR="+owners),
 			})
+			// The guard's curl is the stand-in, where the guard would otherwise run curlProgram:
+			// with curlProgram, a curl read would run a curl this test never counts, and the
+			// assertion below that curl never runs could not fail.
+			guard.curl = filepath.Join(bin, "curl")
 			// A ref the push deletes, named for a host the rules refuse: its name is the push's one
 			// record, so a scan refuses the push and no scan passes it, and no git reads a commit.
 			err := guard.Push(bound(t), PushRequest{
