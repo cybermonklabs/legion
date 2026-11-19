@@ -240,7 +240,10 @@ test("a request still unanswered when the link closes rejects", async () => {
 })
 
 // The hold is wall-clock behaviour of the running server: the point of the test is that a real
-// poll over a real socket comes back on its own, so the clock here is the one under test.
+// poll over a real socket comes back on its own, so the clock here is the one under test. A hold
+// is MOD_POLL_HOLD_MS, 5 s, which is also `bun test`'s default limit for a test, so this test and
+// the liveness test below, which each wait one out, carry a limit of their own rather than depend on
+// the --timeout of the package's test script.
 test("a poll with nothing to do answers an empty list once the hold is up, rather than hanging", async () => {
   const dir = await directory()
   const link = await start(dir, "s7")
@@ -250,7 +253,7 @@ test("a poll with nothing to do answers an empty list once the hold is up, rathe
   expect(answer).toEqual({ status: 200, body: { requests: [] } })
   expect(held).toBeGreaterThanOrEqual(MOD_POLL_HOLD_MS - 250)
   expect(held).toBeLessThan(MOD_POLL_HOLD_MS * 2)
-})
+}, 20_000)
 
 test("a request made while a poll is held is answered at once, not after the hold", async () => {
   const dir = await directory()
@@ -281,7 +284,7 @@ test("the liveness probe is answered while a poll is held", async () => {
   })
   expect(link.connected()).toBe(true)
   expect(polled(await poll)).toEqual([])
-})
+}, 20_000)
 
 test("events reach the owner in the order the mod posted them", async () => {
   const dir = await directory()

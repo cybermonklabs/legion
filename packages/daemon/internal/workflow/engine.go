@@ -135,6 +135,12 @@ type Config struct {
 	// experiment.CryptoSource, the daemon's own, and a test hands in one of its own.
 	Experiments      []config.Experiment
 	ExperimentSource func(uint64) (uint64, error)
+	// StepAgent is the daemon's read of the agent of a step at the moment the engine writes the
+	// step's end (endStep): the session its claim records and the model that answered it last in
+	// that session (supervise.Machine.LastAnswer), read from the claim's machine without waiting
+	// on a decision in flight. Nil reads nothing, so a record names no session and no model,
+	// which is the API-only daemon and every test that reads no agent.
+	StepAgent func(claim.Token) StepAgent
 }
 
 // Engine interprets Table and writes only records and outbox rows through the supplied Store.
@@ -834,7 +840,10 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	}
 	// A role can still be mid-turn in a phase the issue has left: the review event moves reviewing
 	// on, so a reviewer's own request for changes starts the implementer before the reviewer's
-	// handoff lands. Its completion is recorded on its own row and moves nothing (leftItsPhase).
+	// handoff lands. Its completion is recorded on its own row and moves nothing (leftItsPhase),
+	// and the handoff it names is the report of the run of its step the move ended
+	// (reportEndedStep).
+	//
 	// reported is the phase this completion is of (phase.Of): the issue's own, or, for a role the
 	// issue has moved on without, the phase that role has left.
 	reported := phase.Of(fact.Role, issue.Phase)
@@ -900,7 +909,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		return intake.Result{}, err
 	}
 	if !current {
-		return intake.Result{}, nil
+		return intake.Result{}, e.reportEndedStep(ctx, tx, *issue, reported, fact.HandoffRecord)
 	}
 	switch issue.Phase {
 	case phase.Planning:
@@ -1581,6 +1590,13 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err := e.status(ctx, tx, issue, status, moveReason(trigger, issue.Phase, row.To, pr, reason)); err != nil {
 		return err
 	}
+	// The move names the end of the step the issue stood in, on the issue as it stood, before the
+	// phase write: the result and the return the record does not hold (nameMoveEnd). The start
+	// below ends that run before it begins its own (startStep), and a move that starts nothing
+	// leaves it to the fact's settle (SettleFact).
+	if err := e.nameMoveEnd(ctx, issue, trigger, row.To, handoff); err != nil {
+		return err
+	}
 	from := issue.Phase
 	issue.Phase, issue.Hold = row.To, nil
 	// This is the one write that moves an issue into a phase of its own, so it is where the issue's
@@ -1635,6 +1651,18 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if !mergedAlready {
 		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), movedBack); err != nil {
 			return err
+		}
+	}
+	// Two moves start a step no phase worker's start begins, so it starts here, under the agent it
+	// names (startNamedStep): a merge GitHub has already made, which no merger runs and whose close
+	// ends it, and accepting, whose role is the architect, for which start above starts no worker
+	// and only starts a child's failed architect again (reviveArchitect), as every phase start of a
+	// child does.
+	if mergedAlready || row.To == phase.Accepting {
+		if step, ok := standingStep(issue); ok {
+			if err := e.startNamedStep(ctx, tx, issue, step); err != nil {
+				return err
+			}
 		}
 	}
 	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, reason)); err != nil {

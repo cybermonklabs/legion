@@ -9,17 +9,17 @@ import (
 )
 
 // liveSpendAttributes is what the live deployment writes into the operator's
-// OTEL_RESOURCE_ATTRIBUTES, one value per lane: legion/Pulumi.prod.yaml of theorem-labs/agent-infra
+// OTEL_RESOURCE_ATTRIBUTES, one value per lane: legion/Pulumi.prod.yaml of example-org/deployment
 // at main on 2026-11-11, one entry per lane under each project's pod env. No line is cited,
 // because that file moves under every edit of it; search it for the variable's name. The five
 // values differ in the project as well as the lane, so each is written out as the deployment
-// writes it.
+// writes it, with a placeholder in place of the person's address.
 var liveSpendAttributes = []struct{ lane, value string }{
-	{"legion-smoke", "theorem.project=legion,theorem.lane=legion-smoke,theorem.credential=gateway,theorem.person=sami@theorem.dev"},
-	{"legion-linux", "theorem.project=verified-linux,theorem.lane=legion-linux,theorem.credential=gateway,theorem.person=sami@theorem.dev"},
-	{"legion-bet", "theorem.project=task-making,theorem.lane=legion-bet,theorem.credential=gateway,theorem.person=sami@theorem.dev"},
-	{"legion-infra", "theorem.project=legion,theorem.lane=legion-infra,theorem.credential=gateway,theorem.person=sami@theorem.dev"},
-	{"legion-ossv", "theorem.project=oss-verify,theorem.lane=legion-ossv,theorem.credential=gateway,theorem.person=sami@theorem.dev"},
+	{"legion-smoke", "theorem.project=legion,theorem.lane=legion-smoke,theorem.credential=gateway,theorem.person=sami@example.com"},
+	{"legion-linux", "theorem.project=verified-linux,theorem.lane=legion-linux,theorem.credential=gateway,theorem.person=sami@example.com"},
+	{"legion-bet", "theorem.project=task-making,theorem.lane=legion-bet,theorem.credential=gateway,theorem.person=sami@example.com"},
+	{"legion-infra", "theorem.project=legion,theorem.lane=legion-infra,theorem.credential=gateway,theorem.person=sami@example.com"},
+	{"legion-ossv", "theorem.project=oss-verify,theorem.lane=legion-ossv,theorem.credential=gateway,theorem.person=sami@example.com"},
 }
 
 // spendAttributesReaders are the two readers of an operator's own OTEL_RESOURCE_ATTRIBUTES:
@@ -62,7 +62,7 @@ var spendAttributesReaders = []struct {
 	},
 }
 
-// Every value the live deployment writes loads under both readers, as written: a reader that
+// Every value of the live deployment's shape loads under both readers, as written: a reader that
 // refused one of them would stop the deployment it was written to protect, and the runtime
 // appends the launch's own pairs to exactly this text.
 func TestBothReadersAcceptTheLiveSpendAttributes(t *testing.T) {

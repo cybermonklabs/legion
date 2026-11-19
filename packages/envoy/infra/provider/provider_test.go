@@ -168,7 +168,7 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 		"kubeconfig", "namespace", "name", "serviceName", "natsImage", "reloaderImage", "exporterImage",
 		"natsReplicas", "streamMaxBytes", "maxFileStoreGb", "diskSizeGb", "storageClassName", "natsCpu", "natsMemory",
 		"priorityClassName", "clientNamespaces", "monitorNamespaces", "metricsNamespaces", "users", "sessionUser",
-		"authCallout", "privateProjects", "tailnet", "tailnetAuthKey",
+		"authCallout", "privateProjects", "listener", "tailnet", "tailnetAuthKey",
 	}, slices.Collect(maps.Keys(hub.InputProperties)))
 	require.ElementsMatch(t, []string{
 		"kubeconfig", "namespace", "name", "serviceName", "natsImage", "reloaderImage", "exporterImage", "clientNamespaces",
@@ -186,16 +186,20 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 	// Generated SDKs append Args to an object type's name for its input type, so the Go names
 	// ClusteredHubTailnetArgs and ClusteredHubListenerArgs would reach consumers doubled.
 	require.Equal(t, "#/types/envoy-infra:gcp:ClusteredHubTailnet", hub.InputProperties["tailnet"].Ref)
+	// The hub's own listener is the type tailnet.listener takes, declared beside the entry.
+	require.Equal(t, "#/types/envoy-infra:gcp:ClusteredHubListener", hub.InputProperties["listener"].Ref)
 	tailnet := s.Types["envoy-infra:gcp:ClusteredHubTailnet"]
 	require.Equal(t, "#/types/envoy-infra:gcp:ClusteredHubListener", tailnet.Properties["listener"].Ref)
 	require.ElementsMatch(t, []string{"serviceName", "tailnetDnsName", "tags", "replicas", "tailscaleImage", "listener"},
 		slices.Collect(maps.Keys(tailnet.Properties)))
-	require.ElementsMatch(t, []string{"serviceName", "tailnetDnsName", "tags", "tailscaleImage", "listener"}, tailnet.Required)
+	// listener is optional in the entry, since the hub's own listener may declare it instead; the
+	// resolver requires one of the two with tailnet.
+	require.ElementsMatch(t, []string{"serviceName", "tailnetDnsName", "tags", "tailscaleImage"}, tailnet.Required)
 	require.Equal(t, "integer", tailnet.Properties["replicas"].Type)
 	listener := s.Types["envoy-infra:gcp:ClusteredHubListener"]
 	require.ElementsMatch(t, []string{
-		"image", "machineId", "nkey", "seedSecretName", "seedSecretKey", "allowedHosts",
-		"senderMessagesPerMinute", "senderMessageBurst", "cpu", "memory",
+		"image", "machineId", "nkey", "seedSecretName", "seedSecretKey", "clientNamespaces", "allowedHosts",
+		"oidcIssuer", "oidcAudience", "oidcAccounts", "senderMessagesPerMinute", "senderMessageBurst", "cpu", "memory",
 	}, slices.Collect(maps.Keys(listener.Properties)))
 	require.ElementsMatch(t, []string{"image", "nkey", "seedSecretName", "seedSecretKey"}, listener.Required)
 
