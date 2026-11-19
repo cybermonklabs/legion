@@ -3878,6 +3878,39 @@ func TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(
 				{802, "urgent", "search", 0}, {801, "urgent", "search", 0}, {800, "urgent", "search", 0},
 			},
 		},
+		{
+			// The r3 case as the tester's replay of round 13 ran it (replay/ in
+			// dispatch://INFRA-3531/artifact/tester-evidence-41d4f45b-2026-11-19-tar-gz): each
+			// smaps read takes 22 ms after the first kill too, as before it, to the end of the
+			// reading at the mark. The read-on then reaches one grower within one interval of
+			// the reading at the mark and ends it there, each kill sent as it reads the process
+			// (new_read=2:2). The run's next reading, 180 ms later, read 92.55%, at or above the
+			// urgent share, with no grower grown since the kill: the guard ends each of the four
+			// it did not reach at that reading, the largest by its tier and the others by the
+			// urgent rule, since in a stay with history R1's urgent rule ends every process new
+			// to the stay with memory of its own (run 4g-t4latepool-r3 at 4d6665d5, INFRA-3531 R1
+			// of spec version 43, verification version 36).
+			name: "4g-t4latepool-r3 with each read after the first kill 22 ms too and a next reading at 92.55%",
+			band: []replayReading{{7574, 0}, {7974, 102 * time.Millisecond}, {8379, 101 * time.Millisecond},
+				{8390, 100 * time.Millisecond}, {8390, 101 * time.Millisecond}, {8390, 101 * time.Millisecond},
+				{8434, 151 * time.Millisecond}, {8434, 102 * time.Millisecond}, {8434, 103 * time.Millisecond},
+				{8438, 102 * time.Millisecond}, {8438, 101 * time.Millisecond}, {8438, 102 * time.Millisecond}},
+			forksAt:        6,
+			mark:           replayReading{9252, 101 * time.Millisecond},
+			after:          []replayReading{{9255, 180 * time.Millisecond}},
+			stall:          50 * time.Millisecond,
+			perRead:        22 * time.Millisecond,
+			withinInterval: true,
+			slowAfterKill:  true,
+			grown:          []uint64{64, 64},
+			newRead:        "2:2",
+			atMark:         2,
+			want: []endedChoice{
+				{805, "new", "search", 0}, {804, "urgent", "search", 0},
+				{803, "new", "reading", 0}, {802, "urgent", "reading", 0}, {801, "urgent", "reading", 0},
+				{800, "urgent", "reading", 0},
+			},
+		},
 	} {
 		t.Run(run.name, func(t *testing.T) { replayLatepool(t, run) })
 	}
@@ -3906,6 +3939,10 @@ type latepoolRun struct {
 	// that the first kill comes within one interval of the reading at the mark.
 	stall, perRead time.Duration
 	withinInterval bool
+	// slowAfterKill keeps perRead on the smaps reads after the first kill too, to the end of the
+	// reading at the mark, as the tester's replay of round 13 did; without it those reads cost
+	// nothing.
+	slowAfterKill bool
 	// preExec, where set, has the growers start before the band's last reading, which reads each
 	// before its exec, with its parent's executable and arguments, at preExec bytes; they run the
 	// grow program from the reading at the mark on.
@@ -3961,8 +3998,11 @@ func replayLatepool(t *testing.T, run latepoolRun) {
 	stall, perRead := slowMark(h)
 	exit := exitFreeing(pod, 0)
 	h.signal.onKill = func(pid int) bool {
-		// The reads after a kill cost nothing: the read costs model the reads before it.
-		perRead.Store(0)
+		// The reads after a kill cost nothing: the read costs model the reads before it, unless
+		// slowAfterKill keeps them.
+		if !run.slowAfterKill {
+			perRead.Store(0)
+		}
 		return exit(pid)
 	}
 	h.run()
