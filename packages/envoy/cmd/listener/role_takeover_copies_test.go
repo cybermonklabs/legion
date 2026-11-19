@@ -151,11 +151,28 @@ func copiesHolderAnswer(frame relayedFrame) []string {
 	return []string{relayReplyReceived}
 }
 
+// startCopiesStandIn is startSessionStandIn whose stand-in answers nothing more, and whose
+// connection drains, once t ends and before the stand-in's own cleanup closes that connection: a
+// frame that arrives as a row ends - the holder's consumer goes on handing out what it holds - is
+// taken with no reply, so no callback writes to a closed connection or reports to a test that has
+// ended.
+func startCopiesStandIn(t *testing.T, url, sessionID string, answer func(relayedFrame) []string) *sessionStandIn {
+	t.Helper()
+	standIn := startSessionStandIn(t, url, sessionID, answer)
+	t.Cleanup(func() {
+		standIn.silent.Store(true)
+		if err := standIn.conn.Drain(); err == nil {
+			testwait.Holds(5*time.Second, testwait.Poll, standIn.conn.IsClosed)
+		}
+	})
+	return standIn
+}
+
 // startHolder starts sessionID's process, a stand-in on its relay subject answering as
 // copiesHolderAnswer does, and registers it in consumer mode through the listener's own route.
 func (rig *copiesRig) startHolder(t *testing.T, sessionID string) *sessionStandIn {
 	t.Helper()
-	standIn := startSessionStandIn(t, rig.url, sessionID, copiesHolderAnswer)
+	standIn := startCopiesStandIn(t, rig.url, sessionID, copiesHolderAnswer)
 	rig.register(t, sessionID, nil)
 	return standIn
 }
@@ -164,7 +181,7 @@ func (rig *copiesRig) startHolder(t *testing.T, sessionID string) *sessionStandI
 // and registers it in consumer mode.
 func (rig *copiesRig) startTaker(t *testing.T, sessionID string) *sessionStandIn {
 	t.Helper()
-	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+	standIn := startCopiesStandIn(t, rig.url, sessionID, answerDone)
 	rig.register(t, sessionID, nil)
 	return standIn
 }
@@ -173,6 +190,7 @@ func (rig *copiesRig) startTaker(t *testing.T, sessionID string) *sessionStandIn
 // registers no more, so its record stays as it last wrote it, inside the live window.
 func (rig *copiesRig) crash(t *testing.T, sessionID string, standIn *sessionStandIn) {
 	t.Helper()
+	standIn.silent.Store(true)
 	standIn.conn.Close()
 	awaitNoRelaySubscriber(t, rig.url, sessionID)
 }
@@ -421,7 +439,7 @@ func (rig *copiesRig) awaitHandoverIdle(t *testing.T, role string) {
 // of want, or what arrived within copiesWatchBound.
 func (rig *copiesRig) returnAndReceive(t *testing.T, sessionID string, want ...string) copiesReceived {
 	t.Helper()
-	standIn := startSessionStandIn(t, rig.url, sessionID, func(relayedFrame) []string { return []string{relayReplyReceived} })
+	standIn := startCopiesStandIn(t, rig.url, sessionID, func(relayedFrame) []string { return []string{relayReplyReceived} })
 	rig.register(t, sessionID, map[string]any{"delivery": map[string]any{"consumer": true, "epoch": "epoch-returned-" + sessionID}})
 	received := copiesReceived{}
 	deadline := time.Now().Add(copiesWatchBound)
@@ -847,8 +865,17 @@ func copiesUnreadRoleMessagesRow(t *testing.T, soft bool) {
 	t.Run("case: the new holder receives each of the three unread role messages at least once", func(t *testing.T) {
 		copiesRequireEach(t, received, copiesTaker, unread...)
 	})
-	t.Run("control: the new holder receives neither the acknowledged role message, nor the other role's message, nor the two messages to the session", func(t *testing.T) {
+	t.Run("control: the new holder receives neither the acknowledged role message, nor the other role's message, nor the two messages to the session, and the role's kept lane holds no copy of them", func(t *testing.T) {
 		copiesRequireNone(t, received, copiesTaker, append([]string{read}, kept...)...)
+		// The new holder's own relay copies a role message of S rather than deliver it, since
+		// S's claim names the previous holder (sessionRelays.takeOverFrame), so what it receives
+		// alone cannot show that the takeover copied nothing but R's role messages; R's kept lane
+		// can.
+		for _, eventID := range append([]string{read}, kept...) {
+			if copies := rig.keptCopiesOf(t, copiesRole, eventID); copies != 0 {
+				t.Errorf("role %s's kept lane holds %d copies of %s; want none", copiesRole, copies, eventID)
+			}
+		}
 	})
 	t.Run("control: the previous holder's consumer still holds the other role's message and the two messages to the session", func(t *testing.T) {
 		rig.requireUnacknowledged(t, copiesHolder, seqs, kept...)
