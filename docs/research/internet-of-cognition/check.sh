@@ -137,14 +137,20 @@
 # judges the deliverable: Dispatch's "not found", "No block", "no version N of" or
 # "document ... not found" for a reference fails citation-dispatch, and for the judgement
 # or a record under check leaves the text empty, which every assertion over it then fails
-# by its floor or its committed rows. The live-read rule covers the gate's own reads. A row
-# that reads a live source fails on its own failed read, naming it, so an outage during the
-# rows ends exit 1, and a reader whose FAIL lines name a source that did not answer runs
-# the replay again. A row's failed curl of GitHub's REST API is the one the gate reads
-# again itself (github_answer): when GitHub refuses that read for its rate limit, or the
-# row's read or the gate's gets no HTTP answer at all, the row prints no FAIL and the mode
-# cannot run, exit 2, or exit 1 after an earlier FAIL, by the precedence above ("The GitHub
-# tokens stand on no command line" below). The one live read that is no input is the
+# by its floor or its committed rows. The live-read rule covers the gate's own reads. A row's
+# own failed read of a live source, GitHub or Dispatch, is read by one rule of its own
+# (source_answer), since only an answer from the source judges the deliverable: a curl of
+# GitHub's REST API or of the Dispatch API, which the gate reads once more itself at the URL
+# and with the header file the curl's record names; a dispatch command, by the first line it
+# printed; and a python3 of a row whose command reads DISPATCH_URL, by the last urllib or
+# transport error its output holds. A read that got no answer, a server error (5xx), a rate limit, and an
+# answer about the reader's credential (a 401, or a 403 that names authentication, a
+# permission or a token rather than a rate limit) are no verdict on the deliverable: the row
+# prints no FAIL and the mode cannot run, of the kind source, naming the row, the source, the
+# read and the line that shows it, exit 2, or exit 1 after an earlier FAIL, by the precedence
+# above ("The GitHub tokens stand on no command line" below). Any other answer, such as a 404
+# or Dispatch's NOT_FOUND, is the source's answer about the record, and the row fails, naming
+# it; so does a row's failed read of anything else. The one live read that is no input is the
 # report of each published page's live address, which reports an address that does not
 # answer rather than stopping, as the Verification document asks of it.
 #
@@ -353,24 +359,28 @@
 # rows that sent the file written at its start failed together after the hour. The pod's
 # helper answers from a bundle its daemon refreshes in place, so a file written again
 # carries a live token. A row whose curl of GitHub's REST API fails is read once more by the
-# gate itself, at the URL and with the header file that curl's record names (github_answer),
+# gate itself, at the URL and with the header file that curl's record names (source_answer),
 # since the row's own pipeline reads GitHub's answer, and its failure line names the status
-# and the first line of GitHub's message. A refusal for GitHub's rate limit is no verdict on
-# the deliverable and ends the mode, cannot run, of the kind source. So does an outage, a
-# read that got no HTTP answer, since only GitHub's answer judges the row: a row's curl
-# that exited with any status but 22, the one --fail-with-body gives for GitHub's HTTP
-# error, such as a transport error (6, 7, 28, 35, 52 or 56), whatever the gate's read
-# again gets, and a read of the gate's own that gets no HTTP status at all. Its line names
-# the row, the URL, the status the row's curl exited with and what the gate's read got,
-# and no FAIL is printed. No line the gate prints and no output a row records holds a
-# token: a failure names a header file by its path at most. The files go with the scratch,
-# which the EXIT trap removes however the run ends, and check.test.sh's case 117 holds
-# both: a replay of the rows that send them, with a token of the case's own, prints the
-# token nowhere and leaves no header file behind. Case 118 holds that a row meets the files
-# written again, case 119 that a failed read of GitHub's REST API names GitHub's answer,
-# and a refusal for its rate limit cannot run, case 121 that a read that reaches no GitHub
-# cannot run, and case 122 that a row's read that got no HTTP answer cannot run though the
-# gate's read again is answered.
+# and the first line of GitHub's message. Only an answer about the record judges the row:
+# a refusal for GitHub's rate limit, an answer about the reader's credential, as a 401 for a
+# token that expired, and a server error (5xx) are no verdict on the deliverable, and each
+# ends the mode, cannot run, of the kind source. So does an outage, a read that got no HTTP
+# answer: a row's curl that exited with any status but 22, the one --fail-with-body gives for
+# GitHub's HTTP error, such as a transport error (6, 7, 28, 35, 52 or 56), whatever the
+# gate's read again gets, and a read of the gate's own that gets no HTTP status at all. Its
+# line names the row, the URL, the status the row's curl exited with and what the gate's read
+# got, and no FAIL is printed. A row's curl of the Dispatch API runs with --fail-with-body
+# too, sending the Dispatch header file, and is read again by the same rule. No line the gate
+# prints and no output a row records holds a token: a failure names a header file by its
+# path at most. The files go with the scratch, which the EXIT trap removes however the run
+# ends, and check.test.sh's case 117 holds both: a replay of the rows that send them, with a
+# token of the case's own, prints the token nowhere and leaves no header file behind. Case
+# 118 holds that a row meets the files written again, case 119 that a failed read of
+# GitHub's REST API names GitHub's answer, and that a 401 and a refusal for its rate limit
+# cannot run, case 121 that a read that reaches no GitHub cannot run, case 122 that a row's
+# read that got no HTTP answer cannot run though the gate's read again is answered, and case
+# 125 that a read again answered 502 cannot run. Cases 123 and 124 hold the same rule for a
+# row's read of Dispatch: through the dispatch command, by curl and through python3's urllib.
 #
 # The evidence it reads:
 #
@@ -1344,17 +1354,18 @@ PY
 # asked to resolve, the Dispatch API, the GitHub budget and default branch, GitHub's answer
 # to git ls-remote of the private repository rows read (private_repository_read), a clone's
 # fetch, and the run of coordination/count.py over the feed of the count's window
-# (count_load); a recorded command's own reads are the row's (the header's live-read
-# rule). It runs the command, writes what it printed into <file>, and returns 0 when the
-# source answered. It returns 1 when the source answered that it holds no such thing,
-# which is an answer that judges the deliverable: Dispatch's "not found", "No block", "no
-# version N of", "document ... not found", or its refusal to read a reference it does not
-# take ("dispatch read was not called"), each measured against Dispatch on 2026-11-15,
-# each with or without the refusal's code before it ("NOT_FOUND: not found"), which the
-# CLI of the worker image printed from 2026-11-17. Anything else that fails, a Dispatch
-# that is unreachable, a curl or git transport error, a count.py that raised on a read
-# and exited non-zero, is no answer at all: the mode cannot run, and it ends here, naming
-# the source, exit 2, or exit 1 after a FAIL, by the precedence of the header.
+# (count_load); a recorded command's own reads are the row's, which source_answer reads
+# (the header's live-read rule). It runs the command, writes what it printed into <file>,
+# and returns 0 when the source answered. It returns 1 when the source answered that it
+# holds no such thing, which is an answer that judges the deliverable: Dispatch's "not
+# found", "No block", "no version N of", "document ... not found", or its refusal to read a
+# reference it does not take ("dispatch read was not called"), each measured against
+# Dispatch on 2026-11-15, each with or without the refusal's code before it ("NOT_FOUND: not
+# found"), which the CLI of the worker image printed from 2026-11-17. Anything else that
+# fails, a Dispatch that is unreachable, a curl or git transport error, a count.py that
+# raised on a read and exited non-zero, is no answer at all: the mode cannot run, and it
+# ends here, naming the source, exit 2, or exit 1 after a FAIL, by the precedence of the
+# header.
 LIVE_ANSWER_NO='^(NOT_FOUND: )?(not found$|No block |no version [0-9]+ of |document "[^"]*" not found|dispatch [a-z-]+ was not called)'
 live_read() {
     local source="$1" file="$2"
@@ -1927,9 +1938,9 @@ prepare_env() {
 # row may touch.
 PROGRAM_VARIABLES="IOC_PY:python IOC_MASLAB_PY:python IOC_MASLAB_CTL:mas-ctl IOC_MASLAB_WHEEL_CTL:mas-ctl IOC_TC_PY:python"
 # The prefixes of every name the runner and the shims below record with: __ioc_failed,
-# __ioc_record, __ioc_s, __ioc_stages and __IOC_FAILED. reader_py writes them into the
-# reader, which refuses a row that touches a name with one, and --admitted fails a name
-# of the runner that starts with none of them.
+# __ioc_record, __ioc_s, __ioc_said, __ioc_o, __ioc_stages and __IOC_FAILED. reader_py
+# writes them into the reader, which refuses a row that touches a name with one, and
+# --admitted fails a name of the runner that starts with none of them.
 RUNNER_PREFIXES="__ioc __IOC"
 
 program_shims() {
@@ -1950,7 +1961,7 @@ program_shims() {
                 printf '%q "$@"\n' "$real"
                 printf '__ioc_s=$?\n'
                 printf 'if [ "$__ioc_s" -ne 0 ] && [ -n "${__IOC_FAILED:-}" ]; then\n'
-                printf '    printf "%%s\\t%%s\\t%%s\\n" "$__ioc_s" "${IOC_EXPECT_STATUS:--}" "$(printf "%%s " %q "$@" | tr "\\n\\t" "  ")" >>"$__IOC_FAILED"\n' "\$$v"
+                printf '    printf "%%s\\t%%s\\t%%s\\t-\\n" "$__ioc_s" "${IOC_EXPECT_STATUS:--}" "$(printf "%%s " %q "$@" | tr "\\n\\t" "  ")" >>"$__IOC_FAILED"\n' "\$$v"
                 printf 'fi\n'
                 printf 'exit "$__ioc_s"\n'
             } >"$dir/$v"
@@ -1967,15 +1978,22 @@ run_recorded() {
     # it reads nothing an earlier run or an earlier row left under the caller's TMPDIR.
     #
     # Every program the command runs records its own status when it fails, as one line of
-    # <output-file>.failed, the status first and then the program and its arguments. Each
-    # program the row names in command position by a bare word is wrapped in a shell
-    # function of that name, which runs the real command and records its status, and each
-    # program variable points at a shim that does the same. A function and a shim see their
-    # own status wherever the program stands: in any stage of a pipeline, in any element of
-    # an && or || list, in a group, a subshell, a loop or a substitution. That is what bash's
-    # ERR trap does not do, for a stage that is not a pipeline's last and for a command
-    # before && or ||, and what PIPESTATUS does not do, since it holds the statuses of one
-    # pipeline without its commands' text.
+    # <output-file>.failed with four fields, separated by tabs: the status, the status the
+    # row declared for it, the program and its arguments, and the first line it printed, each
+    # of the second and the fourth - where there is none. Each program the row names in
+    # command position by a bare word is wrapped in a shell function of that name, which runs
+    # the real command and records its status, and each program variable points at a shim
+    # that does the same. A function and a shim see their own status wherever the program
+    # stands: in any stage of a pipeline, in any element of an && or || list, in a group, a
+    # subshell, a loop or a substitution. That is what bash's ERR trap does not do, for a
+    # stage that is not a pipeline's last and for a command before && or ||, and what
+    # PIPESTATUS does not do, since it holds the statuses of one pipeline without its
+    # commands' text. The function of dispatch alone keeps the first line its program
+    # printed: the dispatch command prints a refusal on stdout, which every row pipes into
+    # sed, grep or awk, so the row's output holds none of it, and only that line tells
+    # Dispatch's answer about the record from no answer (source_answer). It writes what
+    # dispatch prints into a file beside the record and then onto its own stdout, so the
+    # row's pipeline reads every byte it read before, once dispatch has exited.
     local command="$1" out="$2" script name
     script="$out.sh"
     : >"$out.failed"
@@ -1985,9 +2003,13 @@ run_recorded() {
     printf '%s\n' "$names" | sed -n 's/^UNREAD\t//p' >"$out.unread"
     {
         printf '__ioc_failed=%q\n' "$out.failed"
-        printf '%s\n' '__ioc_record() { local __ioc_s="$1"; shift; printf "%s\t%s\t%s\n" "$__ioc_s" "${IOC_EXPECT_STATUS:--}" "$(printf "%s " "$@" | tr "\n\t" "  ")" >>"$__ioc_failed"; }'
+        printf '%s\n' '__ioc_record() { local __ioc_s="$1"; shift; printf "%s\t%s\t%s\t%s\n" "$__ioc_s" "${IOC_EXPECT_STATUS:--}" "$(printf "%s " "$@" | tr "\n\t" "  ")" "${__ioc_said:--}" >>"$__ioc_failed"; }'
         while IFS= read -r name; do
             [ -n "$name" ] || continue
+            if [ "$name" = dispatch ]; then
+                printf '%s\n' 'dispatch() { local __ioc_o="$__ioc_failed.$BASHPID.dispatch" __ioc_s __ioc_said=""; command dispatch "$@" >"$__ioc_o"; __ioc_s=$?; command cat -- "$__ioc_o"; IFS= read -r __ioc_said <"$__ioc_o"; command rm -f -- "$__ioc_o"; __ioc_said="${__ioc_said//[[:cntrl:]]/ }"; __ioc_said="${__ioc_said:0:240}"; [ "$__ioc_s" -eq 0 ] || __ioc_record "$__ioc_s" dispatch "$@"; return "$__ioc_s"; }'
+                continue
+            fi
             printf '%s() { command %s "$@"; local __ioc_s=$?; [ "$__ioc_s" -eq 0 ] || __ioc_record "$__ioc_s" %s "$@"; return "$__ioc_s"; }\n' "$name" "$name" "$name"
         done < <(printf '%s\n' "$names" | grep -v '^UNREAD')
         program_shims
@@ -2051,10 +2073,10 @@ declared_status_holds() {
 # the one search-miss rule is applied to each program's own status. It names that program,
 # its arguments and its status in IOC_FAILED_READ.
 failed_read() {
-    local out="$1" failed_status failed_declared failed_command
+    local out="$1" failed_status failed_declared failed_command _failed_said
     IOC_FAILED_READ=""
     if [ -s "$out.failed" ]; then
-        while IFS=$'\t' read -r failed_status failed_declared failed_command; do
+        while IFS=$'\t' read -r failed_status failed_declared failed_command _failed_said; do
             declared_status_holds "$failed_status" "$failed_declared" && continue
             search_missed "$failed_command" "$failed_status" && continue
             IOC_FAILED_READ="'$failed_command' exited $failed_status"
@@ -2212,71 +2234,183 @@ github_headers_fresh() {
     [ "$stale" = 0 ] || github_headers
 }
 
-# github_answer <output-file>; when a curl of GitHub's REST API that the row ran failed,
-# makes one read of its own of that curl's URL with the header file it sent, and names what
-# GitHub answered in IOC_GITHUB_ANSWER, its status and the first line of its body's message,
-# as "GitHub answered 401: Bad credentials". IOC_GITHUB_RATE_LIMIT is 1 when that answer is
-# GitHub's rate limit, a 403 or a 429 whose message names a rate limit or a secondary rate
-# limit, or whose x-ratelimit-remaining header is 0, and the answer then names the limit
-# its headers give. IOC_GITHUB_UNANSWERED is 1 when the row's curl exited with any status
-# but 22, the one --fail-with-body gives for GitHub's HTTP error, whatever that read got,
-# or when that read got no HTTP status at all, curl's -w '%{http_code}' printing 000 or
-# nothing after a transport error such as 6, 7, 28, 35, 52 or 56: GitHub gave no answer
-# that judges the row, and the answer then names the URL, the status the row's curl exited
-# with and what the gate's read got, its status, or its exit and the first line its curl
-# printed on stderr. All three are empty when no curl of GitHub's REST API failed. A row
-# records what it records: a row's curl hands GitHub's body to the row's pipeline, jq in
-# each row that sends IOC_GITHUB_AUTH_LEGION, and writes into the row's output only its own
-# line, "curl: (22) The requested URL returned error: 401", so only a read of the gate's own
-# gives GitHub's message. The URL and the header file are the ones the failed curl's record
-# names (run_recorded), the read is one request, made only on a failure, and its body, its
-# headers and curl's stderr go into the run's scratch. Nothing of it is printed but the
-# status, the message's first line, the rate limit's own headers and, when no status came,
-# curl's own error line, so no token is, and a header file stands in a failure line by its
-# path at most, in IOC_FAILED_READ.
-github_answer() {
-    local out="$1" failed_status failed_declared failed_command url="" header="" code reread got row_got="" message
-    local remaining limit reset resource body="$RUN_SCRATCH/github-answer.body" dump="$RUN_SCRATCH/github-answer.headers"
-    local curl_read='^curl (.* )?(https://api\.github\.com/[^ ]*)' header_sent='(^| )-H @([^ ]+)'
-    IOC_GITHUB_ANSWER="" IOC_GITHUB_RATE_LIMIT="" IOC_GITHUB_UNANSWERED=""
+# source_answer <id> <output-file>; reads the first failed read of a live source, GitHub or
+# Dispatch, that the row's record holds with a status the row did not declare, and says
+# whether the source's answer judges the row (the header's live-read rule). Only an answer
+# about the record judges it. A read that got no answer, a server error (5xx), a rate limit,
+# and an answer about the reader's credential, a 401 or a 403 that names authentication, a
+# permission or a token rather than a rate limit, judge nothing of the deliverable: an
+# expired token is the reader's, never a wrong deliverable. IOC_SOURCE_STOP then holds the
+# reason the mode cannot run, naming the row, the source, the read and the line that shows
+# it, as "GitHub refused the credential of tc-input-1's read of its REST API, so the row's
+# failure is no verdict on the deliverable: ... GitHub answered 401: Bad credentials". Any
+# other answer judges the row, and IOC_SOURCE_ANSWER names it for the row's FAIL line. Both
+# are empty when no read of a source failed, or when one failed and printed nothing this
+# rule reads. A source's reads are three, each found by its record (run_recorded):
+#
+#   - A curl of https://api.github.com/ or of DISPATCH_URL, by the URL its record holds.
+#     Each such curl of a row runs with --fail-with-body, which exits 22 when the source
+#     answered with an HTTP error, so any other exit, such as a transport error (6, 7, 28,
+#     35, 52 or 56), is a read that got no answer, whatever comes after. A row's curl hands
+#     the body to the row's pipeline and writes into the row's output only its own line,
+#     "curl: (22) The requested URL returned error: 401", so the gate makes one read of its
+#     own of that URL with the header file the curl sent (-H @<file>): a read again that gets
+#     no HTTP status, curl's -w '%{http_code}' printing 000 or nothing, is no answer either,
+#     and the line names curl's exit and the first line it printed on stderr. A status is
+#     named with the body's message, GitHub's message or the code and the error of
+#     Dispatch's error JSON, as "GitHub answered 401: Bad credentials" or "Dispatch answered
+#     404 NOT_FOUND: not found". A 5xx is a server error. A 429, and GitHub's 403 whose
+#     message names a rate limit or a secondary rate limit or whose x-ratelimit-remaining
+#     header is 0, is a rate limit, named with the limit GitHub's headers give. A 401,
+#     Dispatch's 403, which it answers a request whose credential lacks a scope or a project,
+#     and GitHub's 403 whose message matches GITHUB_CREDENTIAL, as "Resource not accessible
+#     by integration", are the reader's credential. Any other status is an answer.
+#   - A dispatch command, by the first line it printed, which its function keeps in the
+#     record, since the row's pipeline reads what it prints. DISPATCH_UNANSWERED holds the
+#     lines of no answer: "Dispatch at <url> is unreachable: ...", which the CLI of the
+#     worker image prints when it reaches no server, "HTTP_5NN: ...", which it prints for a
+#     5xx whose body is no error JSON of Dispatch's, and each code Dispatch's API at
+#     9542c6fb writes beside a 5xx status. DISPATCH_CREDENTIAL holds "HTTP_401: ...",
+#     "HTTP_403: ..." and each code it writes beside a 401, and beside a 403 for the
+#     request's credential, its scope or its project; DISPATCH_RATE_LIMITED holds "HTTP_429:
+#     ..." and the code it writes beside a 429 for a credential. The CLI prints a refusal's
+#     code and no status, so a code is read by these tables. Any other line, such as
+#     "NOT_FOUND: not found", is Dispatch's answer about the record.
+#   - A python3 of a row whose command reads DISPATCH_URL, by the last line of the row's
+#     output that names urllib's error, the line a traceback ends with: a URLError is no
+#     answer, and an HTTPError's "HTTP Error <status>: <message>" is read as the status of a
+#     curl of Dispatch is.
+#
+# The read again is one request, made only on a failure, and its body, its headers and
+# curl's stderr go into the run's scratch. Nothing of it is printed but the status, the
+# message's first line, the rate limit's own headers and, when no status came, curl's own
+# error line, so no token is, and a header file stands in a failure line by its path at
+# most, in IOC_FAILED_READ.
+DISPATCH_UNANSWERED='^(Dispatch at .* is unreachable: |HTTP_5[0-9][0-9]: |(AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE|AGENT_SECRETS_UNAVAILABLE|ASK_STATE_INVALID|BROKER_UNAVAILABLE|DATABASE_UNAVAILABLE|ENVOY_REFILLING|ENVOY_UNAVAILABLE|ENVOY_UNSUBSCRIBE_FAILED|FILE_MISSING|FILE_STORE_UNAVAILABLE|GITHUB_APP_UNCONFIGURED|GITHUB_UNREADABLE|IDENTITY_ERROR|INTERNAL|OIDC_ISSUER_UNAVAILABLE|SHUTTING_DOWN|SIGNIN_UNAVAILABLE|SLOW_WRITE_CUT_OFF|STREAM_UNAVAILABLE|TEST_HOOK_FAILED|TEST_HOOK_TIMEOUT|TEST_HOOK_UNAVAILABLE): )'
+DISPATCH_CREDENTIAL='^(HTTP_40[13]: |(UNAUTHORIZED|NO_IDENTITY|TOKEN_REVOKED|OIDC_TOKEN_INVALID|BROKER_TOKEN_NOT_ACTIVE|BROKER_TOKEN_KEY_MISMATCH|BROKER_TOKEN_PROOF_INVALID|BROKER_TOKEN_NOT_A_SESSION|OAUTH_SCOPE_REQUIRED|PROJECT_SCOPE|PROJECT_SCOPE_DEPLOYMENT|SESSION_SCOPE|SIGN_IN_REQUIRED|ACTOR_SESSION_MISMATCH): )'
+DISPATCH_RATE_LIMITED='^(HTTP_429: |BROKER_TOKEN_RATE_LIMITED: )'
+GITHUB_CREDENTIAL='authenticat|authoriz|credential|permission|not accessible|token|saml|sso|rights'
+source_answer() {
+    local id="$1" out="$2" failed_status failed_declared failed_command failed_said words word
+    local source="" via="" what="" url="" header="" said="" kind="" detail="" answer="" code reread got row_got="" message="" error_code=""
+    local remaining limit reset resource body="$RUN_SCRATCH/source-answer.body" dump="$RUN_SCRATCH/source-answer.headers"
+    local header_sent='(^| )-H @([^ ]+)' http_error='^urllib\.error\.HTTPError: HTTP Error ([0-9]{3}): ?(.*)$'
+    IOC_SOURCE_ANSWER="" IOC_SOURCE_STOP=""
     [ -s "$out.failed" ] || return 0
-    while IFS=$'\t' read -r failed_status failed_declared failed_command; do
+    while IFS=$'\t' read -r failed_status failed_declared failed_command failed_said; do
         declared_status_holds "$failed_status" "$failed_declared" && continue
-        [[ "$failed_command" =~ $curl_read ]] || continue
-        url="${BASH_REMATCH[2]}"
-        [[ "$failed_command" =~ $header_sent ]] && header="${BASH_REMATCH[2]}"
-        break
+        case "$failed_command" in
+        "curl "*)
+            read -r -a words <<<"$failed_command"
+            for word in "${words[@]}"; do
+                if [[ "$word" == https://api.github.com/* ]]; then
+                    source=GitHub via=curl what="its REST API" url="$word"
+                    break
+                elif [ -n "${DISPATCH_URL:-}" ] && [[ "$word" == "${DISPATCH_URL%/}/"* ]]; then
+                    source=Dispatch via=curl what="its API" url="$word"
+                    break
+                fi
+            done
+            ;;
+        "dispatch "*)
+            source=Dispatch via=dispatch what="its API through the dispatch command"
+            [ "$failed_said" = - ] || said="$failed_said"
+            ;;
+        "python3 "*)
+            grep -qF DISPATCH_URL "$out.command" 2>/dev/null && source=Dispatch via=python what="its API through python3"
+            ;;
+        esac
+        [ -n "$source" ] && break
     done <"$out.failed"
-    [ -n "$url" ] || return 0
-    rm -f -- "$body" "$dump"
-    code="$(curl -sS -o "$body" -D "$dump" -w '%{http_code}' ${header:+-H "@$header"} "$url" 2>"$body.err")"
-    reread=$?
-    if [[ "$code" =~ ^[1-5][0-9][0-9]$ ]]; then
-        got="got $code"
-    else
-        got="exited $reread with no HTTP status: $(head -1 "$body.err" | head -c 160)"
-        IOC_GITHUB_UNANSWERED=1
-    fi
-    # The row's curl runs with --fail-with-body, which exits 22 when GitHub answered with an
-    # HTTP error, so any other status is a read of the row's that got no HTTP answer, and
-    # what the gate's read got after it judges nothing the row read.
-    [ "$failed_status" = 22 ] || {
-        IOC_GITHUB_UNANSWERED=1
-        row_got=" with no HTTP answer"
-    }
-    if [ -n "$IOC_GITHUB_UNANSWERED" ]; then
-        IOC_GITHUB_ANSWER="the row's curl of $url exited $failed_status$row_got, and the gate's read of it again $got"
+    case "$via" in
+    curl)
+        [[ "$failed_command" =~ $header_sent ]] && header="${BASH_REMATCH[2]}"
+        rm -f -- "$body" "$dump"
+        code="$(curl -sS -o "$body" -D "$dump" -w '%{http_code}' ${header:+-H "@$header"} "$url" 2>"$body.err")"
+        reread=$?
+        if [[ "$code" =~ ^[1-5][0-9][0-9]$ ]]; then
+            got="got $code"
+            if [ "$source" = GitHub ]; then
+                message="$(jq -r 'if type == "object" and (.message | type) == "string" then .message | split("\n")[0] | .[0:240] else empty end' "$body" 2>/dev/null)"
+            else
+                error_code="$(jq -r 'if type == "object" and (.code | type) == "string" then .code | .[0:80] else empty end' "$body" 2>/dev/null)"
+                message="$(jq -r 'if type == "object" and (.error | type) == "string" then .error | split("\n")[0] | .[0:240] else empty end' "$body" 2>/dev/null)"
+            fi
+            answer="$source answered $code${error_code:+ $error_code}${message:+: $message}"
+            case "$code" in
+            5??) kind=server ;;
+            401) kind=credential ;;
+            403 | 429)
+                IFS='|' read -r remaining limit reset resource < <(awk -F ': *' '{ sub(/\r$/, "") } { v[tolower($1)] = $2 }
+                    END { printf "%s|%s|%s|%s\n", v["x-ratelimit-remaining"], v["x-ratelimit-limit"], v["x-ratelimit-reset"], v["x-ratelimit-resource"] }' "$dump" 2>/dev/null)
+                if [ "$code" = 429 ] || { [ "$source" = GitHub ] && { [[ "${message,,}" == *"rate limit"* ]] || [ "$remaining" = 0 ]; }; }; then
+                    kind=rate
+                    [ -z "$limit" ] ||
+                        answer="$answer; its ${resource:+$resource }rate limit has ${remaining:-none} of its $limit requests left${reset:+ until $(date -u -d "@$reset" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '%s' "$reset")}"
+                elif [ "$source" = Dispatch ] || [[ "${message,,}" =~ $GITHUB_CREDENTIAL ]]; then
+                    kind=credential
+                fi
+                ;;
+            esac
+        else
+            got="exited $reread with no HTTP status: $(head -1 "$body.err" | head -c 160)"
+            kind=unanswered
+        fi
+        # The row's curl runs with --fail-with-body, which exits 22 when the source answered
+        # with an HTTP error, so any other status is a read of the row's that got no HTTP
+        # answer, and what the gate's read got after it judges nothing the row read.
+        [ "$failed_status" = 22 ] || {
+            kind=unanswered
+            row_got=" with no HTTP answer"
+        }
+        case "$kind" in
+        unanswered) detail="the row's curl of $url exited $failed_status$row_got, and the gate's read of it again $got" ;;
+        server) detail="the row's curl of $url exited 22, and when the gate read it again $answer, a server error" ;;
+        credential) detail="the row's curl of $url exited 22, and when the gate read it again $answer" ;;
+        rate) detail="$answer" ;;
+        esac
+        ;;
+    dispatch)
+        if [[ "$said" =~ $DISPATCH_RATE_LIMITED ]]; then
+            kind=rate
+        elif [[ "$said" =~ $DISPATCH_CREDENTIAL ]]; then
+            kind=credential
+        elif [[ "$said" =~ $DISPATCH_UNANSWERED ]]; then
+            kind=unanswered
+        fi
+        answer="${said:+the dispatch command printed '$said'}"
+        detail="'${failed_command% }' exited $failed_status and printed '$said'"
+        ;;
+    python)
+        # urllib wraps a failure to connect in URLError, but a read that times out or is cut off
+        # after the connection raises the socket's or http.client's own exception, unwrapped:
+        # each of those is no answer too.
+        said="$(grep -E '^(urllib\.error\.(URLError|HTTPError)|TimeoutError|socket\.timeout|Connection(Reset|Refused|Aborted)Error|BrokenPipeError|http\.client\.(RemoteDisconnected|IncompleteRead))(: |$)' "$out" | tail -1 | tr -d '\r' | head -c 240)"
+        if [ -n "$said" ] && [[ "$said" != urllib.error.HTTPError:* ]]; then
+            kind=unanswered
+        elif [[ "$said" =~ $http_error ]]; then
+            code="${BASH_REMATCH[1]}" message="${BASH_REMATCH[2]}"
+            answer="Dispatch answered $code${message:+: $message}"
+            case "$code" in
+            5??) kind=server ;;
+            401 | 403) kind=credential ;;
+            429) kind=rate ;;
+            esac
+        fi
+        detail="its python3 exited $failed_status, and the last urllib or transport error of its output is '$said'"
+        ;;
+    *) return 0 ;;
+    esac
+    case "$kind" in
+    "")
+        IOC_SOURCE_ANSWER="$answer"
         return 0
-    fi
-    message="$(jq -r 'if type == "object" and (.message | type) == "string" then .message | split("\n")[0] | .[0:240] else empty end' "$body" 2>/dev/null)"
-    IOC_GITHUB_ANSWER="GitHub answered $code${message:+: $message}"
-    case "$code" in 403 | 429) ;; *) return 0 ;; esac
-    IFS='|' read -r remaining limit reset resource < <(awk -F ': *' '{ sub(/\r$/, "") } { v[tolower($1)] = $2 }
-        END { printf "%s|%s|%s|%s\n", v["x-ratelimit-remaining"], v["x-ratelimit-limit"], v["x-ratelimit-reset"], v["x-ratelimit-resource"] }' "$dump" 2>/dev/null)
-    [[ "${message,,}" == *"rate limit"* ]] || [ "$remaining" = 0 ] || return 0
-    IOC_GITHUB_RATE_LIMIT=1
-    [ -z "$limit" ] ||
-        IOC_GITHUB_ANSWER="$IOC_GITHUB_ANSWER; its ${resource:+$resource }rate limit has ${remaining:-none} of its $limit requests left${reset:+ until $(date -u -d "@$reset" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '%s' "$reset")}"
+        ;;
+    rate) IOC_SOURCE_STOP="$source's rate limit refused $id's read of $what" ;;
+    credential) IOC_SOURCE_STOP="$source refused the credential of $id's read of $what" ;;
+    *) IOC_SOURCE_STOP="$source gave no answer that judges $id's read of $what" ;;
+    esac
+    IOC_SOURCE_STOP="$IOC_SOURCE_STOP, so the row's failure is no verdict on the deliverable: $detail"
 }
 
 # unpinned_installs; prints one line per package a recorded command installs or runs with
@@ -4199,10 +4333,17 @@ mode_replay() {
             fi
             continue
         fi
+        # A row's failed read of a live source, GitHub or Dispatch, is read by source_answer
+        # before it judges the row, an absence search's as every other: a read that got no
+        # answer, a server error, a rate limit or an answer about the reader's credential is
+        # no verdict on the deliverable, and the mode cannot run, of the kind source, since
+        # only the source's answer about the record judges the row.
         if [ "$kind" = absence ]; then
             if failed_read "$work/$id.out"; then
+                source_answer "$id" "$work/$id.out"
+                [ -z "$IOC_SOURCE_STOP" ] || cannot_run source " --replay now: $IOC_SOURCE_STOP"
                 absence_failures="$absence_failures $id"
-                fail absence-still-empty "$id searched a corpus this run never read: $IOC_FAILED_READ, so the search found nothing because nothing was read"
+                fail absence-still-empty "$id searched a corpus this run never read: $IOC_FAILED_READ${IOC_SOURCE_ANSWER:+, and $IOC_SOURCE_ANSWER}, so the search found nothing because nothing was read"
                 continue
             fi
             if grep -q '[^[:space:]]' "$work/$id.out"; then
@@ -4218,19 +4359,13 @@ mode_replay() {
         # A read that failed anywhere in the row leaves its output no reading of what the
         # row claims, whatever that output still meets: a traceback has enough lines for a
         # bound. A row whose predicate is an exit status claims the failure itself. A failed
-        # curl of GitHub's REST API is read once more by the gate, and its line names what
-        # GitHub answered (github_answer). A refusal for GitHub's rate limit, and a read, the
-        # row's or the gate's, that got no HTTP answer at all, an outage between it and
-        # GitHub, are no verdict on the deliverable: the mode cannot run, of the kind source,
-        # since only GitHub's answer judges the row.
+        # read of a live source is read by source_answer, as above, and the row's line names
+        # what the source answered.
         if failed_read "$work/$id.out"; then
-            github_answer "$work/$id.out"
-            [ -z "$IOC_GITHUB_RATE_LIMIT" ] ||
-                cannot_run source " --replay now: GitHub's rate limit refused $id's read of its REST API, so the row's failure is no verdict on the deliverable: $IOC_GITHUB_ANSWER"
-            [ -z "$IOC_GITHUB_UNANSWERED" ] ||
-                cannot_run source " --replay now: GitHub gave no answer that judges $id's read of its REST API, so the row's failure is no verdict on the deliverable: $IOC_GITHUB_ANSWER"
+            source_answer "$id" "$work/$id.out"
+            [ -z "$IOC_SOURCE_STOP" ] || cannot_run source " --replay now: $IOC_SOURCE_STOP"
             command_failures="$command_failures $id"
-            fail replay-command "$id ran its command and a read inside it failed: $IOC_FAILED_READ${IOC_GITHUB_ANSWER:+, and $IOC_GITHUB_ANSWER}, so its output is no reading of what the row claims"
+            fail replay-command "$id ran its command and a read inside it failed: $IOC_FAILED_READ${IOC_SOURCE_ANSWER:+, and $IOC_SOURCE_ANSWER}, so its output is no reading of what the row claims"
             continue
         fi
         IOC_BOUND_READ=""

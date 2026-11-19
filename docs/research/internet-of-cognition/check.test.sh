@@ -3338,7 +3338,7 @@ fi
 # since each hands GitHub's body to jq and the row's output holds only curl's own line, so
 # that GitHub had answered 401 was an inference. When a row's failed read is a curl of
 # GitHub's REST API, the gate now reads that curl's URL once more itself, with the header
-# file the curl sent (github_answer): its FAIL of replay-command names GitHub's status and
+# file the curl sent (source_answer): its FAIL of replay-command names GitHub's status and
 # the first line of its message, and a 403 or 429 for GitHub's rate limit ends the mode,
 # cannot run, of the kind source, naming the limit. The case plants into each of two
 # fixtures one row of the case's own that runs tc-input-1's command, a curl of GitHub's
@@ -3348,11 +3348,15 @@ fi
 # answer its directory holds: to the row, the body on stdout, curl's line on stderr and
 # exit 22, and to a read with -o, the body and the headers into the files it names and the
 # status, recording what that read sent. It runs the real curl for any other address. Its
-# first answer is 401 Bad credentials: the run must fail replay-command, its FAIL line
+# first answer is 401 Bad credentials, an answer about the reader's credential and not about
+# the deliverable: the run must end exit 2, cannot run, with no FAIL line, its last line
 # naming 401 and the message, after one read of the gate's own of the row's URL with the
-# header file IOC_GITHUB_AUTH_LEGION names. Its second is a 403 whose message names the rate
-# limit and whose x-ratelimit-remaining is 0: the run must end exit 2 with no FAIL line, its
-# last line naming the limit. In neither may the token's prefix stand in the run's log.
+# header file IOC_GITHUB_AUTH_LEGION names. This form changed by the architect's order of
+# 2026-11-19T15:35Z (round 39), that an expired token is the reader's and must never read
+# as a wrong deliverable; until then the run had to fail replay-command, naming 401 and the
+# message. Its second is a 403 whose message names the rate limit and whose
+# x-ratelimit-remaining is 0: the run must end exit 2 with no FAIL line, its last line
+# naming the limit. In neither may the token's prefix stand in the run's log.
 ANSWER_CASE="$WORK/github-answer"
 ANSWER_PREFIX=ghs_IOCFAKETOKEN119
 mkdir -p "$ANSWER_CASE/bin"
@@ -3414,20 +3418,18 @@ jq -c 'select(.id == "tc-input-1") | {id: "f-github-read", requirement: "r7", so
 dir="$(fresh github-answer-401)"
 cat "$ANSWER_CASE/row" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
 out="$(PATH="$ANSWER_CASE/401/bin:$ANSWER_CASE/bin:$PATH" fixture_run "$dir" --replay)"
-answer_case="a row whose curl of GitHub's REST API is answered 401 fails replay-command, naming the status and GitHub's message, read once more with the row's header file"
-if case_read "$answer_case" "$out"; then
-    reads="$(cat "$ANSWER_CASE/401/reads" 2>/dev/null)"
-    if grep -qF "$ANSWER_PREFIX" "$out/text"; then
-        case_failed "$answer_case" "the token's prefix stands in the run's log"
-    elif ! printf '%s' "$RUN_FAILED" | grep -qx replay-command ||
-        ! grep -qE "^FAIL replay-command: f-github-read ran its command and a read inside it failed: .*, and GitHub answered 401: Bad credentials, so its output is no reading of what the row claims$" "$out/text"; then
-        case_failed "$answer_case" "$(grep '^FAIL' "$out/text" | head -2 | tr '\n' ' ')$RUN_LINE"
-    elif [ "$(printf '%s\n' "$reads" | grep -c .)" != 1 ] ||
-        ! printf '%s\n' "$reads" | grep -qE -- '-H @[^ ]*/IOC_GITHUB_AUTH_LEGION\.header https://api\.github\.com/repos/cybermonklabs/legion/pulls/3522/reviews$'; then
-        case_failed "$answer_case" "the gate did not read the row's URL once with the row's header file; it read: $(printf '%s' "$reads" | head -3 | tr '\n' ' ')"
-    else
-        case_passed "$answer_case"
-    fi
+answer_case="a row whose curl of GitHub's REST API is answered 401 cannot run, exit 2, naming the status and GitHub's message, read once more with the row's header file, and prints no FAIL"
+reads="$(cat "$ANSWER_CASE/401/reads" 2>/dev/null)"
+if grep -q '^FAIL' "$out/text"; then
+    case_failed "$answer_case" "$(grep '^FAIL' "$out/text" | head -2 | tr '\n' ' ')"
+elif grep -qF "$ANSWER_PREFIX" "$out/text"; then
+    case_failed "$answer_case" "the token's prefix stands in the run's log"
+elif [ "$(printf '%s\n' "$reads" | grep -c .)" != 1 ] ||
+    ! printf '%s\n' "$reads" | grep -qE -- '-H @[^ ]*/IOC_GITHUB_AUTH_LEGION\.header https://api\.github\.com/repos/cybermonklabs/legion/pulls/3522/reviews$'; then
+    case_failed "$answer_case" "the gate did not read the row's URL once with the row's header file; it read: $(printf '%s' "$reads" | head -3 | tr '\n' ' ')"
+else
+    ending_result "$answer_case" 2 \
+        "^check\\.sh cannot run --replay now: GitHub refused the credential of f-github-read's read of its REST API, so the row's failure is no verdict on the deliverable: .*GitHub answered 401: Bad credentials\$" "$out"
 fi
 dir="$(fresh github-answer-403)"
 cat "$ANSWER_CASE/row" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
@@ -3464,7 +3466,7 @@ case_result "a page whose landing component names one outside Legion, Envoy and 
 # deliverable (test round 38). Case 119 holds a refusal for GitHub's rate limit as a mode
 # that cannot run, since that failure is GitHub's and not the deliverable's, and live_read
 # holds a curl transport error the same way for the gate's own reads. A row's curl that
-# cannot reach api.github.com, and the gate's own read of the same URL that github_answer
+# cannot reach api.github.com, and the gate's own read of the same URL that source_answer
 # makes after it, which gets no status either, is that same outage. At 3df528a3 it ended
 # exit 1 with 'FAIL replay-command: f-github-read ran its command and a read inside it
 # failed: ... exited 7, and GitHub answered nothing when the gate read ... again', a verdict
@@ -3503,7 +3505,7 @@ fi
 # runs curl with --fail-with-body, which exits 22 when GitHub answered with an HTTP error;
 # any other exit of the row's curl, as 6, 7, 28, 35, 52 or 56, means its read got no HTTP
 # answer. An outage that ends between the row's read and the gate's read again
-# (github_answer) left a FAIL naming an answer the row never got: with case 121 held, a row
+# (source_answer) left a FAIL naming an answer the row never got: with case 121 held, a row
 # whose curl exited 28 and whose read again got 200 ended exit 1, 'FAIL replay-command:
 # f-github-read ran its command and a read inside it failed: ... exited 28, and GitHub
 # answered 200'. The case plants case 119's row with a curl of the case's own first on PATH
@@ -3547,6 +3549,263 @@ if grep -q '^FAIL' "$out/text"; then
     case_failed "$late_case" "$(grep '^FAIL' "$out/text" | head -2 | cut -c1-300 | tr '\n' ' ')"
 else
     ending_result "$late_case" 2 '^check\.sh cannot run --replay.*GitHub.*f-github-read.*exited 28.*200' "$out"
+fi
+
+# 123. A row whose dispatch command got no answer from Dispatch, a server error or an answer
+# about the reader's credential is no verdict on the deliverable (the architect's rule of round
+# 39, that only an answer from the source judges the deliverable, and his order of
+# 2026-11-19T15:35Z, that an answer about the reader's credential judges it no more). Of the
+# rows of claims.jsonl, 76 run the dispatch command, and each pipes what it prints into sed,
+# grep or awk, so the row's output holds nothing of a refusal, which the dispatch command
+# prints on stdout before it exits 1. Measured in this pod on 2026-11-19, `dispatch read
+# --issue INFRA-3134` printed 'Dispatch at http://127.0.0.1:1 is unreachable: ECONNREFUSED: ...'
+# with DISPATCH_URL at an address that does not answer, 'HTTP_502: GET ... answered 502 Bad
+# Gateway with a body that is not Dispatch's error JSON ...' against a server answering 502
+# with an HTML page, and 'UNAUTHORIZED: invalid bearer token' with a bearer Dispatch does not
+# hold, and at 6e885f7e each ended FAIL replay-command. The case plants one row of the case's
+# own that runs n-1098-gaps-posted's command, a dispatch read piped into sed and grep, and puts
+# first on PATH a dispatch of the case's own that prints the one line its directory holds and
+# exits 1. With the unreachable line, the HTTP_502 line and the UNAUTHORIZED line, --replay must
+# end exit 2, cannot run, naming the row, Dispatch and the line, with no FAIL line. The honest
+# form is 'NOT_FOUND: not found', Dispatch's answer that it holds no such node: the run must
+# fail replay-command, naming the row and the line.
+DCLI_CASE="$WORK/dispatch-cli"
+mkdir -p "$DCLI_CASE"
+jq -c 'select(.id == "n-1098-gaps-posted") | {id: "f-dispatch-read", requirement: "r7", source: "the case", kind: "behaviour", claim: "The comment of INFRA-1098 names four gaps.", mark: "verified", evidence: {surface: "cli"}, command, expect, output: "", note: "planted by case 123"}' "$HERE/claims.jsonl" >"$DCLI_CASE/row"
+[ -s "$DCLI_CASE/row" ] && grep -qF '"command":"dispatch read ' "$DCLI_CASE/row" || {
+    printf 'FAIL n-1098-gaps-posted is no row of claims.jsonl that runs dispatch read, so case 123 has no command to plant\n'
+    exit 1
+}
+for form in unreachable gateway credential not-found; do
+    mkdir -p "$DCLI_CASE/$form/bin"
+    cat >"$DCLI_CASE/$form/bin/dispatch" <<'STUB'
+#!/bin/sh
+cat ANSWER/line
+exit 1
+STUB
+    sed -i "s|ANSWER|'$DCLI_CASE/$form'|" "$DCLI_CASE/$form/bin/dispatch"
+    chmod +x "$DCLI_CASE/$form/bin/dispatch"
+done
+printf '%s\n' 'Dispatch at http://127.0.0.1:1 is unreachable: ECONNREFUSED: Unable to connect. Is the computer able to access the url?. If the Dispatch URL changed, restart this agent process so it picks up the new configuration.' >"$DCLI_CASE/unreachable/line"
+printf '%s\n' 'HTTP_502: GET http://127.0.0.1:18765/api/v1/issues/INFRA-3134 answered 502 Bad Gateway with a body that is not Dispatch'"'"'s error JSON ("Bad Gateway"), which looks like a proxy or gateway page rather than Dispatch'"'"'s own answer, so a retry may succeed.' >"$DCLI_CASE/gateway/line"
+printf '%s\n' 'UNAUTHORIZED: invalid bearer token' >"$DCLI_CASE/credential/line"
+printf '%s\n' 'NOT_FOUND: not found' >"$DCLI_CASE/not-found/line"
+for form in unreachable gateway credential; do
+    case "$form" in
+    unreachable)
+        cli_case="a row whose dispatch command prints that Dispatch is unreachable cannot run, exit 2, naming the row, Dispatch and the line, and prints no FAIL"
+        want="Dispatch gave no answer that judges f-dispatch-read's read .*Dispatch at http://127\\.0\\.0\\.1:1 is unreachable: "
+        ;;
+    gateway)
+        cli_case="a row whose dispatch command prints HTTP_502, a gateway's server error, cannot run, exit 2, naming the row, Dispatch and the line, and prints no FAIL"
+        want="Dispatch gave no answer that judges f-dispatch-read's read .*HTTP_502: GET "
+        ;;
+    credential)
+        cli_case="a row whose dispatch command prints UNAUTHORIZED, Dispatch's answer about the reader's bearer, cannot run, exit 2, naming the row, Dispatch and the line, and prints no FAIL"
+        want="Dispatch refused the credential of f-dispatch-read's read .*UNAUTHORIZED: invalid bearer token"
+        ;;
+    esac
+    dir="$(fresh "dispatch-cli-$form")"
+    cat "$DCLI_CASE/row" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+    out="$(PATH="$DCLI_CASE/$form/bin:$PATH" fixture_run "$dir" --replay)"
+    if grep -q '^FAIL' "$out/text"; then
+        case_failed "$cli_case" "$(grep '^FAIL' "$out/text" | head -2 | cut -c1-300 | tr '\n' ' ')"
+    else
+        ending_result "$cli_case" 2 "^check\\.sh cannot run --replay now: $want" "$out"
+    fi
+done
+dir="$(fresh dispatch-cli-not-found)"
+cat "$DCLI_CASE/row" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+case_result "a row whose dispatch command prints NOT_FOUND, Dispatch's answer about the record, fails replay-command, naming the row and the line" \
+    "replay-command: f-dispatch-read ran its command and a read inside it failed: .*NOT_FOUND: not found" "$(PATH="$DCLI_CASE/not-found/bin:$PATH" fixture_run "$dir" --replay)"
+
+# 124. A row whose read of the Dispatch API got no answer, a server error or an answer about
+# the reader's credential is no verdict on the deliverable, as case 123 holds for the dispatch
+# command (the architect's rule of round 39 and his order of 2026-11-19T15:35Z). Of the 29 rows
+# of claims.jsonl that read DISPATCH_URL, 25 curl it and 4 read it through python3's urllib.
+# At 6e885f7e no curl of DISPATCH_URL ran with --fail-with-body, and measured in this pod on
+# 2026-11-19 a plain curl of a server answering 502 with an HTML page exits 0 and hands the
+# page to the row's pipeline as if Dispatch had answered. Each such curl now runs with
+# --fail-with-body, which exits 22 on an HTTP error, and the gate reads that curl's URL once
+# more itself with the Dispatch header file the curl sent (source_answer), as it reads a curl
+# of GitHub's REST API again (case 119). The case plants one row of the case's own that runs
+# ts-issue-events's command, a curl of the Dispatch API piped into jq, with DISPATCH_URL at an
+# address of the case's own, http://dispatch.case124.invalid, and puts first on PATH a curl of
+# the case's own that answers that address with the status, body and headers its directory
+# holds, as case 119's answers GitHub's, recording what the gate's read sent. A 502 with an
+# HTML page, and a 401 with the error JSON Dispatch answered a bearer it does not hold on
+# 2026-11-19, {"code":"UNAUTHORIZED","error":"invalid bearer token"}, must each end exit 2,
+# cannot run, naming the row, Dispatch and the status, with no FAIL line, after one read of
+# the gate's own of the row's URL with the row's header file. The honest form is a 404 with the
+# error JSON Dispatch answered GET /api/v1/issues/NO-1 on 2026-11-19,
+# {"code":"NOT_FOUND","error":"not found"}: the run must fail replay-command, naming 404 and the
+# message. A row whose python3 reads DISPATCH_URL is read by the last urllib error line of its
+# output: the case plants a row whose python3 prints the traceback of a URLError, which urllib
+# raises when it reaches no server, and exits 1, which must end exit 2, cannot run, naming the
+# row, Dispatch and the line, with no FAIL line; and one whose traceback ends
+# 'urllib.error.HTTPError: HTTP Error 404: Not Found', which must fail replay-command, naming
+# 404 and the message.
+DAPI_CASE="$WORK/dispatch-api"
+DAPI_URL=http://dispatch.case124.invalid
+mkdir -p "$DAPI_CASE"
+jq -c 'select(.id == "ts-issue-events") | {id: "f-dispatch-api-read", requirement: "r7", source: "the case", kind: "behaviour", claim: "The issue holds 45 events up to 2026-11-12T07:00:00Z.", mark: "verified", evidence: {surface: "cli"}, command, expect, output: "", note: "planted by case 124"}' "$HERE/claims.jsonl" >"$DAPI_CASE/row"
+[ -s "$DAPI_CASE/row" ] && grep -qF '"command":"curl -sS --fail-with-body -H @\"$IOC_DISPATCH_HEADER\" \"$DISPATCH_URL/api/v1/' "$DAPI_CASE/row" || {
+    printf 'FAIL ts-issue-events is no row of claims.jsonl that curls the Dispatch API with --fail-with-body, so case 124 has no command to plant\n'
+    exit 1
+}
+for answer in 502 401 404; do
+    mkdir -p "$DAPI_CASE/$answer/bin"
+    cat >"$DAPI_CASE/$answer/bin/curl" <<'STUB'
+#!/bin/sh
+case " $* " in
+*" DISPATCH_ADDRESS/"*) ;;
+*) exec REAL_CURL "$@" ;;
+esac
+body='' dump='' format='' previous=''
+for word in "$@"; do
+    case "$previous" in
+    -o) body=$word ;;
+    -D) dump=$word ;;
+    -w) format=$word ;;
+    esac
+    previous=$word
+done
+status=$(cat ANSWER/status)
+if [ -n "$body" ]; then
+    printf '%s\n' "$*" >>ANSWER/reads
+    cat ANSWER/body >"$body"
+    [ -z "$dump" ] || cat ANSWER/headers >"$dump"
+    [ -z "$format" ] || printf '%s' "$status"
+    exit 0
+fi
+cat ANSWER/body
+printf 'curl: (22) The requested URL returned error: %s\n' "$status" >&2
+exit 22
+STUB
+    sed -i -e "s|REAL_CURL|'$(command -v curl)'|" -e "s|DISPATCH_ADDRESS|$DAPI_URL|" -e "s|ANSWER|'$DAPI_CASE/$answer'|g" "$DAPI_CASE/$answer/bin/curl"
+    chmod +x "$DAPI_CASE/$answer/bin/curl"
+    printf '%s\n' "$answer" >"$DAPI_CASE/$answer/status"
+done
+printf '<html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>\r\n<center><h1>502 Bad Gateway</h1></center>\r\n</body>\r\n</html>\r\n' >"$DAPI_CASE/502/body"
+printf 'HTTP/1.1 502 Bad Gateway\r\ncontent-type: text/html\r\n\r\n' >"$DAPI_CASE/502/headers"
+printf '{"code":"UNAUTHORIZED","error":"invalid bearer token"}\n' >"$DAPI_CASE/401/body"
+printf 'HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\n\r\n' >"$DAPI_CASE/401/headers"
+printf '{"code":"NOT_FOUND","error":"not found"}\n' >"$DAPI_CASE/404/body"
+printf 'HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\n\r\n' >"$DAPI_CASE/404/headers"
+for answer in 502 401; do
+    case "$answer" in
+    502)
+        api_case="a row whose curl of the Dispatch API exits 22 and whose read again is answered 502 cannot run, exit 2, naming the row, Dispatch and the status, and prints no FAIL"
+        want="Dispatch gave no answer that judges f-dispatch-api-read's read of its API, .*exited 22.*Dispatch answered 502, a server error"
+        ;;
+    401)
+        api_case="a row whose curl of the Dispatch API exits 22 and whose read again is answered 401 UNAUTHORIZED cannot run, exit 2, naming the row, Dispatch and the status, and prints no FAIL"
+        want="Dispatch refused the credential of f-dispatch-api-read's read of its API, .*exited 22.*Dispatch answered 401 UNAUTHORIZED: invalid bearer token"
+        ;;
+    esac
+    dir="$(fresh "dispatch-api-$answer")"
+    cat "$DAPI_CASE/row" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+    out="$(DISPATCH_URL="$DAPI_URL" PATH="$DAPI_CASE/$answer/bin:$PATH" fixture_run "$dir" --replay)"
+    reads="$(cat "$DAPI_CASE/$answer/reads" 2>/dev/null)"
+    if grep -q '^FAIL' "$out/text"; then
+        case_failed "$api_case" "$(grep '^FAIL' "$out/text" | head -2 | cut -c1-300 | tr '\n' ' ')"
+    elif [ "$(printf '%s\n' "$reads" | grep -c .)" != 1 ] ||
+        ! printf '%s\n' "$reads" | grep -qE -- '-H @[^ ]*/dispatch\.header http://dispatch\.case124\.invalid/api/v1/issues/INFRA-3134/events\?after=0&limit=200$'; then
+        case_failed "$api_case" "the gate did not read the row's URL once with the row's header file; it read: $(printf '%s' "$reads" | head -3 | tr '\n' ' ')"
+    else
+        ending_result "$api_case" 2 "^check\\.sh cannot run --replay now: $want" "$out"
+    fi
+done
+dir="$(fresh dispatch-api-404)"
+cat "$DAPI_CASE/row" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+case_result "a row whose curl of the Dispatch API exits 22 and whose read again is answered 404 NOT_FOUND fails replay-command, naming the status and Dispatch's message" \
+    "replay-command: f-dispatch-api-read ran its command and a read inside it failed: .*, and Dispatch answered 404 NOT_FOUND: not found, so its output" \
+    "$(DISPATCH_URL="$DAPI_URL" PATH="$DAPI_CASE/404/bin:$PATH" fixture_run "$dir" --replay)"
+cat >"$DAPI_CASE/urlerror.command" <<'CMD'
+python3 -c 'import os,sys;os.environ.get("DISPATCH_URL");sys.exit("Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nurllib.error.URLError: <urlopen error [Errno 111] Connection refused>")'
+CMD
+cat >"$DAPI_CASE/httperror.command" <<'CMD'
+python3 -c 'import os,sys;os.environ.get("DISPATCH_URL");sys.exit("Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nurllib.error.HTTPError: HTTP Error 404: Not Found")'
+CMD
+cat >"$DAPI_CASE/timeout.command" <<'CMD'
+python3 -c 'import os,sys;os.environ.get("DISPATCH_URL");sys.exit("Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nTimeoutError: The read operation timed out")'
+CMD
+for form in urlerror httperror timeout; do
+    jq -cn --arg c "$(cat "$DAPI_CASE/$form.command")" '{id: "f-dispatch-python-read", requirement: "r7", source: "the case", kind: "behaviour", claim: "The script reads the feed of the window.", mark: "verified", evidence: {surface: "cli"}, command: $c, expect: {contains: "ran"}, output: "", note: "planted by case 124"}' >"$DAPI_CASE/$form.row"
+done
+dir="$(fresh dispatch-python-urlerror)"
+cat "$DAPI_CASE/urlerror.row" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+out="$(DISPATCH_URL="$DAPI_URL" fixture_run "$dir" --replay)"
+python_case="a row whose python3 reads DISPATCH_URL and ends on urllib's URLError cannot run, exit 2, naming the row, Dispatch and the line, and prints no FAIL"
+if grep -q '^FAIL' "$out/text"; then
+    case_failed "$python_case" "$(grep '^FAIL' "$out/text" | head -2 | cut -c1-300 | tr '\n' ' ')"
+else
+    ending_result "$python_case" 2 '^check\.sh cannot run --replay now: Dispatch gave no answer that judges f-dispatch-python-read.*urllib\.error\.URLError: <urlopen error \[Errno 111\] Connection refused>' "$out"
+fi
+dir="$(fresh dispatch-python-httperror)"
+cat "$DAPI_CASE/httperror.row" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+case_result "a row whose python3 reads DISPATCH_URL and ends on urllib's HTTPError 404 fails replay-command, naming the status and the message" \
+    "replay-command: f-dispatch-python-read ran its command and a read inside it failed: .*, and Dispatch answered 404: Not Found, so its output" \
+    "$(DISPATCH_URL="$DAPI_URL" fixture_run "$dir" --replay)"
+# A read that times out after the connection raises the socket's own TimeoutError, which urllib
+# does not wrap in a URLError: no answer either.
+dir="$(fresh dispatch-python-timeout)"
+cat "$DAPI_CASE/timeout.row" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+out="$(DISPATCH_URL="$DAPI_URL" fixture_run "$dir" --replay)"
+timeout_case="a row whose python3 reads DISPATCH_URL and ends on an unwrapped TimeoutError cannot run, exit 2, naming the row, Dispatch and the line, and prints no FAIL"
+if grep -q '^FAIL' "$out/text"; then
+    case_failed "$timeout_case" "$(grep '^FAIL' "$out/text" | head -2 | cut -c1-300 | tr '\n' ' ')"
+else
+    ending_result "$timeout_case" 2 '^check\.sh cannot run --replay now: Dispatch gave no answer that judges f-dispatch-python-read.*TimeoutError: The read operation timed out' "$out"
+fi
+
+# 125. A row whose curl of GitHub's REST API exits 22 and whose read again is answered with a
+# server error is no verdict on the deliverable (the architect's rule of round 39: a 5xx says
+# the server failed, for GitHub as for Dispatch, and judges nothing of the record). At 6e885f7e
+# such a row ended 'FAIL replay-command: ... exited 22, and GitHub answered 502'. The case
+# plants case 119's row with a curl of the case's own first on PATH that answers the row's read
+# and the gate's read again of api.github.com with 502 and an HTML page, as a gateway before
+# GitHub does, and expects --replay to end exit 2, cannot run, naming the row, GitHub, the
+# row's exit 22 and the 502, with no FAIL line.
+GATEWAY_CASE="$WORK/github-gateway"
+mkdir -p "$GATEWAY_CASE/bin"
+cat >"$GATEWAY_CASE/bin/curl" <<'STUB'
+#!/bin/sh
+case " $* " in
+*" https://api.github.com/"*) ;;
+*) exec REAL_CURL "$@" ;;
+esac
+body='' dump='' format='' previous=''
+for word in "$@"; do
+    case "$previous" in
+    -o) body=$word ;;
+    -D) dump=$word ;;
+    -w) format=$word ;;
+    esac
+    previous=$word
+done
+if [ -n "$body" ]; then
+    cat ANSWER/body >"$body"
+    [ -z "$dump" ] || cat ANSWER/headers >"$dump"
+    [ -z "$format" ] || printf '502'
+    exit 0
+fi
+cat ANSWER/body
+printf 'curl: (22) The requested URL returned error: 502\n' >&2
+exit 22
+STUB
+sed -i -e "s|REAL_CURL|'$(command -v curl)'|" -e "s|ANSWER|'$GATEWAY_CASE'|g" "$GATEWAY_CASE/bin/curl"
+chmod +x "$GATEWAY_CASE/bin/curl"
+printf '<html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>\r\n<center><h1>502 Bad Gateway</h1></center>\r\n</body>\r\n</html>\r\n' >"$GATEWAY_CASE/body"
+printf 'HTTP/2 502\r\ncontent-type: text/html\r\n\r\n' >"$GATEWAY_CASE/headers"
+dir="$(fresh github-gateway)"
+cat "$ANSWER_CASE/row" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+out="$(PATH="$GATEWAY_CASE/bin:$ANSWER_CASE/bin:$PATH" fixture_run "$dir" --replay)"
+gateway_case="a row whose curl of GitHub's REST API exits 22 and whose read again is answered 502 cannot run, exit 2, naming the row, GitHub and the status, and prints no FAIL"
+if grep -q '^FAIL' "$out/text"; then
+    case_failed "$gateway_case" "$(grep '^FAIL' "$out/text" | head -2 | cut -c1-300 | tr '\n' ' ')"
+else
+    ending_result "$gateway_case" 2 '^check\.sh cannot run --replay now: GitHub gave no answer that judges f-github-read.*exited 22.*GitHub answered 502, a server error' "$out"
 fi
 
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
