@@ -1488,39 +1488,57 @@ test("the line of the issue and of a child issue is its title as written, its ad
   }
 });
 
-// R22: the batched read names an issue by its title as stored, and a chip naming a child issue,
-// the name the page publishes for it and the link a row draws for it by that name read the
-// title by the rule the child's own line reads it by (`titleWords`), whole: a bare address in it
-// reads as its target's short form and its white space collapses, so a comment citing
-// `dispatch://CORE-2`, titled `Follow dispatch://CORE-3 up`, links `CORE-2` and
-// `Follow CORE-3 up`, the line CORE-2's own row reads, and never the address as written.
+// R22: the batched read names an issue by its title cut to its first 240 characters, and a chip
+// naming the issue or a child of it, the name the page publishes for it and the link a row draws
+// for it by that name read the whole title the issue read holds, by the rule the row's own line
+// reads it by (`titleWords`): a bare address in it reads as its target's short form and its
+// white space collapses, so a comment citing `dispatch://CORE-2`, titled
+// `Follow dispatch://CORE-3 up`, links `CORE-2` and `Follow CORE-3 up`, the line CORE-2's own row
+// reads, and never the address as written. A title longer than that cut is named whole too, so
+// an address the cut would end inside, and one past it, read short as they do on the row.
 test("a chip, a published name and a row's link name a child issue by the line its row reads", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const own = `dispatch://${KEY}`;
   const cited = "dispatch://CORE-2";
   const citing = { ...comment("c1", "2026-11-05T01:00:00Z"), body: `See ${cited} first.` };
-  for (const [title, words] of TITLES) {
+  const long = `${"a".repeat(225)} dispatch://CORE-3/spec#b-r1 then dispatch://CORE-4 up`;
+  const longWords = `${"a".repeat(225)} CORE-3 spec block then CORE-4 up`;
+  for (const [title, words] of [...TITLES, [long, longWords] as const]) {
+    // The read's name for an issue, as the server cuts it: the title's first 240 characters.
+    const head = [...title].slice(0, 240).join("");
     const reads = {
       comments: [citing],
       decisions: decisions([
-        { ...decision("d1", "Keep it.", []), links: [linkTo(cited, "issue")] },
+        {
+          ...decision("d1", "Keep it.", []),
+          links: [linkTo(own, "issue"), linkTo(cited, "issue")],
+        },
       ]),
-      issue: { ...issueDetails([spec, made]), children: [childIssue("CORE-2", title)] },
+      issue: { ...issueDetails([spec, made]), children: [childIssue("CORE-2", title)], title },
       targets: [
-        { gone: false, kind: "issue", name: title, ref: cited },
+        { gone: false, kind: "issue", name: head, ref: own },
+        { gone: false, kind: "issue", name: head, ref: cited },
       ] satisfies ReferenceTarget[],
     };
     const root = buildIssueTree(reads);
     const child = nodeOf(root, "CORE-2");
     const line = child === undefined ? "" : lineWords(child);
     expect(line, title).toBe(words);
+    expect(lineWords(root), title).toBe(`${KEY} ${line}`);
     const chips = nodeOf(root, blockNodeId("decisions-md", "d1"))?.chips;
     expect(
       chips?.map(({ name, ref }) => ({ name, ref })),
       title
-    ).toEqual([{ name: line, ref: cited }]);
+    ).toEqual([
+      { name: line, ref: own },
+      { name: line, ref: cited },
+    ]);
     const { names } = targetNaming(reads);
-    expect([...names], title).toEqual([[cited, line]]);
+    expect([...names], title).toEqual([
+      [own, line],
+      [cited, line],
+    ]);
     const links = rowReferences(nodeOf(root, citing.id)?.text ?? "", knownIssueKeys(names));
     expect(
       links.map((link) => rowReferenceWords(link, names)),

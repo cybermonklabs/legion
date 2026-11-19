@@ -1464,16 +1464,16 @@ function addressUnder(address: string, owner: string, next: string): boolean {
 }
 
 /** The slug of the project document `event` is on, where its payload carries it: a renamed or
- *  removed document's own, an edited comment's document's (`artifact_slug`, absent from a
- *  comment event written before the field), and an edited ask's document's, the one its anchor
- *  quotes (`anchor_artifact`), for an edit through the ask's own route the one that holds its
- *  typed block (`block_artifact`), or for an approval request's rewording the one it asks
- *  approval of (`approval_artifact`, which the server's read of the event log attaches to every
- *  ask event carrying `approval`), each the document the ask is on. Three events carry none, and
- *  name the document by its id alone, which no address is written with: a new version, the edit
- *  of a question asked of the document as a whole, with no anchor, no block and no approval, and
- *  a document version's rewording of a block ask, whose event the document's settlement writes
- *  without `block_artifact`. */
+ *  removed document's own, an edited comment's document's (`artifact_slug`), and an edited
+ *  ask's document's, the one its anchor quotes (`anchor_artifact`), for an edit through the
+ *  ask's own route the one that holds its typed block (`block_artifact`), or for an approval
+ *  request's rewording the one it asks approval of (`approval_artifact`, which the server's read
+ *  of the event log attaches to every ask event carrying `approval`), each the document the ask
+ *  is on. Four events carry none, and name the document by its id alone, which no address is
+ *  written with: a new version, a comment's edit written before `artifact_slug` existed, the
+ *  edit of a question asked of the document as a whole, with no anchor, no block and no
+ *  approval, and a document version's rewording of a block ask, whose event the document's
+ *  settlement writes without `block_artifact`. */
 function projectDocumentSlug(event: DispatchEvent): string | undefined {
   switch (event.type) {
     case "artifact.removed":

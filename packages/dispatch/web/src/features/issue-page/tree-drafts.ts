@@ -279,8 +279,13 @@ export function coverageStatements(
  * - **An issue** - the read answers that its target is one - by its title as the line of the
  *   issue's own row reads it (`titleWords`): as written, each run of white space one space, and
  *   each bare address written as its target's short form, so a chip and a link draw the title
- *   the row draws, `Follow CORE-3 up` and not `Follow dispatch://CORE-3 up`. It is never cut:
- *   an issue's name is its whole title.
+ *   the row draws, `Follow CORE-3 up` and not `Follow dispatch://CORE-3 up`. The issue and each
+ *   child the issue read lists are named by their whole titles, which that read holds, so their
+ *   chips draw the very title their rows draw. Any other issue is named by the read's name for
+ *   it, which is the first 240 characters of its title (the server's `refs.excerptRunes`), so an
+ *   address the cut ends inside is read as what the cut left of it: `dispatch://COR`, which
+ *   names no target, stays as written there. An issue the read has not answered for yet is
+ *   `""`, as a block is, which the chip draws as not yet named.
  * - **Anything else** by the read's `name` for it. An ask's, a comment's and a message's name is
  *   the question or the body as stored, which is markdown whose marks are no word of it (R21),
  *   so it is read to plain words (`plainWords`). A component's name is a title too, which is no
@@ -313,6 +318,16 @@ export function treeContext(
     }
   }
   const nodeIdOfReference = nodeIdOf(reads.issue);
+  // The whole title of the issue and of each child the issue read lists, by its own address:
+  // the names read cuts a title to its first 240 characters, and the issue read holds these
+  // whole, as the rows draw them.
+  const titles = new Map<string, string>([
+    [buildDispatchReference({ key, kind: "issue" }), reads.issue.title],
+    ...(reads.issue.children ?? []).map((child): [string, string] => [
+      buildDispatchReference({ key: child.key, kind: "issue" }),
+      child.title,
+    ]),
+  ]);
   const nameOf = (reference: string, target: ReferenceTarget | undefined): string => {
     const route = parseNodeReference(reference);
     const block = route !== undefined && "block" in route ? route.block : undefined;
@@ -333,7 +348,7 @@ export function treeContext(
     if (target?.kind === "ask" || target?.kind === "comment" || target?.kind === "message") {
       return plainWords(target.name, target);
     }
-    if (target?.kind === "issue") return titleWords(target.name);
+    if (target?.kind === "issue") return titleWords(titles.get(reference) ?? target.name);
     return blockWords(target?.name ?? "");
   };
   // One chip per reference, made the first time it is asked for: a tree asks once for every
@@ -470,7 +485,8 @@ export function titleReading(title: string): DisplayTree {
  *  (`lineWords`): its reading (`titleReading`) with each bare address written as its target's
  *  short form (`withShortAddresses`), each run of white space one space and the ends trimmed.
  *  Nothing cuts them: they are the name a chip naming an issue draws, and the name the page
- *  publishes for it (`treeContext`), which a link draws whole. */
+ *  publishes for it (`treeContext`), read from the whole title of the issue and of its children
+ *  and from the head of any other issue's that the names read gives. */
 export function titleWords(title: string): string {
   return wordsOf(withShortAddresses(titleReading(title)))
     .replace(/\s+/gu, " ")
