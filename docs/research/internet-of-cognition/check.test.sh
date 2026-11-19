@@ -3498,6 +3498,58 @@ else
     ending_result "$outage_case" 2 '^check\.sh cannot run --replay.*GitHub' "$out"
 fi
 
+# 122. A row whose own curl of GitHub's REST API got no HTTP answer is no verdict on the
+# deliverable, whatever the gate's read of it again gets (the architect's rule of round 39:
+# only an answer from GitHub judges the deliverable). Every row that reads GitHub's REST API
+# runs curl with --fail-with-body, which exits 22 when GitHub answered with an HTTP error;
+# any other exit of the row's curl, as 6, 7, 28, 35, 52 or 56, means its read got no HTTP
+# answer. An outage that ends between the row's read and the gate's read again
+# (github_answer) left a FAIL naming an answer the row never got: with case 121 held, a row
+# whose curl exited 28 and whose read again got 200 ended exit 1, 'FAIL replay-command:
+# f-github-read ran its command and a read inside it failed: ... exited 28, and GitHub
+# answered 200'. The case plants case 119's row with a curl of the case's own first on PATH
+# that answers the row's read with no body, curl's line of a timeout on stderr and exit 28,
+# and the gate's read with -o, as case 119's does, with a JSON body and 200, and expects
+# --replay to end exit 2, cannot run, naming the row's exit 28 and the 200, with no FAIL
+# line.
+LATE_CASE="$WORK/github-late-answer"
+mkdir -p "$LATE_CASE/bin"
+cat >"$LATE_CASE/bin/curl" <<'STUB'
+#!/bin/sh
+case " $* " in
+*" https://api.github.com/"*) ;;
+*) exec REAL_CURL "$@" ;;
+esac
+body='' dump='' format='' previous=''
+for word in "$@"; do
+    case "$previous" in
+    -o) body=$word ;;
+    -D) dump=$word ;;
+    -w) format=$word ;;
+    esac
+    previous=$word
+done
+if [ -n "$body" ]; then
+    printf '[{"id": 5854791039, "body": "planted by case 122"}]\n' >"$body"
+    [ -z "$dump" ] || printf 'HTTP/2 200\r\ncontent-type: application/json; charset=utf-8\r\n\r\n' >"$dump"
+    [ -z "$format" ] || printf '200'
+    exit 0
+fi
+printf 'curl: (28) Failed to connect to api.github.com port 443 after 127038 ms: Timeout was reached\n' >&2
+exit 28
+STUB
+sed -i "s|REAL_CURL|'$(command -v curl)'|" "$LATE_CASE/bin/curl"
+chmod +x "$LATE_CASE/bin/curl"
+dir="$(fresh github-late-answer)"
+cat "$ANSWER_CASE/row" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+out="$(PATH="$LATE_CASE/bin:$ANSWER_CASE/bin:$PATH" fixture_run "$dir" --replay)"
+late_case="a row whose own curl of GitHub's REST API got no HTTP answer cannot run, exit 2, naming its exit 28, though the gate's read again is answered 200, and prints no FAIL"
+if grep -q '^FAIL' "$out/text"; then
+    case_failed "$late_case" "$(grep '^FAIL' "$out/text" | head -2 | cut -c1-300 | tr '\n' ' ')"
+else
+    ending_result "$late_case" 2 '^check\.sh cannot run --replay.*GitHub.*f-github-read.*exited 28.*200' "$out"
+fi
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this

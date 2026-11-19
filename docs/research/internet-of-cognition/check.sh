@@ -140,9 +140,13 @@
 # by its floor or its committed rows. The live-read rule covers the gate's own reads. A row
 # that reads a live source fails on its own failed read, naming it, so an outage during the
 # rows ends exit 1, and a reader whose FAIL lines name a source that did not answer runs
-# the replay again. The one live read that is no input is the report of each published
-# page's live address, which reports an address that does not answer rather than stopping,
-# as the Verification document asks of it.
+# the replay again. A row's failed curl of GitHub's REST API is the one the gate reads
+# again itself (github_answer): when GitHub refuses that read for its rate limit, or the
+# row's read or the gate's gets no HTTP answer at all, the row prints no FAIL and the mode
+# cannot run, exit 2, or exit 1 after an earlier FAIL, by the precedence above ("The GitHub
+# tokens stand on no command line" below). The one live read that is no input is the
+# report of each published page's live address, which reports an address that does not
+# answer rather than stopping, as the Verification document asks of it.
 #
 # Prerequisites. Nothing in CI runs this script, and a gate nobody else can start passes by
 # default, so each mode declares what it needs in one table, prerequisite_table below: the
@@ -351,14 +355,22 @@
 # carries a live token. A row whose curl of GitHub's REST API fails is read once more by the
 # gate itself, at the URL and with the header file that curl's record names (github_answer),
 # since the row's own pipeline reads GitHub's answer, and its failure line names the status
-# and the first line of GitHub's message; a refusal for GitHub's rate limit ends the mode,
-# cannot run, of the kind source. No line the gate prints and no output a row records holds
-# a token: a failure names a header file by its path at most. The files go with the
-# scratch, which the EXIT trap removes however the run ends, and check.test.sh's case 117
-# holds both: a replay of the rows that send them, with a token of the case's own, prints
-# the token nowhere and leaves no header file behind. Case 118 holds that a row meets the
-# files written again, and case 119 that a failed read of GitHub's REST API names GitHub's
-# answer, and a refusal for its rate limit cannot run.
+# and the first line of GitHub's message. A refusal for GitHub's rate limit is no verdict on
+# the deliverable and ends the mode, cannot run, of the kind source. So does an outage, a
+# read that got no HTTP answer, since only GitHub's answer judges the row: a row's curl
+# that exited with any status but 22, the one --fail-with-body gives for GitHub's HTTP
+# error, such as a transport error (6, 7, 28, 35, 52 or 56), whatever the gate's read
+# again gets, and a read of the gate's own that gets no HTTP status at all. Its line names
+# the row, the URL, the status the row's curl exited with and what the gate's read got,
+# and no FAIL is printed. No line the gate prints and no output a row records holds a
+# token: a failure names a header file by its path at most. The files go with the scratch,
+# which the EXIT trap removes however the run ends, and check.test.sh's case 117 holds
+# both: a replay of the rows that send them, with a token of the case's own, prints the
+# token nowhere and leaves no header file behind. Case 118 holds that a row meets the files
+# written again, case 119 that a failed read of GitHub's REST API names GitHub's answer,
+# and a refusal for its rate limit cannot run, case 121 that a read that reaches no GitHub
+# cannot run, and case 122 that a row's read that got no HTTP answer cannot run though the
+# gate's read again is answered.
 #
 # The evidence it reads:
 #
@@ -585,7 +597,7 @@ count-class|replay|the count classes are the three the specification names, in c
 count-denominator|replay|every class of the count carries its denominator, and the count coordination/count.py prints again reads a whole number of records above zero|a class with no denominator
 count-zero-premise|replay|a class of zero over a denominator above zero is stated on the front page as a premise that failed|a class of zero with no failed premise
 page-count|shape|the judgement carries at least three and at most seven candidate pages|an eighth candidate page
-page-parts|shape|every candidate page carries all eleven of its parts|a page short of its reversal cost
+page-parts|shape|every candidate page carries all eleven of its parts, and its landing component is Legion, Envoy or Dispatch|a page short of its reversal cost
 page-verdict|shape|every candidate page carries exactly one verdict word of vendor, depend, port and reject|a page with two verdict words
 verdict-commitment|shape|a depend names its upstream owner, a port names the change in our code, a reject names its reason|a reject with no reason
 fixed-page|shape|the three pages the specification fixes exist and each answers by name the design already written for it|a fixed page that answers no named design
@@ -2205,20 +2217,27 @@ github_headers_fresh() {
 # as "GitHub answered 401: Bad credentials". IOC_GITHUB_RATE_LIMIT is 1 when that answer is
 # GitHub's rate limit, a 403 or a 429 whose message names a rate limit or a secondary rate
 # limit, or whose x-ratelimit-remaining header is 0, and the answer then names the limit
-# its headers give. Both are empty when no curl of GitHub's REST API failed. A row records
-# what it records: a row's curl hands GitHub's body to the row's pipeline, jq in each row
-# that sends IOC_GITHUB_AUTH_LEGION, and writes into the row's output only its own line,
-# "curl: (22) The requested URL returned error: 401", so only a read of the gate's own gives
-# GitHub's message. The URL and the header file are the ones the failed curl's record names
-# (run_recorded), the read is one request, made only on a failure, and its body, its
+# its headers give. IOC_GITHUB_UNANSWERED is 1 when the row's curl exited with any status
+# but 22, the one --fail-with-body gives for GitHub's HTTP error, whatever that read got,
+# or when that read got no HTTP status at all, curl's -w '%{http_code}' printing 000 or
+# nothing after a transport error such as 6, 7, 28, 35, 52 or 56: GitHub gave no answer
+# that judges the row, and the answer then names the URL, the status the row's curl exited
+# with and what the gate's read got, its status, or its exit and the first line its curl
+# printed on stderr. All three are empty when no curl of GitHub's REST API failed. A row
+# records what it records: a row's curl hands GitHub's body to the row's pipeline, jq in
+# each row that sends IOC_GITHUB_AUTH_LEGION, and writes into the row's output only its own
+# line, "curl: (22) The requested URL returned error: 401", so only a read of the gate's own
+# gives GitHub's message. The URL and the header file are the ones the failed curl's record
+# names (run_recorded), the read is one request, made only on a failure, and its body, its
 # headers and curl's stderr go into the run's scratch. Nothing of it is printed but the
-# status, the message's first line and the rate limit's own headers, so no token is, and a
-# header file stands in a failure line by its path at most, in IOC_FAILED_READ.
+# status, the message's first line, the rate limit's own headers and, when no status came,
+# curl's own error line, so no token is, and a header file stands in a failure line by its
+# path at most, in IOC_FAILED_READ.
 github_answer() {
-    local out="$1" failed_status failed_declared failed_command url="" header="" code message
+    local out="$1" failed_status failed_declared failed_command url="" header="" code reread got row_got="" message
     local remaining limit reset resource body="$RUN_SCRATCH/github-answer.body" dump="$RUN_SCRATCH/github-answer.headers"
     local curl_read='^curl (.* )?(https://api\.github\.com/[^ ]*)' header_sent='(^| )-H @([^ ]+)'
-    IOC_GITHUB_ANSWER="" IOC_GITHUB_RATE_LIMIT=""
+    IOC_GITHUB_ANSWER="" IOC_GITHUB_RATE_LIMIT="" IOC_GITHUB_UNANSWERED=""
     [ -s "$out.failed" ] || return 0
     while IFS=$'\t' read -r failed_status failed_declared failed_command; do
         declared_status_holds "$failed_status" "$failed_declared" && continue
@@ -2230,8 +2249,22 @@ github_answer() {
     [ -n "$url" ] || return 0
     rm -f -- "$body" "$dump"
     code="$(curl -sS -o "$body" -D "$dump" -w '%{http_code}' ${header:+-H "@$header"} "$url" 2>"$body.err")"
-    if ! [[ "$code" =~ ^[1-5][0-9][0-9]$ ]]; then
-        IOC_GITHUB_ANSWER="GitHub answered nothing when the gate read $url again: $(head -c 160 "$body.err" | tr '\n' ' ')"
+    reread=$?
+    if [[ "$code" =~ ^[1-5][0-9][0-9]$ ]]; then
+        got="got $code"
+    else
+        got="exited $reread with no HTTP status: $(head -1 "$body.err" | head -c 160)"
+        IOC_GITHUB_UNANSWERED=1
+    fi
+    # The row's curl runs with --fail-with-body, which exits 22 when GitHub answered with an
+    # HTTP error, so any other status is a read of the row's that got no HTTP answer, and
+    # what the gate's read got after it judges nothing the row read.
+    [ "$failed_status" = 22 ] || {
+        IOC_GITHUB_UNANSWERED=1
+        row_got=" with no HTTP answer"
+    }
+    if [ -n "$IOC_GITHUB_UNANSWERED" ]; then
+        IOC_GITHUB_ANSWER="the row's curl of $url exited $failed_status$row_got, and the gate's read of it again $got"
         return 0
     fi
     message="$(jq -r 'if type == "object" and (.message | type) == "string" then .message | split("\n")[0] | .[0:240] else empty end' "$body" 2>/dev/null)"
@@ -4185,12 +4218,16 @@ mode_replay() {
         # row claims, whatever that output still meets: a traceback has enough lines for a
         # bound. A row whose predicate is an exit status claims the failure itself. A failed
         # curl of GitHub's REST API is read once more by the gate, and its line names what
-        # GitHub answered (github_answer); a refusal for GitHub's rate limit is no verdict on
-        # the deliverable, and the mode cannot run, of the kind source.
+        # GitHub answered (github_answer). A refusal for GitHub's rate limit, and a read, the
+        # row's or the gate's, that got no HTTP answer at all, an outage between it and
+        # GitHub, are no verdict on the deliverable: the mode cannot run, of the kind source,
+        # since only GitHub's answer judges the row.
         if failed_read "$work/$id.out"; then
             github_answer "$work/$id.out"
             [ -z "$IOC_GITHUB_RATE_LIMIT" ] ||
                 cannot_run source " --replay now: GitHub's rate limit refused $id's read of its REST API, so the row's failure is no verdict on the deliverable: $IOC_GITHUB_ANSWER"
+            [ -z "$IOC_GITHUB_UNANSWERED" ] ||
+                cannot_run source " --replay now: GitHub gave no answer that judges $id's read of its REST API, so the row's failure is no verdict on the deliverable: $IOC_GITHUB_ANSWER"
             command_failures="$command_failures $id"
             fail replay-command "$id ran its command and a read inside it failed: $IOC_FAILED_READ${IOC_GITHUB_ANSWER:+, and $IOC_GITHUB_ANSWER}, so its output is no reading of what the row claims"
             continue
@@ -4572,7 +4609,7 @@ mode_shape() {
     [ "$missing" -eq 0 ] && pass front-page "the front page carries the ranking, the one thing to do first, the paragraph on where the two accounts differ, and what was not read"
 
     local parts=("**Question:**" "**Proposal:**" "**Verdict:**" "**Landing component:**" "**Cost:**" "**Deletes or replaces:**" "**Cost of reversing it:**" "**Default if nobody answers:**" "**Owner:**" "**Node model:**" "**Test:**")
-    local bad_parts=0 bad_verdict=0 bad_commitment=0 page title verdict read_pages=0
+    local bad_parts=0 bad_verdict=0 bad_commitment=0 page title verdict landing read_pages=0
     while IFS= read -r -d $'\f' page; do
         read_pages=$((read_pages + 1))
         title="$(printf '%s\n' "$page" | head -1 | sed 's/^### //')"
@@ -4582,6 +4619,19 @@ mode_shape() {
                 fail page-parts "the page '$title' is short of $part"
             }
         done
+        # R9 names the landing component as Legion, Envoy or Dispatch, so the line's value,
+        # after its label and with the whitespace around it and a trailing full stop trimmed,
+        # is exactly one of the three; a page with no such line is short of it above.
+        landing="$(printf '%s\n' "$page" | grep -m1 -F '**Landing component:**')" && {
+            landing="$(printf '%s\n' "$landing" | sed 's/.*\*\*Landing component:\*\*//; s/^[[:space:]]*//; s/[[:space:]]*$//; s/\.$//')"
+            case "$landing" in
+            Legion | Envoy | Dispatch) ;;
+            *)
+                bad_parts=$((bad_parts + 1))
+                fail page-parts "the page '$title' names the landing component '$landing', which is none of Legion, Envoy and Dispatch"
+                ;;
+            esac
+        }
         verdict="$(printf '%s\n' "$page" | grep -m1 -F '**Verdict:**' | sed 's/.*\*\*Verdict:\*\*[[:space:]]*//' | tr -d '`' | awk '{print $1}')"
         case "$verdict" in
         vendor | depend | port | reject) ;;
@@ -4630,7 +4680,7 @@ mode_shape() {
         fail page-verdict "the judgement carries $read_pages candidate pages, fewer than the floor of $PAGE_FLOOR, so its verdicts are not judged"
         fail verdict-commitment "the judgement carries $read_pages candidate pages, fewer than the floor of $PAGE_FLOOR, so what its verdicts commit us to is not judged"
     fi
-    [ "$bad_parts" -eq 0 ] && pass page-parts "each of the $read_pages candidate pages carries all eleven of its parts"
+    [ "$bad_parts" -eq 0 ] && pass page-parts "each of the $read_pages candidate pages carries all eleven of its parts, and its landing component is Legion, Envoy or Dispatch"
     [ "$bad_verdict" -eq 0 ] && pass page-verdict "each of the $read_pages candidate pages carries exactly one verdict word"
     [ "$bad_commitment" -eq 0 ] && pass verdict-commitment "the verdict of each of the $read_pages candidate pages names what it commits us to"
 
