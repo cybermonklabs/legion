@@ -6,7 +6,7 @@ Read this when the skill's wake table sends you here. Wakes come on `notificatio
 
 Run the every-turn steps and the parked-root walk. Name in the day's report, and take nothing for: each `openCapabilities` row (the operator decides a deployment row, whose `configLine` names its `legion.yaml` line; the operator or the issue's architect fixes a live row's session), each `blocked` and `held` row, and each `silent` entry with its role and how long it has been quiet (with `backgroundSince`, how long its background work has stood).
 
-A `silent` entry is a phase worker nothing will prompt: the daemon sends its task again and tells its architect. When that architect is itself not answering, read the tree's root claim (`issues.<ROOT>.architect`, `<ROOT>` the entry's `tree`). When it reads `failed`, act as [`worker-died`](#worker-died-architect) says. When the owning architect's claim is unreachable, its session's last registration with Envoy more than 20 minutes old, relaunch it on its same session ([Claims Envoy cannot reach](#claims-envoy-cannot-reach)); where that relaunch is refused, ask a person rather than use `fresh_session`, which throws that session away.
+A `silent` entry is a phase worker nothing will prompt: the daemon sends its task again and tells its architect. When that architect is itself not answering, read the tree's root claim (`issues.<ROOT>.architect`, `<ROOT>` the entry's `tree`). When it reads `failed`, act as [`worker-died`](#worker-died-architect) says. When the owning architect's claim does not read `failed` and the Envoy registry shows its session `gone`, `fresh_session` that architect.
 
 ## `awaiting-person`
 
@@ -39,14 +39,6 @@ The daemon ended a stalled turn of the tree's architect; the notice says what be
 ## `provider-errors`
 
 Six turns of `role` in a row ended in a provider error; the daemon keeps prompting. Name the run and its model in the day's report, and `envoy_publish` the key, role and reason to the architect that owns the issue (for a child's own architect, the one above it). When one claim stays stuck, `compact` it; `fresh_session` it only when a later notice says it is still refused. A dead role (`CLAIM_NOT_RUNNING`) takes `fresh_session`.
-
-## Claims Envoy cannot reach
-
-A claim is unreachable when its session last registered with Envoy more than 20 minutes ago: `read_state` gives it an `unreachable` field, and it keeps its state. On an `unreachable-claims` notice, `relaunch` each claim it names, by its `claim` token. A relaunch starts the claim again on its same session, keeping its context, workspace and owed task; it is not `fresh_session`.
-
-The `relaunch-guard-held` (the guard refused the claim for 60 minutes), `relaunch-not-back`, `unreachable-exit` and `worker-locked-out` notices, and the five refusals `skill://legion-controller/references/session.md` names, are a case for a person, not yours to retry: ask a person as `skill://legion-controller/references/unreachable-claims.md` says.
-
-Such a case stops nothing else: relaunch every other unreachable claim, the other claims of that same pod included, and relaunch again a claim the guard refused once a `relaunch-ready` notice names it.
 
 ## GitHub mentions
 

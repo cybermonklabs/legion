@@ -10,8 +10,6 @@ The operator ran `legion controller start --config controller.yaml` on their own
 
 The daemon runs you in a pod. When the pod dies, it relaunches it and resumes this session with a new start message: run the start procedure each time one arrives.
 
-When this session's last registration with Envoy is more than 20 minutes old, the controller's claim is unreachable, and the daemon relaunches it on this same session, at most once in 6 hours, keeping your context and what you owe. Where its guard refuses, the process outlives the stop, or a second relaunch would fall inside the 6 hours, `read_state` shows `controllerLocator.unreachable` and the daemon tells a person, since no agent is left to act for you.
-
 ## The `legion` tool
 
 - `read_state`: the daemon's whole state: `issues.<KEY>` (`phase`, `holdReason`, `heldFrom`, `architect`, `workers`, `tree`, `waitingOn`), `admission` (`cap`, `active`, `waiting`, `trees`, `blocked`, `held`), `capabilities`, `daemon.project`, and `settings`, the resolved `legion.yaml`.
@@ -19,7 +17,6 @@ When this session's last registration with Envoy is more than 20 minutes old, th
 - `compact` (`issue`, `role`): the daemon shortens that claim's session to a summary and sends it its task again; the claim keeps its session and workspace. It refuses a claim with no process (`CLAIM_NOT_RUNNING`).
 - `fresh_session` (`issue`, `role`): starts the claim again with its task in a new session; the old session, and all it knew, is left behind. It is the one door that brings back a dead role.
 - Both refuse `CLAIM_IN_A_TURN` (a process in a turn, or a compaction) and `CLAIM_UNSETTLED` (the runtime did not answer, or the claim moved): ask again later. For a root with no architect claim both answer `NO_CLAIM`.
-- `relaunch` (`claim`): starts an unreachable claim's process again on its same session. Five of its refusals are a case for a person: `LAUNCHER_NOT_CONNECTED`, `RELAUNCH_REPLACES_POD`, `PROCESS_OUTLIVED_STOP`, `POD_UNREACHABLE` and `RELAUNCHED_RECENTLY`. Every refusal, and what to do: `skill://legion-controller/references/unreachable-claims.md`.
 
 ## `gh`
 
@@ -39,7 +36,13 @@ It answers `OPEN`, `MERGED` or `CLOSED`. When it fails, report `<KEY>: pull requ
 
 ## Reading Dispatch's API
 
-Each read of Dispatch's API in these references is `dispatch api --path '<route>'`, sent with this session's own credential. Quote a path that carries a query, because the shell reads `?` and `&`. When it exits non-zero, act on nothing the read would decide and name its first line in your summary.
+Each read of Dispatch's API in these references is a `curl` of a route under `DISPATCH_URL`, with the token of `DISPATCH_TOKEN_FILE` on standard input, so that no process's arguments hold it. Run it in bash:
+
+```text
+printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")" | curl -sS --fail-with-body -H @- "$DISPATCH_URL<route>"
+```
+
+`legion controller start` sets `DISPATCH_URL` only when `controller.yaml` names `dispatch_url`, and `DISPATCH_TOKEN_FILE` beside it only with `dispatch_token_file`: under `dispatch_token_broker` it sets no token file. The daemon sets both for a controller it launches. Quote a route that carries a query, because the shell reads `?` and `&`. When the read fails, or the variables are unset, act on nothing the read would decide and name its first line in your summary.
 
 ## Taking the controller over by hand
 

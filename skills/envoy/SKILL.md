@@ -49,8 +49,7 @@ Read a session's `state` and `last_seen` from `envoy_sessions`, `envoy_role_get`
 - `live`: it registered within the live window (`ENVOY_SESSION_LIVE_WINDOW`, 5m by default).
 - `unresponsive`: it last registered before the live window but within the gone horizon (`ENVOY_SESSION_GONE_HORIZON`, 1h by default).
   It is not dead: never report it as gone, and a message you send it reaches it when it answers again.
-  Start no replacement for it and take no claim from it while its `last_seen` is 20 minutes old or less.
-  Past 20 minutes, a Legion claim it holds is unreachable, and its project's controller relaunches that claim on the same session (`skill://envoy/references/legion.md`).
+  Start no replacement for it and take no role claim from it.
 - `gone`: it last registered before the gone horizon, or the registry holds no record of it.
 - Take an issue claim from a session only when it is `gone` or its `last_seen` is more than 20 minutes old.
   Only the role-claim reaper releases a role claim, once its holder is `gone`: no lookup, publish or delivery failure releases one.
