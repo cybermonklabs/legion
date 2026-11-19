@@ -7,6 +7,8 @@ body: |-
     `project.access_changed` now names only its project and its change, `{project, change}`, and `envoy-dispatch scrub-access-events` rewrites the payloads stored with the whole access. A session counts as one of a project's agents only where the credential behind its write proved that session, as a broker-issued token's write does: migration `20261116081157_session_projects_proven` empties `session_projects` and `session_projects_filled`, so run `envoy-dispatch backfill-session-projects` after the deploy (`--reset` empties both first, for a deployment that rolls). An owner holds at most 100 groups (400 CAP_EXCEEDED), and `GET /api/v1/access-groups` answers a page `{groups, next}` of at most `?limit=` groups after `?after=`. With no private project, no restricted member and no credential that lists projects, every caller reads and writes what it did before.
 
     The heads a caller reads are the newest it can see: `GET /auth/whoami`'s `event_head` and an events subscription's `events_start` since are the newest event the caller can see, and a delivery view's `seq` and `changed_at` the newest change of a repository it sees, so no write of a project it cannot see moves them. Where no project is private, a full member reads the heads it read before.
+
+    `/healthz`, which answers a caller with no credential, names no private project, and while any project is private no repository either: each failed GitHub read's `cause` in its `github` member is then a fixed text, and the error itself stays in `github_read_attempts`. With no private project the cause is answered as recorded.
 time: 2026-11-16T17:17:47.264285777Z
 custom:
     Issue: pr4177
