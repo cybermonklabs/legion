@@ -68,12 +68,12 @@ func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) 
 		// issue in reviewing, or to conflicting, which needs a merge forward once the issue's
 		// review is over (dispatch://INFRA-4374 R0) and leaves a record in testing or reviewing
 		// reading a state GitHub no longer answers (R4). So every pull request this push moved is
-		// read for where the gate says so (classify.MergeStateReadOwed): an issue in testing
-		// through merging, or a round that waits on the merge state. The read is asked for here
-		// rather than from Apply's askMergeState because the line above has just overwritten what
-		// tells a redelivery from a first delivery: a second walk after the handler would find
-		// every pull request on the base recorded at this push's commit and ask for all of their
-		// reads again, however many times the push was delivered.
+		// read for where the push owes a read (askMergeStateFor): an issue in testing through
+		// merging, by the gate (classify.MergeStateReadOwed), or a round that waits on the merge
+		// state. The read is asked for here rather than from Apply's askMergeState because the line
+		// above has just overwritten what tells a redelivery from a first delivery: a second walk
+		// after the handler would find every pull request on the base recorded at this push's
+		// commit and ask for all of their reads again, however many times the push was delivered.
 		if err := e.askMergeStateFor(ctx, tx, own, classify.MergeStateFactBasePush); err != nil {
 			return intake.Result{}, err
 		}

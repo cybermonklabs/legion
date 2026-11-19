@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -61,8 +60,8 @@ func mergeForwardRunnerIn(t *testing.T, publisher notify.Publisher, state record
 // delivered.
 func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 	ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: "sha-1", Base: "main",
-		Phase: phase.Testing, PullRequest: 86, Why: classify.ConflictCheckNotGreen}
-	asked := &record.MergeForward{Head: "sha-1", Base: "main", Phase: phase.Testing, Why: classify.ConflictCheckNotGreen, AskedAt: time.Now()}
+		Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen}
+	asked := &record.MergeForward{Head: "sha-1", Base: "main", Phase: phase.Testing, Why: record.ConflictCheckNotGreen, AskedAt: time.Now()}
 	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleImplementer))
 
 	t.Run("a released implementer is woken, waited for, and told once its session holds the role", func(t *testing.T) {
@@ -105,10 +104,10 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 		}
 	})
 
-	landed := &record.MergeForward{Head: "sha-1", Base: "main", Phase: phase.Testing, Why: classify.ConflictCheckNotGreen,
+	landed := &record.MergeForward{Head: "sha-1", Base: "main", Phase: phase.Testing, Why: record.ConflictCheckNotGreen,
 		AskedAt: time.Now(), Landed: "sha-2"}
 	hold := record.MergeForwardMessage{Role: claim.RoleTester, Step: record.MergeForwardHold, Head: "sha-1", Base: "main",
-		Phase: phase.Testing, PullRequest: 86, Why: classify.ConflictCheckNotGreen}
+		Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen}
 	for _, tc := range []struct {
 		name    string
 		state   record.PullRequestState
@@ -117,7 +116,7 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 		why     string
 	}{
 		{name: "an ask of another head ends undelivered", asked: &record.MergeForward{Head: "sha-2", Base: "main", Phase: phase.Testing,
-			Why: classify.ConflictCheckNotGreen, AskedAt: time.Now()}, message: ask, why: "of head sha-2"},
+			Why: record.ConflictCheckNotGreen, AskedAt: time.Now()}, message: ask, why: "of head sha-2"},
 		{name: "an ask the workflow dropped ends undelivered", message: ask, why: "no merge forward"},
 		// Role-message rows run in no order of the issue's: a hold that reached the tester after
 		// its landed would tell it to wait for a head that already came.

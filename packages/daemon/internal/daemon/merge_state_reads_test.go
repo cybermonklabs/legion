@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -162,8 +161,8 @@ func TestTheMergeStateFollowsGitHubAfterTheLadderEndsOnUnknown(t *testing.T) {
 		if pr.ConflictingHead != "code" || pr.ConflictRead != nil {
 			t.Fatalf("the record holds %q conflicting with first read %+v, want the conflict of code confirmed", pr.ConflictingHead, pr.ConflictRead)
 		}
-		if asked := pr.MergeForward; asked == nil || asked.Head != "code" || asked.Why != classify.ConflictCheckNotGreen {
-			t.Fatalf("the record holds merge forward %+v, want one asked of code for %s: lint is required and green nowhere", asked, classify.ConflictCheckNotGreen)
+		if asked := pr.MergeForward; asked == nil || asked.Head != "code" || asked.Why != record.ConflictCheckNotGreen {
+			t.Fatalf("the record holds merge forward %+v, want one asked of code for %s: lint is required and green nowhere", asked, record.ConflictCheckNotGreen)
 		}
 		if asked := loggedLines(t, rig.logs.String(), "workflow: merge forward asked"); len(asked) != 1 {
 			t.Fatalf("the workflow logged %v, want one merge forward asked", asked)
@@ -318,8 +317,8 @@ func TestTheMergeStateFollowsGitHubAfterASecondReadEndsOnUnknown(t *testing.T) {
 			if pr.ConflictingHead != "code" || pr.ConflictRead != nil {
 				t.Fatalf("the record holds %q conflicting with first read %+v, want the conflict of code confirmed", pr.ConflictingHead, pr.ConflictRead)
 			}
-			if asked := pr.MergeForward; asked == nil || asked.Head != "code" || asked.Why != classify.ConflictCheckNotGreen || asked.Phase != phase.Testing {
-				t.Fatalf("the record holds merge forward %+v, want one asked of code in testing for %s: lint is required and green nowhere", asked, classify.ConflictCheckNotGreen)
+			if asked := pr.MergeForward; asked == nil || asked.Head != "code" || asked.Why != record.ConflictCheckNotGreen || asked.Phase != phase.Testing {
+				t.Fatalf("the record holds merge forward %+v, want one asked of code in testing for %s: lint is required and green nowhere", asked, record.ConflictCheckNotGreen)
 			}
 			testwait.Eventually(t, "the follow to end on GitHub's answer", func() bool {
 				running, waiting := ladders(rig.w)

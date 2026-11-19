@@ -964,7 +964,7 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 // (dispatch://INFRA-4374 R0): nothing GitHub answers about that head changes until the
 // implementer merges the base forward, and the merge is what the issue needs next once its review
 // is over, so the move into accepting asks for it (transition, mergeForwardOnEntry,
-// classify.ConflictMergeNext). While the first conflicting read of the head waits for its second
+// record.ConflictMergeNext). While the first conflicting read of the head waits for its second
 // (record.PullRequest.ConflictRead), the approval waits where it stands and is never reported
 // stuck: GitHub's `dirty` is not yet a conflict the daemon holds, and the second read decides it.
 // An approval that stands on the head of a pull request closed without merging keeps the round
@@ -1193,11 +1193,11 @@ func told(row record.PhaseRow, r round) bool {
 }
 
 // askMergeState asks the daemon to read GitHub's merge state for the pull request fact is of,
-// when the gate of that read holds for the fact and the issue (classify.MergeStateReadOwed,
-// Config.ReadMergeState): the round the fact has just been applied to leaves waiting on GitHub's
-// answer for the head (round.waitsOnMergeState), or the fact moves the head of an issue in
-// implementing through merging, which a conflict with the base needs read (dispatch://INFRA-4374
-// R0). It is the engine's own account of what the round is owed rather than a second reading of
+// when the fact owes that read (askMergeStateFor, Config.ReadMergeState): the round the fact has
+// just been applied to leaves waiting on GitHub's answer for the head (round.waitsOnMergeState),
+// or the fact moves the head of an issue in implementing through merging, which a conflict with
+// the base needs read (the gate's reason, classify.MergeStateReadOwed, dispatch://INFRA-4374 R0).
+// It is the engine's own account of what the round is owed rather than a second reading of
 // the record beside it, and it runs on the commit, so the fact's transaction waits for no GitHub
 // call.
 //
@@ -1254,15 +1254,17 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 	return e.askMergeStateFor(ctx, tx, pr, kind)
 }
 
-// askMergeStateFor queues the read for one pull request when a fact of kind fact asks for it,
-// which is the gate's to say (classify.MergeStateReadOwed) over the issue and the round's own
-// answer (reviewRound's waitsOnMergeState). The guard on a daemon with no reader is here as well
-// as in askMergeState, because a base push reaches this from its handler's walk rather than
-// through that switch (basePush), and that walk is the one caller that names
-// classify.MergeStateFactBasePush. A pull request that is not open is read for nothing: it merges
-// nothing until a reopen, which asks again, and its round waits on no answer
-// (classify.RoundWaitsOnMergeState holds only for an open one), so the test of its state here
-// saves the store reads below.
+// askMergeStateFor queues the read for one pull request when a fact of kind fact asks for it, by
+// one of the gate's two reasons (classify.MergeStateReadOwed: a head move of an issue in
+// implementing through merging, a base push of an issue in testing through merging) or by the
+// third, which the gate does not hold: the issue's review round waiting on GitHub's answer for the
+// head (reviewRound's waitsOnMergeState), worked out here only for a fact the gate owes no read
+// for. The guard on a daemon with no reader is here as well as in askMergeState, because a base
+// push reaches this from its handler's walk rather than through that switch (basePush), and that
+// walk is the one caller that names classify.MergeStateFactBasePush. A pull request that is not
+// open is read for nothing: it merges nothing until a reopen, which asks again, and its round
+// waits on no answer (classify.RoundWaitsOnMergeState holds only for an open one), so the test of
+// its state here saves the store reads below.
 func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, fact classify.MergeStateFact) error {
 	if e.cfg.ReadMergeState == nil || pr.State != record.PullRequestOpen {
 		return nil
@@ -1271,7 +1273,7 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 	if err != nil || issue == nil {
 		return err
 	}
-	owed := classify.MergeStateReadOwed(*issue, false, fact)
+	owed := classify.MergeStateReadOwed(*issue, fact)
 	if !owed {
 		// The round's own answer matters only where the fact and the phase owe no read: every
 		// phase a round can wait on GitHub in already owes one on a head move or a base push.

@@ -1593,9 +1593,9 @@ type MergeForwardMessage struct {
 func (MergeForwardMessage) OutboxKind() OutboxKind { return OutboxKindMergeForward }
 
 // mergeForwardReason is the sentence the ask and the hold give for why, one of R0's reasons
-// (ConflictWhy), of the base branch base; "" for any other word, which a row never carries, since
-// a row whose why is none of them is refused (validateOutboxPayload, conflictWhys): no message can
-// go out with a reason it cannot state.
+// (ConflictWhy), of the base branch base, and "" for any other word. validateOutboxPayload refuses
+// a row whose why this answers "" for, save the empty why of a landed or a review, which gives no
+// reason, so no message can go out with a reason it cannot state.
 func mergeForwardReason(why ConflictWhy, base string) string {
 	switch why {
 	case ConflictMergeNext:
@@ -1609,10 +1609,6 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 	}
 	return ""
 }
-
-// conflictWhys is every word a merge-forward message's Why may be (ConflictWhy), which
-// validateOutboxPayload looks a row's up in.
-var conflictWhys = map[ConflictWhy]bool{ConflictMergeNext: true, ConflictRulesUnread: true, ConflictRequiresCurrent: true, ConflictCheckNotGreen: true}
 
 // Message is what the runner publishes for issue to Role, where repo is the repository the record
 // holds the pull request under (PullRequest.Repo). It starts with the issue key, as every message
@@ -2180,7 +2176,7 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if landing != (value.Landed != "") {
 			return fmt.Errorf("a merge-forward landed or review names the head that landed, and an ask or a hold names none; a %s names %q", value.Step, value.Landed)
 		}
-		if !conflictWhys[value.Why] && (value.Why != "" || !landing) {
+		if mergeForwardReason(value.Why, value.Base) == "" && (value.Why != "" || !landing) {
 			return fmt.Errorf("a merge-forward ask or hold names why the daemon acted, as one of R0's reasons, and a landed or a review names one of them or none; a %s names %q", value.Step, value.Why)
 		}
 	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row

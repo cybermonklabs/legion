@@ -265,19 +265,19 @@ type workflowRuntime struct {
 	// of the same issue, while the first is still queued, one read rather than two.
 	handedOff *wakeSet[string]
 	// mergeStates is each issue a fact owes a read of GitHub's merge state (queueMergeState, the
-	// engine's Config.ReadMergeState, by classify.MergeStateReadOwed: a round waiting on GitHub's
-	// answer, a head move in implementing through merging, a base push in testing through
-	// merging), each the start read found GitHub still computing (readIssuesAtStart), and each a
-	// second read of a conflicting head left reading no answer (queueMergeStateFollow), that
-	// readMergeStates has not started a ladder for yet; mergeStateQueued is what each of them asked
-	// for, the head its ladder starts by following or "" for a climb (queueMergeStateFollow); and
-	// mergeStateRunning each issue whose ladder is still reading, a climb or a follow
-	// (mergeStateRun), which is why a second fact of an issue already being read starts no second
-	// ladder. mergeStateRetry is how long a ladder waits between reads of a state GitHub answers
-	// `unknown` for, the unit the reads after a ladder wait in, and how long the outbox's
-	// merge-queue read and second conflict read wait before they read again (mergeStateWait, which
-	// attach hands the outbox), mergeStateLadderWait when zero, which a test shortens
-	// (overrides.mergeStateRetry).
+	// engine's Config.ReadMergeState: a round waiting on GitHub's answer, and by the gate
+	// classify.MergeStateReadOwed a head move in implementing through merging or a base push in
+	// testing through merging), each the start read found GitHub still computing
+	// (readIssuesAtStart), and each a second read of a conflicting head left reading no answer
+	// (queueMergeStateFollow), that readMergeStates has not started a ladder for yet;
+	// mergeStateQueued is what each of them asked for, the head its ladder starts by following or
+	// "" for a climb (queueMergeStateFollow); and mergeStateRunning each issue whose ladder is still
+	// reading, a climb or a follow (mergeStateRun), which is why a second fact of an issue already
+	// being read starts no second ladder. mergeStateRetry is how long a ladder waits between reads
+	// of a state GitHub answers `unknown` for, the unit the reads after a ladder wait in, and how
+	// long the outbox's merge-queue read and second conflict read wait before they read again
+	// (mergeStateWait, which attach hands the outbox), mergeStateLadderWait when zero, which a test
+	// shortens (overrides.mergeStateRetry).
 	mergeStates       *wakeSet[string]
 	mergeStateMu      sync.Mutex
 	mergeStateQueued  map[string]string

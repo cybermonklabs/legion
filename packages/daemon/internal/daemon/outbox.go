@@ -1925,8 +1925,6 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 		return wait.Errorf("the %s hook's prompt for %s waits for its %s's released pod to come back", payload.Hook, row.Issue, payload.Role)
 	}
 	if err := r.publishKeptToRole(ctx, row, notify.RoleTopicPrefix+string(token), payload.Message(row.Issue),
-		"outbox hook prompt finished: the listener keeps it for the role's next holder",
-		"outbox hook prompt finished undelivered: no live session holds the role",
 		"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "count", payload.Count); err != nil {
 		return fmt.Errorf("publish the %s hook's prompt for %s to its %s: %w", payload.Hook, row.Issue, payload.Role, err)
 	}
@@ -2061,11 +2059,13 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // comes before it, and wraps the error it returns. What each answer does to the row:
 //
 //   - a live holder took the message: the row ends, with nothing logged;
-//   - the listener kept the message on the role's kept lane for one hour: the row ends with kept
-//     logged at Info with fields, the listener being the message's keeper from there;
+//   - the listener kept the message on the role's kept lane for one hour: the row ends, logging
+//     "outbox hook prompt finished: the listener keeps it for the role's next holder" at Info with
+//     fields, the listener being the message's keeper from there;
 //   - no live session holds the role and the listener kept nothing (notify.ErrNoHolder), or the
 //     role's claim records a session it does not hold and nothing was published (the gate's
-//     notify.ErrNoHolder): the row ends undelivered with noHolder logged at Info with fields;
+//     notify.ErrNoHolder): the row ends undelivered, logging at Info with fields
+//     "outbox hook prompt finished undelivered: no live session holds the role";
 //   - a holder the listener calls unresponsive (notify.ErrHolderUnresponsive), and every other
 //     failure: the error is returned as the publisher gave it, and the row keeps its retry.
 //
@@ -2099,14 +2099,14 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // role nobody holds is claimed; and updateAsk's round ends at its bound whether or not the role
 // answers. So whoever changes the rule for a topic with no holder must read all six executors, not
 // this function alone.
-func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, topic, message, kept, noHolder string, fields ...any) error {
+func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, topic, message string, fields ...any) error {
 	keeps, err := r.publishKept(ctx, topic, message, message, record.OutboxKey(row.ID))
 	switch {
 	case errors.Is(err, notify.ErrNoHolder):
-		r.log.Info(noHolder, fields...)
+		r.log.Info("outbox hook prompt finished undelivered: no live session holds the role", fields...)
 		return nil
 	case err == nil && keeps:
-		r.log.Info(kept, fields...)
+		r.log.Info("outbox hook prompt finished: the listener keeps it for the role's next holder", fields...)
 	}
 	return err
 }

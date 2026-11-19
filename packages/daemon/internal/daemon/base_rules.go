@@ -6,10 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -72,7 +72,7 @@ type githubBranch struct {
 //     carries no `strict`, so a classic rule is read as not strict (departure 5 of the plan of
 //     dispatch://INFRA-4374).
 //
-// Each `/`-separated segment of base is path-escaped (branchPath), so a branch whose name holds a
+// base is path-escaped with its slashes kept (ghbranch.RefPath), so a branch whose name holds a
 // `#`, a `?` or a `%` reads that branch and no other. Required holds each context once, sorted.
 //
 // GitHub's 403 whose message carries planRefusal, on either read, is the answer of a plan that
@@ -80,7 +80,7 @@ type githubBranch struct {
 // false, Unread "". Any other failure of either read - another 403, a 404 (GitHub's answer for a
 // branch that does not exist), a 5xx, a read that runs out of issueRead, which bounds each read as
 // it bounds the per-issue read's - is a read whose rules the daemon does not know: Unread says why,
-// R0 acts on it at once (classify.ConflictRulesUnread), and nothing else fails. Each call logs one
+// R0 acts on it at once (record.ConflictRulesUnread), and nothing else fails. Each call logs one
 // line with what it read.
 func (w *workflowRuntime) readBaseRules(ctx context.Context, github githubrest.Client, pr record.PullRequest, base string) record.BaseRules {
 	rules := baseRules(ctx, github, base)
@@ -96,7 +96,7 @@ func (w *workflowRuntime) readBaseRules(ctx context.Context, github githubrest.C
 
 // baseRules is readBaseRules' two reads and what they come to, without its log line.
 func baseRules(ctx context.Context, github githubrest.Client, base string) record.BaseRules {
-	path := branchPath(base)
+	path := ghbranch.RefPath(base)
 	read, cancel := context.WithTimeout(ctx, issueRead)
 	rulesets, err := githubrest.GetPages[githubBranchRule](read, github, "/rules/branches/"+path)
 	cancel()
@@ -155,15 +155,4 @@ func unreadRules(err error) record.BaseRules {
 		unread += ": " + body.Message
 	}
 	return record.BaseRules{Unread: unread}
-}
-
-// branchPath is branch as a path under /rules/branches/ or /branches/: each `/`-separated segment
-// path-escaped, the slashes between them kept, since GitHub reads a branch name's slashes as part
-// of the name on both routes.
-func branchPath(branch string) string {
-	segments := strings.Split(branch, "/")
-	for i, segment := range segments {
-		segments[i] = url.PathEscape(segment)
-	}
-	return strings.Join(segments, "/")
 }

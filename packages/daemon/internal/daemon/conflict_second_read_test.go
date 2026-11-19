@@ -17,7 +17,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
@@ -382,9 +381,9 @@ func TestAConflictSecondReadRowReadsTheHeadAgain(t *testing.T) {
 		if pr.ConflictingHead != "code" || pr.ConflictRead != nil {
 			t.Fatalf("the record holds %q conflicting with first read %+v, want the conflict of code confirmed", pr.ConflictingHead, pr.ConflictRead)
 		}
-		if asked := pr.MergeForward; asked == nil || asked.Head != "code" || asked.Why != classify.ConflictCheckNotGreen || asked.Phase != phase.Testing {
+		if asked := pr.MergeForward; asked == nil || asked.Head != "code" || asked.Why != record.ConflictCheckNotGreen || asked.Phase != phase.Testing {
 			t.Fatalf("the record holds merge forward %+v, want one asked of code in testing for %s: lint is required and green nowhere",
-				asked, classify.ConflictCheckNotGreen)
+				asked, record.ConflictCheckNotGreen)
 		}
 		if lines := rig.lines(t, secondReadLine); len(lines) != 1 || lines[0]["msg"] != secondReadAnswered || lines[0]["mergeable"] != string(record.MergeabilityConflicting) {
 			t.Fatalf("the row logged %v, want one line of GitHub's CONFLICTING", lines)
@@ -543,9 +542,9 @@ func TestAConflictSecondReadOfAReleasedFirstReadLeavesTheNewerFirstReadStanding(
 	if pr.ConflictingHead != "code" || pr.ConflictRead != nil {
 		t.Fatalf("the record holds %q conflicting with first read %+v, want the conflict of code confirmed", pr.ConflictingHead, pr.ConflictRead)
 	}
-	if asked := pr.MergeForward; asked == nil || asked.Head != "code" || asked.Why != classify.ConflictCheckNotGreen || asked.Phase != phase.Testing {
+	if asked := pr.MergeForward; asked == nil || asked.Head != "code" || asked.Why != record.ConflictCheckNotGreen || asked.Phase != phase.Testing {
 		t.Fatalf("the record holds merge forward %+v, want one asked of code in testing for %s: lint is required and green nowhere",
-			asked, classify.ConflictCheckNotGreen)
+			asked, record.ConflictCheckNotGreen)
 	}
 	if got := rig.reads.Load(); got != 2 {
 		t.Fatalf("GitHub was read %d times, want the released first read's one attempt and the newer first read's second read", got)

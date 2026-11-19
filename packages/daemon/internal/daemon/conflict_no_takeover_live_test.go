@@ -75,7 +75,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -317,7 +316,7 @@ func (r *conflictNoTakeoverLive) firstReadSendsNothing() {
 // Step 3. The second read, the row the first one queued, runs a minute on, and GitHub still
 // answers the head conflicting with the same base: the conflict is confirmed, and R0 decides on the
 // base's rules that read carries. ci is required, and no run of it passed on h1, which GitHub runs
-// no checks on while it conflicts (classify.ConflictCheckNotGreen). The issue stays in testing. The
+// no checks on while it conflicts (record.ConflictCheckNotGreen). The issue stays in testing. The
 // implementer is asked, on its own role topic, to merge the base forward (record.MergeForwardAsk),
 // the tester is told, on its own, to hold while the merge runs (MergeForwardHold), and the
 // architect is told once, in a checks-red notice naming testing, the phase the issue stays in. The
@@ -331,14 +330,14 @@ func (r *conflictNoTakeoverLive) secondReadAsksTheMergeForward() {
 	r.note("read back: the second read ran %s after the first was logged: the daemon logged %q for %s, GitHub answering %v for head %v",
 		second.at.Sub(first.at).Round(time.Second), second.Message, r.key, second.Attrs["mergeable"], second.Attrs["readHead"])
 	asked := r.awaitLogged(conflictAskedLine, r.key, bound)
-	if asked.Attrs["why"] != string(classify.ConflictCheckNotGreen) || asked.Attrs["phase"] != string(phase.Testing) || asked.Attrs["head"] != conflictFirstHead {
+	if asked.Attrs["why"] != string(record.ConflictCheckNotGreen) || asked.Attrs["phase"] != string(phase.Testing) || asked.Attrs["head"] != conflictFirstHead {
 		t.Fatalf("the daemon logged %q for %s with %v, want the merge forward of %s asked in testing for %s",
-			asked.Message, r.key, asked.Attrs, conflictFirstHead, classify.ConflictCheckNotGreen)
+			asked.Message, r.key, asked.Attrs, conflictFirstHead, record.ConflictCheckNotGreen)
 	}
 	r.note("read back: the daemon logged %q for %s: head %v, phase %v, why %v", asked.Message, r.key, asked.Attrs["head"], asked.Attrs["phase"], asked.Attrs["why"])
 
 	ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: conflictFirstHead,
-		Base: conflictBase, Phase: phase.Testing, PullRequest: r.number, Why: classify.ConflictCheckNotGreen}
+		Base: conflictBase, Phase: phase.Testing, PullRequest: r.number, Why: record.ConflictCheckNotGreen}
 	if told := r.awaitHeard(claim.RoleImplementer, 1, bound); told[0].Message != ask.Message(r.key, liveRepo) {
 		t.Fatalf("the implementer was told %q, want the merge forward's ask %q", told[0].Message, ask.Message(r.key, liveRepo))
 	}
@@ -390,7 +389,7 @@ func (r *conflictNoTakeoverLive) mergeLands() {
 	r.note("drove the implementer's push of %s, its merge of %s forward onto %s, and GitHub's synchronize of #%d to it, GitHub answering it mergeable",
 		conflictMergedHead, conflictBase, conflictFirstHead, r.number)
 	landed := record.MergeForwardMessage{Role: claim.RoleTester, Step: record.MergeForwardLanded, Head: conflictFirstHead,
-		Landed: conflictMergedHead, Base: conflictBase, Phase: phase.Testing, PullRequest: r.number, Why: classify.ConflictCheckNotGreen}
+		Landed: conflictMergedHead, Base: conflictBase, Phase: phase.Testing, PullRequest: r.number, Why: record.ConflictCheckNotGreen}
 	told := r.awaitHeard(claim.RoleTester, 2, testwait.Bounded(t, time.Minute, time.Second))
 	if told[1].Message != landed.Message(r.key, liveRepo) {
 		t.Fatalf("the tester was told %q, want the merge forward's landing %q", told[1].Message, landed.Message(r.key, liveRepo))
@@ -560,7 +559,7 @@ func (r *conflictNoTakeoverLive) published(issue string) {
 // also). First, what the daemon reads of the base for a head GitHub answers conflicting
 // (readBaseRules): the rules of the branch, one ruleset requiring ci whose rule does not require a
 // pull request to be current with the branch, and the branch itself unprotected otherwise, which a
-// 404 would make rules the daemon could not read, and act on at once (classify.ConflictRulesUnread).
+// 404 would make rules the daemon could not read, and act on at once (record.ConflictRulesUnread).
 // Then the control's pull request, which GitHub answers conflicting with that base from the start,
 // and its reviews, as none.
 func (r *conflictNoTakeoverLive) conflictGitHub() map[string]any {

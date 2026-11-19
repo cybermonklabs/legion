@@ -107,7 +107,7 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 //   - A move into implementing drops the record's merge forward (clearMergeForward): the
 //     implementer works the head there, and a head it pushes is read for a conflict of its own.
 //   - At a head the record holds in a confirmed conflict (classify.ConflictRound), a move into
-//     accepting, retro or merging asks for the merge forward for classify.ConflictMergeNext: the
+//     accepting, retro or merging asks for the merge forward for record.ConflictMergeNext: the
 //     merge comes next, and GitHub merges no head that conflicts with its base. This is where an
 //     approval of a conflicting head, which ends its round (reviewRound), is acted on
 //     (dispatch://INFRA-4374 R0).
@@ -129,7 +129,7 @@ func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue recor
 	asked := pr.MergeForward
 	switch {
 	case record.PastReview(issue):
-		return e.mergeForward(ctx, tx, issue, pr, classify.ConflictMergeNext)
+		return e.mergeForward(ctx, tx, issue, pr, record.ConflictMergeNext)
 	case from == phase.Implementing && !phase.MovesBack(from, issue.Phase) &&
 		asked != nil && asked.Head == pr.HeadSHA && asked.Phase == phase.Implementing:
 		return e.mergeForward(ctx, tx, issue, pr, asked.Why)

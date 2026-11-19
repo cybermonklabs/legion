@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -245,7 +244,7 @@ func TestAConflictIsActedOnOnlyAfterASecondRead(t *testing.T) {
 		if pr := recordedPR(t, pool, "LEGION-208"); pr.ConflictRead != nil || pr.ConflictingHead != conflictHead {
 			t.Fatalf("after the confirming read the record holds first read %+v and %q conflicting, want the conflict held for head alone", pr.ConflictRead, pr.ConflictingHead)
 		}
-		askedOnce(t, pool, phase.Testing, "testing", classify.ConflictRulesUnread, claim.RoleTester)
+		askedOnce(t, pool, phase.Testing, "testing", record.ConflictRulesUnread, claim.RoleTester)
 	})
 
 	t.Run("the second read's row ending on unknown releases the first read", func(t *testing.T) {
@@ -310,11 +309,11 @@ func TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward(t *testing.T) {
 		why    record.ConflictWhy
 		hold   claim.Role
 	}{
-		{phase.Testing, "testing", classify.ConflictCheckNotGreen, claim.RoleTester},
-		{phase.Reviewing, "needs_review", classify.ConflictCheckNotGreen, claim.RoleReviewer},
-		{phase.Accepting, "needs_review", classify.ConflictMergeNext, ""},
-		{phase.Retro, "retro", classify.ConflictMergeNext, ""},
-		{phase.Merging, "retro", classify.ConflictMergeNext, claim.RoleMerger},
+		{phase.Testing, "testing", record.ConflictCheckNotGreen, claim.RoleTester},
+		{phase.Reviewing, "needs_review", record.ConflictCheckNotGreen, claim.RoleReviewer},
+		{phase.Accepting, "needs_review", record.ConflictMergeNext, ""},
+		{phase.Retro, "retro", record.ConflictMergeNext, ""},
+		{phase.Merging, "retro", record.ConflictMergeNext, claim.RoleMerger},
 	} {
 		t.Run(string(tc.at), func(t *testing.T) {
 			pool := seedConflictIssue(t, tc.at, tc.status, settledGreen("lint"))
@@ -356,15 +355,15 @@ func TestAConflictIsActedOnOnlyWhenNeeded(t *testing.T) {
 		{"every required check green in reviewing with no approval", phase.Reviewing, "needs_review", settledGreen("ci", "pr-title"),
 			&record.BaseRules{Required: []string{"ci", "pr-title"}}, ""},
 		{"no required check green", phase.Testing, "testing", settledGreen("lint"),
-			&record.BaseRules{Required: []string{"ci", "pr-title"}}, classify.ConflictCheckNotGreen},
+			&record.BaseRules{Required: []string{"ci", "pr-title"}}, record.ConflictCheckNotGreen},
 		{"one of two required checks green", phase.Testing, "testing", settledGreen("ci"),
-			&record.BaseRules{Required: []string{"ci", "pr-title"}}, classify.ConflictCheckNotGreen},
+			&record.BaseRules{Required: []string{"ci", "pr-title"}}, record.ConflictCheckNotGreen},
 		{"a strict ruleset with every check green in testing", phase.Testing, "testing", settledGreen("ci"),
-			&record.BaseRules{Required: []string{"ci"}, Strict: true}, classify.ConflictRequiresCurrent},
+			&record.BaseRules{Required: []string{"ci"}, Strict: true}, record.ConflictRequiresCurrent},
 		{"a strict ruleset with every check green in reviewing with no approval", phase.Reviewing, "needs_review", settledGreen("ci"),
-			&record.BaseRules{Required: []string{"ci"}, Strict: true}, classify.ConflictRequiresCurrent},
+			&record.BaseRules{Required: []string{"ci"}, Strict: true}, record.ConflictRequiresCurrent},
 		{"rules unread", phase.Testing, "testing", settledGreen("ci"),
-			&record.BaseRules{Unread: "HTTP 502"}, classify.ConflictRulesUnread},
+			&record.BaseRules{Unread: "HTTP 502"}, record.ConflictRulesUnread},
 		{"GitHub's plan refusal of rulesets", phase.Testing, "testing", settledGreen(),
 			&record.BaseRules{}, ""},
 		{"a classic rule's contexts all green", phase.Reviewing, "needs_review", settledGreen("ci", "lint"),
@@ -434,11 +433,11 @@ func TestAConflictIsActedOnOnlyWhenNeeded(t *testing.T) {
 				t.Fatalf("after the approval the issue is in %s, want accepting: an approval of a conflicting head ends its round", got)
 			}
 			want := []record.MergeForwardMessage{{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: conflictHead, Base: "main",
-				Phase: phase.Accepting, PullRequest: 42, Why: classify.ConflictMergeNext}}
+				Phase: phase.Accepting, PullRequest: 42, Why: record.ConflictMergeNext}}
 			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 				t.Fatalf("merge-forward messages %+v, want the one ask in accepting, and no hold: accepting is the architect's", got)
 			}
-			if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Phase != phase.Accepting || asked.Why != classify.ConflictMergeNext {
+			if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Phase != phase.Accepting || asked.Why != record.ConflictMergeNext {
 				t.Fatalf("the record's merge forward = %+v, want the one asked in accepting for merge-next", asked)
 			}
 			if told := capNotices(t, pool, "checks-red"); told != 1 {
@@ -470,8 +469,8 @@ func TestAConflictInImplementingIsToldOnlyWhenNeeded(t *testing.T) {
 		rules *record.BaseRules
 		why   record.ConflictWhy
 	}{
-		{"a required check not green", settledGreen("lint"), &record.BaseRules{Required: []string{"ci"}}, classify.ConflictCheckNotGreen},
-		{"a strict ruleset with every check green", settledGreen("ci"), &record.BaseRules{Required: []string{"ci"}, Strict: true}, classify.ConflictRequiresCurrent},
+		{"a required check not green", settledGreen("lint"), &record.BaseRules{Required: []string{"ci"}}, record.ConflictCheckNotGreen},
+		{"a strict ruleset with every check green", settledGreen("ci"), &record.BaseRules{Required: []string{"ci"}, Strict: true}, record.ConflictRequiresCurrent},
 		{"every required check green and no strict rule", settledGreen("ci"), &record.BaseRules{Required: []string{"ci"}}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -500,21 +499,21 @@ func TestAConflictInImplementingIsToldOnlyWhenNeeded(t *testing.T) {
 		rules := &record.BaseRules{Required: []string{"ci"}}
 		pool := seedConflictIssue(t, phase.Implementing, "in_progress", settledGreen("lint"))
 		confirmsConflict(t, pool, rules)
-		askedOnce(t, pool, phase.Implementing, "in_progress", classify.ConflictCheckNotGreen, "")
+		askedOnce(t, pool, phase.Implementing, "in_progress", record.ConflictCheckNotGreen, "")
 		applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
 			Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "implemented", Commit: conflictHead, HandoffRecord: "implement-1", HandoffVersion: 1})
 		if got := issuePhase(t, pool); got != phase.Testing {
 			t.Fatalf("after the implementer's completion the issue is in %s, want testing: its completion stands", got)
 		}
 		asked := func(role claim.Role, step record.MergeForwardStep, at phase.Phase) record.MergeForwardMessage {
-			return record.MergeForwardMessage{Role: role, Step: step, Head: conflictHead, Base: "main", Phase: at, PullRequest: 42, Why: classify.ConflictCheckNotGreen}
+			return record.MergeForwardMessage{Role: role, Step: step, Head: conflictHead, Base: "main", Phase: at, PullRequest: 42, Why: record.ConflictCheckNotGreen}
 		}
 		want := []record.MergeForwardMessage{asked(claim.RoleImplementer, record.MergeForwardAsk, phase.Implementing),
 			asked(claim.RoleImplementer, record.MergeForwardAsk, phase.Testing), asked(claim.RoleTester, record.MergeForwardHold, phase.Testing)}
 		if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 			t.Fatalf("merge-forward messages %+v, want %+v: testing asks again what implementing asked", got, want)
 		}
-		if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.Phase != phase.Testing || mf.Why != classify.ConflictCheckNotGreen {
+		if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.Phase != phase.Testing || mf.Why != record.ConflictCheckNotGreen {
 			t.Fatalf("the record's merge forward = %+v, want the one asked in testing", mf)
 		}
 		if told := capNotices(t, pool, "checks-red"); told != 1 {
@@ -701,7 +700,7 @@ func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	landing := func(role claim.Role, step record.MergeForwardStep, at phase.Phase) record.MergeForwardMessage {
 		return record.MergeForwardMessage{Role: role, Step: step, Head: conflictHead, Landed: forwardHead, Base: "main", Phase: at,
-			PullRequest: 42, Why: classify.ConflictMergeNext}
+			PullRequest: 42, Why: record.ConflictMergeNext}
 	}
 	for _, tc := range []struct {
 		at     phase.Phase
@@ -885,7 +884,7 @@ func TestAConflictSecondReadIsNeverOneMadeBeforeTheFirst(t *testing.T) {
 	second := conflictingRead(unread)
 	second.ReadAt = firstConflictRead.Add(time.Minute)
 	applyRefusingNothing(t, pool, readsAfter(time.Minute), second)
-	askedOnce(t, pool, phase.Testing, "testing", classify.ConflictRulesUnread, claim.RoleTester)
+	askedOnce(t, pool, phase.Testing, "testing", record.ConflictRulesUnread, claim.RoleTester)
 }
 
 // A completion made for a head a merge forward replaced does not advance the issue

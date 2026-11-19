@@ -10,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -364,10 +363,10 @@ func TestEveryConflictingReadDecidesAndTheAskItselfStopsTheRepeat(t *testing.T) 
 	if due := conflictConfirms(t, pool); len(due) != 0 {
 		t.Fatalf("second reads due at %v, want none: the record already held the conflict", due)
 	}
-	askedOnce(t, pool, phase.Merging, "retro", classify.ConflictMergeNext, claim.RoleMerger)
+	askedOnce(t, pool, phase.Merging, "retro", record.ConflictMergeNext, claim.RoleMerger)
 
 	applyRefusingNothing(t, pool, readsAfter(time.Minute), conflictingRead(&record.BaseRules{}))
-	askedOnce(t, pool, phase.Merging, "retro", classify.ConflictMergeNext, claim.RoleMerger)
+	askedOnce(t, pool, phase.Merging, "retro", record.ConflictMergeNext, claim.RoleMerger)
 }
 
 // settledAt is a CI settlement of head reporting the two check runs build and unit, generation
