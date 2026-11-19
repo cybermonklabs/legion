@@ -246,6 +246,11 @@ func (p *dispatchProcess) holdPersistence(t *testing.T, artifactID string, durat
 		fmt.Sprintf(`{"duration":%q}`, duration.String()), http.StatusNoContent)
 }
 
+// liveWritePausePath is the test hook route of the pause of the document's live writes at point.
+func liveWritePausePath(artifactID string, point docs.LiveWritePausePoint) string {
+	return "/api/v1/artifacts/" + artifactID + "/_test/live-write-pauses/" + string(point)
+}
+
 // armLiveWritePause makes the next live write of the document on this process park at point
 // until releaseLiveWritePause. Arm it before the write is sent, then awaitLiveWriteParked.
 func (p *dispatchProcess) armLiveWritePause(t *testing.T, artifactID string, point docs.LiveWritePausePoint) {
