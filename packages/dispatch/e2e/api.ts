@@ -1073,6 +1073,23 @@ export function createHandoff(
   );
 }
 
+/** The Legion daemon of `issue`'s project writes one run of a step, as its outbox does: under the
+ *  agent bearer, naming the session `legion-daemon:<PROJECT>`, the one writer the route admits
+ *  for that project's issues. A field the record already holds is kept, so a start and an end
+ *  may arrive in either order. */
+export function putStep(
+  issue: string,
+  id: string,
+  input: Body<"/api/v1/issues/{key}/steps/{id}", "put">
+) {
+  const project = issue.slice(0, issue.indexOf("-"));
+  return put(
+    "/api/v1/issues/{key}/steps/{id}",
+    { body: input, params: { id, key: issue } },
+    { actor: { id: `legion-daemon:${project}`, kind: "session" }, as: "agent" }
+  );
+}
+
 /** The signed-in human's own per-agent conversation state, as another of their devices sets it. */
 export function putAgentState(
   sessionID: string,

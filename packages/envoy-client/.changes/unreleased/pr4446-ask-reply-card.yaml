@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  The card of a person's reply in an ask's thread says the ask is the reader's own, with the
+  `--reply-to-ask` reply command and `waiting_on`, only when the reader asked the ask or follows
+  it, as the event's `ask_sessions` says. A session that a mention reached keeps the mention's
+  reply command and gets no `waiting_on`; every other session gets neither, and the card names the
+  reason that brought the reply. A frame from a Dispatch older than `ask_sessions` shows the card
+  it showed before. The answers list words the new `answered_an_ask` and `declined_an_ask`
+  relations.

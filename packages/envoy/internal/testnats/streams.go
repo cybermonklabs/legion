@@ -10,11 +10,17 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 )
 
-// jetStreamWait bounds each JetStream request of a context Cluster.JetStream opens.
+// jetStreamWait bounds each JetStream request of a context Cluster.JetStream opens. It is too short
+// for a create of a stream of more than one copy on a cluster: nats-server answers that create
+// from the stream's first leader, once its members have elected one (processStreamLeaderChange),
+// and on a loaded machine that election can come after jetStreamWait, which ends the request with
+// `context deadline exceeded` although the server makes the stream. Such a create goes through
+// Cluster.CreateStream.
 const jetStreamWait = 10 * time.Second
 
 // JetStream is a JetStream context, its requests bounded by jetStreamWait, on whichever running
-// member of the cluster answers (Connect), closed when the test ends.
+// member of the cluster answers (Connect), closed when the test ends. A test creates a stream of
+// more than one copy with Cluster.CreateStream, not through it.
 func (c *Cluster) JetStream(t testing.TB) natsgo.JetStreamContext {
 	t.Helper()
 	conn := Connect(t, c.URL())
@@ -24,6 +30,22 @@ func (c *Cluster) JetStream(t testing.TB) natsgo.JetStreamContext {
 		t.Fatalf("open JetStream: %v", err)
 	}
 	return js
+}
+
+// CreateStream creates the stream config names on a connection of its own to the cluster
+// (Connect), sending the create once through the context createJetStream opens, and fails the
+// test with the server's answer when the create is refused. A successful create of a stream of
+// more than one copy is answered by that stream's first leader, once its members have elected one
+// (processStreamLeaderChange), which on a loaded machine can come after jetStreamWait; a refusal,
+// such as a placement the cluster cannot make, is answered before any election
+// (jsClusteredStreamRequest).
+func (c *Cluster) CreateStream(t testing.TB, config natsgo.StreamConfig) {
+	t.Helper()
+	conn := Connect(t, c.URL())
+	defer conn.Close()
+	if _, err := createJetStream(t, conn).AddStream(&config); err != nil {
+		t.Fatalf("create stream %s: %v", config.Name, err)
+	}
 }
 
 // Copies is how many copies of a stream or a consumer a cluster holds, its leader's and its

@@ -171,11 +171,12 @@ referencesTest(
     await expect(references).toContainText("depth 1");
     await expect(references).toContainText("depth 2");
     const tabs = page.getByRole("main").getByRole("tab");
-    await expect(tabs).toHaveCount(9);
+    await expect(tabs).toHaveCount(10);
     for (const [index, name] of [
       "Spec",
       "Verification",
       "Plan",
+      "Steps",
       "Conversation",
       "Children",
       "Artifacts 2",

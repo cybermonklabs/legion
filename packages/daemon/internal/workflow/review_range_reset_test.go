@@ -34,7 +34,7 @@ func clockReads(engine *Engine, at time.Time) {
 func readmitsTheTree(t *testing.T, pool *pgxpool.Pool, engine *Engine, at time.Time) {
 	t.Helper()
 	clockReads(engine, at)
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().ClearTreeGeneration(ctx, tx, "LEGION-207", at)
 	})
 }
@@ -45,7 +45,7 @@ func promotesTheReviewer(t *testing.T, pool *pgxpool.Pool, engine *Engine, at ti
 	t.Helper()
 	clockReads(engine, at)
 	member := issueRecord(t, pool, "LEGION-208")
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		return engine.StartPromotedWorker(ctx, tx, *member, claim.RoleReviewer)
 	})
 }

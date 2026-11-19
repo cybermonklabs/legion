@@ -221,8 +221,8 @@ func TestReadRequestWaitAnswersAFailedStoreUnavailable(t *testing.T) {
 	}
 }
 
-// TestReadRequestWaitEndsWhenTheRequestMoves: a held read whose request moves to another
-// enrollment while it waits, as adopt moves a predecessor's requests to its successor, is
+// TestReadRequestWaitEndsWhenTheRequestMoves: a held read whose request moves to an enrollment of
+// another owner while it waits (the successor here records no owner, so it is its own) is
 // answered 403 NOT_YOURS at the next step, as a new read of it is, and not the request's state
 // for the rest of the wait.
 func TestReadRequestWaitEndsWhenTheRequestMoves(t *testing.T) {

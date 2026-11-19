@@ -76,6 +76,7 @@ load:twice) printf "${legion}LEGION_ENVOY_INTERFACE=1\nLEGION_ENVOY_LOADED_FROM=
 session:refuses) echo "Invalid OMP_SESSION_STORAGE: legion-launch-probe (expected file or sql)" >&2; exit 1 ;;
 session:accepts) exit 0 ;;
 session:dies) echo "database is locked" >&2; exit 1 ;;
+session:killed) echo "database is locked" >&2; kill -KILL $$ ;;
 *:denied) echo "secrets: ANTHROPIC_API_KEY was denied" >&2; exit 3 ;;
 *:hang) exec sleep 30 ;;
 esac
@@ -469,6 +470,9 @@ func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
 			[]string{"the OMP pi.agents probe never completed within its retry budget (3 attempts)", "timed out after 1.5s"}, "agents"},
 		{"Oh My Pi dying before the resolver every time", []string{"available"}, []string{"dies"},
 			[]string{"the OMP session storage setting probe never completed within its retry budget (3 attempts)", "exited 1 without naming OMP_SESSION_STORAGE", "database is locked"}, "session"},
+		// A signal's death has no status: read as one, it was `exited -1 without naming …`.
+		{"Oh My Pi killed before the resolver every time", []string{"available"}, []string{"killed"},
+			[]string{"the OMP session storage setting probe never completed within its retry budget (3 attempts)", "was ended by signal: killed without naming OMP_SESSION_STORAGE", "database is locked"}, "session"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			f := newImageOmp(t, testCase.agents, []string{"yes"}, testCase.session)

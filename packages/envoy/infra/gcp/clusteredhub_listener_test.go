@@ -271,9 +271,10 @@ func TestClusteredNatsHubSelectorsSelectNoOtherWorkload(t *testing.T) {
 	require.Equal(t, 6, pairs, "the three selectors were compared in both orders")
 }
 
-// Without tailnet there is no session listener to run: no object of the hub's is named
-// <name>-listener. The registrations are read by name and counted, since the hub's own
-// NetworkPolicy shares the listener's type and a count of none would prove nothing.
+// Without tailnet and without a listener of the hub's own there is no session listener to run: no
+// object of the hub's is named <name>-listener. The registrations are read by name and counted,
+// since the hub's own NetworkPolicy shares the listener's type and a count of none would prove
+// nothing.
 func TestClusteredNatsHubWithoutTailnetRegistersNoListener(t *testing.T) {
 	m := runClusteredHub(t, withoutTailnet(clusteredArgs()))
 	registrations := m.Registrations()

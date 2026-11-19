@@ -13,7 +13,7 @@
 #   Process completed with exit code 143.
 #
 # 143 is 128 + SIGTERM, the status of a step the runner killed. The pair was read whole on
-# theorem-labs/agent-infra run 42466562410, job `services (legion)` 128687417206, on 2026-11-08
+# example-org/deployment run 42466562410, job `services (legion)` 128687417206, on 2026-11-08
 # (dispatch://INFRA-49/comment/4083a833-8bb4-4dba-9d61-8f20757ca82c). The job's result is
 # `failure`, the same result a test of the change failing gives it, so the result alone cannot
 # tell a platform kill from a fault of the change and those two annotations are what does.

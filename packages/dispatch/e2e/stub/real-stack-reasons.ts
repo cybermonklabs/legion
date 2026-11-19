@@ -267,6 +267,8 @@ export const realStackReasons: Record<string, string> = {
   "smoke.e2e.ts":
     "the reader nobody signed in, where the stubbed layer's page is always signed in because its recording answers /auth/whoami",
   "spec-suggestion-decoration.e2e.ts": "reads the decoration's DOM inside the live editor",
+  "steps.e2e.ts":
+    "the attempt is the server's count of the daemon's writes, and a start written twice keeps the server's first",
   "stored-text-reading.e2e.ts":
     "each row reads a body the live server stored and drew as its own tree, and the server's reading is what the row compares against the browser's: a recording would answer a tree recorded elsewhere rather than the one this server sends for those bytes",
   "task-items.e2e.ts": "asserts inside the live document editor",

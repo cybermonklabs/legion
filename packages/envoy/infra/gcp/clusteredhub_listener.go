@@ -1,6 +1,8 @@
 package gcp
 
 import (
+	"strings"
+
 	appsv1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/apps/v1"
 	corev1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/core/v1"
 	metav1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/meta/v1"
@@ -51,23 +53,30 @@ const (
 )
 
 // clusteredHubListenerEnv is the listener container's environment: the resolver's rendering of
-// core.ListenerConfig, in its order, the seed file mounted from the operator's Secret, and the
-// flag that lets the API serve /v1 with no credential. No ENVOY_API_TOKEN: what keeps /v1 to its
-// callers is the listener's NetworkPolicy, which admits the tailnet entry's pods alone, and the
-// listener serves on every address of its pod, where its API refuses to start with neither
-// bearer nor OIDC pair unless ENVOY_API_ALLOW_UNAUTHENTICATED is set
-// (packages/envoy/cmd/listener/apiauth.go).
-func clusteredHubListenerEnv(l clusteredHubListener) corev1.EnvVarArray {
-	return append(envVars(l.env),
-		valueEnv("NATS_NKEY_SEED_FILE", clusteredHubListenerSeedMount+"/"+clusteredHubListenerSeedFile),
-		valueEnv("ENVOY_API_ALLOW_UNAUTHENTICATED", "1"))
+// core.ListenerConfig, in its order, the seed file mounted from the operator's Secret, and then how
+// the API admits a caller. No ENVOY_API_TOKEN either way. A listener with a credential renders its
+// token check, ENVOY_OIDC_ISSUER, ENVOY_OIDC_AUDIENCE and ENVOY_OIDC_ACCOUNTS, and every caller
+// presents a projected ServiceAccount token of a listed subject, whatever the NetworkPolicy
+// admits. One without, a tailnet.listener with no clientNamespaces, renders the flag that lets
+// the API serve /v1 with no credential: its NetworkPolicy admits the tailnet entry's pods alone,
+// and that is what keeps /v1 to its callers, since the listener serves on every address of its
+// pod, where its API refuses to start with no bearer unless ENVOY_API_ALLOW_UNAUTHENTICATED is set
+// (packages/envoy/cmd/listener/apiauth.go). The two never render together.
+func clusteredHubListenerEnv(l *clusteredHubListener) corev1.EnvVarArray {
+	env := append(envVars(l.env), valueEnv("NATS_NKEY_SEED_FILE", clusteredHubListenerSeedMount+"/"+clusteredHubListenerSeedFile))
+	if c := l.credential; c != nil {
+		return append(env, valueEnv("ENVOY_OIDC_ISSUER", c.issuer), valueEnv("ENVOY_OIDC_AUDIENCE", c.audience),
+			valueEnv("ENVOY_OIDC_ACCOUNTS", strings.Join(c.accounts, ",")))
+	}
+	return append(env, valueEnv("ENVOY_API_ALLOW_UNAUTHENTICATED", "1"))
 }
 
 // clusteredHubListenerSelector is the selector labels of the hub's session listener, the pod the
-// tailnet hosts forward the Service's listener port to: what its workload selects, what its
-// Service sends to and what its NetworkPolicy fences. They share no value of
-// app.kubernetes.io/name or app.kubernetes.io/component with clusteredHubSelector or
-// clusteredHubTailnetSelector, so no workload's selector adopts another's pods.
+// tailnet hosts forward the Service's listener port to and the pods of clientNamespaces dial:
+// what its workload selects, what its Service sends to and what its NetworkPolicy fences. They
+// share no value of app.kubernetes.io/name or app.kubernetes.io/component with
+// clusteredHubSelector or clusteredHubTailnetSelector, so no workload's selector adopts another's
+// pods.
 func clusteredHubListenerSelector(release string) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/name":      "nats-listener",
@@ -94,7 +103,7 @@ func clusteredHubListenerName(release string) string {
 // its durable, which /healthz answers 200 with a starting body, is ready, so the rolling update
 // never waits for the stream.
 func clusteredHubListenerPod(s clusteredHubSettings) corev1.PodSpecArgs {
-	l := s.tailnet.listener
+	l := s.listener
 	pod := corev1.PodSpecArgs{
 		ServiceAccountName:            pulumi.String(clusteredHubListenerName(s.name)),
 		EnableServiceLinks:            pulumi.Bool(false),
@@ -136,8 +145,9 @@ func clusteredHubListenerPod(s clusteredHubSettings) corev1.PodSpecArgs {
 // its Kubernetes provider (opts), in the hub's namespace and all under one name
 // (clusteredHubListenerName): ServiceAccount, which mounts no token, since the listener calls no
 // Kubernetes API; Deployment, which waits on the account and on classRead, the priority class
-// read, when there is one; the Service the tailnet hosts forward to; the NetworkPolicy fencing
-// that Service's port; and the PodDisruptionBudget.
+// read, when there is one; the Service the tailnet hosts forward to and the pods of
+// clientNamespaces dial; the NetworkPolicy fencing that Service's port; and the
+// PodDisruptionBudget.
 func newClusteredHubListener(ctx *pulumi.Context, s clusteredHubSettings, classRead []pulumi.Resource, opts ...pulumi.ResourceOption) error {
 	name := clusteredHubListenerName(s.name)
 	account, err := corev1.NewServiceAccount(ctx, name, &corev1.ServiceAccountArgs{
@@ -172,7 +182,8 @@ func newClusteredHubListener(ctx *pulumi.Context, s clusteredHubSettings, classR
 		return err
 	}
 	// The listener's own cluster Service, which each tailnet host's serve config forwards the
-	// Tailscale Service's listener port to (clusteredHubServeConfig).
+	// Tailscale Service's listener port to (clusteredHubServeConfig) and the pods of
+	// clientNamespaces dial.
 	if _, err := corev1.NewService(ctx, name, &corev1.ServiceArgs{
 		Metadata: objectMeta(name, s.namespace),
 		Spec: &corev1.ServiceSpecArgs{
@@ -184,11 +195,20 @@ func newClusteredHubListener(ctx *pulumi.Context, s clusteredHubSettings, classR
 	}, opts...); err != nil {
 		return err
 	}
-	// The listener's port from the tailnet hosts alone, which is what lets it serve /v1 with no
-	// bearer; every other port of the pod is then admitted to nobody, which is what is wanted.
-	if err := networkPolicy(ctx, name, s.namespace, clusteredHubListenerSelector(s.name), networkingv1.NetworkPolicyIngressRuleArray{
-		ingressFrom(core.DefaultListenerPort, networkingv1.NetworkPolicyPeerArray{labelPeer(clusteredHubTailnetSelector(s.name))}),
-	}, opts...); err != nil {
+	// The listener's port from the tailnet hosts and the pods of clientNamespaces alone; every
+	// other port of the pod is then admitted to nobody, which is what is wanted. With the tailnet
+	// hosts alone this policy is what lets the listener serve /v1 with no credential; with
+	// clientNamespaces the listener also requires each caller's token (clusteredHubListenerEnv).
+	// Each source is a rule of its own, the tailnet hosts' first, and the resolver refuses a
+	// listener with neither, whose policy would admit nobody.
+	var ingress networkingv1.NetworkPolicyIngressRuleArray
+	if s.tailnet != nil {
+		ingress = append(ingress, ingressFrom(core.DefaultListenerPort, networkingv1.NetworkPolicyPeerArray{labelPeer(clusteredHubTailnetSelector(s.name))}))
+	}
+	if namespaces := s.listener.clientNamespaces; len(namespaces) > 0 {
+		ingress = append(ingress, ingressFrom(core.DefaultListenerPort, namespacePeers(namespaces)))
+	}
+	if err := networkPolicy(ctx, name, s.namespace, clusteredHubListenerSelector(s.name), ingress, opts...); err != nil {
 		return err
 	}
 	// The workload is one pod, so a budget of one unavailable allows its eviction: a node drain

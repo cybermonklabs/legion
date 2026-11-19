@@ -924,6 +924,21 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("NATS_NKEY_SEED_FILE set but empty: err = %v, want it refused", err)
 			}
 		},
+		"NATS_SERVICE_TOKEN_FILE": func(t *testing.T) {
+			missing := filepath.Join(t.TempDir(), "missing")
+			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": missing}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE names "+missing) {
+				t.Errorf("NATS_SERVICE_TOKEN_FILE: err = %v, want the missing token file refused", err)
+			}
+			token := writeFile(t, "token", "a.b.c\n")
+			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": token, "NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE and NATS_NKEY_SEED are both set") {
+				t.Errorf("beside a seed: err = %v, want both named", err)
+			}
+		},
+		"NATS_SERVICE_GOOGLE_AUDIENCE": func(t *testing.T) {
+			if err := natsConnect(map[string]string{"NATS_SERVICE_GOOGLE_AUDIENCE": " "}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_GOOGLE_AUDIENCE is set but empty") {
+				t.Errorf("NATS_SERVICE_GOOGLE_AUDIENCE: err = %v, want the empty audience refused", err)
+			}
+		},
 		"DISPATCH_NATS_DISABLED": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "1"}); !boot.NATSDisabled {
 				t.Error("DISPATCH_NATS_DISABLED=1: NATS on")
