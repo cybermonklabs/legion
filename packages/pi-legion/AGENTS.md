@@ -95,11 +95,14 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 174 (dispatch://INFRA-3531:
-the daemon's answer to the hello of the project controller's pod's launcher carries that pod's own
-memory guard settings in `memoryGuard`, from `runtime.kubernetes.memory_guard.controller_pod`, and
-that launcher reports each process its guard ended in `launcher_memory_kill`, which the daemon tells
-the controller as a `memory-guard-kill` controller notice; no shape the plugin parses moves),
+number is the one `DaemonAPIVersion` declares, last bumped by contract 169 (dispatch://INFRA-3531
+and dispatch://INFRA-4567, which reach main as one pull request: the daemon's answer to the hello
+of the project controller's pod's launcher carries that pod's own memory guard settings in
+`memoryGuard`, from `runtime.kubernetes.memory_guard.controller_pod`, and `kernelKills`; that
+launcher reports each process its guard ended in `launcher_memory_kill`, which the daemon tells
+the controller as a `memory-guard-kill` controller notice, and where the project's sandbox is a
+microVM it takes `--microvm` and the metadata flags and runs the guest watch in the guard's place;
+no shape the plugin parses moves),
 after contract 146 (dispatch://INFRA-2614:
 a root at `admitted` carries its architect's `phaseEntry` and `givenEntry`, every issue carries
 `entryQueuedAt` and `entryConfirmedAt`, the two times of a claim's own record of its handshake of
