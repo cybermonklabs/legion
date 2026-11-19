@@ -8,8 +8,11 @@ body: |-
     it, and another person's secret after its owner approves it. The pod enrols itself alone, with
     no session name. Only the person lists and revokes its login. The four operator routes refuse it
     (`403 PERSON_POD_LOGIN`), and every service route refuses the mapped account
-    (`403 PERSON_ACCOUNT`). The broker reads the setting at each request and release, so a removed
-    or moved entry stops the pod acting as the person at its next request. The broker refuses to
+    (`403 PERSON_ACCOUNT`). The pod and the person's box read and cancel each other's requests
+    while the setting maps the pod's account to the person. The broker reads the setting at each
+    request, release, read of a request and cancel, so a removed or moved entry stops the pod
+    acting as the person at its next request, and from then on the pod reads and cancels its own
+    requests alone. The broker refuses to
     start on a mapped account that `BROKER_SERVICE_LOGINS` does not name, that `BROKER_SERVICES`
     binds, whose login service `BROKER_SERVICES` or `BROKER_VM_SERVICES` names, or that
     `BROKER_EXCHANGE_ACCOUNTS` maps to another person. `GET /v1/launcher-credentials` names such a
