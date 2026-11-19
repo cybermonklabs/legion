@@ -55,6 +55,7 @@ import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-mor
 import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel, PARENT_ERROR_ID } from "./IssueMargin";
+import { narrowIssue } from "./issue-fixtures";
 import {
   DETAILS_ATTRIBUTE,
   FilledMarginSlot,
@@ -139,11 +140,6 @@ function Details({ issue, state }: { issue: IssueDetails; state: UserState | und
       writes={writes}
     />
   );
-}
-
-function narrowIssue(details: IssueDetails): Issue {
-  const { artifacts: _artifacts, children: _children, open_asks: _openAsks, ...rest } = details;
-  return rest;
 }
 
 /** The reads Details makes of a fixture's issue, each answering the API's empty shape, and the

@@ -9,12 +9,13 @@ import { MemoryRouter } from "react-router-dom";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
-import type { Agent, ClaimHolderLiveness, Issue, IssueClaim, IssueDetails } from "../../api/types";
+import type { ClaimHolderLiveness, Issue, IssueClaim, IssueDetails } from "../../api/types";
 import { dangerText, pageFailedText, pageHeaderControl } from "../../theme/classes";
 import { stateForIssue } from "../issue/pins";
 import { MarginProvider } from "../margin/margin-context";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { IssueClaimControl } from "./IssueClaimControl";
+import { running, unresponsive } from "./issue-fixtures";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
@@ -114,29 +115,6 @@ function claimRow(
     unmount: () => view.unmount(),
     user,
   };
-}
-
-/** One live session, as `GET /api/v1/agents` lists it. */
-function running(sessionID: string, title: string): Agent {
-  return {
-    session_id: sessionID,
-    title,
-    dir: "/w",
-    host: "host",
-    machine_id: "host",
-    roles: [],
-    capabilities: [],
-    last_seen: 1,
-    open_asks: 0,
-    last_activity: null,
-    state: "live",
-  };
-}
-
-/** The same session after it has missed its heartbeats: the listener still lists it, and says
- *  so on the row (`state`), with the heartbeat it was last seen at. */
-function unresponsive(sessionID: string, title: string, lastSeen: number): Agent {
-  return { ...running(sessionID, title), last_seen: lastSeen, state: "unresponsive" };
 }
 
 test("a claimed issue names its holder and releases the claim from Details", async () => {

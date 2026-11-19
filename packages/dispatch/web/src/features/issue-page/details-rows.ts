@@ -44,7 +44,7 @@ export function useOpenDetailsAt(): (row: DetailsRow, press?: boolean) => void {
           if (found === null) return;
           found.scrollIntoView({ block: "nearest" });
           const control = found.querySelector<HTMLElement>(
-            "input, textarea, select, button:not(:disabled), a[href]"
+            ":is(input, textarea, select, button:not(:disabled), a[href]):not([aria-disabled=true])"
           );
           if (press) control?.click();
           else control?.focus({ preventScroll: true });

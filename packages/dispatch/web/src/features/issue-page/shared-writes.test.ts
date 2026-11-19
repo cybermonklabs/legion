@@ -41,6 +41,7 @@ import { issue as marginIssue } from "../margin/margin-fixture";
 import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { issueStatuses } from "../project/board-model";
 import { writesOf } from "../writes/write-store";
+import { narrowIssue } from "./issue-fixtures";
 import { statusGlyph, statusTone } from "./issue-status";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
@@ -60,12 +61,6 @@ import { issueUpdateLabel, statusPickOnly, useIssueHeaderWrites } from "./useIss
 const issue: IssueDetails = { ...marginIssue, last_seq: 250, status: "todo" };
 
 const state: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
-
-/** The server answers a PATCH with the narrow `Issue`: no artifacts, children or open asks. */
-function narrowIssue(details: IssueDetails): Issue {
-  const { artifacts: _artifacts, children: _children, open_asks: _openAsks, ...rest } = details;
-  return rest;
-}
 
 /** The header and the Details panel of one issue page: two callers of the hook on one client. */
 function useBothCallers() {
