@@ -496,13 +496,13 @@ type PodSessionRegistration struct {
 // registrar is refused, since a row naming none would admit nothing.
 //
 // A row of the pod and name that is released, that names another registrar, or that names none
-// (one a broker of the build before registrars wrote, before this registrar bound the name or,
-// from a replica of that build while the broker rolls, after it) is taken whole: its registrar,
-// key, generation and expiry become this write's and its release mark is cleared. A release
-// ends a registration, so neither its key nor its generation carries over to the next, whose
-// claim may count its generations from lower; nor does another registrar's. A row of this
-// registrar's own that it has not released, live or lapsed,
-// keeps the rules below.
+// (one a broker of a build before registrars wrote: before this registrar bound the name, or after
+// it, from a replica of that build while the broker rolls or from a broker rolled back to that
+// build) is taken whole: its registrar, key, generation and expiry become this write's and its
+// release mark is cleared. A release ends a registration, so neither its key nor its generation
+// carries over to the next, whose claim may count its generations from lower; nor does another
+// registrar's. A row of this registrar's own that it has not released, live or lapsed, keeps the
+// rules below.
 //
 // jkt, when set, binds the registration to the key the session's own role proves, which is what
 // separates the roles of one pod: they read one exchange token and are registered for one pod

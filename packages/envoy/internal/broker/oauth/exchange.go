@@ -1253,13 +1253,13 @@ func expiryOf(token map[string]any) (time.Time, bool) {
 // later trade cures it, so both clients read it as final. A name another daemon holds is that
 // daemon's for good, so only that daemon's registration of the pod would admit it. No route of
 // this build writes a live row of a name bound to none, since the route binds the name in the
-// transaction that writes the row; only a broker of a build that writes the registrar and not the
-// binding, or a row written by hand, makes one, and only a registration that binds the name to the
-// pod's registrar admits the pod. Each case logs a
-// WARN line of its own and has a hint of its own. Each hint names the session and neither names a
-// daemon, for the reason the released refusal names no daemon. Each WARN line names the
-// principal, the pod, the session and the registrar that wrote the registration, and the line of a
-// name another daemon holds names the holder too; the operator reads them and the pod does not.
+// transaction that writes the row; only a hand edit of the database, a row written or a binding
+// deleted by hand, makes one, and only a registration that binds the name to the pod's registrar
+// admits the pod. Each case logs a WARN line of its own and has a hint of its own. Each hint names
+// the session and neither names a daemon, for the reason the released refusal names no daemon.
+// Each WARN line names the principal, the pod, the session and the registrar that wrote the
+// registration, and the line of a name another daemon holds names the holder too; the operator
+// reads them and the pod does not.
 func (p *Provider) registeredPodSession(ctx context.Context, session *oauthstore.ExchangeSession) error {
 	if session.Instance == "" {
 		return nil

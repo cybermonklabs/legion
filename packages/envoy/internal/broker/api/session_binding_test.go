@@ -204,15 +204,14 @@ const boundToNoDaemonMessage = "broker: the token exchange refused a pod's trade
 
 // TestATradeUnderANameBoundToNoDaemonIsRefused: a live registration of pod P for S naming daemon
 // A (daemonAccount), while pod_session_registrars binds S to no daemon, does not admit P's trade
-// under S. The test writes that row by hand: no route of this build writes it, since the route
-// binds the name in the transaction that writes the row; only a broker of a build that writes
-// the registrar and not the binding would. P's
-// trade under S is refused invalid_grant with a description beginning
-// session_name_not_this_registrars: that names S, says it is bound to no daemon and does not name
-// A, with no token, and one WARN line naming the principal, P, S and A and no holder, and no line
-// of a name another daemon holds. Once A registers P for S at the route, which binds S to A, P's
-// trade under S is answered: a registration that binds the name to the pod's registrar admits the
-// pod.
+// under S. The test writes that row by hand, since no route of this build writes it: the route
+// binds the name in the transaction that writes the row, and only a hand edit of the database, a
+// row written or a binding deleted by hand, makes one. P's trade under S is refused invalid_grant
+// with a description beginning session_name_not_this_registrars: that names S, says it is bound
+// to no daemon and does not name A, with no token, and one WARN line naming the principal, P, S
+// and A and no holder, and no line of a name another daemon holds. Once A registers P for S at
+// the route, which binds S to A, P's trade under S is answered: a registration that binds the
+// name to the pod's registrar admits the pod.
 func TestATradeUnderANameBoundToNoDaemonIsRefused(t *testing.T) {
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
