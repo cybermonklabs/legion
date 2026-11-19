@@ -662,8 +662,10 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 // which the hour claimReleaseWait caps rather than an operator, and a child's architect's first
 // start waiting for its tree to run again (childArchitectFirstStart), which a person's move of the
 // tree or of the child ends rather than an operator, and then for the branch row a re-admission
-// queued for the child (startRoot), whose own failures that row logs, and a delivery row waiting
-// for a launch the wake pacing parked (parkedWait), which that launch's turn ends.
+// queued for the child (startRoot), whose own failures that row logs, a delivery row waiting for a
+// launch the wake pacing parked (parkedWait), which that launch's turn ends, and a role message a
+// pause held waiting for the role a pause stopped to hold its topic (roleMessage's wait on
+// notify.ErrNoHolder), which the role's return or an end of its debt ends (heldMessageOwed).
 func routineWait(err error) bool {
 	var routine interface{ Routine() bool }
 	return errors.As(err, &routine) && routine.Routine()
@@ -1565,30 +1567,26 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 //
 // A row a project's pause held (record.OutboxRow.HeldByPause) is ended neither for its released
 // claim nor for its role having no live holder while it is owed to its role (R4 of
-// dispatch://INFRA-3759): the role's newest stop is a pause's stop that ended after the issue's
-// newest pod release (store.StoppedByAPause), so a pause, not a release, took the session the
-// message was for, and without the pause the role would have had it. The row waits for the role
-// to come back, and is published to the role's session once it is back. Its publish is what
+// dispatch://INFRA-3759): a pause, not a release, took the session the message was for
+// (store.StoppedByAPause), and without the pause the role would have had it. The row waits for the
+// role to come back, and is published to the role's session once it is back. Its publish is what
 // brings the role back: the listener answers that the role has no live holder
-// (notify.ErrNoHolder), which for this row is a wait, and reports the role's wake beside that
-// answer, and the workflow's wake of a role the pause stopped is that pause's held wake, whose
-// task says the pause stopped the session (workflow.WakeTask). The row takes no wake of its own,
-// since a delivery wake resumes the role with no task. While the wake pacing holds the role's
-// launch over no process, the row waits for that launch's turn (parkedLaunch, parkedWait), as a
-// hook prompt does.
+// (notify.ErrNoHolder), which for this row is a routine wait (routineWaiting), and reports the
+// role's wake beside that answer, and the workflow's wake of a role the pause stopped is that
+// pause's held wake, whose task says the pause stopped the session (workflow.WakeTask). The row
+// takes no wake of its own, since a delivery wake resumes the role with no task. While the wake
+// pacing holds the role's launch over no process, the row waits for that launch's turn
+// (parkedLaunch, parkedWait), as a hook prompt does.
 //
 // The debt reads no ready: the woken agent says it is ready (supervise.SaidReady) before its
 // plugin claims the role's topic, and the listener answers a publish in that gap as it answers the
 // stopped session, so a live role is owed the row too. Nor does it ask which pause held the row: a
 // second pause that begins before the role is back stops nothing of the released role but holds
 // the row again, and its resume marks the row with that second pause. The row ends as any row once
-// its publish reaches a holder, and takes the path above once a release recorded after the stop
-// ends the debt. It is owed only while the role can come back for it (heldMessageOwed): the claim
-// is released and its issue can be woken (wakeableIssue), or the role is on its way back or live
-// (queued, launch_uncertain, launching, shim_connected, registered, ready, idle or working). Any
-// other claim, one that a park, a close, a linger or an operator's suspension took over from the
-// release, one that failed or retired, or a released one whose issue cannot be woken, takes the
-// path above unchanged.
+// its publish reaches a holder. Which rows are owed, and the events alone that end the debt
+// undelivered, are heldMessageOwed's, the one statement of the rule: the role is owed the row
+// while its claim is not gone (supervise.Claim.Gone) or is released with an issue that can be
+// woken. A row whose debt has ended takes the path above unchanged.
 func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload record.RoleMessage) error {
 	if r.notices == nil {
 		return errors.New("role message executor has no Envoy publisher")
@@ -1623,9 +1621,13 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 	}
 	if stopped != 0 && errors.Is(err, notify.ErrNoHolder) {
 		// A wait as well: the role is coming back for the row, the listener reporting its wake
-		// beside this answer, or its session is up and has not claimed the role's topic yet.
-		return wait.Errorf("%s's role message for %s waits for the role's session to hold its topic: pause %d stopped the role, which is coming back or has not claimed its topic yet: %w",
-			row.Issue, payload.Role, stopped, err)
+		// beside this answer, or its session is up and has not claimed the role's topic yet. It is
+		// routine (routineWaiting): the role's return ends it, or one of the debt's end events
+		// (heldMessageOwed) does, so nobody has to act on it, and a return that outlasts the
+		// backoff's climb to its cap, about two minutes, would otherwise be logged as a warning at
+		// every attempt from the seventh (waitWarnAttempts).
+		return routineWaiting{err: wait.Errorf("%s's role message for %s waits for the role's session to hold its topic: pause %d stopped the role, which is coming back or has not claimed its topic yet: %w",
+			row.Issue, payload.Role, stopped, err)}
 	}
 	var refused notify.ErrRefusedByHolder
 	var denied notify.ErrPublishDenied
@@ -1649,27 +1651,32 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 	return nil
 }
 
-// heldMessageOwed is the pause of the stop under which role message row is owed to the role of
-// claim view, and 0 where it is not owed (roleMessage, R4 of dispatch://INFRA-3759). The row is
-// owed where a pause held it (record.OutboxRow.HeldByPause), the role's newest stop is a pause's
-// that ended after the issue's newest pod release (store.StoppedByAPause), whichever pause made
-// it, and the role can come back for the message: it is on its way back or live (queued,
-// launch_uncertain, launching, shim_connected, registered, ready, idle or working), or released
-// with an issue that can be woken (wakeableIssue), as the workflow's wake of a released role reads
-// it (workflow.wakeReleased). A claim this daemon does not supervise has the zero view, whose
-// issue is empty, and answers 0.
+// heldMessageOwed is the held role message's debt, and the one statement of it (R4 of
+// dispatch://INFRA-3759, roleMessage): the pause of the stop under which role message row is owed
+// to the role of claim view, and 0 where it is not owed. A row a pause held
+// (record.OutboxRow.HeldByPause) for a role a pause stopped, the claim's newest stop that ended
+// `stopped` (store.StoppedByAPause), whichever pause made that stop and whichever held the row,
+// stays owed until the role holds its topic and the row's publish reaches it. The debt ends
+// undelivered on these events alone:
+//
+//  1. a pod release of the issue recorded after that stop (store.StoppedByAPause);
+//  2. a takeover suspension: the claim suspended by any source but the release, an operator's or
+//     the daemon's among them;
+//  3. a failure;
+//  4. a retirement;
+//  5. the issue leaving the workflow, a lingering tree included: a released claim is owed only
+//     while its issue can be woken (wakeableIssue), as the workflow's wake of a released role
+//     reads it (workflow.wakeReleased).
+//
+// Events 2 to 4 leave the claim gone (supervise.Claim.Gone) and not released; every claim not
+// gone, launch_uncertain among them, is on its way back or live. A later pause's stop of the role
+// changes nothing, whether it is open, cancelled or ended any other way. A claim this daemon does
+// not supervise has the zero view, whose issue is empty, and answers 0.
 func (r *outbox) heldMessageOwed(ctx context.Context, row record.OutboxRow, view supervise.ClaimView) (int64, error) {
 	if row.HeldByPause == 0 || view.Issue == "" {
 		return 0, nil
 	}
-	switch view.State {
-	case supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching, supervise.StateShimConnected,
-		supervise.StateRegistered, supervise.StateReady, supervise.StateIdle, supervise.StateWorking:
-	case supervise.StateSuspended:
-		if !view.Released() {
-			return 0, nil
-		}
-	default:
+	if view.Gone() && !view.Released() {
 		return 0, nil
 	}
 	pause, err := r.trees.StoppedByAPause(ctx, r.project, view.Issue, view.Token)

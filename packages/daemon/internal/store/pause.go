@@ -853,53 +853,49 @@ func (s *Store) OwedLaunchesWithNoIssueRecord(ctx context.Context, held Pause) (
 	return owed, nil
 }
 
-// StoppedByAPause is the id of the pause whose stop is claim token's newest, where that stop ended
-// `stopped` after issue's newest pod release, whichever pause made it, and 0 otherwise, in a
-// transaction of its own. A role message a pause held reads it to tell a role a pause took from
-// one an idle release took (internal/daemon's outbox.roleMessage, R4 of dispatch://INFRA-3759):
-// the message is owed to a role a pause stopped until the role's session holds its topic, and a
-// release recorded after the stop ends that debt. It reads no ready, as StoppingPauseTx does: a
-// woken agent says it is ready (supervise.SaidReady) before its plugin claims the role's Envoy
-// topic, and the message is still owed in that gap. project is the project token, as the
-// claim-keyed tables hold it.
+// StoppedByAPause is the id of the pause whose stop of claim token is the claim's newest stop that
+// ended `stopped`, where that stop ended after issue's newest pod release, whichever pause made it,
+// and 0 otherwise. It is the held role message's rule (internal/daemon's outbox.heldMessageOwed,
+// R4 of dispatch://INFRA-3759): a role message a pause held is owed to a role a pause stopped
+// until the role's session holds its topic, and a release recorded after the stop ends that debt.
+// A later stop of the claim that is still open, or that ended any other way, is passed over: a
+// cancelled stop stopped nothing, and what a taken-over or failed one signals, the claim's state or
+// a later pod release already says. It reads no ready, unlike StoppingPauseTx: a woken agent says
+// it is ready (supervise.SaidReady) before its plugin claims the role's Envoy topic, and the
+// message is still owed in that gap. project is the project token, as pod_releases holds it.
 func (s *Store) StoppedByAPause(ctx context.Context, project, issue string, token claim.Token) (int64, error) {
 	var pause int64
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
-		var err error
-		pause, err = newestPauseStopTx(ctx, tx, project, issue, token, false)
-		return err
-	})
-	return pause, err
+	if err := s.pool.QueryRow(ctx, `select coalesce((select case
+			when s.ended_at > coalesce((select max(r.at) from pod_releases r where r.project = $1 and r.issue = $2), '-infinity'::timestamptz)
+			then s.pause_id else 0 end
+		from project_pause_stops s where s.claim = $3 and s.ended_as = $4 order by s.id desc limit 1), 0)`,
+		project, issue, string(token), string(PauseStopStopped)).Scan(&pause); err != nil {
+		return 0, fmt.Errorf("read the newest pause that stopped %s: %w", token, err)
+	}
+	return pause, nil
 }
 
 // StoppingPauseTx is the id of the pause that stopped claim token, through tx: the pause of the
-// claim's newest stop, where that stop ended `stopped` after both issue's newest pod release and
-// the claim's last ready (claims.last_ready), and 0 otherwise. It is the one statement of which
-// pause stopped a claim, and a wake of the claim reads it twice over (PodRecords.PauseOfWake): the
-// session the wake brings back is one that pause stopped in a pod it kept, which the wake's task
-// says (decision 16 of dispatch://INFRA-3759, workflow.WakeTask), and a wake taken once that pause
-// has ended can be that pause's held wake, which pairs with no release (decision 15,
-// PodRecords.TakePodWake). A release recorded after that stop took the pod, and the release's
-// words are the true ones. A ready after it is the agent of a launch since, such as the resume's,
-// so something later stopped that session: an idle release suspends the role (its outbox
-// `suspend` row) before its teardown records the release, and a wake taken in between is the
-// release's. project is the project token, as pod_releases holds it.
+// claim's newest stop, whatever its end, where that stop ended `stopped` after both issue's newest
+// pod release and the claim's last ready (claims.last_ready), and 0 otherwise. It is the statement
+// of which pause a wake of the claim belongs to, and a wake of the claim reads it twice over
+// (PodRecords.PauseOfWake): the session the wake brings back is one that pause stopped in a pod it
+// kept, which the wake's task says (decision 16 of dispatch://INFRA-3759, workflow.WakeTask), and a
+// wake taken once that pause has ended can be that pause's held wake, which pairs with no release
+// (decision 15, PodRecords.TakePodWake). A release recorded after that stop took the pod, and the
+// release's words are the true ones. A ready after it is the agent of a launch since, such as the
+// resume's, so something later stopped that session: an idle release suspends the role (its
+// outbox `suspend` row) before its teardown records the release, and a wake taken in between is
+// the release's. The held role message's rule is StoppedByAPause, not this. project is the project
+// token, as pod_releases holds it.
 func StoppingPauseTx(ctx context.Context, tx pgx.Tx, project, issue string, token claim.Token) (int64, error) {
-	return newestPauseStopTx(ctx, tx, project, issue, token, true)
-}
-
-// newestPauseStopTx is the pause of claim token's newest stop, through tx, where that stop ended
-// `stopped` after issue's newest pod release and, when sinceReady, after the claim's last ready
-// (claims.last_ready), and 0 otherwise: the one statement StoppingPauseTx (sinceReady) and
-// StoppedByAPause (no ready) read. project is the project token, as pod_releases holds it.
-func newestPauseStopTx(ctx context.Context, tx pgx.Tx, project, issue string, token claim.Token, sinceReady bool) (int64, error) {
 	var pause int64
 	if err := tx.QueryRow(ctx, `select coalesce((select case when s.ended_as = $4
 			and s.ended_at > coalesce((select max(r.at) from pod_releases r where r.project = $1 and r.issue = $2), '-infinity'::timestamptz)
-			and (not $5::boolean or s.ended_at > coalesce((select c.last_ready from claims c where c.token = $3), '-infinity'::timestamptz))
+			and s.ended_at > coalesce((select c.last_ready from claims c where c.token = $3), '-infinity'::timestamptz)
 			then s.pause_id else 0 end
 		from project_pause_stops s where s.claim = $3 order by s.id desc limit 1), 0)`,
-		project, issue, string(token), string(PauseStopStopped), sinceReady).Scan(&pause); err != nil {
+		project, issue, string(token), string(PauseStopStopped)).Scan(&pause); err != nil {
 		return 0, fmt.Errorf("read the pause that stopped %s: %w", token, err)
 	}
 	return pause, nil
