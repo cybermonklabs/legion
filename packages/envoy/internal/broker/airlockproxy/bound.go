@@ -254,8 +254,12 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Everything below reads the grant this request was decided for: the names it still
-	// carries, the placeholders behind them, and the ids its line logs.
+	// carries, the placeholders behind them, and the ids its line logs. Every dial made for it -
+	// an Azure exchange's as well as the call's own - runs under that grant too (withCaller), so
+	// its line names the caller the request's own line names, and not the one the CONNECT read,
+	// which a grant that moved since no longer is.
 	info.grant = connection
+	r = r.WithContext(withCaller(r.Context(), connection))
 	request := &airlock.Request{
 		ConnectHost: info.host,
 		// The port the CONNECT named, which is 443 for every connection the proxy decrypts
@@ -292,7 +296,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, info.callFor(pair{}), http.StatusForbidden, codeNoBoundName, "no name of this grant is bound to "+info.host)
 		return
 	}
-	chosen := choosePair(candidates, info.grant, request)
+	chosen, holdsPlaceholder := choosePair(candidates, info.grant, request)
 	// The entry's kind is what the value behind this name is: "" a string a header carries,
 	// which the swap below puts there; "aws" a key pair the call itself has to be signed with
 	// (aws.go); "azure" a federated token that has to be exchanged at a token endpoint for an
@@ -302,8 +306,9 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	kind := chosen.kind
 	if s.noKind {
 		// Options.NoKind: the entry's kind is read as none, so an azure or aws entry takes
-		// the plain header swap below. It is the negative control of the check those two
-		// kinds belong to, and is refused on a production start.
+		// the plain header swap below, and the federated token's refusal below holds as it does
+		// under every kind. It is the negative control of the check those two kinds belong to,
+		// and is refused on a production start.
 		kind = ""
 	}
 	exchange := kind == airlock.KindAzure && isTokenRequest(r)
@@ -312,6 +317,20 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// so what it is handled for is the federated slot whatever choosePair read of its
 		// headers. The exchange below checks the form itself.
 		chosen.slot = requests.SlotAzureFederated
+	} else if holdsPlaceholder && chosen.slot == requests.SlotAzureFederated {
+		// The federated token leaves the broker inside an exchange at the token authority and
+		// nowhere else (exchangeToken, azureBound): Entra takes it as the assertion of every
+		// application federated with the broker, so the header swap below would hand the host
+		// this request goes to - the authority or any other host the entry binds - the
+		// assertion of each of them. The refusal follows the slot rather than the entry's kind:
+		// an azure-login name's value fills this slot whatever the kind of the entry that binds
+		// it (requests.airlockSplitOf reads the policy kind first), so under an entry of no kind
+		// or of another, where no exchange is made, it is the same token. A request that
+		// carries no placeholder of the grant is still handled for this slot while the grant
+		// holds no access slot, and goes on with nothing swapped into it: az reads the tenant's
+		// OpenID configuration that way before its first token request.
+		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeFederatedSwap, "refusing to swap "+chosen.name+"'s federated token into a request that is no token request: that token leaves the broker only in an exchange at the token authority")
+		return
 	}
 	placeholder := info.grant.Names[chosen.name].Slots[chosen.slot]
 	values, err := s.valuesFor(r.Context(), info.grant.GrantID)
@@ -364,8 +383,9 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// The one request the proxy answers itself: the broker makes the exchange with the
-		// real federated token and hands the command a placeholder access token.
-		s.exchangeToken(w, info, r, chosen, value)
+		// real federated token and hands the command a placeholder access token, as the
+		// application and in the tenant the name's own document names and no other.
+		s.exchangeToken(w, info, r, chosen, secret)
 		return
 	}
 
@@ -454,6 +474,9 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	refusedByCut := false
 	proxy := &httputil.ReverseProxy{
 		Transport: s.upstream,
+		// httputil's own lines - a body copy that failed, which quotes what the service sent -
+		// go through this package's log rather than the standard logger (Server.errorLog).
+		ErrorLog: s.errorLog,
 		// -1: every write is flushed as it arrives, so a streamed answer - a long poll, a
 		// server-sent event stream, a large download - reaches the command as the service
 		// sends it rather than in buffers. An answer with no body is the one exception
@@ -797,11 +820,13 @@ func (s *Server) refuse(w http.ResponseWriter, r *http.Request, c call, status i
 // name the call was handled for as its secrets, once one was chosen, listed and counted by the API
 // port's rule (answer.SecretNames) - and beside them the host, the reason and the path before the
 // caller's correlation id, and the issue the grant was given for and the slot after it. Never the
-// placeholder and never the value, as callFields: the reason is the broker's own words, which name
-// neither. The method, the host and the path are the caller's, and a reason may quote the host
-// (serveConnect's target that is no host and port, and checkedAddresses' name that does not
-// resolve): RefusalLine.Fields cuts each of them, as it cuts every text field of the line
-// (answer.ClipFields).
+// value: no field is read from a header the swap puts one in, nor from the body. The method, the
+// host, the path and the correlation id (X-Correlation-Id) are the caller's own text, and a reason
+// may quote the host (serveConnect's target that is no host and port, and checkedAddresses' name
+// that does not resolve): RefusalLine.Fields cuts each of them, as it cuts every text field of the
+// line (answer.ClipFields), and the broker writes the line through its placeholder mask
+// (logmask.Writer), which writes each placeholder such text holds as logmask.Mark, since a cut is
+// no redaction.
 func (s *Server) refusalFields(id string, c call, r *http.Request, status int, code, reason string) []any {
 	line := answer.RefusalLine{ID: id, Status: status, Code: code, Method: r.Method,
 		CallerClass: answer.CallerAirlock, Caller: callerOf(c.grant), Correlation: answer.CorrelationID(r)}
@@ -910,6 +935,8 @@ func (s *Server) candidates(grant requests.AirlockConnection, host string, port 
 
 // choosePair is the one (name, slot) pair a request is handled for: the first candidate a header
 // of the request already carries the placeholder of, and otherwise the first candidate.
+// holdsPlaceholder is whether the request carries the placeholder of the pair answered, so the
+// caller tells the request that asks for that pair's value from the one that only fell to it.
 //
 // Why one pair at all. The decision and the swap are over one grant and one secret
 // (airlock.Grant), and the model that is proved is over that pair, so a request is decided for
@@ -924,7 +951,7 @@ func (s *Server) candidates(grant requests.AirlockConnection, host string, port 
 // candidate: the entry's hosts, method and path rules apply to it, and it is forwarded with
 // nothing swapped. That is what makes an entry's allow list a bound on the whole connection
 // rather than on the requests that happen to ask for a swap.
-func choosePair(candidates []pair, grant requests.AirlockConnection, request *airlock.Request) pair {
+func choosePair(candidates []pair, grant requests.AirlockConnection, request *airlock.Request) (chosen pair, holdsPlaceholder bool) {
 	for _, candidate := range candidates {
 		placeholder := grant.Names[candidate.name].Slots[candidate.slot]
 		if placeholder == "" {
@@ -932,11 +959,11 @@ func choosePair(candidates []pair, grant requests.AirlockConnection, request *ai
 		}
 		for _, header := range request.Headers {
 			if airlock.Carries(placeholder, header[1]) {
-				return candidate
+				return candidate, true
 			}
 		}
 	}
-	return candidates[0]
+	return candidates[0], false
 }
 
 // sniOf is the name the command asked for in its TLS handshake, "" for a client that sent none.

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/logging"
 )
@@ -416,6 +417,9 @@ func (f *factsRead) answer(ctx context.Context, key factsKey, node factsNode, re
 		} else if err != nil {
 			logging.FromContext(ctx).Debug("dispatch delivery: the commit messages of a pull request are not read, so its answer is not known until a later read",
 				"repo", canonical, "number", key.number, "error", err)
+			// The attempt that ctx carries notes this failed read (githubreads), as
+			// storePullRequestFacts notes its own.
+			githubreads.NoteFailuref(ctx, "read the commit messages of %s PR #%d: %w", canonical, key.number, err)
 		} else {
 			texts.CommitMessages, texts.MessagesRead = append(kept, rest...), true
 		}

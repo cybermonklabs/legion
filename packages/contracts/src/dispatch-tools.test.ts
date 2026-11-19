@@ -201,6 +201,7 @@ const validCalls = {
   dispatch_attribution: {},
   dispatch_handoff_write: specFor("dispatch_handoff_write").example,
   dispatch_handoff_read: { issue: "DSP-1", phase: "implement", version: 2 },
+  dispatch_steps: { issue: "DSP-1" },
   dispatch_inbox: {},
 } as const;
 
@@ -305,6 +306,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_attribution",
       "dispatch_handoff_write",
       "dispatch_handoff_read",
+      "dispatch_steps",
       "dispatch_inbox",
     ]);
 
@@ -447,6 +449,7 @@ describe("dispatchToolSpecs", () => {
       "acme/infra",
       "sjawhar/legion",
       "Owner-1/repo.name_2",
+      "mona-cat_octo/arch",
       "a/..b",
     ]) {
       expect(schema.safeParse({ project: "CORE", repo }).success, String(repo)).toBe(true);
@@ -765,6 +768,15 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ issue: "DSP-1", phase: "review", body: "{}" }).success).toBe(false);
   });
 
+  test("dispatch_steps takes one issue and nothing else", () => {
+    const schema = schemaFor("dispatch_steps");
+
+    expect(schema.safeParse({ issue: "DSP-1" }).success).toBe(true);
+    expect(schema.safeParse({ issue: "acme/infra#12" }).success).toBe(true);
+    expect(schema.safeParse({ issue: "DSP-1", task: "default" }).success).toBe(false);
+    expect(schema.safeParse({ issue: 1 }).success).toBe(false);
+  });
+
   test("dispatch_project takes a key and a name and nothing else", () => {
     const schema = schemaFor("dispatch_project");
 
@@ -861,7 +873,7 @@ describe("dispatchToolSpecs", () => {
       { issue: "DSP-1", labels: [] },
       { issue: "DSP-1", priority: 0 },
       { issue: "DSP-1", priority: null },
-      { issue: "DSP-1", assignee: "alice@theorem.dev" },
+      { issue: "DSP-1", assignee: "alice@example.com" },
       { issue: "DSP-1", assignee: null },
       { issue: "DSP-1", external_links: ["https://github.com/owner/repo/pull/7"] },
       { issue: "DSP-1", route: "" },

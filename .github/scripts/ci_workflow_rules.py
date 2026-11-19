@@ -7,11 +7,13 @@ None of them
 reads a filter, a gate or the closure of a go command, so none belongs in the filter-coverage
 engine beside them; check-ci-filters.sh's header numbers them 10, 12, 11, 13, 14 and 16, and
 ci_filter_coverage.main()
-is what runs them, over the documents it already loaded - the rerun-guard rule over ci.yaml
-alone, since the `if:` it reads is the caller job's; the cache rule over ci.yaml and every
-workflow its jobs call, since a job's restore moves with its steps; the push-condition rule over
+is what runs them, over the documents it already loaded where the rule reads only those - the
+rerun-guard rule over ci.yaml alone, since the `if:` it reads is the caller job's; the cache
+rule over ci.yaml and every workflow its jobs call, since a job's restore moves with its steps,
+and over every other workflow of the directory, which it reads itself, for the key and paths,
+since a release build's restore misses as silently; the push-condition rule over
 ci.yaml and the called files that are ci.yaml's alone (ci_only_documents says why not the
-others) - the workspace rule over the
+others, and reads the directory to find them) - the workspace rule over the
 root manifest and the WORKSPACES table main() hands it, and the race-fill rule over ci-caches.yaml
 and the DAEMON_RACE_PACKAGES list main() hands it the same way, since what this module imports is
 the engine's names, never the data's, and the merge-group rule over the workflow directory, which
@@ -78,8 +80,9 @@ WORKFLOW_SUFFIXES = (".yaml", ".yml")
 @cache
 def directory_workflows() -> dict:
     """Every workflow of this repository, as {its repository-relative path: the parsed document},
-    in path order. The two rules that walk the directory read this one answer: parsing each file
-    for each of them is a second read of every workflow in the repository."""
+    in path order. The three rules that walk the directory - the push-condition rule (through
+    ci_only_documents), the cache rule and the merge-group rule - read this one answer: parsing
+    each file for each of them is a second read of every workflow in the repository."""
     try:
         paths = sorted(p for p in (REPO / WORKFLOW_DIR).iterdir() if p.suffix in WORKFLOW_SUFFIXES)
     except Exception as exc:
@@ -224,12 +227,14 @@ def cache_steps(document: dict, action: str) -> list:
 
 
 def restores_of(documents: dict) -> dict:
-    """Every restore of ci.yaml's run, as family -> [(where it is, its with:)]. Where a restore
-    can be is where its job's steps are, which is the document set the engine loads: ci.yaml,
-    and each local workflow one of its jobs calls - dispatch-browser.yaml's shard and alone jobs
-    restore the browser and apt archive families for ci.yaml's dispatch-browser job - so a save
-    paired against ci.yaml alone would read as a fill nobody wants. The set holds each called
-    file once however many of ci.yaml's jobs name it, so each restore is taken once."""
+    """Every restore of the given workflows, as family -> [(where it is, its with:)]. Given the
+    document set the engine loads - ci.yaml, and each local workflow one of its jobs calls:
+    dispatch-browser.yaml's binaries, multiprocess, embedder and visual jobs restore go-envoy and
+    go-envoy-test for ci.yaml's dispatch-browser job - it is every restore of ci.yaml's run;
+    paired against ci.yaml alone, a save that only a called workflow restores would read as a fill
+    nobody wants. Given the rest of the directory, it is the restores of the release builds and
+    the other workflows. The set holds each file once however many of ci.yaml's jobs name it, so
+    each restore is taken once."""
     restores = defaultdict(list)
     for path, document in documents.items():
         for job_id, family, given in cache_steps(document, "restore"):
@@ -254,11 +259,20 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
 
     The restores are collected from every document of the set, ci.yaml and each workflow its
     jobs call, since a job that gives its steps to a called file takes its restore there with
-    them and the entry it reads is the same one; each refusal names the file the restore is in."""
+    them and the entry it reads is the same one; each refusal names the file the restore is in.
+
+    The key and the paths are held for every other workflow of the directory too: a release
+    build (release.yaml's go-daemon, release-envoy-infra.yaml's go-envoy-infra), the nightly
+    browser re-record (go-envoy) and this workflow's own lookups restore the entries it fills,
+    and a restore there that drifts from the save misses as silently as one of ci.yaml's. Only
+    the existence check above stays ci.yaml's: a fill is for ci.yaml's run, so a family only
+    another workflow restores is still a fill ci.yaml does not read."""
     if not (REPO / CACHE_WORKFLOW).is_file():
         return
     caches = load_repository_yaml(REPO / CACHE_WORKFLOW) or {}
     restores = restores_of(documents)
+    elsewhere = restores_of({path: document for path, document in directory_workflows().items()
+                             if path not in documents})
     for job_id, family, given in cache_steps(caches, "save"):
         key, paths = str(given.get("key", "")).rstrip(), path_lines(given.get("path", ""))
         if family not in restores:
@@ -268,7 +282,7 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
                                                   f"family nothing restores is a fill nobody reads: restore it there, "
                                                   f"or drop the save"))
             continue
-        for restore_where, restored in restores[family]:
+        for restore_where, restored in restores[family] + elsewhere.get(family, []):
             restored_key = str(restored.get("key", "")).rstrip()
             restored_paths = path_lines(restored.get("path", ""))
             if key != restored_key:

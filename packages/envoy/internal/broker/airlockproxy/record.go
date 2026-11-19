@@ -29,8 +29,11 @@ const (
 	codeNotAProxyRequest = "NOT_A_PROXY_REQUEST"
 	// refuseCredential: no Proxy-Authorization, or one that is not Basic or not base64.
 	codeProxyCredential = "PROXY_CREDENTIAL_INVALID"
-	// serveConnect: a CONNECT authority that is no host and port.
+	// serveConnect: a CONNECT authority that is no host and port, or whose port names no number
+	// from 1 to 65535 (portNumber).
 	codeConnectTarget = "CONNECT_TARGET_INVALID"
+	// servePlain: an absolute URL whose port names no number from 1 to 65535 (portNumber).
+	codeProxyTarget = "PROXY_TARGET_INVALID"
 	// serveConnect and servePlain: a host that resolves nowhere, or somewhere this proxy never
 	// dials (checkedAddresses).
 	codeAddressRefused = "ADDRESS_REFUSED"
@@ -58,10 +61,16 @@ const (
 	codeAWSSignature = "AWS_SIGNATURE_REFUSED"
 	// serveBound: a request the swap refused although the decision allowed it.
 	codeSwapRefused = "SWAP_REFUSED"
+	// serveBound: a request that is no token request and carries an azure name's federated
+	// token's placeholder, which the header swap would hand the host the request goes to.
+	codeFederatedSwap = "FEDERATED_TOKEN_SWAP_REFUSED"
 	// exchangeToken: a token request whose form cannot be read.
 	codeTokenRequest = "TOKEN_REQUEST_INVALID"
 	// exchangeToken: a token request whose client_assertion is not this grant's placeholder.
 	codeTokenAssertion = "TOKEN_ASSERTION_REFUSED"
+	// exchangeToken: a token request to a host that is not the token authority's, or made as
+	// another application or in another tenant than the name's own document names (azureBound).
+	codeTokenApplication = "TOKEN_APPLICATION_REFUSED"
 	// exchangeToken: an exchange the token endpoint did not answer, or answered with nothing the
 	// proxy can hand on.
 	codeExchangeFailed = "TOKEN_EXCHANGE_FAILED"

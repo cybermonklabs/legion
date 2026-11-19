@@ -266,7 +266,7 @@ func TestListIssuesExcludesOpenAsksOnClosedIssues(t *testing.T) {
 	}
 	// The close withdrew the ask, which no longer counts.
 	assertOpenAskCount(0)
-	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice", Proven: true})
 	openOnly := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?project=TEST&open=true", nil, "alice")
 	if openOnly.Code != http.StatusOK || len(decodeBody[[]model.IssueSummary](t, openOnly)) != 0 {
 		t.Fatalf("open issue list: status=%d body=%s", openOnly.Code, openOnly.Body.String())

@@ -31,8 +31,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -398,22 +401,117 @@ const gcloudWaitDelay = time.Second
 // command's picks a configuration.
 // gcloud reads /dev/null, never this command's standard input, which can be a secret's value on
 // its way in; what it writes on its standard error is kept only to name a failure. Once ctx ends,
-// gcloud is killed and its output waited for no more than gcloudWaitDelay: gcloud is a shell
-// script whose Python child can hold the output open after the script is killed.
+// gcloud is killed with its whole process group where the platform has them (killGroupOnCancel),
+// not the gcloud process alone, since the gcloud on PATH can be a script whose child, gcloud's
+// Python, holds the output open and outlives a kill of the script; the output is then waited for
+// no more than gcloudWaitDelay, for a process that left the group.
+// The whole group is killed too where a signal ends this command while gcloud runs: gcloud, in a
+// group of its own, gets no signal sent to this command's group, such as a terminal's interrupt,
+// so runGcloud records each gcloud it runs (runRecorded) and an end by a signal kills each
+// recorded one first (exitBySignal, killRunningGcloud).
 func runGcloud(ctx context.Context, gcloud gcloudCommand, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, gcloud.path, args...)
 	cmd.Env = gcloudEnv()
+	killGroupOnCancel(cmd)
 	cmd.WaitDelay = gcloudWaitDelay
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := runRecorded(cmd); err != nil {
 		if said := strings.TrimSpace(stderr.String()); said != "" {
 			return nil, fmt.Errorf("%w: %s", err, said)
 		}
 		return nil, err
 	}
-	return out, nil
+	return stdout.Bytes(), nil
+}
+
+// runningGcloud holds the pid of each gcloud runRecorded has started and not yet waited for.
+var runningGcloud = struct {
+	sync.Mutex
+	pids map[int]bool
+}{pids: map[int]bool{}}
+
+// formWatchesSignals counts the form watches of createSignals running now (watchCreateSignals),
+// each of which ends the form by a signal through exitBySignal itself.
+var formWatchesSignals atomic.Int32
+
+// runRecorded runs cmd as cmd.Run does, its pid recorded in runningGcloud from its start until it
+// has been waited for, so that an end by a signal (exitBySignal) kills it with its group. Where no
+// form watches createSignals, it watches them itself for as long as cmd runs
+// (watchSignalsWhileGcloudRuns). Once cmd has been waited for, on every outcome, it kills what is
+// left of cmd's group (killGroupLeft): a gcloud that exits by itself can leave a child holding
+// its output, which gcloudWaitDelay stops the wait for and does not kill. The group is gcloud's
+// own, so nothing else is in it, and while a process is left in it its id names no other group.
+func runRecorded(cmd *exec.Cmd) error {
+	runningGcloud.Lock()
+	if err := cmd.Start(); err != nil {
+		runningGcloud.Unlock()
+		return err
+	}
+	pid := cmd.Process.Pid
+	runningGcloud.pids[pid] = true
+	runningGcloud.Unlock()
+	stop := watchSignalsWhileGcloudRuns()
+	err := cmd.Wait()
+	stop()
+	killGroupLeft(pid)
+	runningGcloud.Lock()
+	delete(runningGcloud.pids, pid)
+	runningGcloud.Unlock()
+	return err
+}
+
+// killRunningGcloud kills each gcloud runRecorded is running, with its group (killGcloudGroup),
+// for a command that is ending by a signal. It keeps runningGcloud locked, so no gcloud starts
+// after it.
+func killRunningGcloud() {
+	runningGcloud.Lock()
+	for pid := range runningGcloud.pids {
+		killGcloudGroup(pid)
+	}
+}
+
+// watchSignalsWhileGcloudRuns catches each of createSignals this process did not inherit as
+// ignored, until stop is called, where no form watches them (formWatchesSignals), and ends the
+// process by the first that comes (exitBySignal, which kills the running gcloud first), as the
+// signal's default action would have, once the value prompt, where it reads, has finished
+// (promptBusy). A signal that came before the stop still ends the process.
+func watchSignalsWhileGcloudRuns() (stop func()) {
+	if formWatchesSignals.Load() > 0 {
+		return func() {}
+	}
+	var watched []os.Signal
+	for _, sig := range createSignals {
+		if !signal.Ignored(sig) {
+			watched = append(watched, sig)
+		}
+	}
+	if len(watched) == 0 {
+		return func() {}
+	}
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, watched...)
+	end := func(sig os.Signal) {
+		promptBusy.Lock()
+		exitBySignal(sig)
+	}
+	done := make(chan struct{})
+	go func() {
+		select {
+		case sig := <-signals:
+			end(sig)
+		case <-done:
+		}
+	}()
+	return func() {
+		close(done)
+		signal.Stop(signals)
+		select {
+		case sig := <-signals:
+			end(sig)
+		default:
+		}
+	}
 }
 
 // newGCPBackend signs every form, a read and a write alike, in with the credential of the first
@@ -847,6 +945,13 @@ func (b *gcpBackend) readValue(ctx context.Context, slug string) (string, error)
 // read none.
 func (b *gcpBackend) valueReadPermission() string {
 	return "secretmanager.versions.access on the secret"
+}
+
+// tagReadPermission is what GetSecret needs of a person's sign-in: whoever stores a value reads
+// that secret's annotations first, so a write grant that does not carry this read fails `secret
+// set` before anything is written.
+func (b *gcpBackend) tagReadPermission() string {
+	return "secretmanager.secrets.get on the secret"
 }
 
 // setTags writes tags into the annotations held holds, and removeTags deletes keys from them, each

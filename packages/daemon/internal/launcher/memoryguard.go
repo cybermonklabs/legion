@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/memoryguard"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -19,6 +20,24 @@ import (
 // it.
 var newMemoryGuard = memoryguard.New
 
+// newGuest builds a microVM pod's guest watch from the classifier, the sink and the log the
+// launcher gives it (serveMemoryGuard). It is memoryguard.NewGuest, held in a package variable as
+// newMemoryGuard is, so that a test can point the watch the launcher built at a fake /proc, cgroup
+// directory and clock.
+var newGuest = memoryguard.NewGuest
+
+// guestSessionDrain is the guest watch's SessionDrain: how long after a role's session process
+// leaves /proc a SIGKILL the role's processes show can still be its role-init's. Once the shim has
+// exited, role-init writes the shim's status, sends SIGTERM over the role's namespace and drains
+// for roleNamespaceDrain, asking whether the namespace is empty every namespaceReapPoll, so it sees
+// the drain's end up to one poll and one reapNamespace pass late, and then sends kill(-1, SIGKILL)
+// (runRoleShim, roleinit_linux.go). That lands milliseconds past the drain; the rest of the second
+// is a margin for role-init running late under the memory pressure that raises the counter. A
+// wider bound costs kills of that role left unnamed in a burst that starts within it after the
+// departure, and a wrong name only within the one limit of the guest watch's rule ("What the sign
+// does not show" in docs/kubernetes.md).
+const guestSessionDrain = roleNamespaceDrain + time.Second
+
 // containerInit is whether this launcher is its container's first process, PID 1 of the
 // container's PID namespace, the one rule that also starts the orphan reaper (Run). The pod's
 // classifier holds only there: PID 1 sees every process of the container and owns each one no
@@ -26,8 +45,10 @@ var newMemoryGuard = memoryguard.New
 // role-init is no role's. A launcher run anywhere else (a test of cmd/legion, a launcher run by
 // hand) shares its /proc with processes the classifier knows nothing of, and would end them. The
 // clone's git lock sweep runs behind the same rule (serveGitLockSweep), since a pass removes a
-// lock no process it sees holds open. It is a package variable so that a test of the guard or of
-// the sweep can stand its test process in for PID 1.
+// lock no process it sees holds open, and so does the pod's cache trimmer (serveVolumeTrim),
+// since a sweep may delete a cache entry that no process it sees is using. It is a package
+// variable so that a test of the guard, of the sweep or of the trimmer can stand its test
+// process in for PID 1.
 var containerInit = func() bool { return os.Getpid() == 1 }
 
 // maxWaitingMemoryKills is the most reports of the guard's kills a role keeps while no connection
@@ -36,21 +57,29 @@ var containerInit = func() bool { return os.Getpid() == 1 }
 // report would have told the role.
 const maxWaitingMemoryKills = 32
 
-// serveMemoryGuard runs the issue pod's one memory guard (INFRA-3557) and each role's sender of
-// that guard's kill reports until ctx ends, and answers a channel closed once all of them have
-// returned, so Run can wait for it as it waits for the test database's ticker (serveTestPG). The
-// controller's pod runs none: Run's single-role branch returns before this is reached.
+// serveMemoryGuard runs the issue pod's one memory watch and each role's sender of that watch's
+// kill reports until ctx ends, and answers a channel closed once all of them have returned, so Run
+// can wait for it as it waits for the test database's ticker (serveTestPG). The controller's pod
+// runs none: Run's single-role branch returns before this is reached.
 //
-// The guard runs only where the launcher is the container's first process (containerInit). Any
+// The watch runs only where the launcher is the container's first process (containerInit). Any
 // other launcher logs one line and runs none: no manager then holds a guard, so serve hands no
 // settings on and no report is ever queued.
 //
-// The guard runs at memoryguard's defaults from the start, before any role connects, so the pod is
-// guarded while the daemon is away, and each role's acknowledgement then hands it the daemon's
-// settings (serve). Its lines are the launcher's own, behind no role's prefix (roleLog.linef),
-// because it watches every role's processes and the launcher's together. A kill of a process in a
-// role is reported to that role's manager, which sends it on that role's connection
-// (queueMemoryKill); a kill of a process in no role has the guard's own line and nothing else.
+// Under gVisor the watch is the memory guard (INFRA-3557), which ends a process before the host
+// kernel ends the whole sandbox. It runs at memoryguard's defaults from the start, before any role
+// connects, so the pod is guarded while the daemon is away, and each role's acknowledgement then
+// hands it the daemon's settings (serve). In a microVM (Config.MicroVM, the pod as built) the
+// pod's own kernel stops one process, so the guard is never built and no acknowledgement's
+// settings reach one: the launcher logs one off line and runs the guest watch
+// (memoryguard.Guest, INFRA-3729), which steers that kernel to the processes the guard would end,
+// by the same classifier, and reports each process it stopped through the same sink, each report
+// carrying one of the kernel's two causes. Either watch's lines are the launcher's own, behind no
+// role's prefix (roleLog.linef), because it watches every role's processes and the launcher's
+// together.
+// A kill of a process in a role is reported to that role's manager, which sends it on that role's
+// connection (queueMemoryKill); a kill of a process in no role has the watch's own line and
+// nothing else.
 func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids *pidGuard) <-chan struct{} {
 	done := make(chan struct{})
 	if !containerInit() {
@@ -63,18 +92,25 @@ func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids
 	for _, m := range managers {
 		byRole[m.role] = m
 	}
-	guard := newMemoryGuard(memoryguard.Config{
-		Classify: newPodClassifier(cfg.RolesDir, managers, pids).classify,
-		Sink: func(k memoryguard.Kill) {
-			if m := byRole[k.Role]; m != nil {
-				m.queueMemoryKill(k.LauncherMemoryKill)
-			}
-		},
-		Logf: managers[0].log.linef,
-	})
+	classify := newPodClassifier(cfg.RolesDir, managers, pids).classify
+	sink := func(k memoryguard.Kill) {
+		if m := byRole[k.Role]; m != nil {
+			m.queueMemoryKill(k.LauncherMemoryKill)
+		}
+	}
+	var watch func(context.Context)
+	if cfg.MicroVM {
+		managers[0].log.linef("launcher: memory guard: off reason=the pod runs in a microVM, whose own kernel stops one process")
+		watch = newGuest(memoryguard.GuestConfig{Classify: classify, Sink: sink, Logf: managers[0].log.linef, SessionDrain: guestSessionDrain}).Run
+	} else {
+		guard := newMemoryGuard(memoryguard.Config{Classify: classify, Sink: sink, Logf: managers[0].log.linef})
+		for _, m := range managers {
+			m.memoryGuard = guard
+		}
+		watch = guard.Run
+	}
 	var running sync.WaitGroup
 	for _, m := range managers {
-		m.memoryGuard = guard
 		m.memoryWake = make(chan struct{}, 1)
 		running.Add(1)
 		go func() {
@@ -85,7 +121,7 @@ func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids
 	running.Add(1)
 	go func() {
 		defer running.Done()
-		guard.Run(ctx)
+		watch(ctx)
 	}()
 	go func() {
 		running.Wait()
@@ -119,21 +155,30 @@ const (
 // (an `omp` or a `worker-shim` the agent's own command runs) is not spared for it.
 //
 // It spares, outside every role, the launcher itself, each process the launcher holds (pidGuard:
-// the test database's script, the restore's jj and git) with its descendants, and the test
-// database's server with its backends, since ending one backend makes the postmaster end and
-// restart every backend, which stops every role's test database at once. In each role it spares
-// the role-init itself, not its descendants; the shim, the oldest direct child of the role-init
-// that is this binary run as `worker-shim` (an orphan the role leaves is adopted by the role-init
-// too); every direct child of the shim, which is the agent before and after its start wrapper
-// execs it, the secrets renewer, the working copy's adoption and the CodeGraph warm-up; Oh My Pi's
-// helpers but its eval kernel, each reached from the agent through a chain of helpers; and a
-// Claude Code role's `claude` and its MCP server.
+// the test database's script, the restore's jj and git, the leak-check install's run of the check,
+// each cache trimmer sweep's deleter) with its descendants, and the test database's server with its
+// backends, since ending one backend makes the postmaster end and restart every backend, which
+// stops every role's test database at once. In each role it spares the role-init itself, not its
+// descendants; the shim, the oldest direct child of the role-init that is this binary run as
+// `worker-shim` (an orphan the role leaves is adopted by the role-init too); every direct child of
+// the shim, which is the agent before and after its start wrapper execs it, the secrets renewer,
+// the working copy's adoption and the CodeGraph warm-up; Oh My Pi's helpers but its eval kernel,
+// each reached from the agent through a chain of helpers; and a Claude Code role's `claude` and its
+// MCP server.
 //
 // A process is the role's whose role-init is its ancestor by the parent chain, else the role's
 // whose role-init shares its PID namespace, else no role's. The ancestor comes first because a
 // process can make a PID namespace of its own inside a role (a sandboxed Chromium does), which the
 // namespace alone would read as no role's; the namespace catches a role's process reparented out
 // of the role-init's subtree.
+//
+// It marks as a session process (memoryguard.Class.Session), whose end ends its role's session,
+// each role-init, its shim, and every direct child of the shim: the agent (a Claude Code role's
+// bridge), and the shim's other children, which no place in the tree tells from it (the secrets
+// renewer, the working copy's adoption, the CodeGraph warm-up). That superset of the agent costs
+// kills left unnamed, and a wrong name only within the one limit of the guest watch's rule ("What
+// the sign does not show" in docs/kubernetes.md). Nothing below the agent is one: an Oh My Pi
+// helper can end alone.
 //
 // It keeps nothing a scan changes: each role-init is read under its manager's lock and the
 // launcher's own children under the pid guard's lock, at each scan, so the guard's loop and its
@@ -187,6 +232,7 @@ func (c *podClassifier) classify(t *memoryguard.Table) map[int]memoryguard.Class
 	}
 
 	protected := map[int]bool{c.launcher: true}
+	session := map[int]bool{}
 	// The launcher's own children and the test database, each with every process under it.
 	whole := held
 	for _, p := range t.Children(c.launcher) {
@@ -219,12 +265,15 @@ func (c *podClassifier) classify(t *memoryguard.Table) map[int]memoryguard.Class
 			byNamespace[init.PIDNamespace] = ri.role
 		}
 		protected[init.PID] = true
+		session[init.PID] = true
 		shim := c.shim(t, init)
 		if shim == nil {
 			continue
 		}
 		protected[shim.PID] = true
+		session[shim.PID] = true
 		for _, agent := range t.Children(shim.PID) {
+			session[agent.PID] = true
 			c.protectAgent(t, agent, protected)
 		}
 	}
@@ -236,7 +285,7 @@ func (c *podClassifier) classify(t *memoryguard.Table) map[int]memoryguard.Class
 		if !found {
 			role = byNamespace[p.PIDNamespace]
 		}
-		if class := (memoryguard.Class{Role: role, Protected: protected[p.PID]}); class != (memoryguard.Class{}) {
+		if class := (memoryguard.Class{Role: role, Protected: protected[p.PID], Session: session[p.PID]}); class != (memoryguard.Class{}) {
 			classes[p.PID] = class
 		}
 	}
@@ -375,13 +424,15 @@ func (m *manager) sendMemoryKillsUntil(ctx context.Context) {
 	}
 }
 
-// openMemoryReports makes writer, this role's new connection, the one the guard's reports of this
+// openMemoryReports makes writer, this role's new connection, the one the kill reports of this
 // role's processes go on, and sends the reports waiting for it. serve calls it after the
 // connection's state frame, as it calls reportRestore, so the daemon reads the role's state
-// first. carried is whether the connection's acknowledgement carried guard settings: one that
-// carried none may come from a daemon that does not know the report, which closes a connection on
-// a frame it does not know, so every report waiting then, and each made while that connection is
-// up, is dropped with a line rather than sent.
+// first. carried is whether the connection's acknowledgement says the daemon behind it knows the
+// report (serve): guard settings for a gVisor pod's launcher, KernelKills for a microVM pod's. A
+// daemon that does not know the report may close a connection on a frame it does not know, or
+// tell a role of the kernel's kill in the guard's words, so where carried is false every report
+// waiting then, and each made while that connection is up, is dropped with a line rather than
+// sent.
 func (m *manager) openMemoryReports(writer *shimwire.Writer, carried bool) {
 	m.mu.Lock()
 	m.reportWriter, m.reportsCarried = writer, carried
@@ -411,9 +462,13 @@ func (m *manager) sendMemoryKills() {
 			dropped := m.memoryKills
 			m.memoryKills = nil
 			m.mu.Unlock()
+			member := "memory guard settings"
+			if m.cfg.MicroVM {
+				member = "kernelKills"
+			}
 			for _, report := range dropped {
-				m.logf("launcher: memory guard: report dropped sequence=%d pid=%d reason=this connection's acknowledgement carries no memory guard settings, so the daemon behind it may not know the report",
-					report.Sequence, report.PID)
+				m.logf("launcher: memory guard: report dropped sequence=%d pid=%d reason=this connection's acknowledgement carries no %s, so the daemon behind it may not know the report",
+					report.Sequence, report.PID, member)
 			}
 			return
 		}

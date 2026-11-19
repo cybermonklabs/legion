@@ -111,10 +111,13 @@ type intakeLeases interface {
 // envoy-dispatch binary, with the Dispatch user denied exactly
 // $JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.delivery-events.> (envoy-infra's live row "without
 // the delivery consumer create Dispatch leaves only that intake unbound"). A denied AddConsumer
-// draws no reply at all, so the create blocks for the client's whole JetStream MaxWait -- 10 s
-// (internal/bus/nats.go, nats.MaxWait) -- and the lease is held for every second of it. The events
-// intake took the lease again on its next durableBindInterval poll and held it for another 10 s,
-// round after round:
+// drew no reply at all then, so the create blocked for the client's whole JetStream MaxWait -- 10 s
+// (internal/bus/nats.go, nats.MaxWait) -- and the lease was held for every second of it; it now
+// ends as the server's refusal arrives (internal/bus/refusal_reads.go), and a take-over step the
+// grant refuses is not tried again (retryHeld), so the lease is released within milliseconds,
+// while a change that is stuck some other way still holds its lease for as long as it takes. The
+// events intake took the lease again on its next durableBindInterval poll and held it for another
+// 10 s, round after round:
 //
 //	17:57:16.232 ERROR dispatch delivery: create NATS consumer name=delivery-events error="context deadline exceeded"
 //	17:57:16.232 INFO  dispatch duty: leased pass ran  lease=delivery-consumers
@@ -477,11 +480,14 @@ func startingAt(config natsgo.ConsumerConfig, start uint64) natsgo.ConsumerConfi
 // since a stop that comes meanwhile waits for it to end.
 //
 // takeOverCallTimeout bounds each try of each step, so that one call that draws no answer -- a
-// JetStream request during a leader change, or one the server denies and never answers -- leaves
-// room for the tries after it. A JetStream leader election ordinarily ends within it.
+// JetStream request during a leader change -- leaves room for the tries after it. A JetStream
+// leader election ordinarily ends within it.
 //
 // A failed try waits takeOverFirstRetry before the next one, doubling after each try up to
 // takeOverLastRetry: with calls that fail at once, that is eight tries within takeOverFinishWithin.
+// A try the connection's grant refuses (bus.ErrPublishDenied) is not tried again: the server
+// refuses it again however often it is sent, so the step gives up at once and the consumer lease
+// is released, rather than held for the rest of takeOverFinishWithin.
 const (
 	takeOverFinishWithin = 10 * time.Second
 	takeOverCallTimeout  = 3 * time.Second
@@ -493,16 +499,18 @@ const (
 // lease its caller (takeOver) holds: it deletes the durable when deleteFirst is set, subscribes
 // to create's deliver subject, creates the durable with create, and records the subject alone as
 // the hold's token. Each step that fails is tried again (retryHeld) until it succeeds, this intake
-// no longer holds its hold, or takeOverFinishWithin has passed. It runs on a context of its own
-// rather than the run's, so a stop that comes while the durable is deleted does not leave it so.
+// no longer holds its hold, the grant refuses it, or takeOverFinishWithin has passed. It runs on a
+// context of its own rather than the run's, so a stop that comes while the durable is deleted does
+// not leave it so.
 // Every step is safe to try again: a delete of a durable already gone succeeds, and a create of
 // a durable that a timed-out try did create, with this same config, returns that durable.
 //
 // A create that fails after the delete is therefore tried again inside the one consumer lease, so
 // among builds that take holds such a create loses neither the durable nor its start. The lease is
 // given up with the durable absent only when this process is killed between the delete and the
-// create, when it loses its hold, or when every try fails within takeOverFinishWithin. The start
-// then stays in the hold's token (intakeHoldToken), and the next take-over of this build -- by
+// create, when it loses its hold, when the grant refuses the create, or when every try fails
+// within takeOverFinishWithin. The start then stays in the hold's token (intakeHoldToken), and the
+// next take-over of this build -- by
 // this intake, or by the process that takes the hold next -- creates the durable at that old ack
 // floor rather than at the default start (deliveryConsumerConfig names none, so the stream's first
 // message). A process of the build before holds reconciles the durable under the same lease and
@@ -561,10 +569,12 @@ var errHoldNotHeld = errors.New("the intake no longer holds its hold")
 // ended, waiting takeOverFirstRetry after the first failed try and twice as long after each one
 // after it, up to takeOverLastRetry. Each try runs on a context that ends takeOverCallTimeout
 // after it starts, or at the hold's loss deadline if that comes first, so no step acts once
-// another process can hold the hold. A failed try is logged at WARN as doing what names, and the
-// failure it gives up on at ERROR by failedStep, so a caller writes no step's text a second time
-// and keeps only what it does next. It returns nil once step succeeds, and otherwise the last
-// try's error, or errHoldNotHeld. attributes are the caller's own on that ERROR line.
+// another process can hold the hold. A try the connection's grant refuses (bus.ErrPublishDenied)
+// ends the step at once, since no later try gets past it. A failed try is logged at WARN as doing
+// what names, and the failure it gives up on at ERROR by failedStep, so a caller writes no step's
+// text a second time and keeps only what it does next. It returns nil once step succeeds, and
+// otherwise the last try's error, or errHoldNotHeld. attributes are the caller's own on that ERROR
+// line.
 func (d *heldDurable) retryHeld(finish context.Context, doing string, step func(context.Context) error, attributes ...any) error {
 	wait := takeOverFirstRetry
 	for {
@@ -580,6 +590,9 @@ func (d *heldDurable) retryHeld(finish context.Context, doing string, step func(
 		cancel()
 		if err == nil {
 			return nil
+		}
+		if errors.Is(err, bus.ErrPublishDenied) {
+			return d.failedStep(doing, err, attributes)
 		}
 		slog.Warn("dispatch delivery: take-over step failed; trying it again", "name", d.name, "step", doing, "retry_in", wait, "error", err)
 		timer := time.NewTimer(wait)

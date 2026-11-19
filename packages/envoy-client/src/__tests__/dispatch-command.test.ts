@@ -282,6 +282,7 @@ describe("the dispatch command surface", () => {
         "review",
         "result",
         "results",
+        "steps",
         "suggest",
       ].sort()
     );

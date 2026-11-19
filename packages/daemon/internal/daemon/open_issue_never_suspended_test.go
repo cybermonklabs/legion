@@ -98,7 +98,14 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 	claims := make(map[claim.Token]struct{})
 	launch := func(issue string, role claim.Role) claim.Token {
 		t.Helper()
-		token := launchedClaim(t, sup, root, issue, role)
+		// The root's roles keep the session named for their role, which the ask below names as its
+		// author; a child's claim of the same role registers a session of its own, since the
+		// daemon holds each session id to the first claim that recorded it.
+		session := "ses-" + string(role)
+		if issue != root {
+			session = "ses-" + issue + "-" + string(role)
+		}
+		token := launchedClaimAs(t, sup, root, issue, role, session)
 		claims[token] = struct{}{}
 		return token
 	}

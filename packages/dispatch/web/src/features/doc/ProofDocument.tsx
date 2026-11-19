@@ -21,12 +21,19 @@ import {
 import { artifactBlocksQuery } from "../../api/queries";
 import type { Artifact, AuthenticatedUser, Version } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useTooltips } from "../../components/tooltips";
 import { copyText } from "../../lib/clipboard";
 import {
   badgeMed,
   dangerText,
   linkHoverText,
   linkText,
+  pageFailedText,
+  pageInkText,
+  pageLabelChip,
+  pageLineBorder,
+  pageMutedText,
+  pagePaperBg,
   secondaryButtonBorder,
   secondaryButtonHoverBorder,
   secondaryButtonText,
@@ -312,6 +319,15 @@ export function ProofDocument({
   // block of this document changes it in place, firing no event of the browser's own.
   const { hash: routedHash } = useLocation();
   const documentRef = buildDispatchReference(documentRoute(artifact));
+  const tooltips = useTooltips();
+  // Inside `NoTooltips` each colour the document's own lines and controls draw is one of the new
+  // issue page's: a refusal is its failed red, a reading of the document its muted words, a
+  // count its label chip, the open decision a link in the ink, and a control its header
+  // control's rule and muted words on the paper. What the editor, the decision blocks and the
+  // references draw is theirs.
+  const failedText = tooltips ? dangerText : pageFailedText;
+  const countChip = tooltips ? `${badgeMed.bg} ${badgeMed.text}` : pageLabelChip;
+  const controlOnPage = `${pageLineBorder} ${pagePaperBg} ${pageMutedText}`;
   const artifactQuery = useQuery({
     queryKey: ["artifact", artifact.id],
     queryFn: () => api.getArtifact(artifact.id),
@@ -328,8 +344,8 @@ export function ProofDocument({
   const readmitRef = useRef<(() => void) | undefined>(undefined);
   /** Has this document admitted again, the one way in: a blocked admission has no connection to
    *  readmit, so it re-reads the text and connects (`readmitRef`, set only while it is blocked);
-   *  a live one closes its socket, which the provider reconnects, and the server decides that
-   *  socket's admission afresh - which is what a reopened issue needs, since the admission of the
+   *  a live one asks its connection to be admitted again (`DocumentConnection.readmit` says which
+   *  sockets that closes) - which is what a reopened issue needs, since the admission of the
    *  socket it has is the closed issue's. The new admission reaches `onAdmission` and the pending
    *  sync alike, so the rows the read-only admission kept are restored and sent. */
   const readmit = useCallback(() => {
@@ -424,7 +440,13 @@ export function ProofDocument({
     inline: true,
     label: () => `Rebuild of ${artifact.name}`,
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
+      const reread = queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
+      // Outside `NoTooltips` the rebuild stops pending as it lands and the document's reads go on
+      // after it, as on `main`. Inside, `onSuccess` returns them, which TanStack Query awaits
+      // before the rebuild stops pending: Rebuild stays refused, and keeps the focus, until the
+      // rebuilt document is read, and a text read that succeeds then takes the offer off the page.
+      if (tooltips) return;
+      return reread;
     },
     write: (_variables, bounds) => api.rebuildArtifact(artifact.id, undefined, bounds),
   });
@@ -1026,11 +1048,10 @@ export function ProofDocument({
   // The server admits every socket on a closed issue's document read-only, and decides a socket's
   // admission once, as it connects. A reopened issue's document takes edits again, so the page has
   // its connection admitted again: until the new admission (`onAdmission`) replaces the closed
-  // one's, the socket is still read-only, and so is the editor. The reopen closes the issue's
-  // rooms itself, which readmits every browser on them, but only on the process that served the
-  // PATCH (`SetIssueClosed`); this covers the two sockets that close never reaches: one whose
-  // room another process holds, and one whose room the close could not close, each of which
-  // keeps the read-only admission it was given.
+  // one's, the socket is still read-only, and so is the editor. The reopen's commit closes the
+  // issue's rooms on every process that hears it (`issueOpenChanged`), which readmits every
+  // browser on them; this covers the sockets that close never reaches, each of which keeps the
+  // read-only admission it was given.
   useEffect(() => {
     setQuoteRefusal(undefined);
     editorRef.current?.setAccess(editorAccess(page, isClosed, schemaReadOnlyRef.current));
@@ -1078,7 +1099,7 @@ export function ProofDocument({
       {quoteRefusal === undefined ? null : <p role="status">{quoteRefusal}</p>}
       {repairError === undefined ? null : (
         <div className="space-y-3" role="alert">
-          <p className={dangerText}>{repairError.message}</p>
+          <p className={failedText}>{repairError.message}</p>
           <p>Upload markdown to replace and repair this document.</p>
           <ArtifactDropZone upload={repairUpload}>
             <ArtifactUploadRow upload={repairUpload} />
@@ -1087,15 +1108,20 @@ export function ProofDocument({
       )}
       {rebuildError === undefined ? null : (
         <div className="space-y-3" role="alert">
-          <p className={dangerText}>{rebuildError.message}</p>
+          <p className={failedText}>{rebuildError.message}</p>
           <p>
             Rebuilding discards the unreadable document history and restores its latest saved
             version.
           </p>
           <button
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-            disabled={rebuild.isPending}
+            // Inside `NoTooltips` the button keeps its focus while it rebuilds: it is
+            // `aria-disabled` then, in place of `disabled`, and a press does nothing. Outside it
+            // is `disabled` while it rebuilds, as on `main`.
+            aria-disabled={(!tooltips && rebuild.isPending) || undefined}
+            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${tooltips ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : controlOnPage}`}
+            disabled={tooltips && rebuild.isPending}
             onClick={() => {
+              if (rebuild.isPending) return;
               if (
                 window.confirm(
                   "Rebuild this document from its latest version? This discards its unreadable history."
@@ -1109,7 +1135,7 @@ export function ProofDocument({
             {rebuild.isPending ? "Rebuilding…" : "Rebuild from the latest version"}
           </button>
           {rebuild.isError ? (
-            <p className={dangerText}>
+            <p className={failedText}>
               {rebuild.error instanceof Error
                 ? rebuild.error.message
                 : "Could not rebuild this document."}
@@ -1125,21 +1151,22 @@ export function ProofDocument({
           socket that is not connected shows nothing: its reconnect's admission decides. */}
       {schemaReadOnly && !isClosed && connection === "connected" ? <p>Reload to edit.</p> : null}
       {/* The Open-decisions navigator walks the page's own document; a pane leaves it to the
-          list beside it. */}
+          list beside it. Inside `NoTooltips` no title gives back what an ellipsis cut, and the
+          question is a value, so it breaks anywhere and the row grows to hold it. */}
       {page && version === undefined && openDecision !== undefined ? (
         <nav
           aria-label="Open decisions"
-          className="flex min-h-11 items-center gap-2 md:h-7 md:min-h-0"
+          className={`flex min-h-11 items-center gap-2 ${tooltips ? "md:h-7 md:min-h-0" : "md:min-h-7"}`}
         >
           <span
-            className={`inline-flex h-6 shrink-0 items-center rounded-full px-2 text-xs font-semibold ${badgeMed.bg} ${badgeMed.text}`}
+            className={`inline-flex h-6 shrink-0 items-center rounded-full px-2 text-xs font-semibold ${countChip}`}
           >
             {openBlockAsks.length === 1
               ? "1 open decision"
               : `${openBlockAsks.length} open decisions`}
           </span>
           <a
-            className={`block min-w-0 max-w-[90ch] truncate text-sm font-medium underline ${linkText} ${linkHoverText}`}
+            className={`block min-w-0 max-w-[90ch] ${tooltips ? "truncate" : "[overflow-wrap:anywhere]"} text-sm font-medium underline ${tooltips ? `${linkText} ${linkHoverText}` : pageInkText}`}
             href={blockFragment(openDecision.block_id ?? "")}
             onClick={(event) => {
               event.preventDefault();
@@ -1150,14 +1177,18 @@ export function ProofDocument({
               window.location.hash = blockFragment(blockID);
               focusInEditor(() => editorRef.current?.focusBlock(blockID));
             }}
-            title={openDecision.question}
+            title={tooltips ? openDecision.question : undefined}
           >
-            <TruncatedText>{openDecision.question}</TruncatedText>
+            {tooltips ? (
+              <TruncatedText>{openDecision.question}</TruncatedText>
+            ) : (
+              openDecision.question
+            )}
           </a>
           {openBlockAsks.length > 1 ? (
             <button
               aria-label="Next open decision"
-              className={`ml-auto flex min-h-11 min-w-11 items-center justify-center rounded-full md:min-h-7 md:min-w-7 ${secondaryButtonBorder} ${secondaryButtonHoverBorder} ${secondaryButtonText}`}
+              className={`ml-auto flex min-h-11 min-w-11 items-center justify-center rounded-full md:min-h-7 md:min-w-7 ${tooltips ? `${secondaryButtonBorder} ${secondaryButtonHoverBorder} ${secondaryButtonText}` : controlOnPage}`}
               onClick={() =>
                 setOpenDecisionIndex((current) => (current + 1) % openBlockAsks.length)
               }
@@ -1171,12 +1202,12 @@ export function ProofDocument({
         </nav>
       ) : null}
       {specMarks.changed === undefined ? null : (
-        <p className={`text-sm ${textSecondaryOnCanvas}`} role="status">
+        <p className={`text-sm ${tooltips ? textSecondaryOnCanvas : pageMutedText}`} role="status">
           {readLineText(specMarks.changed)}
         </p>
       )}
       {shownLoadError === undefined || admissionHidesEditor ? null : (
-        <p className={dangerText} role="alert">
+        <p className={failedText} role="alert">
           This document could not load: {shownLoadError}
         </p>
       )}
@@ -1223,7 +1254,7 @@ export function ProofDocument({
                 return (
                   <button
                     aria-label={`${count} references on block`}
-                    className={`pointer-events-auto absolute right-0 min-h-11 min-w-11 rounded-full text-xs font-semibold ${badgeMed.bg} ${badgeMed.text}`}
+                    className={`pointer-events-auto absolute right-0 min-h-11 min-w-11 rounded-full text-xs font-semibold ${countChip}`}
                     key={block.id}
                     onClick={() => {
                       marginRef.current.filterToBlock(block.id);

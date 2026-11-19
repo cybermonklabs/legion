@@ -419,17 +419,24 @@ held by another process from a different session.
 A registration renews every claim its own process holds, whatever topics it carries. What says a
 role was given up is the claim itself: a hand-back that could not free the claim — a release of
 that role's lane topic stating no client instance, the shape a client built before this change
-sends — marks the claim instead, no registration renews a marked claim, and the reaper frees the
-role at its next pass past the live window: one live window plus up to one reap interval, about
-ten minutes with the defaults above. `GET /v1/roles/<role>` answers `handed_back: true` for such
-a claim,
+sends, or any caller that leaves the instance out, so any process of the session can send it —
+marks the claim instead, whether it names a process or none, no registration renews a
+marked claim, and the reaper frees the role at its next pass past the live window: one live
+window plus up to one reap interval, about ten minutes with the defaults above.
+`GET /v1/roles/<role>` answers `handed_back: true` for such a claim,
 on the 200 and on a lapsed holder's 404 alike, and leaves the key out otherwise. Both Oh My Pi
-and Claude Code read a marked claim as a role they do not hold, so a holder marked this way
-claims the role again at its next heartbeat and has it back, the fresh record carrying no mark.
-A registration that states no client instance at all renews the claims of its own session that
-name no process, so a claim standing at a deploy is kept until a registration of that session
-that names a process adopts it — any process of the session, not only the one that took the
-role. A release
+and Claude Code read a marked claim as a role they do not hold, so a holder whose claim names its
+process and was marked this way claims the role again at its next heartbeat and has it back, the
+fresh record carrying no mark. A soft claim over a marked claim that names no process is refused
+until its renewal is older than the live window, or the reaper frees it; the way back is an
+outright claim (no `soft`), which lands at once. A release that states no client
+instance frees no claim, and no release but the administrator's force frees a claim that names
+no process. A registration that states no client instance at all renews the claims of its own
+session that name no process, so the claim of a client that states none is kept while it runs. A
+registration that names a process adopts a claim that names none only at the first heartbeat
+after the claim was written, before any registration that states no process has renewed it —
+any process of the session, not only the one that took the role; after such a renewal no
+registration takes it. A release
 that loses its conditional delete to a record written since is not reported as a release: the
 claim is read again, a record still naming that same session and that same process is its own
 holder's renewal, and the delete goes out again at the revision that renewal left, three
@@ -526,6 +533,8 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 | `ENVOY_ALLOWED_HOSTS` | Comma-separated host names or addresses, with no port, that a listener with no bearer serves `/v1` to besides loopback. Set it to each name clients reach such a listener by, such as a forward to it. |
 | `ENVOY_NATS_REPLICAS` | The deployment's replica count, a whole number from 1 to 5; default `1`. The listener creates the `ENVOY_NOTIFICATIONS` stream and its buckets with this many copies and raises one it finds with fewer, at start and every 30 seconds after ([Keeping the stream](#keeping-the-stream)). More than 1 needs a clustered NATS: a single server refuses it, and the listener then exits at start with an error naming the variable. Any other value refuses startup. Give every Envoy program of a deployment the same value: a clustered deployment sets it in every listener and in Dispatch's server. |
 | `ENVOY_STREAM_MAX_BYTES` | The `ENVOY_NOTIFICATIONS` stream's size limit, a positive whole number of bytes. Once the stream holds that much it refuses every new message and keeps every one it holds, which leaves only when it is 72 hours old, and the sender gets an error it can retry: the listener answers a GitHub webhook `503`, which Dispatch's redelivery sweep has GitHub send again (on a doubling backoff, until GitHub records the delivery or 72 hours after its first failed attempt); Dispatch's outbox retries its event; an agent's send or publish fails with `stream ENVOY_NOTIFICATIONS is full`. Size the limit above what the stream takes in 72 hours at its busiest, with room to spare. Unset, the listener creates the stream with no limit and keeps a limit the stream already has; set, it raises a smaller limit, or none, to its own at start and every 30 seconds, and never lowers one ([Keeping the stream](#keeping-the-stream)). A limit larger than the NATS server can reserve makes the listener exit at start with an error naming the variable. Give every Envoy program of a deployment the same value: a clustered deployment sets it in every listener and in Dispatch's server. |
+| `ENVOY_SENDER_MESSAGES_PER_MINUTE` | How many messages one agent session may send through this listener in a minute, sends and publishes together: a whole number from 0 to 60000. Unset, blank or `0` sets no limit. A message past the limit is answered `429` with a sentence that says when the session can send it again ([The sender limit](#the-sender-limit)). Any other value refuses startup with an error that names the variable. |
+| `ENVOY_SENDER_MESSAGE_BURST` | How many of those messages one session may send at once: a whole number of 1 or more. Unset, it equals the rate. Set with no rate, or with a rate of `0`, it refuses startup, and so does any other value. |
 | `ENVOY_SESSION_LIVE_WINDOW` | How long after its last registration a session reads `live`, as a Go duration; default `5m`. Past it the session reads `unresponsive`, which is not dead ([Live, unresponsive, gone](#live-unresponsive-gone)). It is also how long a role claim stands renewed after its holder's last registration: a claim renewed inside it is kept, and the process that holds it keeps the role. Dispatch's server reads it too and judges a role route's holder by it, so give every listener of a deployment and Dispatch the same value. |
 | `ENVOY_SESSION_GONE_HORIZON` | How long after its last registration a session reads `unresponsive` before it reads `gone`, as a Go duration; default `1h`. Only a `gone` session loses its role claim, and then only when nobody renewed that claim inside the live window; the one claim released while its holder's session still answers is one a hand-back marked. Keep it at or below `ENVOY_SESSION_MAX_AGE`, or a record the bucket expires first reads `gone` before the horizon. Dispatch's server reads it too and judges a role route's holder by it, so give every listener of a deployment and Dispatch the same value: a horizon only the listener carries has Dispatch count an event sent to a holder the listener still calls `unresponsive`, with nothing sent ([Live, unresponsive, gone](#live-unresponsive-gone)). |
 | `ENVOY_SESSION_REAP_INTERVAL` | How often the session reaper deletes the records of `gone` sessions, and settles the session bucket's maximum age, as a Go duration; default `1m`. |
@@ -652,6 +661,77 @@ hold, and its publish without its id failed: stream ENVOY_NOTIFICATIONS is full:
 bytes exceeded`, which is retried as a full stream is. The stream drops no repeat of a message
 stored without its id, so a later publish under the same id stores another copy, which the
 stream's consumers see.
+
+### The sender limit
+
+`ENVOY_SENDER_MESSAGES_PER_MINUTE` and `ENVOY_SENDER_MESSAGE_BURST` limit how many messages one
+agent session sends through a listener, on `/v1/messages/send` and `/v1/messages/publish`
+together. The listener keeps one count for each sending session. The count starts at the burst and
+gains one message every 60 seconds divided by the rate, up to the burst. The listener reads the
+count after the request's own checks and before it reads a session, finds a role's holder,
+reports a wake or stores the message. At 0 it refuses the message. The message is then not
+stored, is not kept for a later holder of a role and reaches no session, and no wake is reported
+for it.
+
+The refusal is HTTP `429`. `Retry-After` gives the whole seconds, rounded up and at least 1, until
+the count holds one message again. The JSON body holds `reason: "sender_rate_limited"`,
+`retry_after_seconds` (the same seconds), `messages_per_minute`, `burst`, and an `error` that is
+this sentence with the values filled in:
+
+```text
+Your sending is rate limited. This message was not sent. This listener lets one session send <rate> messages a minute and <burst> at once. You can send it again after <seconds> seconds.
+```
+
+Where a value in the sentence is 1, its noun is singular: `1 message a minute`, `after 1 second`.
+
+Each client shows the agent that sentence: the Oh My Pi tools `envoy_send` and `envoy_publish`
+and the Claude Code tools return it as the tool's error, and `envoy-send` prints it and exits 1.
+No client sends the refused message again by itself. The one exception is the stall notice that
+Legion's Oh My Pi plugin sends for a stuck tool call: it waits the seconds the refusal names and
+sends the same notice again, at most 3 times. The request's log line has the outcome
+`sender_rate_limited` and the field `sender`, which names the session the limit counted. The line
+of each message that cost its sender one has that field too, and no other line has it.
+
+The sender is the session that a secrets-broker token proves, else the request's `source_session`.
+The listener counts only a message whose `source` is `agent` or absent and that has a sender. It
+does not count a message with another source, such as Dispatch's (`dispatch`) or Envoy's own
+(`envoy`). It does not count a message with no sender either, which is how the Legion daemon sends
+its notices.
+
+A secrets-broker token names the session that the listener counts. A caller that presents one
+and names another session in the body gets `403`. A caller that the listener admits on a bearer, or
+with no credential where `/v1` is open, names the sender itself in `source_session`. Such a caller
+can send under another session's id and spend that session's count, which then takes up to
+`burst × 60 ÷ rate` seconds to fill again. That caller can already send messages as that session.
+
+A token does not make a message with another `source` count. The agents' own Envoy tools send
+the source `agent` and give the agent no argument for it, so the limit counts each of their
+messages that has a sender. A caller that writes its own request can give another source, so the
+limit is not a security boundary.
+
+A counted message costs one when the listener stores it, may have stored it or reports a wake for
+it, whatever the answer is. A role send answered `504` costs one whether or not a forward went
+out, also when the window ended before the first forward. The listener does not tell a `504` that
+forwarded nothing from one whose forward the stream may hold. A `503` after the listener sent the
+message to the stream, such as a write whose acknowledgement did not arrive in time, costs one
+too, since the stream may hold it. A message the listener refuses before any store or wake report
+costs nothing, such as a `400`, a `403`, a `413` or a `503` before the listener sent anything,
+one while it waits for NATS to reconnect among them. A repeat that the listener recognises costs
+nothing too: one the stream answers as a `duplicate`, a repeat of a role message kept for the
+role's next holder, and a repeat of a role forward the route made in the last 10 minutes. So does
+an echo, a role message from the session that holds the role. A `duplicate` that answers the
+listener's own second send, made after its connection to NATS closed under the first, costs one,
+since the first may have stored the message. A role send's echo, repeat or `403` costs nothing
+only while the send has made no forward. After an earlier forward of the same send it costs one,
+as any answer then does, since that forward may have stored the message. A repeat that finds the
+count at 0 is refused as a new message is, because the listener reads the count first.
+
+Each listener process keeps its counts in its own memory. So each replica of a listener keeps its
+own count for a session, and a restart fills each count again. The start log states the limit in
+one line, `listener sender limit: <rate> messages a minute, <burst> at once, for each agent session
+in this process`, or `listener sender limit: none`. Where the rate is 1, the line reads
+`1 message a minute`. The `envoy-infra` components take the two values as the inputs
+`senderMessagesPerMinute` and `senderMessageBurst` ([With Pulumi](#with-pulumi)).
 
 ### With Pulumi
 
@@ -817,9 +897,17 @@ candidates. The 2.15.1 this file pins is past all of them; a machine still on an
    curl http://127.0.0.1:9020/v1/sessions
    ```
 
-   With `ENVOY_API_TOKEN` set, add `-H "Authorization: Bearer <token>"`. The answer lists each live
-   session with its `session_id`. Start a second session, and the two can message each other with
-   `envoy_send`.
+   When `.env` sets `ENVOY_API_TOKEN`, send that token as the bearer on standard input, so it is in
+   no command line. This reads it from `envoy.json` with `jq`, which must be installed: without it
+   the header goes out as `Authorization: Bearer ` and the listener refuses it.
+
+   ```sh
+   printf 'Authorization: Bearer %s' "$(jq -r .envoy.token ~/.config/legion/envoy.json)" |
+     curl -H @- http://127.0.0.1:9020/v1/sessions
+   ```
+
+   The answer lists each live session with its `session_id`. Start a second session, and the two
+   can message each other with `envoy_send`.
 
 NATS keeps the event stream and Envoy's key-value buckets in the `envoy-single-node_nats-data`
 volume. A restart keeps the last 72 hours of events, and the subscriptions and role claims of every

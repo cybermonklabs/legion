@@ -4,17 +4,39 @@
 // `packages/envoy/internal/brokerclient/dpop.go`. A key is one of two kinds: one a session makes
 // in its own process (`newDpopKey`), or the box key a person's sign-in on this machine keeps
 // (`importDpopKey`), which the broker bound the sign-in to. Either way only its public half ever
-// leaves the process: a proof carries the public JWK in its header, and nothing here can export
-// the private half at all — `jose` makes it a non-extractable `CryptoKey`, so `exportJWK` on it
-// fails rather than writing a `d` member.
+// leaves the process: a proof carries the public JWK in its header, and the private half is held
+// in the closure that signs, which no caller of this package can reach.
+//
+// The private half is a `node:crypto` `KeyObject` rather than a WebCrypto `CryptoKey`, because a
+// NATS connection's proof is signed synchronously (`connectionProof`): nats.js asks its
+// authenticator for the CONNECT inside its own synchronous handshake, WebCrypto signs only
+// asynchronously, and the runtime warns of a non-extractable `CryptoKey` turned into a
+// `KeyObject` (`KeyObject.from`, DEP0204). One signer serves both proofs, as Go's `signProof`
+// does, so the two cannot drift.
 
-import { createPrivateKey, createPublicKey } from "node:crypto";
-import { exportJWK, generateKeyPair, importPKCS8, type JWK, SignJWT } from "jose";
-import { messageOf } from "./error-text";
+import {
+  createHash,
+  createPrivateKey,
+  createPublicKey,
+  generateKeyPairSync,
+  type KeyObject,
+  randomUUID,
+  sign,
+} from "node:crypto";
+import type { JWK } from "jose";
 
 /** The signature algorithm every proof carries: ES256 over a P-256 key, the one the broker's
  *  exchange and its resource servers accept. */
 const ALGORITHM = "ES256";
+
+/**
+ * The `htm` and `htu` of a NATS connection's proof, Go's `oauthwire.ConnectionProofMethod` and
+ * `oauthwire.ConnectionProofTarget`: a connection is no HTTP request, so the pair names the
+ * connection rather than a method and a URL, and a proof signed for an HTTP request can never be
+ * presented on a connection, nor the other way round.
+ */
+export const CONNECTION_PROOF_METHOD = "CONNECT";
+export const CONNECTION_PROOF_TARGET = "nats:connect";
 
 /** One proof's subject: the request it is signed for. */
 export interface ProofRequest {
@@ -33,13 +55,28 @@ export interface ProofRequest {
   readonly nonce?: string;
 }
 
+/** A NATS connection's proof's subject: the token its CONNECT presents and the nonce the server
+ *  sent that one connection. */
+export interface ConnectionProofRequest {
+  readonly accessToken: string;
+  readonly nonce: string;
+}
+
 /** A DPoP key: the proofs it signs, and the public half the broker records. */
 export interface DpopKey {
-  /** The public half, as it is embedded in every proof's header. It carries no `d` member: the
-   *  private half cannot be exported from the key at all. */
+  /** The public half, as it is embedded in every proof's header. It carries no `d` member. */
   readonly publicJwk: JWK;
   /** One compact proof for `request`. */
   proof(request: ProofRequest): Promise<string>;
+  /**
+   * The proof a NATS connection presenting `accessToken` carries in its CONNECT's signature
+   * field: the claims {@link proof} signs, naming {@link CONNECTION_PROOF_METHOD},
+   * {@link CONNECTION_PROOF_TARGET}, the token's hash and the nonce the server sent this
+   * connection, which the auth service checks (Go's `brokertoken.VerifyConnectionProof`). It is
+   * synchronous, because nats.js calls its authenticator synchronously. A token or nonce that is
+   * empty is refused, as Go's `brokerclient.ConnectionProof` refuses one.
+   */
+  connectionProof(request: ConnectionProofRequest): string;
 }
 
 /** The `htu` claim for `url`: the target URI with no query and no fragment. */
@@ -50,77 +87,90 @@ function targetUri(url: string): string {
   return parsed.toString();
 }
 
-/** The `ath` claim for `accessToken`: its SHA-256, base64url with no padding. */
-async function accessTokenHash(accessToken: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(accessToken));
-  return Buffer.from(digest).toString("base64url");
-}
-
 /**
  * The key that signs with `privateKey` and embeds `publicJwk`, whichever kind it is: `typ:
  * dpop+jwt`, `alg: ES256` and the public JWK in the header, and `jti`, `htm`, `htu` and `iat` in
  * the claims, with `nonce` and `ath` added only where the request has them. The claim set is the
- * whole of what a proof carries, as `testdata/wire.json` names it, and both kinds of key share
- * this one signer so neither can drift from it.
+ * whole of what a proof carries, as `testdata/wire.json` names it, and both kinds of key and both
+ * kinds of proof share this one signer so none can drift from it. The signature is ECDSA over
+ * SHA-256 in the IEEE P1363 form (`r || s`) a JWS carries (RFC 7518 Section 3.4).
  */
-function dpopKey(privateKey: CryptoKey, publicJwk: JWK): DpopKey {
+function dpopKey(privateKey: KeyObject, publicJwk: JWK): DpopKey {
+  const header = Buffer.from(
+    JSON.stringify({ typ: "dpop+jwt", alg: ALGORITHM, jwk: publicJwk })
+  ).toString("base64url");
+  const signed = (htm: string, htu: string, nonce?: string, accessToken?: string): string => {
+    const claims: Record<string, string | number> = {
+      jti: randomUUID(),
+      htm,
+      htu,
+      iat: Math.floor(Date.now() / 1000),
+    };
+    if (nonce !== undefined && nonce !== "") claims["nonce"] = nonce;
+    if (accessToken !== undefined && accessToken !== "") {
+      claims["ath"] = createHash("sha256").update(accessToken).digest("base64url");
+    }
+    const signingInput = `${header}.${Buffer.from(JSON.stringify(claims)).toString("base64url")}`;
+    const signature = sign("sha256", Buffer.from(signingInput), {
+      key: privateKey,
+      dsaEncoding: "ieee-p1363",
+    });
+    return `${signingInput}.${signature.toString("base64url")}`;
+  };
   return {
     publicJwk,
     async proof(request: ProofRequest): Promise<string> {
-      const claims: Record<string, string | number> = {
-        jti: crypto.randomUUID(),
-        htm: request.method.toUpperCase(),
-        htu: targetUri(request.url),
-        iat: Math.floor(Date.now() / 1000),
-      };
-      if (request.nonce !== undefined && request.nonce !== "") claims["nonce"] = request.nonce;
-      if (request.accessToken !== undefined && request.accessToken !== "") {
-        claims["ath"] = await accessTokenHash(request.accessToken);
-      }
-      return await new SignJWT(claims)
-        .setProtectedHeader({ typ: "dpop+jwt", alg: ALGORITHM, jwk: publicJwk })
-        .sign(privateKey);
+      return signed(
+        request.method.toUpperCase(),
+        targetUri(request.url),
+        request.nonce,
+        request.accessToken
+      );
+    },
+    connectionProof({ accessToken, nonce }: ConnectionProofRequest): string {
+      if (accessToken === "") throw new Error("no access token to prove a NATS connection for");
+      if (nonce === "") throw new Error("the NATS server sent no nonce to sign");
+      return signed(CONNECTION_PROOF_METHOD, CONNECTION_PROOF_TARGET, nonce, accessToken);
     },
   };
 }
 
-/** A key of this process's own, made here and held nowhere else. */
-export async function newDpopKey(): Promise<DpopKey> {
-  const { privateKey, publicKey } = await generateKeyPair(ALGORITHM, { extractable: false });
-  return dpopKey(privateKey, await exportJWK(publicKey));
-}
-
 /**
- * The key `pkcs8Pem` holds, as a DPoP key: a person's box key, which `agent-secrets login`
- * wrote as PKCS#8 PEM and the broker bound their sign-in to, so every trade of that sign-in
- * proves this key and no other. `name` says whose key it is, for a refusal to name.
- *
- * The private half is imported non-extractable for ES256, as {@link newDpopKey}'s is made. The
- * public JWK is derived with `node:crypto` and kept to `kty`, `crv`, `x` and `y`, the members
- * `jose` exports for a key it made, so a proof of either kind carries one header shape. A key
- * that is not P-256 is refused, since ES256 is the one algorithm the broker accepts.
+ * The public JWK of `privateKey`, kept to `kty`, `crv`, `x` and `y`, so a proof of either kind of
+ * key carries one header shape; or the refusal of a key that is not P-256, since ES256 is the one
+ * algorithm the broker accepts. `name` says whose key it is.
  */
-export async function importDpopKey(pkcs8Pem: string, name: string): Promise<DpopKey> {
-  /** The refusal of a key that could not be read, naming whose it is. */
-  const unreadable = (error: unknown): Error =>
-    new Error(`read ${name}: ${messageOf(error)}`, { cause: error });
-  let exported: JWK;
-  try {
-    exported = createPublicKey(createPrivateKey(pkcs8Pem)).export({ format: "jwk" });
-  } catch (error) {
-    throw unreadable(error);
-  }
-  const { kty, crv, x, y } = exported;
+function publicJwkOf(privateKey: KeyObject, name: string): JWK {
+  const { kty, crv, x, y } = createPublicKey(privateKey).export({ format: "jwk" });
   if (kty !== "EC" || crv !== "P-256" || typeof x !== "string" || typeof y !== "string") {
     throw new Error(
       `${name} is not a P-256 key (${kty} ${crv ?? "with no curve"}), and a DPoP proof is signed ${ALGORITHM}`
     );
   }
-  let privateKey: CryptoKey;
+  return { kty, crv, x, y };
+}
+
+/** A key of this process's own, made here and held nowhere else. */
+export async function newDpopKey(): Promise<DpopKey> {
+  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  return dpopKey(privateKey, publicJwkOf(privateKey, "this process's key"));
+}
+
+/**
+ * The key `pkcs8Pem` holds, as a DPoP key: a person's box key, which `agent-secrets login`
+ * wrote as PKCS#8 PEM and the broker bound their sign-in to, so every trade of that sign-in
+ * proves this key and no other. `name` says whose key it is, for a refusal to name. A key that is
+ * not P-256 is refused. A key that does not parse is refused in this package's own words, naming
+ * what was read, with none of the runtime's text and no cause: a parse error can quote the bytes
+ * it was handed, which here are key material, and a cause is printed with the error wherever the
+ * error is printed whole.
+ */
+export async function importDpopKey(pkcs8Pem: string, name: string): Promise<DpopKey> {
+  let privateKey: KeyObject;
   try {
-    privateKey = await importPKCS8(pkcs8Pem, ALGORITHM, { extractable: false });
-  } catch (error) {
-    throw unreadable(error);
+    privateKey = createPrivateKey(pkcs8Pem);
+  } catch {
+    throw new Error(`read ${name}: it does not parse as a PKCS#8 PEM private key`);
   }
-  return dpopKey(privateKey, { kty, crv, x, y });
+  return dpopKey(privateKey, publicJwkOf(privateKey, name));
 }

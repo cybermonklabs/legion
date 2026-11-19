@@ -22,7 +22,7 @@ on:
 
 jobs:
   claude-envoy:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -49,11 +49,24 @@ jobs:
       # The pack step packs the package's own dist/ and legion/ (release-push.sh extract-built).
       - name: Put the checked build into CI's checkout for the pack
         run: .github/scripts/release-push.sh extract-built "$RUNNER_TEMP/claude-envoy-built.tar"
+      # tests/send-arguments.test.ts runs envoy-send's printed resend command under bash and under
+      # zsh, whose EQUALS option reads a bare `=word` as a path, and fails the zsh row on CI where
+      # zsh is missing; the runner image has no zsh.
+      - name: Install zsh
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
       - name: Test Claude Envoy plugin
         run: bun run test
         working-directory: packages/claude-envoy
       - name: Pack Claude Envoy plugin
         run: bun pm pack --destination ../../out/pr-artifacts
+        working-directory: packages/claude-envoy
+      # The Codex plugin's package, built from the checked dist/ and packed and checked as
+      # release.yaml's claude_envoy_build does, into the same artifact.
+      - name: Build, pack and check the Codex plugin as the release does
+        run: |
+          bun scripts/build.ts --codex-out "$RUNNER_TEMP/codex-envoy" --dist dist
+          (cd "$RUNNER_TEMP/codex-envoy" && bun pm pack --destination "$GITHUB_WORKSPACE/out/pr-artifacts")
+          scripts/check-packed-skills.sh "$GITHUB_WORKSPACE"/out/pr-artifacts/sjawhar-codex-envoy-*.tgz
         working-directory: packages/claude-envoy
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

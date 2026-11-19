@@ -80,6 +80,7 @@ export function AgentRuntimeThread({
   conversation,
   empty,
   front,
+  notice,
   onSend,
   ownSendCount,
   sends,
@@ -98,6 +99,9 @@ export function AgentRuntimeThread({
   /** Whether this is the view the person is looking at; the transcript's own scrolling reads
    *  it (`AgentThread`). */
   front: boolean;
+  /** The line above a transcript that holds turns while the session is silent, by the relay's
+   *  word or the session list's, or undefined for none (`AgentThread`). */
+  notice: string | undefined;
   /** Hands `body` to the session as a write of its own, as the page's delivery mode stands. */
   onSend: (body: string) => void;
   /** Bumped once per message this viewer sent that the session accepted, so their own send takes
@@ -284,6 +288,7 @@ export function AgentRuntimeThread({
         front={front}
         held={sendDisabled}
         initialPlace={initialPlace}
+        notice={notice}
         onPlace={onPlace}
         ownSendCount={ownSendCount}
         placeholder={placeholder}

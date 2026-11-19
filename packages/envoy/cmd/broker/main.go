@@ -32,9 +32,9 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/google/uuid"
@@ -50,6 +50,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/judge"
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/broker/machine"
+	"github.com/sjawhar/envoy/internal/broker/natscallout"
 	"github.com/sjawhar/envoy/internal/broker/oauth"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -58,11 +59,11 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/reread"
+	"github.com/sjawhar/envoy/internal/broker/rulehost"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/wake"
 	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -123,11 +124,8 @@ const oauthSecretTimeout = 10 * time.Second
 const clientCheckInterval = time.Hour
 
 func main() {
-	// Every line this process writes is one JSON object on stderr, which Cloud Logging reads as
-	// an entry with its own severity, message and fields (logging.NewCloudHandler). It is the
-	// first thing main does, so a subcommand that opens the store logs the same shape, and the
-	// log package, which slog.SetDefault points at the same handler, writes no line of another.
-	slog.SetDefault(slog.New(logging.NewCloudHandler(os.Stderr)))
+	// The broker's logging (setUpLogging): every line of slog and the log package, masked.
+	setUpLogging(os.Stderr)
 	// A subcommand is read before flag.Parse, and serves nothing: it is the whole of what this
 	// process does. Reading it here is what makes an older image refuse `broker end-sessions`
 	// rather than fall through to serving - and so to migrating the database - when a
@@ -357,6 +355,10 @@ func main() {
 	discovered, err := discoverVerifiers(ctx, cfg, issuerKeys)
 	fatal(err)
 	pod := discovered.Pod
+	// The NATS auth service's list of services and the verifiers of their platform tokens, read
+	// at boot so an entry it could never admit refuses the start rather than every connection.
+	natsServices, natsTokens, err := natsCalloutBoot(ctx, cfg, discovered, issuerKeys)
+	fatal(err)
 
 	// This process's own sender id, minted once at boot. Postgres delivers a notification to every
 	// session listening on the channel, this pod's own included, so without an id stamped on what
@@ -451,15 +453,19 @@ func main() {
 
 	lease, sweep := time.Duration(cfg.LeaseSeconds)*time.Second, time.Duration(cfg.SweepSeconds)*time.Second
 	enr := &enroll.Service{
-		Store: st, Lease: lease, Pod: pod, ServiceLogins: cfg.ServiceLogins, ServicesByAccount: cfg.ServicesByAccount,
+		Store: st, Lease: lease, Carry: time.Duration(cfg.SessionCarrySeconds) * time.Second, Pod: pod,
+		ServiceLogins: cfg.ServiceLogins, ServicesByAccount: cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
-	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry))
+	// The broker's one read of Dispatch, where BROKER_JUDGE_DISPATCH_URL names one: the request
+	// machine and the model judge share it, its token cache and its client.
+	dispatch := judgeDispatch(cfg)
+	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry), dispatch)
 	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
 	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
 	// person who decides it today rather than approving it while the pod is going away.
-	wireJudge(ctx, cfg, rules, reqMachine)
+	wireJudge(ctx, cfg, rules, reqMachine, dispatch)
 	credentialLifetime := time.Duration(cfg.LauncherCredentialSeconds) * time.Second
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
@@ -571,7 +577,7 @@ func main() {
 
 	var waker func(context.Context, string, string, string)
 	if cfg.EnvoyURL != "" {
-		w := wake.Envoy{URL: cfg.EnvoyURL, Token: cfg.EnvoyToken, HTTP: &http.Client{Timeout: 10 * time.Second}}
+		w := wake.Envoy{URL: cfg.EnvoyURL, Account: brokertoken.NewAccountToken(cfg.EnvoyAccountTokenFile), HTTP: &http.Client{Timeout: 10 * time.Second}}
 		waker = func(ctx context.Context, enrollmentID, requestID, state string) {
 			sid, _ := reqMachine.SessionID(ctx, requestID) // requests.session_id, else the enrollment's
 			if sid == "" {
@@ -584,7 +590,7 @@ func main() {
 	}
 	sweeper := &requests.Sweeper{
 		Enrollments: enr, Machine: reqMachine, MachineLogins: mach, OAuth: oauthStore,
-		Interval: sweep, SessionCarry: time.Duration(cfg.SessionCarrySeconds) * time.Second, Wake: waker,
+		Interval: sweep, Wake: waker,
 	}
 	go sweeper.Run(ctx)
 	// The client check, beside the sweeper and on the same context: at boot and every hour
@@ -678,23 +684,29 @@ func main() {
 			// broker_answers_total, which counts the proxy's answers under caller class
 			// airlock beside the API port's.
 			Answers: answers,
-			// The local stack's four settings for the proxy, every one of them refused on a
+			// The broker cluster's own ranges (BROKER_AIRLOCK_CLUSTER_RANGES), which the proxy
+			// refuses to dial beside every private address. config.Load has already refused a
+			// start in a cluster whose ranges miss its Service range.
+			ClusterRanges: cfg.AirlockClusterRanges,
+			// The local stack's settings for the proxy, every one of them refused on a
 			// production start (refuseAirlockTestSettingsInProduction): where a name is, the
-			// addresses it may dial anyway, the roots it trusts upstream, and the two
-			// negative controls.
-			Resolve:       airlockTestResolver(cfg.AirlockTestResolve),
-			UpstreamRoots: airlockTestUpstreamRoots,
-			DialAllow:     cfg.AirlockTestDialAllow,
-			KeepValues:    cfg.AirlockTestKeepValues,
-			NoKind:        cfg.AirlockTestNoKind,
+			// addresses it may dial anyway, the roots it trusts upstream, the two negative
+			// controls, and the stand-in token authority the azure exchange is held to.
+			Resolve:        airlockTestResolver(cfg.AirlockTestResolve),
+			UpstreamRoots:  airlockTestUpstreamRoots,
+			DialAllow:      cfg.AirlockTestDialAllow,
+			KeepValues:     cfg.AirlockTestKeepValues,
+			NoKind:         cfg.AirlockTestNoKind,
+			AzureAuthority: cfg.AirlockTestAzureAuthority,
 		})
 		airlockProxy.Store(proxy)
 	}
 	// The metrics port's own server, on the socket the boot bound: the scrape of the registry
-	// every metric above is built on, and nothing else (metricsHandler). Its timeouts are the
-	// API's, since a scraper is a caller like any other to the server.
+	// every metric above is built on, and the NATS auth service's liveness (metricsHandler). Its
+	// timeouts are the API's, since a scraper is a caller like any other to the server.
+	var callout atomic.Pointer[natscallout.Service]
 	metricsServer := &http.Server{
-		Handler:           metricsHandler(registry),
+		Handler:           metricsHandler(registry, &callout),
 		ReadHeaderTimeout: srv.ReadHeaderTimeout,
 		ReadTimeout:       srv.ReadTimeout,
 		WriteTimeout:      srv.WriteTimeout,
@@ -735,8 +747,32 @@ func main() {
 			stopNotify()
 		}
 	}()
+	// The NATS auth service starts once the broker serves, so a connection it admits can trade
+	// and introspect against a broker that answers; it answers in the replicas' queue group until
+	// the drain begins.
+	if cfg.NATS.Enabled() {
+		service, err := natscallout.Start(ctx, natscallout.Settings{
+			URLs: cfg.NATS.URLs, SeedFile: cfg.NATS.SeedFile, IssuerSeedFile: cfg.NATS.IssuerSeedFile,
+			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: natsServices,
+		}, natscallout.Deps{
+			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify,
+			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
+		})
+		fatal(err)
+		callout.Store(service)
+		go func() {
+			if err := service.Ready(ctx); err == nil {
+				slog.Info("broker: the NATS auth service is answering", "servers", strings.Join(cfg.NATS.URLs, ","), "services", len(natsServices))
+			}
+		}()
+	}
 
 	<-ctx.Done()
+	// The auth service leaves the queue group first, so the hub sends the next authorization to
+	// a replica that is not draining.
+	if service := callout.Load(); service != nil {
+		service.Close()
+	}
 	// nil when this deployment has no airlock, which is what brokerStop reads as "there is no
 	// proxy port to drain".
 	var airlockShutdown func(ctx context.Context) error
@@ -853,7 +889,7 @@ func openStore(ctx context.Context, cfg config.Config, awsAlso bool) (*store.Sto
 	var awsCfg aws.Config
 	var err error
 	if cfg.DatabaseIAM || awsAlso {
-		if awsCfg, err = awsconfig.LoadDefaultConfig(ctx); err != nil {
+		if awsCfg, err = loadAWSConfig(ctx); err != nil {
 			return nil, aws.Config{}, fmt.Errorf("load the AWS configuration: %w", err)
 		}
 	}
@@ -888,7 +924,7 @@ func refusePortZeroPublicURLInProduction(publicURL, fakeSecretsFile string) erro
 }
 
 // refuseAirlockTestSettingsInProduction refuses every one of the local stack's test-only
-// settings, the airlock's seven and the judge's one, unless BROKER_FAKE_SECRETS_FILE makes this
+// settings, the airlock's eight and the judge's one, unless BROKER_FAKE_SECRETS_FILE makes this
 // a local run, as the port-0 refusal above does and for the same reason: each of them points
 // the broker at a stand-in, lets it dial an address no production proxy may dial, or turns off
 // a check the airlock or the judge is made of, so one reaching a real deployment must fail
@@ -911,6 +947,7 @@ func refuseAirlockTestSettingsInProduction(cfg config.Config, fakeSecretsFile st
 		{"BROKER_AIRLOCK_TEST_RESOLVE", len(cfg.AirlockTestResolve) > 0},
 		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", cfg.AirlockTestKeepValues},
 		{"BROKER_AIRLOCK_TEST_NO_KIND", cfg.AirlockTestNoKind},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", cfg.AirlockTestAzureAuthority != ""},
 		{"BROKER_JUDGE_TEST_SKIP_CHECKS", cfg.JudgeTestSkipChecks},
 	} {
 		if setting.set {
@@ -981,9 +1018,18 @@ func parseRulesFile(path string) (airlock.Rules, error) {
 }
 
 // validateRulesFile is everything the broker refuses an airlock rules file for, in one place so
-// that the boot and airlock-check refuse the same file in the same words: airlock.Validate's
-// answer, which is the Lean model's, and then the one refusal that is this program's own and not
-// that model's — an entry whose name is not a name a session can ask for.
+// that the boot and airlock-check refuse the same file in the same words: a host rulehost.Refusal
+// refuses, then airlock.Validate's answer, which is the Lean model's, then the two refusals that
+// are this program's own and not that model's — an entry whose name is not a name a session can
+// ask for, and guidance longer than the judge is shown (maxGuidanceRunes). The hosts come first
+// because rulehost.Refusal names each host's reason and repeats no text of the file but the form
+// to write, where Validate's refusal of a host airlock.HostShapeOK refuses quotes the host as
+// written; and because that grammar serves a host only where HostShapeOK accepts it, Validate then
+// refuses no host. So a file with two faults reports its first bad host, by entry and then by
+// position, ahead of any other fault Validate finds (a repeated name, a judge above 900 seconds,
+// another kind). An entry with no hosts has no host to refuse, and Validate accepts it: it says
+// who decides its key and binds the value nowhere. The host refusals rulehost.Refusal adds to
+// HostShapeOK are this program's own and not the Lean model's.
 //
 // Rules.Lookup compares an entry's name with a released name exactly, and a released name is
 // always of policy.NameToSlug's form, so an entry written "legion_slack_bot_token" or
@@ -992,6 +1038,13 @@ func parseRulesFile(path string) (airlock.Rules, error) {
 // in airlock.Validate because the airlock knows nothing of how a secret is named under the
 // policy's prefix, and config.go refuses BROKER_AZURE_LOGIN_SECRET by the same NameToSlug.
 func validateRulesFile(rules airlock.Rules) error {
+	for i, s := range rules.Secrets {
+		for j, h := range s.Hosts {
+			if why := rulehost.Refusal(h); why != "" {
+				return fmt.Errorf("secrets[%d] %q: hosts[%d] %s", i, s.Name, j, why)
+			}
+		}
+	}
 	if err := airlock.Validate(rules); err != nil {
 		return err
 	}
@@ -999,9 +1052,18 @@ func validateRulesFile(rules airlock.Rules) error {
 		if _, err := policy.NameToSlug(s.Name); err != nil {
 			return fmt.Errorf("secrets[%d] %q: %w, so the entry matches no name a session can ask for and holds nothing back", i, s.Name, err)
 		}
+		if n := utf8.RuneCountInString(s.Guidance); n > maxGuidanceRunes {
+			return fmt.Errorf("secrets[%d] %q: guidance is %d characters, longer than the %d the judge is shown", i, s.Name, n, maxGuidanceRunes)
+		}
 	}
 	return nil
 }
+
+// maxGuidanceRunes is the longest guidance a rules entry may give the judge. The judge shows the
+// whole text to its model beside the request's reason and what Dispatch holds of it, all within
+// one bounded prompt, so a text past this would be cut rather than read; it is refused instead,
+// at the boot and in airlock-check, where its author reads why.
+const maxGuidanceRunes = 2000
 
 // readAirlockRules reads the airlock's rules file, the path BROKER_AIRLOCK_RULES_FILE names. An
 // empty path is a deployment with no airlock, and answers empty rules, whose Digest is "" for
@@ -1055,12 +1117,16 @@ func peerReread(current *policy.Current, dropAirlockName func(string)) func(cont
 
 // metricsHandler is what the metrics port serves: registry's scrape at GET /metrics in the
 // Prometheus text format (the pattern takes HEAD too, as every GET pattern of a ServeMux does),
-// and nothing else - every other path is 404 and every method there but GET and HEAD is 405 - so
-// a scraper reaches no route of the API through it, and no caller of the API reaches the scrape
-// (the API's mux registers no /metrics).
-func metricsHandler(registry *metrics.Registry) http.Handler {
+// and GET /livez, the NATS auth service's liveness, and nothing else - every other path is 404 and
+// every method there but GET and HEAD is 405 - so a scraper or a probe reaches no route of the API
+// through it, and no caller of the API reaches either (the API's mux registers neither).
+//
+// GET /livez is natscallout.Livez on the auth service this broker started, which answers the whole
+// of it, the broker that runs no auth service included.
+func metricsHandler(registry *metrics.Registry, callout *atomic.Pointer[natscallout.Service]) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", registry.Handler())
+	mux.Handle("GET /livez", natscallout.Livez(callout.Load))
 	return mux
 }
 
@@ -1084,7 +1150,8 @@ func airlockCACertificatePEM(ca *airlockproxy.Authority) string {
 // newRequestMachine builds the requests.Machine the broker decides every secret request with, from
 // its configuration: the audience and skew every request object is checked against, and, for each
 // service account, the registered service a pod running as it proves, for each Google
-// service account, the one a machine of that fleet proves, and, for each google-service-account
+// service account, the one a machine of that fleet proves and the person its exchange entry
+// names, and, for each google-service-account
 // secret, the one account the deployment binds it to and so the only one its release mints a
 // token for. A grant lasts the lifetime its request signed, or until its session ends. rules and
 // caCertificate are the airlock's, read at boot: a name the rules name is released as
@@ -1092,18 +1159,23 @@ func airlockCACertificatePEM(ca *airlockproxy.Authority) string {
 // one retry policy and process-wide retry budget of the three minters that call an upstream over
 // HTTP (main's is secrets.NewRetry on the process's registry, which broker_mint_attempts_total is
 // counted on), so a GitHub brownout that spends the budget leaves a Google mint's failure
-// unretried too: each holds the one pointer, which kindMinters' copies keep.
-func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, retry *secrets.Retry) *requests.Machine {
+// unretried too: each holds the one pointer, which typeMinters' copies keep. dispatch is the
+// broker's one read of Dispatch (judgeDispatch), nil where BROKER_JUDGE_DISPATCH_URL is unset;
+// where it is set it also names a Legion pod's issue's assignee, whose Inbox lists that pod's
+// request for a shared secret.
+func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, retry *secrets.Retry, dispatch *judge.Dispatch) *requests.Machine {
+	githubApp := secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry}
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
 		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
 		ServicesByAccount:   cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount,
-		// The two kinds whose minter calls an endpoint of its own carry the local stack's
+		VMPersonsByAccount:  vmPersonsByAccount(cfg.ExchangeGoogleAccounts),
+		// The two types whose minter calls an endpoint of its own carry the local stack's
 		// stand-in endpoints when it named them, and the real ones otherwise: a minter left
 		// zero mints against GitHub and Google themselves.
-		Minters: kindMinters(
-			secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry},
+		Minters: typeMinters(
+			githubApp,
 			secrets.GoogleLogin{TokenURL: cfg.AirlockTestGoogleTokenURL, Retry: retry},
 			secrets.AzureLogin{TokenFile: cfg.AzureTokenFile, SecretName: cfg.AzureLoginSecret},
 			// The google-service-account minter takes the deployment's binding of each such
@@ -1115,6 +1187,10 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 			// asks Google's own IAM endpoint. It is passed by pointer because that is where it
 			// keeps those credentials.
 			&secrets.GoogleServiceAccount{Accounts: cfg.ServiceAccountSecrets, Retry: retry}),
+		// A GitHub App token a release minted and hands to nobody - a release that failed after
+		// the mint, or a name behind the airlock - goes back to GitHub through the same minter's
+		// endpoint and retry.
+		GiveBacks:            map[string]requests.GiveBack{policy.TypeGitHubApp: githubApp.GiveBack},
 		Airlock:              rules,
 		AirlockProxyURL:      cfg.AirlockProxyURL,
 		AirlockCACertificate: caCertificate,
@@ -1123,7 +1199,38 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		SignInOff: cfg.SignInOff,
 	}
 	m.Chain = requests.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second, m.Airlock)
+	if dispatch != nil {
+		m.Assignees = dispatch
+	}
 	return m
+}
+
+// vmPersonsByAccount is the person each BROKER_VM_EXCHANGE_ACCOUNTS entry names, keyed by its
+// account, an entry that names none left out: whose Inbox lists a request one of that fleet's
+// machines makes for a shared human-tier secret. The entry's person reaches no secret.
+func vmPersonsByAccount(entries []exchange.GoogleEntry) map[string]string {
+	persons := make(map[string]string, len(entries))
+	for _, e := range entries {
+		if e.Person != "" {
+			persons[e.Account] = e.Person
+		}
+	}
+	return persons
+}
+
+// judgeDispatch is the broker's one read of Dispatch, at BROKER_JUDGE_DISPATCH_URL under the token
+// BROKER_JUDGE_DISPATCH_TOKEN_FILE holds, and nil where that URL is unset: the model judge reads a
+// request's issue with it, and the request machine a Legion pod's issue's assignee. main builds it
+// once and hands both the same one, so they share its token cache and its client.
+func judgeDispatch(cfg config.Config) *judge.Dispatch {
+	if cfg.JudgeDispatchURL == "" {
+		return nil
+	}
+	return &judge.Dispatch{
+		BaseURL: cfg.JudgeDispatchURL,
+		Account: brokertoken.NewAccountToken(cfg.JudgeDispatchTokenFile),
+		HTTP:    &http.Client{Timeout: judgeDispatchTimeout},
+	}
 }
 
 // The request machine answers every question the model judge asks of the broker. The assertion
@@ -1136,12 +1243,14 @@ var _ judge.Requests = (*requests.Machine)(nil)
 // budget already ends a read whose server never answers, but that budget is shared with the
 // 20-second model call, so a client with no timeout of its own would let one stalled read eat
 // the whole run. Ten seconds is wake.Envoy's own bound for the same kind of call, an authorized
-// GET against a service inside the cluster.
+// GET against a service inside the cluster. The request machine's assignee read holds itself to
+// a shorter bound of its own (requests' assigneeBound).
 const judgeDispatchTimeout = 10 * time.Second
 
 // wireJudge gives m the broker's model judge, when this deployment configures one, and logs in
 // one line which of the two brokers this is. The five settings are all-or-none (config.Load
-// refuses a start that sets some of them), so the model URL alone says whether there is a judge.
+// refuses a start that sets some of them), so the model URL alone says whether there is a judge,
+// and a judge always has dispatch, the read of Dispatch main built once and gave m as well.
 //
 // ctx is main's own signal.NotifyContext, which the first SIGTERM cancels, and not boot's
 // `serving`, which outlives the drain: every run hangs off it, so one in flight when the broker
@@ -1149,7 +1258,7 @@ const judgeDispatchTimeout = 10 * time.Second
 // request pending for the person who decides it today. That is the right way round for a judge
 // where it is not for the policy reload — a half-finished reload costs a pod stale tags for its
 // drain, while a half-finished run would approve a credential as the pod goes away.
-func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *requests.Machine) {
+func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *requests.Machine, dispatch *judge.Dispatch) {
 	if cfg.JudgeModelURL == "" {
 		// config.Load refuses a judge beside BROKER_SIGNIN=off, so an off broker always lands here,
 		// and its line says what such a broker does with a request a person would decide.
@@ -1161,12 +1270,8 @@ func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *r
 		return
 	}
 	runner := judge.New(ctx, judge.Options{
-		Rules: rules,
-		Dispatch: judge.Dispatch{
-			BaseURL: cfg.JudgeDispatchURL,
-			Account: brokertoken.NewAccountToken(cfg.JudgeDispatchTokenFile),
-			HTTP:    &http.Client{Timeout: judgeDispatchTimeout},
-		},
+		Rules:      rules,
+		Dispatch:   *dispatch,
 		Model:      judge.NewModel(cfg.JudgeModelURL, cfg.JudgeModel, cfg.JudgeModelProtocol, cfg.JudgeModelAudience),
 		Requests:   m,
 		SkipChecks: cfg.JudgeTestSkipChecks,
@@ -1331,20 +1436,20 @@ func issuerKeys(ctx context.Context, issuer string) (*oidc.Keys, error) {
 	return oidc.NewKeys(discovery, issuer)
 }
 
-// kindMinters is the broker's minter for each kind. Its arguments are the production minters in
+// typeMinters is the broker's minter for each type. Its arguments are the production minters in
 // newRequestMachine; a test passes ones aimed at its own endpoints and projected token file, and
 // its own binding of each google-service-account secret to the account that minter may mint for,
 // which in production is BROKER_SERVICE_ACCOUNT_SECRETS; a minter given no binding at all mints
-// no secret of that kind. The google-service-account minter is a pointer: its method value would
+// no secret of that type. The google-service-account minter is a pointer: its method value would
 // otherwise copy the credentials it caches away from the minter every later mint reads. The other
 // two are copied, and each Retry they hold is a pointer, so minters given one Retry still draw
 // from its one budget.
-func kindMinters(githubApp secrets.GitHubApp, googleLogin secrets.GoogleLogin, azureLogin secrets.AzureLogin, googleServiceAccount *secrets.GoogleServiceAccount) map[string]requests.Minter {
+func typeMinters(githubApp secrets.GitHubApp, googleLogin secrets.GoogleLogin, azureLogin secrets.AzureLogin, googleServiceAccount *secrets.GoogleServiceAccount) map[string]requests.Minter {
 	return map[string]requests.Minter{
-		policy.KindGitHubApp:            githubApp.Mint,
-		policy.KindGoogleLogin:          googleLogin.Mint,
-		policy.KindAzureLogin:           azureLogin.Mint,
-		policy.KindGoogleServiceAccount: googleServiceAccount.Mint,
+		policy.TypeGitHubApp:            githubApp.Mint,
+		policy.TypeGoogleLogin:          googleLogin.Mint,
+		policy.TypeAzureLogin:           azureLogin.Mint,
+		policy.TypeGoogleServiceAccount: googleServiceAccount.Mint,
 	}
 }
 

@@ -17,7 +17,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"maps"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -29,6 +28,8 @@ import (
 	"time"
 
 	"google.golang.org/grpc/codes"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // startGoogleTokenServer answers Google's JWT-bearer grant, as oauth2.googleapis.com/token does
@@ -76,7 +77,7 @@ func writeServiceAccountFile(t *testing.T, path, email, tokenURI string) {
 	}
 	data, err := json.Marshal(map[string]string{
 		"type":           "service_account",
-		"project_id":     "acme-agent-infra",
+		"project_id":     "acme-deployment",
 		"private_key_id": "test-key",
 		"private_key":    string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})),
 		"client_email":   email,
@@ -116,7 +117,7 @@ func startMetadataServer(t *testing.T, email string) *metadataServer {
 		metadataTokenPath: `{"access_token":"metadata-not-a-secret","expires_in":3600,"token_type":"Bearer"}`,
 		"/computeMetadata/v1/instance/service-accounts/default/email":    email,
 		"/computeMetadata/v1/instance/service-accounts/default/identity": "metadata-identity-token",
-		"/computeMetadata/v1/project/project-id":                         "acme-agent-infra",
+		"/computeMetadata/v1/project/project-id":                         "acme-deployment",
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
@@ -310,13 +311,9 @@ func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
 	startFakeSecretManager(t, fake)
 	dir := useGcloudConfigurations(t, "", nil)
 	t.Setenv("PATH", t.TempDir())
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	closed := lis.Addr().String()
-	lis.Close()
-	t.Setenv("GCE_METADATA_HOST", closed)
+	// A port the test holds and nothing listens on, so no other process can take it and answer
+	// as a metadata server (testport.Refused).
+	t.Setenv("GCE_METADATA_HOST", testport.Refused(t))
 	startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
 	started := time.Now()
 	_, stderr, code := runSecret("show", "SCRATCH_TEST")

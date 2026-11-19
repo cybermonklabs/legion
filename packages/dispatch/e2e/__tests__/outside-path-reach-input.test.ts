@@ -77,14 +77,14 @@ describe.concurrent("outside-path-reach.sh", () => {
     }
   );
   row(withoutTools)("fails naming an origin that serves a read with no credential", async () => {
-    const origin = fakeDispatch(200, 200);
+    const origin = await fakeDispatch(200, 200);
     try {
       const where = `http://127.0.0.1:${origin.port}`;
       const run = await drive({ OUTSIDE_ORIGIN: where, OUTSIDE_PATH_TARGETS: await list() });
       expect(verdict(run)).toBe(`FAIL: ${where} served a read with no credential`);
       expect(run.code).toBe(1);
     } finally {
-      origin.stop(true);
+      await origin.stop();
     }
   });
 
@@ -98,7 +98,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         // A proxy of its own that refuses every path but a health route it answers itself.
         [200, 401, { error: "unauthorized" }],
       ] as const) {
-        const origin = fakeDispatch(health, projects, refusal);
+        const origin = await fakeDispatch(health, projects, refusal);
         try {
           const where = `http://127.0.0.1:${origin.port}`;
           const run = await drive({ OUTSIDE_ORIGIN: where, OUTSIDE_PATH_TARGETS: await list() });
@@ -110,7 +110,7 @@ describe.concurrent("outside-path-reach.sh", () => {
             code: 2,
           });
         } finally {
-          origin.stop(true);
+          await origin.stop();
         }
       }
     }
@@ -247,8 +247,8 @@ describe.concurrent("outside-path-reach.sh", () => {
   // bash 3.2 cuts a line at a NUL byte, so `42<NUL>22` would be probed as port 42; bash 5 drops
   // the byte and probes 4222. Neither is the line as written, so a list holding one is refused.
   row(withoutTools)("refuses a target list holding a NUL byte", async () => {
-    const origin = fakeDispatch();
     const holding = holdingTarget();
+    const origin = await fakeDispatch();
     try {
       const port = String(holding.port);
       const where = await list(`nats 127.0.0.1 ${port.slice(0, 2)}\0${port.slice(2)}`);
@@ -258,25 +258,26 @@ describe.concurrent("outside-path-reach.sh", () => {
       });
       expect(verdict(run)).toBe(byteRefusal(where, readFileSync(where).indexOf(0)));
       expect(run.code).toBe(2);
-      expect(origin.seen).toEqual([]);
+      expect(await origin.seen()).toEqual([]);
     } finally {
-      origin.stop(true);
       holding.stop(true);
+      await origin.stop();
     }
   });
 
   // A read that stops before the end of the list, here by a TMOUT=1 the device's shell makes
   // readonly (through BASH_ENV, which bash reads at its start), so the script cannot unset it.
+  // The list's first line comes at once and the pipe then stays open with nothing more until the
+  // script exits, so the read can end only at its timeout, however late this host runs the script.
   // bash 5 says so with read's status 142; bash 3.2 gives 1 and keeps nothing it read, as at the
   // end of an empty list. Either way the run refuses before it goes on the network.
   row(withoutTools)(
     "refuses a target list whose read stopped before the end of the list",
     async () => {
-      const origin = fakeDispatch();
-      const holding = holdingTarget();
       const major = Number(
         Bun.spawnSync([bash, "-c", `printf %s "\${BASH_VERSINFO[0]}"`]).stdout.toString()
       );
+      const origin = await fakeDispatch();
       try {
         const run = await drive(
           {
@@ -284,10 +285,7 @@ describe.concurrent("outside-path-reach.sh", () => {
             OUTSIDE_PATH_TARGETS: "/dev/stdin",
             BASH_ENV: written("readonly TMOUT=1\n"),
           },
-          {
-            stdin: `closed 127.0.0.1 ${await closedPort()}\n`,
-            stdinLater: `hub 127.0.0.1 ${holding.port}\n`,
-          }
+          { stdin: `closed 127.0.0.1 ${await closedPort()}\n`, stdinHeld: true }
         );
         expect(verdict(run)).toBe(
           major >= 4
@@ -296,16 +294,15 @@ describe.concurrent("outside-path-reach.sh", () => {
             : "UNKNOWN: /dev/stdin lists no target: nothing was tried, so nothing is proved"
         );
         expect(run.code).toBe(2);
-        expect(origin.seen).toEqual([]);
+        expect(await origin.seen()).toEqual([]);
       } finally {
-        origin.stop(true);
-        holding.stop(true);
+        await origin.stop();
       }
     }
   );
 
   row(withoutTools)("is unknown when curl is missing", async () => {
-    const origin = fakeDispatch();
+    const origin = await fakeDispatch();
     try {
       const run = await drive(
         { OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`, OUTSIDE_PATH_TARGETS: await list() },
@@ -314,12 +311,12 @@ describe.concurrent("outside-path-reach.sh", () => {
       expect(verdict(run)).toStartWith("UNKNOWN: curl missing");
       expect(run.code).toBe(2);
     } finally {
-      origin.stop(true);
+      await origin.stop();
     }
   });
 
   row(withoutTools)("is unknown when sleep is missing", async () => {
-    const origin = fakeDispatch();
+    const origin = await fakeDispatch();
     try {
       const run = await drive(
         { OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`, OUTSIDE_PATH_TARGETS: await list() },
@@ -327,17 +324,17 @@ describe.concurrent("outside-path-reach.sh", () => {
       );
       expect(verdict(run)).toStartWith("UNKNOWN: sleep missing");
       expect(run.code).toBe(2);
-      expect(origin.seen).toEqual([]);
+      expect(await origin.seen()).toEqual([]);
     } finally {
-      origin.stop(true);
+      await origin.stop();
     }
   });
 
   row(withoutTools)("is unknown when curl is older than 7.40", async () => {
-    const origin = fakeDispatch();
     const path = pathWithCurl(
       `case "$*" in *--version*) echo 'curl 7.39.0 (x86_64-redhat-linux-gnu) libcurl/7.39.0'; exit 0 ;; esac`
     );
+    const origin = await fakeDispatch();
     try {
       const run = await drive(
         { OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`, OUTSIDE_PATH_TARGETS: await list() },
@@ -348,12 +345,12 @@ describe.concurrent("outside-path-reach.sh", () => {
       );
       expect(run.code).toBe(2);
     } finally {
-      origin.stop(true);
+      await origin.stop();
     }
   });
 
   row(withoutTools)("is unknown when the target file lists no target", async () => {
-    const origin = fakeDispatch();
+    const origin = await fakeDispatch();
     try {
       const run = await drive({
         OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
@@ -363,7 +360,7 @@ describe.concurrent("outside-path-reach.sh", () => {
       expect(verdict(run)).toStartWith("UNKNOWN: ");
       expect(run.code).toBe(2);
     } finally {
-      origin.stop(true);
+      await origin.stop();
     }
   });
 
@@ -379,12 +376,12 @@ describe.concurrent("outside-path-reach.sh", () => {
   row(withoutTools)(
     "refuses a target list it cannot read whole or a line it cannot take, before going on the network",
     async () => {
-      const origin = fakeDispatch();
       // A list with a byte outside printable ASCII, tab and LF at `offset`, counted from 0.
       const bad = (text: string, offset: number) => {
         const where = written(text);
         return [where, byteRefusal(where, offset)] as const;
       };
+      const origin = await fakeDispatch();
       try {
         for (const [where, reason] of [
           [await list("hub 127.0.0.1"), "is not 'name host port': hub 127.0.0.1"],
@@ -453,7 +450,7 @@ describe.concurrent("outside-path-reach.sh", () => {
           );
           expect(verdict(run)).toContain(reason);
         }
-        expect(origin.seen).toEqual([]);
+        expect(await origin.seen()).toEqual([]);
         // A list it cannot open, or a read error, refuses with bash's own words at the end.
         const [directory, missing] = await Promise.all(
           [scratch, join(scratch, "no-such-list.txt")].map((where) =>
@@ -471,9 +468,9 @@ describe.concurrent("outside-path-reach.sh", () => {
           "which this device could not read whole: could not open it"
         );
         expect(missing.code).toBe(2);
-        expect(origin.seen).toEqual([]);
+        expect(await origin.seen()).toEqual([]);
       } finally {
-        origin.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -497,8 +494,8 @@ describe.concurrent("outside-path-reach.sh", () => {
   row(withoutTools)(
     "refuses a line holding a control character or a Unicode line break, which would hide the target after it",
     async () => {
-      const origin = fakeDispatch();
       const holding = holdingTarget();
+      const origin = await fakeDispatch();
       try {
         const closed = await closedPort();
         const runs = await Promise.all(
@@ -524,10 +521,10 @@ describe.concurrent("outside-path-reach.sh", () => {
             code: 2,
           });
         }
-        expect(origin.seen).toEqual([]);
+        expect(await origin.seen()).toEqual([]);
       } finally {
-        origin.stop(true);
         holding.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -537,8 +534,8 @@ describe.concurrent("outside-path-reach.sh", () => {
   row(withoutTools)(
     "refuses the raw byte 0x85 after a comment, which would hide the target after it",
     async () => {
-      const origin = fakeDispatch();
       const holding = holdingTarget();
+      const origin = await fakeDispatch();
       try {
         const prefix = `closed 127.0.0.1 ${await closedPort()} # closed port`;
         const runs = await Promise.all(
@@ -566,10 +563,10 @@ describe.concurrent("outside-path-reach.sh", () => {
         for (const { locale, said, want, code } of runs) {
           expect({ locale, said, code }).toEqual({ locale, said: want, code: 2 });
         }
-        expect(origin.seen).toEqual([]);
+        expect(await origin.seen()).toEqual([]);
       } finally {
-        origin.stop(true);
         holding.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -637,8 +634,8 @@ describe.concurrent("outside-path-reach.sh", () => {
   row(withoutTools)(
     "refuses every spelling of an IPv4-mapped address, which a v6-only device would read unreachable",
     async () => {
-      const origin = fakeDispatch();
       const holding = holdingTarget();
+      const origin = await fakeDispatch();
       try {
         const path = v6Only();
         const runs = await Promise.all(
@@ -660,10 +657,10 @@ describe.concurrent("outside-path-reach.sh", () => {
             code: 2,
           });
         }
-        expect(origin.seen).toEqual([]);
+        expect(await origin.seen()).toEqual([]);
       } finally {
-        origin.stop(true);
         holding.stop(true);
+        await origin.stop();
       }
     }
   );

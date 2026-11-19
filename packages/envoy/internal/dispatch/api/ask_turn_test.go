@@ -9,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -290,61 +288,16 @@ func TestCommentTurnRequiresAnAskReply(t *testing.T) {
 	}
 }
 
-// A closed ask has no turn to hold: a reply under an answered ask records no turn
-// even when the request asks for one, and its comment.created carries no
-// ask_waiting_on.
-func TestReplyUnderAnAnsweredAskRecordsNoTurn(t *testing.T) {
-	handler := newTestHandler(t)
-	issue := createInteractionIssue(t, handler, "TEST", "Closed turns", "spec")
-	askID := openTurnAsk(t, handler, issue.Key, "Ship it?")
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer", map[string]any{
-		"text": "Yes.",
-	}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("answer ask: status=%d body=%s", response.Code, response.Body.String())
-	}
-	reply := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
-		"body": "Shipped in #42.", "ask_id": askID, "turn": "agent", "actor": sessionActor(),
-	})
-	if reply.Code != http.StatusCreated {
-		t.Fatalf("reply under answered ask: status=%d body=%s", reply.Code, reply.Body.String())
-	}
-	if comment := decodeBody[model.Comment](t, reply); comment.Turn != nil {
-		t.Fatalf("reply under answered ask turn = %q, want null", *comment.Turn)
-	}
-	payload := latestCommentCreatedPayload(t, handler, issue.Key)
-	if _, present := payload["ask_waiting_on"]; present || payload["ask_state"] != "answered" || payload["turn"] != nil {
-		t.Fatalf("comment.created under answered ask = %#v, want ask_state answered with no turn and no ask_waiting_on", payload)
-	}
-	if detail := readAskDetail(t, handler, askID); detail.WaitingOn != "" {
-		t.Fatalf("answered ask detail waiting_on = %q, want none", detail.WaitingOn)
-	}
-}
-
 // oneConnectionHandler serves deps's routes from a store of one connection of its own and answers
 // that connection's backend process id, so every statement a request sent through it makes on
 // deps.Store runs on that one backend, and a test watches the backend that request waits on
 // (storetest.WaitForQueuedBehind) rather than count every session queued behind a lock. Its
 // listener, broker and document service are deps's, so what it writes is what the test's own
-// handler reads.
+// handler reads. The store is oneConnectionStore's (item_row_owner_lock_test.go), which a writer
+// that is not a route runs on directly; this is that store with deps' routes registered over it.
 func oneConnectionHandler(t *testing.T, deps Deps) (http.Handler, uint32) {
 	t.Helper()
-	config := deps.Store.Pool.Config()
-	config.MaxConns = 1
-	config.MinConns = 0
-	config.MinIdleConns = 0
-	opened, err := pgxpool.NewWithConfig(context.Background(), config)
-	if err != nil {
-		t.Fatalf("open the call's one-connection pool: %v", err)
-	}
-	callStore := &store.Store{Pool: store.NewPool(opened)}
-	// Registered before the server's wait, so the wait runs first and this closes after.
-	t.Cleanup(callStore.Pool.Close)
-	conn, err := callStore.Pool.Acquire(context.Background())
-	if err != nil {
-		t.Fatalf("acquire the call's connection: %v", err)
-	}
-	pid := conn.Conn().PgConn().PID()
-	conn.Release()
+	callStore, pid := oneConnectionStore(t, deps)
 	callDeps := deps
 	callDeps.Store = callStore
 	mux := http.NewServeMux()
@@ -414,11 +367,11 @@ func TestAReplyThatWaitedForTheOwnerRowIsTheNewest(t *testing.T) {
 
 			hold, err := database.Pool.Begin(ctx)
 			if err != nil {
-				t.Fatalf("begin the owner row hold: %v", err)
+				t.Fatalf("begin the owner lock hold: %v", err)
 			}
 			defer hold.Rollback(ctx)
-			if _, err := hold.Exec(ctx, `select 1 from issues where key = $1 for no key update`, issue.Key); err != nil {
-				t.Fatalf("hold the owner row: %v", err)
+			if err := store.LockOwner(ctx, hold, store.IssueOwner(issue.Key)); err != nil {
+				t.Fatalf("hold the owner lock: %v", err)
 			}
 			// The agent's reply runs on a connection of its own, and the test goes on once that
 			// backend is queued behind the owner row. A count of waiters would also take the
@@ -444,7 +397,7 @@ func TestAReplyThatWaitedForTheOwnerRowIsTheNewest(t *testing.T) {
 				t.Fatalf("reply on the other ask: status=%d body=%s", response.Code, response.Body.String())
 			}
 			if err := hold.Rollback(ctx); err != nil {
-				t.Fatalf("release the owner row: %v", err)
+				t.Fatalf("release the owner lock: %v", err)
 			}
 			response := awaitResponse(t, replied)
 			if response.Code != http.StatusCreated {

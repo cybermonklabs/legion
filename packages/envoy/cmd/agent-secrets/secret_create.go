@@ -90,6 +90,7 @@ func watchCreateSignals() (stop func()) {
 	}
 	signals := make(chan os.Signal, len(watched))
 	signal.Notify(signals, watched...)
+	formWatchesSignals.Add(1)
 	done, exited := make(chan struct{}), make(chan struct{})
 	go func() {
 		select {
@@ -106,6 +107,7 @@ func watchCreateSignals() (stop func()) {
 	return sync.OnceFunc(func() {
 		close(done)
 		<-exited
+		formWatchesSignals.Add(-1)
 		signal.Stop(signals)
 		select {
 		case sig := <-signals:
@@ -145,9 +147,12 @@ func endAtOnce(sig os.Signal) {
 	exitBySignal(sig)
 }
 
-// exitBySignal ends the process by sig: back at its default action, the platform raises it where
-// it can (raiseSignal), and the exit status a shell gives for sig is the fallback.
+// exitBySignal ends the process by sig: it first kills each gcloud runGcloud is running, with its
+// group (killRunningGcloud), since gcloud, in a group of its own, does not get sig; then, back at
+// sig's default action, the platform raises it where it can (raiseSignal), and the exit status a
+// shell gives for sig is the fallback.
 func exitBySignal(sig os.Signal) {
+	killRunningGcloud()
 	signal.Reset(sig)
 	if raiseSignal(sig) {
 		time.Sleep(time.Second)
@@ -219,6 +224,7 @@ const (
 type pendingCreate struct {
 	s              *secretSession
 	form, name     string
+	secretType     string // the type tag the create writes, "" for none, which its reread is held to (rereadValue)
 	owner, tier    string // the owner and tier tags the created line names
 	stdout, stderr io.Writer
 	created        newSecret
@@ -236,11 +242,11 @@ type pendingCreate struct {
 // (readValue, handed the deadline its read ends at: valueReadWindow after the store is asked to
 // make the secret, where begin makes one that waits for its value, and the zero time, no bound,
 // where it makes nothing), store, and abandon after any failure. It ends the stretch before it
-// reports anything, the failure, or the value stored and the broker's reread, so a signal that
-// comes as it reports finds no cleanup to run, and one that came before keeps the stretch from
-// ending: interrupted reports instead. It answers the form's exit code, and is a function rather
-// than a method of pendingCreate because broker-refgen reads every exit code this package returns,
-// and it follows a plain call, never a method's.
+// reports anything, the failure, or the value stored and the broker's reread, held to the type the
+// create wrote (rereadValue), so a signal that comes as it reports finds no cleanup to run, and one
+// that came before keeps the stretch from ending: interrupted reports instead. It answers the
+// form's exit code, and is a function rather than a method of pendingCreate because broker-refgen
+// reads every exit code this package returns, and it follows a plain call, never a method's.
 func runCreate(p *pendingCreate, readValue func(deadline time.Time) (string, error)) int {
 	end := p.watch()
 	defer end()
@@ -269,7 +275,7 @@ func runCreate(p *pendingCreate, readValue func(deadline time.Time) (string, err
 	}
 	p.sayStored()
 	noteEdgeSpaces(p.stderr, p.form, p.name, value)
-	return rereadAfter(p.s, p.stdout, p.stderr, p.form, p.name, true, nil)
+	return rereadValue(p.s, p.stdout, p.stderr, p.form, p.name, p.secretType)
 }
 
 // sayStored prints the line that says the create stored the secret with its value.

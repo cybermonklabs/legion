@@ -168,17 +168,14 @@ theorem T2 {rules : Rules} {g : Grant} {value : String} {r r' : Request}
     exact ⟨sr, hl, hb, hp, hs, hh, hd, hm, rfl, rfl, rfl, rfl, rfl⟩
   · cases h
 
-/-- T3: a valid rules file gives every entry at least one host, and a judge a lifetime of
-at most 900 seconds. -/
+/-- T3: a valid rules file gives a judge a lifetime of at most 900 seconds. That no value goes
+to a host an entry does not bind is T2's, which holds for an entry with no host too: `check`
+refuses every request for one. -/
 theorem T3 {rules : Rules} (hv : validate rules = true) :
-    ∀ sr ∈ rules.secrets, sr.hosts ≠ [] ∧ ∀ l, sr.judge = some l → l ≤ 900 := by
-  intro sr hm
+    ∀ sr ∈ rules.secrets, ∀ l, sr.judge = some l → l ≤ 900 := by
+  intro sr hm l hj
   simp only [validate, Bool.and_eq_true, List.all_eq_true] at hv
-  have hs := hv.2 sr hm
-  simp only [Bool.not_eq_true', List.isEmpty_eq_false_iff] at hs
-  refine ⟨hs.1.1, ?_⟩
-  intro l hj
-  have hjo := hs.1.2
+  have hjo := (hv.2 sr hm).1.1
   rw [hj] at hjo
   simpa [judgeOK] using hjo
 

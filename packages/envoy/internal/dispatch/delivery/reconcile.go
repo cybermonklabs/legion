@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -52,6 +53,9 @@ type Reconcile struct {
 	events   *events.Broker
 	atStart  bool
 	interval time.Duration
+	// gitHubReads is what RecordGitHubReads set: each leased pass's attempt at reading GitHub
+	// goes through it, and nil records nothing.
+	gitHubReads githubreads.Recorder
 }
 
 // NewReconcile builds a Reconcile.
@@ -75,6 +79,14 @@ func (r *Reconcile) FirstPassAtStart() *Reconcile {
 // it: five minutes is what the Delivery page's freshness row promises.
 func (r *Reconcile) TickEvery(interval time.Duration) *Reconcile {
 	r.interval = interval
+	return r
+}
+
+// RecordGitHubReads makes each leased pass record its attempt at reading GitHub through record,
+// as the newest attempt of githubreads.DeliveryReconcile, which GET /healthz answers: whether a
+// GitHub read of the pass failed, and the first failure. Without it a pass records nothing.
+func (r *Reconcile) RecordGitHubReads(record githubreads.Recorder) *Reconcile {
+	r.gitHubReads = record
 	return r
 }
 
@@ -167,19 +179,35 @@ func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time
 // start of runOnce to its return, at every return. The deferred call writes it, so no step of the
 // pass comes after it. duty.RunJittered arms the next timer only after the pass returns, so this
 // is the time between one pass's start and the next one's timer.
+//
+// It is the pass the lease runs (leasedPass), so it is one attempt at reading GitHub
+// (githubreads), recorded through RecordGitHubReads' recorder when it ends: the GitHub client
+// notes on it each request and each failure no caller takes as data, and the pass notes each part
+// of its read it gives up on an answer the client leaves to it: the permission check, a step that
+// reads GitHub and fails (recordRead), and a row of such a step it logs and skips
+// (readOwedPullRequests, readFactsOf, storePullRequestFacts, completePartialPullRequest).
+// An answer a step takes as data is no failure, nor is the step that reads no GitHub, nor are the
+// runs backfills, which never fail the pass (the client still notes what they meet). It is
+// recorded on the context the lease handed the pass, so a pass this process's shutdown cut short
+// records nothing.
 func (r *Reconcile) runOnce(ctx context.Context) {
 	start := time.Now()
 	defer func() { slog.Info("dispatch delivery: reconcile pass", "took", time.Since(start)) }()
+	caller := ctx
+	ctx, attempt := githubreads.Begin(ctx)
+	defer githubreads.Finish(caller, githubreads.DeliveryReconcile, attempt, r.gitHubReads, nil)
 	now := start
 	headErr := r.reconcilePullRequestHeads(ctx, now)
 	// Where the pass returns before record() below exists, the head pass's failure can only be
 	// logged. At the GetSettings arm there is no delivery_settings row to write it in, or none
 	// that could be read; at the splitRepo and permission arms below, r.fail does write
 	// last_error into that row, but last_error holds the one failure that ended the pass and the
-	// step list that would carry a second one (failures, record) does not exist yet.
+	// step list that would carry a second one (failures, record) does not exist yet. It is a
+	// step that reads GitHub all the same, so the pass's attempt notes it, as recordRead does.
 	logHeadFailure := func() {
 		if headErr != nil {
 			slog.Error("dispatch delivery: reconcile pull request heads", "error", headErr)
+			githubreads.NoteFailuref(ctx, "reconcile pull request heads: %w", headErr)
 		}
 	}
 	settings, err := GetSettings(ctx, r.pool)
@@ -209,6 +237,9 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 	if _, err := r.github.DeliveryPermissions(ctx, owner, repo); err != nil {
 		logHeadFailure()
 		slog.Error("dispatch delivery: GitHub App permission check", "error", err)
+		// The App not installed on the deploy repository, or lacking a grant, is an answer the
+		// client leaves to its caller, and it ends every step below: the pass notes it.
+		githubreads.NoteFailure(ctx, err)
 		r.fail(ctx, err)
 		return
 	}
@@ -223,15 +254,25 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 		slog.Error("dispatch delivery: "+step, "error", err)
 		failures = append(failures, fmt.Sprintf("%s: %s", step, err))
 	}
+	// recordRead is record for a step that reads GitHub: its failure gives up part of the pass's
+	// read, which the pass's attempt notes as well, whatever failed inside the step (a database
+	// error inside a step that reads GitHub ends that read too). The one step that reads no
+	// GitHub, the issue.deployed events, goes through record alone.
+	recordRead := func(step string, err error) {
+		if err != nil {
+			githubreads.NoteFailuref(ctx, "%s: %w", step, err)
+		}
+		record(step, err)
+	}
 
-	record("reconcile merged pull requests", r.reconcileMergedPullRequests(ctx, settings, searchScope, now))
-	record("reconcile partial pull requests", r.reconcilePartialPullRequests(ctx))
+	recordRead("reconcile merged pull requests", r.reconcileMergedPullRequests(ctx, settings, searchScope, now))
+	recordRead("reconcile partial pull requests", r.reconcilePartialPullRequests(ctx))
 	// The head pass ran at the top of the pass, before the settings were read; its failure is
 	// recorded here, so last_error names the steps in this list's order.
-	record("reconcile pull request heads", headErr)
-	record("reconcile deploy workflow runs", r.reconcileWorkflow(ctx, owner, repo, settings.DeployRepo, settings.DeployWorkflowPath, DeliveryRunKindDeploy, production, now))
+	recordRead("reconcile pull request heads", headErr)
+	recordRead("reconcile deploy workflow runs", r.reconcileWorkflow(ctx, owner, repo, settings.DeployRepo, settings.DeployWorkflowPath, DeliveryRunKindDeploy, production, now))
 	if settings.PRChecksWorkflowPath != settings.DeployWorkflowPath {
-		record("reconcile PR-checks workflow runs", r.reconcileWorkflow(ctx, owner, repo, settings.DeployRepo, settings.PRChecksWorkflowPath, DeliveryRunKindPRChecks, production, now))
+		recordRead("reconcile PR-checks workflow runs", r.reconcileWorkflow(ctx, owner, repo, settings.DeployRepo, settings.PRChecksWorkflowPath, DeliveryRunKindPRChecks, production, now))
 	}
 	// The runs backfills log and resume their own failures and never reach record(): a rate limit
 	// one meets must not hold last_reconcile_at or set last_error while every regular step
@@ -654,7 +695,8 @@ const (
 // pullRequestAbsent, which asks GitHub once more with the query's token. A rate limit goes to
 // limited and ends the reads of its installation, and the other installations go on. Any other
 // failure of GitHub is logged and ends the reads of its installation for this pass. A target of a
-// query that failed is not settled. It answers each failure of the database.
+// query that failed is not settled. It answers each failure of the database. The attempt of the
+// pass notes each read of GitHub that this function logs and gives up (githubreads).
 func (r *Reconcile) readFactsOf(
 	ctx context.Context, installations *passInstallations, limited *passRateLimit, targets []factsTarget,
 	now time.Time, proveAbsence bool, settle func(context.Context, factsTarget, factsOutcome) error,
@@ -688,6 +730,7 @@ func (r *Reconcile) readFactsOf(
 		default:
 			slog.Warn("dispatch delivery: mint the token of a read of a pull request's facts; the next pass reads it",
 				"repo", target.ref.Owner+"/"+target.ref.Repo, "number", target.ref.Number, "error", err)
+			githubreads.NoteFailuref(ctx, "read the facts of %s PR #%d: %w", target.ref.Owner+"/"+target.ref.Repo, target.ref.Number, err)
 			continue
 		}
 		scope := r.github.TokenScope(token)
@@ -733,6 +776,7 @@ func (r *Reconcile) readFactsOf(
 							if askErr != nil && !limited.keep(askErr) {
 								slog.Warn("dispatch delivery: ask GitHub whether a repository holds a pull request it answered absent; the next pass reads it again",
 									"repo", target.ref.Owner+"/"+target.ref.Repo, "number", target.ref.Number, "error", askErr)
+								githubreads.NoteFailuref(ctx, "ask GitHub whether %s holds PR #%d: %w", target.ref.Owner+"/"+target.ref.Repo, target.ref.Number, askErr)
 							}
 							if absent {
 								outcome = factsAbsent
@@ -747,6 +791,9 @@ func (r *Reconcile) readFactsOf(
 					if !errors.Is(err, errFactsBudgetSpent) && !limited.keep(err) {
 						slog.Warn("dispatch delivery: read the facts of pull requests; the next pass reads them again",
 							"installation", g.scope, "pull_requests", len(chunk), "error", err)
+						first := chunk[0].ref
+						githubreads.NoteFailuref(ctx, "read the facts of %d pull requests under %s, the first %s PR #%d: %w",
+							len(chunk), g.scope, first.Owner+"/"+first.Repo, first.Number, err)
 					}
 					return
 				}
@@ -1068,6 +1115,7 @@ func (r *Reconcile) readOwedPullRequests(ctx context.Context, now time.Time, ins
 			if askErr != nil && !limited.keep(askErr) {
 				slog.Warn("dispatch delivery: ask GitHub whether a repository holds a pull request it refused; the read stays owed",
 					"repo", owed.Repo, "number", owed.Number, "error", askErr)
+				githubreads.NoteFailuref(ctx, "ask GitHub whether %s holds PR #%d: %w", owed.Repo, owed.Number, askErr)
 			}
 			if !absent {
 				outcome, refusedAs = owedReadRefused, refusalOf(refused.err)
@@ -1080,6 +1128,8 @@ func (r *Reconcile) readOwedPullRequests(ctx context.Context, now time.Time, ins
 		if err != nil && !limited.keep(err) {
 			slog.Warn("dispatch delivery: read a pull request owed a read; the next pass reads it again",
 				"repo", owed.Repo, "number", owed.Number, "reason", owed.Reason, "owed_at", owed.OwedAt, "error", err)
+			// The pass gives up this read until the next pass, so the attempt of the pass notes it.
+			githubreads.NoteFailuref(ctx, "read the owed head of %s PR #%d: %w", owed.Repo, owed.Number, err)
 		}
 		return nil
 	}
@@ -1111,11 +1161,13 @@ func (r *Reconcile) readOwedPullRequests(ctx context.Context, now time.Time, ins
 // readable and holds no such pull request. One 404, or a repository that the App cannot read, is
 // no such proof, so the row stays partial and the next pass reads it again.
 func (r *Reconcile) completePartialPullRequest(ctx context.Context, pr DeliveryPullRequest, limited *passRateLimit) error {
-	// settle ends the completion of the row at err: it keeps a rate limit for the step, and it
-	// logs any other failure with message. The row stays partial for the next pass.
+	// settle ends the completion of the row at err: it keeps a rate limit for the step. It logs
+	// any other failure with message, and the attempt of the pass notes that failure. The row
+	// stays partial for the next pass.
 	settle := func(message string, err error) error {
 		if !limited.keep(err) {
 			slog.Warn(message, "repo", pr.Repo, "number", pr.Number, "error", err)
+			githubreads.NoteFailuref(ctx, "complete partial pull request %s #%d: %w", pr.Repo, pr.Number, err)
 		}
 		return nil
 	}
@@ -1131,6 +1183,11 @@ func (r *Reconcile) completePartialPullRequest(ctx context.Context, pr DeliveryP
 		if !absent {
 			slog.Warn("dispatch delivery: GitHub refused the read of a partial pull request; the next pass reads it again",
 				"repo", pr.Repo, "number", pr.Number, "error", refused.err)
+			// GitHub refuses the repository again in each pass, so the attempt of the pass notes
+			// that refusal. A pull request not found and an App not installed are data, not failures.
+			if errors.Is(refused.err, githubapp.ErrRepositoryUnreadable) {
+				githubreads.NoteFailuref(ctx, "complete partial pull request %s #%d: %w", pr.Repo, pr.Number, refused.err)
+			}
 			return nil
 		}
 		if markErr := MarkPullRequestUnfetchable(ctx, r.pool, pr.Repo, pr.Number, refused.err.Error()); markErr != nil {

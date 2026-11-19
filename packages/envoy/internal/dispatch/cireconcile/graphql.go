@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"hash/maphash"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 )
 
@@ -41,8 +43,12 @@ const (
 )
 
 // headsQuery reads one page of a repository's open pull requests with every check suite and
-// check run of each one's head commit: the whole of what the REST pass read with two requests a
-// head, in one request for twenty heads.
+// check run of each one's head commit: the whole of what a head read over REST asks for with two
+// requests, its check runs and its check suites, in one request for twenty heads. It is what a
+// repository is queried with where the token the pass holds for it does not hold Commit
+// statuses, and headsQueryWithStatuses, the same text with the head commit's statuses asked for
+// beside its check suites (headsDocument), is what a repository is queried with where it does:
+// there a head read over REST asks for three, its commit statuses the third (readStatuses).
 //
 // Four things in it are load-bearing.
 //
@@ -72,7 +78,27 @@ const (
 // The three page sizes are the constants above, written into the document once each by
 // Sprintf: a GraphQL document takes its `first` as a literal, and a literal spelled out here
 // beside the constant the pass reads its own answers by is a literal that can disagree with it.
-var headsQuery = fmt.Sprintf(`query($owner: String!, $name: String!, $after: String) {
+var (
+	headsQuery             = headsDocument("")
+	headsQueryWithStatuses = headsDocument(statusSelection)
+)
+
+// statusSelection is the head commit's commit statuses as headsQueryWithStatuses asks for them:
+// GitHub's combined status of the commit, whose contexts are the newest status of each context,
+// each with the five fields the REST listing of the same statuses carries (statusObject). It adds
+// no connection to the query, which is what GitHub prices a query's points by, and no request to
+// the pass. One context with its five fields is about 250 to 400 bytes of JSON, and the open
+// heads read on 2026-11-17 carried 0 to 2 contexts each, so a page of twenty heads grows by about
+// 16 KB, far inside githubapp's 1 MiB response limit; a page past that limit is read over REST
+// as any other is (walk.page).
+const statusSelection = "              status { contexts { context state createdAt targetUrl description } }\n"
+
+// headsDocument is headsQuery's one text with status written in on the head commit, after its
+// oid. An empty status is headsQuery itself: a repository whose token does not hold Commit
+// statuses is sent the query it was sent before the pass read statuses, byte for byte, which is
+// what a repository the App cannot read the statuses of costs.
+func headsDocument(status string) string {
+	return fmt.Sprintf(`query($owner: String!, $name: String!, $after: String) {
   rateLimit { cost }
   repository(owner: $owner, name: $name) {
     pullRequests(states: OPEN, first: %d, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
@@ -83,7 +109,7 @@ var headsQuery = fmt.Sprintf(`query($owner: String!, $name: String!, $after: Str
           nodes {
             commit {
               oid
-              checkSuites(first: %d) {
+%s              checkSuites(first: %d) {
                 pageInfo { hasNextPage }
                 nodes {
                   databaseId
@@ -111,10 +137,12 @@ var headsQuery = fmt.Sprintf(`query($owner: String!, $name: String!, $after: Str
       }
     }
   }
-}`, pullsPerQuery, suitesPerQuery, runsPerQuery)
+}`, pullsPerQuery, status, suitesPerQuery, runsPerQuery)
+}
 
-// queryPage is one answer to headsQuery as the pass reads it: the heads of one page of open pull
-// requests, in the order the pass takes them, and where the page after it begins.
+// queryPage is one answer to headsQuery or headsQueryWithStatuses as the pass reads it: the heads
+// of one page of open pull requests, in the order the pass takes them, and where the page after
+// it begins.
 type queryPage struct {
 	heads       []queryHead
 	hasNextPage bool
@@ -122,13 +150,24 @@ type queryPage struct {
 }
 
 // queryHead is one open pull request's head as the query answered it: its number, its head
-// commit, and the check objects of that commit mapped into the shape the webhook's own body
-// carries (checkRunObject, checkSuiteObject).
+// commit, and the check objects and commit statuses of that commit mapped into the shapes the
+// webhook's own body and the REST status listing carry (checkRunObject, checkSuiteObject,
+// statusObject).
 type queryHead struct {
 	number int64
 	sha    string
 	runs   []object
 	suites []object
+	// statuses is the head commit's statuses in a state the record keeps (success, failure or
+	// error), and nil for a head the query asked no status of, whose status GitHub refused, or
+	// whose commit no status was posted to.
+	statuses []object
+	// statusesRefused is the errors entries GitHub answered against the head commit's status
+	// field or a field under it, and nil where it answered none. Any entry costs the head its
+	// statuses alone: the head is answered whole by its check suites as any other head, the
+	// entries are named at WARN, and a head read over REST for its checks reads no statuses
+	// (walk.visitHead), since GitHub has just refused them.
+	statusesRefused []graphQLError
 	// overflow is why the query could not answer this head whole, and empty for a head it
 	// answered whole. A head with a reason here is read over REST instead and the objects above
 	// are not recorded: the head has more check suites than one query asks for, one of its
@@ -144,9 +183,10 @@ type queryHead struct {
 	fingerprint uint64
 }
 
-// graphQLAnswer is GitHub's `{data, errors}` envelope for headsQuery. Every connection is a
-// pointer, since GitHub answers a field it refuses with null beside an entry in errors, and a
-// null the pass read as an empty list would be a head whose checks it silently recorded none of.
+// graphQLAnswer is GitHub's `{data, errors}` envelope for headsQuery and headsQueryWithStatuses.
+// Every connection is a pointer, since GitHub answers a field it refuses with null beside an
+// entry in errors, and a null the pass read as an empty list would be a head whose checks it
+// silently recorded none of.
 type graphQLAnswer struct {
 	Data struct {
 		RateLimit struct {
@@ -166,8 +206,8 @@ type graphQLAnswer struct {
 }
 
 // graphQLError is one entry of GitHub's errors array. Path names the field the entry is about,
-// which is how a refusal of one head's Checks is told from a refusal of the whole query
-// (refusedPulls).
+// which is how a refusal of one head's Checks, or of its statuses alone, is told from a refusal
+// of the whole query (refusedPulls).
 type graphQLError struct {
 	Type    string `json:"type"`
 	Path    []any  `json:"path"`
@@ -184,13 +224,31 @@ type graphQLPull struct {
 }
 
 type graphQLCommit struct {
-	OID         string `json:"oid"`
+	OID string `json:"oid"`
+	// Status is the commit's combined status, which headsQueryWithStatuses alone asks for. It is
+	// a pointer because GitHub answers it null for a commit no status was posted to and for a
+	// field it refuses, and only an errors entry against its path tells the two apart
+	// (refusedPulls).
+	Status *struct {
+		Contexts []graphQLStatusContext `json:"contexts"`
+	} `json:"status"`
 	CheckSuites *struct {
 		PageInfo struct {
 			HasNextPage bool `json:"hasNextPage"`
 		} `json:"pageInfo"`
 		Nodes []graphQLSuite `json:"nodes"`
 	} `json:"checkSuites"`
+}
+
+// graphQLStatusContext is one of GitHub's StatusContext objects: the newest status of one context.
+// A targetUrl or a description GitHub answers null decodes as the empty string, which is what the
+// REST listing's own null maps to.
+type graphQLStatusContext struct {
+	Context     string `json:"context"`
+	State       string `json:"state"`
+	CreatedAt   string `json:"createdAt"`
+	TargetURL   string `json:"targetUrl"`
+	Description string `json:"description"`
 }
 
 type graphQLSuite struct {
@@ -231,15 +289,19 @@ func (r *Reconciler) query(ctx context.Context, repository reconciled, after str
 	if after != "" {
 		variables["after"] = after
 	}
+	document := headsQuery
+	if repository.statuses {
+		document = headsQueryWithStatuses
+	}
 	started := time.Now()
-	body, status, _, err := r.GitHub.GraphQL(ctx, repository.token, headsQuery, variables)
+	body, status, _, err := r.GitHub.GraphQL(ctx, repository.token, document, variables)
 	c.graphQLTook = time.Since(started)
 	c.queries++
 	if err != nil {
 		return queryPage{}, err
 	}
 	if status != http.StatusOK {
-		return queryPage{}, fmt.Errorf("the GraphQL query for %s/%s answered status %d: %s", repository.owner, repository.repo, status, githubapp.ShownBody(body))
+		return queryPage{}, fmt.Errorf("the GraphQL query for %s/%s answered %s", repository.owner, repository.repo, githubapp.StatusText(status, body))
 	}
 	var answer graphQLAnswer
 	if err := json.Unmarshal(body, &answer); err != nil {
@@ -247,7 +309,7 @@ func (r *Reconciler) query(ctx context.Context, repository reconciled, after str
 	}
 	c.points += answer.Data.RateLimit.Cost
 	var page queryPage
-	refused, wholePage := refusedPulls(answer.Errors)
+	refused, statusesRefused, wholePage := refusedPulls(answer.Errors)
 	if wholePage || answer.Data.Repository == nil {
 		return page, fmt.Errorf("GitHub refused the GraphQL query for %s/%s: %s", repository.owner, repository.repo, errorText(answer.Errors))
 	}
@@ -267,7 +329,7 @@ func (r *Reconciler) query(ctx context.Context, repository reconciled, after str
 			return page, fmt.Errorf("GitHub answered no readable pull request at node %d of the page for %s/%s: %s",
 				index, repository.owner, repository.repo, errorText(answer.Errors))
 		}
-		page.heads = append(page.heads, headOf(pull, pullRefused))
+		page.heads = append(page.heads, headOf(pull, pullRefused, statusesRefused[index]))
 	}
 	return page, nil
 }
@@ -282,16 +344,19 @@ func headCommit(pull *graphQLPull) *graphQLCommit {
 }
 
 // headOf is one answered pull request as the pass takes it: its head commit, the check objects
-// of that commit, the fingerprint of those objects, and, where the query could not answer the
-// head whole, why. refused says GitHub answered an errors entry against this pull request's own
-// path, which is its Checks fields refused.
+// and commit statuses of that commit, the fingerprint of those objects, and, where the query
+// could not answer the head whole, why. refused says GitHub answered an errors entry against
+// this pull request's own path, which is its Checks fields refused; statusesRefused is the
+// entries it answered against the head commit's status field or a field under it, which cost
+// the head its statuses alone, and the head keeps them for the pass to name at WARN
+// (queryHead.statusesRefused, walk.visitHead).
 //
 // A pull request GitHub listed with no head commit is no head to read, exactly as one the REST
 // listing answered with no head.sha is: it is answered with an empty sha and the caller passes
 // over it. A refused pull request with no head commit never reaches here: the query cannot
 // answer that head at all, so its whole page is read over REST.
-func headOf(pull *graphQLPull, refused bool) queryHead {
-	head := queryHead{number: pull.Number}
+func headOf(pull *graphQLPull, refused bool, statusesRefused []graphQLError) queryHead {
+	head := queryHead{number: pull.Number, statusesRefused: statusesRefused}
 	commit := headCommit(pull)
 	if commit == nil {
 		return head
@@ -321,11 +386,19 @@ func headOf(pull *graphQLPull, refused bool) queryHead {
 		}
 		runs += len(suite.CheckRuns.Nodes)
 	}
-	// The loop above walks every suite and every run of the head to validate it, so each slice
-	// is made at the size it will hold: a head of 7 suites and 32 runs is two allocations and
-	// no copy, where an appended slice takes a dozen of each for every head of every page. A
-	// head GitHub answered no object for keeps both slices nil, which is what such a head
-	// carries.
+	// A head whose status field GitHub refused, or refused a field under, records no status from
+	// this answer, whatever the field holds; a commit no status was posted to answers the field
+	// null and has none to record either.
+	var contexts []graphQLStatusContext
+	if commit.Status != nil && len(statusesRefused) == 0 {
+		contexts = commit.Status.Contexts
+	}
+	// The loop above walks every suite and every run of the head to validate it, so each of
+	// those slices is made at the size it will hold: a head of 7 suites and 32 runs is two
+	// allocations and no copy, where an appended slice takes a dozen of each for every head of
+	// every page. A head GitHub answered no object for keeps its slices nil, which is what such a
+	// head carries. The statuses are appended to a nil slice: a head carries few of them, and
+	// only the ones the record keeps (statusObject).
 	if len(commit.CheckSuites.Nodes) > 0 {
 		head.suites = make([]object, 0, len(commit.CheckSuites.Nodes))
 	}
@@ -334,9 +407,10 @@ func headOf(pull *graphQLPull, refused bool) queryHead {
 	}
 	// The objects and the head's fingerprint are built together, each field written into the
 	// object the pass records and into the hash as it is mapped (mappedObject). The order is
-	// the answer's own -- each suite, then the runs under it -- which is the order every pass
-	// reads a given answer in, and that is what two passes' fingerprints of one head must
-	// agree on.
+	// the answer's own -- each suite, then the runs under it, then the statuses -- which is the
+	// order every pass reads a given answer in, and that is what two passes' fingerprints of one
+	// head must agree on. Only a status the pass records enters the hash, so a pending status
+	// moves no fingerprint.
 	var sum maphash.Hash
 	sum.SetSeed(fingerprintSeed)
 	for _, suite := range commit.CheckSuites.Nodes {
@@ -345,8 +419,39 @@ func headOf(pull *graphQLPull, refused bool) queryHead {
 			head.runs = append(head.runs, checkRunObject(&sum, run, suite, commit.OID))
 		}
 	}
+	for _, entry := range contexts {
+		if status, recorded := statusObject(&sum, entry); recorded {
+			head.statuses = append(head.statuses, status)
+		}
+	}
 	head.fingerprint = fingerprintOf(&sum)
 	return head
+}
+
+// statusObject is one commit status the query answered, in the shape GitHub's REST listing of the
+// commit's statuses carries it in (githubapp.Client.CommitStatuses), so
+// contracts.GithubStatusObservation maps a status read here and the same status read over REST to
+// one observation. GraphQL's createdAt and targetUrl are REST's created_at and target_url, and its
+// state is an upper-case enum (SUCCESS) where REST's is lower case (success), so it is lowered as
+// the observation lowers it, and the one lowered state is both tested and written.
+//
+// recorded is false for a status the record does not keep, by the observation's own test: one
+// with no context (checkName keeps every other context non-empty), or one whose state, lowered, is
+// not success, failure or error (contracts.TerminalStatusState), which GraphQL's PENDING and
+// EXPECTED are not. Such a status is tested before any field is written, so it enters neither the
+// objects the pass records nor the fingerprint.
+func statusObject(sum *maphash.Hash, entry graphQLStatusContext) (status object, recorded bool) {
+	state := strings.ToLower(entry.State)
+	if entry.Context == "" || !contracts.TerminalStatusState(state) {
+		return nil, false
+	}
+	item := mappedObject{item: make(object, 5), sum: sum}
+	item.text("context", entry.Context)
+	item.text("state", state)
+	item.text("created_at", entry.CreatedAt)
+	item.text("target_url", entry.TargetURL)
+	item.text("description", entry.Description)
+	return item.item, true
 }
 
 // checkRunObject is one check run the query answered, in the shape the webhook's own body
@@ -412,18 +517,18 @@ func checkSuiteObject(sum *maphash.Hash, suite graphQLSuite, oid string) object 
 // nowhere and sent nowhere.
 var fingerprintSeed = maphash.MakeSeed()
 
-// mappedObject is one check run or check suite as this package maps it: the object the pass
-// records, built field by field, and the head's fingerprint taken over those same fields as
-// they are written. The one call writes both, so the record and the fingerprint cannot come
-// apart -- a field added to an object is hashed by the call that adds it -- which is what the
-// fingerprint rests on.
+// mappedObject is one check run, check suite or commit status as this package maps it: the
+// object the pass records, built field by field, and the head's fingerprint taken over those same
+// fields as they are written. The one call writes both, so the record and the fingerprint cannot
+// come apart -- a field added to an object is hashed by the call that adds it -- which is what
+// the fingerprint rests on.
 //
 // The hash is of what would be written rather than of what GitHub sent: these are the values
-// contracts.GithubCIObservation maps, so two answers GitHub spelled differently and this
-// package maps to the same observations fingerprint the same, and an answer holding one
-// observation more, or one field of one observation different, fingerprints differently and is
-// written. Hashing GitHub's raw JSON instead would write every head again for a field this
-// package never reads.
+// contracts.GithubCIObservation and contracts.GithubStatusObservation map, so two answers GitHub
+// spelled differently and this package maps to the same observations fingerprint the same, and
+// an answer holding one observation more, or one field of one observation different,
+// fingerprints differently and is written. Hashing GitHub's raw JSON instead would write every
+// head again for a field this package never reads.
 type mappedObject struct {
 	item object
 	sum  *maphash.Hash
@@ -481,8 +586,10 @@ func fingerprintOf(sum *maphash.Hash) uint64 {
 	return 1
 }
 
-// refusedPulls reads GitHub's errors array: the indexes of the pull request nodes an entry is
-// about, and whether any entry is about more than one of them.
+// refusedPulls reads GitHub's errors array: the indexes of the pull request nodes an entry
+// refused anything of but the head commit's statuses, the entries against a node's head commit
+// status field or a field under it, by the node's index, and whether any entry names no pull
+// request node at all.
 //
 // GitHub answers a field one installation may not read with null in data and an entry in errors
 // whose path names that field, the rest of the answer standing: a refusal of one head's Checks
@@ -490,28 +597,43 @@ func fingerprintOf(sum *maphash.Hash) uint64 {
 // "checkSuites"], so the number after the first "nodes" is the head it refused. An entry whose
 // path names no pull request node -- the repository itself, or the query -- is the whole page
 // refused, and every head of that page is read over REST.
-func refusedPulls(errors []graphQLError) (map[int]struct{}, bool) {
+//
+// An entry against the head commit's status field, or a field under it, is told apart from
+// every other entry of its node, because it costs the head its statuses alone. Measured on
+// 2026-11-17, GitHub answers a status field the token may not read with `status: null` and a
+// FORBIDDEN entry whose path is [...,"nodes",3,"commits","nodes",0,"commit","status"]. A head
+// with no other entry is answered whole by its check suites, as a head with no entry is, and is
+// not read over REST. A null status with no entry against its path is a commit no status was
+// posted to, which is no refusal at all.
+func refusedPulls(errors []graphQLError) (refused map[int]struct{}, statuses map[int][]graphQLError, whole bool) {
 	if len(errors) == 0 {
 		// Almost every answer GitHub gives carries no error at all, and a nil map answers the
-		// caller's lookups false, so the map is made for the answers that hold an entry alone.
-		return nil, false
+		// caller's lookups false, so the maps are made for the answers that hold an entry alone.
+		return nil, nil, false
 	}
-	refused := make(map[int]struct{})
-	whole := false
+	refused = make(map[int]struct{})
 	for _, entry := range errors {
-		index, ok := pullIndex(entry.Path)
+		index, field, ok := pullIndex(entry.Path)
 		if !ok {
 			whole = true
 			continue
 		}
+		if underStatus(field) {
+			if statuses == nil {
+				statuses = make(map[int][]graphQLError)
+			}
+			statuses[index] = append(statuses[index], entry)
+			continue
+		}
 		refused[index] = struct{}{}
 	}
-	return refused, whole
+	return refused, statuses, whole
 }
 
-// pullIndex is the pull request node one error path is about: the number that follows
-// "pullRequests","nodes" in it.
-func pullIndex(path []any) (int, bool) {
+// pullIndex is the pull request node one error path is about -- the number that follows
+// "pullRequests","nodes" in it -- and the rest of the path after that number, which is the field
+// of the node the entry is about.
+func pullIndex(path []any) (int, []any, bool) {
 	for i := 0; i+2 < len(path); i++ {
 		if text, ok := path[i].(string); !ok || text != "pullRequests" {
 			continue
@@ -522,11 +644,22 @@ func pullIndex(path []any) (int, bool) {
 		// A JSON number decodes into any as a float64, and an index is a whole small one.
 		index, ok := path[i+2].(float64)
 		if !ok || index < 0 {
-			return 0, false
+			return 0, nil, false
 		}
-		return int(index), true
+		return int(index), path[i+3:], true
 	}
-	return 0, false
+	return 0, nil, false
+}
+
+// statusField is the path of the head commit's status field under a pull request node, as an
+// error path names it after the node's index: the commit of `commits(last: 1)`'s one node, whose
+// index a JSON number decodes as, a float64.
+var statusField = []any{"commits", "nodes", float64(0), "commit", "status"}
+
+// underStatus reports whether field, an error path after its pull request node's index, is the
+// head commit's status field or a field under it.
+func underStatus(field []any) bool {
+	return len(field) >= len(statusField) && slices.Equal(field[:len(statusField)], statusField)
 }
 
 // errorText is GitHub's errors array as one line of a log, each entry's type and message: the

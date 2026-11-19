@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -78,7 +79,7 @@ func waitForRegistration(t *testing.T, refusals int) (*Token, error, []stubReque
 	clock := &waitingClock{now: time.Date(2026, 11, 16, 4, 0, 0, 0, time.UTC), stop: ctx}
 	logged := &logtest.Recorder{}
 	client, err := New(Config{
-		BrokerURL: broker.URL(), Key: testKey(t), Subject: projectedStub(), Session: registeredSession,
+		BrokerURL: brokeraddr.New(broker.URL()), Key: testKey(t), Subject: projectedStub(), Session: registeredSession,
 		Log: slog.New(logged), Now: clock.Now, After: clock.After,
 	})
 	if err != nil {
@@ -152,6 +153,40 @@ func TestAPodTradesOnceItsSessionIsRegistered(t *testing.T) {
 	}
 }
 
+// registeredLogLine is what the loop logs once, when a trade lands after it has said the broker
+// had no registration for its session: the line that ends the wait, as the TypeScript client
+// logs one too (packages/broker-client/src/token-client.ts).
+const registeredLogLine = "the secrets broker answered this pod's session once it was registered"
+
+// TestTheEndOfAWaitForARegistrationIsLoggedOnce: the wait is said once when it starts and once
+// when the token lands, naming the session and how long it waited, and nothing else is said of it.
+func TestTheEndOfAWaitForARegistrationIsLoggedOnce(t *testing.T) {
+	const refusals = 3
+	landed, err, _, _, records := waitForRegistration(t, refusals)
+	if err != nil || landed == nil {
+		t.Fatalf("the trade after the registration did not land: token %v, error %v", landed, err)
+	}
+	var ended []slog.Record
+	for _, record := range records {
+		if record.Message == registeredLogLine {
+			ended = append(ended, record)
+		}
+	}
+	if len(ended) != 1 {
+		t.Fatalf("the loop logged %d lines saying the wait ended, want exactly one", len(ended))
+	}
+	session := ""
+	ended[0].Attrs(func(attr slog.Attr) bool {
+		if attr.Key == "session" {
+			session = attr.Value.String()
+		}
+		return true
+	})
+	if session != registeredSession || waitedOf(ended[0]) <= 0 {
+		t.Errorf("the line that ends the wait names session %q after %v, want %q after the refusals' waits", session, waitedOf(ended[0]), registeredSession)
+	}
+}
+
 // TestAnUnregisteredSessionIsLoggedAgainEveryHalfHour: a registration that stays missing for over
 // an hour is logged when it is first refused, again at the first refusal 30 minutes after that,
 // and again 30 minutes after that — three lines across seventeen refusals and 3765 s, rather than
@@ -216,7 +251,7 @@ func TestEveryOtherRefusalStaysPermanent(t *testing.T) {
 		{"a refused subject token", 400, "invalid_request", "The subject token was refused: its audience is not this broker's.", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			refused := newRefusedError(tc.status, tc.code, tc.description)
+			refused := newRefusedError("a pod's projected token", tc.status, tc.code, tc.description)
 			if got := refused.Permanent(); got != tc.permanent {
 				t.Errorf("HTTP %d %s %q reads permanent=%t, want %t", tc.status, tc.code, tc.description, got, tc.permanent)
 			}

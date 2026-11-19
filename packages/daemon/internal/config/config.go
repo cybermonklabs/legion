@@ -5,7 +5,7 @@
 // is refused with the message that names its replacement, worded exactly as operators have met it;
 // anything else is a typo, refused as an unknown key. One kind is not refused: a warned key
 // (warnedKeys) is accepted, changes nothing, and is kept as a Warning the daemon logs at boot and
-// `legion start --check-config` prints after its OK line. Under `runtime: kubernetes` the loader
+// `legion config check` prints after its OK line. Under `runtime: kubernetes` the loader
 // also refuses what a pod could not run with: the `runtime.kubernetes` block's own values, and the
 // keys outside it every pod needs.
 //
@@ -14,8 +14,8 @@
 // `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
 // ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, and the runtime's client, so a
-// configuration loads on a machine that has none of the files it names; `legion start
-// --check-config` then reads them as boot does (daemon.CheckStart).
+// configuration loads on a machine that has none of the files it names; `legion config check`
+// then reads them as boot does (daemon.CheckStart).
 package config
 
 import (
@@ -262,7 +262,7 @@ type Config struct {
 	// about rather than refused, since the deployment that writes it releases on its own schedule
 	// (docs/solutions/envoy/a-setting-another-repositorys-deployment-sets-is-removed-in-two-releases-pr2674.md).
 	// `legion start` logs each before any other work this boot does with the configuration, and
-	// `legion start --check-config` prints each right after its OK line, so an operator reads the
+	// `legion config check` prints each right after its OK line, so an operator reads the
 	// same sentence either way.
 	Warnings []string
 }
@@ -330,7 +330,7 @@ var tossedKeys = map[string]string{
 	"worker_cap":                 "the running-worker cap no longer exists (LEGION-208 Requirement 8)",
 	"worker_idle_retire_seconds": `an idle window retires no worker: it releases the worker's issue pod, and the key for it is runtime.kubernetes.idle_release (idle_minutes, backstop_minutes), which suspends every claim of the released pod with the source released and brings them back on the next wake (INFRA-945)`,
 	"resync_interval_seconds":    `the mirror of Dispatch and GitHub as truth, and resync's drift healing, no longer exist (LEGION-208 Design, "Ported, and tossed")`,
-	"max_recursion_depth":        "an architect spawns no worker and no sub-architect (the daemon starts every phase, and only the operator starts any other claim), so there is no spawn recursion to bound",
+	"max_recursion_depth":        "no agent starts a worker or an architect: the daemon starts every phase worker and every child's architect, one per issue, and the admission cap bounds how many issues run, so there is no spawn recursion to bound",
 }
 
 // warnedKeys are the settings that no longer exist and that a file may carry all the same, mapped
@@ -338,7 +338,7 @@ var tossedKeys = map[string]string{
 // value from it, and warns: the reviewer's rule for this loader is that a refusal must close a
 // vulnerability, and a count nothing reads closes none, so refusing a boot over it would stop a
 // deployment for a word in a file. The refusal this key would otherwise carry is the warning's
-// own text (Config.Warnings, readKeys), which boot logs and `legion start --check-config`
+// own text (Config.Warnings, readKeys), which boot logs and `legion config check`
 // prints, so the operator reads what the refusal would have said and the daemon runs.
 var warnedKeys = map[string]string{
 	"max_fix_attempts":        "nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
@@ -434,7 +434,7 @@ func Load(path string, env func(string) string) (Config, error) {
 
 // LoadForValidation checks a configuration without executing its App private-key commands or
 // secrets reads, and answers its Warnings as Load does. It is the Go equivalent of the shipped
-// daemon's --check-config path.
+// daemon's `legion config check` path.
 func LoadForValidation(path string, env func(string) string) (Config, error) {
 	return load(path, env, false)
 }
@@ -634,7 +634,7 @@ func (e unknownKeyError) Error() string { return fmt.Sprintf("unknown key %s.%s"
 // describedMembers returns a mapping's members by name, refusing a name it does not know or names
 // twice. A member whose value is null is left out, as an unset key. It is the one reader of a
 // mapping in the loader: group is the dotted path of one nestedKeys entry (keytable.go), whose
-// members are the names the mapping may carry, each with the line `legion config-reference --json`
+// members are the names the mapping may carry, each with the line `legion config reference --json`
 // prints for it, so every nested key the loader accepts is described. key is the path this mapping
 // was reached by, which a refusal names, and which differs from group where a project key or a
 // sequence index stands in it. A group nestedKeys does not hold panics: it is a reader naming a
@@ -663,6 +663,18 @@ func describedMembers(value *yaml.Node, key, group string) (map[string]*yaml.Nod
 	return found, nil
 }
 
+// namesKey reports whether the mapping value names the key name, whatever value follows it. It
+// reads the mapping's own keys, since describedMembers leaves out a member whose value is null, so
+// a key written with nothing after it counts as named.
+func namesKey(value *yaml.Node, name string) bool {
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		if value.Content[i].Value == name {
+			return true
+		}
+	}
+	return false
+}
+
 // readNatsURLs is `nats_urls`: valid URLs, in order, each once.
 func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 	read, err := readStrings(value, key)
@@ -684,7 +696,7 @@ func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 // dispatchBase is `dispatch_url`: a base URL, never its clients' `/mcp` endpoint, which the clients
 // append themselves (the shipped `requireNoMcpSuffix`, config.ts). A trailing slash is gone
 // by then, so `/mcp/` is caught too. Its scheme must be http or https: anything else — a typo such
-// as `htp` — is a misconfiguration `--check-config` should catch now, rather than reaching the
+// as `htp` — is a misconfiguration `legion config check` should catch now, rather than reaching the
 // daemon's HTTP client as "unsupported protocol scheme", which the boot's readiness gate would
 // otherwise wait out forever as if Dispatch were merely unreachable (LEGION-580).
 func dispatchBase(value, key string) (string, error) {
@@ -779,8 +791,8 @@ const providerKeysShape = "provider_keys must be a mapping of the variable OMP r
 // the real gh the `legion gh` wrapper runs, and GH_TOKEN, GITHUB_TOKEN and GH_HOST set to the
 // empty string so nothing outranks the files. Each runtime's runtimeOwned holds the six and refuses
 // a provider key named for one — tmux at its construction, after boot has read every provider key
-// from secretsd, kubernetes in CheckPod — so the loader refuses it first, where `legion start
-// --check-config` sees it: the shim refuses to start over a provider key its own environment
+// from secretsd, kubernetes in CheckPod — so the loader refuses it first, where `legion config
+// check` sees it: the shim refuses to start over a provider key its own environment
 // already names, an empty value included (shim.ReadProviderEnv, LEGION-186), so such a key would
 // stop every pane.
 var paneGitHubEnv = []string{"GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "GH_HOST", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH"}

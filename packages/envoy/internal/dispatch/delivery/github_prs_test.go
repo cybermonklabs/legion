@@ -73,12 +73,36 @@ type fakeGitHub struct {
 	// place of answerFactsQuery. factsQueries counts each such query, whoever answers it.
 	facts        http.HandlerFunc
 	factsQueries atomic.Int32
+	// installationStatus, keyed by "owner/repo", answers that repository's installation lookup
+	// with the status and GitHub's error body rather than the installation: 404 is a repository
+	// the App is not installed on, or one deleted. answerInstallation sets it, under mu, since a
+	// test changes it between passes.
+	mu                 sync.Mutex
+	installationStatus map[string]int
 }
 
 // lookupsOf is how many times GET /repos/{owner}/{repo}/installation was asked about repo.
 func (f *fakeGitHub) lookupsOf(repo string) int32 {
 	counter, _ := f.lookups.LoadOrStore(repo, &atomic.Int32{})
 	return counter.(*atomic.Int32).Load()
+}
+
+// answerInstallation makes the installation lookup of repo ("owner/repo") answer status, and
+// answer the installation again for a status of zero.
+func (f *fakeGitHub) answerInstallation(repo string, status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.installationStatus == nil {
+		f.installationStatus = map[string]int{}
+	}
+	f.installationStatus[repo] = status
+}
+
+// installationAnswer is the status answerInstallation set for repo, zero for none.
+func (f *fakeGitHub) installationAnswer(repo string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.installationStatus[repo]
 }
 
 // tokenExpired reports whether r's bearer is an installation token this fake minted whose expiry
@@ -102,6 +126,11 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		if _, missing := f.notInstalled.Load(name); missing {
 			w.WriteHeader(http.StatusNotFound)
 			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		if status := f.installationAnswer(name); status != 0 {
+			w.WriteHeader(status)
+			fmt.Fprintf(w, `{"message":%q}`, http.StatusText(status))
 			return
 		}
 		id := f.installID
@@ -182,6 +211,8 @@ func (f *fakeGitHub) handle(pattern string, handler http.HandlerFunc) {
 	f.mux.HandleFunc(pattern, handler)
 }
 
+// newTestClient builds the App client this fake answers, with options (a shared rate limit,
+// githubapp.WithLimits) where a test needs them.
 func (f *fakeGitHub) newTestClient(options ...githubapp.Option) *githubapp.Client {
 	t := f.t
 	t.Helper()

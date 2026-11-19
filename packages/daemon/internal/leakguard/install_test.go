@@ -4,16 +4,23 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // theTag is the pin these tests install, spelled as the worker image spells one.
@@ -125,7 +132,7 @@ func leftovers(t *testing.T, dir string) []string {
 func install(t *testing.T, dir, tag string, body []byte) ([]string, error) {
 	t.Helper()
 	var logged []string
-	err := InstallServed(bound(t), ServedInstall{Dir: dir, Tag: tag, Body: body, Log: func(format string, args ...any) {
+	err := InstallServed(bound(t), ServedInstall{Dir: dir, Tag: tag, Body: body, Start: procgroup.NoReaper, Log: func(format string, args ...any) {
 		logged = append(logged, format)
 	}})
 	return logged, err
@@ -423,6 +430,64 @@ func TestTheHelpRunSeesOnlyPathHomeAndTmpdir(t *testing.T) {
 	}
 }
 
+// A --help run that ends with no exit of its own has answered no shape, but the install's refusal
+// names why it ended rather than a check that answered nothing. One that something else killed
+// (another drain's signal, the kernel's out-of-memory kill) is refused naming the kill, with what
+// it printed before it beneath (procgroup.Said), so the person reading the claim's cause looks for
+// what killed it and sees what the check said first. One the install's own context ended is
+// refused naming the context, since that end is what killed the run (verifyServed reads it before
+// the run's error). The stand-in prints a line, writes its pid and waits; each row ends it its own
+// way.
+func TestAHelpRunThatEndsWithNoExitIsRefusedNamingWhy(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		end  func(t *testing.T, pid int, cancel context.CancelFunc)
+		want string
+	}{
+		{
+			name: "killed by another process",
+			end: func(t *testing.T, pid int, _ context.CancelFunc) {
+				if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+					t.Fatalf("kill the --help run %d: %v", pid, err)
+				}
+			},
+			want: "the served check could not be run: signal: terminated\nLEAK CHECK: reading the rules",
+		},
+		{
+			name: "the install's context ended",
+			end:  func(_ *testing.T, _ int, cancel context.CancelFunc) { cancel() },
+			want: "the served check could not be run: context canceled",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			parent := t.TempDir()
+			pidFile := filepath.Join(parent, "help-pid")
+			body := served(t, wholeCheck(t, "#!/bin/sh\necho 'LEAK CHECK: reading the rules' >&2\necho $$ >'"+pidFile+"'\nexec sleep 30\n"))
+			dir := filepath.Join(parent, "leak-check")
+			ctx, cancel := context.WithCancel(bound(t))
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				done <- InstallServed(ctx, ServedInstall{Dir: dir, Tag: theTag, Body: body, Start: procgroup.NoReaper, Log: func(string, ...any) {}})
+			}()
+			var pid int
+			testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "the --help run to write its pid", func() bool {
+				written, err := os.ReadFile(pidFile)
+				n, convErr := strconv.Atoi(strings.TrimSpace(string(written)))
+				pid = n
+				return err == nil && convErr == nil && pid > 0
+			})
+			row.end(t, pid, cancel)
+			if err := <-done; err == nil || err.Error() != row.want {
+				t.Fatalf("install with its --help run ended = %v, want %q", err, row.want)
+			}
+			if _, statErr := os.Lstat(dir); !errors.Is(statErr, fs.ErrNotExist) {
+				t.Errorf("the refused install left %s (%v), want nothing there", dir, statErr)
+			}
+		})
+	}
+}
+
 // A role's shim reads the install and starts no agent unless it is the pin's: an absent check, an
 // install that records no tag and one of another tag are each refused naming the pin and what is
 // there. With no pin, which is every tmux pane, nothing is read and nothing refused.
@@ -497,4 +562,61 @@ func remove(t *testing.T, path string) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// The install's one run of the check starts through the caller's starter (ServedInstall.Start),
+// which is how the pod's launcher, its container's PID 1, holds the run out of its own reaper:
+// the starter is given the staged check's --help, and its done is called only once the run's own
+// wait has read the exit. A start the starter refuses refuses the install, and an install named no
+// starter at all is refused before it writes anything, rather than run the check under a start
+// nobody chose; either leaves nothing behind.
+func TestTheInstallsRunOfTheCheckStartsThroughItsStarter(t *testing.T) {
+	t.Run("a starter", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "leak-check")
+		var started []*exec.Cmd
+		var exitAtDone *os.ProcessState
+		err := InstallServed(bound(t), ServedInstall{Dir: dir, Tag: theTag, Body: served(t, wholeCheck(t, answersItsHelp)),
+			Start: func(cmd *exec.Cmd) (func(), error) {
+				started = append(started, cmd)
+				return func() { exitAtDone = cmd.ProcessState }, cmd.Start()
+			}})
+		if err != nil {
+			t.Fatalf("install: %v", err)
+		}
+		if len(started) != 1 || filepath.Base(started[0].Path) != checkName || !slices.Equal(started[0].Args[1:], []string{"--help"}) {
+			t.Fatalf("the starter was given %d commands (%v), want the one run of the check's --help", len(started), started)
+		}
+		if exitAtDone == nil || exitAtDone.ExitCode() != 1 {
+			t.Errorf("done ran with the exit %v, want it called once the run's wait had read its exit 1", exitAtDone)
+		}
+		if got := recordedTag(t, dir); got != theTag+"\n" {
+			t.Errorf("the install records %q, want %q", got, theTag+"\n")
+		}
+	})
+	t.Run("a start the starter refuses", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "leak-check")
+		refused := errors.New("the guard refused the start")
+		err := InstallServed(bound(t), ServedInstall{Dir: dir, Tag: theTag, Body: served(t, wholeCheck(t, answersItsHelp)),
+			Start: func(*exec.Cmd) (func(), error) { return nil, refused }})
+		if want := "the served check could not be run: " + refused.Error(); err == nil || err.Error() != want || !errors.Is(err, refused) {
+			t.Fatalf("install = %v, want %q", err, want)
+		}
+		if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the refused install left %s (%v), want nothing there", dir, err)
+		}
+		if left := leftovers(t, dir); len(left) != 0 {
+			t.Errorf("the refused install left %v beside %s, want nothing", left, dir)
+		}
+	})
+	t.Run("no starter", func(t *testing.T) {
+		parent := t.TempDir()
+		dir := filepath.Join(parent, "leak-check")
+		err := InstallServed(bound(t), ServedInstall{Dir: dir, Tag: theTag, Body: served(t, wholeCheck(t, answersItsHelp))})
+		if want := "the pod's launcher named no starter for the check's run"; err == nil || err.Error() != want {
+			t.Fatalf("install = %v, want %q", err, want)
+		}
+		if entries, err := os.ReadDir(parent); err != nil || len(entries) != 0 {
+			t.Errorf("the refused install left %v (%v) in %s, want nothing", entries, err, parent)
+		}
+	})
 }

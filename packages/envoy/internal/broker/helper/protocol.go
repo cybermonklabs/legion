@@ -18,6 +18,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/brokerclient"
 )
 
 // Request is the client's one line. Op is register, sign, sign-request, sign-launcher,
@@ -36,6 +38,16 @@ type Request struct {
 	Thumbprint      string   `json:"thumbprint,omitempty"`       // enroll-session-key: the session key's thumbprint
 	SessionID       *string  `json:"session_id,omitempty"`       // enroll-session-key: optional registry session id; register: the omp session id this session is to be known by
 	EnrollmentID    string   `json:"enrollment_id,omitempty"`    // unenroll-session-key: which enrollment to end
+	// Attach is register only: the caller is `agent-secrets register` run without --exec, whose
+	// own process ends with the command, so the helper never pins it. The caller is answered from
+	// the session it is already in; outside one, the helper pins RootPID, and with no RootPID it
+	// refuses NOT_A_SESSION. False (--exec, and every client from before this field) pins the
+	// caller when it is in no session.
+	Attach bool `json:"attach,omitempty"`
+	// RootPID is register only: the session launcher (an `omp` process) above the caller that the
+	// helper is to pin as the session's root when the caller is in no session. The client sends
+	// the nearest `omp` ancestor it finds, and none when it finds none.
+	RootPID int `json:"root_pid,omitempty"`
 }
 
 // Response is the helper's one line. Code and Error are set only when OK is false, except that
@@ -43,11 +55,16 @@ type Request struct {
 // Code NO_CREDENTIAL while the helper holds no launcher credential to enroll it with), and a
 // login/login-status reply carries the confirmation code in Code while OK is true.
 type Response struct {
-	OK                  bool          `json:"ok"`
-	Code                string        `json:"code,omitempty"`
-	Error               string        `json:"error,omitempty"`
-	EnrollmentID        string        `json:"enrollment_id,omitempty"`
-	RuntimeID           string        `json:"runtime_id,omitempty"`
+	OK           bool   `json:"ok"`
+	Code         string `json:"code,omitempty"`
+	Error        string `json:"error,omitempty"`
+	EnrollmentID string `json:"enrollment_id,omitempty"`
+	RuntimeID    string `json:"runtime_id,omitempty"`
+	// RootPID is register only: the pid the session's root is, so a client run without --exec can
+	// see that the session is rooted above it (the launcher it named, or the root of the session
+	// it is already in) and not at its own process, which ends with the command. A helper from
+	// before this field sends none, and such a client refuses that answer.
+	RootPID             int           `json:"root_pid,omitempty"`
 	Operator            string        `json:"operator,omitempty"`
 	State               string        `json:"state,omitempty"`                 // register: enrolling | enrolled
 	VerificationURI     string        `json:"verification_uri,omitempty"`      // login: where a person types the code, the broker's device authorization verification_uri; empty from a helper before this field
@@ -56,11 +73,14 @@ type Response struct {
 	CredentialExpiresAt string        `json:"credential_expires_at,omitempty"` // login-status: RFC3339, when the held credential lapses without a refresh; empty while none is held
 	LoginRefused        bool          `json:"login_refused,omitempty"`         // login-status: the helper dropped the credential it held (the broker refused it or its refresh, or it reached its expiry), and no login has started or settled since
 	CredentialDropped   string        `json:"credential_dropped,omitempty"`    // login-status: why, set exactly when LoginRefused (dropRefused, dropRefreshRefused or dropExpired); a helper from before this field sends LoginRefused alone
+	MachineIdentity     bool          `json:"machine_identity,omitempty"`      // login-status, sign-launcher: the helper trades this machine's own identity (AGENT_SECRETS_MACHINE_IDENTITY) and holds no machine login; a helper before this field sends none, which reads as machine-login mode
+	IdentityStopped     bool          `json:"identity_stopped,omitempty"`      // login-status, sign-launcher: beside MachineIdentity, the helper's trade loop stopped on a refusal no retry cures, and nothing trades again until the helper restarts
 	LeaseExpires        string        `json:"lease_expires,omitempty"`         // enroll-session-key: RFC3339Nano
 	Proof               string        `json:"proof,omitempty"`                 // sign: a session proof; sign-launcher: a launcher proof of the machine credential
 	CredentialID        string        `json:"credential_id,omitempty"`         // sign-launcher: the machine credential the proof names, so a machine revoke can tell this machine's own login
 	RequestObject       string        `json:"request_object,omitempty"`        // sign-request: the signed compact JWS
 	Sessions            []SessionInfo `json:"sessions,omitempty"`
+	Version             string        `json:"version,omitempty"` // version: the release the running helper was built as, so a client names the process serving the socket, not the binary on disk a pin move may have replaced
 }
 
 // The causes for which the helper drops the launcher credential it holds, as login-status's
@@ -104,6 +124,25 @@ func NoCredentialReason(loginState string, refused bool, dropped string) string 
 	}
 }
 
+// NoCredentialFailure is the class of a login-status or sign-launcher answer r while the helper
+// holds no live launcher credential (brokerclient.Hint): in identity mode the helper's own trade
+// loop gets one, or, once it has stopped, nothing does until the helper restarts; otherwise a
+// machine login a human approves. An answer from a helper before MachineIdentity reads as
+// machine-login mode, the only mode such a helper reports a login for.
+func (r Response) NoCredentialFailure() brokerclient.Failure {
+	return modeFailure(r.MachineIdentity, r.IdentityStopped)
+}
+
+func modeFailure(machineIdentity, identityStopped bool) brokerclient.Failure {
+	switch {
+	case machineIdentity && identityStopped:
+		return brokerclient.FailureIdentityStopped
+	case machineIdentity:
+		return brokerclient.FailureIdentityLapsed
+	}
+	return brokerclient.FailureNoMachineLogin
+}
+
 // SessionInfo is one registered session as `sessions` lists it: never a key.
 type SessionInfo struct {
 	PID          int    `json:"pid"`
@@ -119,7 +158,8 @@ type SessionInfo struct {
 // code.
 const (
 	// CodeNotASession answers sign, sign-request or unregister from a process that descends from no
-	// session `agent-secrets register` registered.
+	// session `agent-secrets register` registered, and a register run without --exec from such a
+	// process that names no session launcher (omp) above it.
 	CodeNotASession = "NOT_A_SESSION"
 	// CodeNotEnrolled answers sign or sign-request for a registered session that is still
 	// enrolling: the helper holds a launcher credential, and its enroll loop has not succeeded yet.

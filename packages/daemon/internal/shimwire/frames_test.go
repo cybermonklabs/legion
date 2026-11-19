@@ -143,6 +143,43 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 		},
 		{"launcher_hello_ack", `{"type":"launcher_hello_ack"}`, LauncherHelloAck{}},
 		{
+			// The ack that hands the launcher its trimmer settings. An ack with no volumeTrim is
+			// the row above, and the only ack that hands the launcher no settings
+			// (TestALauncherHelloAckWithoutSettingsIsTheOnlyAbsenceOfThem).
+			"launcher_hello_ack with trimmer settings",
+			`{"type":"launcher_hello_ack","volumeTrim":{"highPercent":85,"lowPercent":70,"minAgeMinutes":120,"intervalSeconds":60}}`,
+			LauncherHelloAck{VolumeTrim: &LauncherVolumeTrim{HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60}},
+		},
+		{
+			// One sweep as the trimmer reports it, every member set: the episode and what raised
+			// it, the volume before and after, the sizes of the directories two levels under the
+			// root, one of them read only in part, a directory it could not open with the read the
+			// kernel refused, and the faults that have now stopped the trimmer itself.
+			"launcher_volume_report",
+			`{"type":"launcher_volume_report","trimmer":"trim-9f3c","episode":2,"raisedBy":"rise","usedBytes":48318382080,"freeBytes":5368709120,"freedBytes":10737418240,` +
+				`"stopReason":"the reading fell below the low mark","refusedReads":["1842 role-init"],` +
+				`"sizes":[{"path":"/legion/go/build","bytes":32212254720,"bytesOverHour":21474836480,"bytesOverDay":10737418240},` +
+				`{"path":"/legion/scratch/tmp","bytes":16106127360,"bytesOverHour":8589934592,"bytesOverDay":0,"refused":"/legion/scratch/tmp/.../locked (depth 3)","refusals":2}],` +
+				`"sizesAt":"2026-11-10T04:05:06Z","sizesPartial":true,"sizesMissing":[{"path":"/legion/uv","reason":"openat: permission denied"}],` +
+				`"faults":["panic: the size walk read a path that went away (goroutine 42)"],"switchedOff":true}`,
+			LauncherVolumeReport{
+				Trimmer: "trim-9f3c", Episode: 2, RaisedBy: VolumeEpisodeRise,
+				UsedBytes: 48_318_382_080, FreeBytes: 5_368_709_120, FreedBytes: 10_737_418_240,
+				StopReason:   "the reading fell below the low mark",
+				RefusedReads: []string{"1842 role-init"},
+				Sizes: []LauncherVolumeSize{
+					{Path: "/legion/go/build", Bytes: 32_212_254_720, BytesOverHour: 21_474_836_480, BytesOverDay: 10_737_418_240},
+					{Path: "/legion/scratch/tmp", Bytes: 16_106_127_360, BytesOverHour: 8_589_934_592,
+						Refused: "/legion/scratch/tmp/.../locked (depth 3)", Refusals: 2},
+				},
+				SizesAt:      time.Date(2026, 11, 10, 4, 5, 6, 0, time.UTC),
+				SizesPartial: true,
+				SizesMissing: []LauncherVolumeMissing{{Path: "/legion/uv", Reason: "openat: permission denied"}},
+				Faults:       []string{"panic: the size walk read a path that went away (goroutine 42)"},
+				SwitchedOff:  true,
+			},
+		},
+		{
 			"launcher_state",
 			`{"type":"launcher_state","child":{"generation":7,"pid":42},"lastExit":{"generation":6,"code":143,"signal":"terminated"}}`,
 			LauncherState{Child: &LauncherChild{Generation: 7, PID: 42}, LastExit: &LauncherExit{Generation: 6, Code: 143, Signal: "terminated"}},
@@ -403,9 +440,10 @@ func TestALineThatIsNotAJSONObjectIsRefused(t *testing.T) {
 	}
 }
 
-// The two frames the shipped code refuses when their fields are malformed, because in each case
-// the sender is the only writer and a malformed one is a bug to name: the hello
-// (worker-stream-listener.ts:140-148) and the daemon's adoption request (worker-shim.ts:171-180).
+// Four frames the shipped code refuses when their fields are malformed, because in each case the
+// sender is the only writer and a malformed one is a bug to name: the hello
+// (worker-stream-listener.ts:140-148), the daemon's adoption request (worker-shim.ts:171-180), the
+// compaction request and the launcher's volume report.
 func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T) {
 	if err := (Hello{BootToken: "boot-1"}).Validate(); err != nil {
 		t.Fatalf("Hello.Validate: %v", err)
@@ -446,6 +484,59 @@ func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T)
 		if err := tc.frame.Validate(); !errors.Is(err, ErrMalformedFrame) {
 			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame", tc.name, err)
 		}
+	}
+	// The volume report is the trimmer's own, and the daemon counts its notice bounds per
+	// trimmer and per episode: a report missing either is one it could not count.
+	report := LauncherVolumeReport{Trimmer: "trim-9f3c", Episode: 1, RaisedBy: VolumeEpisodeFirst}
+	if err := report.Validate(); err != nil {
+		t.Fatalf("LauncherVolumeReport.Validate: %v", err)
+	}
+	for _, tc := range []struct {
+		name  string
+		frame LauncherVolumeReport
+	}{
+		{"no trimmer", LauncherVolumeReport{Episode: 1, RaisedBy: VolumeEpisodeFirst}},
+		{"an episode below the first", LauncherVolumeReport{Trimmer: report.Trimmer, RaisedBy: VolumeEpisodeFirst}},
+	} {
+		if err := tc.frame.Validate(); !errors.Is(err, ErrMalformedFrame) {
+			t.Fatalf("%s: Validate = %v, want ErrMalformedFrame", tc.name, err)
+		}
+	}
+}
+
+// A volume report may hold each of its four lists up to the list's cap and not one entry past
+// it. The caps are the ones the launcher's trimmer cuts its reports at (internal/launcher's
+// bound), and this is the daemon's side of them: a report over a cap is refused rather than
+// rendered whole into the notice, whatever sent it. The negative control is the report at every
+// cap, which validates.
+func TestAVolumeReportOverAListCapIsRefused(t *testing.T) {
+	at := LauncherVolumeReport{
+		Trimmer: "trim-9f3c", Episode: 1, RaisedBy: VolumeEpisodeFirst,
+		Sizes:        make([]LauncherVolumeSize, VolumeReportSizes),
+		SizesMissing: make([]LauncherVolumeMissing, VolumeReportSizesMissing),
+		RefusedReads: make([]string, VolumeReportRefusedReads),
+		Faults:       make([]string, VolumeReportFaults),
+	}
+	if err := at.Validate(); err != nil {
+		t.Fatalf("a report holding every list at its cap was refused: %v", err)
+	}
+	for _, tc := range []struct {
+		list string
+		over func(*LauncherVolumeReport)
+	}{
+		{"sizes", func(r *LauncherVolumeReport) { r.Sizes = append(r.Sizes, LauncherVolumeSize{}) }},
+		{"sizesMissing", func(r *LauncherVolumeReport) { r.SizesMissing = append(r.SizesMissing, LauncherVolumeMissing{}) }},
+		{"refusedReads", func(r *LauncherVolumeReport) { r.RefusedReads = append(r.RefusedReads, "") }},
+		{"faults", func(r *LauncherVolumeReport) { r.Faults = append(r.Faults, "") }},
+	} {
+		t.Run(tc.list, func(t *testing.T) {
+			report := at
+			tc.over(&report)
+			err := report.Validate()
+			if !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), tc.list+" holds") {
+				t.Fatalf("a report holding one entry past the cap of %s validated as %v, want ErrMalformedFrame naming the list", tc.list, err)
+			}
+		})
 	}
 }
 
@@ -628,9 +719,10 @@ func TestMemoryGuardFramesRoundTripThroughTheWire(t *testing.T) {
 	}
 }
 
-// The acknowledgement of a daemon built before the guard, and of one whose deployment turned the
-// guard off, carries no member, and decodes with none: the launcher's guard turns off on that
-// absence. The empty acknowledgement every caller already builds is that same line.
+// An acknowledgement with no memoryGuard member decodes with none, and the launcher's guard turns
+// off on that absence: a daemon built before the guard writes such a line, and so does one whose
+// deployment turned the guard off, with or without a volumeTrim member beside it. This case
+// decodes the empty acknowledgement, the plainest such line.
 func TestMemoryGuardAnAcknowledgementWithNoMemberDecodesWithNone(t *testing.T) {
 	decoded, err := Decode([]byte(`{"type":"launcher_hello_ack"}`))
 	if err != nil {
@@ -737,5 +829,197 @@ func TestMemoryGuardKillValidateRefusesWhatTheDaemonCannotApply(t *testing.T) {
 				t.Fatalf("Validate = %v, want ErrMalformedFrame naming %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// An ack with no volumeTrim member is the one ack that hands the launcher no settings: a daemon
+// built before INFRA-2009 writes such a line, and so does a deployment that turned the trimmer
+// off, with or without a memoryGuard member beside it. This case decodes the empty object, the
+// plainest such line. Settings whose numbers are all zero are not that line — they are
+// settings, which the launcher refuses value by value, and a launcher that read them as an
+// absence would say no settings came and discard a held report that the daemon which sent them
+// can take — which is why the member is a pointer (LauncherHelloAck.VolumeTrim).
+func TestALauncherHelloAckWithoutSettingsIsTheOnlyAbsenceOfThem(t *testing.T) {
+	decoded, err := Decode([]byte(`{"type":"launcher_hello_ack"}`))
+	if err != nil {
+		t.Fatalf("Decode the old empty ack: %v", err)
+	}
+	ack, ok := decoded.(LauncherHelloAck)
+	if !ok {
+		t.Fatalf("Decode the old empty ack = %#v, want a LauncherHelloAck", decoded)
+	}
+	if ack.VolumeTrim != nil {
+		t.Fatalf("the old empty ack decoded VolumeTrim = %#v, want nil", ack.VolumeTrim)
+	}
+	decoded, err = Decode([]byte(`{"type":"launcher_hello_ack","volumeTrim":{}}`))
+	if err != nil {
+		t.Fatalf("Decode an ack carrying zeroed settings: %v", err)
+	}
+	ack, ok = decoded.(LauncherHelloAck)
+	if !ok {
+		t.Fatalf("Decode an ack carrying zeroed settings = %#v, want a LauncherHelloAck", decoded)
+	}
+	if ack.VolumeTrim == nil {
+		t.Fatal("an ack carrying zeroed settings decoded VolumeTrim = nil, want settings a launcher can read")
+	}
+	if *ack.VolumeTrim != (LauncherVolumeTrim{}) {
+		t.Fatalf("an ack carrying zeroed settings decoded VolumeTrim = %#v, want the zero settings it carried", *ack.VolumeTrim)
+	}
+}
+
+// A report whose walk measured nothing still writes `sizes` as an array: a strict reader refuses
+// a null, which is why record.UpdateStalled.MarshalJSON keeps `waiting` one the same way.
+func TestAVolumeReportWithNoSizesEncodesAnEmptyArray(t *testing.T) {
+	line, err := json.Marshal(LauncherVolumeReport{Trimmer: "trim-9f3c", Episode: 1, RaisedBy: VolumeEpisodeFirst})
+	if err != nil {
+		t.Fatalf("Marshal a report with no sizes: %v", err)
+	}
+	if !bytes.Contains(line, []byte(`"sizes":[]`)) || bytes.Contains(line, []byte(`"sizes":null`)) {
+		t.Fatalf("Marshal a report with no sizes = %s, want its sizes as an empty array", line)
+	}
+}
+
+// kernelKillLine and kernelProtectedKillLine are a launcher's reports of one process the pod's
+// kernel stopped, a command of the role's and one of the processes that run its session, as they
+// cross the wire: the guard's report with the cause last.
+const (
+	kernelKillLine = `{"type":"launcher_memory_kill","guard":"3f2a9c1d5e7b8a60","sequence":1,"pid":4242,"executable":"python3",` +
+		`"sizeBytes":1048576000,"readingBytes":3774873600,"counterBytes":4089446400,"limitBytes":4294967296,"at":"2026-11-14T03:00:00Z","cause":"kernel"}`
+	kernelProtectedKillLine = `{"type":"launcher_memory_kill","guard":"3f2a9c1d5e7b8a60","sequence":1,"pid":4242,"executable":"python3",` +
+		`"sizeBytes":1048576000,"readingBytes":3774873600,"counterBytes":4089446400,"limitBytes":4294967296,"at":"2026-11-14T03:00:00Z","cause":"kernel-protected"}`
+)
+
+// A report of a process the pod's kernel stopped, of either of the kernel's causes, crosses the
+// wire whole, through the writer and the reader a launcher and the daemon speak, with its cause,
+// and the frame's own rule takes it.
+func TestMemoryKillAKernelKillRoundTripsThroughTheWireWithItsCause(t *testing.T) {
+	for _, tc := range []struct {
+		cause MemoryKillCause
+		line  string
+	}{
+		{MemoryKillCauseKernel, kernelKillLine},
+		{MemoryKillCauseKernelProtected, kernelProtectedKillLine},
+	} {
+		t.Run(string(tc.cause), func(t *testing.T) {
+			kill := memoryKill()
+			kill.Cause = tc.cause
+			var wire bytes.Buffer
+			if err := NewWriter(&wire).WriteFrame(kill); err != nil {
+				t.Fatal(err)
+			}
+			if wire.String() != tc.line+"\n" {
+				t.Fatalf("the writer wrote %s, want %s", wire.String(), tc.line)
+			}
+			line, err := NewReader(&wire).ReadLine()
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded, err := Decode(line)
+			if err != nil {
+				t.Fatalf("Decode(%s): %v", line, err)
+			}
+			if !reflect.DeepEqual(decoded, kill) {
+				t.Fatalf("Decode(%s) = %#v, want %#v", line, decoded, kill)
+			}
+			if err := decoded.(LauncherMemoryKill).Validate(); err != nil {
+				t.Fatalf("the decoded kernel kill does not validate: %v", err)
+			}
+		})
+	}
+}
+
+// A report that carries no cause, which is every report a launcher built before the member sends,
+// decodes with none and validates: it is the guard's own kill. The guard's report still encodes
+// as those bytes, with no cause member.
+func TestMemoryKillAReportWithNoCauseIsTheGuardsOwn(t *testing.T) {
+	decoded, err := Decode([]byte(memoryKillLine))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kill, ok := decoded.(LauncherMemoryKill)
+	if !ok || kill.Cause != MemoryKillCauseGuard {
+		t.Fatalf("decoded %#v, want a launcher_memory_kill with no cause", decoded)
+	}
+	if err := kill.Validate(); err != nil {
+		t.Fatalf("a report with no cause does not validate: %v", err)
+	}
+	line, err := json.Marshal(memoryKill())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(line) != memoryKillLine {
+		t.Fatalf("the guard's report encodes as %s, want %s", line, memoryKillLine)
+	}
+}
+
+// A cause other than the three MemoryKillCause values is one no note says, and the frame's own
+// rule refuses it, naming the cause; the three it knows are taken.
+func TestMemoryKillValidateRefusesACauseItDoesNotKnow(t *testing.T) {
+	for _, cause := range []MemoryKillCause{MemoryKillCauseGuard, MemoryKillCauseKernel, MemoryKillCauseKernelProtected} {
+		k := memoryKill()
+		k.Cause = cause
+		if err := k.Validate(); err != nil {
+			t.Fatalf("cause %q is refused: %v", cause, err)
+		}
+	}
+	for _, cause := range []MemoryKillCause{"guard", "Kernel", " kernel", "oom", "protected", "kernel-Protected", "kernel-protected "} {
+		t.Run(string(cause), func(t *testing.T) {
+			k := memoryKill()
+			k.Cause = cause
+			err := k.Validate()
+			want := fmt.Sprintf("launcher_memory_kill cause is %q, not \"kernel\", \"kernel-protected\" or none", cause)
+			if !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Validate = %v, want ErrMalformedFrame naming %q", err, want)
+			}
+		})
+	}
+}
+
+// An acknowledgement without kernelKills, an older daemon's or the controller's pod's, decodes
+// with it false, whether or not it carries guard settings; one with it decodes true.
+func TestHelloAckKernelKillsDecodesFalseWithoutTheMemberAndTrueWithIt(t *testing.T) {
+	settings := &LauncherMemoryGuard{ActPercent: 85, FloorPercent: 10, WaitSeconds: 5, IntervalMilliseconds: 100}
+	for _, tc := range []struct {
+		line string
+		want LauncherHelloAck
+	}{
+		{`{"type":"launcher_hello_ack"}`, LauncherHelloAck{}},
+		{memoryGuardAckLine, LauncherHelloAck{MemoryGuard: settings}},
+		{`{"type":"launcher_hello_ack","kernelKills":true}`, LauncherHelloAck{KernelKills: true}},
+		{`{"type":"launcher_hello_ack","memoryGuard":{"actPercent":85,"floorPercent":10,"waitSeconds":5,"intervalMilliseconds":100},"kernelKills":true}`,
+			LauncherHelloAck{MemoryGuard: settings, KernelKills: true}},
+	} {
+		decoded, err := Decode([]byte(tc.line))
+		if err != nil {
+			t.Fatalf("Decode(%s): %v", tc.line, err)
+		}
+		if !reflect.DeepEqual(decoded, tc.want) {
+			t.Fatalf("Decode(%s) = %#v, want %#v", tc.line, decoded, tc.want)
+		}
+	}
+}
+
+// An acknowledgement whose KernelKills is false carries no kernelKills member, so it is byte for
+// byte the acknowledgement a daemon built before the member writes, with guard settings or
+// without; one whose KernelKills is true carries the member after the settings.
+func TestHelloAckEncodesKernelKillsOnlyWhenTrue(t *testing.T) {
+	settings := &LauncherMemoryGuard{ActPercent: 85, FloorPercent: 10, WaitSeconds: 5, IntervalMilliseconds: 100}
+	for _, tc := range []struct {
+		ack  LauncherHelloAck
+		line string
+	}{
+		{LauncherHelloAck{}, `{"type":"launcher_hello_ack"}`},
+		{LauncherHelloAck{MemoryGuard: settings}, memoryGuardAckLine},
+		{LauncherHelloAck{KernelKills: true}, `{"type":"launcher_hello_ack","kernelKills":true}`},
+		{LauncherHelloAck{MemoryGuard: settings, KernelKills: true},
+			`{"type":"launcher_hello_ack","memoryGuard":{"actPercent":85,"floorPercent":10,"waitSeconds":5,"intervalMilliseconds":100},"kernelKills":true}`},
+	} {
+		line, err := json.Marshal(tc.ack)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(line) != tc.line {
+			t.Fatalf("%+v encodes as %s, want %s", tc.ack, line, tc.line)
+		}
 	}
 }

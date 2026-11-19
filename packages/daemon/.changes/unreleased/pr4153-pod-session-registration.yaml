@@ -20,8 +20,11 @@ body: |-
   answer that names another pod or another key than the daemon sent ends them
   too, logged with the pod, the session and both values. The registration needs this release's
   broker, which binds and orders it; an earlier broker refuses the `thumbprint` and `generation`
-  fields. Until t-e-54
-  holds each session id to the claim that first recorded it, and t-e-53 makes a role trade with
-  its own key, the daemon registers whatever session id a role's agent reports and a role's own
-  trade is refused, so set no `exchange_audience` before both are in. Unset, no registration is
-  made.
+  fields. Set no `exchange_audience` until your daemon, its pods and its broker carry three more
+  changes: each role trading with a key of its own, since until then a role's own trade is refused;
+  each session name registered at `POST /v1/oauth/exchange/pod-sessions` bound to the daemon that
+  registered it, not only each registrar to the pods of its own daemon, since until then any
+  `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another
+  claim's session; and the daemon choosing each role's session id rather than taking its agent's
+  report. The daemon already holds each session id to the claim of its project that first recorded
+  it and registers no session another of its claims holds. Unset, no registration is made.

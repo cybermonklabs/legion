@@ -157,18 +157,13 @@ env:
     packages/broker-client/ packages/pi-legion/agents/ skills/
     scripts/third-party-notices.ts scripts/pi-plugin-prepack.sh patches/
   # The Go `legion`. The binary embeds its prompts (internal/prompts/roles and go), so a docs:
-  # commit there still releases. It also compiles in packages/envoy packages, so a change to one
-  # of them changes the binary. The notices scripts and the target list are runtime inputs of the
+  # commit there still releases. The notices scripts and the target list are runtime inputs of the
   # release archives and worker image, so any change to one needs a new tag rather than a CI-only
   # rebuild. The envoy packages below are every package `go list -deps ./cmd/legion` reaches
-  # through the module's `replace` on ../envoy — its seven public packages, and the internal ones
-  # they pull in with them: the splitter, parser, contracts, text reader and cache behind
-  # `dispatchbody`, the token client, its wire, its lock and the identity reader behind
-  # `brokerclient`, and the contracts behind `sessiontiming` and `subjectforms`, and `natsversion` — so a change to any
-  # of them changes the binary and must release one, and the envoy module's
-  # own go.mod and go.sum decide which versions of their dependencies it links. That list is
-  # written here by hand; this is the command that prints it, to be run from packages/daemon
-  # whenever what the binary links moves:
+  # through the module's `replace` on ../envoy, public and internal, so a change to any of them
+  # changes the binary and must release one, and the envoy module's own go.mod and go.sum decide
+  # which versions of their dependencies it links. That list is written here by hand; this is the
+  # command that prints it, to be run from packages/daemon whenever what the binary links moves:
   #   go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |
   #     sed 's#^github.com/sjawhar/envoy#packages/envoy#' | sort
   LEGION_VERSION_ARGS: >-
@@ -176,14 +171,16 @@ env:
     --patch-path scripts/go-third-party-notices.sh --patch-path scripts/assemble-third-party-notices.sh
     --patch-path .github/go-release-targets.json
     -- packages/daemon/ packages/daemon/internal/prompts/roles/ packages/daemon/internal/prompts/go/
-    packages/envoy/brokerclient/ packages/envoy/dispatchbody/ packages/envoy/listenfd/
-    packages/envoy/migrationid/ packages/envoy/roleholder/ packages/envoy/sessiontiming/
-    packages/envoy/subjectforms/ packages/envoy/natsversion/
+    packages/envoy/brokeraddr/ packages/envoy/brokerclient/ packages/envoy/dispatchbody/
     packages/envoy/internal/broker/oauthwire/ packages/envoy/internal/brokerclient/
     packages/envoy/internal/contracts/ packages/envoy/internal/ctxlock/
     packages/envoy/internal/dispatch/bytelru/ packages/envoy/internal/dispatch/itemblocks/
     packages/envoy/internal/dispatch/model/ packages/envoy/internal/dispatch/pmdoc/
-    packages/envoy/internal/dispatch/text/ packages/envoy/internal/googleidentity/
+    packages/envoy/internal/dispatch/text/ packages/envoy/internal/fold/
+    packages/envoy/internal/googleidentity/ packages/envoy/internal/id/ packages/envoy/internal/redact/
+    packages/envoy/internal/redirects/ packages/envoy/listenerwire/ packages/envoy/listenfd/
+    packages/envoy/migrationid/ packages/envoy/natsversion/ packages/envoy/roleholder/
+    packages/envoy/sessiontiming/ packages/envoy/steprecord/ packages/envoy/subjectforms/
     packages/envoy/go.mod packages/envoy/go.sum
     scripts/go-third-party-notices.sh scripts/assemble-third-party-notices.sh .github/go-release-targets.json
 
@@ -297,8 +294,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-daemon-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: go-daemon-${{ runner.os }}-
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: go-daemon-${{ runner.os }}-${{ runner.arch }}-
       # CGO_ENABLED=0: a static binary, as the worker image builds it, so a linux archive runs on any
       # distribution. One archive per target .github/go-release-targets.json lists (the pull
       # request's notices check reads the same list), each holding one top-level directory,
@@ -639,6 +636,10 @@ jobs:
   # builds dist/ and legion/ with packages/claude-envoy/scripts/verify-build.sh — the one
   # statement of what the published plugin must hold, which ci.yaml runs on every pull request —
   # puts that checked build into the checkout and packs it with the rest of the package.
+  # It also packs the Codex CLI plugin, @sjawhar/codex-envoy, from that same checked
+  # dist/ and at the same version: the two hosts' plugin rules cannot both hold in one package
+  # (packages/claude-envoy/scripts/build.ts, CODEX_SOURCES), so the Codex one is a package of its
+  # own, built from the same source and released with this one.
   # .claude-plugin/marketplace.json names this package as an `npm` source with the range
   # `>=1.0.0`, so Claude Code installs the newest release and never the 0.0.0 placeholder that
   # `latest` points at until the first one.
@@ -705,12 +706,15 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          # All three manifests, and for different readers. package.json's version is what npm
+          # All five manifests, and for different readers. package.json's version is what npm
           # publishes and what the MCP server reports. .claude-plugin/plugin.json's is what Claude
           # Code calls the installed plugin's version: it reads the manifest, never the registry,
           # and an install whose manifest declares none lands in a plugin-cache directory named
           # `unknown` and never updates, since one `unknown` is indistinguishable from the next
-          # (measured on Claude Code 2.1.311). .omp-plugin/plugin.json's is what Oh My Pi reports,
+          # (measured on Claude Code 2.1.311). The Codex CLI names its plugin cache directory by
+          # codex/.codex-plugin/plugin.json's and reinstalls when it changes (measured on Codex CLI
+          # 0.154.0), and the Codex package's package.json is what npm publishes it
+          # at. .omp-plugin/plugin.json's is what Oh My Pi reports,
           # and tests/envoy-channel-server.test.ts holds it equal to package.json's, so a release
           # that rewrote the first two alone would publish a plugin naming two versions. The
           # committed .claude-plugin manifest declares none, which is what keeps a checkout from
@@ -718,7 +722,9 @@ jobs:
           # rewrites below.
           for manifest in packages/claude-envoy/package.json \
             packages/claude-envoy/.claude-plugin/plugin.json \
-            packages/claude-envoy/.omp-plugin/plugin.json; do
+            packages/claude-envoy/.omp-plugin/plugin.json \
+            packages/claude-envoy/codex/package.json \
+            packages/claude-envoy/codex/.codex-plugin/plugin.json; do
             jq --arg v "$VERSION" '.version = $v' "$manifest" > tmp.json && mv tmp.json "$manifest"
           done
 
@@ -731,9 +737,9 @@ jobs:
           # repository; this writes whichever one the job runs in, and this job's tree is
           # discarded.
           url=$(.github/scripts/repo-paths.sh repository_url)
-          jq --arg u "$url" '.repository.url = $u' \
-            packages/claude-envoy/package.json > tmp.json \
-            && mv tmp.json packages/claude-envoy/package.json
+          for manifest in packages/claude-envoy/package.json packages/claude-envoy/codex/package.json; do
+            jq --arg u "$url" '.repository.url = $u' "$manifest" > tmp.json && mv tmp.json "$manifest"
+          done
 
       # What it builds and checks: packages/claude-envoy/scripts/verify-build.sh, which builds the
       # plugin twice into scratch directories outside the checkout, compares the two byte for
@@ -801,6 +807,47 @@ jobs:
         with:
           name: claude-envoy-tarball
           path: packages/claude-envoy/*.tgz
+          if-no-files-found: error
+
+      # The Codex plugin's package, built from the checked dist/ the step above packed rather than
+      # bundled again, with the manifests and skills of this tree (scripts/build.ts --codex-out).
+      # It is written outside the checkout, as every build here is.
+      - name: Build and pack the Codex plugin
+        if: steps.version.outputs.skip != 'true'
+        run: |
+          bun scripts/build.ts --codex-out "$RUNNER_TEMP/codex-envoy" --dist dist
+          mkdir "$RUNNER_TEMP/codex-envoy-tarball"
+          cd "$RUNNER_TEMP/codex-envoy" && bun pm pack --destination "$RUNNER_TEMP/codex-envoy-tarball"
+        working-directory: packages/claude-envoy
+
+      - name: Check the packed Codex tarball names the publishing repository and the release, and holds the build and the skills
+        if: steps.version.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # The Claude Code tarball's checks above, over the Codex package: its repository, the
+          # version npm and Codex read, the bundle its MCP server runs, the hooks file Codex reads
+          # by default, and the skills as real files.
+          tgz=("$RUNNER_TEMP"/codex-envoy-tarball/*.tgz)
+          url=$(.github/scripts/repo-paths.sh repository_url)
+          tar -xzOf "${tgz[0]}" package/package.json | jq -e --arg u "$url" '.repository.url == $u'
+          for manifest in package/package.json package/.codex-plugin/plugin.json; do
+            tar -xzOf "${tgz[0]}" "$manifest" | jq -e --arg v "$VERSION" '.version == $v'
+          done
+          members=$(tar -tzf "${tgz[0]}")
+          for member in package/dist/envoy-channel.js package/hooks/hooks.json; do
+            if ! printf '%s\n' "$members" | grep -qxF "$member"; then
+              echo "::error::the packed Codex tarball holds no $member, which the installed plugin runs from"
+              exit 1
+            fi
+          done
+          packages/claude-envoy/scripts/check-packed-skills.sh "${tgz[0]}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: steps.version.outputs.skip != 'true'
+        with:
+          name: codex-envoy-tarball
+          path: ${{ runner.temp }}/codex-envoy-tarball/*.tgz
           if-no-files-found: error
 
       - name: Check this job holds no credential (tripwire)
@@ -1139,6 +1186,56 @@ jobs:
           # claude_envoy_build's one rendered file, written into the body as pi-envoy's is above.
           .github/scripts/release-push.sh release-section "$TAG" '## Changelog' \
             "$RUNNER_TEMP/claude-envoy-notes/release-notes.md"
+
+      # codex-envoy: the Codex CLI plugin claude_envoy_build packed beside claude-envoy, from the
+      # same build and at the same version, published to npm on its own name and tagged with
+      # claude-envoy's tag alone. npm's trusted publishing cannot create a package, so until an
+      # owner of the @sjawhar scope has published the name once by hand and named this workflow
+      # its trusted publisher, this step says so and publishes nothing; any other failure of the
+      # registry read is an error. Like claude-envoy's steps, none of these gates the legion
+      # release below.
+      - name: "codex-envoy: Download the tarball"
+        id: codex_envoy_download
+        if: ${{ !cancelled() && needs.claude_envoy_build.result == 'success' && needs.claude_envoy_build.outputs.skip != 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-envoy-tarball
+          path: ${{ runner.temp }}/codex-envoy-tarball
+
+      - name: "codex-envoy: Check the hand-over"
+        id: codex_envoy_handed
+        if: ${{ !cancelled() && steps.codex_envoy_download.outcome == 'success' }}
+        env:
+          VERSION: ${{ needs.claude_envoy_build.outputs.version }}
+        run: |
+          git checkout --force --detach "$GITHUB_SHA"
+          git clean -ffdx
+          name=$(jq -r .name packages/claude-envoy/codex/package.json)
+          stem="${name#@}"
+          stem="${stem//\//-}-$VERSION"
+          .github/scripts/release-push.sh handed claude-envoy-v "$VERSION" "$RUNNER_TEMP/codex-envoy-tarball" "$stem.tgz" >/dev/null
+          { echo "name=$name"; echo "stem=$stem"; } >> "$GITHUB_OUTPUT"
+
+      - name: "codex-envoy: Publish to npm"
+        if: ${{ !cancelled() && steps.codex_envoy_handed.outcome == 'success' }}
+        env:
+          VERSION: ${{ needs.claude_envoy_build.outputs.version }}
+          NAME: ${{ steps.codex_envoy_handed.outputs.name }}
+          STEM: ${{ steps.codex_envoy_handed.outputs.stem }}
+        run: |
+          if ! read_name=$(npm view "$NAME" name 2>&1); then
+            if grep -q E404 <<<"$read_name"; then
+              echo "::warning::npm has no package $NAME yet, and trusted publishing cannot create one: an owner of its scope publishes it once by hand and names this workflow its trusted publisher. Not publishing $VERSION."
+              exit 0
+            fi
+            echo "::error::reading $NAME from npm failed: $read_name"
+            exit 1
+          fi
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "npm already has $NAME $VERSION; skipping publish"
+          else
+            npm publish "$RUNNER_TEMP/codex-envoy-tarball/$STEM.tgz" --access public --provenance
+          fi
 
       # The plugin pair npm carries for this run, which legion links and the worker image installs:
       # for each Oh My Pi plugin, the version its build released when "Create GitHub release", the

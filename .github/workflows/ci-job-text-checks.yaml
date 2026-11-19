@@ -71,7 +71,7 @@ env:
 
 jobs:
   text-checks:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # About three times the cold measurement in the header, which is what a runner that restores
     # no build cache does on every run - the supervise pins' call, a quarter more cold time on
     # the pod that measured the five against the four, left that nearly as it was.
@@ -95,16 +95,22 @@ jobs:
       - name: Check the text packages/daemon pins
         run: go test -count=1 ./internal/textcheck/
         working-directory: packages/daemon
-      # The API's eight static source checks read the module's source and open no database, so
-      # they run here rather than in the job that carries Postgres for that package. They sit in
-      # the package they guard, beside its Postgres-backed tests, so this step selects them by
-      # name: the list is generated in .github/scripts/ci_job_reads.py from TEXT_CHECK_TESTS,
-      # the same declaration that leaves exactly these fifteen out of envoy-go's plain step, so a
-      # guard test added or renamed reaches both or fails the ci-filters job naming this step.
+      # The fifteen tests of the API's eight static source checks read the module's source and
+      # open no database, so they run here rather than in the job that carries Postgres for that
+      # package. They sit in the package they guard, beside its Postgres-backed tests, so this
+      # step selects them by name: the list is generated in .github/scripts/ci_job_reads.py from
+      # TEXT_CHECK_TESTS, the same declaration that leaves exactly these fifteen out of envoy-go's
+      # plain step. A guard test added to or renamed in its file must be named there
+      # (ci_job_reads.py refuses the file otherwise), and check-ci-filters.sh refuses this step
+      # when its run: is not the text built from the list, naming this step and each test the one
+      # names and the other lacks, and when an env, shell or container could change which tests
+      # it runs (a GOFLAGS -skip would skip a test the -run names): a test dropped from this
+      # -run, named here and not in the list, or skipped from outside it, fails the ci-filters
+      # job rather than running in no job or in both.
       # The package's other tests skip without DISPATCH_TEST_DATABASE_URL, and -run keeps this
       # step from even building their fixtures' work.
       - name: Test the Dispatch API's source guards (no database)
-        run: go test -count=1 -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryReviewReadOrdersByReviewOrder|TestEveryRouteThatTakesABodyRefusesADecisionBlock|TestNoForUpdateOnOwnerTables|TestOneExpressionDecidesWhoWaitsInOneSpelling|TestOnlyTheBrokerInsertsEvents|TestOnlyWriteReviewWritesReviews|TestTheDecisionBlockGuardSeesWhatItGuards|TestTheGuardReadsABodyStringOffARequestType|TestTheKeyedWriteGuardSeesWhatItGuards|TestTheReviewOrderGuardReadsBothOrders|TestTheReviewWriterPatternsReadEveryNameOfTheTable|TestTheReviewWriterScanFindsAnIdentifierNamingTheTable)$' ./internal/dispatch/api
+        run: go test -count=1 -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryReviewReadOrdersByReviewOrder|TestEveryRouteThatTakesABodyRefusesADecisionBlock|TestNoForUpdateOnOwnerTables|TestOneExpressionDecidesWhoWaitsInOneSpelling|TestOnlyQueueReviewWritesReviews|TestOnlyTheBrokerInsertsEvents|TestTheDecisionBlockGuardSeesWhatItGuards|TestTheGuardReadsABodyStringOffARequestType|TestTheKeyedWriteGuardSeesWhatItGuards|TestTheReviewOrderGuardReadsBothOrders|TestTheReviewWriterPatternsReadEveryNameOfTheTable|TestTheReviewWriterScanFindsAnIdentifierNamingTheTable)$' ./internal/dispatch/api
         working-directory: packages/envoy
       # The two pure pins of packages/daemon's supervise table: they hold the table to the
       # package's own source — a row or a named ignore for every event in every state, and one

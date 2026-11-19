@@ -141,7 +141,7 @@ func bucketOps(t *testing.T, kv natsgo.KeyValue) map[string]natsgo.KeyValueOp {
 // openRegistry opens the registry on conn and waits for its interest cache.
 func openRegistry(t *testing.T, conn *natsgo.Conn) *Registry {
 	t.Helper()
-	registry, err := Open(conn, WithReplicas(1))
+	registry, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -764,7 +764,7 @@ func startGrantedServer(t *testing.T, deny []string) grantedServer {
 	}
 	seedMarkers(t, kv, 6)
 	seedLive(t, kv, 3)
-	registry, err := Open(conn, WithReplicas(1))
+	registry, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

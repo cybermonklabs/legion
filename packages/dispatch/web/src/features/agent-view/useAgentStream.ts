@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState, useSyncExternalStore } from "react";
 
-import { liveSocketFor } from "../../api/live-socket";
+import { type LiveSocketConnection, liveSocketFor } from "../../api/live-socket";
 import {
   type AgentConversation,
   applyFrame,
@@ -9,7 +9,14 @@ import {
   EMPTY_CONVERSATION,
 } from "./conversation";
 
-export type AgentStreamStatus = "connecting" | "live" | "reconnecting" | "unavailable";
+/** Where the view's connection to the session stands. `not-answering` is the relay saying nobody
+ *  answers on the session's control subject (`responding === false`). */
+export type AgentStreamStatus =
+  | "connecting"
+  | "live"
+  | "not-answering"
+  | "reconnecting"
+  | "unavailable";
 
 export interface AgentStreamState {
   readonly conversation: AgentConversation;
@@ -22,8 +29,9 @@ export interface AgentStreamState {
   readonly replays: number;
   /** Whether the session answers the relay on its control subject; `undefined` until it says.
    *  `false` is a session that is not answering the live view - an older plugin, one started
-   *  without its plugin, or one no longer running - and it can turn true on a later replay
-   *  without this viewer reconnecting. */
+   *  without its plugin, or one no longer running - and reads as `not-answering` in `status`. A
+   *  later answer of `true`, or any frame of the session's, turns it true again without this
+   *  viewer reconnecting. */
   readonly responding: boolean | undefined;
 }
 
@@ -47,6 +55,20 @@ const NOTHING_HEARD: Heard = {
   replays: 0,
   responding: undefined,
 };
+
+/**
+ * Where the view's connection to the session stands, from the socket's state and what the view
+ * has heard. A refusal outranks the socket's state; a lost socket outranks what the view last
+ * heard; and the relay's word that nobody answers outranks having heard from it at all, until a
+ * frame or a later answer of `true` says the session speaks again.
+ */
+function streamStatus(heard: Heard, connection: LiveSocketConnection): AgentStreamStatus {
+  if (heard.refused) return "unavailable";
+  if (connection === "reconnecting") return "reconnecting";
+  if (heard.responding === false) return "not-answering";
+  if (heard.answered) return "live";
+  return "connecting";
+}
 
 /**
  * Watches one session's own conversation, as a subscription on the tab's live socket.
@@ -108,18 +130,10 @@ export function useAgentStream(sessionID: string): AgentStreamState {
     });
   }, [queryClient, sessionID]);
 
-  // A refusal outranks the socket's state; a lost socket outranks what the view last heard.
-  const status: AgentStreamStatus = heard.refused
-    ? "unavailable"
-    : connection === "reconnecting"
-      ? "reconnecting"
-      : heard.answered
-        ? "live"
-        : "connecting";
   return {
     conversation: heard.conversation,
     replays: heard.replays,
     responding: heard.responding,
-    status,
+    status: streamStatus(heard, connection),
   };
 }
