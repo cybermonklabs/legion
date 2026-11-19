@@ -310,7 +310,7 @@ func (k *claudeKeeper) connect(ctx context.Context) error {
 // The file there is something the role wrote and the launcher is its container's PID 1, so it is
 // read only as a regular file and only up to one byte past the row (readHead): a link, a fifo or
 // anything else that is no regular file is refused at once in words naming it, never followed or
-// waited on, and a file of any size is read no further than the row reaches.
+// waited on, and a file of any size is read no further than one byte past the row.
 func (k *claudeKeeper) restore(ctx context.Context, f *keptFile) error {
 	row, ok, err := ompsessions.Read(ctx, k.conn, f.path)
 	if err != nil || !ok {

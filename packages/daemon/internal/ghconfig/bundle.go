@@ -243,9 +243,10 @@ func (b Bundle) Validate() error {
 // changed, sorted, and writes nothing for a bundle Validate refuses.
 //
 // Because the pane's own user can write root, the cleaning follows no link and waits on no fifo
-// (rolefile.RemoveTree): a link planted at either level is unlinked and what it names is never
-// opened, and an entry the cleaning cannot remove, such as a link under a directory the pane made
-// 0555, is left as it is and answered as an error naming it. root may sit under a state
+// (rolefile.RemoveTree): a link at the root, one at an owner's name among them, is unlinked and
+// what it names is never opened, and under an owner's directory only subdirectories go, so a link
+// there is left as it is. An entry the cleaning cannot remove, such as a link under a directory the
+// pane made 0555, is left as it is and answered as an error naming it. root may sit under a state
 // directory reached through a link, or be a link itself, so it is resolved once
 // (filepath.EvalSymlinks) before the cleaning reads it, and RemoveTree, which refuses a parent
 // that is a link, takes the directory that link names.
