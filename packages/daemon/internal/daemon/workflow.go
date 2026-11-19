@@ -697,10 +697,10 @@ func (w *workflowRuntime) wakeOutbox(issue string, kind record.OutboxKind) {
 // show that session as the one at work, as the role-holder publication would (LiveRoleHolders,
 // which leaves it out). The check only reads. It asks the machine first (Machine.Admits: no lock,
 // no store call), and where the machine has not seen the answer, as after a restart, it reads
-// claim_sessions in the fact's own transaction (record.SessionHeld), one statement on the
-// connection that already holds the fact lock: no store write, and no wait on another connection
-// while that lock is held, where the store's hold (HoldSessions) would write through the pool. A
-// read that fails names no session, and the record's end then names none.
+// claim_sessions in the fact's own transaction (record.SessionHeld), one select under a
+// savepoint on the connection that already holds the fact lock: no store write, and no wait on
+// another connection while that lock is held, where the store's hold (HoldSessions) would write
+// through the pool. A read that fails names no session, and the record's end then names none.
 func (w *workflowRuntime) stepAgent(ctx context.Context, tx pgx.Tx, token claim.Token) workflow.StepAgent {
 	r := w.outboxWake.Load()
 	if r == nil || r.supervisor == nil {

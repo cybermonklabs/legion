@@ -2445,9 +2445,10 @@ func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string)
 // SessionHeld reports whether claim_sessions holds, for token in project, every name its record
 // gives session and sessionFile, by LiveRoleHolders' rule: every name supervise.RecordedHolds
 // gives, none of them one supervise.UnholdableNames refuses. It only reads, in tx, which may be a
-// fact's transaction holding the fact lock (the daemon's step record): one statement on that
-// transaction's own connection, so it waits on no other connection and writes nothing. It runs
-// under a savepoint, so a failure of the read leaves tx usable and answers false with the error.
+// fact's transaction holding the fact lock (the daemon's step record): a savepoint, one select and
+// the savepoint's release, all on that transaction's own connection, so it waits on no other
+// connection and writes nothing. The savepoint is what makes a failure of the read leave tx usable;
+// such a read answers false with the error.
 func SessionHeld(ctx context.Context, tx pgx.Tx, project string, token claim.Token, session, sessionFile string) (bool, error) {
 	names := supervise.RecordedHolds(session, sessionFile)
 	if len(names) == 0 || len(supervise.UnholdableNames(session, sessionFile)) > 0 {

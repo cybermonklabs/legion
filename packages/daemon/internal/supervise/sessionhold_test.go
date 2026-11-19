@@ -1093,3 +1093,66 @@ func TestARetryOrDeliveryOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// A death's relaunch of a claim recording a session another claim holds is refused by start's own
+// hold (Machine.start) and charged to the launch budget like any refused launch (launchNow), so at
+// the budget the claim fails rather than relaunching at the probe interval for ever. No resume
+// reaches the runtime. The resume, retry and delivery routes refuse such a claim before start
+// (resumeRefusal); a death has no route to refuse, so this row is what reads start's charge.
+//
+// The control (the pull request records the run): launchNow sending start's refusal down the
+// retry that charges nothing, as it sends errHoldUnanswered: the claim is left launching.
+func TestADeathsRelaunchIntoAHeldSessionIsChargedToTheLaunchBudget(t *testing.T) {
+	const other = claim.Token("legion-legion-LEGION-209-tester")
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.store.setHold(sessionID(session), other)
+	// The death itself is charged one launch failure (relaunchAfterFailure), and the relaunch start
+	// refuses is charged the second, which spends the budget (launchNow).
+	h.deps.Limits.LaunchFailures = 2
+	h.restart()
+	resumes := len(h.calls("Resume"))
+
+	// At the budget the refused relaunch fails the claim, and the death's handling answers nil or
+	// the refusal: the failure is the claim's, recorded below.
+	if err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}}); err != nil {
+		var refusal claim.Refusal
+		if !errors.As(err, &refusal) || refusal != claim.SessionHeldRefusal(session) {
+			t.Fatalf("the death's relaunch = %v, want nil or %v", err, claim.SessionHeldRefusal(session))
+		}
+	}
+	if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
+		t.Fatalf("the runtime was asked to resume %s's session: %+v", other, calls)
+	}
+	if c := h.claim(); c.State != StateFailed || !strings.Contains(c.Failure, "recorded for another claim") {
+		t.Fatalf("the claim is %s (%q), want it failed at its launch budget by the hold's refusal rather than relaunching under %s", c.State, c.Failure, session)
+	}
+}
+
+// The daemon's own resume of a claim it suspended, recording a session another claim holds, leaves
+// the claim suspended (resumeByRule, resumeRefusal): nothing resumed, nothing charged, and the line
+// says why. A claim an operator suspended never reaches this check (RuleMayResume).
+//
+// The control (the pull request records the run): resumeByRule without its resumeRefusal: the rule's
+// resume answers the hold's refusal from start.
+func TestARuleResumeOfASessionTheClaimDoesNotHoldLeavesItSuspended(t *testing.T) {
+	const other = claim.Token("legion-legion-LEGION-209-tester")
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestSuspend{Claim: h.token, Reason: "the boot contains it", By: SuspendedByDaemon})
+	h.wantState(StateSuspended)
+	h.store.setHold(sessionID(session), other)
+	h.restart()
+	resumes := len(h.calls("Resume"))
+
+	h.must(RequestRuleResume{Claim: h.token, Reason: "the outbox starts the claim's phase"})
+	if c := h.claim(); c.State != StateSuspended || c.Budgets.LaunchFailures != 0 {
+		t.Fatalf("the claim is %s with %d launch failures, want it suspended with none", c.State, c.Budgets.LaunchFailures)
+	}
+	if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
+		t.Fatalf("the runtime was asked to resume %d times, want none", len(calls))
+	}
+	if lines := h.logs.lines("not resumed by rule: the claim records a session it does not hold"); len(lines) != 1 {
+		t.Fatalf("the rule's refusal wrote %d lines, want one: %v", len(lines), lines)
+	}
+}

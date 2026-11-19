@@ -1444,8 +1444,8 @@ type Machine struct {
 	// once rather than every probe interval; a hold admitted clears it (warnRefusal). Memory only.
 	refusalLogged string
 	// admitted is the session and file the store last admitted for this claim, which holdRecorded
-	// and HoldsItsSession write and HoldsItsSession reads without the lock; forgetSession clears it
-	// with heldNames. Memory only.
+	// and HoldsItsSession write, and HoldsItsSession and Admits (the daemon's step record) read
+	// without the lock; forgetSession clears it with heldNames. Memory only.
 	admitted atomic.Pointer[admittedSession]
 	// registration is the pod-session registration this machine keeps written for the claim's
 	// current process (ensureRegistered), nil while it keeps none. Memory only: a restored claim

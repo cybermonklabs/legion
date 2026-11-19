@@ -662,7 +662,8 @@ func (forgetWait) Is(target error) bool {
 func (w forgetWait) Unwrap() error { return w.error }
 
 // admittedSession is a session and file every name of which the store last answered as this
-// claim's (holdRecorded, HoldsItsSession), kept for HoldsItsSession to read without the lock.
+// claim's (holdRecorded, HoldsItsSession), kept for HoldsItsSession and Admits to read without
+// the lock.
 type admittedSession struct{ session, file string }
 
 // Admits reports whether the store last answered every name of session and sessionFile as this
