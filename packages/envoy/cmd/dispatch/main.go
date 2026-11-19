@@ -370,7 +370,10 @@ func main() {
 		slog.Info("dispatch: a targeted message to a session no store holds fails: queueing it needs NATS")
 	}
 
-	database, err := store.Open(ctx, boot.DatabaseURL)
+	// Every transaction of this process is ended by Postgres once it waits 5 s on this process
+	// between two statements (store.IdleTransactionBound), so a process that is stopped while a
+	// write of an issue is open does not hold that issue's lock from every other process's writes.
+	database, err := store.Open(ctx, boot.DatabaseURL, store.BoundIdleTransactions())
 	if err != nil {
 		slog.Error("dispatch: open database", "error", err)
 		os.Exit(1)

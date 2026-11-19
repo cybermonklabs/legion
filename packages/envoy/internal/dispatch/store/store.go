@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -41,11 +42,57 @@ var migrationFiles embed.FS
 // override them, deliberately and per pool (Pool.separate).
 const poolSizeParam = "pool_max_conns"
 
+// IdleTransactionBound is how long Postgres lets a transaction of a Dispatch server process wait
+// on that process between two of its statements (idle_in_transaction_session_timeout, set by
+// BoundIdleTransactions). Past it Postgres ends the process's session, which rolls the
+// transaction back and releases every lock it held, and the process's next statement on that
+// connection fails.
+//
+// A process that is stopped (SIGSTOP, or any stall of the whole process) keeps its connections
+// open, and its kernel still answers for them, so neither Postgres nor TCP learns that anything is
+// wrong, and a transaction it had open when it stopped keeps its locks for as long as it is
+// stopped. Every write of an issue takes the issue's owner lock (LockOwner), so a process stopped
+// inside a write of one issue holds every write of that issue, through every other process:
+// cmd/dispatch's frozen-publisher row measured a standby that took the publisher hold 5 s after
+// the publisher was stopped, and whose next comment on the issue the stopped process had locked
+// then waited on that lock until the row's HTTP client gave the request up 30 s later.
+//
+// 5 s is the publisher hold's TTL (outbox.publisherHoldOptions): a stopped publisher's
+// transactions end by the time its hold lapses and a standby takes it, so the standby's writes
+// of the issues the stopped process held go through within the six seconds a take-over has.
+// The bound counts from the end of the transaction's last statement, so a process stopped
+// between two statements of a transaction releases its locks at most IdleTransactionBound after
+// it stopped. A statement that waits on a lock or runs long is active, not idle, and the bound
+// does not count it; what it ends is a transaction whose own process sends nothing for 5 s
+// between two of its statements, which holds its locks over every other writer of them for that
+// long.
+const IdleTransactionBound = 5 * time.Second
+
+// idleTransactionParam is the Postgres setting BoundIdleTransactions sets on each connection.
+const idleTransactionParam = "idle_in_transaction_session_timeout"
+
+// OpenOption sets something of the pool Open opens.
+type OpenOption func(*pgxpool.Config)
+
+// BoundIdleTransactions has every connection of the pool, and of the pools Pool.separate copies
+// from it, carry IdleTransactionBound as its idle_in_transaction_session_timeout, whatever
+// databaseURL says. The server process opens its store with it (cmd/dispatch). A test's own pool
+// (storetest) does not, since its fixtures hold a transaction open across a wait on purpose.
+func BoundIdleTransactions() OpenOption {
+	return func(config *pgxpool.Config) {
+		if config.ConnConfig.RuntimeParams == nil {
+			config.ConnConfig.RuntimeParams = make(map[string]string)
+		}
+		config.ConnConfig.RuntimeParams[idleTransactionParam] = strconv.FormatInt(IdleTransactionBound.Milliseconds(), 10)
+	}
+}
+
 // Open connects to databaseURL and verifies the database is reachable. The pool's size is
 // sharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
 // string that names its database. Every connection it opens scans timestamptz in UTC
-// (scanTimestampsInUTC), as do the pools Pool.separate copies from its configuration.
-func Open(ctx context.Context, databaseURL string) (*Store, error) {
+// (scanTimestampsInUTC), as do the pools Pool.separate copies from its configuration. options
+// apply after both.
+func Open(ctx context.Context, databaseURL string, options ...OpenOption) (*Store, error) {
 	declared, err := declaresPoolSize(databaseURL)
 	if err != nil {
 		return nil, err
@@ -61,6 +108,9 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	config.MaxConns = sharedPoolSize
 	config.AfterConnect = scanTimestampsInUTC
+	for _, option := range options {
+		option(config)
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("open Postgres pool: %w", err)

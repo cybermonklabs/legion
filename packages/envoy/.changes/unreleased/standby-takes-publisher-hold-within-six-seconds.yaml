@@ -12,4 +12,8 @@ body: |-
   attempt either, so it answers through a silent cut of NATS, and nor does an envoy-listener's
   `/healthz` for its role lane's client. The cost: a holder whose renewal is late stops publishing
   1 s, not 2 s, before a standby may take the hold, and a NATS outage of 2 to 3 s now hands the
-  hold to the other process.
+  hold to the other process. A Dispatch server stopped in the middle of a write no longer holds
+  that issue's writes, through every other server, for as long as it stays stopped: Postgres ends
+  a server's transaction once it has waited 5 s on its server between two statements
+  (`idle_in_transaction_session_timeout`), which releases its locks by the time a standby has taken
+  over.
