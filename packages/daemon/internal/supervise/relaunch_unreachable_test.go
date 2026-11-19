@@ -233,94 +233,62 @@ func TestTheRelaunchGuardReadsTheRecordItIsHanded(t *testing.T) {
 func TestTheRelaunchGuardRefusesAClaimWhoseSessionReportedInItsTurn(t *testing.T) {
 	h := newHarness(t)
 	h.workingOnATask("implement the plan")
-	h.stepped("wait", "toolu_wait_0", `{"jobs":["activity-service"]}`, false)
-	h.advance(21 * time.Minute)
-	h.reportActivity()
-	reported := h.clock.Now()
-	h.advance(4 * time.Minute)
-	before := h.claim()
 
-	err := h.handle(h.relaunchOf(false))
-
-	if !errors.Is(err, ErrRelaunchGuard) {
-		t.Fatalf("relaunch of a claim whose session reported 4 minutes ago in its turn = %v, want the guard's refusal", err)
-	}
-	if stamp := reported.UTC().Format(time.RFC3339); !strings.Contains(err.Error(), stamp) {
-		t.Fatalf("the refusal %q does not name the report's time %s", err, stamp)
-	}
-	h.wantState(StateWorking)
-	h.wantCalls("Suspend", 0)
-	h.wantCalls("Resume", 0)
-	if h.generation() != before.Generation {
-		t.Fatalf("generation = %d, want it unmoved at %d", h.generation(), before.Generation)
-	}
+	h.wantRelaunchGuardedInTurn("a claim in a turn")
 }
 
 // A turn Oh My Pi starts under a compaction — a follow-up an Envoy delivery queued while the
 // session was being compacted — is the claim's turn once the compaction ends and leaves the claim
-// working for it (compactEnded), so the guard reads the claim in that turn as it reads any other:
-// the turn here sits in a `wait` on a named `bash` service for 25 minutes, and its session's
-// heartbeat reported in it 4 minutes ago. Read against the start of the turn before the
-// compaction, which has ended, the claim would be in no turn, and the relaunch would cut the live
-// one. The daemon's sweep asks the guard of the stored claim, which the compaction's end wrote.
+// working for it (compactEnded), so the guard reads the claim in that turn as it reads any other.
+// Read against the start of the turn before the compaction, which has ended, the claim would be in
+// no turn, and the relaunch would cut the live one. The daemon's sweep asks the guard of the
+// stored claim, which the compaction's end wrote.
 func TestTheRelaunchGuardRefusesAClaimInATurnThatBeganUnderACompaction(t *testing.T) {
 	h := newHarness(t)
-	h.reach(StateIdle)
-	h.advance(time.Minute)
-	release := h.conn.HoldCompact()
-	compacted := make(chan error, 1)
-	go func() { compacted <- h.m.Compact(h.ctx, testCompactInstructions) }()
-	waitForCompacting(t, h)
+	end := h.compactingIdle()
 	h.must(StreamTurnStart{Claim: h.token})
-	release()
-	if err := <-compacted; err != nil {
+	if err := end(); err != nil {
 		t.Fatalf("compact: %v", err)
 	}
-	h.m.Wait()
-	h.wantState(StateWorking)
-	h.stepped("wait", "toolu_wait_0", `{"jobs":["activity-service"]}`, false)
-	h.advance(21 * time.Minute)
-	h.reportActivity()
-	stamp := h.clock.Now().UTC().Format(time.RFC3339)
-	h.advance(4 * time.Minute)
-	before := h.claim()
 
-	err := h.handle(h.relaunchOf(false))
-
-	if !errors.Is(err, ErrRelaunchGuard) || !strings.Contains(err.Error(), stamp) {
-		t.Fatalf("relaunch of a claim whose session reported 4 minutes ago in a turn begun under a compaction = %v, want the guard's refusal naming the report at %s", err, stamp)
-	}
-	h.wantState(StateWorking)
-	h.wantCalls("Suspend", 0)
-	h.wantCalls("Resume", 0)
-	if h.generation() != before.Generation {
-		t.Fatalf("generation = %d, want it unmoved at %d", h.generation(), before.Generation)
-	}
-	if why := RelaunchGuard(h.store.load(h.token), time.Time{}, h.clock.Now()); !strings.Contains(why, stamp) {
-		t.Fatalf("RelaunchGuard of the stored claim = %q, want a refusal naming the report at %s", why, stamp)
-	}
+	h.wantRelaunchGuardedInTurn("a claim in a turn begun under a compaction")
 }
 
 // compactingIdle takes an idle claim, whose last turn has ended, for a compaction that Oh My Pi
-// is still writing, and returns the machine that asked for it: the claim stored working with no
-// turn begun under the compaction yet.
-func (h *harness) compactingIdle() *Machine {
+// is still writing: the claim stored working with no turn begun under the compaction yet. end lets
+// Oh My Pi answer the compaction and returns what Compact answered, once the machine has decided
+// everything the answer started. A test that restarts the daemon instead leaves end uncalled: the
+// machine that asked is dropped, as a stopped daemon's is, and its Compact waits on the held
+// connection until the harness's context ends.
+func (h *harness) compactingIdle() (end func() error) {
 	h.t.Helper()
 	h.reach(StateIdle)
 	h.advance(time.Minute)
-	h.conn.HoldCompact()
+	release := h.conn.HoldCompact()
 	asked := h.m
-	go func() { _ = asked.Compact(h.ctx, testCompactInstructions) }()
+	compacted := make(chan error, 1)
+	go func() { compacted <- asked.Compact(h.ctx, testCompactInstructions) }()
 	waitForCompacting(h.t, h)
-	return asked
+	return func() error {
+		release()
+		err := <-compacted
+		asked.Wait()
+		return err
+	}
 }
 
-// wantRelaunchGuardedInTurn walks the claim through a `wait` on a named `bash` service 25 minutes
-// old whose session reported in its turn 4 minutes ago, and wants the relaunch refused by the
-// guard's rule for a report in the turn, both by the machine and by the guard read of the stored
-// claim the daemon's sweep makes.
+// wantRelaunchGuardedInTurn walks a claim in a turn through a `wait` on a named `bash` service 25
+// minutes old whose session reported in that turn 4 minutes ago, and wants the relaunch refused by
+// the guard's rule for a report in the turn, naming the report's time, with nothing stopped or
+// started — both by the machine and by the guard read of the stored claim the daemon's sweep makes.
+// That is R5's turn heartbeat, measured: a session in a turn sends its activity report again every
+// 5 minutes whatever it says (pi-legion's TURN_ACTIVITY_HEARTBEAT_MS), from a timer of its own
+// process, so a report made in that turn in the last 20 minutes is the process still running the
+// turn, though its worker stream shows no step, as a `wait` on a named `bash` service does on the
+// pinned Oh My Pi, and the service is in no report.
 func (h *harness) wantRelaunchGuardedInTurn(what string) {
 	h.t.Helper()
+	h.wantState(StateWorking)
 	h.stepped("wait", "toolu_wait_0", `{"jobs":["activity-service"]}`, false)
 	h.advance(21 * time.Minute)
 	h.reportActivity()
@@ -333,7 +301,9 @@ func (h *harness) wantRelaunchGuardedInTurn(what string) {
 	if !errors.Is(err, ErrRelaunchGuard) || !strings.Contains(err.Error(), stamp) {
 		h.t.Fatalf("relaunch of %s whose session reported 4 minutes ago in its turn = %v, want the guard's refusal naming the report at %s", what, err, stamp)
 	}
+	h.wantState(StateWorking)
 	h.wantCalls("Suspend", 0)
+	h.wantCalls("Resume", 0)
 	if h.generation() != generation {
 		h.t.Fatalf("generation = %d, want it unmoved at %d", h.generation(), generation)
 	}
