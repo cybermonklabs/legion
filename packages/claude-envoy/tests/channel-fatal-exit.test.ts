@@ -185,18 +185,35 @@ async function exitWithin(server: Subprocess, ms: number): Promise<number | unde
   return Promise.race([server.exited, late])
 }
 
+/**
+ * Waits until `ready` holds, looking every 50 ms, with no deadline of its own: the row's timeout is
+ * its only bound, so a start that a loaded machine slows takes what it takes. A server that exits
+ * first ends the wait at once, naming its exit code and what it wrote to stderr.
+ */
+async function startedTo(started: Started, ready: () => boolean, what: string): Promise<void> {
+  let exited: number | undefined
+  void started.server.exited.then((code) => {
+    exited = code
+  })
+  while (!ready()) {
+    if (exited !== undefined) {
+      throw new Error(`the server exited ${exited} before ${what}: ${started.stderr()}`)
+    }
+    await Bun.sleep(50)
+  }
+}
+
 test("a start the hub refuses closes the mod socket and exits non-zero, naming the setting", async () => {
   const hub = refusingHub()
   const started = await startServer([hub])
   // Its stdin stays open: the parent is alive, and the server still ends with its session.
-  const code = await exitWithin(started.server, 8_000)
+  const code = await started.server.exited
   // The failure says which setting named the hub, which credential it refused, and why; it names
   // no part of the hub's address, which the setting holds.
   expect(started.stderr()).toMatch(
     /could not connect to NATS at the server envoy\.natsUrls in \S+envoy\.json names presenting no credential: Authorization Violation/,
   )
   expect(started.stderr()).not.toContain(hub)
-  expect(code, `still running: ${started.stderr()}`).toBeDefined()
   expect(code).not.toBe(0)
   expect(existsSync(started.socketPath)).toBe(false)
 }, 20_000)
@@ -204,13 +221,10 @@ test("a start the hub refuses closes the mod socket and exits non-zero, naming t
 test("a server whose parent is gone exits on its stdin's end of file, its socket removed", async () => {
   // Inbound off: the session runs with no NATS, so nothing but the parent ends it.
   const started = await startServer([])
-  const deadline = Date.now() + 8_000
-  while (!existsSync(started.socketPath) && Date.now() < deadline) await Bun.sleep(50)
-  expect(existsSync(started.socketPath), started.stderr()).toBe(true)
+  await startedTo(started, () => existsSync(started.socketPath), "its mod socket was bound")
   expect(await exitWithin(started.server, 500)).toBeUndefined()
   started.server.stdin.end()
-  const code = await exitWithin(started.server, 8_000)
-  expect(code, `still running after stdin closed: ${started.stderr()}`).toBeDefined()
+  await started.server.exited
   expect(existsSync(started.socketPath)).toBe(false)
 }, 20_000)
 
@@ -219,15 +233,15 @@ test("a stop asked for while the start waits on a silent hub exits 0, its socket
   // admitting the session. A stop then is an asked-for stop, not a failure.
   const hub = silentHub()
   const started = await startServer([hub.url])
-  const deadline = Date.now() + 8_000
-  while ((hub.pings() < 2 || !existsSync(started.socketPath)) && Date.now() < deadline) {
-    await Bun.sleep(50)
-  }
-  expect(hub.pings(), started.stderr()).toBeGreaterThanOrEqual(2)
+  await startedTo(
+    started,
+    () => hub.pings() >= 2 && existsSync(started.socketPath),
+    "the hub's second PING and its mod socket",
+  )
   expect(await exitWithin(started.server, 500)).toBeUndefined()
   started.server.kill("SIGTERM")
-  const code = await exitWithin(started.server, 8_000)
-  expect(code, `still running after SIGTERM: ${started.stderr()}`).toBe(0)
+  const code = await started.server.exited
+  expect(code, started.stderr()).toBe(0)
   expect(started.stderr()).not.toContain("channel server failed")
   expect(existsSync(started.socketPath)).toBe(false)
 }, 30_000)
@@ -235,11 +249,11 @@ test("a stop asked for while the start waits on a silent hub exits 0, its socket
 test("a stop asked for while the dial waits on a mute hub exits 0, its socket removed", async () => {
   const hub = muteHub()
   const started = await startServer([hub.url])
-  const deadline = Date.now() + 8_000
-  while ((hub.connections() < 1 || !existsSync(started.socketPath)) && Date.now() < deadline) {
-    await Bun.sleep(50)
-  }
-  expect(hub.connections(), started.stderr()).toBeGreaterThanOrEqual(1)
+  await startedTo(
+    started,
+    () => hub.connections() >= 1 && existsSync(started.socketPath),
+    "the hub's connection and its mod socket",
+  )
   started.server.kill("SIGTERM")
   // Well inside nats.js's dial timeout: the stop, not the timeout, ends the wait.
   const code = await exitWithin(started.server, 1_500)
