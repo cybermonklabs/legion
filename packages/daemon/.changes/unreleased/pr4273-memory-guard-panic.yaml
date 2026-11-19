@@ -4,4 +4,6 @@ body: |-
     process, or in a microVM pod's guest memory watch, no longer ends the launcher, which is PID 1
     of the pod, and with it every role's turn. The guard or the watch writes one
     `off reason=panic: …` line that names the panic and where it was raised, and turns off for good,
-    as where it cannot read the pod; the launcher runs on.
+    as where it cannot read the pod; the launcher runs on. A panic in the reader of the guest watch's
+    file-modified events ends that wake alone, with a `wake off` line, and the watch goes on with its
+    scans.

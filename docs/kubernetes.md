@@ -4319,7 +4319,7 @@ A step of the watch that panics, its start, a scan or a wake, writes `off reason
 The watch then names no kill, and it still raises scores and writes its hourly line, which do not need the counter.
 
 `wake off` comes once where the watch reads a kill counter but does not wake on the file-modified event of `memory.events`.
-Its reason is `cgroup v1's memory.oom_control raises no file-modified event` on cgroup v1, the error where the watch of the event cannot start, or `the watch of <dir>/memory.events ended: <error>` where that watch ends, with the error that ended it: the kernel's drop of the watch (`IN_IGNORED`) once the file goes away, or the error of a read that failed.
+Its reason is `cgroup v1's memory.oom_control raises no file-modified event` on cgroup v1, the error where the watch of the event cannot start, or `the watch of <dir>/memory.events ended: <error>` where that watch ends, with the error that ended it: the kernel's drop of the watch (`IN_IGNORED`) once the file goes away, the error of a read that failed, or a panic of the watch's reader, `panic: <value> at <function> (<file>:<line>)`, which ends the watch rather than the launcher.
 The watch then reads the counter at its 100 ms scan alone, so it names a stopped process only where that process still shows SIGKILL pending at a scan.
 
 `killed unnamed` comes when a wait ends with kills that no process was named for, and at each rise of the counter once the watch is off.
