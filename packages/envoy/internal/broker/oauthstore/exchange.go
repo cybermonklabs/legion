@@ -433,8 +433,8 @@ var ErrPodSessionNotThisRegistrars = errors.New("the pod's registration for this
 // registrar is not the one its session name is bound to, or of a name bound to none. It is
 // ErrPodSessionNotThisRegistrars (errors.Is). Session is the name, Registrar the registrar that
 // wrote the registration, and Holder the registrar the name is bound to, "" when it is bound to
-// none; the exchange logs all three and answers none of them: neither daemon is the pod's to be
-// told about.
+// none. The exchange logs each of them, Holder only when the name is bound, and answers only
+// Session: neither daemon is the pod's to be told about.
 type PodSessionNotThisRegistrarsError struct{ Session, Registrar, Holder string }
 
 func (e *PodSessionNotThisRegistrarsError) Error() string {
@@ -500,8 +500,8 @@ type PodSessionRegistration struct {
 // from a replica of that build while the broker rolls, after it) is taken whole: its registrar,
 // key, generation and expiry become this write's and its release mark is cleared. A release
 // ends a registration, so neither its key nor its generation carries over to the next, whose
-// claim may count its generations from lower; nor does
-// another registrar's. A row of this registrar's own that it has not released, live or lapsed,
+// claim may count its generations from lower; nor does another registrar's. A row of this
+// registrar's own that it has not released, live or lapsed,
 // keeps the rules below.
 //
 // jkt, when set, binds the registration to the key the session's own role proves, which is what
@@ -630,10 +630,9 @@ func (s *Store) writePodSession(ctx context.Context, registrar, podUID, session,
 	var row pgx.Row
 	switch {
 	case locked.released || locked.registrar != registrar:
-		// A release ended the row's registration, or it is another registrar's or no registrar's (a
-		// broker of the build before registrars writes a row of none, before registrar bound the name
-		// or, while the broker rolls, after it): nothing of it carries over, so the write sets it as a
-		// first write would.
+		// A release ended the row's registration, or it is another registrar's or no registrar's
+		// (RegisterPodSession says where a row of none comes from): nothing of it carries over, so
+		// the write sets it as a first write would.
 		row = s.db(ctx).QueryRow(ctx, `update oauth_pod_sessions
 			set registrar = $3, expires_at = $4, jkt = nullif($5, ''), generation = $6, released_at = null
 			where pod_uid = $1 and session = $2

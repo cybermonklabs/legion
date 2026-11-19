@@ -1,7 +1,8 @@
 // cross_daemon_exchange_test.go drives the REAL compiled broker over HTTP, on a real Postgres,
 // against a local OpenID issuer standing in for the cluster's, with two deployments' daemons
 // listed for one pod account: the session name the first daemon's pods trade under is not the
-// second daemon's to register, and a pod the second daemon registered trades nothing under it.
+// second daemon's to register, and a pod whose registration under it the second daemon is refused
+// trades nothing under it.
 package main
 
 import (
@@ -99,6 +100,6 @@ func TestAPodAnotherDaemonRegisteredCannotTradeForASessionThisDaemonsPodHolds(t 
 	description, _ := body["error_description"].(string)
 	if status != http.StatusBadRequest || body["error"] != "invalid_grant" || !strings.HasPrefix(description, oauthwire.PodSessionNotRegistered+":") || body["access_token"] != nil {
 		t.Errorf("b-1's trade under %s, a name %s holds, after %s was refused its registration = %d %v %q with an access token %t; want 400 invalid_grant, its description beginning %s:, and no access token",
-			session, registrarAccount, secondRegistrarAccount, status, body["error"], body["error_description"], body["access_token"] != nil, oauthwire.PodSessionNotRegistered)
+			session, registrarAccount, secondRegistrarAccount, status, body["error"], description, body["access_token"] != nil, oauthwire.PodSessionNotRegistered)
 	}
 }

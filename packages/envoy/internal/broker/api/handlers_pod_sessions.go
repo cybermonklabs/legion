@@ -142,9 +142,8 @@ type podSessionResponse struct {
 // lines are the one record of who may write under which name. A write applied is logged at Info
 // as registered, naming the registrar and the thumbprint and generation it sent beside the ones
 // stored, and the thumbprint it replaced when it took a key off the row, by binding the row to
-// another key or by taking whole a released row, or a row of another registrar or of none (a
-// broker of the build before registrars writes a row of none, before the caller bound its name
-// or, while the broker rolls, after it); one that names no key and no generation, of a row that
+// another key or by taking whole a released row, or a row of another registrar or of none
+// (oauthstore.Store.RegisterPodSession); one that names no key and no generation, of a row that
 // held no key and names neither after it, logs the line it logged before either existed (R9), the
 // registrar included in neither. A write the generation rule refused changed nothing, so it is
 // not logged as registered: it logs a line of its own at Warn, naming the registrar and what it

@@ -37,6 +37,16 @@ func (ts *testServer) admits(t *testing.T, what, registrar, podToken, pod, sessi
 	}
 }
 
+// writesLiveRowByHand writes a live registration of pod for session naming registrar straight into
+// oauth_pod_sessions, binding nothing: a row no route of this build writes.
+func (ts *testServer) writesLiveRowByHand(t *testing.T, pod, session, registrar string) {
+	t.Helper()
+	if _, err := ts.Store.Pool.Exec(context.Background(), `insert into oauth_pod_sessions (pod_uid, session, expires_at, registrar)
+		values ($1, $2, now() + interval '1 day', $3)`, pod, session, registrar); err != nil {
+		t.Fatalf("write a live registration of %s for %s naming %s by hand: %v", pod, session, registrar, err)
+	}
+}
+
 // loggedAs is every record capture holds whose message is message, each as its level, its message
 // and its attributes, in the order they were logged.
 func loggedAs(capture *logtest.Recorder, message string) []map[string]any {
@@ -166,10 +176,7 @@ func TestAPodAnotherDaemonRegisteredCannotTradeUnderAHeldName(t *testing.T) {
 			podB, session, daemonAccount, answer, oauthwire.PodSessionNotRegistered)
 	}
 
-	if _, err := ts.Store.Pool.Exec(context.Background(), `insert into oauth_pod_sessions (pod_uid, session, expires_at, registrar)
-		values ($1, $2, now() + interval '1 day', $3)`, podB, session, otherDaemonAccount); err != nil {
-		t.Fatalf("write a live registration of %s for %s naming %s by hand: %v", podB, session, otherDaemonAccount, err)
-	}
+	ts.writesLiveRowByHand(t, podB, session, otherDaemonAccount)
 	answer = ts.exchangePodToken(t, ts.rolesTradeToken(t, podB), session)
 	if answer.status != http.StatusBadRequest || answer.code != "invalid_grant" || answer.issued ||
 		!strings.HasPrefix(answer.description, oauthwire.SessionNameNotThisRegistrars+":") || !strings.Contains(answer.description, session) {
@@ -198,7 +205,8 @@ const boundToNoDaemonMessage = "broker: the token exchange refused a pod's trade
 // TestATradeUnderANameBoundToNoDaemonIsRefused: a live registration of pod P for S naming daemon
 // A (daemonAccount), while pod_session_registrars binds S to no daemon, does not admit P's trade
 // under S. The test writes that row by hand: no route of this build writes it, since the route
-// binds the name in the transaction that writes the row; a broker of another build does. P's
+// binds the name in the transaction that writes the row; only a broker of a build that writes
+// the registrar and not the binding would. P's
 // trade under S is refused invalid_grant with a description beginning
 // session_name_not_this_registrars: that names S, says it is bound to no daemon and does not name
 // A, with no token, and one WARN line naming the principal, P, S and A and no holder, and no line
@@ -212,10 +220,7 @@ func TestATradeUnderANameBoundToNoDaemonIsRefused(t *testing.T) {
 	const session, pod = "implementer-g1", "pod-uid-of-a"
 	daemonA := ts.accountToken(t, daemonAccount, "", time.Hour)
 
-	if _, err := ts.Store.Pool.Exec(context.Background(), `insert into oauth_pod_sessions (pod_uid, session, expires_at, registrar)
-		values ($1, $2, now() + interval '1 day', $3)`, pod, session, daemonAccount); err != nil {
-		t.Fatalf("write a live registration of %s for %s naming %s by hand: %v", pod, session, daemonAccount, err)
-	}
+	ts.writesLiveRowByHand(t, pod, session, daemonAccount)
 	if bound := ts.column(t, `select registrar from pod_session_registrars where session_name = $1`, session); len(bound) != 0 {
 		t.Fatalf("pod_session_registrars binds %s to %v once the test wrote %s's row by hand, want no binding: the test is about a name bound to no daemon", session, bound, pod)
 	}

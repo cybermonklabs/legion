@@ -58,21 +58,14 @@ async function refusalOf400(session: string, description: string): Promise<Broke
   }
 }
 
-test("the refusal of a session name another daemon holds prints whole, and no trade cures it", async () => {
-  const refusal = await refusalOf400("ses_held", notThisRegistrars("ses_held"));
-  expect(refusal.said).toBe(notThisRegistrars("ses_held"));
+test.each([
+  ["another daemon holds", "ses_held", notThisRegistrars],
+  ["bound to no daemon", "ses_unbound", boundToNone],
+] as const)("the refusal of a session name %s prints whole, and no trade cures it", async (_, session, refusalFor) => {
+  const refusal = await refusalOf400(session, refusalFor(session));
+  expect(refusal.said).toBe(refusalFor(session));
   expect(refusal.message).toBe(
-    `the secrets broker refused the projected service-account token: HTTP 400 invalid_grant: ${notThisRegistrars("ses_held")}`
-  );
-  expect(refusal.podSessionUnregistered).toBe(false);
-  expect(isFinalRefusal(refusal)).toBe(true);
-});
-
-test("the refusal of a session name bound to no daemon prints whole, and no trade cures it", async () => {
-  const refusal = await refusalOf400("ses_unbound", boundToNone("ses_unbound"));
-  expect(refusal.said).toBe(boundToNone("ses_unbound"));
-  expect(refusal.message).toBe(
-    `the secrets broker refused the projected service-account token: HTTP 400 invalid_grant: ${boundToNone("ses_unbound")}`
+    `the secrets broker refused the projected service-account token: HTTP 400 invalid_grant: ${refusalFor(session)}`
   );
   expect(refusal.podSessionUnregistered).toBe(false);
   expect(isFinalRefusal(refusal)).toBe(true);
