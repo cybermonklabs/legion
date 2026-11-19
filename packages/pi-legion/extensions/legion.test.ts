@@ -92,6 +92,7 @@ import {
   type StallWatchRecord,
 } from "../src/stall-evidence";
 import { stallExitsFile } from "../src/stall-exits";
+import { memoryRoot } from "../test/memory-root";
 import type legionEntryDefault from "./legion";
 import type {
   setLegionBootstrapExitForTests as SetLegionBootstrapExitForTests,
@@ -390,8 +391,12 @@ const jjHomeDirectory = temporaryDirectory("legion-jj-home");
 
 /** The repository every workspace in this file is a copy of: one `jj git init` before the tests.
  * A copy spawns no process, so a test's workspace costs none of bun's 5 s test timeout, which a
- * `jj` process, whose run time is the machine's load, would otherwise spend. */
+ * `jj` process, whose run time is the machine's load, would otherwise spend. The template and its
+ * copies are made on the memory root (test/memory-root.ts): "a resumed worker restores its phase"
+ * copies it seven times, and run alone in a 2-CPU cgroup it took 7.7-9.8 s with TMPDIR on a dev
+ * box's shared disk, timing out 1 run of 3, and 2.0-2.3 s on /dev/shm. */
 let jjTemplate = "";
+const jjWorkspaceRoot = memoryRoot();
 
 /** The jj binary this host's `jj` runs (`jjBinary`), which every jj of this file's own runs: the
  * first `jj` on PATH can be a wrapper that finds its jj from the HOME and PATH it is given, which
@@ -408,7 +413,7 @@ const skip = skipWithout("jj");
 beforeAll(async () => {
   if (skip) return;
   jjProgram = await jjBinary(jjHomeDirectory);
-  jjTemplate = await mkdtemp(path.join(os.tmpdir(), "legion-omp-extension-template-"));
+  jjTemplate = await mkdtemp(path.join(jjWorkspaceRoot, "legion-omp-extension-template-"));
   await runTool(
     jjProgram,
     jjHomeDirectory,
@@ -758,7 +763,7 @@ async function createSubagentTranscriptPaths(): Promise<{
   return { parentFile, childFile };
 }
 async function createJjWorkspace(): Promise<string> {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "legion-omp-extension-"));
+  const directory = await mkdtemp(path.join(jjWorkspaceRoot, "legion-omp-extension-"));
   temporaryPaths.push(directory);
   await cp(jjTemplate, directory, { recursive: true });
   return directory;
