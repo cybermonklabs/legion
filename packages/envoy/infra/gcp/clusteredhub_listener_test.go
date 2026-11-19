@@ -175,30 +175,32 @@ func TestClusteredNatsHubListenerEnvironment(t *testing.T) {
 	}}, seed)
 }
 
-// The listener's startup and liveness probes read /livez and its readiness probe reads /healthz,
-// both on its own loopback. Startup and liveness are status-blind, curl -sS of /livez, which the
-// listener answers 204 without touching the bus: a listener whose NATS is down or whose caches
-// are warming is alive, keeps those caches and repairs itself, and only one that answers nothing
-// at all is restarted, after two minutes of silence at startup (5 s × 24) or one minute later on
-// (10 s × 6). Readiness is curl -fsS of /healthz, which reads the HTTP status and never the
-// body: that status is what tells a starting pod from a serving one, and a pod still waiting for
-// its durable, which /healthz answers 200 with a starting body, is ready, so the rolling update
-// never waits for the stream.
+// The listener's three probes, each on its own loopback. Startup is /bin/sh -c of a scrape of
+// /metrics, which passes only once the scrape holds the sample line of envoy_active_interests,
+// which the listener writes only once its /v1 gate is open and its interest list can be served.
+// The kubelet keeps the pod unready until then, which keeps the old pod serving through the
+// rolling update until the new one's /v1 serves, and it restarts a listener that has not opened
+// /v1 within ten minutes (10 s × 60). Readiness and liveness are status-blind, curl -sS of /livez,
+// which the listener answers 204 without touching the bus: a fault of the hub, which every pod
+// shares, neither takes the one pod out of its Service nor restarts it, and only a listener that
+// answers nothing at all is taken out, after 30 s of silence (10 s × 3), or restarted, after one
+// minute (10 s × 6). TestClusteredNatsHubListenerStartupProbePassesOnlyOnTheSample runs the
+// startup script.
 func TestClusteredNatsHubListenerProbes(t *testing.T) {
 	template := deploymentPodTemplate(t, runClusteredHub(t, clusteredArgs()), clusteredListenerName)
 	listener := podContainer(t, template, "listener")
 
 	blind := []any{"curl", "-sS", "-o", "/dev/null", "--max-time", "8", "http://127.0.0.1:9020/livez"}
+	served := []any{"/bin/sh", "-c", "curl -fsS --max-time 5 http://127.0.0.1:9020/metrics | grep -q '^envoy_active_interests '"}
 	want := map[string]any{
 		"startupProbe": map[string]any{
-			"exec": map[string]any{"command": blind}, "periodSeconds": 5.0, "timeoutSeconds": 9.0, "failureThreshold": 24.0,
+			"exec": map[string]any{"command": served}, "periodSeconds": 10.0, "timeoutSeconds": 6.0, "failureThreshold": 60.0,
 		},
 		"livenessProbe": map[string]any{
 			"exec": map[string]any{"command": blind}, "periodSeconds": 10.0, "timeoutSeconds": 9.0, "failureThreshold": 6.0,
 		},
 		"readinessProbe": map[string]any{
-			"exec":          map[string]any{"command": []any{"curl", "-fsS", "http://127.0.0.1:9020/healthz"}},
-			"periodSeconds": 5.0, "timeoutSeconds": 6.0, "failureThreshold": 2.0,
+			"exec": map[string]any{"command": blind}, "periodSeconds": 10.0, "timeoutSeconds": 9.0, "failureThreshold": 3.0,
 		},
 	}
 	read := 0
@@ -216,8 +218,9 @@ func TestClusteredNatsHubListenerProbes(t *testing.T) {
 // grace period, and kills what is still running at its end: the 5 s hook, which holds the pod
 // open while its removal from its Service's endpoints reaches every node's proxy, and the 28 s
 // stop both fit in 40 s. The grace is also under the bind deadline a starting listener waits the
-// durable out for, which is necessary and not sufficient: what has to hold is the new pod's time
-// to its first /healthz answer plus this grace.
+// durable out for, which is necessary and not sufficient: that deadline counts from the new pod's
+// /v1 open, right after which its listener starts the bind, so what has to fit under it is the new
+// pod's startup probe's lag behind that open, at most one 10 s period, plus this grace.
 func TestClusteredNatsHubListenerStopFitsItsGrace(t *testing.T) {
 	template := deploymentPodTemplate(t, runClusteredHub(t, clusteredArgs()), clusteredListenerName)
 	grace := template["spec"].(map[string]any)["terminationGracePeriodSeconds"].(float64)

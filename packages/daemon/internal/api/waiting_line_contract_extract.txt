@@ -49,32 +49,6 @@ pec` step's row, which a reader that asks one question of one gate takes. */
   /** The one rendered answer an issue that is not working now carries: which fact holds it, and
  
 
-# packages/pi-legion/AGENTS.md
-oses `awaiting_merge`, a pull request carries
-`mergeState` in place of `checksVerdict`, a phase carries `pass`, every claim view carries
-`lastTurnStart` and `lastTurnEnd`, and `handoff_complete` takes no `ready`), after contract 85's
-`why` and the
-`waitingLine` fields beside it
-(INFRA-2554: each member of the line carries `part`, `kind`, `partPlace`, `partLength`,
-`holdsSlot`, `since` for a member whose work came back, `rootRank`, `ownRank` and `r
-
-# packages/pi-legion/AGENTS.md
- order of the two ever runs; the
-controller's `legion` tool gains `compact (issue, role)` and `fresh_session (issue, role)`, which
-post `POST /legion/v1/claims/compact` and `POST /legion/v1/claims/fresh-session`), after
-contract 58's waiting line
-(INFRA-1100: an issue of `GET /legion/v1/state` that `admission.waiting` names carries
-`waitingLine`, its `place` in that list, 1 at the front, and the list's `length` at that read;
-an issue the list does
-
-# packages/pi-legion/AGENTS.md
-1/state` that `admission.waiting` names carries
-`waitingLine`, its `place` in that list, 1 at the front, and the list's `length` at that read;
-an issue the list does not name carries no such key, and a caller
-from a pod below 58 is served every issue without the field), after contract 57's claim step
-record and stall numbers (every claim view of `GET /legion/v1/state` and of `legion claims list`
-carries `step`, what the daemon last saw that cla
-
 # docs/site/src/content/docs/legion/running-legion.md
 ished line still names — each standing
   among the issues whose work came back, oldest first, until the pass that resumes it — and each by key

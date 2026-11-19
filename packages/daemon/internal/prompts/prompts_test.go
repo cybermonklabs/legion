@@ -744,9 +744,9 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 		"over the diff that round reads, when that diff touches runtime code",
 		"The thermonuclear pair reads that same difference, and runs only when it touches runtime code.",
 		"The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other",
-		"Read the whole change again, and give the pair the whole change, in three cases: the task names no commit;",
+		"Read the whole change again, and give the pair the whole change, in two cases: the task names no commit,",
 		"the commit is not an ancestor of the head (`git merge-base --is-ancestor <commit> <head>` does not exit 0)",
-		"a forward merge of the base changed the unchanged-diff fingerprint",
+		"After a forward merge of the base, read the merge as the next paragraph says",
 	} {
 		if !strings.Contains(text, phrase) {
 			t.Errorf("the composed reviewer prompt omits %q", phrase)
@@ -856,8 +856,8 @@ func TestEveryComposedPromptCarriesThePodMemoryRule(t *testing.T) {
 // merge in its opening clause and limits nothing of its `fail` clause by it. A test that passes on
 // the revert it exists to catch measures the wrong unit, so a check widened from here keeps the
 // clause. That is read over the composed prompt of each role a look reaches, the tester's and the
-// implementer's. The three pages that state the rule outside a prompt - the repository's
-// AGENTS.md, the e2e proof's account of the bound's look and the concepts page - are read by
+// implementer's. The two pages that state the rule outside a prompt - the e2e proof's account
+// of the bound's look and the concepts page - are read by
 // internal/textcheck's TestThePagesFailAnUnobservedRequirementOnlyWhereProductionCarriesTheMerge,
 // with the same clause rule, so an edit to one of them alone starts the text checks rather than
 // this package's whole lane. Each prompt must hold one such clause at least, so a matcher that

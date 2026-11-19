@@ -32,15 +32,19 @@ env:
 jobs:
   envoy-infra-go:
     runs-on: ubuntu-24.04-arm
-    # With a go-envoy-infra entry filled for the run's module files, both vets take a second and the
-    # job took 537 s (run 44016277498, from an entry a dispatched fill saved on its branch), the live
-    # tests 423 s of it. A run whose module files main has not filled, such as a pull request that
-    # changes them, restores an entry built from older module versions and rebuilds what moved. At
-    # worst that is both vets nearly from nothing, and the whole job then took 959 and 1059 s in
-    # runs 44013632169 and 43996496498, whose entry was eleven days old and held no darwin objects.
-    # With no entry at all, as after an eviction, the job took 921 s (run 44026580304). This limit
-    # is for those cases. Those four runs ran the job on ubuntu-24.04, before it moved to arm64.
-    timeout-minutes: 20
+    # The limit is the worst job measured plus half again. With a go-envoy-infra entry filled for
+    # the run's module files (ci-caches.yaml's envoy-infra job, whose arm64 leg compiles this job's
+    # race unit step), both vets take a second, the unit step under -race 50 s, and the job 519 s
+    # (run 44565671151, from the entry a dispatched fill saved on its branch); the live tests take
+    # most of it. With no entry at all, as after an eviction or for a pull request whose
+    # module files main has not filled, everything compiles: the job took 996 s, the two vets
+    # 175 and 162 s, the race unit step 234 s and the live tests 390 s (run 44563221379, its
+    # restore forced to miss). The plain unit step took 28 to 34 s in nine runs of 2026-11-19, so
+    # -race costs a run with no entry 200 s or more. The worst runs on record were older: 959 and
+    # 1059 s for runs 44013632169 and 43996496498 on ubuntu-24.04, whose entry was eleven days old
+    # and held no darwin objects. 1059 s and the 206 s the race compile adds at most (234 s less
+    # 28 s) come to 1265 s, about 21 minutes, and half again is 1898 s, the 32 minutes here.
+    timeout-minutes: 32
     env:
       TESTCONTAINERS_RYUK_DISABLED: "true"
     steps:
@@ -98,17 +102,19 @@ jobs:
         working-directory: packages/envoy/infra
       # Every package of the module except internal/textcheck, whose tests are the text-check
       # job's: a change to only what they read must not start this job, and they must not run
-      # twice. `go test ./...` cannot say "but one package", so the step lists the packages and
-      # drops that one before go test sees them, as the envoy and daemon lanes do;
-      # `set -o pipefail` is what makes a failed go list, or a pattern that matches every
-      # package, fail the step rather than pass it with nothing tested. The pattern is built in
-      # .github/scripts/ci_job_reads.py from the package name the text-check job's own steps are
-      # built from. The vet step above still compiles the text checks, which keeps them
-      # compiling as the module changes.
+      # twice. scripts/race-unit.sh lists the packages, drops that one and runs go test -count=1
+      # -race over the rest; ci-caches.yaml's envoy-infra fill runs the same script's compile mode,
+      # so the race objects the cache holds are the ones this step links, and neither caller can
+      # name another package or flag than the other. .github/scripts/ci_job_reads.py pins this
+      # step's run: and the script's pattern, which it builds from the package name the text-check
+      # job's own steps are built from. The vet step above still compiles the text checks, which
+      # keeps them compiling as the module changes.
+      # Under the race detector: the gate's tests drive an httptest server from a child process,
+      # whose handler shares state with the test, and two of them raced that way unseen while this
+      # step ran without it. With the fill's entry the step took 50 s (run 44565671151); with none,
+      # 234 s (run 44563221379), against 28 to 34 s for the plain step.
       - name: Unit test envoy-infra
-        run: |
-          set -o pipefail
-          go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1
+        run: scripts/race-unit.sh run
         working-directory: packages/envoy/infra
       - name: Live tests of envoy-infra against nats-server (natslive)
         # gcp's live tests build helm, nats-server, the config reloader and the exporter with go

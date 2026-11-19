@@ -37,7 +37,8 @@ jobs:
     # before it at their measured times plus its own limit: about 1 minute of setup, then the
     # plain race-impossible step's five 10-minute runs, which is 51; after that step's measured
     # 5 minutes (about 2 before the API's and delivery's xid window tests joined it, which took
-    # 134 s and 4 s on a two-vCPU pod; the auth service's restart storm adds 17 s) the unit step's
+    # 134 s and 4 s on a two-vCPU pod; the auth service's restart storm adds 17 s, and the API's
+    # claim model is not among them, running in envoy-go-claim-model) the unit step's
     # own 20 is 26; after the unit step, which runs strictly fewer packages than the 35 minutes it
     # measured before the race lane's left it and so cannot exceed that, the store-form count's
     # own 5 is 46 (two packages, which go test starts at once with -p at least 2, so its -timeout
@@ -117,11 +118,13 @@ jobs:
       # seeds and fewer edits under it (raceEnabled), so this is their full-size run. So is the
       # NATS auth service's restart storm's: five hundred connections, two hundred under the
       # detector (raceEnabled), whose instrumentation makes each in-process connect several times
-      # the cost (natscallout's race_disabled_test.go says why). The API's
-      # seven source guards, and one_expression_guard_test.go beside them, carry that tag too and
-      # are deliberately not here: they read the module's source, the text-check job runs their
-      # fifteen tests by name, and ci_job_reads.py's TEXT_CHECK_TESTS leaves exactly those out of
-      # this step rather than have each of them run twice. It comes before the unit step for the
+      # the cost (natscallout's race_disabled_test.go says why). The API's mention sender claim
+      # model is out of the race build too, and runs in a job of its own, envoy-go-claim-model;
+      # the API's eight source guards, and one_expression_guard_test.go beside them, carry that
+      # tag as well and are deliberately not here: they read the module's source, the text-check
+      # job runs their seventeen tests by name, and ci_job_reads.py's CLAIM_MODEL_TESTS and
+      # TEXT_CHECK_TESTS leave exactly those tests out of this step rather than have each of them
+      # run twice. It comes before the unit step for the
       # reason the API package's own run did: run beside the other package binaries,
       # its Postgres-backed tests and the room-memory measurements queue their per-test database
       # cleanup on the service's one checkpointer, and the API's live-feed and delivery-hub tests
