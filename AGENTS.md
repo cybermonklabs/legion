@@ -376,7 +376,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - `legion launcher`'s memory guard
 
-  In gVisor both forms run the pod's memory guard (`packages/daemon/internal/memoryguard`) where the deployment runs it (it is on by default), and each runs it only as PID 1 of its container: it reads the pod's anonymous memory (`AnonPages`) each interval, and at `act_percent` of the container's limit (85 by default) it ends with SIGKILL a process that is neither Legion's own nor an agent's own, the one that grows fastest first (`docs/kubernetes.md`, "What it ends").
+  Both of the launcher's forms run the pod's memory guard (`packages/daemon/internal/memoryguard`) where the deployment runs it (it is on by default), and each runs it only as PID 1 of its container: it reads the pod's anonymous memory (`AnonPages`) each interval, and at `act_percent` of the container's limit (85 by default) it ends with SIGKILL a process that is neither Legion's own nor an agent's own, the one that grows fastest first (`docs/kubernetes.md`, "What it ends").
   The multi-role form, PID 1 of an issue pod's `roles` container, reads `runtime.kubernetes.memory_guard.issue_pods` and reports the kill on the connection of that process's role, which the daemon then tells on its role topic (`docs/kubernetes.md`, "The memory guard in an issue pod").
   The single-role form, PID 1 of the controller's pod, reads a block of its own, `runtime.kubernetes.memory_guard.controller_pod`, counts every process of its container as the controller's, and reports each kill on the controller's connection, which the daemon then tells the controller as a controller notice of kind `memory-guard-kill` (`docs/kubernetes.md`, "The memory guard in the controller's pod").
 
