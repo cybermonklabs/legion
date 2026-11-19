@@ -315,6 +315,14 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 	require.False(t, existingDatabaseInstance.Plain)
 	require.False(t, existingDatabaseInstance.Secret)
 	require.NotContains(t, dispatch.RequiredInputs, "existingDatabaseInstance")
+	// regionalNetwork, false to register no Subnetwork, Router or RouterNat beside existingCluster,
+	// is an optional plain boolean, not secret: it decides which resources register, so it is never
+	// another resource's output, and a stack that sets nothing sends no property, keeping the
+	// regional network it always had.
+	require.Equal(t, "boolean", dispatch.InputProperties["regionalNetwork"].Type)
+	require.True(t, dispatch.InputProperties["regionalNetwork"].Plain)
+	require.False(t, dispatch.InputProperties["regionalNetwork"].Secret)
+	require.NotContains(t, dispatch.RequiredInputs, "regionalNetwork")
 	// region and hostname, which name every cloud resource, are the only inputs the schema
 	// requires: every other input configures Dispatch itself, which clusterOnly does not build.
 	require.ElementsMatch(t, []string{"region", "hostname"}, dispatch.RequiredInputs)

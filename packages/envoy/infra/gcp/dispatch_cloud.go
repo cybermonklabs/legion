@@ -28,6 +28,8 @@ import (
 type dispatchNetwork struct {
 	// network is the VPC the cluster's nodes and the database's private IP are on, and subnetwork
 	// the range in region the component's own cluster takes its nodes' and pods' addresses from.
+	// With regionalNetwork false the network half registers no subnetwork and subnetwork is nil:
+	// the resolvers allow that only beside existingCluster, where the component makes no cluster.
 	network    *compute.Network
 	subnetwork *compute.Subnetwork
 	// connection is the private services peering the Cloud SQL instance takes its private IP
@@ -115,13 +117,15 @@ func providerFor(ctx context.Context, pkg string, opts ...pulumi.ResourceOption)
 }
 
 // newDispatchNetwork is the network half: it registers the network the component runs on, apart
-// from any cluster. That is the VPC, Network <hostname>-network; in region, its subnetwork and
-// the router and Cloud NAT that private nodes reach the internet through, Subnetwork, Router and
-// RouterNat <hostname>; and, outside clusterOnly, which builds no database, the private services
-// range and its peering, GlobalAddress and Connection <hostname>-services, through which the Cloud
-// SQL instance takes its private IP. It also looks the project up through the gcp provider. The
-// cluster half takes the network and the subnetwork from it, and the database half the network,
-// the connection and the project.
+// from any cluster. That is the VPC, Network <hostname>-network; in region, unless regionalNetwork
+// is false, its subnetwork and the router and Cloud NAT that private nodes reach the internet
+// through, Subnetwork, Router and RouterNat <hostname>; and, outside clusterOnly, which builds no
+// database, the private services range and its peering, GlobalAddress and Connection
+// <hostname>-services, through which the Cloud SQL instance takes its private IP. The Network, the
+// GlobalAddress and the Connection register identically whatever regionalNetwork says, so turning
+// it false deletes the regional three alone. It also looks the project up through the gcp
+// provider. The cluster half takes the network and the subnetwork from it, and the database half
+// the network, the connection and the project.
 func newDispatchNetwork(ctx *pulumi.Context, comp *Dispatch, s dispatchSettings, opts ...pulumi.ResourceOption) (*dispatchNetwork, error) {
 	gcpProvider, err := providerFor(ctx.Context(), "gcp", opts...)
 	if err != nil {
@@ -133,26 +137,31 @@ func newDispatchNetwork(ctx *pulumi.Context, comp *Dispatch, s dispatchSettings,
 	if err != nil {
 		return nil, err
 	}
+	vpc := &dispatchNetwork{network: network, project: project}
 	// The regional part of the network, which only a cluster in region uses: the subnetwork the
 	// component's own cluster takes its addresses from, and the router and Cloud NAT its private
-	// nodes reach the internet through.
-	subnetwork, err := compute.NewSubnetwork(ctx, s.hostname, &compute.SubnetworkArgs{
-		Network: network.ID(), Region: pulumi.String(s.region), IpCidrRange: pulumi.String("10.64.0.0/20"), PrivateIpGoogleAccess: pulumi.Bool(true),
-	}, child)
-	if err != nil {
-		return nil, err
+	// nodes reach the internet through. regionalNetwork false, which the resolvers take only beside
+	// existingCluster, registers none of the three, so a consumer whose cluster runs elsewhere can
+	// empty the region once nothing uses the subnetwork.
+	if s.regionalNetwork {
+		subnetwork, err := compute.NewSubnetwork(ctx, s.hostname, &compute.SubnetworkArgs{
+			Network: network.ID(), Region: pulumi.String(s.region), IpCidrRange: pulumi.String("10.64.0.0/20"), PrivateIpGoogleAccess: pulumi.Bool(true),
+		}, child)
+		if err != nil {
+			return nil, err
+		}
+		router, err := compute.NewRouter(ctx, s.hostname, &compute.RouterArgs{Network: network.ID(), Region: pulumi.String(s.region)}, child)
+		if err != nil {
+			return nil, err
+		}
+		_, err = compute.NewRouterNat(ctx, s.hostname, &compute.RouterNatArgs{
+			Router: router.Name, Region: pulumi.String(s.region), NatIpAllocateOption: pulumi.String("AUTO_ONLY"), SourceSubnetworkIpRangesToNat: pulumi.String("ALL_SUBNETWORKS_ALL_IP_RANGES"),
+		}, child)
+		if err != nil {
+			return nil, err
+		}
+		vpc.subnetwork = subnetwork
 	}
-	router, err := compute.NewRouter(ctx, s.hostname, &compute.RouterArgs{Network: network.ID(), Region: pulumi.String(s.region)}, child)
-	if err != nil {
-		return nil, err
-	}
-	_, err = compute.NewRouterNat(ctx, s.hostname, &compute.RouterNatArgs{
-		Router: router.Name, Region: pulumi.String(s.region), NatIpAllocateOption: pulumi.String("AUTO_ONLY"), SourceSubnetworkIpRangesToNat: pulumi.String("ALL_SUBNETWORKS_ALL_IP_RANGES"),
-	}, child)
-	if err != nil {
-		return nil, err
-	}
-	vpc := &dispatchNetwork{network: network, subnetwork: subnetwork, project: project}
 	if s.clusterOnly {
 		return vpc, nil
 	}

@@ -285,16 +285,28 @@ type DispatchArgs struct {
 	// databaseWaitsFor configure the instance the component makes, and are refused beside it.
 	// Unset, the component makes the Cloud SQL instance <hostname>.
 	ExistingDatabaseInstance pulumi.StringInput `pulumi:"existingDatabaseInstance,optional"`
+	// RegionalNetwork is the regional part of the component's network: Subnetwork, Router and
+	// RouterNat <hostname> in region, the subnetwork the component's own cluster takes its
+	// addresses from and the router and Cloud NAT its private nodes reach the internet through.
+	// True when unset. False registers none of the three, while the Network, its GlobalAddress and
+	// its private services Connection stay exactly as they are, so the Cloud SQL instance keeps its
+	// private address. It is the step that empties the region once nothing uses the subnetwork, and
+	// so is allowed only beside existingCluster: the component's own cluster runs on that
+	// subnetwork, and false without existingCluster is refused rather than leaving it none.
+	RegionalNetwork *bool `pulumi:"regionalNetwork,optional"`
 
 	// ClusterOnly builds the cluster alone: the VPC, its subnetwork, the router, Cloud NAT and the
 	// Autopilot cluster, and nothing else. No Cloud SQL instance, database or user, no generated
 	// password, no Secret Manager grant, no Kubernetes provider and no Kubernetes object is
 	// registered, and the component requires no random provider. Every input that configures
-	// Dispatch rather than the cluster is refused by name, so only region, hostname and
-	// deletionProtection come with it; clusterName, kubeconfig and serviceAccountIssuer carry the
-	// cluster's own values and url, databaseInstance, principal, agentToken and
-	// serviceAccountSubject are "". A stack already running Dispatch cannot turn it on: such a
-	// stack sets the inputs this mode refuses, so the update is refused before anything is deleted.
+	// Dispatch rather than the cluster is refused by name, so only region, hostname,
+	// deletionProtection and regionalNetwork come with it: regionalNetwork shapes the network half
+	// both modes build, and since this mode always makes its own cluster on that subnetwork, true
+	// (or unset) changes nothing and false is refused. clusterName, kubeconfig and
+	// serviceAccountIssuer carry the cluster's own values and url, databaseInstance, principal,
+	// agentToken and serviceAccountSubject are "". A stack already running Dispatch cannot turn it
+	// on: such a stack sets the inputs this mode refuses, so the update is refused before anything
+	// is deleted.
 	ClusterOnly *bool `pulumi:"clusterOnly,optional"`
 
 	// Replicas is the app Deployment's replica count, 1 by default. Above 1 the Deployment rolls
@@ -580,8 +592,10 @@ type Dispatch struct {
 }
 
 // dispatchSettings are the plain inputs, validated, with the defaults applied, so they are known at
-// preview. images.tools is frontDoorToolsImage. With clusterOnly set only hostname, region and
-// deletionProtection are resolved: no other field is read by the cluster the mode builds.
+// preview. images.tools is frontDoorToolsImage. With clusterOnly set only hostname, region,
+// deletionProtection and regionalNetwork are resolved, regionalNetwork because it shapes the
+// network half both modes build: no other field is read by the cluster and the network the mode
+// builds.
 // natsReplicas, streamMaxBytes, senderMessagesPerMinute and senderMessageBurst are 0 when their
 // inputs are unset, where the component renders none of those settings, and signingKeyGenerations
 // is the generations the component registers a signing key for, in the order the server holds
@@ -601,7 +615,9 @@ type Dispatch struct {
 // a cluster of its own. existingDatabaseInstance is true while the input of that name is set,
 // where the component makes no Cloud SQL instance, database or user and the proxy connects to the
 // instance it names; the connection name itself is a Pulumi Input, judged once it resolves, and so
-// no field here.
+// no field here. regionalNetwork is true unless the input of that name is false, which both
+// resolvers allow only beside existingCluster, where the network half registers no Subnetwork,
+// Router or RouterNat.
 type dispatchSettings struct {
 	clusterOnly                                 bool
 	frontDoor, signInOn                         bool
@@ -631,6 +647,7 @@ type dispatchSettings struct {
 	answerer                                    dispatchAnswerer
 	existingCluster                             dispatchClusterRef
 	existingDatabaseInstance                    bool
+	regionalNetwork                             bool
 }
 
 // dispatchClusterRef is a GKE cluster by its name and location, as existingCluster names it and the
@@ -916,14 +933,16 @@ func dispatchSignInInputs(args *DispatchArgs) []dispatchInput {
 }
 
 // dispatchClusterOnlyRefusals is every pulumi-tagged input of DispatchArgs that configures
-// Dispatch rather than the cluster, which clusterOnly refuses by name. Only the four inputs both
+// Dispatch rather than the cluster, which clusterOnly refuses by name. Only the five inputs both
 // modes use are absent: clusterOnly itself, region and hostname, which name every cloud resource,
-// and deletionProtection, which guards the cluster as well as the database. existingCluster and
-// existingDatabaseInstance are among the refused: one names the cluster Dispatch runs in and the
-// other the database instance it uses, and clusterOnly runs no Dispatch, always makes its own
-// cluster and uses no database. The eight inputs of the two groups come from the groups' own
-// definitions, so an input either group gains is refused here without being written down a
-// second time.
+// deletionProtection, which guards the cluster as well as the database, and regionalNetwork, which
+// shapes the network half both modes build; newDispatchClusterOnlySettings refuses it false by a
+// rule of its own, since true is the only value that leaves the cluster this mode makes a
+// subnetwork. existingCluster and existingDatabaseInstance are among the refused: one names the
+// cluster Dispatch runs in and the other the database instance it uses, and clusterOnly runs no
+// Dispatch, always makes its own cluster and uses no database. The eight inputs of the two groups
+// come from the groups' own definitions, so an input either group gains is refused here without
+// being written down a second time.
 func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 	return slices.Concat(dispatchTailnetInputs(args), dispatchSignInInputs(args), []dispatchInput{
 		{"outsideOrigin", args.OutsideOrigin != ""},
@@ -1231,10 +1250,20 @@ func dispatchDeletionProtection(value *bool) bool {
 	return *value
 }
 
-// newDispatchClusterOnlySettings resolves the inputs clusterOnly leaves live, hostname, region and
-// deletionProtection, each as the full resolver resolves it, and refuses every input that
-// configures Dispatch, which this mode does not build. It validates nothing else and applies no
-// other default: no other value reaches a resource here.
+// dispatchRegionalNetwork resolves regionalNetwork, true when the consumer sets nothing. It shapes
+// the network half both modes build, so both resolvers default it the same way; each refuses false
+// in its own words, since only the full resolver can be given the existingCluster false needs.
+func dispatchRegionalNetwork(value *bool) bool {
+	return value == nil || *value
+}
+
+// newDispatchClusterOnlySettings resolves the inputs clusterOnly leaves live, hostname, region,
+// deletionProtection and regionalNetwork, each as the full resolver resolves it, and refuses every
+// input that configures Dispatch, which this mode does not build. regionalNetwork is live because
+// it shapes the network half both modes build, but this mode always makes its own cluster on the
+// subnetwork false would drop, and refuses existingCluster, so true (or unset) changes nothing and
+// false is refused, as a core.InputError naming it. It validates nothing else and applies no other
+// default: no other value reaches a resource here.
 func newDispatchClusterOnlySettings(args *DispatchArgs) (dispatchSettings, error) {
 	if err := refuseDispatchHostname(args.Hostname); err != nil {
 		return dispatchSettings{}, err
@@ -1242,7 +1271,15 @@ func newDispatchClusterOnlySettings(args *DispatchArgs) (dispatchSettings, error
 	if err := refuseDispatchRegion(args.Region); err != nil {
 		return dispatchSettings{}, err
 	}
-	s := dispatchSettings{clusterOnly: true, hostname: args.Hostname, region: args.Region, deletionProtection: dispatchDeletionProtection(args.DeletionProtection)}
+	regionalNetwork := dispatchRegionalNetwork(args.RegionalNetwork)
+	if !regionalNetwork {
+		return dispatchSettings{}, core.InputErrorf("regionalNetwork",
+			"regionalNetwork false leaves the cluster clusterOnly builds no subnetwork: unset regionalNetwork")
+	}
+	s := dispatchSettings{
+		clusterOnly: true, hostname: args.Hostname, region: args.Region,
+		deletionProtection: dispatchDeletionProtection(args.DeletionProtection), regionalNetwork: regionalNetwork,
+	}
 	for _, in := range dispatchClusterOnlyRefusals(args) {
 		if in.set {
 			return dispatchSettings{}, fmt.Errorf("%s configures Dispatch, which clusterOnly does not build: unset it, or unset clusterOnly", in.input)
@@ -1304,6 +1341,14 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	existingCluster, err := newDispatchClusterRef(args)
 	if err != nil {
 		return dispatchSettings{}, err
+	}
+	// The component's own cluster runs on the regional subnetwork, so regionalNetwork false is
+	// taken only beside a cluster the component does not make, and refused rather than dropped
+	// without one.
+	regionalNetwork := dispatchRegionalNetwork(args.RegionalNetwork)
+	if !regionalNetwork && existingCluster.name == "" {
+		return dispatchSettings{}, core.InputErrorf("regionalNetwork",
+			"regionalNetwork false leaves the component's own cluster no subnetwork: set existingCluster, or unset regionalNetwork")
 	}
 	existingDatabaseInstance, err := newDispatchExistingDatabaseInstance(args)
 	if err != nil {
@@ -1395,6 +1440,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		existingCluster: existingCluster,
 	}
 	s.existingDatabaseInstance = existingDatabaseInstance
+	s.regionalNetwork = regionalNetwork
 	s.images.envoy = args.EnvoyImage
 	s.images.tailscale = args.TailscaleImage
 	s.images.proxy = args.CloudSqlProxyImage
