@@ -13,7 +13,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -200,30 +199,16 @@ func TestARowIsHeldForAClaimRestoredMidLaunch(t *testing.T) {
 	}
 }
 
-// suspendHeld is the fake runtime with a Suspend that waits, once entered is told, until release
-// closes: the runtime's stop of a relaunch that waits on the cluster.
-type suspendHeld struct {
-	*fake.Runtime
-	entered chan struct{}
-	release chan struct{}
-}
-
-func (r *suspendHeld) Suspend(ctx context.Context, loc runtime.Locator) error {
-	close(r.entered)
-	<-r.release
-	return r.Runtime.Suspend(ctx, loc)
-}
-
 // The controller's relaunch of a claim Envoy cannot reach stops its process only to start it
 // again on the same session, so a role message or hook prompt held for that claim, tried while the
-// relaunch's stop waits on the runtime, stays held: the claim keeps its role through the stop, and
-// the session the relaunch brings back is the one the hold waits for (R5).
+// relaunch's stop waits on the runtime (exitingSuspend), stays held: the claim keeps its role
+// through the stop, and the session the relaunch brings back is the one the hold waits for (R5).
 func TestAHeldRowTriedWhileTheRelaunchsStopWaitsStaysHeld(t *testing.T) {
 	for name, payload := range storedRows(t) {
 		t.Run(name, func(t *testing.T) {
 			publisher := &holderPublisher{}
 			runner, sup, pool := hookRunner(t, publisher)
-			held := &suspendHeld{Runtime: sup.deps.Runtime.(*fake.Runtime), entered: make(chan struct{}), release: make(chan struct{})}
+			held := &exitingSuspend{Runtime: sup.deps.Runtime.(*fake.Runtime), stopping: make(chan claim.Token, 4), exit: make(chan struct{})}
 			sup.deps.Runtime = held
 			sup.deps.ClaimActivity = func(context.Context, claim.Token, uint64) (supervise.ActivityReport, bool, error) {
 				return supervise.ActivityReport{At: time.Now().Add(-time.Hour)}, true, nil
@@ -243,7 +228,7 @@ func TestAHeldRowTriedWhileTheRelaunchsStopWaitsStaysHeld(t *testing.T) {
 					Cause: "Envoy could not reach its session", At: time.Now()})
 			}()
 			select {
-			case <-held.entered:
+			case <-held.stopping:
 			case err := <-relaunched:
 				t.Fatalf("the relaunch returned %v before its stop reached the runtime", err)
 			case <-time.After(10 * time.Second):
@@ -252,7 +237,7 @@ func TestAHeldRowTriedWhileTheRelaunchsStopWaitsStaysHeld(t *testing.T) {
 			dueNow(t, pool)
 			drain(t, runner)
 			left := outboxRows(t, pool)
-			close(held.release)
+			close(held.exit)
 			if err := <-relaunched; err != nil {
 				t.Fatalf("the relaunch: %v", err)
 			}
