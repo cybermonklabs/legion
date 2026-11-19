@@ -511,8 +511,8 @@ func crashConflictAtEveryTry(t *testing.T) {
 }
 
 // (8) The message on A's subject is the publish route's forward, its key under the forward mark:
-// the copy reaches B under one forward mark, not two, on the copy's own key (the message's key and
-// the frame it was copied from, takenFrameDedupeKey).
+// the copy reaches B under one forward mark, not two, on the copy's own minted key
+// (takenFrameDedupeKey).
 func crashCopiedForwardHasOnePrefix(t *testing.T) {
 	rig := newCrashRig(t)
 	const a, b, role = "ses_cr8_a", "ses_cr8_b", "cr8"
@@ -529,11 +529,11 @@ func crashCopiedForwardHasOnePrefix(t *testing.T) {
 	next := rig.relayed(b, answerDone)
 	rig.claim(rig.mux, b, role)
 	frames := crashAwaitEvents(t, next, []string{answer.EventID}, nil, "the new holder")
-	copied := roleForwardDedupePrefix + answer.DedupeKey + keptFrameMark
+	copied := roleForwardDedupePrefix + takenFrameKeyPrefix
 	for _, frame := range frames {
 		key := frame.item.DedupeKey
 		if frame.item.EventID == answer.EventID && (!strings.HasPrefix(key, copied) || strings.Count(key, roleForwardDedupePrefix) != 1) {
-			t.Errorf("the new holder received event %s under dedupe key %q; want %q and a frame, one forward mark", answer.EventID, key, copied)
+			t.Errorf("the new holder received event %s under dedupe key %q; want the copy's own key after one forward mark, %q…", answer.EventID, key, copied)
 		}
 	}
 }

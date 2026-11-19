@@ -198,9 +198,10 @@ func crashTakeBackCopyIsTheSameEvent(t *testing.T) {
 		t.Fatalf("A received no copy of %s after it took the role back", unread.EventID)
 	}
 	for _, frame := range copies {
-		key := strings.TrimPrefix(frame.item.DedupeKey, contracts.RoleForwardDedupePrefix)
-		if !strings.HasPrefix(key, unread.DedupeKey+keptFrameMark) {
-			t.Fatalf("the copy A received carries dedupe key %q, want the message's key %q and a frame of its own", frame.item.DedupeKey, unread.DedupeKey)
+		copied := frame.item
+		copied.DedupeKey = strings.TrimPrefix(copied.DedupeKey, contracts.RoleForwardDedupePrefix)
+		if !strings.HasPrefix(copied.DedupeKey, takenFrameKeyPrefix) || copied.DedupeKey == unread.DedupeKey || !contracts.DedupeKeyNamesTheUpstreamEvent(copied) {
+			t.Fatalf("the copy A received carries dedupe key %q, want a minted key of its own, apart from the message's %q", frame.item.DedupeKey, unread.DedupeKey)
 		}
 	}
 }

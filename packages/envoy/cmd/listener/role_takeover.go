@@ -14,6 +14,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -65,28 +67,26 @@ func takenFrameMsgID(dedupeKey, role string, seq uint64) string {
 }
 
 // takenFrameDedupeKey is the dedupe key of the copy of the frame stored at seq, whose own dedupe
-// key without the forward mark is dedupeKey: that key, then keptFrameMark and seq. The kept lane's
-// walk forwards a copy, and records what a holder took, by its dedupe key, so with a key of its own
-// the copy is forwarded under an id no earlier forward of the same message took, and is not passed
-// over as a message its holder already took - by this release's walk and by the walk of the
-// release before alike. A role taken from A by B and back by A so gives A the copy of the frame B
-// did not read, where the role lane's own forward of that message to A would have the stream drop
-// it. The copy keeps the message's event id, by which a host that already showed the message
-// drops it (R4).
+// key without the forward mark is dedupeKey: a key in the minted form
+// (contracts.MintedDedupeKeyPattern), takenFrameKeyPrefix and 32 hex digits of the SHA-256 of
+// dedupeKey, keptFrameMark and seq, so one frame's copies share it and no other message has it. A
+// minted key names its event (contracts.DedupeKeyNamesTheUpstreamEvent), so every walk - this
+// release's, and the release before's, which reads a copy as any kept copy - forwards the copy
+// under that key (roleForward.msgID), an id no earlier forward of the same message took, and
+// records what a holder took by it. A role taken from A by B and back by A so gives A the copy of
+// the frame B did not read, whatever key the message had, where the role lane's own forward of the
+// message to A would have the stream drop it. The copy keeps the message's event id, by which a
+// host that already showed the message drops it (R4).
 func takenFrameDedupeKey(dedupeKey string, seq uint64) string {
-	return dedupeKey + keptFrameMark + strconv.FormatUint(seq, 10)
+	sum := sha256.Sum256([]byte(dedupeKey + keptFrameMark + strconv.FormatUint(seq, 10)))
+	return takenFrameKeyPrefix + hex.EncodeToString(sum[:16])
 }
 
-// isTakenFrameDedupeKey reports whether key is a takeover copy's own (takenFrameDedupeKey): it
-// ends in keptFrameMark and a stream sequence.
-func isTakenFrameDedupeKey(key string) bool {
-	at := strings.LastIndex(key, keptFrameMark)
-	if at < 0 {
-		return false
-	}
-	_, err := strconv.ParseUint(key[at+len(keptFrameMark):], 10, 64)
-	return err == nil
-}
+// takenFrameKeyPrefix begins a takeover copy's dedupe key (takenFrameDedupeKey): the agent form of
+// a minted key, under a name no session's own key takes, since the publish form marks the
+// listener's own publishes (publishDedupePrefix), which the walk tells from Dispatch's outbox copies
+// by it (isOutboxCopy).
+const takenFrameKeyPrefix = "agent.takeover."
 
 // takeoverFaultSet holds the takeover copy's test seams; production runs with none
 // (takeoverFaultHooks). Each names a point a row forces: a crash or a refusal at that point.
