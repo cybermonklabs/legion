@@ -923,6 +923,8 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
     // card the key goes to, so that card is off the screen until its placing puts it on.
     const first = nodeRow(page, step(T.third)).first();
     const last = nodeRow(page, step(T.loose)).first();
+    /** The card that holds the focus, itself or a link inside it. */
+    const focusedCard = planChart(page).locator("[data-node-row]:focus-within");
     /** Puts the page at its `end`, from where `card` stands off the screen (`before` fails the
      *  row where it does not), runs `press`, which presses a key and reads where it left the
      *  focus, and reads until `shown` - the card, or the link the key focused - stands on screen
@@ -935,6 +937,33 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
       after: string,
       shown: Locator = card
     ): Promise<void> => {
+      // The key before this one moved the focus, and the card it focused places itself on screen
+      // after the focus lands (`useRowOnScreen`: in its layout effect, and in its resize
+      // observer's first callback a frame later). The page is scrolled once that placing has
+      // settled - the card on screen and the scroll position still over two consecutive animation
+      // frames - or the placing undoes the scroll. A resize observer reports in the rendering
+      // step after the call that observes, which runs after the first of the two frame callbacks,
+      // so a scroll it makes there is read by the second.
+      await expect
+        .poll(
+          async () => [
+            await onScreen(focusedCard),
+            await page.evaluate(() => {
+              const { promise, resolve } = Promise.withResolvers<boolean>();
+              const start = window.scrollY;
+              requestAnimationFrame(() => {
+                const next = window.scrollY;
+                requestAnimationFrame(() => resolve(start === next && next === window.scrollY));
+              });
+              return promise;
+            }),
+          ],
+          {
+            message: "the focused card's placing does not settle before the page is scrolled",
+            timeout: 10_000,
+          }
+        )
+        .toEqual([true, true]);
       await page.evaluate(
         (bottom) =>
           window.scrollTo({
