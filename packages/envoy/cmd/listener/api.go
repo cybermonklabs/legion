@@ -315,6 +315,16 @@ func writeBusUnavailable(w http.ResponseWriter, err error) int {
 	if !errors.Is(err, bus.ErrRefused) {
 		w.Header().Set("Retry-After", "1")
 	}
+	// A publish that went out and was never acknowledged (bus.ErrUnacknowledged) may be stored:
+	// the 503 says so in its code, so a sender treats it as a receipt timeout rather than as a send
+	// that stored nothing (listenerwire.CodeMaybeStored).
+	if errors.Is(err, bus.ErrUnacknowledged) && !errors.Is(err, bus.ErrRefused) {
+		writeJSON(w, http.StatusServiceUnavailable, listenerwire.APIError{
+			Code:  listenerwire.CodeMaybeStored,
+			Error: fmt.Sprintf("%s: %s", busUnansweredPrefix, err),
+		})
+		return http.StatusServiceUnavailable
+	}
 	return writeNATSError(w, err, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", busUnansweredPrefix, err))
 }
 

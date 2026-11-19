@@ -58,13 +58,20 @@ type TmuxPlace struct {
 }
 
 // APIError is the body of a /v1 error answer. Code names an answer a caller acts on beyond its
-// status (the list routes' refilling 503, code refilling); every other answer leaves it out.
-// Expected names the request fields the refusal is about.
+// status (the list routes' refilling 503, code refilling, and a send's or publish's 503 that may
+// have stored the message, CodeMaybeStored); every other answer leaves it out. Expected names the
+// request fields the refusal is about.
 type APIError struct {
 	Code     string   `json:"code,omitempty"`
 	Error    string   `json:"error"`
 	Expected []string `json:"expected,omitempty"`
 }
+
+// CodeMaybeStored is the code of a send's or a publish's 503 whose publish went out and was never
+// acknowledged: the stream may hold the message, so a caller reads it as a receipt timeout - it may
+// have landed, and a repeat under the same idempotency key is recognised - and not as a send that
+// stored nothing. Every other 503 of those routes leaves the code out.
+const CodeMaybeStored = "maybe_stored"
 
 // MessageBody is the message a send or a publish carries, which the listener builds the envelope
 // it puts on the bus from. A sender that leaves Source out speaks as an agent.

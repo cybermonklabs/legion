@@ -970,8 +970,18 @@ func listenerResponseError(response *http.Response) error {
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 		return listenerRefusal(response, "")
 	}
+	if response.StatusCode == http.StatusServiceUnavailable && body.Code == listenerwire.CodeMaybeStored {
+		return unreachable(fmt.Errorf("%w: %w: listener returned %d: %s", ErrUnavailable, ErrStoreUnconfirmed, response.StatusCode, body.Error))
+	}
 	return listenerRefusal(response, body.Error)
 }
+
+// ErrStoreUnconfirmed reports a send the listener answered 503 with the code that says the
+// message may be stored (listenerwire.CodeMaybeStored): it published the envelope and the message
+// bus never acknowledged the publish, so the session may already hold it, as after
+// ErrReceiptTimeout. It is a failure of its own rather than ErrReceiptTimeout because the listener
+// did answer; it is ErrUnavailable and ErrUnreachable too, as every 503 is.
+var ErrStoreUnconfirmed = errors.New("envoy listener could not confirm the send was stored")
 
 // listenerRefusal is a refused answer as its caller reports it: the listener's own reason when
 // its body named one, and its status when the body named nothing a caller could act on. A 502,

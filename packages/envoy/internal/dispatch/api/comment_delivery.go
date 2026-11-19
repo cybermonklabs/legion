@@ -127,11 +127,13 @@ type sendOutcome struct {
 //
 // A receipt timeout is worded differently from every other failure, and only here. The listener
 // publishes the envelope before it answers, so a send whose answer missed the window may have
-// landed. What the row records is only that CAUSE. Whether retrying is safe depends on how old
-// the attempt is - a repeat is recognised only inside DELIVERY_DUPLICATE_WINDOW_MS, whose doc in
-// packages/contracts states the promise - so that guidance is composed at render time against
-// the attempt's age, never frozen into the row here. A row written today would otherwise still
-// promise a safe retry next week.
+// landed. A 503 whose code says the message may be stored (dispatchenvoy.ErrStoreUnconfirmed) may
+// have landed too, and is worded as that cause (storeUnconfirmedText), not as a receipt timeout:
+// the listener did answer. What the row records is only that CAUSE. Whether retrying is safe
+// depends on how old the attempt is - a repeat is recognised only inside
+// DELIVERY_DUPLICATE_WINDOW_MS, whose doc in packages/contracts states the promise - so that
+// guidance is composed at render time against the attempt's age, never frozen into the row here. A
+// row written today would otherwise still promise a safe retry next week.
 //
 // A send for a role the listener kept on the role's kept lane (dispatchenvoy.SendResult.Kept),
 // because the role's claim named another session than the one resolved when the send arrived, is
@@ -160,6 +162,9 @@ func (s *server) sendResolvedDelivery(
 	send, err := s.deps.Envoy.Send(ctx, input)
 	if errors.Is(err, dispatchenvoy.ErrReceiptTimeout) {
 		return sendOutcome{failure: receiptTimeoutText}
+	}
+	if errors.Is(err, dispatchenvoy.ErrStoreUnconfirmed) {
+		return sendOutcome{failure: storeUnconfirmedText}
 	}
 	if err != nil {
 		return sendOutcome{failure: deliveryErrorText(err)}
@@ -245,6 +250,13 @@ func commentExpectsReply(comment model.Comment) contracts.ExpectsReply {
 // renderer, which has the attempt's age; see isSafeRetry in the dashboard's delivery module.
 // The dashboard keys that wording on this exact string, so both sides read one literal.
 const receiptTimeoutText = contracts.ReceiptTimeoutCause
+
+// storeUnconfirmedText is the CAUSE a send the listener answered 503 with the code that says the
+// message may be stored (dispatchenvoy.ErrStoreUnconfirmed) records: the listener published it
+// and could not confirm the store, so it may have landed. The dashboard gives it the receipt
+// timeout's possible-second-delivery wording (POSSIBLY_DELIVERED_CAUSES), keyed on this exact
+// string, so both sides read one literal.
+const storeUnconfirmedText = contracts.StoreUnconfirmedCause
 
 // claimedCommentDelivery is the attempt one delivery call owns. settled is non-nil when that
 // attempt already carries its outcome, belongs to a sender that is still working, or is one this

@@ -245,13 +245,14 @@ const (
 // retryableDeliveryFailure reports whether a failure a try recorded is one a listener take-over
 // gives, which a later try can outlast: the listener unreachable (listenerUnreachablePrefix - a
 // connection refused, reset or timed out, a 502, 503 or 504 - but never
-// listenerNotConfiguredText), a receipt timeout, or the listener holding no record of the session
-// yet - "no live session", as the registry read is recorded and as the send's own 404 words it. A
-// receipt timeout is safe to repeat because the retry carries the same idempotency key, which the
-// listener recognises as a repeat (DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts). Anything
-// else is the listener's answer - a session that does not take this mode, a send it refused, a
-// status it chose such as a 401 for a token it refuses (listenerAnsweredPrefix) - which no
-// successor answers differently, and the attempt settles with it at once.
+// listenerNotConfiguredText), a receipt timeout, a send whose store the listener could not confirm
+// (storeUnconfirmedText), or the listener holding no record of the session yet - "no live session",
+// as the registry read is recorded and as the send's own 404 words it. A receipt timeout and an
+// unconfirmed store are safe to repeat because the retry carries the same idempotency key, which
+// the listener recognises as a repeat (DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts).
+// Anything else is the listener's answer - a session that does not take this mode, a send it
+// refused, a status it chose such as a 401 for a token it refuses (listenerAnsweredPrefix) - which
+// no successor answers differently, and the attempt settles with it at once.
 //
 // It reads the recorded text rather than the error behind it because a resumed mention's first
 // try sends with the resolve error its row already holds (mentionResolutionFor), which survives
@@ -261,6 +262,7 @@ func retryableDeliveryFailure(failure string) bool {
 	case failure == listenerNotConfiguredText:
 		return false
 	case failure == receiptTimeoutText,
+		failure == storeUnconfirmedText,
 		strings.HasPrefix(failure, listenerUnreachablePrefix),
 		strings.HasPrefix(failure, noLiveSessionPrefix):
 		return true
