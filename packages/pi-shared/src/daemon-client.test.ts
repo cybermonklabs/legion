@@ -792,7 +792,7 @@ async function refusalFrom(daemonContract: number | undefined): Promise<Error> {
 }
 
 /** A value only the body carries: no refusal message may quote it. */
-const BODY_SECRET = "U3VwZXJ2aXNlZEJ5TGVnaW9u";
+const BODY_SECRET = fixtureSecret("body");
 
 test("a refusal from a build below the daemon says the process waits for its replacement", async () => {
   const refused = await refusalFrom(CONTRACT + 1);
@@ -952,7 +952,7 @@ test("every request states this build's contract, a GET included", async () => {
   await client.exit({
     claimToken: "legion-legion-legion-208-architect",
     sessionId: "ses_architect_208",
-    secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+    secret: CLAIM_SECRET,
     generation: 3,
     reason: "session ended",
   });
