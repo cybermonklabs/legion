@@ -327,13 +327,13 @@ func f(t *testing.T, a, b string) (string, error) {
 	return "", nil
 }
 
-func (r *rig) binary() string { return r.omp }
-
 var hook func(int) int
+
+func (r *rig) binary() string { return r.omp }
 EOF
 )
 check "the declaration, the literal by its name, the method; a func type is none" \
-  "$(is "$out" "$(printf '%s\n' 'f 3 t,a,b read 8' 'read 4 env return 6' 'binary 10 - return 10')")"
+  "$(is "$out" "$(printf '%s\n' 'f 3 t,a,b read 8' 'read 4 env return 6' 'binary 12 - return 12')")"
 
 echo "case: TypeScript: a function, an arrow by its name, a method and an object key's arrow, past a return type"
 out=$(src_of ts 'for f in src.functions():

@@ -480,7 +480,7 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the spawn" "$(named next-omp.test.ts 2)"
 
-echo "case: an environment the call names is followed to the helper"
+echo "case: an environment the call names, or a function of the file builds, is followed to the helper"
 root=$(fixture ts_env_name)
 put "$root" packages/pi-envoy/extensions/named-env-omp.test.ts <<'EOF'
 test("named", async () => {
@@ -488,10 +488,16 @@ test("named", async () => {
   const listed = Bun.spawn([omp, "models", "list"], { env });
   await listed.exited;
 });
+function paneEnv(): Record<string, string> {
+  return { HOME: "/tmp/home", ...ompOffline(cleanup) };
+}
+test("from a function", async () => {
+  await Bun.spawn([omp, "models"], { env: paneEnv() }).exited;
+});
 EOF
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
-check "counts it under the helper" "$(contains "$out" 'offline helper (4) or carries a reason (0)')"
+check "counts both under the helper" "$(contains "$out" 'offline helper (5) or carries a reason (0)')"
 
 echo "case: a start in a file that is no test code is not read, in either language"
 root=$(fixture non_test)
@@ -637,6 +643,23 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the exec" "$(named split_test.go 10)"
 check "passes the door, in the helper that calls OMPOffline" "$(is "$(named split_test.go 5)" false)"
+
+echo "case: the nearest assignment before a start decides its environment"
+root=$(fixture go_nearest)
+put "$root" packages/daemon/internal/podsafety/nearest_test.go <<'EOF'
+package podsafety
+
+func TestNearest(t *testing.T) {
+	omp := testbin.OMP(t)
+	env := []string{"HOME=" + t.TempDir()}
+	env = append(env, testbin.OMPOffline(t))
+	cmd := exec.Command(omp, "models")
+	cmd.Env = env
+}
+EOF
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "counts the door and the exec under the helper" "$(contains "$out" 'offline helper (5) or carries a reason (0)')"
 
 echo "case: the environment a closure is given is followed to its every call"
 root=$(fixture go_param)
