@@ -2,7 +2,10 @@
 # A stage proof's transcript. Sourced by the entry script before its first output, never run.
 #
 # transcript_to FILE sends the calling shell's stdout and stderr to FILE as well as to whatever read
-# stdout before, so every line of the run is kept whoever is reading.
+# stdout before, so every line of the run is kept whoever is reading. It opens FILE for append
+# first, in the calling shell, and returns that open's failure, which names FILE, before it moves
+# either stream: the tee opens FILE in a process of its own, whose failure no caller sees, so a run
+# would otherwise go on to its PASS with no transcript of it.
 #
 # The tee shares the driver's process group. A signal to the group (Ctrl-C, a closed pane,
 # timeout's TERM) would end it before cleanup writes, and cleanup's first write would then die of
@@ -25,5 +28,6 @@
 # working directory stay outside $work, or the caller opens FILE on a descriptor and passes
 # /dev/fd/N, as stage 2 and stage3-4b13b-acceptance.sh do.
 transcript_to() {
+  : >>"$1" || return
   exec > >(trap '' HUP INT TERM PIPE && exec tee -a "$1" /dev/null) 2>&1
 }

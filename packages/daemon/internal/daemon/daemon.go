@@ -167,8 +167,9 @@ type overrides struct {
 	// that came due (workflowRuntime.idleTick, both ticks); zero is the production minute. A test
 	// of release and wake shortens it, so it waits out its own period rather than the daemon's.
 	idleTick time.Duration
-	// mergeStateRetry is how long the merge-state ladder and the merge-queue read wait between two
-	// reads of GitHub (workflowRuntime.mergeStateRetry, read through mergeStateWait); zero is the
+	// mergeStateRetry is how long the merge-state ladder, the merge-queue read and the second read
+	// of a conflicting head wait between two reads of GitHub, and the unit the reads after a
+	// ladder wait in (workflowRuntime.mergeStateRetry, read through mergeStateWait); zero is the
 	// production mergeStateLadderWait. A whole-daemon test of those reads shortens it, so it waits
 	// out its own wait rather than half a minute a read.
 	mergeStateRetry time.Duration
