@@ -80,9 +80,10 @@ type Kubernetes struct {
 	// `session_dsn_secret` holds under `postgres`; the Cloud SQL database `session_database` names,
 	// which no password reaches, under `cloudsql-iam`: each pod signs in to it as itself, or, when
 	// the block's optional `impersonate_service_account` names a Google service account, as that
-	// account, which the pod impersonates. The key is required under `runtime: kubernetes` and `pvc`
-	// is refused (readSessionStore), so the settled store always keeps sessions in a database
-	// (InDatabase): no issue disk holds a session.
+	// account, which the pod impersonates with its own credentials or, when the block's optional
+	// `writer_audience` is set too, with a token only its launcher reads. The key is required
+	// under `runtime: kubernetes` and `pvc` is refused (readSessionStore), so the settled store
+	// always keeps sessions in a database (InDatabase): no issue disk holds a session.
 	SessionStore ompsessions.Store
 	// Plugins is `runtime.kubernetes.plugins`: the exact pi-legion/pi-envoy pair a stale-plugin
 	// relaunch installs into a kept pod, when the file names one. Nil when the file sets none and
@@ -1805,13 +1806,19 @@ func inertSessionKey(key string, kind ompsessions.StoreKind) error {
 // readSessionDatabase reads `session_database` under `cloudsql-iam`: the instance's connection
 // name, project:region:instance or domain:project:region:instance, which the pod's proxy dials
 // (internal/sessionproxy) and which must pass ompsessions.ValidInstance, the connector's own rule;
-// the database in it; the IAM login the pod signs in as; and `impersonate_service_account`, the
+// the database in it; the IAM login the pod signs in as; `impersonate_service_account`, the
 // Google service account the pod's proxy impersonates with the pod's own credentials and signs in
-// as. The first three are required, since no pod can reach the database without them; the fourth
-// is optional, and without it each pod signs in as itself. A named account must be a service
-// account's email by ompsessions.ServiceAccountLogin, the rule the proxy holds to as well, and
-// `user` must then be that account's login: the proxy signs in as the account it impersonates, so
-// any other login, let through here, would fail every generation's first dial instead.
+// as; and `writer_audience`, the audience of the projected ServiceAccount token only the pod's
+// launcher reads, which the proxy exchanges at Google's security token service to impersonate
+// that account in place of the pod's own credentials. The first three are required, since no pod
+// can reach the database without them; the last two are optional, and without them each pod
+// signs in as itself. A named account must be a service account's email by
+// ompsessions.ServiceAccountLogin, the rule the proxy holds to as well, and `user` must then be
+// that account's login: the proxy signs in as the account it impersonates, so any other login,
+// let through here, would fail every generation's first dial instead. A named audience must be a
+// workload identity provider's full resource name by ompsessions.ValidWriterAudience, the rule the
+// launcher and the proxy hold to as well, and needs `impersonate_service_account`: the writer
+// token signs in only by impersonating that account, so without one it would sign in as nobody.
 func readSessionDatabase(value *yaml.Node) (ompsessions.Database, error) {
 	if value == nil {
 		return ompsessions.Database{}, errors.New(sessionDatabaseKey +
@@ -1841,8 +1848,23 @@ func readSessionDatabase(value *yaml.Node) (ompsessions.Database, error) {
 		sessionDatabaseKey+".impersonate_service_account"); err != nil {
 		return ompsessions.Database{}, err
 	}
+	if database.WriterAudience, err = optionalString(fields["writer_audience"],
+		sessionDatabaseKey+".writer_audience"); err != nil {
+		return ompsessions.Database{}, err
+	}
 	if !ompsessions.ValidInstance(database.Instance) {
 		return ompsessions.Database{}, fmt.Errorf("%s.instance %q must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project", sessionDatabaseKey, database.Instance)
+	}
+	if database.WriterAudience != "" {
+		if !ompsessions.ValidWriterAudience(database.WriterAudience) {
+			return ompsessions.Database{}, fmt.Errorf("%s.writer_audience %q must be a workload identity provider's full resource name,"+
+				" //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>,"+
+				" each id 4 to 32 characters of a-z, 0-9 and -", sessionDatabaseKey, database.WriterAudience)
+		}
+		if database.ImpersonateServiceAccount == "" {
+			return ompsessions.Database{}, fmt.Errorf("%s.writer_audience needs %s.impersonate_service_account:"+
+				" the writer token signs in to Cloud SQL only by impersonating that service account", sessionDatabaseKey, sessionDatabaseKey)
+		}
 	}
 	if database.ImpersonateServiceAccount == "" {
 		return database, nil

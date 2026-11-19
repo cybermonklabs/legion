@@ -501,9 +501,10 @@ func TestAPodsEphemeralStorageBoundSettlesFieldByField(t *testing.T) {
 // `session_store` settles to the one kind with the one field that kind carries: `postgres` the
 // providers Secret's key that holds the session database's whole URL, `cloudsql-iam` the Cloud SQL
 // instance, database and IAM login each pod signs in as, and the Google service account, when the
-// block names one, that the pod impersonates to sign in as that login. Any of Google's service
-// account forms is taken, with its own login as `user`. `pvc` and an omitted store are refused
-// (TestLoadForValidationRefusesUnderKubernetes): no issue disk holds a session.
+// block names one, that the pod impersonates to sign in as that login, with the audience, when the
+// block names one, of the token only the launcher reads that the pod impersonates it with. Any of
+// Google's service account forms is taken, with its own login as `user`. `pvc` and an omitted
+// store are refused (TestLoadForValidationRefusesUnderKubernetes): no issue disk holds a session.
 func TestLoadForValidationSettlesTheSessionStore(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string
@@ -549,6 +550,14 @@ func TestLoadForValidationSettlesTheSessionStore(t *testing.T) {
 				Instance: "example-project:us-central1:example-instance", Name: "legion_sessions", User: "service-123@gcp-sa-cloud-sql.iam",
 				ImpersonateServiceAccount: "service-123@gcp-sa-cloud-sql.iam.gserviceaccount.com",
 			}}},
+		{"cloudsql-iam impersonating a service account with the launcher's writer token", withSessionStore("    session_store: cloudsql-iam\n" +
+			"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam," +
+			" impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com, writer_audience: \"" + testWriterAudience + "\"}\n"),
+			ompsessions.Store{Kind: ompsessions.StoreCloudSQLIAM, Database: ompsessions.Database{
+				Instance: "example-project:us-central1:example-instance", Name: "legion_sessions", User: "legion-sessions@example-project.iam",
+				ImpersonateServiceAccount: "legion-sessions@example-project.iam.gserviceaccount.com",
+				WriterAudience:            testWriterAudience,
+			}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := LoadForValidation(writeConfigFile(t, tc.body), noEnv)
@@ -559,6 +568,96 @@ func TestLoadForValidationSettlesTheSessionStore(t *testing.T) {
 				t.Errorf("SessionStore = %#v, want %#v", got, tc.want)
 			}
 		})
+	}
+}
+
+// testWriterAudience is a workload identity provider's full resource name, with placeholder ids.
+const testWriterAudience = "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/legion-session-writer/providers/example-cluster"
+
+// writerAudienceRefusal is the loader's answer to a writer_audience of another form than a
+// provider's full resource name.
+func writerAudienceRefusal(value string) string {
+	return fmt.Sprintf("runtime.kubernetes.session_database.writer_audience %q must be a workload identity provider's full resource name,"+
+		" //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>,"+
+		" each id 4 to 32 characters of a-z, 0-9 and -", value)
+}
+
+// `legion config check` (LoadForValidation) and the daemon's boot (Load) refuse the same
+// writer_audience files with the same words, so no file the check passes fails the boot and no
+// file the boot would refuse passes the check. Refused are: the member without
+// `impersonate_service_account`, since the writer token signs in only by impersonating that
+// account; a value that is not a provider's full resource name; a blank value; and the member
+// under `postgres`, where `session_database` as a whole is inert and refused. The App keys are
+// commands that fail, so a boot load that got past the session store would fail on them instead.
+func TestConfigCheckAndTheBootLoadRefuseAWriterAudienceWithoutTheAccountOrOfAnotherForm(t *testing.T) {
+	const database = "{instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam"
+	const account = ", impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com"
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{
+			name: "without impersonate_service_account",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + ", writer_audience: \"" + testWriterAudience + "\"}\n"),
+			want: "runtime.kubernetes.session_database.writer_audience needs runtime.kubernetes.session_database.impersonate_service_account:" +
+				" the writer token signs in to Cloud SQL only by impersonating that service account",
+		},
+		{
+			name: "the pool's name, not the provider's",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account +
+				", writer_audience: \"//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/legion-session-writer\"}\n"),
+			want: writerAudienceRefusal("//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/legion-session-writer"),
+		},
+		{
+			name: "a trailing slash",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "/\"}\n"),
+			want: writerAudienceRefusal(testWriterAudience + "/"),
+		},
+		{
+			name: "the project's id in place of its number",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account +
+				", writer_audience: \"//iam.googleapis.com/projects/example-project/locations/global/workloadIdentityPools/legion-session-writer/providers/example-cluster\"}\n"),
+			want: writerAudienceRefusal("//iam.googleapis.com/projects/example-project/locations/global/workloadIdentityPools/legion-session-writer/providers/example-cluster"),
+		},
+		{
+			name: "the STS URL's scheme in front",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"https:" + testWriterAudience + "\"}\n"),
+			want: writerAudienceRefusal("https:" + testWriterAudience),
+		},
+		{
+			name: "of another form and without impersonate_service_account",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + ", writer_audience: legion-session-writer}\n"),
+			want: writerAudienceRefusal("legion-session-writer"),
+		},
+		{
+			name: "blank",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \" \"}\n"),
+			want: "runtime.kubernetes.session_database.writer_audience must not be empty",
+		},
+		{
+			name: "under postgres",
+			body: withSessionStore("    session_store: postgres\n    session_dsn_secret: SESSION_DSN\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n"),
+			want: "runtime.kubernetes.session_database is not used when runtime.kubernetes.session_store is postgres; remove it",
+		},
+	} {
+		for _, loader := range []struct {
+			name string
+			load func(string, func(string) string) (Config, error)
+		}{{"LoadForValidation", LoadForValidation}, {"Load", Load}} {
+			t.Run(tc.name+"/"+loader.name, func(t *testing.T) {
+				_, err := loader.load(writeConfigFile(t, tc.body), noEnv)
+				if err == nil || err.Error() != tc.want {
+					t.Fatalf("%s error =\n%v\nwant\n%q", loader.name, err, tc.want)
+				}
+			})
+		}
 	}
 }
 

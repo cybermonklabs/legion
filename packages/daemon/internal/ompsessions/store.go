@@ -22,7 +22,8 @@ const (
 	// with no password written anywhere: the pod's launcher binds a unix socket of its own for each
 	// generation and proxies it to the instance (internal/sessionproxy), signing in over the pod's
 	// own cloud identity, or as the Google service account the deployment names, which that
-	// identity impersonates (Database.ImpersonateServiceAccount).
+	// identity impersonates (Database.ImpersonateServiceAccount), or which a token only the
+	// launcher reads impersonates (Database.WriterAudience).
 	StoreCloudSQLIAM StoreKind = "cloudsql-iam"
 )
 
@@ -40,15 +41,23 @@ type Store struct {
 }
 
 // Database is a Cloud SQL session database: the instance's connection name (ValidInstance), the
-// database in it, the IAM login a pod signs in as, and the service account, if any, whose login
-// that is and which the pod impersonates to sign in as it. It is a struct of strings, so a reader
-// compares two databases, or one with the zero value, with ==.
+// database in it, the IAM login a pod signs in as, the service account, if any, whose login that
+// is and which the pod impersonates to sign in as it, and the audience, if any, of the token that
+// the pod impersonates that account with in place of its own credentials. It is a struct of
+// strings, so a reader compares two databases, or one with the zero value, with ==.
 type Database struct {
 	Instance, Name, User string
 	// ImpersonateServiceAccount is the email of the Google service account the pod's session proxy
 	// impersonates with the pod's own credentials and signs in as, so User is that account's IAM
 	// login (ServiceAccountLogin). Empty signs in as the pod's own identity.
 	ImpersonateServiceAccount string
+	// WriterAudience is the audience of the projected ServiceAccount token that only the pod's
+	// launcher reads. It is also the audience the session proxy names to Google's security token
+	// service when it exchanges that token: a workload identity provider's full resource name
+	// (ValidWriterAudience). The proxy then impersonates ImpersonateServiceAccount with the
+	// federated token, never with the pod's own credentials, so the audience is set only with an
+	// account. Empty leaves the proxy to sign in with the pod's own credentials.
+	WriterAudience string
 }
 
 // ValidInstance reports whether name is a Cloud SQL instance's connection name the connector
@@ -88,6 +97,32 @@ func ServiceAccountLogin(email string) (login string, ok bool) {
 		return "", false
 	}
 	return strings.TrimSuffix(email, ".gserviceaccount.com"), true
+}
+
+// writerAudience is a workload identity provider's full resource name, with its pool id and its
+// provider id captured.
+var writerAudience = regexp.MustCompile(`^//iam\.googleapis\.com/projects/[0-9]+/locations/global/workloadIdentityPools/([a-z0-9-]{4,32})/providers/([a-z0-9-]{4,32})$`)
+
+// ValidWriterAudience reports whether audience is the full resource name of a workload identity
+// provider:
+//
+//	//iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>
+//
+// which is the audience of the projected ServiceAccount token only the launcher reads, and the
+// audience the session proxy names to Google's security token service when it exchanges that
+// token. The project is its number in decimal digits, never its id. Google holds a pool id and a
+// provider id each to 4 to 32 characters of [a-z0-9-], and reserves the prefix gcp- for itself, so
+// no pool or provider a deployment makes starts with it
+// (https://cloud.google.com/iam/docs/reference/rest/v1/projects.locations.workloadIdentityPools/create
+// and https://cloud.google.com/iam/docs/reference/rest/v1/projects.locations.workloadIdentityPools.providers/create).
+// The rule is anchored, so it refuses white space, upper case, a trailing slash, another host or
+// prefix, an extra path segment and a blank value. It is the one rule, which the loader that reads
+// the audience from the file, the launcher that takes it as a flag and the proxy that exchanges
+// the token all hold to, as the loader and the proxy hold to ValidInstance for the instance, so
+// `legion config check` accepts no audience the launcher or the proxy would refuse.
+func ValidWriterAudience(audience string) bool {
+	ids := writerAudience.FindStringSubmatch(audience)
+	return ids != nil && !strings.HasPrefix(ids[1], "gcp-") && !strings.HasPrefix(ids[2], "gcp-")
 }
 
 // InDatabase is whether a session is a row rather than a file, which both database kinds are: then
