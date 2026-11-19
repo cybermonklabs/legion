@@ -134,8 +134,8 @@ func (a *analysis) texty(t types.Type) bool {
 
 // keepsText are the packages whose functions answer with the text they are handed, or fail with
 // an error that quotes it: url.Parse's, strconv's and time.ParseDuration's errors hold their input,
-// and pgx's ParseConfig names the connection string. A function of any other package this program
-// does not read (the module's other packages, NATS, the AWS SDK) is not followed.
+// and pgx's ParseConfig names the connection string. A function of another package this program
+// does not read (NATS, the AWS SDK) is not followed; one of the module is (evaluateCall).
 var keepsText = map[string]bool{
 	"strings": true, "strconv": true, "fmt": true, "errors": true, "bytes": true, "path": true,
 	"path/filepath": true, "net": true, "net/url": true, "net/netip": true, "time": true,
@@ -150,6 +150,15 @@ var keepsText = map[string]bool{
 var keepsTextFunctions = map[string]bool{
 	"github.com/sjawhar/envoy/pgsetting.ParseConfig":     true,
 	"github.com/sjawhar/envoy/pgsetting.ParsePoolConfig": true,
+}
+
+// namesNoText are the functions of the module this program does not read whose answer holds no
+// text of what they are handed, each read at its source: a refusal that names a setting by its
+// length and what to correct, never its text (urlsetting.Refuse and pgsetting.Refuse, through
+// redact.Refusal).
+var namesNoText = map[string]bool{
+	"github.com/sjawhar/envoy/urlsetting.Refuse": true,
+	"github.com/sjawhar/envoy/pgsetting.Refuse":  true,
 }
 
 // urlTakers are the functions that read the value they are handed as a URL, or hand it to

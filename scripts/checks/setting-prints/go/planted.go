@@ -22,7 +22,9 @@ import (
 	"os"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/pgsetting"
 )
 
 type plantedBoot struct{ Issuer string }
@@ -57,6 +59,17 @@ func plantedParse(raw string) error {
 	return err
 }
 
+func plantedAccount(env settingValues) {
+	account := brokertoken.NewGoogleAccount(env.get("PLANTED_AUDIENCE"))
+	if _, err := account.Read(); err != nil {
+		slog.Warn("planted", "error", err) // planted: found
+	}
+}
+
+func plantedRefuse(env settingValues) {
+	fmt.Println(pgsetting.Refuse("PLANTED_DATABASE_URL", env.get("PLANTED_DATABASE_URL"))) // planted: quiet
+}
+
 func plantedCalls() {
 	env := processSettings()
 	_ = plantedRefusal(env)
@@ -65,6 +78,8 @@ func plantedCalls() {
 	_ = plantedLength()
 	_ = plantedMode(env)
 	fmt.Println(plantedParse(os.Getenv("PLANTED_PARSE"))) // planted: found
+	plantedAccount(env)
+	plantedRefuse(env)
 }
 `
 

@@ -220,9 +220,14 @@ func (a *analysis) evaluateCall(call *ast.CallExpr) set {
 	}
 	// A function this program does not read, of a package whose answers and errors hold the text
 	// they are handed (keepsText), or one such function of the module (keepsTextFunctions), hands
-	// on the text of each argument and receiver that can hold text (texty). Any function hands on
-	// what each function it is handed answers, and, handed one, reads the setting a constant names.
-	keeps := fn != nil && (keepsText[packagePath(fn)] || keepsTextFunctions[packagePath(fn)+"."+fn.Name()])
+	// on the text of each argument and receiver that can hold text (texty). So does every other
+	// function of the module this program does not read, but those namesNoText lists: its error,
+	// or the value it builds and a later call's error, can quote what it was handed, as
+	// googleidentity.Token's quoted the audience in the URL it asked, reached through
+	// brokertoken.NewGoogleAccount and its Read. Any function hands on what each function it is
+	// handed answers, and, handed one, reads the setting a constant names.
+	module := fn != nil && strings.HasPrefix(packagePath(fn), a.module+"/") && !a.read[packagePath(fn)] && !namesNoText[packagePath(fn)+"."+fn.Name()]
+	keeps := fn != nil && (keepsText[packagePath(fn)] || keepsTextFunctions[packagePath(fn)+"."+fn.Name()] || module)
 	var all []set
 	if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok && keeps && a.info.Selections[sel] != nil && a.texty(a.info.TypeOf(sel.X)) {
 		all = append(all, a.ev(sel.X))
