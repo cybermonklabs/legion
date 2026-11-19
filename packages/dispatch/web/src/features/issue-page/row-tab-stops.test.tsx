@@ -359,8 +359,8 @@ test("RowText with tabStops leaves its wide code block and table in the tab orde
 
 /** A box `useOutOfTabOrder` keeps out of the tab order, with `keepScrollers` as given: a code
  *  block, a table's wrapper, a drawn diagram's preview (the class `mermaid-diagrams.ts`'s
- *  `drawBlock` gives it) and a box of another kind, each able to scroll, and each with somewhere
- *  to scroll to where the test lays its content out past its box (`overflowKept`). */
+ *  `drawBlock` gives it) and a box of another kind, each able to scroll sideways, and each with
+ *  somewhere to scroll to where the test lays its content out past its box (`overflowKept`). */
 function KeptScrollers({ keepScrollers }: { keepScrollers: boolean }): ReactNode {
   const box = useRef<HTMLDivElement>(null);
   useOutOfTabOrder(box, true, { keepScrollers });
@@ -379,8 +379,8 @@ function KeptScrollers({ keepScrollers }: { keepScrollers: boolean }): ReactNode
         </table>
       </div>
       <div className="dispatch-mermaid-preview" data-diagram="" style={{ overflowX: "auto" }} />
-      <div data-other="" style={{ overflowY: "scroll" }}>
-        Twelve lines of output
+      <div data-other="" style={{ overflowX: "auto" }}>
+        A line of output wider than its box
       </div>
     </div>
   );
@@ -408,16 +408,10 @@ function keptState(container: HTMLElement, selectors: readonly string[]): Scroll
   });
 }
 
-/** Lays the content of every scroller of `KeptScrollers` out past its box until the answer is
- *  called: the code block's, the table wrapper's and the diagram preview's sideways, as each
- *  scrolls, and the other box's down. */
+/** Lays the content of every scroller of `KeptScrollers` out past its box, sideways, as each
+ *  scrolls, until the answer is called. */
 function overflowKept(): () => void {
-  const sideways = overflowing("[data-code], [data-table], [data-diagram]");
-  const down = overflowing("[data-other]", "scrollHeight");
-  return () => {
-    down();
-    sideways();
-  };
+  return overflowing("[data-code], [data-table], [data-diagram], [data-other]");
 }
 
 // Decision 317: hiding every scroller from the keyboard leaves a reader on the keyboard no way to
@@ -452,8 +446,9 @@ test("useOutOfTabOrder with keepScrollers keeps a drawn diagram's preview in the
   }
 });
 
-// A scroller of a kind the page has no word of its own for takes the word for content. Its name
-// says no direction: such a box can scroll down as well as sideways, as this one scrolls down.
+// A scroller of a kind the page has no word of its own for takes the word for content, in the
+// form of the other names: "Content, scrolls sideways" (decision 317), and this one, like each of
+// the others, scrolls sideways.
 test("useOutOfTabOrder with keepScrollers keeps a scroller of any other kind in the tab order, named as content", () => {
   const restore = overflowKept();
   const view = draw(<KeptScrollers keepScrollers />);
@@ -461,10 +456,6 @@ test("useOutOfTabOrder with keepScrollers keeps a scroller of any other kind in 
     expect(keptState(view.container, ["[data-other]"])).toEqual([
       { label: CONTROL_LABELS.scrolls_content, role: "region", tabIndex: "0" },
     ]);
-    expect(
-      CONTROL_LABELS.scrolls_content,
-      "a box that scrolls down is named as one that scrolls sideways"
-    ).not.toContain("sideways");
   } finally {
     view.unmount();
     restore();

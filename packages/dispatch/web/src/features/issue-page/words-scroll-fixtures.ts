@@ -48,24 +48,21 @@ export function wordsScrollSheet(): HTMLStyleElement {
 }
 
 /**
- * Lays the content of each element `selectors` names out past its box along `along`, until the
- * answer is called, as a wide table's or a long line of code's is laid out in the browser. A unit
- * test's DOM lays nothing out, so there every box holds its content (its scroll size and its
- * client size both 0) and none has anywhere to scroll.
+ * Lays the content of each element `selectors` names out past its box sideways, until the answer
+ * is called, as a wide table's or a long line of code's is laid out in the browser. A unit test's
+ * DOM lays nothing out, so there every box holds its content (its scroll width and its client
+ * width both 0) and none has anywhere to scroll.
  */
-export function overflowing(
-  selectors: string,
-  along: "scrollHeight" | "scrollWidth" = "scrollWidth"
-): () => void {
-  const own = Object.getOwnPropertyDescriptor(Element.prototype, along);
-  Object.defineProperty(Element.prototype, along, {
+export function overflowing(selectors: string): () => void {
+  const own = Object.getOwnPropertyDescriptor(Element.prototype, "scrollWidth");
+  Object.defineProperty(Element.prototype, "scrollWidth", {
     configurable: true,
     get(this: Element) {
       return this.matches(selectors) ? 1 : (own?.get?.call(this) ?? 0);
     },
   });
   return () => {
-    if (own === undefined) Reflect.deleteProperty(Element.prototype, along);
-    else Object.defineProperty(Element.prototype, along, own);
+    if (own === undefined) Reflect.deleteProperty(Element.prototype, "scrollWidth");
+    else Object.defineProperty(Element.prototype, "scrollWidth", own);
   };
 }

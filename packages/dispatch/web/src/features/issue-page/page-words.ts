@@ -1032,10 +1032,9 @@ export const CONTROL_LABELS = freeze({
   save_route: "Save route",
   /** The names a focused row's scrollers carry while each keeps its tab stop, so a reader on the
    *  keyboard can reach it and scroll it sideways (decision 317): a code block, a drawn diagram,
-   *  a table, and content of any other kind, which names no direction, since such a box can
-   *  scroll down as well as sideways. */
+   *  a table, and content of any other kind. */
   scrolls_code: "Code, scrolls sideways",
-  scrolls_content: "Content, scrolls",
+  scrolls_content: "Content, scrolls sideways",
   scrolls_diagram: "Diagram, scrolls sideways",
   scrolls_table: "Table, scrolls sideways",
   /** Sends the change a reader wrote against a decision, named apart from the conversation's
