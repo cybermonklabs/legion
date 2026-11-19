@@ -838,6 +838,80 @@ test("one more read that fails for words that cite more keeps the names it gave,
   }
 });
 
+// The one more read's kept answer stands only for what it is asked for now. A plan task's words
+// cite two issues, which the one more read names. Then the first issue is renamed and a comment
+// cites it, so the first read names it now, with its new name; the one more read is asked for the
+// second issue alone, and that read fails. Its kept answer still holds the first issue's old name,
+// which must not stand over the first read's newer one.
+test("a failed one more read's kept answer stands over no name the first read now gives", async () => {
+  const cited = "dispatch://CORE-7";
+  const added = "dispatch://CORE-8";
+  const words = `Draw the tree as ${cited} and ${added} ask.`;
+  let title = "The cited issue";
+  let failing = false;
+  const asked: string[][] = [];
+  const stubs = stubTreeReads(async (refs) => {
+    asked.push([...refs]);
+    // The one more read names only what the task's words cite, so it never names the task.
+    if (failing && !refs.includes(TASK_REF)) throw new Error("the names read failed");
+    return {
+      targets: namedTargets(refs).targets.map((target) => {
+        if (target.ref === TASK_REF) {
+          return {
+            ...target,
+            name: `:::plan_task{#t1}\n${words}\n:::`,
+            text_tree: {
+              content: [{ content: [{ text: words, type: "text" }], type: "paragraph" }],
+              type: "doc",
+            },
+          };
+        }
+        if (target.ref === cited) return { ...target, kind: "issue", name: title };
+        return target.ref === added
+          ? { ...target, kind: "issue", name: "The added issue" }
+          : target;
+      }),
+    };
+  });
+  // No retry: the one more read under its new key fails on its first attempt.
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        const tree = useIssueTree(issue);
+        return { names: [useKnownReferenceName(cited), useKnownReferenceName(added)], tree };
+      },
+      { wrapper }
+    );
+    await waitFor(() =>
+      expect(view.result.current.names).toEqual(["The cited issue", "The added issue"])
+    );
+    expect(asked.at(-1)).toEqual([cited, added]);
+
+    // The first issue is renamed and a comment cites it: the first read names it now, and the
+    // one more read, of the second issue alone, fails.
+    title = "The cited issue, renamed";
+    failing = true;
+    await act(async () => {
+      client.setQueryData(["comments", KEY], [{ ...comment, body: `Read ${cited} again.` }]);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(view.result.current.tree.namesFailed).toBe(true));
+    expect(asked.some((refs) => refs.length === 1 && refs[0] === added)).toBe(true);
+    await waitFor(() =>
+      expect(view.result.current.names).toEqual(["The cited issue, renamed", "The added issue"])
+    );
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
 // One block read for every document of the issue was 25 of a first load's 47
 // requests. The tree reads the blocks of the spec and of the plan, Verification and decisions
 // documents, whose typed blocks the page draws, and of no other document: each the one the issue
