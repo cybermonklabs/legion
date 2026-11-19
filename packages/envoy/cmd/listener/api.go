@@ -1039,10 +1039,11 @@ func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerF
 }
 
 // publishDedupePrefix opens every dedupe key the publish route makes for a request that chose
-// none: publish.<a new id>, or publish.<the request's idempotency_key>. Two places use it: the
+// none: publish.<a new id>, or publish.<the request's idempotency_key>. Three places use it: the
 // route, which writes it (publishHandler) and refuses a dedupe key chosen for an envelope with
-// source dispatch, so every copy it keeps of a dispatch envelope carries it; and isOutboxCopy,
-// which reads it to tell such a copy from one Dispatch's outbox kept under a key of its own.
+// source dispatch, so every copy it keeps of a dispatch envelope carries it; a takeover's copy of
+// such a message, whose own key keeps it (takenFrameDedupeKey); and isOutboxCopy, which reads it
+// to tell such a copy from one Dispatch's outbox kept under a key of its own.
 const publishDedupePrefix = "publish."
 
 // publishHandler rejects agent-targeted topics (must use /v1/messages/send

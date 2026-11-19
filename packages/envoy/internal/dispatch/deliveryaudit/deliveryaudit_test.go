@@ -165,7 +165,7 @@ func newRig(t *testing.T) *rig {
 		t.Fatalf("parse agent token: %v", err)
 	}
 	// Dispatch presents an identity of its own to the listener, as a deployment does: without one
-	// it refuses every send for a role (envoy.ErrNoIdentity), and this rig mentions a role. The
+	// it refuses every send for a role (envoy.ErrNoListenerIdentity), and this rig mentions a role. The
 	// stand-in listener checks no bearer.
 	accountToken := filepath.Join(t.TempDir(), "envoy-account-token")
 	if err := os.WriteFile(accountToken, []byte("dispatch-test-account-token\n"), 0o600); err != nil {

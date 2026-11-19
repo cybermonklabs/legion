@@ -2628,10 +2628,12 @@ echo "case: every filter of a job that compiles or reads another package's files
 # gates such a job and does not select what it compiles or reads leaves the change that breaks
 # it starting no job at all, on the pull request and again on the merge group that lands it.
 #
-# This list is hand-kept, like the reads it guards: it holds the pairs somebody has measured,
-# and nothing derives it, so a job added later is not held until its pair is written here.
-uncovered=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 - "$script_dir/../workflows/ci.yaml" <<'PY'
-import sys, yaml, workflow_paths as wp
+# COMPILERS and READS are hand-kept, like the reads they guard: they hold the pairs somebody has
+# measured, so a job added later is not held until its pair is written here. The JSON files the
+# packages' tests import from another package by a relative path are derived (JSON_READERS below),
+# with a planted import as the control that the derivation refuses an unselected one.
+uncovered=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 - "$script_dir/../workflows/ci.yaml" "$script_dir/../.." <<'PY'
+import re, sys, tempfile, yaml, workflow_paths as wp
 from pathlib import Path
 
 SOURCE = "packages/broker-client/src/token-client.ts"
@@ -2682,6 +2684,43 @@ READS = (
     ("test", "packages/dispatch/web/src/fonts/inter/LICENSE.txt", "the same thirdPartyNotices call"),
 )
 
+# Every JSON file a test of one of these packages imports from outside the package by a
+# relative path (`import x from "../../contracts/fixtures/y.json"`) is derived, not hand-kept: the
+# scan below reads each package's test files, resolves each such import and holds the package's
+# filter to it. Such a file is part of no tsc program when the test file is outside the package's
+# `include` (packages/pi-envoy's is `extensions/envoy.ts` alone), so check-ts-filters.sh cannot see
+# it, and a fixture change would start no job of the package that reads it.
+JSON_READERS = (
+    ("packages/claude-envoy", "claude_envoy"),
+    ("packages/envoy-client", "envoy_client"),
+    ("packages/pi-envoy", "pi_envoy"),
+    ("packages/pi-legion", "pi_legion"),
+    ("packages/pi-shared", "pi_shared"),
+)
+IMPORT = re.compile(r'''^\s*import\s[^;]*?from\s+["'](\.\.?/[^"']+\.json)["']''', re.M)
+
+
+def json_reads(root):
+    """Each (filter, file, test) where a test of a JSON_READERS package imports a JSON file outside
+    that package by a relative path, the file repository-relative."""
+    found = []
+    for package, name in JSON_READERS:
+        base = root / package
+        for test in sorted(base.rglob("*.test.ts")):
+            if "node_modules" in test.parts:
+                continue
+            for match in IMPORT.finditer(test.read_text(errors="replace")):
+                target = (test.parent / match.group(1)).resolve()
+                try:
+                    rel = target.relative_to(root.resolve()).as_posix()
+                except ValueError:
+                    continue
+                if not rel.startswith(package + "/"):
+                    line = test.read_text(errors="replace")[: match.start(1)].count("\n") + 1
+                    found.append((name, rel, f"{test.relative_to(root).as_posix()}:{line}"))
+    return found
+
+
 doc = yaml.safe_load(Path(sys.argv[1]).read_text())
 # Every paths-filter step of the changes job: it declares its filters in three of them (rule 18),
 # and a group more than one writes out is the same patterns in each (rule 19), so one dict holds
@@ -2700,9 +2739,24 @@ def covers(name, path):
     return wp.Filter(flat(filters[name])).covers(path)
 
 
+root = Path(sys.argv[2])
+derived = json_reads(root)
 bad = [f"{job} ({name}) compiles {SOURCE}" for job, name in COMPILERS if not covers(name, SOURCE)]
 bad += [f"{name} does not select {path}, which {who} reads"
-        for name, path, who in READS if not covers(name, path)]
+        for name, path, who in READS + tuple(derived) if not covers(name, path)]
+if not derived:
+    bad.append("the scan of the packages' tests found no JSON import outside a package, so it read nothing")
+
+# The control: a planted test of pi-envoy that imports a JSON file no filter selects is found by
+# the same scan and refused by the same rule.
+with tempfile.TemporaryDirectory() as scratch:
+    planted = Path(scratch) / "packages/pi-envoy/extensions/planted.test.ts"
+    planted.parent.mkdir(parents=True)
+    planted.write_text('import planted from "../../contracts/fixtures/planted-unselected.json";\n')
+    (Path(scratch) / "packages/contracts/fixtures").mkdir(parents=True)
+    caught = [(n, p) for n, p, _ in json_reads(Path(scratch)) if not covers(n, p)]
+    if caught != [("pi_envoy", "packages/contracts/fixtures/planted-unselected.json")]:
+        bad.append(f"the control's planted unselected import was not refused: {caught}")
 print("; ".join(bad))
 PY
 )

@@ -1381,20 +1381,16 @@ func readRoleClaimHolder(ctx context.Context, cfg listenerDeliveryHandlerConfig,
 // outbox wrote as well, since it needs no mark the outbox would have to write. An outbox copy gets
 // no dead letter, since the person or session behind a Dispatch event sent no Envoy message, and it
 // wakes no role from the sweep (keptLaneWakesItsRole), as an outbox keep raises no wake report
-// either. A takeover's copy carries a minted key of its own (takenFrameDedupeKey), so it is judged
-// by the message's own key, which its message id on role's kept lane keeps (takenFrameOriginal,
-// msgID): a copy of a frame the publish route forwarded for source dispatch is the listener's, as
-// the frame was.
-func isOutboxCopy(item contracts.Envelope, msgID, role string) bool {
-	item = takenFrameOriginal(item, msgID, role)
+// either. A takeover's copy of a frame the publish route forwarded keeps publishDedupePrefix in
+// its own key (takenFrameDedupeKey), so it reads as the listener's after any number of takeovers.
+func isOutboxCopy(item contracts.Envelope) bool {
 	return item.Source == "dispatch" && item.Role == "" && !strings.HasPrefix(item.DedupeKey, publishDedupePrefix)
 }
 
-// keptCopyKeptBy is who kept item, stored on role's kept lane under msgID, as the kept_by label
-// and attribute name it: keptByDispatchOutbox for an outbox copy (isOutboxCopy), keptByListener
-// for every other.
-func keptCopyKeptBy(item contracts.Envelope, msgID, role string) string {
-	if isOutboxCopy(item, msgID, role) {
+// keptCopyKeptBy is who kept item, as the kept_by label and attribute name it:
+// keptByDispatchOutbox for an outbox copy (isOutboxCopy), keptByListener for every other.
+func keptCopyKeptBy(item contracts.Envelope) string {
+	if isOutboxCopy(item) {
 		return keptByDispatchOutbox
 	}
 	return keptByListener
@@ -1563,7 +1559,7 @@ func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, e
 		}}
 	}
 	at := now()
-	owed := !isOutboxCopy(item, stored.MsgID, role) && item.SourceSession != ""
+	owed := !isOutboxCopy(item) && item.SourceSession != ""
 	// deadLetter is the verdict of a copy owed a dead letter for drop, with the report the copy
 	// is owed beside it. Every such verdict is made here, so every drop carries the qualifier of
 	// the claim this walk took over, whatever its reason (keptCopyClaim.forwardUnconfirmed).
@@ -1608,7 +1604,7 @@ func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, e
 // stream sequence. holder is the role's live holder the walk is for, empty for a walk with no
 // holder, which the line names as its session_id.
 func keptRoleDroppedReport(cfg listenerDeliveryHandlerConfig, role, holder string, stored bus.StoredMessage, item contracts.Envelope, age time.Duration, stale bool) func() {
-	keptBy := keptCopyKeptBy(item, stored.MsgID, role)
+	keptBy := keptCopyKeptBy(item)
 	return func() {
 		// No role label: a role token names a tree role of one issue, so a deployment sees
 		// unboundedly many of them and each would be a series of its own, kept for the

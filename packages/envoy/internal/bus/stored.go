@@ -260,8 +260,9 @@ func (c *Client) storedMessage(ctx context.Context, request any) (StoredMessage,
 		Data:     response.Message.Data,
 	}
 	// A header that does not decode leaves the message id empty, as a message published under
-	// none has it: the id names what a copy was taken from (cmd/listener's takeover copy), and
-	// no reader decides more than that by it.
+	// none has it. The id of a takeover's copy names the key of the frame it was taken from, and
+	// the only reader is cmd/listener's walk, which names the message by that key in an exception
+	// about the copy (takenFrameOriginal); no reader judges a copy's owner, wake or dead letter by it.
 	if len(response.Message.Header) > 0 {
 		if header, err := nats.DecodeHeadersMsg(response.Message.Header); err == nil {
 			stored.MsgID = header.Get(nats.MsgIdHdr)

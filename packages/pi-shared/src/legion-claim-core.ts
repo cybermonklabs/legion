@@ -262,10 +262,12 @@ const ROLE_CLAIM_RETRY_MAX_DELAY_MS = 30_000;
  * 503 (`listenerAskedToClaimAgain`): the listener wrote no claim - every try of its write met a
  * conflict, or the takeover record a claim writes first did not store - and asks for the claim
  * again. The wait starts at `firstDelayMs` (`ROLE_CLAIM_RETRY_FIRST_DELAY_MS` unset) and doubles up
- * to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one `log` line per wait; the timer is unref'd, so it
- * holds no process open. Any other failure is thrown at once, for the caller to stop on. An aborted
- * `signal` - the host stopping - ends the waiting with the last 503 thrown and claims no more, so
- * no claim after a stop makes a session the host ended live again.
+ * to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one `log` line per wait naming the attempt the listener
+ * answered and its answer; the timer is unref'd, so it holds no process open. Any other failure is
+ * thrown at once, for the caller to stop on. An aborted `signal` - the host stopping - ends the
+ * waiting with the last 503 thrown and claims no more, so no claim after a stop makes a session the
+ * host ended live again. With `maxAttempts`, the 503 of the last attempt is thrown, for a claim a
+ * person is waiting on to fail where they see it.
  */
 export async function claimRoleAgainOnBusy(
   claim: () => Promise<void>,
@@ -274,17 +276,20 @@ export async function claimRoleAgainOnBusy(
     readonly log: (line: string) => void;
     readonly firstDelayMs?: number | undefined;
     readonly signal?: AbortSignal | undefined;
+    /** The most claims made, the first included; the 503 of the last is thrown. Unset, no bound. */
+    readonly maxAttempts?: number | undefined;
   }
 ): Promise<void> {
   let wait = options.firstDelayMs ?? ROLE_CLAIM_RETRY_FIRST_DELAY_MS;
-  for (;;) {
+  for (let attempt = 1; ; attempt++) {
     try {
       await claim();
       return;
     } catch (error) {
       if (!listenerAskedToClaimAgain(error) || options.signal?.aborted) throw error;
+      if (options.maxAttempts !== undefined && attempt >= options.maxAttempts) throw error;
       options.log(
-        `claim of Envoy role ${role} was answered 503, so nothing was claimed; claiming it again in ${wait} ms: ${messageFor(error)}`
+        `claim of Envoy role ${role} was answered 503 at attempt ${attempt}, so nothing was claimed; claiming it again in ${wait} ms: ${messageFor(error)}`
       );
       const waited = Promise.withResolvers<void>();
       const timer = setTimeout(waited.resolve, wait);

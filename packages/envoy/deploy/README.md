@@ -291,33 +291,48 @@ refuses the send: the attempt fails at once, and its recorded error names these 
   `ENVOY_OIDC_GOOGLE_ACCOUNTS`, and set the listener's `ENVOY_DISPATCH_PRINCIPAL` to that address.
 - **Elsewhere:** give Dispatch a service-account token from an issuer the listener verifies
   (`ENVOY_OIDC_ISSUER` and `ENVOY_OIDC_AUDIENCE`), in the file `ENVOY_ACCOUNT_TOKEN_FILE` names,
-  rewritten before it expires, and set the listener's `ENVOY_DISPATCH_PRINCIPAL` to its subject
-  (`system:serviceaccount:<namespace>:<name>` for a Kubernetes token).
+  rewritten in place before it expires (the compose file binds that one file, which keeps the file
+  it found at start, so a writer that replaces it by rename needs the container restarted), and set
+  the listener's `ENVOY_DISPATCH_PRINCIPAL` to its subject (`system:serviceaccount:<namespace>:<name>`
+  for a Kubernetes token).
 
 Messages and mentions to a `session:` route need neither.
 
-With the compose files, `dispatch.compose.yml` refuses `docker compose up` until one of Dispatch's
-two settings is set in `compose/.env`, naming both, and `listener.compose.yml` (or
-`single-node.compose.yml`) passes the listener's verifier and principal from the same file. On a
-Google Cloud VM, whose service account is Dispatch's identity:
+**Setting a verifier closes the listener to every caller with no bearer.** A listener with the
+OIDC pair or the Google pair set answers `401` to a request that presents no token, so the host's
+own agent sessions, which reach an open loopback listener with none, stop working unless they
+present the listener's shared token. Set `ENVOY_API_TOKEN` with the verifier, and give each host
+session that token: `ENVOY_TOKEN` in its environment, or `envoy.token` in its `envoy.json`.
+
+With the compose files, the Dispatch container exits at start, naming both of Dispatch's two
+settings, until one is set in `compose/.env`; `listener.compose.yml` (or `single-node.compose.yml`)
+passes the listener's verifier, principal and shared token from the same file. On a Google Cloud
+VM, whose service account is Dispatch's identity:
 
 ```bash
 cd packages/envoy/deploy
 account=$(curl -s -H 'Metadata-Flavor: Google' \
   http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email)
+token=$(openssl rand -hex 32)
 cat >>compose/.env <<EOF
 ENVOY_ACCOUNT_GOOGLE_AUDIENCE=envoy-listener
 ENVOY_OIDC_GOOGLE_AUDIENCE=envoy-listener
 ENVOY_OIDC_GOOGLE_ACCOUNTS=$account
 ENVOY_DISPATCH_PRINCIPAL=$account
+ENVOY_API_TOKEN=$token
+ENVOY_TOKEN=$token
 EOF
 scripts/up-listener.sh
 scripts/up-dispatch.sh
 ```
 
+Then give the host's sessions the same token (`ENVOY_TOKEN=$token`, or `"token"` under `envoy` in
+their `envoy.json`) before they next connect.
+
 Elsewhere, set `ENVOY_ACCOUNT_TOKEN_FILE` to the host path of Dispatch's token file (the compose
-file mounts it into the container), and the listener's `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE`
-and `ENVOY_DISPATCH_PRINCIPAL` instead.
+file mounts it into the container, and refuses `up` when the path does not exist), and the
+listener's `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE`, `ENVOY_DISPATCH_PRINCIPAL` and
+`ENVOY_API_TOKEN` instead.
 
 ## Backups and restore
 

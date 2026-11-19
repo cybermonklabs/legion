@@ -525,8 +525,10 @@ record finished) and otherwise only once its last write is fifteen minutes old, 
 moves costs four writes an hour however many listeners sweep it, and never ages out while a pass
 needs it. A role message is one whose topic is the role's, or whose `role` field names it. The copy
 is the envelope without the forward mark, with the message's event id and a dedupe key of its own
-in the minted form (`agent.takeover.` and 32 hex digits of the SHA-256 of the message's key and the
-frame's stream sequence), under the kept message id followed by `:frame:` and that sequence, so two
+in the minted form (32 hex digits of the SHA-256 of the message's key and the frame's stream
+sequence, after `publish.` when the message's key has it, as the publish route's keys do, and after
+`agent.takeover.` otherwise, so a copy of a copy is still the listener's and not Dispatch's outbox's
+by its key), under the kept message id followed by `:frame:` and that sequence, so two
 copies of one frame are stored once and no copy is dropped as a repeat of an earlier kept copy of
 the same message. A minted key names its event, so every walk, a listener of the release before
 included, forwards the copy under that key: a role taken back reaches its previous holder, where

@@ -50,6 +50,10 @@ export interface ControllerSession {
 /** The host widget a session change's re-claim shows its outcome in (`reclaimAfterSessionChange`). */
 const CLAIM_WIDGET = "legion-controller-claim";
 
+/** How many tries a person's controller claim makes while the listener answers it 503: four
+ * waits of 1, 2, 4 and 8 seconds, then the command fails with the listener's answer. */
+export const CONTROLLER_CLAIM_BUSY_ATTEMPTS = 5;
+
 /**
  * The controller `legion controller start` launched for the operator: the controller marker
  * (`LEGION_CONTROLLER=1`) without the boot token of a controller the daemon launched itself. It
@@ -337,13 +341,42 @@ export function createControllerSession(deps: {
       startMessageSent = true;
     }
     // A claim the listener answered 503 wrote nothing - every try met a conflict, or the takeover
-    // record a claim writes first did not store - and is made again after a growing wait, as the
-    // claim boot makes it (claimRoleAgainOnBusy), rather than exiting the daemon-launched
-    // controller for a relaunch that would meet the same 503.
+    // record a claim writes first did not store - and is made again after a growing wait
+    // (claimRoleAgainOnBusy), each wait logged with its attempt and the listener's answer. The
+    // daemon-launched controller claims again until it lands, as the claim boot does, rather than
+    // exiting for a relaunch that would meet the same 503; the daemon supervises it, and its claim
+    // widget shows it waiting on the listener until the claim lands (taken down below), so a broken
+    // listener shows on the controller's pane, not only in its log. A claim a person started
+    // (/legion-claim-controller, /legion-controller-start, a session change's re-claim) shows each
+    // wait on screen and gives up after CONTROLLER_CLAIM_BUSY_ATTEMPTS tries, so the command fails
+    // where the person sees it, with the listener's answer.
+    const showWaiting = (line: string): void => {
+      const shown = `legion: this controller holds no Envoy role yet: ${line}`;
+      const setWidget = "setWidget" in context.ui ? context.ui.setWidget : undefined;
+      if (setWidget === undefined) {
+        context.ui.notify(shown, "warning");
+        return;
+      }
+      setWidget(CLAIM_WIDGET, [shown]);
+      claimWidget = { session: sessionID, clear: () => setWidget(CLAIM_WIDGET, undefined) };
+    };
     await claimRoleAgainOnBusy(
       () => claimEnvoyRole(sessionID, registration.claimToken, envoyContext),
       registration.claimToken,
-      { log: (line) => logger.warn(`[legion] ${line}`) }
+      supervised
+        ? {
+            log: (line) => {
+              logger.warn(`[legion] ${line}`);
+              showWaiting(line);
+            },
+          }
+        : {
+            log: (line) => {
+              logger.warn(`[legion] ${line}`);
+              context.ui.notify(`legion: ${line}`, "info");
+            },
+            maxAttempts: CONTROLLER_CLAIM_BUSY_ATTEMPTS,
+          }
     );
     await subscribeLegionNotice(
       sessionID,

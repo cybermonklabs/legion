@@ -2403,6 +2403,8 @@ jobs:
               - 'packages/test-fixtures/src/**'
               # extensions/envoy.test.ts:300.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
+              # extensions/envoy.test.ts:99 reads the envelope fixture.
+              - 'packages/contracts/fixtures/envelope-without-role.json'
               - 'skills/**'
               - 'packages/daemon/internal/prompts/**'
               # Its pack runs the shared prepack, which writes dist/THIRD_PARTY_NOTICES, and

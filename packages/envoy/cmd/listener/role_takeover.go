@@ -82,6 +82,10 @@ var takeoverUnrecordedWarnings = struct {
 	held map[string]int
 }{last: map[string]time.Time{}, held: map[string]int{}}
 
+// takeoverWarningForget is how long a role's entry in takeoverUnrecordedWarnings outlives its last
+// line: a role refused again after it logs at once, and its count of held-back lines is dropped.
+const takeoverWarningForget = 10 * time.Minute
+
 // warnTakeoverUnrecorded logs the claim route's refusal of claimant's takeover claim of role whose
 // record did not store (errTakeoverUnrecorded), at most once a minute for each role, naming the
 // role, the previous holder the claim read, the claimant and the record's failure: while the stream
@@ -103,6 +107,14 @@ func warnTakeoverUnrecorded(logger *logging.Logger, role, claimant string, err e
 	}
 	held := w.held[role]
 	w.last[role], w.held[role] = now, 0
+	// The roles whose last line is takeoverWarningForget old are forgotten, with the lines they
+	// held back, so the two maps hold only the roles refused in that time, not every role ever.
+	for other, at := range w.last {
+		if now.Sub(at) >= takeoverWarningForget {
+			delete(w.last, other)
+			delete(w.held, other)
+		}
+	}
 	w.mu.Unlock()
 	logger.Warn("listener role claim refused: the takeover record of the claim did not store, so the role stays with its holder",
 		slog.String("role", role),
@@ -129,9 +141,12 @@ func takenFrameMsgID(dedupeKey, role string, seq uint64) string {
 
 // takenFrameDedupeKey is the dedupe key of the copy of the frame stored at seq, whose own dedupe
 // key without the forward mark is dedupeKey: a key in the minted form
-// (contracts.MintedDedupeKeyPattern), takenFrameKeyPrefix and 32 hex digits of the SHA-256 of
-// dedupeKey, keptFrameMark and seq, so one frame's copies share it and no other message has it. A
-// minted key names its event (contracts.DedupeKeyNamesTheUpstreamEvent), so every walk - this
+// (contracts.MintedDedupeKeyPattern), a prefix and 32 hex digits of the SHA-256 of dedupeKey,
+// keptFrameMark and seq, so one frame's copies share it and no other message has it. The prefix
+// is publishDedupePrefix for a frame whose key has it - the listener's own publish route forwarded
+// it - and takenFrameKeyPrefix for any other, so the listener's own messages are told from
+// Dispatch's outbox copies by the copy's key (isOutboxCopy) however many takeovers it went through.
+// A minted key names its event (contracts.DedupeKeyNamesTheUpstreamEvent), so every walk - this
 // release's, and the release before's, which reads a copy as any kept copy - forwards the copy
 // under that key (roleForward.msgID), an id no earlier forward of the same message took, and
 // records what a holder took by it. A role taken from A by B and back by A so gives A the copy of
@@ -140,31 +155,34 @@ func takenFrameMsgID(dedupeKey, role string, seq uint64) string {
 // host that already showed the message drops it (R4).
 func takenFrameDedupeKey(dedupeKey string, seq uint64) string {
 	sum := sha256.Sum256([]byte(dedupeKey + keptFrameMark + strconv.FormatUint(seq, 10)))
-	return takenFrameKeyPrefix + hex.EncodeToString(sum[:16])
+	prefix := takenFrameKeyPrefix
+	if strings.HasPrefix(dedupeKey, publishDedupePrefix) {
+		prefix = publishDedupePrefix
+	}
+	return prefix + hex.EncodeToString(sum[:16])
 }
 
-// takenFrameKeyPrefix begins a takeover copy's dedupe key (takenFrameDedupeKey): the agent form of
-// a minted key, under a name no session's own key takes, since the publish form marks the
-// listener's own publishes (publishDedupePrefix), which the walk tells from Dispatch's outbox copies
-// by it (isOutboxCopy).
+// takenFrameKeyPrefix begins the dedupe key of a takeover's copy of a frame the publish route did
+// not forward (takenFrameDedupeKey): the agent form of a minted key, under a name no session's own
+// key takes.
 const takenFrameKeyPrefix = "agent.takeover."
 
 // takenFrameOriginal is item as an exception about it names it. A takeover's copy carries a
 // minted dedupe key of its own (takenFrameDedupeKey), and a reader of the exception, such as the
 // Legion daemon's re-hold, identifies the message by the message's own key, which the copy's
 // message id on role's kept lane keeps (takenFrameMsgID: bus.KeptMsgID of that key, then
-// keptFrameMark and the frame's sequence). For such a copy it is item under that key; any other
-// kept copy is item as it is.
+// keptFrameMark and the frame's sequence). For a copy whose key is the copy key of that key and
+// sequence it is item under that key; any other kept copy is item as it is. A copy of a copy - a
+// role that moved twice before its message was read - is named by the first copy's key, not the
+// message's own: the second copy's message id keeps only the key of the frame it copied.
 func takenFrameOriginal(item contracts.Envelope, msgID, role string) contracts.Envelope {
-	if !strings.HasPrefix(item.DedupeKey, takenFrameKeyPrefix) {
-		return item
-	}
 	suffix := ":" + bus.KeptRoleSubject(role) + keptFrameMark
 	at := strings.LastIndex(msgID, suffix)
 	if at <= 0 {
 		return item
 	}
-	if _, err := strconv.ParseUint(msgID[at+len(suffix):], 10, 64); err != nil {
+	seq, err := strconv.ParseUint(msgID[at+len(suffix):], 10, 64)
+	if err != nil || item.DedupeKey != takenFrameDedupeKey(msgID[:at], seq) {
 		return item
 	}
 	original := item

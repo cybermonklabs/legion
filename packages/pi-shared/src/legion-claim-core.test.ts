@@ -232,10 +232,13 @@ test("a claim the listener answers 503 is claimed again after a growing wait, an
   expect(steps).not.toContain("stop");
   expect(steps.filter((step) => step === `claimRole ${claimToken}`)).toHaveLength(4);
   expect(lines.map((line) => line.replace(/: .*$/, ""))).toEqual([
-    `claim of Envoy role ${claimToken} was answered 503, so nothing was claimed; claiming it again in 1 ms`,
-    `claim of Envoy role ${claimToken} was answered 503, so nothing was claimed; claiming it again in 2 ms`,
-    `claim of Envoy role ${claimToken} was answered 503, so nothing was claimed; claiming it again in 4 ms`,
+    `claim of Envoy role ${claimToken} was answered 503 at attempt 1, so nothing was claimed; claiming it again in 1 ms`,
+    `claim of Envoy role ${claimToken} was answered 503 at attempt 2, so nothing was claimed; claiming it again in 2 ms`,
+    `claim of Envoy role ${claimToken} was answered 503 at attempt 3, so nothing was claimed; claiming it again in 4 ms`,
   ]);
+  for (const line of lines) {
+    expect(line).toContain("the message bus refused the message because its stream is full");
+  }
 });
 
 test("control: a claim the listener refuses with any other status still stops the session at once, with no retry", async () => {
@@ -316,6 +319,34 @@ test("the daemon-launched controller's claim is made again on a 503 with the sam
     )
   ).rejects.toBe(refused);
   expect(lines).toHaveLength(2);
+});
+
+test("a claim a person waits on gives up after its counted attempts, throwing the listener's 503; the control, with no bound, lands", async () => {
+  const lines: string[] = [];
+  let tries = 0;
+  const busy = claimAnswered503();
+  await expect(
+    claimRoleAgainOnBusy(
+      async () => {
+        tries++;
+        throw busy;
+      },
+      "controller",
+      { log: (line) => lines.push(line), firstDelayMs: 1, maxAttempts: 3 }
+    )
+  ).rejects.toBe(busy);
+  expect(tries).toBe(3);
+  expect(lines).toHaveLength(2);
+
+  let unbounded = 0;
+  await claimRoleAgainOnBusy(
+    async () => {
+      if (++unbounded < 6) throw claimAnswered503();
+    },
+    "controller",
+    { log: () => {}, firstDelayMs: 1 }
+  );
+  expect(unbounded).toBe(6);
 });
 
 test("a 4xx at claims/ready is not retried: one ready, then the agent stops, with no regain listener and no claim, whatever turn the registered signal reports", async () => {
