@@ -4214,6 +4214,8 @@ Each item below names a path with its method and identity, then its purpose.
     During a roll the release before this one writes no row, so an entry can be an interval or more old, which `at` shows.
 
   - A cause can name a repository: the route takes no credential, a GitHub error carries the URL it asked, and Dispatch answers on its private network alone.
+    So while any project is private (the state the `Dispatch-Private-Projects` header reads, `privateProjectsState.AnyPrivate`), every failed read's `cause` is the fixed text `withheldGitHubCause`, which names no repository, and the cause itself is read in `github_read_attempts`.
+    With no private project it is answered as recorded (`TestHealthzNamesNoPrivateProjectToACallerWithNoCredential`).
 
   - The delivery intakes read GitHub too, for each webhook event (`FetchPullRequest`, `FetchWorkflowRun` and `ListWorkflowRunJobs` in `internal/dispatch/delivery`), and have no entry of their own:
     they report through `delivery_reconcile`, since the delivery reconcile reads the same pull requests and runs with the same App every interval, so a GitHub failure of those reads shows there within one pass.
