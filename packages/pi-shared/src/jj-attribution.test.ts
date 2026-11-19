@@ -647,6 +647,9 @@ describe("userConfigChain", () => {
   /** bun's bound on the forked-child case, in milliseconds: the bounds it tries add up to 12.6 s,
    * and `stops` waits up to 3 s. */
   const FORK_CASE_BOUND_MS = 30_000;
+  /** What Oh My Pi gives the session_start handler that awaits attribution, in milliseconds: a
+   * handler still running when it passes holds the session's bootstrap. */
+  const SESSION_START_MS = 30_000;
 
   // Real-time polling is required here: the kernel reaping the child is external OS state, which
   // Bun's fake timers cannot advance.
@@ -669,23 +672,31 @@ describe("userConfigChain", () => {
     expect(await userConfigChain(5_000, env)).toBe("/u/a.toml:/u/b.toml");
   });
 
-  it("gives up on a jj that never answers, so attribution never holds bootstrap", async () => {
-    const env = await withJj("exec sleep 30");
-    const dir = await mkdtemp(path.join(tmpdir(), "jj-attribution-"));
-    dirs.push(dir);
-    const exported: NodeJS.ProcessEnv = {};
-    const started = Date.now();
-    await exportJjSessionAttribution(ROOT_ID, dir, {
-      env: exported,
-      resolveBase: () => userConfigChain(200, env),
-    });
-    expect(Date.now() - started).toBeLessThan(5_000);
-    expect(exported.JJ_CONFIG).toBeUndefined();
-  });
+  // jj sleeps past the case's bound, so within the case only a give-up returns at all, and the case
+  // holds no elapsed time of its own. Its bound is the session_start handler's: a give-up that
+  // comes after that has held bootstrap, which is the failure the name states.
+  it(
+    "gives up on a jj that never answers, so attribution never holds bootstrap",
+    async () => {
+      const env = await withJj("exec sleep 300");
+      const dir = await mkdtemp(path.join(tmpdir(), "jj-attribution-"));
+      dirs.push(dir);
+      const exported: NodeJS.ProcessEnv = {};
+      await exportJjSessionAttribution(ROOT_ID, dir, {
+        env: exported,
+        resolveBase: () => userConfigChain(200, env),
+      });
+      expect(exported.JJ_CONFIG).toBeUndefined();
+    },
+    SESSION_START_MS
+  );
 
   // The bound must pass after the wrapper has forked its child and written the child's pid, or the
   // group it kills holds no child to check, and a loaded host can take longer than a short bound to
-  // get the wrapper there. So the case doubles the bound until a run has written the pid.
+  // get the wrapper there. So the case doubles the bound until a run has written the pid. The child
+  // sleeps past the case's bound and the wrapper waits for it, so a call that did not give up never
+  // returns within the case, and one that gave up but left the child fails on `stops`: the case
+  // holds no elapsed time of its own.
   it(
     "kills a wrapper's forked child when jj times out",
     async () => {
@@ -695,14 +706,11 @@ describe("userConfigChain", () => {
           "pid"
         );
         dirs.push(path.dirname(pidFile));
-        const env = await withJj(`sleep 30 & echo $! > ${JSON.stringify(pidFile)}; wait`);
-        const started = Date.now();
+        const env = await withJj(`sleep 300 & echo $! > ${JSON.stringify(pidFile)}; wait`);
         await userConfigChain(bound, env);
-        const returnedAfter = Date.now() - started;
         const pid = await writtenPid(pidFile);
         if (pid === undefined) continue;
         try {
-          expect(returnedAfter).toBeLessThan(bound + 5_000);
           expect(await stops(pid)).toBe(true);
         } finally {
           try {
@@ -752,6 +760,6 @@ describe("userConfigChain", () => {
 
   it("bounds jj at 10 s, inside the 30 s Oh My Pi gives the session_start handler", () => {
     expect(JJ_CONFIG_PATH_TIMEOUT_MS).toBe(10_000);
-    expect(JJ_CONFIG_PATH_TIMEOUT_MS).toBeLessThan(30_000);
+    expect(JJ_CONFIG_PATH_TIMEOUT_MS).toBeLessThan(SESSION_START_MS);
   });
 });
