@@ -12,8 +12,8 @@
 -- trade under it.
 --
 -- A binding is never swept and no route moves or removes it: a daemon that stops using a name
--- keeps it. The operator's move of a binding to another daemon is the plan's task t-e-70 (INFRA-840),
--- which needs an operator's token no broker route verifies yet. The table starts empty, with no
+-- keeps it. The operator's move of a binding to another daemon is plan E's t-e-70
+-- (dispatch://INFRA-840), which needs an operator's token no broker route verifies yet. The table starts empty, with no
 -- backfill from oauth_pod_sessions, because no deployment registers pods today.
 --
 -- It replaces 0038's live-row holder, the write's check of the name's live rows that this table
@@ -21,4 +21,4 @@
 -- SESSION_HELD_BY_ANOTHER_REGISTRAR, which is now SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR. The
 -- primary key on session_name is also what serializes two daemons' first registrations of one
 -- name: the second's insert waits for the first's to commit and then finds its row.
-create table pod_session_registrars (session_name text primary key, registrar text not null, registered_at timestamptz not null);
+create table pod_session_registrars (session_name text primary key, registrar text not null, registered_at timestamptz not null default now());

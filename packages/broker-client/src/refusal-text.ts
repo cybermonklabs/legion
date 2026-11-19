@@ -284,9 +284,8 @@ const CODE_PREFIXES = [POD_SESSION_NOT_REGISTERED, SESSION_NAME_NOT_THIS_REGISTR
   (code) => `${code}: `
 );
 
-/** `text` with the library's fixed sentence, the broker's refusal code, or one of the two
- *  prefixes the broker writes in place of the library's sentence ({@link POD_SESSION_NOT_REGISTERED}
- *  or {@link SESSION_NAME_NOT_THIS_REGISTRARS}, and a colon), taken off its front. */
+/** `text` with the library's fixed sentence, the broker's refusal code, or one of
+ *  {@link CODE_PREFIXES}, taken off its front. */
 function brokerHint(text: string): string {
   for (const fixed of LIBRARY_DESCRIPTIONS) {
     if (text.startsWith(`${fixed} `)) return text.slice(fixed.length + 1);

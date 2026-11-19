@@ -558,10 +558,10 @@ func TestTwoDaemonsFirstWritesOfOneNameAdmitOne(t *testing.T) {
 
 // TestAWriteTakesARowNoLiveRegistrationOfItsOwnHolds: a row of a pod and name that is no live,
 // unreleased registration of the writing registrar's own is taken whole by that registrar's next
-// write. Each row is written by hand with no binding of its name, as rows a broker of an earlier
-// build left: a released row of registrarA's, a lapsed row of registrarB's and a live row no
-// registrar wrote (a broker of the build before registrars), each bound to an old key at a high
-// generation. Before A's write the exchange honours none of them, in the order
+// write. Each row is written by hand with no binding of its name, to reach states the route does
+// not produce: a released row of registrarA's, a lapsed row of registrarB's and a live row no
+// registrar wrote (as a broker of the build before registrars writes one), each bound to an old
+// key at a high generation. Before A's write the exchange honours none of them, in the order
 // PodSessionRegistered answers: the released row is refused as released, naming A, before the
 // name's missing binding is read, and the other two are answered as no registration is, the
 // lapsed one being no live row and the unnamed one naming no registrar, so neither reaches the

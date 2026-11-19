@@ -36,9 +36,9 @@ func (ts *testServer) admits(t *testing.T, what, registrar, podToken, pod, sessi
 	}
 }
 
-// warnedAs is every record capture holds whose message is message, each as its level, its message
+// loggedAs is every record capture holds whose message is message, each as its level, its message
 // and its attributes, in the order they were logged.
-func warnedAs(capture *logtest.Recorder, message string) []map[string]any {
+func loggedAs(capture *logtest.Recorder, message string) []map[string]any {
 	var logged []map[string]any
 	for _, record := range capture.Records() {
 		if record.Message != message {
@@ -118,7 +118,7 @@ func TestASessionNameStaysWithItsFirstRegistrar(t *testing.T) {
 	ts.releases(t, daemonAccount+"'s release of "+session, daemonA, []string{session}, 1, 1)
 	refused("once "+daemonAccount+" has released it", podB)
 
-	if logged := warnedAs(capture, heldMessage); !reflect.DeepEqual(logged, want) {
+	if logged := loggedAs(capture, heldMessage); !reflect.DeepEqual(logged, want) {
 		t.Fatalf("the refused registrations of %s logged %v, want exactly %v", session, logged, want)
 	}
 	ts.admits(t, "B's registration of "+podB+" for a name of its own, "+ownSession, daemonB, ts.rolesPodToken(t, podB), podB, ownSession)
@@ -134,9 +134,8 @@ const notThisRegistrarsMessage = "broker: the token exchange refused a pod's tra
 // SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR. With no registration of P_B for S, P_B's trade under S
 // is refused invalid_grant with the description of a pod no registration names
 // (pod_session_not_registered:), the one both clients trade again on. A live registration of P_B
-// for S naming B, which the route never writes and the test writes by hand, as a broker of an
-// earlier build could have written it while A's rows of S had lapsed, does not admit it either:
-// P_B's trade under S is then refused invalid_grant with a description beginning
+// for S naming B, which no build's route writes and the test writes by hand, does not admit it
+// either: P_B's trade under S is then refused invalid_grant with a description beginning
 // session_name_not_this_registrars: that names S and not A, with no token, and a WARN line naming
 // the pod, S, B and A. P_B's trade under S_B is answered. Both pods run as one account, which is
 // one principal at the exchange, so the claim on the name, which binds a name to a principal,
@@ -183,7 +182,7 @@ func TestAPodAnotherDaemonRegisteredCannotTradeUnderAHeldName(t *testing.T) {
 		"level": slog.LevelWarn, "msg": notThisRegistrarsMessage, "principal": exchange.AccountPrincipal(brokertest.ExchangeRolesAccount),
 		"pod": podB, "session": session, "registrar": otherDaemonAccount, "holder": daemonAccount,
 	}}
-	if logged := warnedAs(capture, notThisRegistrarsMessage); !reflect.DeepEqual(logged, wantWarned) {
+	if logged := loggedAs(capture, notThisRegistrarsMessage); !reflect.DeepEqual(logged, wantWarned) {
 		t.Errorf("%s's refused trade under %s logged %v, want exactly %v", podB, session, logged, wantWarned)
 	}
 	if answer := ts.exchangePodToken(t, ts.rolesTradeToken(t, podB), ownSession); answer.status != http.StatusOK || !answer.issued {

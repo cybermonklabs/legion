@@ -484,7 +484,7 @@ func (s *Store) RegisterPodSession(ctx context.Context, registrar, podUID, sessi
 // that write commits or rolls back, and under read committed the read that follows, a statement
 // of its own, sees what that write committed.
 func (s *Store) bindPodSessionName(ctx context.Context, registrar, session string) error {
-	if _, err := s.db(ctx).Exec(ctx, `insert into pod_session_registrars (session_name, registrar, registered_at) values ($1, $2, now()) on conflict (session_name) do nothing`, session, registrar); err != nil {
+	if _, err := s.db(ctx).Exec(ctx, `insert into pod_session_registrars (session_name, registrar) values ($1, $2) on conflict (session_name) do nothing`, session, registrar); err != nil {
 		return fmt.Errorf("bind the session name: %w", err)
 	}
 	var holder string
