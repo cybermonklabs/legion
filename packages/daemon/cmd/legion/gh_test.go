@@ -2187,13 +2187,14 @@ func TestLegionGhLetsOnlyTheRateLimitReadBypassTheGuard(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			record := filepath.Join(t.TempDir(), "gh")
+			check := ghCheckAt(t, tc.check)
 			env := map[string]string{
 				"GH_CONFIG_DIR":        defaultDir,
 				"GH_STANDIN_RECORD":    record,
 				"LEGION_GH_OWNERS_DIR": root,
 				"LEGION_GH_PATH":       stub,
-				"PUBLIC_LEAK_CHECK":    ghCheckAt(t, tc.check),
-				leakguard.CheckerVar:   ghProvenProgramSHA256,
+				"PUBLIC_LEAK_CHECK":    check,
+				leakguard.CheckerVar:   ghManifestOf(t, check),
 				testProvenCheckEnv:     ghProvenProgramSHA256,
 			}
 			if code, _, stderr := legionGhIn(t, repository, env, "", tc.args...); code != tc.wantCode {

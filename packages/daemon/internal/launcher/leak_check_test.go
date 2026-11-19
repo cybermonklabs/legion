@@ -48,24 +48,27 @@ func pinLeakCheck(t *testing.T, tag string) {
 
 // packedLeakCheck is what the daemon serves of the check's repository: a tarball shaped as
 // GitHub's (every member under one `<owner>-<repo>-<sha>` directory, the check's own under its
-// leak-check directory, one file of the repository outside it), whose check is launcher, with a
-// python file beside it and a fixture of incompressible bytes large enough that the packed body
-// takes two slices, packed as the daemon packs it (leakguard.PackTarball).
+// leak-check directory, one file of the repository outside it), whose check is launcher, with
+// every other file of its manifest beside it (the python file, the README and the must-pass lines)
+// and a fixture of incompressible bytes large enough that the packed body takes two slices,
+// packed as the daemon packs it (leakguard.PackTarball).
 func packedLeakCheck(t *testing.T, launcher string) []byte {
 	t.Helper()
 	fixture := make([]byte, shimwire.LauncherBundlePayloadBytes+4096)
 	_, _ = rand.NewChaCha8([32]byte{}).Read(fixture)
 	raw := leakguardtest.GitHubTarball(t, map[string]leakguardtest.Member{
-		leakguardtest.CheckName:   {Body: "#!/bin/sh\n" + launcher, Mode: 0o755},
-		leakguardtest.ProgramName: {Body: leakguardtest.Program, Mode: 0o644},
-		"fixtures/must-pass.bin":  {Body: string(fixture), Mode: 0o644},
+		leakguardtest.CheckName:    {Body: "#!/bin/sh\n" + launcher, Mode: 0o755},
+		leakguardtest.ProgramName:  {Body: leakguardtest.Program, Mode: 0o644},
+		leakguardtest.ReadmeName:   {Body: leakguardtest.Readme, Mode: 0o644},
+		leakguardtest.MustPassName: {Body: leakguardtest.MustPass, Mode: 0o644},
+		"fixtures/must-pass.bin":   {Body: string(fixture), Mode: 0o644},
 	})
 	body, err := leakguard.PackTarball(bytes.NewReader(raw))
 	if err != nil {
 		t.Fatalf("pack the test's tarball: %v", err)
 	}
-	if files := packedFiles(t, body); files != 3 {
-		t.Fatalf("the pack holds %d files, want the check's 3", files)
+	if files := packedFiles(t, body); files != 5 {
+		t.Fatalf("the pack holds %d files, want the check's 5", files)
 	}
 	return body
 }
@@ -187,15 +190,21 @@ func installLines(log string) []string {
 }
 
 // requireInstalledAt holds that dir holds the check of pin, read the way every role's shim reads it
-// under a deployment that runs a shared leak check: with the pin and the deployment's checker
-// (leakguard.CheckerVar) in its environment.
+// under a deployment that runs a shared leak check: with the pin and the deployment's manifest
+// digest (leakguard.CheckerVar) in its environment. The digest is the install's own: this test is
+// of the install landing whole at its pin, and the comparison itself, with every file of the
+// manifest spoiled in turn, is leakguard's (TestInstalledAnswersTheCheckOfThePinAlone).
 func requireInstalledAt(t *testing.T, dir, pin string) {
 	t.Helper()
 	recorded, err := os.ReadFile(filepath.Join(dir, ".installed-tag"))
 	if err != nil || string(recorded) != pin+"\n" {
 		t.Fatalf("the install's .installed-tag holds %q (%v), want %q", recorded, err, pin+"\n")
 	}
-	check, err := leakguard.Installed([]string{leakguard.TagVariable + "=" + pin, leakguard.CheckerVar + "=" + leakguardtest.ProgramSHA256}, dir)
+	digest, err := leakguard.Manifest(func(name string) ([]byte, error) { return os.ReadFile(filepath.Join(dir, name)) })
+	if err != nil {
+		t.Fatalf("the install at %s holds no whole manifest: %v", dir, err)
+	}
+	check, err := leakguard.Installed([]string{leakguard.TagVariable + "=" + pin, leakguard.CheckerVar + "=" + digest}, dir)
 	if err != nil || check != filepath.Join(dir, leakguardtest.CheckName) {
 		t.Fatalf("a role's shim reads the install as %q, %v; want the check at %s", check, err, dir)
 	}

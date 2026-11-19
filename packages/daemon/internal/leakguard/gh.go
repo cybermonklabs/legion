@@ -91,9 +91,9 @@ func provenCheck(check, proven string) bool {
 }
 
 // programSHA256 is the sha256, in lowercase hex, of the public_leak_check.py beside check, in the
-// script's own directory once its symbolic links are followed: which check is installed, since the
-// script only runs that program. Both a role's shim (Installed) and `legion gh` (provenCheck) hash
-// it.
+// script's own directory once its symbolic links are followed. `legion gh` reads it alone
+// (provenCheck): the read rule was proven against that program. The deployment's pin is the
+// manifest digest of every file the check runs from (manifestSHA256), not this.
 func programSHA256(check string) (string, error) {
 	dir := filepath.Dir(check)
 	if followed, err := filepath.EvalSymlinks(check); err == nil {

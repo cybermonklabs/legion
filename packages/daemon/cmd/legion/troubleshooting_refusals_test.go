@@ -64,11 +64,11 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	"postgres_dsn is required (or set LEGION_POSTGRES_DSN)": func(t *testing.T) string {
 		return refusalFile{drop: []string{"postgres_dsn:"}}.refuse(t)
 	},
-	"<LEGION_LEAK_CHECK_REPOSITORY or leak_check.repository> is set and the checker sha256 is not: …": func(t *testing.T) string {
-		// A daemon whose environment names the leak check's repository and not its checker, as a
-		// deployment that set one of its two variables starts it.
+	"<LEGION_LEAK_CHECK_REPOSITORY or leak_check.repository> is set and the manifest sha256 is not: …": func(t *testing.T) string {
+		// A daemon whose environment names the leak check's repository and not its manifest
+		// digest, as a deployment that set one of its two variables starts it.
 		t.Setenv("LEGION_LEAK_CHECK_REPOSITORY", "example-org/deployment")
-		t.Setenv("LEGION_LEAK_CHECK_SHA256", "")
+		t.Setenv("LEGION_LEAK_CHECK_MANIFEST_SHA256", "")
 		return refusalFile{}.refuse(t)
 	},
 	"unknown key <key>": func(t *testing.T) string {

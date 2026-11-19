@@ -69,7 +69,7 @@ var (
 // repository and checker (leakguard.Setting): the runtime a test configures tells its roles the
 // install and the checker, and pushes the check to a launcher that names its pin, as a
 // deployment that runs one has it done.
-var testLeakCheck = leakguard.Setting{Repository: ghrepo.MustParse("example-org/deployment"), CheckerSHA256: strings.Repeat("5e", 32)}
+var testLeakCheck = leakguard.Setting{Repository: ghrepo.MustParse("example-org/deployment"), ManifestSHA256: strings.Repeat("5e", 32)}
 
 // testOptions are the options every test starts from: production's shape — a store that keeps
 // sessions in a database included, which configure requires, here the postgres one with its URL key

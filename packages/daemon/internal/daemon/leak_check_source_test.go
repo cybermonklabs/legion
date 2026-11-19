@@ -34,7 +34,7 @@ const leakCheckLease = "ghs_leak_check_lease"
 // leakCheckSetting is the deployment's shared leak check these tests read, as config's leak_check
 // settles it: a stand-in repository, whose owner's installation the read lease is minted on, and
 // a stand-in checker.
-var leakCheckSetting = leakguard.Setting{Repository: ghrepo.MustParse("example-org/deployment"), CheckerSHA256: strings.Repeat("5e", 32)}
+var leakCheckSetting = leakguard.Setting{Repository: ghrepo.MustParse("example-org/deployment"), ManifestSHA256: strings.Repeat("5e", 32)}
 
 // leakCheckTarballRoute is the path GitHub serves the check's repository's tarball under, a tag
 // after it.
@@ -392,8 +392,8 @@ func TestADaemonWithNoAppsOrNoLeakCheckSettingHasNoLeakCheckSource(t *testing.T)
 // is told. A daemon that dropped either would start roles that never ran the deployment's check.
 func TestTheLeakCheckSettingReachesEitherRuntime(t *testing.T) {
 	cfg := config.Config{Runtime: config.Runtime{Name: "tmux"}, LeakCheck: leakCheckSetting}
-	if got := tmuxOptions(cfg, "test", nil, "", "", quietLogger()).LeakCheckSHA256; got != leakCheckSetting.CheckerSHA256 {
-		t.Errorf("tmux LeakCheckSHA256 = %q, want the deployment's checker %q", got, leakCheckSetting.CheckerSHA256)
+	if got := tmuxOptions(cfg, "test", nil, "", "", quietLogger()).LeakCheckSHA256; got != leakCheckSetting.ManifestSHA256 {
+		t.Errorf("tmux LeakCheckSHA256 = %q, want the deployment's checker %q", got, leakCheckSetting.ManifestSHA256)
 	}
 	k := kubernetesConfig(t, "https://127.0.0.1:1")
 	k.LeakCheck = leakCheckSetting
@@ -407,11 +407,11 @@ func TestTheLeakCheckSettingReachesEitherRuntime(t *testing.T) {
 }
 
 // The boot says once which shared leak check the deployment runs: under the deployment's setting,
-// one line naming the repository the check is read from and the checker every role is held to;
-// under none, one plain line naming the two settings that would name one.
+// one line naming the repository the check is read from and the manifest digest every role is held
+// to; under none, one plain line naming the two settings that would name one.
 func TestTheBootSaysOnceWhichLeakCheckIsConfigured(t *testing.T) {
-	const notConfigured = "daemon: the deployment leak check is not configured (LEGION_LEAK_CHECK_REPOSITORY and LEGION_LEAK_CHECK_SHA256, or leak_check.repository and leak_check.checker_sha256 in legion.yaml): role pods start without it, and no write is refused for its absence"
-	const configured = "daemon: the deployment leak check is configured: role pods install it from the repository at the worker image's pin, and every role is held to the checker"
+	const notConfigured = "daemon: the deployment leak check is not configured (LEGION_LEAK_CHECK_REPOSITORY and LEGION_LEAK_CHECK_MANIFEST_SHA256, or leak_check.repository and leak_check.manifest_sha256 in legion.yaml): role pods start without it, and no write is refused for its absence"
+	const configured = "daemon: the deployment leak check is configured: role pods install it from the repository at the worker image's pin, and every role is held to its manifest digest"
 	for _, tc := range []struct {
 		name    string
 		setting leakguard.Setting
@@ -419,7 +419,7 @@ func TestTheBootSaysOnceWhichLeakCheckIsConfigured(t *testing.T) {
 	}{
 		{name: "no setting", setting: leakguard.Setting{}, want: []string{`level=INFO msg="` + notConfigured + `"`}},
 		{name: "the deployment's setting", setting: leakCheckSetting, want: []string{`level=INFO msg="` + configured +
-			`" repository=example-org/deployment checker_sha256=` + leakCheckSetting.CheckerSHA256}},
+			`" repository=example-org/deployment manifest_sha256=` + leakCheckSetting.ManifestSHA256}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf strings.Builder

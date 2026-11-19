@@ -410,31 +410,54 @@ type keptPod struct {
 	// none, and its role is told neither of Oh My Pi's two session variables rather than a URL
 	// file it cannot read.
 	store ompsessions.StoreKind
-	// checker is the deployment's leak check checker this pod was built under, as its template
-	// recorded it (leakCheckerAnnotation): the sha256 its install, made at the image's own pin,
-	// hashes to, and so the one its role is told (launch.leakChecker). "" is a pod built under no
-	// setting or before the record existed, whose role is told none.
-	checker string
+	// checker is the manifest digest of the deployment's leak check this pod was built under, as
+	// its template recorded it (leakCheckerAnnotation): the digest of its install, made at the
+	// image's own pin, and so the one its role is told (launch.leakChecker). recorded is whether
+	// the template records one at all. A pod built under no setting, or by a daemon before the
+	// record, records none: its role is told none where its launcher holds an install from before
+	// (main's daemon pushed it, and hashed nothing), and the setting's own digest where its
+	// launcher holds none, since this daemon pushes the setting's check into it first (relaunch).
+	checker  string
+	recorded bool
 }
 
-// leakCheckerAnnotation records on a pod template's metadata the deployment's leak check checker
-// (Options.LeakCheckSetting's CheckerSHA256) the pod was built under, written where the template
-// is built (podTemplate) and only under a configured setting. A pod's install is made once, at its
-// own image's pin, so a pod kept after the deployment moved its pin and its checker together
-// holds the install of the old pin, which hashes to the old checker. A role started in such a pod
-// is told the checker its pod was built under (keptPod.checker), so its shim starts against the
-// install its pod holds, and it can push its work and answer the update round that replaces the
-// pod, where told the checker now it would start no agent at all.
-const leakCheckerAnnotation = "legion.dev/leak-checker-sha256"
+// leakCheckerAnnotation records on a pod template's metadata the manifest digest of the
+// deployment's leak check (Options.LeakCheckSetting's ManifestSHA256) the pod was built under,
+// written where the template is built (podTemplate) and only under a configured setting. A pod's
+// install is made once, at its own image's pin, so a pod kept after the deployment moved its pin
+// and its digest together holds the install of the old pin, whose digest is the old one. A role
+// started in such a pod is told the digest its pod was built under (keptPod.checker), so its shim
+// starts against the install its pod holds, and it can push its work and answer the update round
+// that replaces the pod (leakCheckDrift), where told the digest now it would start no agent at all.
+const leakCheckerAnnotation = "legion.dev/leak-checker-manifest-sha256"
 
-// leakChecker is the checker this launch's generation is told (leakguard.CheckerVar): the one the
-// live pod it keeps was built under (keptPod.checker), and the deployment's own for a launch that
-// builds the pod itself. "" tells none.
+// leakChecker is the manifest digest this launch's generation is told (leakguard.CheckerVar): the
+// one the live pod it keeps was built under (keptPod.checker), and the deployment's own for a
+// launch that builds the pod itself. "" tells none.
 func (l launch) leakChecker(r *Runtime) string {
 	if l.kept != nil {
 		return l.kept.checker
 	}
-	return r.leakCheck.CheckerSHA256
+	return r.leakCheck.ManifestSHA256
+}
+
+// leakCheckDrift is why a pod whose template carries annotations was built under another leak
+// check than the runtime runs now: it records a manifest digest (leakCheckerAnnotation) other than
+// the setting's, "none" where the runtime runs no check now. A template that records none says
+// nothing, as a template with no shape compares by image alone (podShapeDrift): a pod built under
+// no setting, or by a daemon before the record, is no drift for it. An update round opens over a
+// pod that has drifted so, and its workers are told the digest the pod records while they push
+// (keptPod.checker), so a corrected digest, or a moved repository, reaches every pod.
+func (r *Runtime) leakCheckDrift(annotations map[string]string) []string {
+	held, recorded := annotations[leakCheckerAnnotation]
+	if !recorded || held == r.leakCheck.ManifestSHA256 {
+		return nil
+	}
+	now := r.leakCheck.ManifestSHA256
+	if now == "" {
+		now = "none"
+	}
+	return []string{"leak check manifest " + held + ", now " + now}
 }
 
 // enrollsIn is the one decision whether a generation of role started now in a pod holds the
@@ -890,7 +913,7 @@ func (r *Runtime) podTemplate(l launch) podTemplate {
 		podShapeAnnotation: r.podShapes[l.shapeKey()],
 	}
 	if r.leakCheck.Configured() {
-		annotations[leakCheckerAnnotation] = r.leakCheck.CheckerSHA256
+		annotations[leakCheckerAnnotation] = r.leakCheck.ManifestSHA256
 	}
 	return podTemplate{
 		Metadata: podMetadata{Labels: labels, Annotations: annotations},

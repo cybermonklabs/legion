@@ -251,10 +251,11 @@ type Config struct {
 	// records keep the name each was written under. The zero value, which answers as
 	// strings.EqualFold does, while the file configures none.
 	RepositoryRenames ghrepo.Renames
-	// LeakCheck is `leak_check`, or leakguard.RepositoryVar and leakguard.SHA256Var in the
+	// LeakCheck is `leak_check`, or leakguard.RepositoryVar and leakguard.ManifestVar in the
 	// daemon's environment, which the file's members override one by one: the repository the
-	// deployment's shared public leak check is read from and the sha256 of its checker. The zero
-	// Setting is a deployment that runs no shared leak check of its own (resolveLeakCheck).
+	// deployment's shared public leak check is read from and the check's manifest digest
+	// (leakguard.Manifest). The zero Setting is a deployment that runs no shared leak check of its
+	// own (resolveLeakCheck).
 	LeakCheck leakguard.Setting
 	// Hooks is `hooks`: the deployment's own prompts, each put in front of named roles every
 	// Every moves back of the moves it selects. DefaultHooks() while the file names no key, and

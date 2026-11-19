@@ -444,7 +444,7 @@ func TestRunLogsTheLeakCheckLineAtBoot(t *testing.T) {
 			if err := run(context.Background(), cfg, slog.New(slog.NewJSONHandler(&logged, nil)), o); err == nil {
 				t.Fatal("run returned no error although another listener held its port")
 			}
-			named := `"repository":"` + tc.setting.Repository.String() + `","checker_sha256":"` + tc.setting.CheckerSHA256 + `"`
+			named := `"repository":"` + tc.setting.Repository.String() + `","manifest_sha256":"` + tc.setting.ManifestSHA256 + `"`
 			if got := strings.Count(logged.String(), leakCheckNotConfigured); got != tc.notConfigured {
 				t.Fatalf("the boot logged the not-configured line %d times, want %d; log:\n%s", got, tc.notConfigured, logged.String())
 			}

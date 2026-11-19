@@ -186,7 +186,7 @@ func TestADeploymentThatNamesNoLeakCheckPushesNoneAndTellsItsRolesNone(t *testin
 	}{
 		{name: "no setting", setting: leakguard.Setting{}, told: map[string]string{}},
 		{name: "the deployment's setting", setting: testLeakCheck, pushed: true, told: map[string]string{
-			leakguard.CheckVar: leakguard.InstalledCheck, leakguard.CheckerVar: testLeakCheck.CheckerSHA256,
+			leakguard.CheckVar: leakguard.InstalledCheck, leakguard.CheckerVar: testLeakCheck.ManifestSHA256,
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -224,34 +224,41 @@ func TestADeploymentThatNamesNoLeakCheckPushesNoneAndTellsItsRolesNone(t *testin
 	}
 }
 
-// A pod records the checker it was built under on its template (leakCheckerAnnotation), and a role
-// started in that pod after the daemon restarted under another checker — the deployment moved its
-// worker image's pin and its checker together, and the pod is kept until its update round — is
-// told the checker its pod was built under, which is the one the install of that pod's own pin
-// hashes to. Told the checker now, its shim would start no agent, so it would never answer the
-// round that is to replace the pod. A pod built under no setting records none, and its role is
-// told the installed check and no checker. A pod the launch builds itself is told the checker now
-// (TestADeploymentThatNamesNoLeakCheckPushesNoneAndTellsItsRolesNone).
+// A pod records the manifest digest it was built under on its template (leakCheckerAnnotation),
+// and a role started in that pod after the daemon restarted under another digest — the deployment
+// moved its worker image's pin and its digest together, and the pod is kept until its update
+// round — is told the digest its pod was built under, which is the one the install of that pod's
+// own pin has. Told the digest now, its shim would start no agent, so it would never answer the
+// round that is to replace the pod. A pod built under no setting records none: where its launcher
+// holds an install from before, its role is told the installed check and no digest; where its
+// launcher holds none, the restarted daemon pushes the setting's check into it, and its role is
+// told the setting's digest, so the check pushed is hashed. A pod the launch builds itself is told
+// the digest now (TestADeploymentThatNamesNoLeakCheckPushesNoneAndTellsItsRolesNone).
 func TestARoleStartedInAKeptPodIsToldTheCheckerItsPodWasBuiltUnder(t *testing.T) {
-	moved := leakguard.Setting{Repository: testLeakCheck.Repository, CheckerSHA256: strings.Repeat("7c", 32)}
+	moved := leakguard.Setting{Repository: testLeakCheck.Repository, ManifestSHA256: strings.Repeat("7c", 32)}
 	for _, tc := range []struct {
 		name     string
 		built    leakguard.Setting
+		held     bool
 		recorded string
+		pushed   bool
 		told     map[string]string
 	}{
-		{name: "built under the checker before", built: testLeakCheck, recorded: testLeakCheck.CheckerSHA256,
-			told: map[string]string{leakguard.CheckVar: leakguard.InstalledCheck, leakguard.CheckerVar: testLeakCheck.CheckerSHA256}},
-		{name: "built under no setting", built: leakguard.Setting{},
+		{name: "built under the digest before", built: testLeakCheck, held: true, recorded: testLeakCheck.ManifestSHA256,
+			told: map[string]string{leakguard.CheckVar: leakguard.InstalledCheck, leakguard.CheckerVar: testLeakCheck.ManifestSHA256}},
+		{name: "built under no setting, its launcher holding an install from before", built: leakguard.Setting{}, held: true,
 			told: map[string]string{leakguard.CheckVar: leakguard.InstalledCheck}},
+		{name: "built under no setting, its launcher holding none", built: leakguard.Setting{}, held: false, pushed: true,
+			told: map[string]string{leakguard.CheckVar: leakguard.InstalledCheck, leakguard.CheckerVar: moved.ManifestSHA256}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			g := newRig(t, nil, withLeakCheckHello(testLeakCheckTag, true),
+			g := newRig(t, nil, withLeakCheckHello(testLeakCheckTag, tc.held),
 				withOptions(func(o *Options) { o.LeakCheck, o.LeakCheckSetting = servedLeakCheck(), tc.built }))
 			loc := g.spawn(workerSpec(t))
 			if got := g.sandbox(loc.Sandbox.Name).Spec.PodTemplate.Metadata.Annotations[leakCheckerAnnotation]; got != tc.recorded {
-				t.Fatalf("the pod's template records the checker %q, want %q", got, tc.recorded)
+				t.Fatalf("the pod's template records the digest %q, want %q", got, tc.recorded)
 			}
+			before := countOf(g.sent(workerToken), shimwire.TypeLauncherLeakCheck)
 			r2 := restartedOver(t, g, loc, func(o *Options) {
 				o.LeakCheck, o.LeakCheckSetting = servedLeakCheck(), moved
 				movedReservation(o)
@@ -263,6 +270,9 @@ func TestARoleStartedInAKeptPodIsToldTheCheckerItsPodWasBuiltUnder(t *testing.T)
 			if kept.Sandbox.PodUID != loc.Sandbox.PodUID {
 				t.Fatalf("Resume replaced the drifted pod; this case is about the pod a launch keeps")
 			}
+			if pushed := countOf(g.sent(workerToken), shimwire.TypeLauncherLeakCheck) > before; pushed != tc.pushed {
+				t.Fatalf("the restarted daemon pushed the check to the kept pod's launcher: %t, want %t", pushed, tc.pushed)
+			}
 			told := map[string]string{}
 			for name, value := range startEnv(startSent(t, g, 2)) {
 				if name == leakguard.CheckVar || name == leakguard.CheckerVar {
@@ -271,6 +281,42 @@ func TestARoleStartedInAKeptPodIsToldTheCheckerItsPodWasBuiltUnder(t *testing.T)
 			}
 			if !maps.Equal(told, tc.told) {
 				t.Fatalf("the role started in the kept pod was told %v of the leak check, want %v", told, tc.told)
+			}
+		})
+	}
+}
+
+// A change of the deployment's manifest digest alone is drift: an issue pod built under one digest
+// is reported drifted, naming both, by a daemon restarted under another, so its update round
+// opens and replaces the pod once its workers have pushed — a corrected digest reaches every pod.
+// A pod built under no setting records none and has not drifted for it, and neither has a pod
+// built under the digest the daemon still runs.
+func TestAChangedManifestDigestIsDrift(t *testing.T) {
+	moved := leakguard.Setting{Repository: testLeakCheck.Repository, ManifestSHA256: strings.Repeat("7c", 32)}
+	for _, tc := range []struct {
+		name   string
+		built  leakguard.Setting
+		now    leakguard.Setting
+		reason string
+	}{
+		{name: "another digest", built: testLeakCheck, now: moved,
+			reason: "leak check manifest " + testLeakCheck.ManifestSHA256 + ", now " + moved.ManifestSHA256},
+		{name: "no setting now", built: testLeakCheck, now: leakguard.Setting{},
+			reason: "leak check manifest " + testLeakCheck.ManifestSHA256 + ", now none"},
+		{name: "the same digest", built: testLeakCheck, now: testLeakCheck},
+		{name: "a pod that records none", built: leakguard.Setting{}, now: moved},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newRig(t, nil, withLeakCheckHello(testLeakCheckTag, true),
+				withOptions(func(o *Options) { o.LeakCheck, o.LeakCheckSetting = servedLeakCheck(), tc.built }))
+			loc := g.spawn(workerSpec(t))
+			r2 := restartedOver(t, g, loc, func(o *Options) { o.LeakCheck, o.LeakCheckSetting = servedLeakCheck(), tc.now })
+			drifted := driftOf(t, g.ctx, r2, loc)
+			switch {
+			case tc.reason == "" && len(drifted) != 0:
+				t.Fatalf("PodDrift = %q, want nothing", drifted)
+			case tc.reason != "" && !slices.Contains(drifted, tc.reason):
+				t.Fatalf("PodDrift = %q, want %q among it", drifted, tc.reason)
 			}
 		})
 	}
@@ -427,10 +473,10 @@ func TestARolesEnvironmentLoadsAConfigurationWithNoLeakCheckRefusal(t *testing.T
 		name, value, _ := strings.Cut(pair, "=")
 		env[name] = value
 	}
-	if env[leakguard.CheckerVar] != testLeakCheck.CheckerSHA256 {
-		t.Fatalf("the role is told %s=%q, want the deployment's checker %q", leakguard.CheckerVar, env[leakguard.CheckerVar], testLeakCheck.CheckerSHA256)
+	if env[leakguard.CheckerVar] != testLeakCheck.ManifestSHA256 {
+		t.Fatalf("the role is told %s=%q, want the deployment's checker %q", leakguard.CheckerVar, env[leakguard.CheckerVar], testLeakCheck.ManifestSHA256)
 	}
-	for _, name := range []string{leakguard.RepositoryVar, leakguard.SHA256Var} {
+	for _, name := range []string{leakguard.RepositoryVar, leakguard.ManifestVar} {
 		if value, told := env[name]; told {
 			t.Errorf("the role is told the daemon's own %s=%q, which a configuration it loads would read", name, value)
 		}

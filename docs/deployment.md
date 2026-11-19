@@ -329,20 +329,23 @@ run on the machine the daemon runs on.
 A daemon that resolves none tells that pane no `PUBLIC_LEAK_CHECK`.
 What a pane's `legion gh` writes then meet is the deployment's leak check setting, which a tmux
 daemon reads from its process environment as a Kubernetes daemon does:
-`LEGION_LEAK_CHECK_REPOSITORY` and `LEGION_LEAK_CHECK_SHA256`, or the `leak_check` block of
-`legion.yaml` ([Worker image](kubernetes.md#worker-image)).
-With the setting, every pane is told the checker as `LEGION_LEAK_CHECKER_SHA256`, the daemon logs
-one line per launch naming a pane it resolved no check for, and every write that pane's
-`legion gh` makes to a public repository is refused with a setup error naming the missing check.
-A pane that resolves a check whose `public_leak_check.py` hashes to anything but that checker has
-every call of its `legion gh` refused, reads included, with a setup error naming the checker and
-the sha256 it found, so the check the machine's installer put there must be the one whose sha256
-the setting names.
+`LEGION_LEAK_CHECK_REPOSITORY` and `LEGION_LEAK_CHECK_MANIFEST_SHA256`, or the `leak_check` block
+of `legion.yaml` ([Worker image](kubernetes.md#worker-image)).
+With the setting, every pane is told the check's manifest digest as
+`LEGION_LEAK_CHECKER_MANIFEST_SHA256`, the daemon logs one line per launch naming a pane it
+resolved no check for, and every write that pane's `legion gh` makes to a public repository is
+refused with a setup error naming the missing check.
+A pane that resolves a check whose manifest digest is anything but that one — another program, a
+launcher script edited beside an unchanged program, a missing README or must-pass lines — has
+every call of its `legion gh` refused, reads included, with a setup error naming the digest told
+and the digest found, so the check the machine's installer put there must be the tag the setting
+names, whole.
 A broken setup on the machine is told to the pane all the same, as the path it is broken at: a
-stale `PUBLIC_LEAK_CHECK`, a pointer file naming a moved check, a pointer file that names nothing
-or cannot be read, or a `public-leak-check.sh` on `PATH` that is a dangling link or has no execute
-bit. Its public writes are then refused under either setting, and the daemon logs a line per
-launch.
+stale `PUBLIC_LEAK_CHECK`, a `PUBLIC_LEAK_CHECK` or pointer file naming a directory or a file with
+no execute bit, a pointer file that names nothing or cannot be read, or, where nothing else names
+a check, a `public-leak-check.sh` on `PATH` that is a dangling link or has no execute bit. Its
+public writes, pushes included, are then refused under either setting, and the daemon logs a line
+per launch.
 With no setting, the daemon logs once at boot that the deployment leak check is not configured, and
 a pane's `legion gh` with no check named anywhere writes under the guard's visibility read and this
 repository's own private-name rules alone.

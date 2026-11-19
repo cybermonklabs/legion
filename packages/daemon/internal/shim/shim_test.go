@@ -585,23 +585,42 @@ func TestOMPIsSpawnedOnlyAfterTheHelloAck(t *testing.T) {
 }
 
 // theTag is the pin a pod's worker image carries, as these tests spell one, and theChecker the
-// deployment's checker the runtime tells a role of a deployment that runs a shared leak check
-// (leakguard.CheckerVar): the sha256 of the stand-in program every install here carries beside
-// its check (leakguardtest.Program), which the shim hashes before it starts an agent.
+// deployment's manifest digest the runtime tells a role of a deployment that runs a shared leak
+// check (leakguard.CheckerVar): the digest (leakguard.Manifest) of the stand-in check every install
+// here holds (installedFiles), which the shim compares before it starts an agent.
 const theTag = "leak-check-v15"
 
-var theChecker = leakguard.CheckerVar + "=" + leakguardtest.ProgramSHA256
+// installedFiles are the files of the stand-in check every install here holds: a launcher whose
+// --help names both shapes, and the other files of its manifest.
+var installedFiles = map[string]string{
+	leakguardtest.CheckName:    "#!/bin/sh\n" + leakguardtest.AnswersHelp(os.DevNull),
+	leakguardtest.ProgramName:  leakguardtest.Program,
+	leakguardtest.ReadmeName:   leakguardtest.Readme,
+	leakguardtest.MustPassName: leakguardtest.MustPass,
+}
+
+var theChecker = leakguard.CheckerVar + "=" + func() string {
+	digest, err := leakguard.Manifest(func(name string) ([]byte, error) { return []byte(installedFiles[name]), nil })
+	if err != nil {
+		panic(err)
+	}
+	return digest
+}()
 
 // installedCheck is the directory the pod's launcher installs the check the daemon served into,
-// made the way the launcher makes it: a GitHub-shaped tarball of a stand-in check whose --help
-// names both shapes (leakguardtest.AnswersHelp), with the stand-in program beside it, packed
+// made the way the launcher makes it: a GitHub-shaped tarball of installedFiles, packed
 // (leakguard.PackTarball) and installed at tag (leakguard.InstallServed).
 func installedCheck(t *testing.T, tag string) string {
 	t.Helper()
-	raw := leakguardtest.GitHubTarball(t, map[string]leakguardtest.Member{
-		leakguardtest.CheckName:   {Body: "#!/bin/sh\n" + leakguardtest.AnswersHelp(filepath.Join(t.TempDir(), "help-runs")), Mode: 0o755},
-		leakguardtest.ProgramName: {Body: leakguardtest.Program, Mode: 0o644},
-	})
+	members := map[string]leakguardtest.Member{}
+	for name, body := range installedFiles {
+		mode := int64(0o644)
+		if name == leakguardtest.CheckName {
+			mode = 0o755
+		}
+		members[name] = leakguardtest.Member{Body: body, Mode: mode}
+	}
+	raw := leakguardtest.GitHubTarball(t, members)
 	body, err := leakguard.PackTarball(bytes.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)

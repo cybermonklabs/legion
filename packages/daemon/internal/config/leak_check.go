@@ -17,22 +17,22 @@ const leakCheckKey = "leak_check"
 // The two members of `leak_check`, each with the environment variable it overrides.
 const (
 	leakCheckRepositoryKey = leakCheckKey + ".repository"
-	leakCheckSHA256Key     = leakCheckKey + ".checker_sha256"
+	leakCheckManifestKey   = leakCheckKey + ".manifest_sha256"
 )
 
-// checkerSHA256 is the shape of `leak_check.checker_sha256`: a sha256 in lowercase hex, which is
+// manifestSHA256 is the shape of `leak_check.manifest_sha256`: a sha256 in lowercase hex, which is
 // how `sha256sum` prints one.
-var checkerSHA256 = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var manifestSHA256 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // fileLeakCheck is `leak_check` as the file wrote it: each member a pointer, so a member the file
 // leaves out is told from one it sets and leaves the environment's value standing
 // (resolveLeakCheck).
 type fileLeakCheck struct {
-	Repository    *string
-	CheckerSHA256 *string
+	Repository     *string
+	ManifestSHA256 *string
 }
 
-// readLeakCheck is `leak_check`: a mapping of `repository` and `checker_sha256`, each a non-empty
+// readLeakCheck is `leak_check`: a mapping of `repository` and `manifest_sha256`, each a non-empty
 // string, refused here where its key is known. Whether the two stand together, and each one's
 // shape (an owner/name ghrepo.Parse takes, 64 lowercase hex digits), are settled once the
 // environment's values are read (resolveLeakCheck). An absent key and a null one are no block.
@@ -51,40 +51,40 @@ func readLeakCheck(value *yaml.Node, key string) (*fileLeakCheck, error) {
 	if block.Repository, err = readNonEmptyString(fields["repository"], key+".repository"); err != nil {
 		return nil, err
 	}
-	if block.CheckerSHA256, err = readNonEmptyString(fields["checker_sha256"], key+".checker_sha256"); err != nil {
+	if block.ManifestSHA256, err = readNonEmptyString(fields["manifest_sha256"], key+".manifest_sha256"); err != nil {
 		return nil, err
 	}
 	return block, nil
 }
 
 // resolveLeakCheck settles the deployment's shared public leak check (Config.LeakCheck): each of
-// the two values from the daemon's environment (leakguard.RepositoryVar, leakguard.SHA256Var),
+// the two values from the daemon's environment (leakguard.RepositoryVar, leakguard.ManifestVar),
 // which the file's member of the same value overrides, as postgres_dsn overrides
-// LEGION_POSTGRES_DSN. The repository must be one ghrepo.Parse takes and the sha256 64 lowercase
-// hex digits, each refused naming where it came from. The two are set together or not at all: one
-// without the other is refused naming the half that is set and the two places the missing half
-// may come from, since a check read from a repository with no checker to hold it to, or a checker
-// with no repository to read the check from, is a half of the setting the daemon cannot run. With
-// neither, the deployment runs no shared leak check, which is no refusal
-// (leakguard.Setting.Configured).
+// LEGION_POSTGRES_DSN. The repository must be one ghrepo.Parse takes and the manifest digest
+// (leakguard.Manifest) 64 lowercase hex digits, each refused naming where it came from. The two are
+// set together or not at all: one without the other is refused naming the half that is set and the
+// two places the missing half may come from, since a check read from a repository with no digest
+// to hold it to, or a digest with no repository to read the check from, is a half of the setting
+// the daemon cannot run. With neither, the deployment runs no shared leak check, which is no
+// refusal (leakguard.Setting.Configured).
 func resolveLeakCheck(file fileConfig, env func(string) string, cfg *Config) error {
 	repository, repositoryFrom := env(leakguard.RepositoryVar), leakguard.RepositoryVar
-	sha, shaFrom := env(leakguard.SHA256Var), leakguard.SHA256Var
+	sha, shaFrom := env(leakguard.ManifestVar), leakguard.ManifestVar
 	if block := file.LeakCheck; block != nil {
 		if block.Repository != nil {
 			repository, repositoryFrom = *block.Repository, leakCheckRepositoryKey
 		}
-		if block.CheckerSHA256 != nil {
-			sha, shaFrom = *block.CheckerSHA256, leakCheckSHA256Key
+		if block.ManifestSHA256 != nil {
+			sha, shaFrom = *block.ManifestSHA256, leakCheckManifestKey
 		}
 	}
-	const together = "the repository and the checker sha256 of the deployment's leak check are set together or not at all"
+	const together = "the repository and the manifest sha256 of the deployment's leak check are set together or not at all"
 	switch {
 	case repository == "" && sha == "":
 		return nil
 	case sha == "":
-		return fmt.Errorf("%s is set and the checker sha256 is not: set %s, or %s in legion.yaml; %s",
-			repositoryFrom, leakguard.SHA256Var, leakCheckSHA256Key, together)
+		return fmt.Errorf("%s is set and the manifest sha256 is not: set %s, or %s in legion.yaml; %s",
+			repositoryFrom, leakguard.ManifestVar, leakCheckManifestKey, together)
 	case repository == "":
 		return fmt.Errorf("%s is set and the repository is not: set %s, or %s in legion.yaml; %s",
 			shaFrom, leakguard.RepositoryVar, leakCheckRepositoryKey, together)
@@ -93,9 +93,9 @@ func resolveLeakCheck(file fileConfig, env func(string) string, cfg *Config) err
 	if err != nil {
 		return err
 	}
-	if !checkerSHA256.MatchString(sha) {
-		return fmt.Errorf("%s must be the sha256 of the check's public_leak_check.py, 64 lowercase hex digits (got %+q)", shaFrom, sha)
+	if !manifestSHA256.MatchString(sha) {
+		return fmt.Errorf("%s must be the check's manifest digest, 64 lowercase hex digits (got %+q)", shaFrom, sha)
 	}
-	cfg.LeakCheck = leakguard.Setting{Repository: parsed, CheckerSHA256: sha}
+	cfg.LeakCheck = leakguard.Setting{Repository: parsed, ManifestSHA256: sha}
 	return nil
 }

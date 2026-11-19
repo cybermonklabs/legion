@@ -369,7 +369,7 @@ func TestEveryIssueAndControllerPodIsProtectedFromAutoscalerEviction(t *testing.
 				doNotDisruptAnnotation: "true",
 				safeToEvictAnnotation:  "false",
 				podShapeAnnotation:     podShape(r, l.kind, l.microVM),
-				leakCheckerAnnotation:  testLeakCheck.CheckerSHA256,
+				leakCheckerAnnotation:  testLeakCheck.ManifestSHA256,
 			}
 			if got := r.podTemplate(l).Metadata.Annotations; !maps.Equal(got, want) {
 				t.Errorf("pod annotations = %v, want exactly %v", got, want)
@@ -2639,7 +2639,7 @@ func TestAMicroVMPodKeepsTheStopEvictionAnnotations(t *testing.T) {
 		t.Fatalf("the pod runs in %s, want a microVM", got)
 	}
 	want := map[string]string{doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false", podShapeAnnotation: podShape(r, issuePod{}, testMicroVM()),
-		leakCheckerAnnotation: testLeakCheck.CheckerSHA256}
+		leakCheckerAnnotation: testLeakCheck.ManifestSHA256}
 	if got := template.Metadata.Annotations; !maps.Equal(got, want) {
 		t.Errorf("the microVM pod's annotations are %v, want exactly %v", got, want)
 	}

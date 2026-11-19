@@ -1,24 +1,33 @@
 package leakguard
 
-import "github.com/sjawhar/legion/daemon/internal/ghrepo"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+)
 
 // Setting is the deployment's shared public leak check as its operator names it: the daemon's
-// `leak_check` block in legion.yaml, or RepositoryVar and SHA256Var in the daemon's environment
+// `leak_check` block in legion.yaml, or RepositoryVar and ManifestVar in the daemon's environment
 // (internal/config). Legion holds no name of it: the deployment supplies both values, and a
 // turnkey install runs with neither.
 //
 // Repository is the repository the check is published from by tag, whose `leak-check` directory
-// the daemon reads at a pod's pin and pushes to the pod's launcher (Source). CheckerSHA256 is the
-// sha256, in lowercase hex, of that check's public_leak_check.py, which the runtime tells every
-// role it starts under CheckerVar, and which a role's shim (Installed) and guard
-// (Guard.sharedCheck) hold the check they find to.
+// the daemon reads at a pod's pin and pushes to the pod's launcher (Source). ManifestSHA256 is
+// that check's manifest digest (ManifestFiles, Manifest): one digest over every file the check
+// runs from, which the runtime tells every role it starts under CheckerVar, and which a role's
+// shim (Installed) and guard (Guard.sharedCheck) hold the check they find to.
 //
 // Both are set, or neither, which the loader holds the setting to. The zero Setting is a
 // deployment that runs no shared leak check of its own: the daemon reads and pushes none, a role
 // pod starts without it, and the guard refuses no write for its absence (Guard.sharedCheck).
 type Setting struct {
-	Repository    ghrepo.Repository
-	CheckerSHA256 string
+	Repository     ghrepo.Repository
+	ManifestSHA256 string
 }
 
 // Configured is whether the deployment names a shared leak check at all.
@@ -28,24 +37,63 @@ func (s Setting) Configured() bool { return !s.Repository.IsZero() }
 // `leak_check.repository` overrides.
 const RepositoryVar = "LEGION_LEAK_CHECK_REPOSITORY"
 
-// SHA256Var is the daemon's environment fallback for Setting.CheckerSHA256, which the file's
-// `leak_check.checker_sha256` overrides. It is the daemon's own and told to no role: a role is told
-// the checker under CheckerVar, a name the daemon's configuration never reads, so a configuration
-// loaded in a role — `legion config check` in a pod reads the process environment — never
-// meets one half of the daemon's setting without the other.
-const SHA256Var = "LEGION_LEAK_CHECK_SHA256"
+// ManifestVar is the daemon's environment fallback for Setting.ManifestSHA256, the check's
+// manifest digest (Manifest), which the file's `leak_check.manifest_sha256` overrides. It is the
+// daemon's own and told to no role: a role is told the digest under CheckerVar, a name the
+// daemon's configuration never reads, so a configuration loaded in a role — `legion config check`
+// in a pod reads the process environment — never meets one half of the daemon's setting without
+// the other.
+const ManifestVar = "LEGION_LEAK_CHECK_MANIFEST_SHA256"
 
-// CheckerVar is the name the runtime tells every role it starts the deployment's checker
-// (Setting.CheckerSHA256) under (runtime/sandbox's mainEnvironment, runtime/tmux's panePairs). In a
-// role's environment it names the one check the role may write under: a role's shim reads the
-// pod's install only under it and starts no agent unless the install's program hashes to it
-// (Installed), and the guard refuses a write for want of a check, or under a check whose program
-// hashes to anything else, only under it (Guard.sharedCheck). It does not decide `legion gh`'s
+// CheckerVar is the name the runtime tells every role it starts the deployment's manifest digest
+// (Setting.ManifestSHA256) under (runtime/sandbox's mainEnvironment, runtime/tmux's panePairs). In
+// a role's environment it names the one check the role may write under: a role's shim reads the
+// pod's install only under it and starts no agent unless the install's manifest digest is it
+// (Installed), and the guard refuses a write for want of a check, or under a check whose manifest
+// digest is anything else, only under it (Guard.sharedCheck). It does not decide `legion gh`'s
 // checked-only reads, which only the resolved check's program does (GhRequest.ProvenCheck). It is
 // exported because each of those reads it, and a second copy of the string in any of them is one
 // an edit here would silently part from.
-const CheckerVar = "LEGION_LEAK_CHECKER_SHA256"
+const CheckerVar = "LEGION_LEAK_CHECKER_MANIFEST_SHA256"
 
-// configured is whether env names the deployment's checker (CheckerVar): the role runs under a
-// deployment that runs a shared leak check.
+// configured is whether env names the deployment's manifest digest (CheckerVar): the role runs
+// under a deployment that runs a shared leak check.
 func configured(env []string) bool { return value(env, CheckerVar) != "" }
+
+// ManifestFiles are the files the check's manifest digest covers, in the order it hashes them: the
+// set the check's own install procedure installs into a home and records a sha256 of each of
+// (`home_files` in its INSTALL.md). They are every file the guard runs or the check reads when it
+// runs — the launcher script, which execs the program; the program; and the must-pass lines its
+// self-test reads — and its README, which the procedure installs beside them.
+var ManifestFiles = []string{checkName, checkProgram, "README.md", "must-pass-lines.txt"}
+
+// Manifest is the manifest digest of the files read answers for ManifestFiles: for each file, in
+// that order, the line `sha256sum` prints of it — its sha256 in lowercase hex, two spaces, its
+// name, a newline — and the sha256, in lowercase hex, of those lines together. It is what
+// `(cd <dir> && sha256sum public-leak-check.sh public_leak_check.py README.md must-pass-lines.txt)
+// | sha256sum` prints of a directory holding the check, so an operator computes the setting's value
+// with that one line. A file read cannot answer is an error naming it.
+func Manifest(read func(name string) ([]byte, error)) (string, error) {
+	var lines strings.Builder
+	for _, name := range ManifestFiles {
+		body, err := read(name)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", name, err)
+		}
+		sum := sha256.Sum256(body)
+		lines.WriteString(hex.EncodeToString(sum[:]) + "  " + name + "\n")
+	}
+	digest := sha256.Sum256([]byte(lines.String()))
+	return hex.EncodeToString(digest[:]), nil
+}
+
+// manifestSHA256 is the manifest digest (Manifest) of the check installed at check: of the files
+// in the script's own directory once its symbolic links are followed, since the script finds its
+// program beside itself there (readlink -f).
+func manifestSHA256(check string) (string, error) {
+	dir := filepath.Dir(check)
+	if followed, err := filepath.EvalSymlinks(check); err == nil {
+		dir = filepath.Dir(followed)
+	}
+	return Manifest(func(name string) ([]byte, error) { return os.ReadFile(filepath.Join(dir, name)) })
+}

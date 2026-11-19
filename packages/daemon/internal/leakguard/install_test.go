@@ -58,14 +58,16 @@ echo "LEAK CHECK ERROR: /usr/bin/python3 is missing or not executable, so the ch
 exit 2
 `
 
-// theCheck is the members of a check that runs: the launcher, its python file, its fixture and a
-// nested directory.
+// theCheck is the members of a check that runs: the launcher, its python file, its README, its
+// fixture and a nested directory — every file of its manifest (ManifestFiles) and two it does not
+// cover.
 func theCheck(launcher string) map[string]leakguardtest.Member {
 	return map[string]leakguardtest.Member{
-		checkName:    {Body: launcher, Mode: 0o755},
-		theNeighbour: {Body: leakguardtest.Program, Mode: 0o644},
-		theFixture:   {Body: "a line the self-test must pass\n", Mode: 0o600},
-		theNested:    {Body: "# the revert gate\n", Mode: 0o644},
+		checkName:                {Body: launcher, Mode: 0o755},
+		theNeighbour:             {Body: leakguardtest.Program, Mode: 0o644},
+		leakguardtest.ReadmeName: {Body: leakguardtest.Readme, Mode: 0o644},
+		theFixture:               {Body: "a line the self-test must pass\n", Mode: 0o600},
+		theNested:                {Body: "# the revert gate\n", Mode: 0o644},
 	}
 }
 
@@ -183,7 +185,7 @@ func TestThePackHoldsTheDirectoryAlone(t *testing.T) {
 		names = append(names, name)
 	}
 	slices.Sort(names)
-	want := []string{checkName, theFixture, theNeighbour, theNested}
+	want := []string{checkName, theFixture, theNeighbour, theNested, leakguardtest.ReadmeName}
 	slices.Sort(want)
 	if !slices.Equal(names, want) {
 		t.Fatalf("the pack holds %q, want the directory's own files alone, %q", names, want)
@@ -278,8 +280,8 @@ func TestTheServedInstallLandsTheCheckAndReplacesWhatWasThere(t *testing.T) {
 			t.Errorf("the install holds %s with mode %o, want %o", name, got, m.Mode)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(dir, "README.md")); !os.IsNotExist(err) {
-		t.Errorf("stat the repository's own README in the install = %v, want nothing of the repository outside %s", err, checkDirectory)
+	if _, err := os.Stat(filepath.Join(dir, "CONTRIBUTING.md")); !os.IsNotExist(err) {
+		t.Errorf("stat the repository's own CONTRIBUTING.md in the install = %v, want nothing of the repository outside %s", err, checkDirectory)
 	}
 	if got := recordedTag(t, dir); got != theTag+"\n" {
 		t.Errorf("the install recorded %q, want %q", got, theTag+"\n")
@@ -488,15 +490,14 @@ func TestAHelpRunThatEndsWithNoExitIsRefusedNamingWhy(t *testing.T) {
 	}
 }
 
-// A role's shim reads the install and starts no agent unless it is the pin's and its program is
-// the deployment's checker: an absent check, an install that records no tag, one of another tag,
-// one whose program hashes to another sha256 and one with no program are each refused naming the
-// pin and what is there. With no pin, which is every tmux pane, nothing is read and nothing
-// refused; and with the pin but no deployment checker (CheckerVar), which is every role of a
-// deployment that runs no shared leak check, nothing is read either, even where there is no
-// install at all.
+// A role's shim reads the install and starts no agent unless it is the pin's and its manifest
+// digest is the deployment's: an absent check, an install that records no tag, one of another
+// tag, one whose program is another, one whose launcher is edited beside an untouched program,
+// and one missing a file of the manifest are each refused naming the pin and what is there. With
+// no pin, which is every tmux pane, nothing is read and nothing refused; and with the pin but no
+// deployment digest (CheckerVar), which is every role of a deployment that runs no shared leak
+// check, nothing is read either, even where there is no install at all.
 func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
-	pinned := []string{"PATH=/usr/bin:/bin", TagVariable + "=" + theTag, CheckerVar + "=" + leakguardtest.ProgramSHA256}
 	installedAt := func(t *testing.T) string {
 		t.Helper()
 		dir := filepath.Join(t.TempDir(), "leak-check")
@@ -505,6 +506,11 @@ func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
 		}
 		return dir
 	}
+	deployments, err := manifestSHA256(filepath.Join(installedAt(t), checkName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned := []string{"PATH=/usr/bin:/bin", TagVariable + "=" + theTag, CheckerVar + "=" + deployments}
 
 	t.Run("the install of the pin", func(t *testing.T) {
 		dir := installedAt(t)
@@ -525,6 +531,18 @@ func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
 			t.Fatalf("Installed = %q, %v; want no check and no refusal", check, err)
 		}
 	})
+	edit := func(name, body string, mode os.FileMode) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			path := filepath.Join(dir, name)
+			if err := os.Chmod(path, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(body), mode); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	differs := []string{TagVariable + "=" + theTag, "has the manifest digest ", "not the deployment's " + CheckerVar + "=" + deployments}
 	for _, tc := range []struct {
 		name  string
 		spoil func(t *testing.T, dir string)
@@ -550,19 +568,24 @@ func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
 			want: []string{TagVariable + "=" + theTag, "is of leak-check-v14"},
 		},
 		{
-			name: "a program that does not hash to the deployment's checker",
-			spoil: func(t *testing.T, dir string) {
-				if err := os.WriteFile(filepath.Join(dir, theNeighbour), []byte("# a check of another version\n"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			},
-			want: []string{TagVariable + "=" + theTag, "holds a public_leak_check.py whose sha256 is ",
-				"not the deployment's checker " + CheckerVar + "=" + leakguardtest.ProgramSHA256},
+			name:  "a program of another version",
+			spoil: edit(theNeighbour, "# a check of another version\n", 0o644),
+			want:  differs,
+		},
+		{
+			name:  "a launcher edited to exit 0 beside an untouched program",
+			spoil: edit(checkName, "#!/bin/sh\nexit 0\n", 0o755),
+			want:  differs,
 		},
 		{
 			name:  "no program beside the check",
 			spoil: func(t *testing.T, dir string) { remove(t, filepath.Join(dir, theNeighbour)) },
-			want:  []string{TagVariable + "=" + theTag, "holds no public_leak_check.py to hash against " + CheckerVar},
+			want:  []string{TagVariable + "=" + theTag, "the manifest of the install at ", "cannot be read to compare with " + CheckerVar},
+		},
+		{
+			name:  "no must-pass lines beside the check",
+			spoil: func(t *testing.T, dir string) { remove(t, filepath.Join(dir, theFixture)) },
+			want:  []string{TagVariable + "=" + theTag, "cannot be read to compare with " + CheckerVar, theFixture},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

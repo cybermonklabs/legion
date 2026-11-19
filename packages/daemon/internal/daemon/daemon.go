@@ -1273,7 +1273,7 @@ func tmuxOptions(cfg config.Config, project string, launchers map[runtime.Backen
 		AdoptTimeout:      cfg.SlowCommandTimeout,
 		ProviderEnvDir:    providerEnvDir,
 		RoleConfigFiles:   cfg.RoleConfigFiles,
-		LeakCheckSHA256:   cfg.LeakCheck.CheckerSHA256,
+		LeakCheckSHA256:   cfg.LeakCheck.ManifestSHA256,
 		Log:               log,
 	}
 	if block := cfg.Runtime.Tmux; block != nil {

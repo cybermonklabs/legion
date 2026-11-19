@@ -89,9 +89,9 @@ var ghChildTestEnviron []string
 //     GIT_COMMITTER_EMAIL, for the git gh runs: no prompt, and the identity a pane's commits carry
 //     (runtime's identity environment). Its configuration is ghChildGitConfig's, not the caller's;
 //   - LEGION_GH_PATH and LEGION_GH_OWNERS_DIR, which `legion gh auth git-credential`, git's
-//     credential helper through GH_PATH, reads; PUBLIC_LEAK_CHECK, LEGION_LEAK_CHECKER_SHA256 and
-//     WRAPPED_GIT_AT, which the pre-push hook of a push gh's git makes reads, the first through
-//     leakguard.Resolve and the second as the checker its guard holds that check to; and
+//     credential helper through GH_PATH, reads; PUBLIC_LEAK_CHECK, LEGION_LEAK_CHECKER_MANIFEST_SHA256
+//     and WRAPPED_GIT_AT, which the pre-push hook of a push gh's git makes reads, the first through
+//     leakguard.Resolve and the second as the manifest digest its guard holds that check to; and
 //     LEGION_ROLE and LEGION_ISSUE, which both log.
 //
 // Everything else stays out: the trust stores, GIT_SSL_CAINFO, GIT_SSL_NO_VERIFY, SSLKEYLOGFILE,

@@ -93,9 +93,12 @@ type launcherSession struct {
 	// leakCheckTag is the tag of the shared public leak check this launcher's hello named, its
 	// own pin ("" for a launcher that takes no check from the daemon), and leakCheckInstalled
 	// whether this launcher process holds that tag installed: as its hello said, or as its answer
-	// to the push on this connection did (serveLeakCheck).
+	// to the push on this connection did (serveLeakCheck). leakCheckHeld is what the hello said
+	// alone, and never changes: an install the launcher held before this connection, which no
+	// push of this daemon made (heldLeakCheck).
 	leakCheckTag       string
 	leakCheckInstalled bool
+	leakCheckHeld      bool
 }
 
 func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored,
@@ -110,7 +113,7 @@ func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, saved ru
 func (d *launchers) accept(token claim.Token, issue string, podCreated time.Time, hello shimwire.LauncherHello) *launcherSession {
 	s := &launcherSession{owner: d, token: token, issue: issue, podCreated: podCreated, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
-		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled}
+		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled, leakCheckHeld: hello.LeakCheckInstalled}
 	d.mu.Lock()
 	old := d.sessions[token]
 	d.sessions[token] = s
@@ -232,6 +235,23 @@ func (d *launchers) state(token claim.Token, podUID string) (shimwire.LauncherSt
 		return shimwire.LauncherState{}, false
 	}
 	return session.state, true
+}
+
+// heldLeakCheck is whether token's launcher in podUID said in its hello that it held its pin's
+// check installed from before this connection (leakCheckHeld), and whether that launcher is
+// connected at all. A launcher that held none is pushed the check of the setting this daemon runs
+// before its first start (serveLeakCheck), so its role is told that setting's manifest digest even
+// in a kept pod that records none (relaunch).
+func (d *launchers) heldLeakCheck(token claim.Token, podUID string) (held, connected bool) {
+	d.mu.Lock()
+	session := d.sessions[token]
+	d.mu.Unlock()
+	if session == nil || session.podUID != podUID {
+		return false, false
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return session.leakCheckHeld, !session.closed
 }
 
 func (d *launchers) await(ctx context.Context, token claim.Token, podUID string) (*launcherSession, error) {
@@ -453,7 +473,7 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 		confirmed.mu.Unlock()
 		d.log.Info("launcher leak check: the pod's launcher installed the shared public leak check the daemon read",
 			"launcher", token, "pod", podUID, "repository", d.leakCheckSetting.Repository.String(), "tag", tag,
-			"checker_sha256", d.leakCheckSetting.CheckerSHA256, "bytes", len(served.Body), "slices", len(served.Frames))
+			"manifest_sha256", d.leakCheckSetting.ManifestSHA256, "bytes", len(served.Body), "slices", len(served.Frames))
 		return nil
 	}
 	return refuse(fmt.Sprintf("the pod's launcher took every slice of %s without installing it", tag), nil)

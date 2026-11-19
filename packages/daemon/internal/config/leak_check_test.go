@@ -9,12 +9,12 @@ import (
 )
 
 // The two values of a deployment's shared leak check as these tests write them: a neutral
-// repository, and a checker sha256 of the shape `sha256sum` prints and another one, so a test reads
-// which source a value came from.
+// repository, and a manifest digest of the shape `sha256sum` prints and another one, so a test
+// reads which source a value came from.
 const (
 	theLeakCheckRepository = "example-org/deployment"
-	theCheckerSHA256       = "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e"
-	otherCheckerSHA256     = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	theManifestSHA256      = "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e"
+	otherManifestSHA256    = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 )
 
 // deploymentDaemonEnvironment is the leak check's part of the environment a deployment's own
@@ -23,8 +23,8 @@ const (
 // TestTheDeploymentsDaemonEnvironmentNamesTheSetting rather than leaving every daemon the
 // deployment runs with no setting and no refusal.
 var deploymentDaemonEnvironment = map[string]string{
-	"LEGION_LEAK_CHECK_REPOSITORY": theLeakCheckRepository,
-	"LEGION_LEAK_CHECK_SHA256":     theCheckerSHA256,
+	"LEGION_LEAK_CHECK_REPOSITORY":      theLeakCheckRepository,
+	"LEGION_LEAK_CHECK_MANIFEST_SHA256": theManifestSHA256,
 }
 
 // A daemon handed deploymentDaemonEnvironment, and nothing in its file, reads both values: the
@@ -35,7 +35,7 @@ func TestTheDeploymentsDaemonEnvironmentNamesTheSetting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load with the deployment's daemon environment: %v", err)
 	}
-	want := leakguard.Setting{Repository: ghrepo.MustParse(theLeakCheckRepository), CheckerSHA256: theCheckerSHA256}
+	want := leakguard.Setting{Repository: ghrepo.MustParse(theLeakCheckRepository), ManifestSHA256: theManifestSHA256}
 	if cfg.LeakCheck != want || !cfg.LeakCheck.Configured() {
 		t.Fatalf("the setting = %+v, want %+v, read from the deployment's two variables", cfg.LeakCheck, want)
 	}
@@ -46,7 +46,7 @@ func TestTheDeploymentsDaemonEnvironmentNamesTheSetting(t *testing.T) {
 // member takes the other from the environment. Neither anywhere is a deployment that runs no
 // shared leak check, which loads.
 func TestTheLeakCheckSettingIsTheFileOverTheEnvironmentKeyByKey(t *testing.T) {
-	want := leakguard.Setting{Repository: ghrepo.MustParse(theLeakCheckRepository), CheckerSHA256: theCheckerSHA256}
+	want := leakguard.Setting{Repository: ghrepo.MustParse(theLeakCheckRepository), ManifestSHA256: theManifestSHA256}
 	for _, tc := range []struct {
 		name  string
 		block string
@@ -54,18 +54,18 @@ func TestTheLeakCheckSettingIsTheFileOverTheEnvironmentKeyByKey(t *testing.T) {
 		want  leakguard.Setting
 	}{
 		{name: "neither", want: leakguard.Setting{}},
-		{name: "the file alone", block: "leak_check:\n  repository: " + theLeakCheckRepository + "\n  checker_sha256: " + theCheckerSHA256 + "\n", want: want},
+		{name: "the file alone", block: "leak_check:\n  repository: " + theLeakCheckRepository + "\n  manifest_sha256: " + theManifestSHA256 + "\n", want: want},
 		{name: "the environment alone", env: map[string]string{
-			leakguard.RepositoryVar: theLeakCheckRepository, leakguard.SHA256Var: theCheckerSHA256,
+			leakguard.RepositoryVar: theLeakCheckRepository, leakguard.ManifestVar: theManifestSHA256,
 		}, want: want},
-		{name: "the file's checker over the environment's", block: "leak_check: {checker_sha256: " + theCheckerSHA256 + "}\n", env: map[string]string{
-			leakguard.RepositoryVar: theLeakCheckRepository, leakguard.SHA256Var: otherCheckerSHA256,
+		{name: "the file's digest over the environment's", block: "leak_check: {manifest_sha256: " + theManifestSHA256 + "}\n", env: map[string]string{
+			leakguard.RepositoryVar: theLeakCheckRepository, leakguard.ManifestVar: otherManifestSHA256,
 		}, want: want},
 		{name: "the file's repository over the environment's", block: "leak_check: {repository: " + theLeakCheckRepository + "}\n", env: map[string]string{
-			leakguard.RepositoryVar: "acme/elsewhere", leakguard.SHA256Var: theCheckerSHA256,
+			leakguard.RepositoryVar: "acme/elsewhere", leakguard.ManifestVar: theManifestSHA256,
 		}, want: want},
 		{name: "a null block, which is no block", block: "leak_check:\n", env: map[string]string{
-			leakguard.RepositoryVar: theLeakCheckRepository, leakguard.SHA256Var: theCheckerSHA256,
+			leakguard.RepositoryVar: theLeakCheckRepository, leakguard.ManifestVar: theManifestSHA256,
 		}, want: want},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -86,8 +86,8 @@ func TestTheLeakCheckSettingIsTheFileOverTheEnvironmentKeyByKey(t *testing.T) {
 // missing is no setting the daemon can run. A value the file names does not stand in for the half
 // the environment lacks.
 func TestOneLeakCheckValueWithoutTheOtherIsRefused(t *testing.T) {
-	const together = "; the repository and the checker sha256 of the deployment's leak check are set together or not at all"
-	const missingChecker = " is set and the checker sha256 is not: set LEGION_LEAK_CHECK_SHA256, or leak_check.checker_sha256 in legion.yaml" + together
+	const together = "; the repository and the manifest sha256 of the deployment's leak check are set together or not at all"
+	const missingManifest = " is set and the manifest sha256 is not: set LEGION_LEAK_CHECK_MANIFEST_SHA256, or leak_check.manifest_sha256 in legion.yaml" + together
 	const missingRepository = " is set and the repository is not: set LEGION_LEAK_CHECK_REPOSITORY, or leak_check.repository in legion.yaml" + together
 	for _, tc := range []struct {
 		name  string
@@ -96,15 +96,15 @@ func TestOneLeakCheckValueWithoutTheOtherIsRefused(t *testing.T) {
 		want  string
 	}{
 		{name: "the file's repository alone", block: "leak_check: {repository: " + theLeakCheckRepository + "}\n",
-			want: "leak_check.repository" + missingChecker},
-		{name: "the file's checker alone", block: "leak_check: {checker_sha256: " + theCheckerSHA256 + "}\n",
-			want: "leak_check.checker_sha256" + missingRepository},
+			want: "leak_check.repository" + missingManifest},
+		{name: "the file's digest alone", block: "leak_check: {manifest_sha256: " + theManifestSHA256 + "}\n",
+			want: "leak_check.manifest_sha256" + missingRepository},
 		{name: "the environment's repository alone", env: map[string]string{leakguard.RepositoryVar: theLeakCheckRepository},
-			want: "LEGION_LEAK_CHECK_REPOSITORY" + missingChecker},
-		{name: "the environment's checker alone", env: map[string]string{leakguard.SHA256Var: theCheckerSHA256},
-			want: "LEGION_LEAK_CHECK_SHA256" + missingRepository},
-		{name: "the file's repository and an empty environment checker", block: "leak_check: {repository: " + theLeakCheckRepository + "}\n",
-			env: map[string]string{leakguard.SHA256Var: ""}, want: "leak_check.repository" + missingChecker},
+			want: "LEGION_LEAK_CHECK_REPOSITORY" + missingManifest},
+		{name: "the environment's digest alone", env: map[string]string{leakguard.ManifestVar: theManifestSHA256},
+			want: "LEGION_LEAK_CHECK_MANIFEST_SHA256" + missingRepository},
+		{name: "the file's repository and an empty environment digest", block: "leak_check: {repository: " + theLeakCheckRepository + "}\n",
+			env: map[string]string{leakguard.ManifestVar: ""}, want: "leak_check.repository" + missingManifest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Load(writeConfigFile(t, minimalFile+tc.block), envMap(tc.env))
@@ -116,37 +116,39 @@ func TestOneLeakCheckValueWithoutTheOtherIsRefused(t *testing.T) {
 }
 
 // A malformed value is refused naming where it came from: a repository that is no owner/name, a
-// checker that is not 64 lowercase hex digits — one of capitals, one a digit short, one that is no
-// hex at all — an empty member, a member the block does not have, and a block that is no mapping.
+// manifest digest that is not 64 lowercase hex digits — one of capitals, one a digit short, one
+// that is no hex at all — an empty member, a member the block does not have, and a block that is
+// no mapping.
 func TestAMalformedLeakCheckValueIsRefused(t *testing.T) {
 	both := func(repository, sha string) string {
-		return "leak_check:\n  repository: " + repository + "\n  checker_sha256: " + sha + "\n"
+		return "leak_check:\n  repository: " + repository + "\n  manifest_sha256: " + sha + "\n"
 	}
+	const malformed = " must be the check's manifest digest, 64 lowercase hex digits"
 	for _, tc := range []struct {
 		name  string
 		block string
 		env   map[string]string
 		says  string
 	}{
-		{name: "a repository that is no owner/name", block: both("deployment", theCheckerSHA256),
+		{name: "a repository that is no owner/name", block: both("deployment", theManifestSHA256),
 			says: `leak_check.repository must be "owner/name" (got "deployment")`},
-		{name: "a repository of three parts", block: both("example-org/deployment/leak-check", theCheckerSHA256),
+		{name: "a repository of three parts", block: both("example-org/deployment/leak-check", theManifestSHA256),
 			says: `leak_check.repository must be "owner/name"`},
-		{name: "a checker in capitals", block: both(theLeakCheckRepository, strings.ToUpper(theCheckerSHA256)),
-			says: "leak_check.checker_sha256 must be the sha256 of the check's public_leak_check.py, 64 lowercase hex digits"},
-		{name: "a checker a digit short", block: both(theLeakCheckRepository, theCheckerSHA256[1:]),
-			says: "leak_check.checker_sha256 must be the sha256 of the check's public_leak_check.py, 64 lowercase hex digits"},
-		{name: "a checker that is no hex", block: both(theLeakCheckRepository, strings.Repeat("g", 64)),
-			says: "leak_check.checker_sha256 must be the sha256 of the check's public_leak_check.py, 64 lowercase hex digits"},
+		{name: "a digest in capitals", block: both(theLeakCheckRepository, strings.ToUpper(theManifestSHA256)),
+			says: "leak_check.manifest_sha256" + malformed},
+		{name: "a digest a digit short", block: both(theLeakCheckRepository, theManifestSHA256[1:]),
+			says: "leak_check.manifest_sha256" + malformed},
+		{name: "a digest that is no hex", block: both(theLeakCheckRepository, strings.Repeat("g", 64)),
+			says: "leak_check.manifest_sha256" + malformed},
 		{name: "the environment's malformed repository", env: map[string]string{
-			leakguard.RepositoryVar: "example-org", leakguard.SHA256Var: theCheckerSHA256,
+			leakguard.RepositoryVar: "example-org", leakguard.ManifestVar: theManifestSHA256,
 		}, says: `LEGION_LEAK_CHECK_REPOSITORY must be "owner/name" (got "example-org")`},
-		{name: "the environment's malformed checker", env: map[string]string{
-			leakguard.RepositoryVar: theLeakCheckRepository, leakguard.SHA256Var: "sha256:" + theCheckerSHA256,
-		}, says: "LEGION_LEAK_CHECK_SHA256 must be the sha256 of the check's public_leak_check.py, 64 lowercase hex digits"},
-		{name: "an empty member", block: "leak_check: {repository: \"\", checker_sha256: " + theCheckerSHA256 + "}\n",
+		{name: "the environment's malformed digest", env: map[string]string{
+			leakguard.RepositoryVar: theLeakCheckRepository, leakguard.ManifestVar: "sha256:" + theManifestSHA256,
+		}, says: "LEGION_LEAK_CHECK_MANIFEST_SHA256" + malformed},
+		{name: "an empty member", block: "leak_check: {repository: \"\", manifest_sha256: " + theManifestSHA256 + "}\n",
 			says: "leak_check.repository must not be empty"},
-		{name: "a member the block does not have", block: both(theLeakCheckRepository, theCheckerSHA256) + "  tag: leak-check-v15\n",
+		{name: "a member the block does not have", block: both(theLeakCheckRepository, theManifestSHA256) + "  tag: leak-check-v15\n",
 			says: "unknown key leak_check.tag"},
 		{name: "a block that is no mapping", block: "leak_check: " + theLeakCheckRepository + "\n",
 			says: "leak_check must be a mapping"},

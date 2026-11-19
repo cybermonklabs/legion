@@ -22,8 +22,6 @@
 package leakguardtest
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -36,19 +34,36 @@ import (
 // guard's PATH lookup (leakguard/check_test.go).
 const CheckName = "public-leak-check.sh"
 
-// ProgramName is the file beside the check that the check only runs, the program a role's shim
-// hashes against the deployment's checker (leakguard.CheckerVar) before it starts an agent, and
-// Program a stand-in body for it, which a stand-in check a test installs carries beside itself.
+// ProgramName is the file beside the check that the check only runs, and Program a stand-in body
+// for it, which a stand-in check a test installs carries beside itself. ReadmeName and
+// MustPassName are the two other files the check's manifest digest covers (leakguard.Manifest), and
+// Readme and MustPass stand-in bodies for them. A test holds a stand-in to a digest by computing
+// leakguard.Manifest over its directory, never by a copy of the formula here.
 const (
-	ProgramName = "public_leak_check.py"
-	Program     = "# the check itself\n"
+	ProgramName  = "public_leak_check.py"
+	Program      = "# the check itself\n"
+	ReadmeName   = "README.md"
+	Readme       = "# the check's readme\n"
+	MustPassName = "must-pass-lines.txt"
+	MustPass     = "a line the self-test must pass\n"
 )
 
-// ProgramSHA256 is the sha256 of Program, in lowercase hex.
-var ProgramSHA256 = func() string {
-	sum := sha256.Sum256([]byte(Program))
-	return hex.EncodeToString(sum[:])
-}()
+// Companions writes, beside the stand-in check in dir, the files its manifest covers but the
+// check itself: program as its public_leak_check.py (none where program is empty), and Readme and
+// MustPass. A test that holds a stand-in to the deployment's manifest digest writes them, so the
+// digest is computable.
+func Companions(t testing.TB, dir, program string) {
+	t.Helper()
+	files := map[string]string{ReadmeName: Readme, MustPassName: MustPass}
+	if program != "" {
+		files[ProgramName] = program
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 // recordVar names the file a recording stand-in appends what it was asked to, which is how a test
 // reads whether the check ran at all and with what. A stand-in run without it records nowhere.

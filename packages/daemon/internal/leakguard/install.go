@@ -433,9 +433,10 @@ func firstLine(printed string) string {
 //
 // With a pin and CheckerVar it answers a *SetupFailure, naming the pin and what the install holds,
 // where the check is absent, where the install records no tag, where it records another tag, and
-// where the program beside the check (public_leak_check.py) does not hash to the deployment's
-// checker or is not there: a role whose check is not the pin's, or not the one the deployment
-// named by its sha256 (Setting.CheckerSHA256), runs no agent.
+// where the install's manifest digest (manifestSHA256: the launcher script, the program, the
+// must-pass lines and the README) is not the deployment's or cannot be read: a role whose check is
+// not the pin's, or not the one the deployment named by its manifest digest
+// (Setting.ManifestSHA256), runs no agent.
 func Installed(env []string, dir string) (string, error) {
 	pin := value(env, TagVariable)
 	if pin == "" || !configured(env) {
@@ -458,14 +459,14 @@ func Installed(env []string, dir string) (string, error) {
 			Why: fmt.Sprintf("%s=%s, and the install at %s is of %s", TagVariable, pin, dir, tag)}
 	}
 	checker := value(env, CheckerVar)
-	held, err := programSHA256(check)
+	held, err := manifestSHA256(check)
 	switch {
 	case err != nil:
 		return "", &SetupFailure{What: installWhat,
-			Why: fmt.Sprintf("%s=%s, and the install at %s holds no %s to hash against %s=%s: %v", TagVariable, pin, dir, checkProgram, CheckerVar, checker, err)}
+			Why: fmt.Sprintf("%s=%s, and the manifest of the install at %s cannot be read to compare with %s=%s: %v", TagVariable, pin, dir, CheckerVar, checker, err)}
 	case !strings.EqualFold(held, checker):
 		return "", &SetupFailure{What: installWhat,
-			Why: fmt.Sprintf("%s=%s, and the install at %s holds a %s whose sha256 is %s, not the deployment's checker %s=%s", TagVariable, pin, dir, checkProgram, held, CheckerVar, checker)}
+			Why: fmt.Sprintf("%s=%s, and the install at %s has the manifest digest %s, not the deployment's %s=%s", TagVariable, pin, dir, held, CheckerVar, checker)}
 	}
 	return check, nil
 }

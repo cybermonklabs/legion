@@ -382,11 +382,11 @@ run_case() { # run_case <shape> <case> <variant>
     clears) push_env=("PUBLIC_LEAK_CHECK=$clears") ;;
     internal-error) push_env=("PUBLIC_LEAK_CHECK=$internal_error") ;;
     # No check anywhere, under a deployment that names one: the role is told the deployment's
-    # checker (LEGION_LEAK_CHECKER_SHA256, packages/daemon/internal/leakguard's CheckerVar), so
-    # the guard expects a check and refuses the push for its absence. Without a checker the role
-    # is one of a deployment that runs no shared check, which no write is refused for.
+    # manifest digest (LEGION_LEAK_CHECKER_MANIFEST_SHA256, packages/daemon/internal/leakguard's
+    # CheckerVar), so the guard expects a check and refuses the push for its absence. Without it
+    # the role is one of a deployment that runs no shared check, which no write is refused for.
     no-check) push_env=(-u PUBLIC_LEAK_CHECK "HOME=$scratch/empty" "XDG_CONFIG_HOME=$scratch/empty"
-      "LEGION_LEAK_CHECKER_SHA256=5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e") ;;
+      "LEGION_LEAK_CHECKER_MANIFEST_SHA256=5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e") ;;
     *) die "no such variant: $variant" ;;
   esac
 
