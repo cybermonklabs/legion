@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink } from "node:fs/promises";
+import { describe, expect, it } from "bun:test";
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { LEGION_ROLES } from "@legion/contracts";
+import { removeAfterEachCase } from "../test/scratch-removal";
 import {
   exportJjSessionAttribution,
   JJ_CONFIG_PATH_TIMEOUT_MS,
@@ -31,17 +32,9 @@ const JJ_COMMANDS_BOUND_MS = 240_000;
  * the one that passes first, because bun runs afterEach while a case it timed out still runs:
  * here, jj in the repository that afterEach removes. */
 const JJ_CASE_MARGIN_MS = 30_000;
-/** Each afterEach's bound on removing its case's directories, in milliseconds. A hook that states
- * no bound gets bun's 5 s, and this file's afterEach passed that in 16 of 20 runs on the devbox at
- * a 1-minute load of 466 to 703, removing the real-jj case's repository (about 230 entries). */
-const REMOVE_BOUND_MS = 30_000;
-/** bun's bound on each afterEach, in milliseconds: past REMOVE_BOUND_MS, so that the removal's own
- * bound passes first and names the directories it left. */
-const AFTER_EACH_BOUND_MS = REMOVE_BOUND_MS + 5_000;
 
 /** Whether `work` settles within `ms` milliseconds; a rejection of `work` rejects. Real time is
- * required: a jj process and the filesystem are outside bun, and its fake timers cannot advance
- * them. */
+ * required: a jj process is outside bun, and its fake timers cannot advance it. */
 async function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolean> {
   const passed = Promise.withResolvers<false>();
   const timer = setTimeout(() => passed.resolve(false), ms);
@@ -49,15 +42,6 @@ async function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolea
     return await Promise.race([work.then(() => true), passed.promise]);
   } finally {
     clearTimeout(timer);
-  }
-}
-
-/** Removes `dirs`, or fails naming them when the removal has not finished within
- * REMOVE_BOUND_MS. */
-async function removeWithin(dirs: readonly string[]): Promise<void> {
-  const removed = Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
-  if (!(await settlesWithin(removed, REMOVE_BOUND_MS))) {
-    throw new Error(`removing ${dirs.join(" ")} did not finish within ${REMOVE_BOUND_MS} ms`);
   }
 }
 
@@ -86,7 +70,7 @@ describe("exportJjSessionAttribution", () => {
     dirs.push(dir);
     return dir;
   }
-  afterEach(() => removeWithin(dirs.splice(0)), AFTER_EACH_BOUND_MS);
+  removeAfterEachCase(dirs);
   /** The overlay the writer wrote under `dir`. */
   async function overlayText(dir: string): Promise<string> {
     return await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8");
@@ -596,7 +580,7 @@ describe("paneAttributionOptions", () => {
 
 describe("resolvedWorkspace", () => {
   const dirs: string[] = [];
-  afterEach(() => removeWithin(dirs.splice(0)), AFTER_EACH_BOUND_MS);
+  removeAfterEachCase(dirs);
   async function scratch(): Promise<string> {
     const dir = await mkdtemp(path.join(tmpdir(), "jj-attribution-resolve-"));
     dirs.push(dir);
@@ -650,7 +634,7 @@ describe("userConfigChain", () => {
     await chmod(path.join(dir, "jj"), 0o755);
     return { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: dir };
   }
-  afterEach(() => removeWithin(dirs.splice(0)), AFTER_EACH_BOUND_MS);
+  removeAfterEachCase(dirs);
   /** The child pid the wrapper wrote to `pidFile`, or undefined when it wrote none. Read once
    * userConfigChain has returned: by then the wrapper has exited, or its group has been sent
    * SIGKILL, so there is no later write to wait for, and a pid it had not written counts as none. */
