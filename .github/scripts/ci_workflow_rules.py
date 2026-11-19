@@ -1,16 +1,17 @@
 """The rules about ci.yaml that stand on their own: what no `if:` of it may say, what every job's
 `if:` must say, what ci-caches.yaml must save
-for the entries ci.yaml restores and which packages its race build must compile, which workspaces
-ci_job_reads.py's WORKSPACES must name, and
+for the entries ci.yaml restores, which packages its race build must compile and which fetch
+command each go-fetch fill must run, which workspaces ci_job_reads.py's WORKSPACES must name, and
 that no other workflow of this repository runs on a merge group.
 None of them
 reads a filter, a gate or the closure of a go command, so none belongs in the filter-coverage
-engine beside them; check-ci-filters.sh's header numbers them 10, 12, 11, 13, 14 and 16, and
+engine beside them; check-ci-filters.sh's header numbers them 10, 12, 11, 16, 21, 13 and 14, and
 ci_filter_coverage.main()
 is what runs them, over the documents it already loaded where the rule reads only those - the
 rerun-guard rule over ci.yaml alone, since the `if:` it reads is the caller job's; the cache
-rule over ci.yaml and every workflow its jobs call, since a job's restore moves with its steps,
-and over every other workflow of the directory, which it reads itself, for the key and paths,
+rule and the go-fetch rule over ci.yaml and every workflow its jobs call, since a job's restore
+moves with its steps, and the cache rule also over every other workflow of the directory, which
+it reads itself, for the key and paths,
 since a release build's restore misses as silently; the push-condition rule over
 ci.yaml and the called files that are ci.yaml's alone (ci_only_documents says why not the
 others, and reads the directory to find them) - the workspace rule over the
@@ -381,6 +382,83 @@ def check_race_fill_packages(packages: list, problems: list) -> None:
                                                   f"{RACE_LIST} has {', '.join(wanted)}: the same packages in another order, so the "
                                                   f"fill is right and only a reader who sorts both lists can see that it is; spell the "
                                                   f"command as the list reads, so the next change to either shows as a difference"))
+
+
+# ---------------------------------------------- the go-fetch fills and the fetch steps they serve
+# A go-fetch family is the module cache one job's fetch step fills and nothing else: its name begins
+# GO_FETCH_FAMILY, and its fill in ci-caches.yaml runs that step's command. A fetch line is a line
+# of a step's run: script that names GO_FETCH, read through script_lines, so a comment is none,
+# with the step's working-directory beside it, since the same words run in another directory
+# fetch another module's graph. The other families whose fills also run go-fetch.sh (go-daemon,
+# go-envoy, go-envoy-infra) hold their readers' builds too, and a reader's fetch step may name
+# less than such a fill fetches, so this rule leaves them alone.
+GO_FETCH_FAMILY = "go-fetch-"
+GO_FETCH = ".github/scripts/go-fetch.sh"
+
+
+def fetch_lines(steps) -> list:
+    """Every go-fetch.sh line of `steps`, in order, as (its step's working-directory, the line)."""
+    return [(str((step or {}).get("working-directory") or ""), line)
+            for step in steps
+            for line in script_lines(str((step or {}).get("run", "")))
+            if GO_FETCH in line]
+
+
+def shown(lines: list) -> str:
+    """A list of fetch lines as a refusal shows it."""
+    return "; ".join(f"`{line}`" + (f" in {workdir}" if workdir else "") for workdir, line in lines) or "(none)"
+
+
+def check_go_fetch_fills(documents: dict, problems: list) -> None:
+    """Each go-fetch family's fill runs exactly the fetch command of every job that restores it.
+    The entry exists so that its reader's fetch step downloads nothing: the fill runs that step's
+    go-fetch.sh lines on a fresh runner and saves the module cache they leave. A fill whose lines
+    drift from the reader's - a package the step now names and the fill does not, another
+    directory - saves an entry that lacks what the step then downloads on every run, and nothing
+    fails: the silence check_cache_round_trip is about, one level down, where the key and the
+    paths match and the entry holds the wrong modules. So the go-fetch.sh lines of the job that
+    saves a go-fetch family, in order and with their steps' working-directory, must be the
+    go-fetch.sh lines each job that restores the family runs after its restore, in ci.yaml and
+    in every workflow its jobs call (`documents`, as for the cache rule). A fill with no such line
+    fills nothing its reader fetches, and a reader with no such line after the restore has no
+    fetch for the entry to serve, so both are refusals too. A family that no job restores is the
+    cache rule's refusal, not this one's. A ci-caches.yaml that is not in the repository fills
+    nothing, and so has nothing to hold."""
+    if not (REPO / CACHE_WORKFLOW).is_file():
+        return
+    caches = load_repository_yaml(REPO / CACHE_WORKFLOW) or {}
+    readers = defaultdict(list)
+    for path, document in documents.items():
+        for job_id, job in (document.get("jobs") or {}).items():
+            steps = (job or {}).get("steps") or []
+            for index, step in enumerate(steps):
+                if str((step or {}).get("uses", "")).split("@")[0] not in ("actions/cache/restore", "actions/cache"):
+                    continue
+                family = cache_family(str(((step or {}).get("with") or {}).get("key", "")))
+                if family.startswith(GO_FETCH_FAMILY):
+                    readers[family].append((f"job {job_id} of {path}", fetch_lines(steps[index + 1:])))
+    for job_id, job in (caches.get("jobs") or {}).items():
+        for family, _ in job_cache_steps(job or {}, "save"):
+            if not family.startswith(GO_FETCH_FAMILY):
+                continue
+            filled = fetch_lines((job or {}).get("steps") or [])
+            if not filled:
+                problems.append(error(CACHE_WORKFLOW, f"job {job_id} saves go-fetch family {family} and runs no "
+                                                      f"{GO_FETCH} line: the entry is the module cache its reader's fetch "
+                                                      f"step fills, so the fill runs that step's command word for word"))
+                continue
+            for where, fetched in readers.get(family, []):
+                if not fetched:
+                    problems.append(error(CACHE_WORKFLOW, f"{where} restores go-fetch family {family} and runs no "
+                                                          f"{GO_FETCH} line after it, so the entry job {job_id} fills with "
+                                                          f"{shown(filled)} serves no fetch of that job: fetch after the "
+                                                          f"restore, or restore another family"))
+                elif fetched != filled:
+                    problems.append(error(CACHE_WORKFLOW, f"job {job_id} fills go-fetch family {family} with "
+                                                          f"{shown(filled)}, but {where} fetches {shown(fetched)} after "
+                                                          f"its restore: the entry then lacks what that job's fetch "
+                                                          f"downloads on every run, and nothing fails; run the reader's "
+                                                          f"fetch command in the fill, word for word"))
 
 
 # ---------------------------------------------------------------- the workspaces and the table

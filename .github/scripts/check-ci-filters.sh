@@ -335,6 +335,18 @@
 #      module with .github/scripts/go_build_tags.py at run time and ci_job_reads.py gives their
 #      Runs what it prints now, so this rule fails when that script stops printing a set a
 #      file needs.
+#  21. a go-fetch family .github/workflows/ci-caches.yaml saves (one whose name begins
+#      `go-fetch-`: the module cache one job's fetch step fills, and nothing else) whose fill
+#      job's go-fetch.sh lines are not exactly, in order and with their steps'
+#      working-directory, the go-fetch.sh lines each job that restores the family - in ci.yaml or
+#      a workflow it calls - runs after its restore, naming the family, both jobs, the reader's
+#      file and both lists; such a fill with no go-fetch.sh line; and a job restoring one that
+#      runs no go-fetch.sh line after it. The entry is there so its reader's fetch downloads
+#      nothing, and a fill whose command drifted from its reader's saves one that lacks what that
+#      fetch then downloads on every run, with nothing failing: rule 11's silence, one level
+#      down. Only the go-fetch families: the fills of go-daemon, go-envoy and go-envoy-infra run
+#      go-fetch.sh beside the builds their readers make, and a fetch step of one of their readers
+#      may name less than such a fill does.
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of
 # `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of
