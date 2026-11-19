@@ -476,7 +476,9 @@ seed signs in to, nor turns off the Envoy the session's environment configured. 
 server, which reads the same files, refuses to start on a checkout's `envoy` section. A checkout's
 OpenCode-era `.opencode/envoy.json` is never read: while the checkout has no `.envoy/envoy.json`,
 `warnings` holds `<old file> is not read: mkdir -p <cwd>/.envoy && mv <old file> <cwd>/.envoy/envoy.json`,
-which the start notice and the `dispatch` command say.
+each path in it one shell word (`@legion/envoy-client/shell-quote`), so a checkout whose path
+holds a space or a quote gets a command that pastes as it reads; the start notice and the
+`dispatch` command say it.
 
 Each section is resolved on its own: `dispatchSettings(env, config)` reads the chosen file's
 `dispatch` section and, while `DISPATCH_URL` is unset, the checkout's, and `envoySettings(env,

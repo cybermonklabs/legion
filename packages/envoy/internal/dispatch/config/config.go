@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/sjawhar/envoy/internal/shellquote"
 )
 
 // DispatchConfig is what the server reads of the `dispatch` sub-object in envoy.json: its URL.
@@ -192,11 +194,12 @@ func statDevice(directory string) (uint64, bool) {
 	return uint64(stat.Dev), true //nolint:unconvert // Dev is int32 on darwin
 }
 
-// moveFix is what to do with oldPath, which is not read, so that newPath holds it: the mv, unless
-// the old file's directory and the nearest existing ancestor of the new file's directory are on
-// different devices (as for a directory an agent box bind-mounts from its host). There a mv would
-// move the host's file into the box's own filesystem, so it names the file to create and says to
-// move the old one on the machine that owns it, with no command.
+// moveFix is what to do with oldPath, which is not read, so that newPath holds it: the mv, its
+// paths each one shell word (shellquote), since a person pastes it into a shell and a checkout's
+// path may hold a space, unless the old file's directory and the nearest existing ancestor of the
+// new file's directory are on different devices (as for a directory an agent box bind-mounts from
+// its host). There a mv would move the host's file into the box's own filesystem, so it names the
+// file to create and says to move the old one on the machine that owns it, with no command.
 func moveFix(oldPath, newPath string, deviceOf func(string) (uint64, bool)) string {
 	oldDevice, oldKnown := deviceOf(filepath.Dir(oldPath))
 	ancestor := filepath.Dir(newPath)
@@ -208,7 +211,7 @@ func moveFix(oldPath, newPath string, deviceOf func(string) (uint64, bool)) stri
 	if oldKnown && newKnown && oldDevice != newDevice {
 		return oldPath + " is not read, and is on another filesystem than " + newPath + " (a mount): create " + newPath + ", and move " + oldPath + " on the machine that owns it"
 	}
-	return oldPath + " is not read: mkdir -p " + filepath.Dir(newPath) + " && mv " + oldPath + " " + newPath
+	return oldPath + " is not read: mkdir -p " + shellquote.Quote(filepath.Dir(newPath)) + " && mv " + shellquote.Quote(oldPath) + " " + shellquote.Quote(newPath)
 }
 
 // refuseOpenCodeUserFile refuses a user file still at oldPath, which nothing reads, while none is

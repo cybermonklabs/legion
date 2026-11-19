@@ -13,8 +13,12 @@ afterEach(async () => {
 const NOW = Date.parse("2026-10-13T21:53:36Z");
 
 /** A git lock file at `name` in a scratch directory, last written `ageMs` before NOW. */
-async function staleLock(name: string, ageMs: number): Promise<string> {
-  const dir = await mkdtemp(path.join(tmpdir(), "legion-git-lock-"));
+async function staleLock(
+  name: string,
+  ageMs: number,
+  prefix = "legion-git-lock-"
+): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), prefix));
   scratch.push(dir);
   const lock = path.join(dir, name);
   await writeFile(lock, "");
@@ -49,6 +53,32 @@ test("says nothing of output that names no lock, or names one already gone", asy
   const gone = path.join(tmpdir(), "legion-git-lock-never-made", "index.lock");
   expect(await staleGitLockNote('Error: There is no jj repo in "."', NOW)).toBe("");
   expect(await staleGitLockNote(`fatal: Unable to create '${gone}': File exists.`, NOW)).toBe("");
+});
+
+test("names a lock whose path holds a single quote, which git and jj write unescaped", async () => {
+  const index = await staleLock("index.lock", (31 * 60 + 4) * 1000, "legion-git-lock-sq'x-");
+  const ref = await staleLock("main.lock", (2 * 3600 + 5) * 1000, "legion-git-lock-sq'x-");
+  const output = [
+    `2: The lock for resource '${index.slice(0, -5)}' could not be obtained after 1.00s after 16 attempt(s). The lockfile at '${index}' might need manual deletion.`,
+    `error: cannot lock ref 'refs/heads/main': Unable to create '${ref}': File exists.`,
+  ].join("\n");
+  expect(await staleGitLockNote(output, NOW)).toBe(
+    `${daemonNote(index, "31m4s")}\n${daemonNote(ref, "2h0m5s")}`
+  );
+});
+
+test("names a lock whose path holds a line break, which git and jj write as it is", async () => {
+  for (const prefix of ["legion-git-lock-lf\nx-", "legion-git-lock-ls\u2028x-"]) {
+    const index = await staleLock("index.lock", (31 * 60 + 4) * 1000, prefix);
+    const ref = await staleLock("main.lock", (2 * 3600 + 5) * 1000, prefix);
+    const output = [
+      `2: The lock for resource '${index.slice(0, -5)}' could not be obtained after 1.00s after 16 attempt(s). The lockfile at '${index}' might need manual deletion.`,
+      `error: cannot lock ref 'refs/heads/main': Unable to create '${ref}': File exists.`,
+    ].join("\n");
+    expect(await staleGitLockNote(output, NOW)).toBe(
+      `${daemonNote(index, "31m4s")}\n${daemonNote(ref, "2h0m5s")}`
+    );
+  }
 });
 
 /**

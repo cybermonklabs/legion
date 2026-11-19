@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { shellQuote } from "../../../packages/envoy-client/src/shell-quote.ts";
 import { approvalAsk, edited, handedBack, opened, recordedAt } from "./approval-events.ts";
 
 const script = join(import.meta.dir, "..", "ask-census.ts");
@@ -183,7 +184,7 @@ describe("ask census since #1671", () => {
     ]);
 
     expect(stderr).toBe(
-      `dispatch: ${old} is not read: mkdir -p ${join(checkout, ".envoy")} && mv ${old} ${join(checkout, ".envoy", "envoy.json")}\n`
+      `dispatch: ${old} is not read: mkdir -p ${shellQuote(join(checkout, ".envoy"))} && mv ${shellQuote(old)} ${shellQuote(join(checkout, ".envoy", "envoy.json"))}\n`
     );
     expect(exitCode).toBe(0);
     expect(requests).toBeGreaterThan(0);

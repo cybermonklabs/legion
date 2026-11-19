@@ -17,20 +17,25 @@ import (
 
 // ParseAddress reads --connect: the daemon's worker stream as `unix:///<absolute path>` or
 // `tcp://<host>:<port>`, the two families the listener accepts. It returns the network and
-// address net.Dial takes. The TCP rules are the shipped ones (worker-shim.ts:544-576): a host, a
-// port in 1..65535, and nothing else — no path beyond "/", no query, fragment, or user.
+// address net.Dial takes. A unix address is read as the listener reads it (stream's parseAddr) and
+// as the daemon writes it (`unix://` and the state directory's socket path): everything after
+// `unix://` is the path as written, so a path holding a '?', '#' or '%', which a URL would read as
+// a query, a fragment or an escape, names the socket the listener bound. The TCP rules are the
+// shipped ones (worker-shim.ts:544-576): a host, a port in 1..65535, and nothing else — no path
+// beyond "/", no query, fragment, or user.
 func ParseAddress(value string) (network, address string, err error) {
 	malformed := fmt.Errorf("--connect must be unix:///<path> or tcp://<host>:<port>, got %q", value)
+	if path, ok := strings.CutPrefix(value, "unix://"); ok {
+		if !strings.HasPrefix(path, "/") || strings.HasSuffix(path, "/") {
+			return "", "", malformed
+		}
+		return "unix", path, nil
+	}
 	u, err := url.Parse(value)
 	if err != nil || u.Opaque != "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
 		return "", "", malformed
 	}
 	switch {
-	case u.Scheme == "unix" && strings.HasPrefix(value, "unix://"):
-		if u.Host != "" || !strings.HasPrefix(u.Path, "/") || strings.HasSuffix(u.Path, "/") {
-			return "", "", malformed
-		}
-		return "unix", u.Path, nil
 	case u.Scheme == "tcp" && strings.HasPrefix(value, "tcp://"):
 		host, port := u.Hostname(), u.Port()
 		n, err := strconv.Atoi(port)

@@ -3,11 +3,40 @@ package config
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/shellquote"
 )
+
+// The move a notice names, run by a shell as a person pastes it, moves the file whatever its
+// paths hold: a space, a quote, a glob character, a '?'.
+func TestTheMoveFixRunsAsWrittenUnderAPathWithAShellCharacter(t *testing.T) {
+	for _, name := range []string{"x y", "sq'x", "q?x", "glob[x]"} {
+		t.Run(name, func(t *testing.T) {
+			cwd := filepath.Join(t.TempDir(), name)
+			oldPath := filepath.Join(cwd, ".opencode", "envoy.json")
+			mustWrite(t, oldPath, `{"dispatch": {"serverUrl": "https://old.dispatch.example"}}`)
+			fix := moveFix(oldPath, checkoutFile(cwd), statDevice)
+			command, ok := strings.CutPrefix(fix, oldPath+" is not read: ")
+			if !ok {
+				t.Fatalf("moveFix = %q, want the notice naming %s", fix, oldPath)
+			}
+			if out, err := exec.Command("sh", "-c", command).CombinedOutput(); err != nil {
+				t.Fatalf("the notice's command %q: %v\n%s", command, err, out)
+			}
+			if _, err := os.Stat(oldPath); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("%s is still there after the notice's command: %v", oldPath, err)
+			}
+			if got, err := os.ReadFile(checkoutFile(cwd)); err != nil || !strings.Contains(string(got), "old.dispatch.example") {
+				t.Errorf("%s after the notice's command = %q, %v; want the moved file", checkoutFile(cwd), got, err)
+			}
+		})
+	}
+}
 
 // environment is the environment Load reads holding exactly values: a key present is set, even
 // when its value is empty, as os.LookupEnv answers.
@@ -248,7 +277,7 @@ func TestLoadRefusesTheOldUserFile(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected a refusal while only the old user file exists")
 			}
-			want := oldPath + " is not read: mkdir -p " + filepath.Dir(userFile(home)) + " && mv " + oldPath + " " + userFile(home)
+			want := oldPath + " is not read: mkdir -p " + shellquote.Quote(filepath.Dir(userFile(home))) + " && mv " + shellquote.Quote(oldPath) + " " + shellquote.Quote(userFile(home))
 			if err.Error() != want {
 				t.Errorf("error: got %q, want %q", err, want)
 			}
@@ -341,7 +370,7 @@ func TestLoadIgnoresTheOldCheckoutFile(t *testing.T) {
 		t.Errorf("got %+v (dispatch %+v), want nothing from .opencode/envoy.json", cfg.Envoy, cfg.Dispatch)
 	}
 	want := Warning{Message: WarnOpenCodeCheckout, Path: oldPath,
-		Fix: oldPath + " is not read: mkdir -p " + filepath.Join(cwd, ".envoy") + " && mv " + oldPath + " " + checkoutFile(cwd)}
+		Fix: oldPath + " is not read: mkdir -p " + shellquote.Quote(filepath.Join(cwd, ".envoy")) + " && mv " + shellquote.Quote(oldPath) + " " + shellquote.Quote(checkoutFile(cwd))}
 	if len(cfg.Warnings) != 1 || cfg.Warnings[0] != want {
 		t.Errorf("warnings: got %+v, want only %+v", cfg.Warnings, want)
 	}

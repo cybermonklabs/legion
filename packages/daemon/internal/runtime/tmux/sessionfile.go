@@ -50,16 +50,17 @@ func sessionFileOf(recorded string, paneSessions func() (string, error)) (found 
 
 // newestSession is the regular file written last among those one folder below sessions named name
 // or, for Oh My Pi's `<timestamp>_<session id>.jsonl`, of any timestamp with name's session id; ""
-// for none. A directory or name holding a glob character is searched nowhere: it would match other
-// sessions.
+// for none. A name holding a glob character is searched for nowhere: it is no name Oh My Pi or
+// Claude Code writes. The directory is matched as written: a glob character it holds, as a home
+// directory's path may, is escaped (globLiteral), so it matches only itself.
 func newestSession(sessions, name string) (string, error) {
-	if strings.ContainsAny(sessions+name, `*?[\`) {
+	if strings.ContainsAny(name, `*?[\`) {
 		return "", nil
 	}
-	patterns := []string{filepath.Join(sessions, "*", name)}
+	patterns := []string{filepath.Join(globLiteral(sessions), "*", name)}
 	if stem, ok := strings.CutSuffix(name, ".jsonl"); ok {
 		if _, id, ok := strings.Cut(stem, "_"); ok && id != "" {
-			patterns = append(patterns, filepath.Join(sessions, "*", "*_"+id+".jsonl"))
+			patterns = append(patterns, filepath.Join(globLiteral(sessions), "*", "*_"+id+".jsonl"))
 		}
 	}
 	var candidates []string
@@ -85,6 +86,20 @@ func newestSession(sessions, name string) (string, error) {
 		}
 	}
 	return newest, nil
+}
+
+// globLiteral is s as a filepath.Glob pattern that matches s alone: each of the pattern
+// characters `*`, `?`, `[` and `\` escaped with a `\`, and every other byte kept as it is, so a
+// path that is not valid UTF-8 names the same directory.
+func globLiteral(s string) string {
+	var b strings.Builder
+	for i := range len(s) {
+		if strings.IndexByte(`*?[\`, s[i]) >= 0 {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 // searchedIn is the sessions directories a search for a session found nothing in (sessionFileOf),

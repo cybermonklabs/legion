@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
 import { closeSync, constants, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
+import { shellQuote } from "@legion/envoy-client/shell-quote";
 import {
   type FakeDispatchServer,
   startFakeDispatch,
@@ -19,7 +20,6 @@ import {
   type OpenAskRead,
   type SeededInboxRow,
   Supervisor,
-  shellQuote,
 } from "../local-instance-support";
 import { bounds, eventually, rowLimit, runBounded, watch } from "./bounded-subprocess";
 
@@ -423,8 +423,9 @@ describe("databaseUrlRefusal", () => {
   });
 });
 
-/** The quoting cases dev-postgres.sh's `quote` is held to as well, so the two copies of the rule
- *  cannot drift apart. */
+/** The quoting cases @legion/envoy-client's shellQuote is held to, as the Go copy
+ *  (packages/envoy/internal/shellquote) and dev-postgres.sh's `quote` are, so the copies of the
+ *  rule cannot drift apart. */
 const quoteCases = (await Bun.file(
   new URL("../../../envoy/scripts/fixtures/shell-quote.json", import.meta.url)
 ).json()) as { word: string; quoted: string }[];

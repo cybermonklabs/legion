@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+  Four readers now take a path that holds a character with a meaning of its own:
+  - A resume under the tmux runtime finds a session carried into a sessions directory whose path
+    holds `*`, `?`, `[` or `\`. The search skipped such a directory, so the role started a fresh
+    session instead of continuing its own.
+  - `legion worker-shim` reads `--connect unix://<path>` as the worker stream listener does. It
+    read the address as a URL, so with a state directory holding `?`, `#` or `%` every worker pane
+    exited at once with `--connect must be unix:///<path> or tcp://<host>:<port>`.
+  - The stale git lock note names a lock whose path holds a `'` or a line break. The note's
+    patterns stopped at the first `'`, so such a lock got git's bare error without the note.
+  - A pod launcher's own session client reaches its generation's session socket under a directory
+    whose path holds a space. Its URL wrote the space as `+`, which pgx reads as itself, so every
+    session save and resume lookup failed with `connect to Postgres at /…/a+b/…: no such file or
+    directory`.
+time: 2026-11-19T02:33:03Z
+custom:
+    Issue: fix-product-paths-with-glob-and-url-characters

@@ -10,7 +10,22 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/shellquote"
 )
+
+// textAttr is key=value as slog's text handler writes the pair: a value it must quote, such as a
+// path under a temporary directory whose name holds a space, quoted as the log quotes it.
+func textAttr(key, value string) string {
+	var b strings.Builder
+	pairOnly := func(_ []string, a slog.Attr) slog.Attr {
+		if a.Key == slog.TimeKey || a.Key == slog.LevelKey || a.Key == slog.MessageKey {
+			return slog.Attr{}
+		}
+		return a
+	}
+	slog.New(slog.NewTextHandler(&b, &slog.HandlerOptions{ReplaceAttr: pairOnly})).Info("", key, value)
+	return strings.TrimSuffix(b.String(), "\n")
+}
 
 func writeConfigFile(t *testing.T, path, contents string) {
 	t.Helper()
@@ -35,7 +50,7 @@ func TestTheServerRefusesTheOldUserFile(t *testing.T) {
 		{"DISPATCH_SERVER_URL": "https://environment.dispatch.example", "NATS_URLS": "nats://environment:4222"},
 	} {
 		cfg, err := loadEnvoyConfig(envGetter(values), config.LoadOptions{CWD: t.TempDir(), HomeDir: home})
-		want := oldPath + " is not read: mkdir -p " + filepath.Dir(userPath) + " && mv " + oldPath + " " + userPath
+		want := oldPath + " is not read: mkdir -p " + shellquote.Quote(filepath.Dir(userPath)) + " && mv " + shellquote.Quote(oldPath) + " " + shellquote.Quote(userPath)
 		if err == nil || err.Error() != want {
 			t.Errorf("with %v: got %+v, %v; want the refusal %q", values, cfg, err, want)
 		}
@@ -61,8 +76,8 @@ func TestTheServerWarnsOfTheOldCheckoutFile(t *testing.T) {
 		t.Errorf("got %+v (dispatch %+v), want the user file's values alone", cfg.Envoy, cfg.Dispatch)
 	}
 	lines := strings.Split(strings.TrimSpace(logged.String()), "\n")
-	move := oldPath + " is not read: mkdir -p " + filepath.Join(cwd, ".envoy") + " && mv " + oldPath + " " + filepath.Join(cwd, ".envoy", "envoy.json")
-	if len(lines) != 1 || !strings.Contains(lines[0], `level=WARN msg="dispatch: a checkout's .opencode/envoy.json is not read" path=`+oldPath+` fix="`+move+`"`) {
+	move := oldPath + " is not read: mkdir -p " + shellquote.Quote(filepath.Join(cwd, ".envoy")) + " && mv " + shellquote.Quote(oldPath) + " " + shellquote.Quote(filepath.Join(cwd, ".envoy", "envoy.json"))
+	if len(lines) != 1 || !strings.Contains(lines[0], `level=WARN msg="dispatch: a checkout's .opencode/envoy.json is not read" `+textAttr("path", oldPath)+` `+textAttr("fix", move)) {
 		t.Errorf("log: got %q, want one WARN naming %s and the rename", logged.String(), oldPath)
 	}
 }

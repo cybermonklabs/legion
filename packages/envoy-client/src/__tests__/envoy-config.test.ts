@@ -31,6 +31,7 @@ import {
   type SectionOff,
 } from "../envoy-config";
 import { type EnabledEnvoySettings, envoySettings as resolveEnvoy } from "../envoy-settings";
+import { shellQuote } from "../shell-quote";
 
 // Both sections resolve one `credential` object (`ActiveDispatchConfig`, `EnabledEnvoySettings`).
 // What this file is about is which file and which variable a section reads, so each resolution is
@@ -466,7 +467,7 @@ describe("readEnvoyConfig", () => {
         oldUserFileNotice: `${old} is not read: mkdir -p ~/.config/legion && mv ~/.config/opencode/envoy.json ~/.config/legion/`,
       },
       warnings: [
-        `${oldCheckout} is not read: mkdir -p ${path.dirname(checkout)} && mv ${oldCheckout} ${checkout}`,
+        `${oldCheckout} is not read: mkdir -p ${shellQuote(path.dirname(checkout))} && mv ${shellQuote(oldCheckout)} ${shellQuote(checkout)}`,
       ],
     });
   });
@@ -699,11 +700,32 @@ describe("readEnvoyConfig", () => {
       checkout: null,
       missing: null,
       warnings: [
-        `${old} is not read: mkdir -p ${path.join(cwd, ".envoy")} && mv ${old} ${path.join(cwd, ".envoy", "envoy.json")}`,
+        `${old} is not read: mkdir -p ${shellQuote(path.join(cwd, ".envoy"))} && mv ${shellQuote(old)} ${shellQuote(path.join(cwd, ".envoy", "envoy.json"))}`,
       ],
     });
     expect(dispatchSettings({}, config)).toMatchObject({ enabled: false, error: null });
     expect(envoySettings({}, config)).toMatchObject({ enabled: false, error: null });
+
+    // The move, run by a shell as a person pastes it, moves the file whatever the checkout's path
+    // holds: a space, a quote, a glob character, a '?'.
+    for (const name of ["x y", "sq'x", "q?x", "glob[x]"]) {
+      const checkout = path.join(tempDir(), name);
+      const moved = writeFile(path.join(checkout, ".opencode", "envoy.json"), { dispatch: {} });
+      const read = readEnvoyConfig(file, { HOME: tempDir() }, { cwd: checkout });
+      if (read.kind !== "read")
+        throw new Error(`readEnvoyConfig(${file}) failed: ${JSON.stringify(read)}`);
+      const [warning = ""] = read.warnings;
+      expect(warning.startsWith(`${moved} is not read: `)).toBe(true);
+      const command = warning.slice(`${moved} is not read: `.length);
+      const run = Bun.spawnSync(["sh", "-c", command]);
+      expect({ name, code: run.exitCode, stderr: run.stderr.toString() }).toEqual({
+        name,
+        code: 0,
+        stderr: "",
+      });
+      expect(existsSync(moved)).toBe(false);
+      expect(existsSync(path.join(checkout, ".envoy", "envoy.json"))).toBe(true);
+    }
     // A .envoy/envoy.json beside it is the one read, and the old one is not named.
     const current = writeFile(path.join(cwd, ".envoy", "envoy.json"), {
       dispatch: { enabled: false },

@@ -13,7 +13,8 @@
 # for it. The printed listing, dump, dump check, run and restore lines are replayed through bash to
 # prove they paste as they read.
 # Its `quote`, which prints those commands, is held to fixtures/shell-quote.json, the table
-# packages/dispatch's shellQuote test reads too, so the two copies of the rule cannot drift apart.
+# @legion/envoy-client's shellQuote test (in packages/dispatch) and the Go shellquote package's test
+# read too, so the copies of the rule cannot drift apart.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"

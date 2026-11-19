@@ -100,8 +100,10 @@ const NOT_CALLED = /^dispatch ([a-z][a-z-]*) was not called: /;
 const NOT_A_REFUSAL = [
   "dispatch: warning: ",
   STATE_WRITE_FAILED,
-  // readEnvoyConfig's warnings: the OpenCode-era `.opencode/envoy.json` beside a checkout.
-  /^dispatch: \S+ is not read(?:: | for this profile| under | and is on another filesystem )/,
+  // readEnvoyConfig's warnings: the OpenCode-era `.opencode/envoy.json` beside a checkout. The
+  // path runs to the notice's fixed text, since a checkout's path may hold a space; the notice of a
+  // file on another filesystem reads `<file> is not read, and is on another filesystem …`.
+  /^dispatch: .+? is not read(?:: | for this profile| under |, and is on another filesystem )/,
 ];
 
 export interface CliRefusal {

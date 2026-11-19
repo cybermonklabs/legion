@@ -17,6 +17,7 @@ import { z } from "zod";
 import { hasErrnoCode, messageFor } from "./errors";
 import { jsonErrorPosition } from "./json-position";
 import { sendable } from "./secret-file";
+import { shellQuote } from "./shell-quote";
 
 /** Where a caller runs: one of the three plugin hosts (and the `dispatch` command, which takes its
  * host plugin's rule), or a script outside any of them (`command`). */
@@ -482,11 +483,12 @@ function statDevice(directory: string): number | undefined {
 }
 
 /** What to do with `oldFile`, which is not read, so that `newFile` holds it: `move`, the `mv`
- * command, unless the old file's directory and the nearest existing ancestor of the new file's
- * directory are on different filesystems (their devices differ, as for a directory an agent box
- * bind-mounts from its host). There a `mv` would move the host's file into the box's own
- * filesystem, so the notice names the file to create and says to move the old one on the machine
- * that owns it, with no command. */
+ * command (each path in it one shell word, shellQuote, since a person pastes it into a shell and a
+ * checkout's path may hold a space), unless the old file's directory and the nearest existing
+ * ancestor of the new file's directory are on different filesystems (their devices differ, as for
+ * a directory an agent box bind-mounts from its host). There a `mv` would move the host's file
+ * into the box's own filesystem, so the notice names the file to create and says to move the old
+ * one on the machine that owns it, with no command. */
 function moveNotice(oldFile: string, newFile: string, move: string, deviceOf: DeviceOf): string {
   const oldDevice = deviceOf(path.dirname(oldFile));
   let ancestor = path.dirname(newFile);
@@ -612,7 +614,7 @@ export function readEnvoyConfig(
           moveNotice(
             oldCheckout,
             checkoutPath,
-            `mkdir -p ${path.dirname(checkoutPath)} && mv ${oldCheckout} ${checkoutPath}`,
+            `mkdir -p ${shellQuote(path.dirname(checkoutPath))} && mv ${shellQuote(oldCheckout)} ${shellQuote(checkoutPath)}`,
             deviceOf
           ),
         ]

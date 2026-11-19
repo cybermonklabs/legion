@@ -5,6 +5,7 @@
  *  any spec against this instance — and empties its database and its fake Envoy, so restart it
  *  to reseed. */
 import { fileURLToPath } from "node:url";
+import { shellQuote } from "@legion/envoy-client/shell-quote";
 
 import { harnessVariables } from "./harness-ports";
 import { harnessProcessCount } from "./harness-processes";
@@ -16,7 +17,6 @@ import {
   Interrupted,
   type PostgresProbe,
   Supervisor,
-  shellQuote,
 } from "./local-instance-support";
 import { sqlAt } from "./psql";
 import { sessionIds } from "./session-ids";

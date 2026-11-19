@@ -6,6 +6,7 @@ import {
 } from "@legion/contracts";
 import { z } from "zod";
 import { messageFor } from "./errors";
+import { shellQuote } from "./shell-quote";
 
 /**
  * The `dispatch` command surface: one command per Dispatch tool spec and one flag per field, all
@@ -102,7 +103,6 @@ export interface CommandFlagRow {
 }
 
 const STDIN = "-";
-const BARE_WORD = /^[A-Za-z0-9_./:@%+=,-]+$/;
 const OPTION_SEPARATOR = ": ";
 
 /**
@@ -385,7 +385,7 @@ export function parseCommand(
     const commands = [...toolsByCommand.keys()].join(", ");
     return {
       kind: "refused",
-      problems: [`unknown command ${quoteWord(command)}; the commands are: ${commands}`],
+      problems: [`unknown command ${shellQuote(command)}; the commands are: ${commands}`],
     };
   }
   const surface = surfaceFor(tool);
@@ -458,16 +458,16 @@ export function parseCommand(
           // Advising `--issue` when a flag already set it would only lead to a second refusal.
           const earlier = setBy.get("issue");
           // biome-ignore lint/complexity/useLiteralKeys: claude-envoy's tsconfig refuses dot access on an index signature.
-          const current = quoteWord(String(args["issue"]));
-          let reason = `a bare issue key is the --issue only as the first argument; otherwise write --issue ${quoteWord(token)}`;
+          const current = shellQuote(String(args["issue"]));
+          let reason = `a bare issue key is the --issue only as the first argument; otherwise write --issue ${shellQuote(token)}`;
           if (earlier === "--issue") reason = `--issue is already ${current}`;
           else if (earlier?.startsWith("--"))
             reason = `${earlier} already set --issue to ${current}`;
-          problems.push(`unexpected argument ${quoteWord(token)}: ${reason}`);
+          problems.push(`unexpected argument ${shellQuote(token)}: ${reason}`);
         }
         continue;
       }
-      problems.push(`unexpected argument ${quoteWord(token)}: every value follows its flag`);
+      problems.push(`unexpected argument ${shellQuote(token)}: every value follows its flag`);
       continue;
     }
     const eq = token.indexOf("=");
@@ -590,14 +590,9 @@ function appendedItem(
 /** A Dispatch issue key, `PROJECT-N`. */
 const ISSUE_KEY = /^[A-Z][A-Z0-9]*-\d+$/;
 
-/** A shell word: bare when it needs no quoting, otherwise POSIX single-quoted. */
-function quoteWord(value: string): string {
-  return BARE_WORD.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
-}
-
 /** `--flag value`, or `--flag=value` when the value itself starts with `--`. */
 function flagWithValue(flag: string, value: string): string[] {
-  return value.startsWith("--") ? [`${flag}=${quoteWord(value)}`] : [flag, quoteWord(value)];
+  return value.startsWith("--") ? [`${flag}=${shellQuote(value)}`] : [flag, shellQuote(value)];
 }
 
 function scalarText(value: unknown): string {

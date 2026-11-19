@@ -156,10 +156,13 @@ func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Durati
 }
 
 // gitLockReports are the ways a git or jj failure names the lock file it could not take: jj's git
-// backend (gitoxide), and git's own lockfile API, which every git jj runs reports through.
+// backend (gitoxide), and git's own lockfile API, which every git jj runs reports through. Each
+// writes the path between single quotes and escapes nothing in it, so the path runs to the
+// message's fixed text after it, not to the next quote, and may hold any byte a path can, a `'`
+// or a line break among them.
 var gitLockReports = []*regexp.Regexp{
-	regexp.MustCompile(`The lockfile at '([^']+)' might need manual deletion`),
-	regexp.MustCompile(`Unable to create '([^']+)': File exists`),
+	regexp.MustCompile(`The lockfile at '((?s:.+?))' might need manual deletion`),
+	regexp.MustCompile(`Unable to create '((?s:.+?))': File exists`),
 }
 
 // staleGitLockNoteFile is the note's wording, held in a data file beside this one rather than in

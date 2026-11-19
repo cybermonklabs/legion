@@ -124,8 +124,8 @@ func TestSessionFileOfFindsAClaudeSessionByItsName(t *testing.T) {
 }
 
 // A session found nowhere is no file and no error, with every sessions directory searched, each
-// once; a recorded name holding a glob character is searched for nowhere, and a sessions directory
-// holding one is skipped, since either would match other sessions.
+// once; a recorded name holding a glob character is searched for nowhere, since it would match
+// other sessions.
 func TestSessionFileOfFindingNothingNamesEverySessionsDirectorySearched(t *testing.T) {
 	sessions := filepath.Join(t.TempDir(), "sessions")
 	recorded := filepath.Join(sessions, "--legion-workspace--", "2026-10-20T10-00-00-000Z_ses-abc.jsonl")
@@ -147,10 +147,32 @@ func TestSessionFileOfFindingNothingNamesEverySessionsDirectorySearched(t *testi
 	if got, _, err := sessionFileOf(globbed, paneAt(pane)); err != nil || got != "" {
 		t.Fatalf("sessionFileOf of a name holding a glob = %q, %v; want nothing", got, err)
 	}
-	starred := filepath.Join(t.TempDir(), "pane*sessions")
-	writeSession(t, filepath.Join(starred, "--pane-work--", filepath.Base(recorded)), time.Now())
-	if got, _, err := sessionFileOf(recorded, paneAt(starred)); err != nil || got != "" {
-		t.Fatalf("sessionFileOf in a pane sessions directory holding a glob = %q, %v; want nothing", got, err)
+}
+
+// A sessions directory whose path holds a glob character, as a home directory's may, is searched
+// as written: the session in it is found, and one in a sibling directory the character would match
+// as a pattern is not, however recently it was written.
+func TestSessionFileOfSearchesASessionsDirectoryHoldingAGlobCharacterAsWritten(t *testing.T) {
+	recorded := filepath.Join("/home/legion/.omp/agent/sessions", "--legion-workspace--", "2026-10-20T10-00-00-000Z_ses-abc.jsonl")
+	for _, testCase := range []struct{ name, sibling string }{
+		{"pane*sessions", "pane-other-sessions"},
+		{"pane?sessions", "paneXsessions"},
+		{"pane[x]sessions", "panexsessions"},
+		{`pane\sessions`, "panesessions"},
+		// A byte that is no UTF-8, which a Linux path may hold, beside a glob character: the
+		// directory searched is the one named, byte for byte.
+		{"pane-\xff*sessions", "pane-\xff-other-sessions"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := t.TempDir()
+			pane := filepath.Join(root, testCase.name)
+			carried := filepath.Join(pane, "--pane-work--", filepath.Base(recorded))
+			writeSession(t, carried, time.Now())
+			writeSession(t, filepath.Join(root, testCase.sibling, "--pane-work--", filepath.Base(recorded)), time.Now().Add(time.Hour))
+			if got, _, err := sessionFileOf(recorded, paneAt(pane)); err != nil || got != carried {
+				t.Fatalf("sessionFileOf in the pane sessions directory %s = %q, %v; want %s", pane, got, err, carried)
+			}
+		})
 	}
 }
 

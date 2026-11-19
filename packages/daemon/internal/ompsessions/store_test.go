@@ -4,6 +4,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // The endpoint a pod's launcher serves: a socket in the generation's own private
@@ -116,6 +118,24 @@ func TestClientURLNamesTheSocketsDirectoryAndSurvivesARoundTrip(t *testing.T) {
 	}
 	if got := u.Query().Get("sslmode"); got != "disable" {
 		t.Errorf("sslmode = %q, want disable", got)
+	}
+}
+
+// pgx, the launcher's client, reads the URL as libpq does, percent-decoding the query and keeping a
+// '+' as itself: a socket directory holding a space, a '+', a '%', a '?' or a quote reaches it
+// whole, as do the login and the database.
+func TestClientURLReachesPgxWholeForASocketDirectoryHoldingAnyCharacter(t *testing.T) {
+	for _, dir := range []string{"/var/run/a b/g1", "/var/run/a+b/g1", "/var/run/100%/g1", "/var/run/q?x/g1", "/var/run/sq'x/g1"} {
+		endpoint := testEndpoint
+		endpoint.SocketDir = dir
+		config, err := pgconn.ParseConfig(endpoint.ClientURL())
+		if err != nil {
+			t.Fatalf("pgx refused ClientURL() = %q: %v", endpoint.ClientURL(), err)
+		}
+		if config.Host != dir || config.User != endpoint.User || config.Database != endpoint.Database {
+			t.Errorf("pgx reads ClientURL() = %q as host %q, user %q, database %q; want %q, %q, %q",
+				endpoint.ClientURL(), config.Host, config.User, config.Database, dir, endpoint.User, endpoint.Database)
+		}
 	}
 }
 

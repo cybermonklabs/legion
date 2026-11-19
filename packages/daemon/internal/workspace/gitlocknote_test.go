@@ -140,6 +140,44 @@ func TestStaleGitLockNoteEndsWithTellingTheArchitect(t *testing.T) {
 	})
 }
 
+// git and jj write the lock's path between single quotes without escaping one in it, so a
+// workspace whose path holds a `'` still gets the note, naming the whole path, for each message.
+func TestStaleGitLockNoteNamesALockWhosePathHoldsASingleQuote(t *testing.T) {
+	now := time.Now()
+	dir := filepath.Join(t.TempDir(), "tmp-sq'x")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	index, ref := plantedLock(t, dir, "index.lock", now), plantedLock(t, dir, "main.lock", now)
+	output := jjLockFailure(index) + "\n" + gitLockFailure(ref)
+	lines := strings.Split(StaleGitLockNote(output, now), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("the note is %q, want one line for each of the two locks", lines)
+	}
+	for i, lock := range []string{index, ref} {
+		if !strings.HasPrefix(lines[i], "git lock "+lock+" was last written "+ageWords+" ago") {
+			t.Errorf("line %d is %q, want it to name %s and its age", i, lines[i], lock)
+		}
+	}
+}
+
+// git and jj write a line break in the lock's path as it is, so a path holding one still gets the
+// note, naming the whole path: the path runs to the message's fixed text, across the break.
+func TestStaleGitLockNoteNamesALockWhosePathHoldsALineBreak(t *testing.T) {
+	now := time.Now()
+	dir := filepath.Join(t.TempDir(), "tmp-lf\nx")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	index, ref := plantedLock(t, dir, "index.lock", now), plantedLock(t, dir, "main.lock", now)
+	note := StaleGitLockNote(jjLockFailure(index)+"\n"+gitLockFailure(ref), now)
+	for _, lock := range []string{index, ref} {
+		if !strings.Contains(note, "git lock "+lock+" was last written "+ageWords+" ago") {
+			t.Errorf("the note is %q, want it to name %s and its age", note, lock)
+		}
+	}
+}
+
 func TestStaleGitLockNoteOffersNoPodReplacement(t *testing.T) {
 	note, _ := noteForOneLock(t, time.Now())
 	// Replacing the issue's pod takes the pod's disk with it, and every role in it: a remedy the

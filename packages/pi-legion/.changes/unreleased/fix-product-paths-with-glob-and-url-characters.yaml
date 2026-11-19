@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'The stale git lock note the `legion` tool adds to a failed jj call names a lock whose path holds a `''`. Git and jj write the path between single quotes without escaping one in it, and the note''s patterns stopped at the first `''`, so such a lock got the bare error without the note.'
+time: 2026-11-19T02:33:03Z
+custom:
+    Issue: fix-product-paths-with-glob-and-url-characters

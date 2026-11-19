@@ -9,6 +9,7 @@ import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
 import { forgetShownPictures } from "../dispatch-picture-tools";
+import { shellQuote } from "../shell-quote";
 
 interface Recorded {
   readonly method: string;
@@ -2040,7 +2041,7 @@ describe("the dispatch CLI's envoy.json", () => {
     const { code, stdout } = await run(["projects"], fromFile);
 
     expect(stdout).toBe(
-      `dispatch: ${old} is not read: mkdir -p ${join(stateDir, ".envoy")} && mv ${old} ${join(stateDir, ".envoy", "envoy.json")}\nCORE Core\nSMOKE684 Smoke\n`
+      `dispatch: ${old} is not read: mkdir -p ${shellQuote(join(stateDir, ".envoy"))} && mv ${shellQuote(old)} ${shellQuote(join(stateDir, ".envoy", "envoy.json"))}\nCORE Core\nSMOKE684 Smoke\n`
     );
     expect(code).toBe(0);
   });
@@ -2420,6 +2421,19 @@ describe("cliRefusals", () => {
     expect(moved.code).toBe(0);
     expect(moved.stdout).toStartWith("dispatch: ");
     expect(cliRefusals(moved.stdout)).toEqual([]);
+  });
+
+  // The moved file's notice names checkout paths, which may hold a space or a quote: each notice
+  // still reads as no refusal, and a refusal printed after it, naming such a path, still reads as one.
+  test("a moved file's notice refuses nothing whatever its paths hold", () => {
+    for (const name of ["x y", "sq'x", "q?x", "a b/it's here"]) {
+      const old = `/work/${name}/.opencode/envoy.json`;
+      const notice = `dispatch: ${old} is not read: mkdir -p ${shellQuote(`/work/${name}/.envoy`)} && mv ${shellQuote(old)} ${shellQuote(`/work/${name}/.envoy/envoy.json`)}`;
+      const across = `dispatch: ${old} is not read, and is on another filesystem than /x (a mount): create /x, and move ${old} on the machine that owns it`;
+      expect(cliRefusals(`${notice}\n${across}\n`)).toEqual([]);
+      const refused = `dispatch: /work/${name}/envoy.json: the top-level natsUrls is not read; move it to envoy.natsUrls`;
+      expect(cliRefusals(`${notice}\n${refused}\n`)).toEqual([{ line: refused, command: null }]);
+    }
   });
 
   // A refusal the CLI prints before it reaches Dispatch is logged too, whenever the call knows its

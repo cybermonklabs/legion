@@ -1,0 +1,11 @@
+kind: Fixed
+custom:
+  Issue: fix-product-paths-with-glob-and-url-characters
+body: |-
+  The notice for a checkout's OpenCode-era `.opencode/envoy.json` writes each path in its
+  `mkdir -p … && mv …` command as one shell word, so a checkout whose path holds a space or a
+  quote gets a command that pastes as it reads; before, pasting it moved the wrong path or failed.
+  `cliRefusals` reads that notice, whatever its paths hold, as no refusal: under a checkout path
+  with a space it was counted as one, so a reader such as pi-envoy's run-end check took a call
+  Dispatch answered for a refused one. The quoting is `@legion/envoy-client/shell-quote`, which
+  `packages/dispatch`'s local harness now imports in place of its own copy.

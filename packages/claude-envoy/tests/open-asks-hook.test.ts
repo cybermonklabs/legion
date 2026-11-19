@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { shellQuote } from "@legion/envoy-client/shell-quote"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
@@ -331,7 +332,7 @@ test("names a checkout's unread .opencode/envoy.json and still summarises the as
       dispatch: { enabled: true, serverUrl: "http://127.0.0.1:1", token: checkoutToken },
     }),
   )
-  const rename = `envoy: ${old} is not read: mkdir -p ${join(checkout, ".envoy")} && mv ${old} ${join(checkout, ".envoy", "envoy.json")}\n`
+  const rename = `envoy: ${old} is not read: mkdir -p ${shellQuote(join(checkout, ".envoy"))} && mv ${shellQuote(old)} ${shellQuote(join(checkout, ".envoy", "envoy.json"))}\n`
   try {
     const result = await runHook(
       { ...hookInput, cwd: checkout },

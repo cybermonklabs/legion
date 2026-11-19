@@ -215,6 +215,7 @@ on:
       - 'packages/envoy/internal/routing/*'
       - 'packages/envoy/internal/serverwait/*'
       - 'packages/envoy/internal/session/*'
+      - 'packages/envoy/internal/shellquote/*'
       - 'packages/envoy/internal/store/*'
       - 'packages/envoy/listenerwire/*'
       - 'packages/envoy/listenfd/*'

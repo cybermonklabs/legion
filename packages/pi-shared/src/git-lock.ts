@@ -1,11 +1,32 @@
 import { lstat } from "node:fs/promises";
 
 /** The ways a git or jj failure names the lock file it could not take: jj's git backend
- * (gitoxide), and git's own lockfile API, which every git jj runs reports through. */
-const GIT_LOCK_REPORTS = [
-  /The lockfile at '([^']+)' might need manual deletion/g,
-  /Unable to create '([^']+)': File exists/g,
+ * (gitoxide), and git's own lockfile API, which every git jj runs reports through. Each writes the
+ * path between its opening text and its closing text and escapes nothing in it, so the path runs
+ * to the message's fixed text after it, not to the next quote, and may hold any character a path
+ * can, a `'` or a line break among them. */
+const GIT_LOCK_REPORTS: ReadonlyArray<readonly [opening: string, closing: string]> = [
+  ["The lockfile at '", "' might need manual deletion"],
+  ["Unable to create '", "': File exists"],
 ];
+
+/**
+ * Each path `output` names between `opening` and `closing`, read as the daemon's pattern reads it
+ * (`(?s:.+?)`, jjgit.go): at least one character, up to the first `closing` after it, each report
+ * after the last. A scan, not a backtracking pattern, so output that repeats an opening with no
+ * closing after it takes time in its length, not its square.
+ */
+function reportedPaths(output: string, opening: string, closing: string): string[] {
+  const paths: string[] = [];
+  for (let at = output.indexOf(opening); at >= 0; ) {
+    const start = at + opening.length;
+    const end = output.indexOf(closing, start + 1);
+    if (end < 0) break;
+    paths.push(output.slice(start, end));
+    at = output.indexOf(opening, end + closing.length);
+  }
+  return paths;
+}
 
 /** `ms` as Go prints a time.Duration rounded to the second: `31m4s`, `2h0m5s`, `45s`. */
 function age(ms: number): string {
@@ -35,8 +56,8 @@ function age(ms: number): string {
  */
 export async function staleGitLockNote(output: string, now = Date.now()): Promise<string> {
   const locks = new Set<string>();
-  for (const report of GIT_LOCK_REPORTS) {
-    for (const match of output.matchAll(report)) locks.add(match[1] as string);
+  for (const [opening, closing] of GIT_LOCK_REPORTS) {
+    for (const lock of reportedPaths(output, opening, closing)) locks.add(lock);
   }
   const notes: string[] = [];
   for (const lock of locks) {

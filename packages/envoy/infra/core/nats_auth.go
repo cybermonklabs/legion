@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/shellquote"
 )
 
 // User is one nkey user of a NATS server's authorization block. Its JSON keys, and Rules' and
@@ -367,7 +368,7 @@ func (a Authorization) StartScript(configHeader, serverArgs []string, configPath
 		config += privateMonitorLines
 	}
 	command := append([]string{"nats-server", "--config", configPath}, serverArgs...)
-	return "set -eu; printf '%s' " + ShellQuote(config) + " > " + ShellQuote(configPath) + "; exec " + ShellJoin(command), nil
+	return "set -eu; printf '%s' " + shellquote.Quote(config) + " > " + shellquote.Quote(configPath) + "; exec " + shellquote.Join(command), nil
 }
 
 // PrivateMonitorHost is the address a start script binds nats-server's monitoring to beside

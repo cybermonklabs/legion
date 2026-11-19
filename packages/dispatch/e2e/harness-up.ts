@@ -31,10 +31,10 @@
  *  this one: it is a Dispatch for a person to open, on the repository's dev Postgres, seeded with
  *  `e2e/workspace.ts` and printing a signed-in URL. This prints an environment and seeds nothing.
  *
- *  Every value is shell-quoted, since a `DATABASE_URL` carries characters a reader would
- *  otherwise have to think about (`e2e/local-instance-support.ts`). */
+ *  Every value is shell-quoted (`@legion/envoy-client/shell-quote`), since a `DATABASE_URL`
+ *  carries characters a reader would otherwise have to think about. */
+import { shellQuote } from "@legion/envoy-client/shell-quote";
 import { startStacks, stopStacks } from "./harness-pool";
-import { shellQuote } from "./local-instance-support";
 
 const [stack] = await startStacks(1);
 for (const [variable, value] of Object.entries(stack.env)) {
