@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 )
 
 // maxPages bounds one listing's pages, so a pass can never read on for ever: an answer GitHub
@@ -217,12 +218,11 @@ func (r *Reconciler) readHead(ctx context.Context, writer Writer, head pullHead,
 // readHead calls it once the head's check runs and check suites are recorded, so nothing that
 // befalls this read takes those from the head.
 //
-// A rate limit stops the pass, as at any read. Every other failure -- GitHub refusing the read
-// with 403 or 404, which is a grant of Commit statuses taken away while the token lives, or an
-// answer the pass cannot read -- costs the head its statuses alone: it is named at WARN, the pass
-// sends no further request for the head, and the head keeps its runs, its suites and the ETags of
-// both, which headFailed would drop. The status listing's own ETags are dropped, so the next pass
-// reads it in full.
+// A rate limit stops the pass, as at any read. Every other failure -- a 403 or 404 among them,
+// which is a grant of Commit statuses taken away while the token lives -- costs the head its
+// statuses alone: it is named at WARN, the pass sends no further request for the head, and the
+// head keeps its runs, its suites and the ETags of both, which headFailed would drop. The status
+// listing's own ETags are dropped, so the next pass reads it in full.
 //
 // recorded says the head's runs and suites changed its record already, which then counts once
 // whatever the statuses change. notModified says every page of the listing answered 304, and cut
@@ -241,7 +241,7 @@ func (r *Reconciler) readStatuses(ctx context.Context, writer Writer, head pullH
 			// next pass reads the head again, on the ETags the pass holds.
 			return false, true, nil
 		}
-		r.statusesUnread(head, err)
+		r.statusesUnread(ctx, head, err)
 		r.holdStatuses(head, nil, 0)
 		return false, false, nil
 	}
@@ -271,15 +271,18 @@ func (r *Reconciler) holdStatuses(head pullHead, pages []pageOf[object], wanted 
 	r.heads[head.key()] = state
 }
 
-// statusesUnread names at WARN a head whose commit statuses the pass read none of, with cause,
-// what GitHub answered: the error of a REST read of the listing (readStatuses), or the errors
-// entries a query answered against the head commit's status field as one error of their text
-// (errorText, walk.visitHead). Both refusals are this one line, which
+// statusesUnread names at WARN a head whose commit statuses the pass read none of, with cause:
+// the error of a REST read of the listing (readStatuses), or the errors entries a query answered
+// at or under the head commit's status field as one error of their text (errorText,
+// walk.visitHead). Both failures are this one line, which
 // packages/envoy/cmd/dispatch/README.md ("CI reconcile") gives operators with these four fields;
-// slog writes cause as its Error() text.
-func (r *Reconciler) statusesUnread(head pullHead, cause error) {
+// slog writes cause as its Error() text. It notes the failed read on the pass's attempt
+// (githubreads), whatever failed, as headFailed does: the statuses of a head whose token holds
+// Commit statuses are part of the read the deployment configured, and the pass gave them up.
+func (r *Reconciler) statusesUnread(ctx context.Context, head pullHead, cause error) {
 	r.Logger.Warn("ci reconcile read no commit status of a head",
 		"repository", head.repository(), "pr", head.number, "sha", head.sha, "error", cause)
+	githubreads.NoteFailuref(ctx, "ci reconcile read no commit status of %s#%s at %s: %w", head.repository(), head.number, head.sha, cause)
 }
 
 // kept is what the pass remembers of one head -- the ETags of a head read over REST, the
@@ -318,7 +321,8 @@ func (r *Reconciler) kept(writer Writer, head pullHead) headState {
 // the cursor names it, and the next pass reads it from the start.
 //
 // Every other failure is the head's own. It drops what the pass kept of that head, so the next
-// pass reads it in full, and leaves the pass to the head after it.
+// pass reads it in full, and leaves the pass to the head after it. It is a GitHub read the pass
+// gave up, so it is noted on the pass's attempt (githubreads).
 func (r *Reconciler) headFailed(ctx context.Context, err error, head pullHead, c *counts) *stop {
 	// A limit GitHub answered is read before the pass's own end, as every other read of the pass
 	// reads it (identify, openPullRequests, the query): it is GitHub's answer, not a request the
@@ -332,6 +336,7 @@ func (r *Reconciler) headFailed(ctx context.Context, err error, head pullHead, c
 	}
 	c.heads++
 	delete(r.heads, head.key())
+	githubreads.NoteFailure(ctx, err)
 	var tooLarge *githubapp.ResponseTooLargeError
 	if errors.As(err, &tooLarge) {
 		// GitHub's answer is past what githubapp reads at all, so this head cannot be read: it is

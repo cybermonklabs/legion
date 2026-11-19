@@ -2363,23 +2363,121 @@ type RoleHolder struct {
 }
 
 // LiveRoleHolders is the session of each live claim of issue, by role: a claim in one of
-// liveClaimStates that records a session. It is what a role-holder publication sends.
+// liveClaimStates that records a session it holds. It is what a role-holder publication sends.
+//
+// A claim holds its session when claim_sessions holds every name its record gives the session
+// (supervise.RecordedHolds: the id, the file's name, the id an Oh My Pi file name gives, and the
+// Claude Code session a `<uuid>.jsonl` file names) for it, in its own project (internal/store's
+// HoldSessions, plan E's t-e-54), and none of those names is one no hold can cover
+// (supervise.UnholdableNames). Every session a registration records is held first, and the boot
+// holds every recorded name no row held before any machine exists. So a live claim's session is
+// left out only where the claim records a session it does not hold, which the boot suspends: a
+// name two claims recorded under a daemon from before the hold, or one past the bound, while that
+// claim's suspension waits for the end of its turn, or after a suspension the runtime refused.
+// Published, such a session would name the claim's role as the holder of another claim's session,
+// or of one no claim holds. The names are the supervise package's one rule, read here rather than
+// spelled again in SQL, and the holds of an issue's few claims are read in one statement.
 func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolder, error) {
-	rows, err := tx.Query(ctx, `select role, session from claims
-		where issue = $1 and session <> '' and state = any($2)
-		order by role`, issue, liveClaimStates)
+	type candidate struct {
+		token, project, file string
+		holder               RoleHolder
+	}
+	rows, err := tx.Query(ctx, `select c.token, c.project, c.role, c.session, c.session_file from claims c
+		where c.issue = $1 and c.session <> '' and c.state = any($2)
+		order by c.role`, issue, liveClaimStates)
 	if err != nil {
 		return nil, fmt.Errorf("read the live role holders of %s: %w", issue, err)
 	}
-	holders, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (RoleHolder, error) {
-		var holder RoleHolder
-		err := row.Scan(&holder.Role, &holder.Session)
-		return holder, err
+	candidates, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (candidate, error) {
+		var c candidate
+		err := row.Scan(&c.token, &c.project, &c.holder.Role, &c.holder.Session, &c.file)
+		return c, err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("read the live role holders of %s: %w", issue, err)
 	}
+	var claims, projects, kinds, names []string
+	for _, c := range candidates {
+		for _, h := range supervise.RecordedHolds(c.holder.Session, c.file) {
+			claims, projects, kinds, names = append(claims, c.token), append(projects, c.project), append(kinds, string(h.Kind)), append(names, h.Name)
+		}
+	}
+	held := map[string]map[supervise.Hold]bool{}
+	if len(names) > 0 {
+		rows, err := tx.Query(ctx, `select h.claim, h.kind, h.name from claim_sessions h
+			join unnest($1::text[], $2::text[], $3::text[], $4::text[]) as want(claim, project, kind, name)
+				on h.project = want.project and h.kind = want.kind and h.name = want.name and h.claim = want.claim`,
+			claims, projects, kinds, names)
+		if err != nil {
+			return nil, fmt.Errorf("read the holds of %s's live role holders: %w", issue, err)
+		}
+		for rows.Next() {
+			var token, kind, name string
+			if err := rows.Scan(&token, &kind, &name); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("read the holds of %s's live role holders: %w", issue, err)
+			}
+			if held[token] == nil {
+				held[token] = map[supervise.Hold]bool{}
+			}
+			held[token][supervise.Hold{Kind: supervise.HoldKind(kind), Name: name}] = true
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("read the holds of %s's live role holders: %w", issue, err)
+		}
+	}
+	var holders []RoleHolder
+	for _, c := range candidates {
+		names := supervise.RecordedHolds(c.holder.Session, c.file)
+		if len(supervise.UnholdableNames(c.holder.Session, c.file)) > 0 || len(names) == 0 {
+			continue
+		}
+		holds := true
+		for _, h := range names {
+			holds = holds && held[c.token][h]
+		}
+		if holds {
+			holders = append(holders, c.holder)
+		}
+	}
 	return holders, nil
+}
+
+// SessionHeld reports whether claim_sessions holds, for token in project, every name its record
+// gives session and sessionFile, by LiveRoleHolders' rule: every name supervise.RecordedHolds
+// gives, none of them one supervise.UnholdableNames refuses. It only reads, in tx, which may be a
+// fact's transaction holding the fact lock (the daemon's step record): a savepoint, one select and
+// the savepoint's release, all on that transaction's own connection, so it waits on no other
+// connection and writes nothing. The savepoint is what makes a failure of the read leave tx usable;
+// such a read answers false with the error.
+func SessionHeld(ctx context.Context, tx pgx.Tx, project string, token claim.Token, session, sessionFile string) (bool, error) {
+	names := supervise.RecordedHolds(session, sessionFile)
+	if len(names) == 0 || len(supervise.UnholdableNames(session, sessionFile)) > 0 {
+		return false, nil
+	}
+	var kinds, values []string
+	distinct := map[supervise.Hold]bool{}
+	for _, h := range names {
+		if !distinct[h] {
+			distinct[h] = true
+			kinds, values = append(kinds, string(h.Kind)), append(values, h.Name)
+		}
+	}
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("read whether %s holds session %s: %w", token, session, err)
+	}
+	defer sp.Rollback(ctx)
+	var held int
+	if err := sp.QueryRow(ctx, `select count(distinct (h.kind, h.name)) from claim_sessions h
+		join unnest($3::text[], $4::text[]) as want(kind, name) on h.kind = want.kind and h.name = want.name
+		where h.project = $1 and h.claim = $2`, project, string(token), kinds, values).Scan(&held); err != nil {
+		return false, fmt.Errorf("read whether %s holds session %s: %w", token, session, err)
+	}
+	if err := sp.Commit(ctx); err != nil {
+		return false, fmt.Errorf("read whether %s holds session %s: %w", token, session, err)
+	}
+	return held == len(distinct), nil
 }
 
 // RecentClaimIssues is every issue of the Dispatch project whose key starts `<project>-` and

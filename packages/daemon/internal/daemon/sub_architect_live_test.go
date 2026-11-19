@@ -835,7 +835,7 @@ func (r *subArchitectLive) register(issue string, role claim.Role, session strin
 		t.Fatalf("decode the registration of %s: %v", token, err)
 	}
 	c.secret = registered.Secret
-	go c.serve()
+	c.sh.serve(c.serve)
 	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: token, SessionID: session, Secret: registered.Secret, Generation: launch.Generation,
 	}, false); status != http.StatusNoContent {
@@ -863,14 +863,14 @@ type subArchitectSession struct {
 	prompts []shimwire.Prompt
 }
 
-// serve reads every frame the daemon sends the shim until the connection closes: it answers the
-// protocol negotiation and the state probe (idle, or streaming while a turn runs), and takes each
-// prompt — answering it and starting the turn, as Oh My Pi does — for a step to read. A write
-// that fails ends it too: the connection closed under the process the runtime reported gone.
+// serve reads every frame the daemon sends the shim until the connection closes or the test ends
+// it (shim.serve): it answers the protocol negotiation and the state probe (idle, or streaming
+// while a turn runs), and takes each prompt — answering it and starting the turn, as Oh My Pi
+// does — for a step to read. A write that fails ends it too: the connection closed under the
+// process the runtime reported gone.
 func (c *subArchitectSession) serve() {
 	// The reader dialShim read the hello_ack through, which may already hold the frames after it.
 	reader := c.sh.lines
-	_ = c.sh.conn.SetReadDeadline(time.Time{})
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {

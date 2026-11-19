@@ -1,18 +1,24 @@
 package delivery
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // TestReconcileCatchesAMissedPullRequest proves the plan's "a missed event appears by the next
@@ -872,5 +878,406 @@ func TestReconcileReadsAMergedHeadItReJudgedOnlyOnce(t *testing.T) {
 	}
 	if again := readHead(t, ctx, pool, "acme/gadgets", 61); again.IssueKey != nil {
 		t.Fatalf("the merged head after the second pass = %v, want nobody still", again.IssueKey)
+	}
+}
+
+// readRecorder is a githubreads.Recorder that keeps each attempt it is handed, in the order the
+// passes recorded them, so a test reads what a pass gave GET /healthz to answer.
+type readRecorder struct {
+	mu       sync.Mutex
+	recorded []recordedRead
+}
+
+// recordedRead is one attempt a readRecorder was handed.
+type recordedRead struct {
+	read      githubreads.Read
+	succeeded bool
+	cause     string
+}
+
+func (r *readRecorder) record(_ context.Context, read githubreads.Read, succeeded bool, cause string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.recorded = append(r.recorded, recordedRead{read: read, succeeded: succeeded, cause: cause})
+	return nil
+}
+
+// take answers the attempts recorded since the last take, and forgets them.
+func (r *readRecorder) take() []recordedRead {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	taken := r.recorded
+	r.recorded = nil
+	return taken
+}
+
+// The routes of the run listings of seedDeliverySettings' two workflows.
+const (
+	deployRunsRoute   = "GET /repos/acme/widgets/actions/workflows/.github%2Fworkflows%2Fdeploy.yml/runs"
+	prChecksRunsRoute = "GET /repos/acme/widgets/actions/workflows/.github%2Fworkflows%2Fpr-checks.yml/runs"
+)
+
+// answerGitHub installs handlers on fake, and on every route handlers does not name GitHub having
+// nothing new for a reconcile pass: an empty merged-PR search, and no run of either workflow.
+func answerGitHub(t *testing.T, fake *fakeGitHub, handlers map[string]http.HandlerFunc) {
+	t.Helper()
+	noRuns := func(w http.ResponseWriter, _ *http.Request) {
+		mustEncode(t, w, map[string]any{"total_count": 0, "workflow_runs": []any{}})
+	}
+	answers := map[string]http.HandlerFunc{
+		"POST /graphql": func(w http.ResponseWriter, _ *http.Request) {
+			mustEncode(t, w, searchResponseJSON(0, nil, false, ""))
+		},
+		deployRunsRoute:   noRuns,
+		prChecksRunsRoute: noRuns,
+	}
+	maps.Copy(answers, handlers)
+	for pattern, handler := range answers {
+		fake.handle(pattern, handler)
+	}
+}
+
+// leasedReconciles answers the pass the reconcile's loop runs under its lease (leasedPass), each
+// call due one ReconcileInterval after the one before so the lease's record of the last period
+// served never skips it, and the recorder reconcile records each pass's attempt at reading GitHub
+// into.
+func leasedReconciles(t *testing.T, ctx context.Context, pool *store.Pool, reconcile *Reconcile) (pass func(), reads *readRecorder) {
+	t.Helper()
+	leases := deliveryTestLeases(t, pool)
+	reads = &readRecorder{}
+	reconcile.RecordGitHubReads(reads.record)
+	due := time.Now()
+	return func() {
+		reconcile.leasedPass(ctx, leases, due)
+		due = due.Add(ReconcileInterval)
+	}, reads
+}
+
+// Each leased reconcile pass records its attempt at reading GitHub, which GET /healthz answers: a
+// pass with no delivery settings and no pull request head to read asks GitHub nothing and records
+// nothing; a pass whose first request GitHub answered 503 -- the permission check's installation
+// lookup -- records failed, with that answer as its cause; and the next pass, which GitHub
+// answered, records succeeded.
+func TestEachLeasedReconcilePassRecordsItsAttemptAtReadingGitHub(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	fake := newFakeGitHub(t)
+	answerGitHub(t, fake, nil)
+	pass, reads := leasedReconciles(t, ctx, pool, NewReconcile(pool, fake.newTestClient(), events.NewBroker()))
+
+	pass()
+	if got := reads.take(); len(got) != 0 {
+		t.Fatalf("a pass with no delivery settings and no head to read recorded %+v, want nothing", got)
+	}
+	if mints := fake.tokenMints.Load(); mints != 0 {
+		t.Fatalf("the pass with nothing to read minted %d installation tokens, want none", mints)
+	}
+
+	seedDeliverySettings(t, ctx, pool)
+	fake.answerInstallation("acme/widgets", http.StatusServiceUnavailable)
+	pass()
+	installation := "/repos/acme/widgets/installation"
+	got := reads.take()
+	if len(got) != 1 || got[0].read != githubreads.DeliveryReconcile || got[0].succeeded ||
+		!strings.Contains(got[0].cause, installation) || !strings.Contains(got[0].cause, "status 503") {
+		t.Fatalf("the pass GitHub answered 503 recorded %+v, want one failed %s attempt whose cause is that 503", got, githubreads.DeliveryReconcile)
+	}
+
+	fake.answerInstallation("acme/widgets", 0)
+	pass()
+	if got := reads.take(); len(got) != 1 || got[0].read != githubreads.DeliveryReconcile || !got[0].succeeded || got[0].cause != "" {
+		t.Fatalf("the pass GitHub answered recorded %+v, want one succeeded %s attempt with no cause", got, githubreads.DeliveryReconcile)
+	}
+	settings, err := GetSettings(ctx, pool)
+	if err != nil || settings.LastError != nil || settings.LastReconcileAt == nil {
+		t.Fatalf("the settings after the pass GitHub answered = %+v, %v; want a successful pass", settings, err)
+	}
+}
+
+// A leased reconcile pass records failed when it gives up part of its read of GitHub on an answer
+// the client leaves to it and notes nothing of -- a 404, a 422, a 403 that carries no limit, a
+// permission the installation lacks, a GraphQL answer that carries errors -- so in those rows
+// only the pass's own note can make the record say so, and its cause names what the pass gave
+// up. Two rows are failures the client notes in a held scope (githubreads.Hold) that the page
+// read keeps: a search a recorded GraphQL limit holds, and a page GitHub answers 502 on every
+// try; in each the cause is the client's, which reaches the attempt before the pass's own note.
+// A page GitHub answers 502 once and then reads is a page read, whose dropped note is no failure,
+// and a pull request of a deleted repository is an answer the pass takes as data, marking it
+// unfetchable: each records succeeded.
+func TestALeasedReconcilePassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) {
+	fastPageRetries(t)
+	answer := func(status int, message string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(status)
+			fmt.Fprintf(w, `{"message":%q}`, message)
+		}
+	}
+	for _, row := range []struct {
+		name string
+		// arrange seeds the database and sets the stand-in's answers before the pass, and answers
+		// the routes it answers in place of GitHub having nothing new (answerGitHub).
+		arrange func(t *testing.T, ctx context.Context, pool *store.Pool, fake *fakeGitHub) map[string]http.HandlerFunc
+		// graphQLLimited records a limit on GitHub's GraphQL budget in the limits the client obeys.
+		graphQLLimited bool
+		succeeded      bool
+		// causeHas is what the cause of a failed attempt must name, and causeStarts what it must
+		// begin with, for a row whose first failure is the client's own note.
+		causeHas    []string
+		causeStarts string
+		// after checks what the pass left behind.
+		after func(t *testing.T, ctx context.Context, pool *store.Pool)
+	}{{
+		name: "a deploy repository the App is not installed on",
+		arrange: func(_ *testing.T, _ context.Context, _ *store.Pool, fake *fakeGitHub) map[string]http.HandlerFunc {
+			fake.answerInstallation("acme/widgets", http.StatusNotFound)
+			return nil
+		},
+		causeHas: []string{"not installed", "acme/widgets"},
+	}, {
+		name: "an installation lacking Actions read",
+		arrange: func(_ *testing.T, _ context.Context, _ *store.Pool, fake *fakeGitHub) map[string]http.HandlerFunc {
+			fake.permissions = map[string]string{"contents": "read", "pull_requests": "read"}
+			return nil
+		},
+		causeHas: []string{"lacks Actions: read", "acme/widgets"},
+	}, {
+		name: "an installation lacking Pull requests read",
+		arrange: func(_ *testing.T, _ context.Context, _ *store.Pool, fake *fakeGitHub) map[string]http.HandlerFunc {
+			fake.permissions = map[string]string{"contents": "read", "actions": "read"}
+			return nil
+		},
+		causeHas: []string{"lacks Pull requests: read", "acme/widgets"},
+	}, {
+		name: "a deploy workflow path GitHub answers 404 for",
+		arrange: func(*testing.T, context.Context, *store.Pool, *fakeGitHub) map[string]http.HandlerFunc {
+			return map[string]http.HandlerFunc{deployRunsRoute: answer(http.StatusNotFound, "Not Found")}
+		},
+		causeHas: []string{"reconcile deploy workflow runs", "status 404"},
+	}, {
+		name: "a merged pull request search whose GraphQL answer carries errors",
+		arrange: func(t *testing.T, _ context.Context, _ *store.Pool, _ *fakeGitHub) map[string]http.HandlerFunc {
+			return map[string]http.HandlerFunc{"POST /graphql": func(w http.ResponseWriter, _ *http.Request) {
+				mustEncode(t, w, map[string]any{"data": nil, "errors": []any{
+					map[string]any{"message": "Something went wrong while executing your query."},
+				}})
+			}}
+		},
+		causeHas: []string{"reconcile merged pull requests", "Something went wrong"},
+	}, {
+		name:           "a merged pull request search a recorded GraphQL limit holds",
+		graphQLLimited: true,
+		causeStarts:    "GitHub rate limit on " + githubapp.GraphQLScope,
+	}, {
+		name: "a partial pull request GitHub answers 403 with no limit",
+		arrange: func(t *testing.T, ctx context.Context, pool *store.Pool, _ *fakeGitHub) map[string]http.HandlerFunc {
+			merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
+			if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{
+				Repo: "acme/widgets", Number: 7, Title: "feat: refused", URL: "https://github.com/acme/widgets/pull/7",
+				Author: "octocat", CreatedAt: &merged, Partial: true,
+			}); err != nil {
+				t.Fatalf("seed the partial pull request: %v", err)
+			}
+			return map[string]http.HandlerFunc{
+				"GET /repos/acme/widgets/pulls/7": answer(http.StatusForbidden, "Resource not accessible by integration"),
+			}
+		},
+		causeHas: []string{"complete partial pull request acme/widgets #7"},
+	}, {
+		name: "a merged partial pull request whose commit messages GitHub answers 422",
+		arrange: func(t *testing.T, ctx context.Context, pool *store.Pool, _ *fakeGitHub) map[string]http.HandlerFunc {
+			merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
+			if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{
+				Repo: "acme/widgets", Number: 11, Title: "feat: commits refused", URL: "https://github.com/acme/widgets/pull/11",
+				Author: "octocat", CreatedAt: &merged, Partial: true,
+			}); err != nil {
+				t.Fatalf("seed the partial pull request: %v", err)
+			}
+			return map[string]http.HandlerFunc{
+				"GET /repos/acme/widgets/pulls/11": func(w http.ResponseWriter, _ *http.Request) {
+					mustEncode(t, w, map[string]any{
+						"number": 11, "title": "feat: commits refused", "html_url": "https://github.com/acme/widgets/pull/11",
+						"user": map[string]any{"login": "octocat"}, "labels": []any{},
+						"created_at": "2024-01-01T00:00:00Z", "merged_at": "2024-01-01T01:00:00Z",
+						"merge_commit_sha": "abc", "additions": 1, "deletions": 1, "body": "",
+						"head": map[string]any{"ref": "feature"},
+					})
+				},
+				// The completing fetch reads the first commit; the completion's read of the
+				// commit messages is refused.
+				"GET /repos/acme/widgets/pulls/11/commits": func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Query().Get("per_page") == "1" {
+						mustEncode(t, w, []any{map[string]any{"commit": map[string]any{"message": "x", "author": map[string]any{"date": "2024-01-01T00:00:00Z"}}}})
+						return
+					}
+					answer(http.StatusUnprocessableEntity, "Validation Failed")(w, r)
+				},
+			}
+		},
+		causeHas: []string{"complete partial pull request acme/widgets #11", "422"},
+	}, {
+		name: "a pull request head whose re-read GitHub answers 422",
+		arrange: func(t *testing.T, ctx context.Context, pool *store.Pool, _ *fakeGitHub) map[string]http.HandlerFunc {
+			seedUnreadHead(t, ctx, pool, 8)
+			return map[string]http.HandlerFunc{
+				"GET /repos/acme/widgets/pulls/8": answer(http.StatusUnprocessableEntity, "Validation Failed"),
+			}
+		},
+		causeHas: []string{"re-read the head of acme/widgets PR #8", "422"},
+	}, {
+		name: "a pull request head whose commit messages GitHub answers 422",
+		arrange: func(t *testing.T, ctx context.Context, pool *store.Pool, _ *fakeGitHub) map[string]http.HandlerFunc {
+			seedUnreadHead(t, ctx, pool, 9)
+			return map[string]http.HandlerFunc{
+				// Neither the title nor the branch names an issue, and the head is this
+				// repository's own, so the attribution reads the commit messages.
+				"GET /repos/acme/widgets/pulls/9": func(w http.ResponseWriter, _ *http.Request) {
+					mustEncode(t, w, map[string]any{
+						"number": 9, "title": "Tidy the walk", "body": "", "html_url": "https://github.com/acme/widgets/pull/9",
+						"state": "open", "merged": false, "updated_at": "2026-02-06T00:00:00Z",
+						"head": map[string]any{
+							"ref": "topic", "sha": "9999999999999999999999999999999999999999",
+							"repo": map[string]any{"full_name": "acme/widgets"},
+						},
+						"base": map[string]any{"ref": "main"},
+					})
+				},
+				"GET /repos/acme/widgets/pulls/9/commits": answer(http.StatusUnprocessableEntity, "Validation Failed"),
+			}
+		},
+		causeHas: []string{"attribute the head of acme/widgets PR #9 without its commit messages", "422"},
+	}, {
+		name: "a stored pull request whose attribution read GitHub answers 422",
+		arrange: func(t *testing.T, ctx context.Context, pool *store.Pool, _ *fakeGitHub) map[string]http.HandlerFunc {
+			merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
+			// Complete, and stored before its attribution inputs were read.
+			if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{
+				Repo: "acme/widgets", Number: 10, Title: "feat: unread", URL: "https://github.com/acme/widgets/pull/10",
+				Author: "octocat", CreatedAt: &merged, MergedAt: &merged,
+			}); err != nil {
+				t.Fatalf("seed the stored pull request: %v", err)
+			}
+			return map[string]http.HandlerFunc{
+				"GET /repos/acme/widgets/pulls/10": answer(http.StatusUnprocessableEntity, "Validation Failed"),
+			}
+		},
+		causeHas: []string{"read attribution inputs of acme/widgets PR #10", "422"},
+	}, {
+		name: "a page GitHub answers 502 on every try",
+		arrange: func(*testing.T, context.Context, *store.Pool, *fakeGitHub) map[string]http.HandlerFunc {
+			return map[string]http.HandlerFunc{deployRunsRoute: answer(http.StatusBadGateway, "Server Error")}
+		},
+		causeStarts: "GET ",
+		causeHas:    []string{"deploy.yml", "status 502"},
+	}, {
+		name: "a page GitHub answers 502 once and then reads",
+		arrange: func(t *testing.T, _ context.Context, _ *store.Pool, _ *fakeGitHub) map[string]http.HandlerFunc {
+			// The merged-PR search's first query and the deploy runs listing's first page, one
+			// page of each reader (queryGitHubPage and readGitHubPage).
+			var queries, listings atomic.Int32
+			return map[string]http.HandlerFunc{
+				"POST /graphql": func(w http.ResponseWriter, _ *http.Request) {
+					if queries.Add(1) == 1 {
+						answer(http.StatusBadGateway, "Server Error")(w, nil)
+						return
+					}
+					mustEncode(t, w, searchResponseJSON(0, nil, false, ""))
+				},
+				deployRunsRoute: func(w http.ResponseWriter, _ *http.Request) {
+					if listings.Add(1) == 1 {
+						answer(http.StatusBadGateway, "Server Error")(w, nil)
+						return
+					}
+					mustEncode(t, w, map[string]any{"total_count": 0, "workflow_runs": []any{}})
+				},
+			}
+		},
+		succeeded: true,
+		after: func(t *testing.T, ctx context.Context, pool *store.Pool) {
+			if settings, err := GetSettings(ctx, pool); err != nil || settings.LastError != nil || settings.LastReconcileAt == nil {
+				t.Fatalf("the settings after the pass = %+v, %v; want a successful pass: each page was read on its second try", settings, err)
+			}
+		},
+	}, {
+		name: "a pass whose only 404 is on a pull request of a deleted repository",
+		arrange: func(t *testing.T, ctx context.Context, pool *store.Pool, fake *fakeGitHub) map[string]http.HandlerFunc {
+			merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
+			if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{
+				Repo: "acme/gone", Number: 13, Title: "feat: of a deleted repository", URL: "https://github.com/acme/gone/pull/13",
+				Author: "octocat", CreatedAt: &merged, Partial: true,
+			}); err != nil {
+				t.Fatalf("seed the partial pull request: %v", err)
+			}
+			// GitHub answers the installation lookup of a deleted repository 404.
+			fake.answerInstallation("acme/gone", http.StatusNotFound)
+			return nil
+		},
+		succeeded: true,
+		after: func(t *testing.T, ctx context.Context, pool *store.Pool) {
+			pr, err := ScanPullRequest(pool.QueryRow(ctx, `select `+PullRequestColumns+` from delivery_pull_requests where repo = $1 and number = $2`, "acme/gone", 13))
+			if err != nil {
+				t.Fatalf("read the deleted repository's pull request: %v", err)
+			}
+			if pr.UnfetchableAt == nil {
+				t.Fatal("the deleted repository's pull request is not marked unfetchable, want it marked")
+			}
+		},
+	}} {
+		t.Run(row.name, func(t *testing.T) {
+			pool, ctx := deliveryTestPool(t)
+			seedDeliverySettings(t, ctx, pool)
+			fake := newFakeGitHub(t)
+			var handlers map[string]http.HandlerFunc
+			if row.arrange != nil {
+				handlers = row.arrange(t, ctx, pool, fake)
+			}
+			answerGitHub(t, fake, handlers)
+			var options []githubapp.Option
+			if row.graphQLLimited {
+				limits := ratelimit.New(pool)
+				if err := limits.Record(ctx, githubapp.GraphQLScope, time.Hour); err != nil {
+					t.Fatalf("record a limit on GitHub's GraphQL budget: %v", err)
+				}
+				options = append(options, githubapp.WithLimits(limits))
+			}
+			pass, reads := leasedReconciles(t, ctx, pool, NewReconcile(pool, fake.newTestClient(options...), events.NewBroker()))
+
+			pass()
+
+			got := reads.take()
+			if len(got) != 1 || got[0].read != githubreads.DeliveryReconcile {
+				t.Fatalf("the pass recorded %+v, want one %s attempt", got, githubreads.DeliveryReconcile)
+			}
+			if row.after != nil {
+				row.after(t, ctx, pool)
+			}
+			if row.succeeded {
+				if !got[0].succeeded || got[0].cause != "" {
+					t.Fatalf("the pass recorded %+v, want succeeded with no cause", got[0])
+				}
+				return
+			}
+			if got[0].succeeded {
+				t.Fatal("the pass recorded succeeded, want failed")
+			}
+			if !strings.HasPrefix(got[0].cause, row.causeStarts) {
+				t.Fatalf("the recorded cause %q does not begin with %q", got[0].cause, row.causeStarts)
+			}
+			for _, text := range row.causeHas {
+				if !strings.Contains(got[0].cause, text) {
+					t.Fatalf("the recorded cause %q does not name %q", got[0].cause, text)
+				}
+			}
+		})
+	}
+}
+
+// seedUnreadHead stores the head of acme/widgets' open pull request number, which no read of
+// GitHub has reached, so the next pass re-reads it first (ListStalePullRequestHeads).
+func seedUnreadHead(t *testing.T, ctx context.Context, pool *store.Pool, number int) {
+	t.Helper()
+	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+		Repo: "acme/widgets", Number: number, HeadSHA: "cccccccccccccccccccccccccccccccccccccccc",
+		HeadRef: "topic", BaseRef: "main", State: "open",
+	}); err != nil {
+		t.Fatalf("store the head of #%d: %v", number, err)
 	}
 }

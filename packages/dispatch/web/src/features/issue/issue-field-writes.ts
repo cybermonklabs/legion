@@ -303,6 +303,16 @@ export function newerWriteOf(client: QueryClient, pick: Write<IssueFieldPick>): 
   return fieldWritesOf(client, pick.detail).some((write) => write.live && write.rank > pick.joined);
 }
 
+/** Whether the client holds a live board move of `of`'s field still waiting its turn on its board
+ *  (`fieldWritesOf`): newer than every write on the issue's line, so newer than a pick of the field
+ *  made now too, and the screen shows the move's lane over that pick. */
+export function waitingMoveOf(
+  client: QueryClient,
+  of: Pick<IssueFieldPick, "field" | "issueKey">
+): boolean {
+  return fieldWritesOf(client, of).some((write) => write.live && write.rank === WAITING);
+}
+
 /** How `of`'s field shows while writes of it are live: as the newest of them
  *  (`fieldWritesOf`), whichever control made it - of the watch's live picks, and of every other
  *  live write of the field, a board move among them. Undefined while none is live. */

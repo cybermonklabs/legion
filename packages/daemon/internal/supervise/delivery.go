@@ -764,6 +764,25 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		}
 		return m.relaunchAfterDrop(ctx)
 	}
+	// Nothing is sent to a process under a session its claim does not hold (holdRecorded, plan E's
+	// t-e-54): a claim the boot could not suspend, its stop refused, keeps its live process, and a
+	// task sent to it would put that process to work under another claim's session, or one no claim
+	// holds (review round 12 of #4220). The task waits, unsent and charged nothing, and the next
+	// decision asks again, so an operator's settle of the name sends it. A store that does not
+	// answer sends nothing either. For a claim holding its session this asks the store once per
+	// session (Machine.heldNames).
+	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
+		var refusal claim.Refusal
+		switch {
+		case !errors.As(err, &refusal):
+			m.log.Warn("supervise: the store did not answer whether this claim holds its session; the task waits", "delivery", p.ID, "error", err)
+		case m.unheldDelivery != p.ID:
+			m.unheldDelivery = p.ID
+			m.log.Error("supervise: this claim records a session it does not hold, so no task is sent to its process; the task waits until the claim holds it: an operator gives the claim a new session, or records it as the rightful holder of a name held for none",
+				"delivery", p.ID, "session", m.claim.Session, "error", err)
+		}
+		return nil
+	}
 	// A root architect's task of a run (asksRoot) is the one delivery the question a restart left
 	// never answers: such a task may be one nobody has ever sent — it is held on the claim while
 	// its root has no architect to hear it, across restarts — and the decisions it names are held
@@ -970,7 +989,7 @@ func (m *Machine) answerAskFirstAfterDrop(ctx context.Context) error {
 	if streaming, _ := m.streaming(ctx, conn); !streaming {
 		return nil
 	}
-	m.log.Info("supervise: the agent is in a turn of its own after its task was dropped", "claim", m.claim.Token)
+	m.log.Info("supervise: the agent is in a turn of its own after its task was dropped")
 	// The turn is dated from the agent's answer, the daemon's first word of it, as the askFirst
 	// branch of sendPending dates the turn it confirms a task by (Claim.LastTurnStart).
 	m.claim.State, m.claim.LastTurnStart = StateWorking, m.deps.Clock.Now()

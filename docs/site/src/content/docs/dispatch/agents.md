@@ -148,8 +148,11 @@ when it first appears on the Agents page.
 If you write in a mode the session does not take, the message box warns you and suggests a prefix
 it does take.
 
-A session that advertises no mode takes no message: its card says **Takes no messages**, and a
-message sent to it is recorded as a failed attempt.
+A session that advertises no mode takes no message: its card says **Takes no messages**, its live
+view and its Inbox thread warn that it advertises no delivery mode, and a message sent to it is
+recorded as a failed attempt.
+A session that lists only capabilities Dispatch does not know as a mode also takes no message, and
+Dispatch says so in the same places.
 A Claude Code session advertises none while its plugin cannot reach its conversation: its Claude
 Code is older than 2.1.310, it was started with `--bare` or `--safe-mode`, or its settings turn
 mods off (`disableAllHooks`, or `allowManagedModsOnly` or `allowManagedHooksOnly` in managed
@@ -257,8 +260,27 @@ An agent's name, on its Agents row (**↗** beside the title) and everywhere els
 links to its conversation as it happens, at `/agents/<session>/live`.
 
 - The header holds a link back to **Agents**, the session's name with its
-  [running mark](#how-dispatch-shows-an-agent), whether this Dispatch is connected to the
-  session's conversation, and a pin.
+  [running mark](#how-dispatch-shows-an-agent), a pin, and a word on the session: whether this
+  Dispatch is connected to the session's conversation, or, while that connection stands, what the
+  session list says when it marks the session as missing its heartbeats or no longer holds it.
+  When the session does not answer the live view, the header reads **Not answering**, and a line
+  says what can cause that: in the empty transcript, or above the messages Dispatch keeps for it.
+  When the session list marks the session as missing its heartbeats, the header reads
+  **Unresponsive** with when it was last seen, and the line says that the session has not ended.
+  When the session leaves the list while you look at it, the header reads **Not in the session
+  list**, and the line says so.
+  A turn the session still streams changes neither of the last two, and a lost connection to
+  Dispatch does not remove the line.
+  When the session does not answer the live view and the list also marks it or no longer holds it,
+  the header reads **Not answering**, beside **Unresponsive** where the list marks it, and the line
+  says first what can cause that and then what the list says.
+  When Dispatch cannot read the session list for a while (it is refilling or unreachable), the
+  page keeps what the list last said: the header does not go back to **Live**, and the line stays.
+  The page reads the session list every 15 seconds, and Dispatch's copy of that list is at most
+  5 seconds old, so a session that leaves the list shows it within about 20 seconds.
+  The list marks a session as missing its heartbeats once its last one is older than the live
+  window (5 minutes by default), so a session that stops without leaving the list can read **Live**
+  for up to about 5 minutes and 20 seconds.
 - Everything else sits in one row under the message box: **Send as**, the machine the session runs
   on, its directory, the model and thinking level, a ring showing how full the session's context
   window is, and a **?**. On a phone that row scrolls sideways, with the ring and the **?** keeping
@@ -271,7 +293,8 @@ links to its conversation as it happens, at `/agents/<session>/live`.
   gives the tokens and the window in figures and says what a nearly full window means. From 80 per
   cent the ring and the share turn amber. The figures move while the session works: after each
   message of a turn, at the start of a turn, and after a compaction. A session that reports no
-  context window shows no ring.
+  context window shows no ring. A ring drawn before goes at the session's next turn, for example
+  after you switch the session to a model with no context window.
 - The row shows the model and thinking level the session runs now, as Oh My Pi's own `/model`
   and `/effort` report them, before any turn runs on them. A change made anywhere else (at the
   session's terminal, by a `/model` or `/effort` message, or a fallback to another model) shows
