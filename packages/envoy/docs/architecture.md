@@ -500,10 +500,14 @@ stream carries that lane, no consumer filter takes it and no session may registe
 resume lane. Every claim writes with the revision of the claim record it read, and an outright
 claim reads again and writes again on a conflict until its request's budget ends, then answers
 `503` with `Retry-After: 1` and writes nothing, so the record names the holder the claim really
-replaced. A pass of a record reads the previous holder's subject from the acknowledgement floor of
-its session consumer on (or the floor the listener recorded when it deleted that consumer, or,
-with neither, from an hour before the claim), and copies each role message of that role stored
-less than an hour before the claim or after it to the role's kept lane: one whose topic is the
+replaced. A pass of a record first reads the role's claim. While it names the record's previous
+holder - the claim did not land, or the role went back to it - the pass copies nothing, since
+that holder receives its role messages from its own consumer and a copy would come back to the
+subject it was taken from as a new frame. Otherwise the pass reads the previous holder's subject
+from the acknowledgement floor of its session consumer on (or the floor the listener recorded when
+it deleted that consumer, or, with neither, from an hour before the claim, on the sweep's next
+pass), and copies each role message of that role stored less than an hour before the claim or
+after it to the role's kept lane: one whose topic is the
 role's, or whose `role` field names it. The copy is the envelope without the forward mark, under
 the kept message id followed by `:frame:` and the frame's stream sequence, so two copies of one
 frame are stored once and no copy is dropped as a repeat of an earlier kept copy of the same
