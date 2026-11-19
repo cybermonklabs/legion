@@ -338,7 +338,7 @@ func (r *idleWakeRig) podReady(pod, uid string, roles map[string]string) {
 			wanted[role] = token
 		}
 	}
-	r.pods.podReady(pod, uid, wanted, func(role, dir string) { r.agents.setPrivate(key, role, dir) })
+	r.pods.podReady(pod, uid, wanted, func(role, dir string, _ *idleRigPodProcesses) { r.agents.setPrivate(key, role, dir) })
 }
 
 // seed records one issue, its tree's lifecycle and its implementer's suspended claim, as

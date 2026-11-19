@@ -30,7 +30,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	legionruntime "github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
@@ -259,7 +258,7 @@ func controllerSandboxMove(t *testing.T, from, to controllerSandboxSetting, rout
 	relaunched := r.awaitServing("the controller's next launch to come up in a pod other than "+first.pod.uid, first.pod.uid, first.generation)
 	r.logPod(to.name, "relaunch", relaunched.pod)
 	r.requirePlaced(relaunched.pod, to)
-	if starts := r.pods.starts(); starts != 2 {
+	if starts := r.pods.launchers.starts(r.name); starts != 2 {
 		t.Errorf("the controller's pods were started %d times, want twice: the first boot's and the relaunch's", starts)
 	}
 	r.kube.requireServed(t)
@@ -346,7 +345,7 @@ func newControllerSandboxRig(t *testing.T, first controllerSandboxSetting) *cont
 			return idleRigDialer{address: idleRigHostPort(t, pool)}, nil
 		})
 	kube.onPodReady = r.pods.podReady
-	kube.onPodGone = r.pods.podGone
+	kube.onPodGone = r.pods.launchers.podGone
 	kube.run(t)
 	// Registered before any boot, so it runs after every daemon's stop: the logs it prints carry
 	// the shutdown's own lines.
@@ -479,7 +478,7 @@ func (r *controllerSandboxRig) awaitServing(what, notUID string, after uint64) c
 func (r *controllerSandboxRig) awaitReadopted(first controllerSandboxServing) controllerSandboxServing {
 	r.t.Helper()
 	notKept := func(pod controllerSandboxPodSeen, live bool) bool {
-		return !live || pod.uid != first.pod.uid || r.pods.starts() != 1
+		return !live || pod.uid != first.pod.uid || r.pods.launchers.starts(r.name) != 1
 	}
 	var readopted controllerSandboxServing
 	moved := false
@@ -508,7 +507,7 @@ func (r *controllerSandboxRig) awaitReadopted(first controllerSandboxServing) co
 	if moved {
 		pod, _ := r.kube.controllerSandboxPodOf(r.name)
 		r.t.Fatalf("the second boot did not keep the controller's pod %s (now %q, %d launchers started), want it re-adopted until the controller's next launch; %s",
-			first.pod.uid, pod.uid, r.pods.starts(), r.diagnose())
+			first.pod.uid, pod.uid, r.pods.launchers.starts(r.name), r.diagnose())
 	}
 	return readopted
 }
@@ -603,7 +602,7 @@ func (r *controllerSandboxRig) printLogsOnFailure() {
 	if !r.t.Failed() {
 		return
 	}
-	r.t.Logf("the launchers' log, its last %d bytes:\n%s", 16<<10, controllerSandboxTail(r.pods.logs.String(), 16<<10))
+	r.t.Logf("the launchers' log, its last %d bytes:\n%s", 16<<10, controllerSandboxTail(r.pods.launchers.log(), 16<<10))
 	r.t.Logf("the daemon's log, its last %d bytes:\n%s", 48<<10, controllerSandboxTail(r.logs.String(), 48<<10))
 }
 
@@ -620,8 +619,7 @@ func controllerSandboxTail(text string, n int) string {
 }
 
 // requirePlaced fails the test unless pod is the controller's pod setting renders
-// (controllerSandboxSetting.placement), and its launcher ran with --microvm exactly where the
-// pod's own command names it.
+// (controllerSandboxSetting.placement), and a launcher was started for it.
 func (r *controllerSandboxRig) requirePlaced(pod controllerSandboxPodSeen, setting controllerSandboxSetting) {
 	r.t.Helper()
 	want := setting.placement()
@@ -642,8 +640,8 @@ func (r *controllerSandboxRig) requirePlaced(pod controllerSandboxPodSeen, setti
 	if flagged := slices.Contains(pod.command(), controllerSandboxMicroVMFlag); flagged != want.microVM {
 		r.t.Errorf("the controller's pod %s runs %q, --microvm %t, want %t (%s)", pod.uid, pod.command(), flagged, want.microVM, setting.name)
 	}
-	if ran, started := r.pods.ranMicroVM(pod.uid); !started || ran != want.microVM {
-		r.t.Errorf("the launcher of the controller's pod %s ran with MicroVM %t (started %t), want %t (%s)", pod.uid, ran, started, want.microVM, setting.name)
+	if !r.pods.launched(pod.uid) {
+		r.t.Errorf("no launcher was started for the controller's pod %s, want one (%s); launchers started: %s", pod.uid, setting.name, r.pods.startedLine())
 	}
 	member, err := pod.shapeSandbox()
 	if err != nil {
@@ -729,36 +727,6 @@ func (p controllerSandboxPodSeen) shapeSandbox() (json.RawMessage, error) {
 	return record.Sandbox, nil
 }
 
-// controllerSandboxPodOf is the pod of name as the API holds it, decoded, with the shape its
-// Sandbox's template records; false while the API holds no such pod. A stored object is never
-// written again (putLocked), so it is encoded under the lock and decoded outside it.
-func (a *issueSandboxAPI) controllerSandboxPodOf(name string) (controllerSandboxPodSeen, bool) {
-	a.mu.Lock()
-	object, ok := a.objects["pods"][name]
-	var shape string
-	if s := a.objects["sandboxes"][name]; s != nil {
-		spec, _ := s["spec"].(map[string]any)
-		template, _ := spec["podTemplate"].(map[string]any)
-		meta, _ := template["metadata"].(map[string]any)
-		annotations, _ := meta["annotations"].(map[string]any)
-		shape, _ = annotations[controllerSandboxShapeKey].(string)
-	}
-	var encoded []byte
-	var err error
-	if ok {
-		encoded, err = json.Marshal(object)
-	}
-	a.mu.Unlock()
-	if !ok || err != nil {
-		return controllerSandboxPodSeen{}, false
-	}
-	var pod corev1.Pod
-	if err := json.Unmarshal(encoded, &pod); err != nil {
-		return controllerSandboxPodSeen{}, false
-	}
-	return controllerSandboxPodSeen{uid: string(pod.UID), pod: pod, shape: shape}, true
-}
-
 // controllerSandboxLegionTool writes, under dir, the `legion` the controller's launcher starts as
 // each generation: the stand-in for `legion worker-shim … -- <omp argv>` as the pod's process.
 // It says it runs, with a run file named by its generation (LEGION_GENERATION, which the runtime
@@ -781,113 +749,83 @@ func controllerSandboxLegionTool(t *testing.T, dir string) string {
 	return path
 }
 
-// controllerSandboxPods runs the process of every pod the fake cluster reports Ready: the
-// controller pod's one container's `legion launcher`, in its single-role form, started in this
-// process with launcher.Run as idleRigPods starts an issue pod's, and stopped when the pod is
-// deleted. Its Connect and MicroVM are read from the pod's own container command, so the stream
-// and the sandbox flag the daemon rendered are the ones the launcher runs with. Beside it, for
-// each generation the launcher starts, the generation's shim (controllerSandboxShim).
+// controllerSandboxPods is the controller's own part of running every pod the fake cluster
+// reports Ready. The pod's one container's `legion launcher` runs as an issue pod's does, in its
+// single-role form, through launchers (idleRigPods), which also makes its private directory,
+// stops it when the pod is deleted and counts its starts; its Connect and MicroVM are read from
+// the pod's own container command (launch), so the stream and the sandbox flag the daemon
+// rendered are the ones the launcher runs with. Beside it, for each generation the launcher
+// starts, the generation's shim (controllerSandboxShim), which the watch of that launcher's
+// private directory starts (watchGenerations).
 type controllerSandboxPods struct {
-	kube *issueSandboxAPI
+	// launchers runs the launcher of every pod the fake cluster reports Ready; its log holds the
+	// rig's own lines too (logf).
+	launchers *idleRigPods
+	kube      *issueSandboxAPI
 	// tools holds the generations' run and die files (controllerSandboxLegionTool).
 	tools     string
 	daemonURL string
 	pool      *store.Pool
-	session   ompsessions.Database
-	dial      func(ctx context.Context, account string) (sessionproxy.Dialer, error)
-	logs      *syncBuffer
-	// dirRoot holds each launcher's private directory, a numbered subdirectory, whose budget
-	// newIdleRigPods explains.
-	dirRoot string
 
-	mu      sync.Mutex
-	dirNext int
-	running map[string]*controllerSandboxPod
-	// started is every launcher started, by pod uid, with the MicroVM it ran with, in order.
-	started []controllerSandboxLaunch
+	mu sync.Mutex
+	// started is the uid of every pod a launcher was started for, in order.
+	started []string
 	shims   map[uint64]*controllerSandboxShim
 }
 
-// controllerSandboxPod is one live pod's launcher: its private directory, the context that stops
-// it, and the wait that its goroutines and its shims' have ended.
-type controllerSandboxPod struct {
-	dir    string
-	cancel context.CancelFunc
-	done   sync.WaitGroup
-}
-
-// controllerSandboxLaunch is one launcher started: the pod it ran in and its MicroVM.
-type controllerSandboxLaunch struct {
-	uid     string
-	microVM bool
-}
-
+// newControllerSandboxPods is the controller's part over launchers of its own, whose launch is
+// the controller's: each launcher dials the stream its pod's own command names, so the launchers
+// are given no address of the rig's.
 func newControllerSandboxPods(t *testing.T, kube *issueSandboxAPI, tools, daemonURL string, pool *store.Pool, session ompsessions.Database,
 	dial func(ctx context.Context, account string) (sessionproxy.Dialer, error),
 ) *controllerSandboxPods {
 	t.Helper()
-	p := &controllerSandboxPods{kube: kube, tools: tools, daemonURL: daemonURL, pool: pool, session: session, dial: dial,
-		logs: &syncBuffer{}, dirRoot: testtmp.Dir(t, filepath.Join("999", shimwire.GenerationDir(999), ompsessions.SocketName)),
-		running: map[string]*controllerSandboxPod{}, shims: map[uint64]*controllerSandboxShim{}}
-	t.Cleanup(p.stopAll)
+	p := &controllerSandboxPods{launchers: newIdleRigPods(t, nil, session, dial), kube: kube, tools: tools, daemonURL: daemonURL, pool: pool,
+		shims: map[uint64]*controllerSandboxShim{}}
+	p.launchers.launch = p.launch
 	return p
 }
 
 // logf writes one line of the rig's own to the launchers' log.
 func (p *controllerSandboxPods) logf(format string, args ...any) {
-	fmt.Fprintf(p.logs, "controller sandbox rig: "+format+"\n", args...)
+	fmt.Fprintf(p.launchers.logs, "controller sandbox rig: "+format+"\n", args...)
 }
 
-// podReady starts the pod's launcher with the controller's launcher token, and the watch that
-// gives each of its generations a shim. It runs on the fake cluster's controller goroutine, off
-// the API's lock, so it reads the pod through the API and fails nothing itself.
+// podReady starts the pod's launcher with the controller's launcher token
+// (idleRigPods.podReady), and beside it the watch that gives each of its generations a shim. It
+// runs on the fake cluster's controller goroutine, off the API's lock, so it fails nothing
+// itself.
 func (p *controllerSandboxPods) podReady(pod, uid string, roles map[string]string) {
+	role := string(claim.RoleController)
+	token := roles[role]
+	if token == "" {
+		p.logf("the pod %s/%s holds no controller launcher token", pod, uid)
+		return
+	}
+	p.launchers.podReady(pod, uid, map[string]string{role: token}, func(_, dir string, processes *idleRigPodProcesses) {
+		p.mu.Lock()
+		p.started = append(p.started, uid)
+		p.mu.Unlock()
+		processes.run(func(ctx context.Context) { p.watchGenerations(ctx, processes, dir) })
+	})
+}
+
+// launch is how the launcher of the controller's pod runs (idleRigPods.launch): with the stream
+// and the sandbox flag the daemon rendered into the pod's own container command. It reads the pod
+// through the API, and starts no launcher for a pod gone before its launcher could start or for
+// one whose command names no stream.
+func (p *controllerSandboxPods) launch(pod, uid string) (connect string, microVM, ok bool) {
 	seen, live := p.kube.controllerSandboxPodOf(pod)
 	if !live || seen.uid != uid {
 		p.logf("the pod %s/%s was gone before its launcher could start", pod, uid)
-		return
+		return "", false, false
 	}
 	command := seen.command()
-	connect := controllerSandboxFlag(command, "--connect")
-	token := roles[string(claim.RoleController)]
-	if connect == "" || token == "" {
-		p.logf("the pod %s/%s names no stream (%q) or holds no controller launcher token (%t): %q", pod, uid, connect, token != "", command)
-		return
+	if connect = controllerSandboxFlag(command, "--connect"); connect == "" {
+		p.logf("the pod %s/%s names no stream: %q", pod, uid, command)
+		return "", false, false
 	}
-	p.mu.Lock()
-	if _, running := p.running[pod]; running {
-		p.mu.Unlock()
-		return
-	}
-	p.dirNext++
-	dir := filepath.Join(p.dirRoot, strconv.Itoa(p.dirNext))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		p.mu.Unlock()
-		p.logf("make the private directory of %s/%s: %v", pod, uid, err)
-		return
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	processes := &controllerSandboxPod{dir: dir, cancel: cancel}
-	p.running[pod] = processes
-	microVM := slices.Contains(command, controllerSandboxMicroVMFlag)
-	p.started = append(p.started, controllerSandboxLaunch{uid: uid, microVM: microVM})
-	p.mu.Unlock()
-	cfg := launcher.Config{
-		Connect: connect, Token: token, Sandbox: pod, Role: string(claim.RoleController), PodUID: uid, PrivateDir: dir,
-		MicroVM: microVM, Stdout: p.logs, Stderr: p.logs, StopGrace: 10 * time.Second,
-		SessionDatabase: p.session, SessionDialer: p.dial,
-	}
-	processes.done.Add(2)
-	go func() {
-		defer processes.done.Done()
-		if err := launcher.Run(ctx, cfg); err != nil && ctx.Err() == nil {
-			p.logf("launcher %s/%s: %v", pod, uid, err)
-		}
-	}()
-	go func() {
-		defer processes.done.Done()
-		p.watchGenerations(ctx, processes, strings.TrimPrefix(connect, "tcp://"))
-	}()
+	return connect, slices.Contains(command, controllerSandboxMicroVMFlag), true
 }
 
 // controllerSandboxFlag is the value after flag in command, "" where command names none.
@@ -899,11 +837,14 @@ func controllerSandboxFlag(command []string, flag string) string {
 	return command[i+1]
 }
 
-// watchGenerations gives each generation the pod's launcher starts a shim, once that
-// generation's process says it runs (its run file) and its credentials are in this launcher's
-// private directory, until the pod is gone. A generation's run file whose credentials are in no
-// directory of this pod's is an earlier pod's generation, and is passed over.
-func (p *controllerSandboxPods) watchGenerations(ctx context.Context, pod *controllerSandboxPod, address string) {
+// watchGenerations gives each generation the launcher of the private directory dir starts a
+// shim, once that generation's process says it runs (its run file) and its credentials are in
+// dir, until the pod is gone. Each shim dials the stream the pod's launcher dials and runs beside
+// it (idleRigPodProcesses.run), so the pod's removal waits for it. A generation's run file whose
+// credentials are in no directory of this pod's is an earlier pod's generation, and is passed
+// over.
+func (p *controllerSandboxPods) watchGenerations(ctx context.Context, processes *idleRigPodProcesses, dir string) {
+	address := strings.TrimPrefix(processes.connect, "tcp://")
 	handled := map[uint64]bool{}
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
@@ -924,47 +865,19 @@ func (p *controllerSandboxPods) watchGenerations(ctx context.Context, pod *contr
 			if !isRun || err != nil || handled[generation] {
 				continue
 			}
-			dir := filepath.Join(pod.dir, shimwire.GenerationDir(generation))
-			bootToken, err := os.ReadFile(filepath.Join(dir, controllerSandboxBootTokenFile))
+			generationDir := filepath.Join(dir, shimwire.GenerationDir(generation))
+			bootToken, err := os.ReadFile(filepath.Join(generationDir, controllerSandboxBootTokenFile))
 			if err != nil {
 				continue
 			}
 			handled[generation] = true
 			shim := &controllerSandboxShim{pods: p, address: address, generation: generation, bootToken: strings.TrimSpace(string(bootToken)),
-				dir: dir, client: &http.Client{Timeout: 20 * time.Second}}
+				dir: generationDir, client: &http.Client{Timeout: 20 * time.Second}}
 			p.mu.Lock()
 			p.shims[generation] = shim
 			p.mu.Unlock()
-			pod.done.Add(1)
-			go func() {
-				defer pod.done.Done()
-				shim.run(ctx)
-			}()
+			processes.run(shim.run)
 		}
-	}
-}
-
-// podGone stops the pod's launcher and its shims and waits for them, as the kubelet's stop of
-// the container does: the pod is gone, so nothing of it may still answer the daemon.
-func (p *controllerSandboxPods) podGone(pod string) {
-	p.mu.Lock()
-	processes, live := p.running[pod]
-	delete(p.running, pod)
-	p.mu.Unlock()
-	if !live {
-		return
-	}
-	processes.cancel()
-	processes.done.Wait()
-	_ = os.RemoveAll(processes.dir)
-}
-
-func (p *controllerSandboxPods) stopAll() {
-	p.mu.Lock()
-	pods := slices.Collect(maps.Keys(p.running))
-	p.mu.Unlock()
-	for _, pod := range pods {
-		p.podGone(pod)
 	}
 }
 
@@ -977,34 +890,18 @@ func (p *controllerSandboxPods) die(generation uint64) error {
 	return nil
 }
 
-// starts is how many launchers were started: one per pod the cluster reported Ready.
-func (p *controllerSandboxPods) starts() int {
+// launched is whether a launcher was started for the pod uid.
+func (p *controllerSandboxPods) launched(uid string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return len(p.started)
+	return slices.Contains(p.started, uid)
 }
 
-// ranMicroVM is the MicroVM the launcher of the pod uid ran with, and whether one was started.
-func (p *controllerSandboxPods) ranMicroVM(uid string) (microVM, started bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for _, launch := range p.started {
-		if launch.uid == uid {
-			return launch.microVM, true
-		}
-	}
-	return false, false
-}
-
-// startedLine is every launcher started, for a failure to name.
+// startedLine is the uid of every pod a launcher was started for, for a failure to name.
 func (p *controllerSandboxPods) startedLine() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	var lines []string
-	for _, launch := range p.started {
-		lines = append(lines, fmt.Sprintf("%s (microVM %t)", launch.uid, launch.microVM))
-	}
-	return "[" + strings.Join(lines, ", ") + "]"
+	return "[" + strings.Join(p.started, ", ") + "]"
 }
 
 // controllerSandboxShimState is what a generation's shim has done: how many of its hellos a
@@ -1191,9 +1088,10 @@ func (s *controllerSandboxShim) connect() error {
 // register registers the generation's agent and reports it ready. A registration the daemon
 // refuses because its machine has not recorded the launch's process yet is asked again, as a
 // shim whose hello came before the launch returned would find it, until the shim has ended, so a
-// pod's removal, which waits for its shims (podGone), does not wait out the retries; the session's
-// row is written first, as Oh My Pi writes its session before its plugin registers, so the
-// daemon's relaunch resumes a session the table holds (internal/launcher's sessionWritten).
+// pod's removal, which waits for its shims (idleRigPods.podGone), does not wait out the retries;
+// the session's row is written first, as Oh My Pi writes its session before its plugin
+// registers, so the daemon's relaunch resumes a session the table holds (internal/launcher's
+// sessionWritten).
 func (s *controllerSandboxShim) register() error {
 	if _, err := s.pods.pool.Exec(context.Background(),
 		`insert into omp_session_files (path, mtime_ms) values ($1, $2)
