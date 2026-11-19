@@ -268,7 +268,7 @@ jobs:
         run: .github/scripts/disk_watch.py report --state "$RUNNER_TEMP/disk-watch.json"
 
       # The proxy stops with this job, and the steps after this one must not be routed through
-      # it: the ci-ok-report step below reads the run's jobs and posts a check run with gh, which
+      # it: the ci-ok-report step below can read the run's jobs and post a check run with gh, which
       # would otherwise go through a proxy that is about to go. The rig writes the emptied variables, as it
       # wrote the proxy ones.
       - name: Stop routing this job through the fault

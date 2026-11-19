@@ -724,7 +724,13 @@ def files_but_tests(directory, suffix=".go", tree=False, skip=()):
     the files are listed from the directory as it is on each run, and one added later is declared
     with no edit here. Only repo_files() counts, as for every other read: a file git ignores, such
     as what a local run leaves behind, is no file of the repository, so a read of it would be
-    refused as matching none."""
+    refused as matching none. `directory` is refused unless it is relative and in normal form
+    (os.path.normpath), since repo_files() spells every path that way: `./d`, `d/` or an absolute
+    path would list no file of it, and the reads would go missing with nothing failing."""
+    if os.path.isabs(directory) or directory == "." or os.path.normpath(directory) != directory:
+        raise ValueError(f"files_but_tests is given {directory!r}, which is not a path relative to the "
+                         f"repository root in normal form, so no file of repo_files() would match it; "
+                         f"write it as {os.path.normpath(directory)!r}")
     known = repo_file_set()
     out = []
     for current, subdirs, names in os.walk(directory):

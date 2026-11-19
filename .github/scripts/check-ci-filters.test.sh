@@ -813,6 +813,11 @@ replace "$root/.github/scripts/ci_job_reads.py" 'from ci_filter_coverage import 
   'from ci_filter_coverage import Read, at, files_but_tests, gate, run'
 replace "$root/.github/scripts/ci_job_reads.py" 'reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]' \
   'reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition"), *[Read(path, "the app walks fixtures") for path in files_but_tests("fixtures", suffix="", tree=True)]]'
+# With no RULES row, fixtures/data.json is read through the listing alone, so a listing that kept
+# no tracked file would leave 'fixtures/**' matching no read, which rule 9's second direction
+# refuses: the case holds the tracked file kept as well as the ignored ones dropped.
+replace "$root/.github/scripts/ci_job_reads.py" \
+  'RULES = {"mod/lib/lib_test.go": [Read("fixtures/data.json", "lib_test.go reads ../../fixtures/data.json")]}' 'RULES = {}'
 printf '/fixtures/run.lock\n/fixtures/run/\n' > "$root/.gitignore"
 echo lock > "$root/fixtures/run.lock"
 mkdir -p "$root/fixtures/run"
@@ -820,6 +825,20 @@ echo log > "$root/fixtures/run/out.log"
 run_check "$root"
 check "passes" "$(is "$status" 0)"
 check "and names no ignored file" "$(is "$(contains "$out" 'fixtures/run')" false)"
+
+echo "case: files_but_tests refuses a directory not spelled as repo_files() spells a path"
+# ./fixtures, fixtures/ or an absolute path would list no file of repo_files(), and the reads
+# would go missing with nothing failing.
+for spelling in ./fixtures fixtures/ "$work/abs"; do
+  root=$(fixture "listed-$(printf '%s' "$spelling" | tr -c 'a-z' '-')")
+  replace "$root/.github/scripts/ci_job_reads.py" 'from ci_filter_coverage import Read, at, gate, run' \
+    'from ci_filter_coverage import Read, at, files_but_tests, gate, run'
+  replace "$root/.github/scripts/ci_job_reads.py" 'reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]' \
+    "reads=[Read(\".github/workflows/ci.yaml\", \"a job reads its own definition\"), *[Read(path, \"the app walks fixtures\") for path in files_but_tests(\"$spelling\", suffix=\"\", tree=True)]]"
+  run_check "$root"
+  check "fails for $spelling" "$(is "$status" 1)"
+  check "and names the spelling" "$(contains "$out" "files_but_tests is given '$spelling', which is not a path relative to the repository root in normal form")"
+done
 
 # Rule 9's second direction, the other way round: a pattern that matches files of the repository
 # none of which its job reads selects the job for a change no step of it can see. The app job's

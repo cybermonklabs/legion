@@ -6,6 +6,7 @@ record its step, its job or its key rests on, and the sections stand in the orde
 blocks stood in the workflow file. A value's own arithmetic stays beside the value, and a comment
 inside a `run:` body stays beside its command, in the workflow file, or in the script its step
 runs.
+In the text moved here, "this workflow" refers to `.github/workflows/release.yaml`.
 
 ## Why the workflow level permissions block is empty, and the four stages a release waits for
 

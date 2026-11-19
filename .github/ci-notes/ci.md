@@ -12,8 +12,10 @@ stays with its command. `.github/ci-filters.yaml` holds patterns and names: besi
 lines, its only comments are the lines of the blocks .github/scripts/check-ci-filters.sh and
 .github/scripts/check-ts-filters.sh write. A comment of it that said which files a job reads
 was deleted, since the filter beneath it is that record.
+In the text moved here, "this file" and "this workflow" refer to `.github/workflows/ci.yaml`,
+where every one of these comments stood before this change, the filters' comments among them.
 
-## How a filter of this file is written
+## How a filter of the filters file is written
 
 Each filter names every file its job reads: the package and what its tests, typecheck
 and build read outside it; the composite actions the job installs its tools through;
@@ -71,7 +73,7 @@ The first keys are no job's gate: each is a group many filters share, written on
 every filter that needs it through its anchor, which dorny/paths-filter flattens into the list
 that names it. The gate filters follow, one per `changes` output. ci_router carries two
 anchors, one on each scalar, because the image check, .github/scripts/check-image-trigger-paths.sh, reads the two filters that gate an image
-build as flat lists of globs: every filter that names ci.yaml names this file beside it.
+build as flat lists of globs: every filter that names ci.yaml names .github/ci-filters.yaml beside it.
 
 A comment block of three lines or more that stood beside a filter is in
 .github/ci-notes/ci.md, under the heading the `# why:` line in its place names.
@@ -82,11 +84,11 @@ that record.
 
 Every path filter .github/workflows/ci.yaml's `changes` job selects jobs by, in one file.
 
-That job's one dorny/paths-filter step hands this file's path over as its `filters` input, and
+That job's one dorny/paths-filter step hands .github/ci-filters.yaml's path over as its `filters` input, and
 the action reads the file off the disk against GITHUB_WORKSPACE. It takes the input as a path
 only when the text holds no newline and no colon (the action's `isPathInput`), so the value
 there stays a plain scalar: a block scalar or a quoted path with a colon in it would be read as
-inline YAML and the step would fail. On a pull request that job checks out this file and no
+inline YAML and the step would fail. On a pull request that job checks out .github/ci-filters.yaml and no
 other, paths-filter reading the changed-file list from the API and the filters from the
 tree; on a merge group it has the whole clone, which the git diff of base_sha..head_sha needs.
 
@@ -1207,7 +1209,7 @@ The jobs that run on every change: no `changes` output gates one, so CI_OK_SELEC
 none of them, and ci-ok passes only when each of them succeeded — a skipped, cancelled or
 absent one fails the verdict, since nothing else says the job ran. `changes` is here because
 it selects every other job, `lint` because every change is linted. ci-ok.sh reads this list
-rather than knowing those two names, and check-ci-filters.sh holds every job of this file to
+rather than knowing those two names, and check-ci-filters.sh holds every job of ci.yaml to
 exactly one of ci-ok's three classes: mapped by CI_OK_SELECTED_BY, named by ci.yaml's
 CI_OK_ALWAYS_RUN, or named by ci.yaml's CI_OK_EXEMPT. The list is a JSON array written over
 lines rather than one long one, as ci.yaml's CI_OK_SELECTED_BY, a JSON object, is.
@@ -2161,7 +2163,7 @@ with the run but starts only once the last of its needs has ended, when the pool
 with the next wave. docs/solutions/github/join-a-job-to-the-ci-router.md holds every reading
 of it. This job runs on ubuntu-24.04-arm because it needs nothing of an x86_64 machine, and
 that pool queues apart from the x86_64 one and is idle by the time the last need ends: on the
-run this file's "Runners" paragraph measures, it started 14 s after it was created. The shape
+run the "Runners" paragraph of .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs measures, it started 14 s after it was created. The shape
 is kept because a late verdict is right while one in another workflow's
 suite blocks the head until a person re-runs it. What this job cannot do, and the
 ci-ok-report step every other job ends with still does, is post the failing ci-ok of a

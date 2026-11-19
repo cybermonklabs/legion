@@ -5,6 +5,9 @@ this file. Each `# why:` line of that workflow names the section below that hold
 or the record its step, its job or its key rests on, and the sections stand in the order their
 comment blocks stood in the workflow file. A budget's own arithmetic stays beside the budget, in
 the workflow file, where the comment that derived it held one.
+In the text moved here, "this file" and "this workflow" refer to the workflow,
+`.github/workflows/dispatch-browser.yaml`, and "this file's head" to its head comment, which is the
+first sections below.
 
 ## The suite, its two lanes and the budget rule every job follows
 
