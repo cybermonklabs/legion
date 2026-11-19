@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pulumi/pulumi-go-provider/infer"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 
 	"github.com/sjawhar/envoy/infra/core"
@@ -133,6 +134,16 @@ var (
 	// quantityRule is a Kubernetes resource quantity (k8s.io/apimachinery's resource.Quantity):
 	// a signed decimal, then a binary suffix, a decimal suffix or a decimal exponent.
 	quantityRule = regexp.MustCompile(`^([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))(Ki|Mi|Gi|Ti|Pi|Ei|n|u|m|k|M|G|T|P|E|[eE][+-]?[0-9]+)?$`)
+	// clusterLocationRule is a Google Cloud region (us-central1) or zone (us-central1-a), where a
+	// cluster runs.
+	clusterLocationRule = regexp.MustCompile(`^[a-z]+-[a-z]+[0-9]+(?:-[a-z])?$`)
+	// connectionNameRule is a Cloud SQL instance's connection name, <project>:<region>:<instance>,
+	// the form the instance's connectionName takes: a project id (a lowercase letter, then 4 to 28
+	// lowercase letters, digits or hyphens, and a lowercase letter or digit), which a domain-scoped
+	// project prefixes with its domain (example.com:example-project, so the whole name then has
+	// four parts); a region (us-central1); and the instance's name (a lowercase letter, then at most
+	// 97 lowercase letters, digits or hyphens, ending in a letter or digit).
+	connectionNameRule = regexp.MustCompile(`^(?:[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)+:)?[a-z][-a-z0-9]{4,28}[a-z0-9]:[a-z]+-[a-z]+[0-9]+:[a-z](?:[-a-z0-9]{0,96}[a-z0-9])?$`)
 )
 
 // DispatchArgs are the inputs of an envoy-infra:gcp:Dispatch. Every field of a plain Go type is a
@@ -252,8 +263,9 @@ type DispatchArgs struct {
 	// OidcAudience turns on Dispatch's own service-account verifier, the one the secrets
 	// broker's judge reads Dispatch with: DISPATCH_OIDC_AUDIENCE is the audience a projected
 	// ServiceAccount token must carry, and DISPATCH_OIDC_ISSUER the issuer that signed it,
-	// which defaults to this component's cluster (the serviceAccountIssuer output) and which
-	// oidcIssuer replaces for a token another cluster mints. Dispatch reads the two as a pair
+	// which defaults to the cluster Dispatch runs in, the component's own or the one
+	// existingCluster names (the serviceAccountIssuer output), and which oidcIssuer replaces
+	// for a token another cluster mints. Dispatch reads the two as a pair
 	// (oidc.ConfigFromEnv refuses half of one), so the component renders both or neither, and
 	// an oidcIssuer with no oidcAudience is refused.
 	//
@@ -281,31 +293,68 @@ type DispatchArgs struct {
 	DatabaseVersion    *string `pulumi:"databaseVersion,optional"`
 	DatabaseTier       *string `pulumi:"databaseTier,optional"`
 	DeletionProtection *bool   `pulumi:"deletionProtection,optional"`
-	// DatabaseAvailabilityType is the Cloud SQL instance's availability type: ZONAL, one zone and
-	// the default, or REGIONAL, a standby in a second zone that Cloud SQL fails over to. Switching
-	// changes the instance in place, restarting it once.
+	// DatabaseAvailabilityType is the availability type of the Cloud SQL instance the component
+	// makes: ZONAL, one zone and the default, or REGIONAL, a standby in a second zone that Cloud
+	// SQL fails over to. Switching changes the instance in place, restarting it once.
 	DatabaseAvailabilityType *string `pulumi:"databaseAvailabilityType,optional"`
-	// DatabaseWaitsFor is a value of the resource whose update the Cloud SQL instance's must
-	// follow, so that a step of the consumer's own — deleting the old tailnet device before the
-	// front door comes back, for instance — runs before the instance restarts. The component never
-	// reads the value, and it reaches no resource: only the resources the value came from are
-	// used, which is what pulumi.DependsOnInputs reads off it. Unset, the instance's ordering is
-	// what it is today.
+	// DatabaseWaitsFor is a value of the resource whose update must come before the update of the
+	// Cloud SQL instance the component makes, so that a step of the consumer's own — deleting the
+	// old tailnet device before the front door comes back, for instance — runs before the instance
+	// restarts. The component never reads the value, and it reaches no resource: only the
+	// resources the value came from are used, which is what pulumi.DependsOnInputs reads off it.
+	// Unset, the instance's ordering is what it is today.
 	DatabaseWaitsFor pulumi.StringInput `pulumi:"databaseWaitsFor,optional"`
 	Namespace        *string            `pulumi:"namespace,optional"`
 	// ExistingNamespace: use the namespace as it exists in the cluster rather than creating it
 	// (another program owns the namespace).
 	ExistingNamespace *bool `pulumi:"existingNamespace,optional"`
+	// ExistingCluster names a GKE cluster the component does not make: the component runs
+	// Dispatch in that cluster and registers no Cluster of its own. The cluster must run on the
+	// component's own network, Network <hostname>-network, which the component registers whether
+	// or not it makes a cluster: the Cloud SQL proxy reaches the instance's private address on that
+	// network. It is a plain object, not a Pulumi Input, because the component looks the cluster up
+	// through the gcp provider before it registers anything and builds its Kubernetes provider's
+	// kubeconfig from what the lookup reports: an Input would make the kubeconfig unknown whenever
+	// the cluster's name is, and pulumi-kubernetes replaces its provider, and so every Kubernetes
+	// child, whenever the kubeconfig is unknown. The lookup refuses a cluster Dispatch cannot run
+	// in (lookupDispatchCluster). Unset, the component makes the Autopilot cluster <hostname>.
+	ExistingCluster *DispatchClusterArgs `pulumi:"existingCluster,optional"`
+	// ExistingDatabaseInstance is the connection name, <project>:<region>:<instance>, of a Cloud
+	// SQL instance the component does not make: the form of the databaseInstance output, so a
+	// consumer can pass its own replica's connectionName. With it the component registers no
+	// DatabaseInstance, Database or User, and the app pod's cloud-sql-proxy sidecar connects to
+	// that instance. It keeps every RandomPassword, under the names and with the arguments it
+	// always had, so the contract is that the instance holds database dispatch and login dispatch,
+	// whose password is the component's generated one: a promoted replica of the component's own
+	// instance does. It is a Pulumi Input because a consumer takes it from another resource or
+	// stack, and it is checked for a seed and for its shape once it resolves
+	// (dispatchDatabaseConnectionName). databaseVersion, databaseTier, databaseAvailabilityType and
+	// databaseWaitsFor configure the instance the component makes, and are refused beside it.
+	// Unset, the component makes the Cloud SQL instance <hostname>.
+	ExistingDatabaseInstance pulumi.StringInput `pulumi:"existingDatabaseInstance,optional"`
+	// RegionalNetwork is the regional part of the component's network: Subnetwork, Router and
+	// RouterNat <hostname> in region, the subnetwork the component's own cluster takes its
+	// addresses from and the router and Cloud NAT its private nodes reach the internet through.
+	// True when unset. False registers none of the three, while the Network, its GlobalAddress and
+	// its private services Connection stay exactly as they are, so the Cloud SQL instance keeps its
+	// private address. It is the step that empties the region once nothing uses the subnetwork, and
+	// so is allowed only beside existingCluster: the component's own cluster runs on that
+	// subnetwork, and false without existingCluster is refused rather than leaving it none.
+	RegionalNetwork *bool `pulumi:"regionalNetwork,optional"`
 
-	// ClusterOnly builds the cluster alone: the VPC, its subnetwork, the router, Cloud NAT and the
-	// Autopilot cluster, and nothing else. No Cloud SQL instance, database or user, no generated
-	// password, no Secret Manager grant, no Kubernetes provider and no Kubernetes object is
-	// registered, and the component requires no random provider. Every input that configures
-	// Dispatch rather than the cluster is refused by name, so only region, hostname and
-	// deletionProtection come with it; clusterName, kubeconfig and serviceAccountIssuer carry the
-	// cluster's own values and url, databaseInstance, principal, agentToken and
-	// serviceAccountSubject are "". A stack already running Dispatch cannot turn it on: such a
-	// stack sets the inputs this mode refuses, so the update is refused before anything is deleted.
+	// ClusterOnly builds the cluster alone: the VPC, its subnetwork, the router, Cloud NAT and an
+	// Autopilot cluster of the component's own, and nothing else. No Cloud SQL instance, database
+	// or user, no generated password, no Secret Manager grant, no Kubernetes provider and no
+	// Kubernetes object is registered, and the component requires no random provider. Every input
+	// that configures Dispatch rather than the cluster is refused by name, existingCluster and
+	// existingDatabaseInstance among them, since this mode always makes its own cluster and uses
+	// no database. So only region, hostname, deletionProtection and regionalNetwork come with it:
+	// regionalNetwork shapes the network half both modes build, and since this mode always makes
+	// its own cluster on that subnetwork, true (or unset) changes nothing and false is refused.
+	// clusterName, kubeconfig and serviceAccountIssuer carry the cluster's own values and url,
+	// databaseInstance, principal, agentToken and serviceAccountSubject are "". A stack already
+	// running Dispatch cannot turn it on: such a stack sets the inputs this mode refuses, so the
+	// update is refused before anything is deleted.
 	ClusterOnly *bool `pulumi:"clusterOnly,optional"`
 
 	// Replicas is the app Deployment's replica count, 1 by default. Above 1 the Deployment rolls
@@ -461,6 +510,20 @@ type DispatchArgs struct {
 	AzureFederationAudience *string            `pulumi:"azureFederationAudience,optional"`
 }
 
+// DispatchClusterArgs name the GKE cluster existingCluster runs Dispatch in, as the gcp provider's
+// getCluster takes it: the cluster's name and its location.
+type DispatchClusterArgs struct {
+	// Name is the cluster's name: a lowercase letter, then lowercase letters, digits and hyphens,
+	// ending in a letter or digit, at most 40 characters.
+	Name string `pulumi:"name"`
+	// Location is the region (us-central1) or the zone (us-central1-a) the cluster runs in.
+	Location string `pulumi:"location"`
+}
+
+// Annotate names the type gcp:DispatchCluster in the schema, for the reason NATSUserArgs's
+// gives.
+func (c *DispatchClusterArgs) Annotate(a infer.Annotator) { a.SetToken("gcp", "DispatchCluster") }
+
 // dispatchSeededInput names the first plain string input that holds an nkey seed. No component
 // input takes an nkey seed here: each value reaches a cloud resource, a Kubernetes object, or the
 // pod configuration, so a seed would be disclosed or used as the wrong credential. An int input,
@@ -555,11 +618,21 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 	if args.ChatModel != nil && bus.HoldsSeed(*args.ChatModel) {
 		return "chatModel", true
 	}
+	if args.ExistingCluster != nil {
+		if bus.HoldsSeed(args.ExistingCluster.Name) {
+			return "existingCluster.name", true
+		}
+		if bus.HoldsSeed(args.ExistingCluster.Location) {
+			return "existingCluster.location", true
+		}
+	}
 	return "", false
 }
 
-// Dispatch is Dispatch on an Autopilot cluster of its own, with Cloud SQL, reached over a tailnet,
-// at a public origin the deployment's own entrance serves, or inside its cluster alone.
+// Dispatch is Dispatch on GKE with Cloud SQL: on an Autopilot cluster of its own, or in the
+// cluster existingCluster names, and on a Cloud SQL instance of its own, or on the one
+// existingDatabaseInstance names, the two choices independent of each other. It is reached over a
+// tailnet, at a public origin the deployment's own entrance serves, or inside its cluster alone.
 type Dispatch struct {
 	pulumi.ResourceState
 	Url              pulumi.StringOutput `pulumi:"url"`
@@ -577,8 +650,10 @@ type Dispatch struct {
 }
 
 // dispatchSettings are the plain inputs, validated, with the defaults applied, so they are known at
-// preview. images.tools is frontDoorToolsImage. With clusterOnly set only hostname, region and
-// deletionProtection are resolved: no other field is read by the cluster the mode builds.
+// preview. images.tools is frontDoorToolsImage. With clusterOnly set only hostname, region,
+// deletionProtection and regionalNetwork are resolved, regionalNetwork because it shapes the
+// network half both modes build: no other field is read by the cluster and the network the mode
+// builds.
 // natsReplicas, streamMaxBytes, senderMessagesPerMinute and senderMessageBurst are 0 when their
 // inputs are unset, where the component renders none of those settings, and signingKeyGenerations
 // is the generations the component registers a signing key for, in the order the server holds
@@ -596,7 +671,14 @@ type Dispatch struct {
 // unset, where the component renders no second origin.
 // oidcIssuer is "" when its input is unset and oidcAudience is set, where the issuer rendered is
 // the cluster's own, which only the cluster half knows (dispatchCluster.issuer) and so is no
-// field here.
+// field here. existingCluster is the input of that name, its name and location checked
+// (resolveDispatchExistingCluster), which NewDispatch looks the cluster up by and runs Dispatch
+// in, and nil without that input, where the component makes a cluster of its own.
+// existingDatabaseInstance is true while the input of that name is set, where the component makes
+// no Cloud SQL instance, database or user and the proxy connects to the instance it names; the
+// connection name itself is a Pulumi Input, judged once it resolves, and so no field here.
+// regionalNetwork is true unless the input of that name is false, which both resolvers allow only
+// beside existingCluster, where the network half registers no Subnetwork, Router or RouterNat.
 type dispatchSettings struct {
 	clusterOnly                                 bool
 	frontDoor, signInOn                         bool
@@ -625,6 +707,9 @@ type dispatchSettings struct {
 	disruption                                  dispatchDisruption
 	azure                                       dispatchAzure
 	answerer                                    dispatchAnswerer
+	existingCluster                             *DispatchClusterArgs
+	existingDatabaseInstance                    bool
+	regionalNetwork                             bool
 }
 
 // socks5Proxy is the address of the front door's SOCKS5 proxy, the one the app and the listener
@@ -909,12 +994,32 @@ func dispatchSignInInputs(args *DispatchArgs) []dispatchInput {
 	}
 }
 
+// dispatchDatabaseInputs are the four inputs that configure the Cloud SQL instance the component
+// makes, in the order a refusal judges them in: newDispatchExistingDatabaseInstance refuses each
+// beside existingDatabaseInstance, which replaces that instance, and dispatchClusterOnlyRefusals
+// takes them from here. Written here alone, as the two groups are.
+func dispatchDatabaseInputs(args *DispatchArgs) []dispatchInput {
+	return []dispatchInput{
+		{"databaseVersion", args.DatabaseVersion != nil},
+		{"databaseTier", args.DatabaseTier != nil},
+		{"databaseAvailabilityType", args.DatabaseAvailabilityType != nil},
+		{"databaseWaitsFor", args.DatabaseWaitsFor != nil},
+	}
+}
+
 // dispatchClusterOnlyRefusals is every pulumi-tagged input of DispatchArgs that configures
-// Dispatch rather than the cluster, which clusterOnly refuses by name. Only the four inputs both
+// Dispatch rather than the cluster, which clusterOnly refuses by name. Only the five inputs both
 // modes use are absent: clusterOnly itself, region and hostname, which name every cloud resource,
-// and deletionProtection, which guards the cluster as well as the database. The eight inputs of
-// the two groups come from the groups' own definitions, so an input either group gains is refused
-// here without being written down a second time.
+// deletionProtection, which guards the cluster this mode makes as it guards whatever else the
+// component makes (dispatchDeletionProtection), and regionalNetwork, which shapes the network half
+// both modes build; newDispatchClusterOnlySettings refuses it false by a rule of its own, since
+// true is the only value that leaves the cluster this mode makes a subnetwork. existingCluster and
+// existingDatabaseInstance are among the refused: one names the cluster Dispatch runs in and the
+// other the database instance it uses, and clusterOnly runs no Dispatch, always makes its own
+// cluster and uses no database. The eight inputs of the two groups and the four database inputs
+// come from their own definitions (dispatchTailnetInputs, dispatchSignInInputs and
+// dispatchDatabaseInputs), so an input any of them gains is refused here without being written
+// down a second time.
 func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 	return slices.Concat(dispatchTailnetInputs(args), dispatchSignInInputs(args), []dispatchInput{
 		{"outsideOrigin", args.OutsideOrigin != ""},
@@ -935,12 +1040,11 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"appId", args.AppId != ""},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName != ""},
 		{"appPrivateKeySecretKey", args.AppPrivateKeySecretKey != ""},
-		{"databaseVersion", args.DatabaseVersion != nil},
-		{"databaseTier", args.DatabaseTier != nil},
-		{"databaseAvailabilityType", args.DatabaseAvailabilityType != nil},
-		{"databaseWaitsFor", args.DatabaseWaitsFor != nil},
+	}, dispatchDatabaseInputs(args), []dispatchInput{
 		{"namespace", args.Namespace != nil},
 		{"existingNamespace", args.ExistingNamespace != nil},
+		{"existingCluster", args.ExistingCluster != nil},
+		{"existingDatabaseInstance", args.ExistingDatabaseInstance != nil},
 		{"replicas", args.Replicas != nil},
 		{"frontDoorReplicas", args.FrontDoorReplicas != nil},
 		{"listenerReplicas", args.ListenerReplicas != nil},
@@ -1281,8 +1385,54 @@ func refuseDispatchRegion(region string) error {
 	return nil
 }
 
+// resolveDispatchExistingCluster resolves existingCluster: nil when it is unset, where the
+// component makes a cluster of its own, and otherwise the input itself, once its name and location
+// have the shape GKE gives them, each refused as a core.InputError naming its path when it does
+// not, so the lookup never asks for a cluster no GKE cluster can be. A GKE cluster's name is a
+// DNS-1035 label (dns1035LabelRule) of at most 40 characters. dispatchSeededInput has refused a
+// seed in either already, so each refusal may quote its value.
+func resolveDispatchExistingCluster(args *DispatchArgs) (*DispatchClusterArgs, error) {
+	cluster := args.ExistingCluster
+	if cluster == nil {
+		return nil, nil
+	}
+	if len(cluster.Name) > 40 || !dns1035LabelRule.MatchString(cluster.Name) {
+		return nil, core.InputErrorf("existingCluster.name",
+			"existingCluster.name %q must be a GKE cluster name: a lowercase letter, then lowercase letters, digits and hyphens, ending in a letter or digit, at most 40 characters", cluster.Name)
+	}
+	if !clusterLocationRule.MatchString(cluster.Location) {
+		return nil, core.InputErrorf("existingCluster.location",
+			"existingCluster.location %q must be a region or a zone, such as us-central1 or us-central1-a", cluster.Location)
+	}
+	return cluster, nil
+}
+
+// newDispatchExistingDatabaseInstance resolves existingDatabaseInstance: false when it is unset,
+// where the component makes a Cloud SQL instance of its own, and otherwise true, with each of the
+// four inputs that configure that instance (dispatchDatabaseInputs) refused when it is set, in that
+// order, as a core.InputError naming it. The instance existingDatabaseInstance names replaces the
+// component's own, so each of the four would configure nothing, and is refused rather than
+// dropped. The check runs before the resolver judges the four's own values, so one sent beside it
+// is refused for being sent at all, an empty databaseTier as much as a valid one. The connection
+// name is a Pulumi Input, judged once it resolves (dispatchDatabaseConnectionName).
+func newDispatchExistingDatabaseInstance(args *DispatchArgs) (bool, error) {
+	if args.ExistingDatabaseInstance == nil {
+		return false, nil
+	}
+	for _, in := range dispatchDatabaseInputs(args) {
+		if in.set {
+			return false, core.InputErrorf(in.input,
+				"%s configures the Cloud SQL instance the component makes, which existingDatabaseInstance replaces: unset it, or unset existingDatabaseInstance", in.input)
+		}
+	}
+	return true, nil
+}
+
 // dispatchDeletionProtection resolves deletionProtection, true when the consumer sets nothing. It
-// guards the cluster as well as the database, so both resolvers default it the same way.
+// guards what the component makes: its own cluster, its own Cloud SQL instance and the database
+// dispatch on it, and the Tailscale Service. A cluster existingCluster names and an instance
+// existingDatabaseInstance names are not the component's, and it guards neither. clusterOnly makes
+// its own cluster too, so both resolvers default it the same way.
 func dispatchDeletionProtection(value *bool) bool {
 	if value == nil {
 		return true
@@ -1290,10 +1440,20 @@ func dispatchDeletionProtection(value *bool) bool {
 	return *value
 }
 
-// newDispatchClusterOnlySettings resolves the inputs clusterOnly leaves live, hostname, region and
-// deletionProtection, each as the full resolver resolves it, and refuses every input that
-// configures Dispatch, which this mode does not build. It validates nothing else and applies no
-// other default: no other value reaches a resource here.
+// dispatchRegionalNetwork resolves regionalNetwork, true when the consumer sets nothing. It shapes
+// the network half both modes build, so both resolvers default it the same way; each refuses false
+// in its own words, since only the full resolver can be given the existingCluster false needs.
+func dispatchRegionalNetwork(value *bool) bool {
+	return value == nil || *value
+}
+
+// newDispatchClusterOnlySettings resolves the inputs clusterOnly leaves live, hostname, region,
+// deletionProtection and regionalNetwork, each as the full resolver resolves it, and refuses every
+// input that configures Dispatch, which this mode does not build. regionalNetwork is live because
+// it shapes the network half both modes build, but this mode always makes its own cluster on the
+// subnetwork false would drop, and refuses existingCluster, so true (or unset) changes nothing and
+// false is refused, as a core.InputError naming it. It validates nothing else and applies no other
+// default: no other value reaches a resource here.
 func newDispatchClusterOnlySettings(args *DispatchArgs) (dispatchSettings, error) {
 	if err := refuseDispatchHostname(args.Hostname); err != nil {
 		return dispatchSettings{}, err
@@ -1301,7 +1461,15 @@ func newDispatchClusterOnlySettings(args *DispatchArgs) (dispatchSettings, error
 	if err := refuseDispatchRegion(args.Region); err != nil {
 		return dispatchSettings{}, err
 	}
-	s := dispatchSettings{clusterOnly: true, hostname: args.Hostname, region: args.Region, deletionProtection: dispatchDeletionProtection(args.DeletionProtection)}
+	regionalNetwork := dispatchRegionalNetwork(args.RegionalNetwork)
+	if !regionalNetwork {
+		return dispatchSettings{}, core.InputErrorf("regionalNetwork",
+			"regionalNetwork false leaves the cluster clusterOnly builds no subnetwork: unset regionalNetwork")
+	}
+	s := dispatchSettings{
+		clusterOnly: true, hostname: args.Hostname, region: args.Region,
+		deletionProtection: dispatchDeletionProtection(args.DeletionProtection), regionalNetwork: regionalNetwork,
+	}
 	for _, in := range dispatchClusterOnlyRefusals(args) {
 		if in.set {
 			return dispatchSettings{}, fmt.Errorf("%s configures Dispatch, which clusterOnly does not build: unset it, or unset clusterOnly", in.input)
@@ -1389,6 +1557,22 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		}
 	}
 	if err := refuseDispatchRegion(args.Region); err != nil {
+		return dispatchSettings{}, err
+	}
+	existingCluster, err := resolveDispatchExistingCluster(args)
+	if err != nil {
+		return dispatchSettings{}, err
+	}
+	// The component's own cluster runs on the regional subnetwork, so regionalNetwork false is
+	// taken only beside a cluster the component does not make, and refused rather than dropped
+	// without one.
+	regionalNetwork := dispatchRegionalNetwork(args.RegionalNetwork)
+	if !regionalNetwork && existingCluster == nil {
+		return dispatchSettings{}, core.InputErrorf("regionalNetwork",
+			"regionalNetwork false leaves the component's own cluster no subnetwork: set existingCluster, or unset regionalNetwork")
+	}
+	existingDatabaseInstance, err := newDispatchExistingDatabaseInstance(args)
+	if err != nil {
 		return dispatchSettings{}, err
 	}
 	if args.NatsUrl == nil {
@@ -1480,7 +1664,10 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		databaseVersion: defaultDispatchDatabaseVersion,
 		databaseTier:    defaultDispatchDatabaseTier,
 		namespace:       defaultDispatchNamespace,
+		existingCluster: existingCluster,
 	}
+	s.existingDatabaseInstance = existingDatabaseInstance
+	s.regionalNetwork = regionalNetwork
 	s.images.envoy = args.EnvoyImage
 	s.images.tailscale = args.TailscaleImage
 	s.images.proxy = args.CloudSqlProxyImage
@@ -1927,8 +2114,13 @@ func mebibytes(bytes *big.Rat) string {
 	return new(big.Rat).Quo(bytes, new(big.Rat).SetInt64(1<<20)).FloatString(0) + "Mi"
 }
 
-// NewDispatch registers a Dispatch component after resolving all plain inputs and requiring the
-// providers its cluster, database, generated secrets, and Kubernetes resources use.
+// NewDispatch registers a Dispatch component after resolving all plain inputs, requiring the
+// providers its network, cluster, database, generated secrets, and Kubernetes resources use, and
+// looking up the cluster existingCluster names, when it names one. The cluster is then that one,
+// which the component registers nothing for, or else the component's own; and the Cloud SQL
+// instance is the one existingDatabaseInstance names, for which the component registers no
+// DatabaseInstance, Database or User, or else the component's own. Whichever they are, the
+// component registers its network (newDispatchNetwork).
 func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...pulumi.ResourceOption) (*Dispatch, error) {
 	// The name is quoted in every refusal below and the component registers under it, so a seed
 	// there is refused first, as NewNatsHub refuses one in its own name.
@@ -1956,17 +2148,44 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 			return nil, err
 		}
 	}
+	// The gcp provider among opts, which the first providers check found there, read once: the
+	// lookup of the cluster existingCluster names and the network half's project lookup both go
+	// through it.
+	gcpProvider, err := providerFor(ctx.Context(), "gcp", opts...)
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", dispatchType, name, err)
+	}
+	// The cluster half is decided once, from existingCluster alone: the component's own cluster
+	// (newDispatchCluster), or else the cluster existingCluster names (newDispatchExistingCluster).
+	// That cluster is looked up here, after the providers checks and before anything registers, so
+	// a cluster Dispatch cannot run in is refused with nothing registered, and its half builds the
+	// kubeconfig from the lookup's plain values. Either half runs after the network half, whose
+	// network both read.
+	newCluster := newDispatchCluster
+	if s.existingCluster != nil {
+		existing, err := lookupDispatchCluster(ctx, s.existingCluster, gcpProvider)
+		if err != nil {
+			return nil, fmt.Errorf("%s %s: %w", dispatchType, name, err)
+		}
+		newCluster = func(_ *pulumi.Context, _ *Dispatch, name string, _ dispatchSettings, vpc *dispatchNetwork) (*dispatchCluster, error) {
+			return newDispatchExistingCluster(name, vpc, existing), nil
+		}
+	}
 
 	comp := &Dispatch{}
 	if err := ctx.RegisterComponentResource(dispatchType, name, comp, opts...); err != nil {
 		return nil, err
 	}
-	cloud, err := newDispatchCluster(ctx, comp, name, s, opts...)
+	vpc, err := newDispatchNetwork(ctx, comp, s, gcpProvider)
+	if err != nil {
+		return nil, err
+	}
+	cloud, err := newCluster(ctx, comp, name, s, vpc)
 	if err != nil {
 		return nil, err
 	}
 	// The three outputs the cluster alone decides, which both modes carry.
-	comp.ClusterName = cloud.cluster.Name
+	comp.ClusterName = cloud.name
 	comp.Kubeconfig = cloud.kubeconfig
 	comp.ServiceAccountIssuer = cloud.issuer
 	if s.clusterOnly {
@@ -1978,14 +2197,14 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 		comp.AgentToken, comp.ServiceAccountSubject = empty, empty
 		return comp, nil
 	}
-	database, err := newDispatchDatabase(ctx, comp, name, args, s, cloud)
+	database, err := newDispatchDatabase(ctx, comp, name, args, s, vpc, cloud)
 	if err != nil {
 		return nil, err
 	}
 	if err := newDispatchKubernetes(ctx, comp, name, args, s, cloud, database); err != nil {
 		return nil, err
 	}
-	comp.DatabaseInstance = database.instance.ConnectionName
+	comp.DatabaseInstance = database.connectionName
 	comp.Principal = database.principal
 	comp.AgentToken = database.agentToken.Result
 	comp.Url = pulumi.String(s.serverURL()).ToStringOutput()

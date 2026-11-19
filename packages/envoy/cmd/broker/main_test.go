@@ -411,6 +411,83 @@ func TestMainSignsInToALocalPasswordlessURLAsGiven(t *testing.T) {
 	}
 }
 
+// TestTheBrokerLogsTheSessionAccountPairsItRead drives the real binary twice. Started with
+// BROKER_SESSION_ACCOUNT_PAIRS, it logs one "session account pairs" line at boot, at INFO and on,
+// whose pairs are each pair as the setting wrote it, in the setting's order, joined by one space:
+// the pairs config.Load read and not the raw value, which here carries the whitespace an
+// operator's manifest may. The first pair's accounts and the two pairs are each written out of
+// sorted order, so a line that sorted either does not match. Started without the setting, the
+// line says off, names no pairs, and names the setting in what being off means.
+func TestTheBrokerLogsTheSessionAccountPairsItRead(t *testing.T) {
+	const (
+		workerPair   = "system:serviceaccount:example-ns:example-worker=system:serviceaccount:example-next:example-worker"
+		reviewerPair = "system:serviceaccount:example-ns:example-reviewer=system:serviceaccount:example-next:example-reviewer"
+	)
+	binary := buildBroker(t)
+	start := func(t *testing.T, env ...string) *brokerProcess {
+		t.Helper()
+		return startBroker(t, brokerOptions{Binary: binary, Env: append([]string{
+			"BROKER_DATABASE_URL=" + storetest.URL(t),
+			"BROKER_LISTEN_ADDR=127.0.0.1:0",
+			"BROKER_PUBLIC_URL=http://127.0.0.1:0",
+			"BROKER_FAKE_SECRETS_FILE=" + emptySecretsFile(t),
+		}, env...)})
+	}
+	// line is the one "session account pairs" line broker logs, failing t unless it logged
+	// exactly one.
+	line := func(t *testing.T, broker *brokerProcess) map[string]any {
+		t.Helper()
+		broker.AwaitRecord(t, "session account pairs", nil)
+		lines := recordsWith(broker.Log(), "session account pairs", nil)
+		if len(lines) != 1 {
+			t.Fatalf("the broker logged %d %q lines, want one:\n%s", len(lines), "session account pairs", broker.Log())
+		}
+		return lines[0]
+	}
+
+	t.Run("with the setting", func(t *testing.T) {
+		broker := start(t, "BROKER_SESSION_ACCOUNT_PAIRS=  "+workerPair+"\n\t"+reviewerPair+" ")
+		want := map[string]any{"severity": "INFO", "state": "on", "pairs": workerPair + " " + reviewerPair}
+		if got := line(t, broker); !carries(got, want) {
+			t.Fatalf("the broker logged %v, want %v: each pair as written, in the order given", got, want)
+		}
+	})
+
+	t.Run("without the setting", func(t *testing.T) {
+		got := line(t, start(t))
+		detail, _ := got["detail"].(string)
+		_, pairs := got["pairs"]
+		if !carries(got, map[string]any{"severity": "INFO", "state": "off"}) || pairs || !strings.Contains(detail, "BROKER_SESSION_ACCOUNT_PAIRS") {
+			t.Fatalf("the broker logged %v, want state off at INFO with no pairs and a detail naming BROKER_SESSION_ACCOUNT_PAIRS", got)
+		}
+	})
+}
+
+// TestTheBrokerRefusesABadSessionAccountPair drives the real binary with a BROKER_SESSION_ACCOUNT_PAIRS
+// whose second entry pairs an account with itself: it exits non-zero without binding, and its one
+// fatal line names the setting and that entry, not the good pair before it, so an operator knows
+// which entry to fix. The database it is given is unreachable, so a broker that read the setting
+// after opening the store would fail on the host instead of on the entry.
+func TestTheBrokerRefusesABadSessionAccountPair(t *testing.T) {
+	const (
+		good = "system:serviceaccount:example-ns:example-worker=system:serviceaccount:example-next:example-worker"
+		bad  = "system:serviceaccount:example-ns:example-reviewer=system:serviceaccount:example-ns:example-reviewer"
+	)
+	out := runRefusedBroker(t, buildBroker(t),
+		"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
+		"BROKER_PUBLIC_URL=https://secrets.internal.example",
+		"BROKER_SESSION_ACCOUNT_PAIRS="+good+" "+bad,
+	)
+	refusals := recordsWith(out, "broker: fatal", nil)
+	if len(refusals) != 1 {
+		t.Fatalf("the broker logged %d %q lines, want one:\n%s", len(refusals), "broker: fatal", out)
+	}
+	refusal, _ := refusals[0]["error"].(string)
+	if !strings.Contains(refusal, "BROKER_SESSION_ACCOUNT_PAIRS") || !strings.Contains(refusal, strconv.Quote(bad)) || strings.Contains(refusal, strconv.Quote(good)) {
+		t.Fatalf("the broker refused with %q, want a refusal naming BROKER_SESSION_ACCOUNT_PAIRS and the entry %q, and not the good pair %q", refusal, bad, good)
+	}
+}
+
 // listenTimeout bounds how long startBroker waits for a broker's "broker listening" line: long
 // enough for a cold binary to migrate an empty database, short enough that a broker which will
 // never bind fails its row rather than its package's deadline.

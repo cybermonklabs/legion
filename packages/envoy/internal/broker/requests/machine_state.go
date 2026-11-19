@@ -503,8 +503,70 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 // Legion pod that person is its claim's issue's assignee, read from Dispatch before the
 // transaction opens (claimAssignee).
 //
-// A request it writes pending is handed to Machine.Judge once the transaction has committed, and
-// one it coalesced onto a pending request is not, so the model judge sees each record once.
+// Before that rule, on every ask that writes a request, pending or decided at once, it ends each
+// pending request of the enrollment for one of the requested names whose record is signed for
+// another broker address (signedForAnotherBroker), whatever its age, and keeps every other one
+// (endSignedForAnotherBroker); a request past its deadline is neither, since every decision of it
+// answers ErrExpired and the sweep expires it (pendingRequests). Such a request was asked of a
+// broker of another BROKER_PUBLIC_URL that shares this database, or of this broker before its
+// public URL changed, and its session now asks here: no person and no judge here can decide it,
+// and left pending it would hold every overlapping ask to ErrRequestPending until it expired, or
+// wait beside the request kept or the one decided at once until then. The broker cancels it in this
+// transaction, once the policy's evaluation has answered, through store.EndPendingRequests
+// (brokerMovedEnd, BrokerMovedDetail). For a request that needs a decision the rule then applies
+// to the oldest request it kept: Create coalesces onto it when the names and the lifetime join,
+// otherwise refuses with ErrRequestPending naming it, and with none kept writes the new request
+// pending. A request decided at once, granted or denied, is written as it is with nothing
+// pending. The ends commit on each of those paths, the refusal's included, since a refusal writes
+// no row and the transaction then holds the ends alone, and each end is logged once that commit
+// has succeeded (logBrokerMoved, RequestEndedBrokerMovedMessage, naming the request the session
+// is referred to), so a commit that fails logs none.
+//
+// An ask a live grant answers (reuseLiveGrant) writes no request, and Create hands that grant
+// back before the transaction above. endBesideReusedGrant ends the same requests all the same: a
+// read in no transaction tells whether any of them is signed for another broker address, and only
+// when one is does a short transaction of its own, under the advisory locks of the asked names and
+// the enrollment's lock, end them, commit and then log each end naming the reused grant's request.
+// With none it opens no transaction and writes nothing beyond the jti Replay already wrote, so
+// such an ask waits on no writer of the enrollment row. An error of that read or of that
+// transaction is the ask's. An ask Create refuses before it writes a request ends nothing: an
+// invalid or replayed request object, an unknown name
+// (policy.ErrUnknownSecret, which the evaluation answers), a name whose value is pending, a
+// lifetime over a name's max-grant, a narrowing refusal or ErrMixedApprovers (the evaluation's
+// too). Each of them returns before any end runs, since the main transaction ends requests only
+// once the evaluation has answered and the reuse path only once a live grant has: no request of
+// that ask exists for the line to name, and the session's next valid ask ends that request.
+//
+// An end takes the request's row lock after the advisory locks, which every Create takes in
+// sorted name order, and after the enrollment's lock for share. applyDecisionAttempt, which
+// decides such a request on the broker it was signed for, takes the enrollment's lock for share
+// and then the row's, Cancel the row's alone, and an enrollment's end (enroll's endEnrollment)
+// updates the enrollment before it ends the enrollment's pending requests, so none of them waits
+// on a lock Create holds while Create waits on the row, and none of them deadlocks with it. Two
+// Creates of the enrollment for different names can both find one request that holds a name of
+// each; they end what they find in one order (pendingRequests), so the second waits on the
+// first's row and holds none the first waits on.
+// Two sweeps fall outside that order: each takes no enrollment lock and ends many pending
+// requests in one statement, in whatever order that statement reaches them. One is the sweep's
+// expiry (expirePending, store.RequestsPastDeadline). The other is the sweep's denyUndecidable
+// (store.RequestsByIDs) on a broker of another address that runs with BROKER_SIGNIN=off: it ends
+// the pending requests that verify for that broker, the very requests this broker ends as signed
+// for another broker. An end here takes the rows one at a time in (created_at, id) order
+// (endSignedForAnotherBroker), so when such a sweep ends two stale requests of one session while
+// that session's ask ends them, the two transactions can lock the rows in opposite orders, and
+// Postgres ends one of them with a deadlock error: the sweep's, which its next tick runs again, or
+// the ask's, which answers that error and which the session's next ask runs again. The
+// transaction Postgres ends rolls back whole and the other ends each row once, so no row is left
+// in a wrong state. For the expiry the window is narrow: pendingRequests reads only requests
+// whose deadline had not passed when the transaction began (requestBeforeDeadline, over
+// Postgres's now()), so the expiry and an end here reach the same row only when its deadline
+// passes between that start and the sweep's own now, and two of a session's requests must both
+// do so for the locks to cross.
+// An end that finds the request decided meanwhile ends nothing and leaves that decision as it is.
+//
+// A request it writes pending that the judge holds (judgeHolds) is handed to Machine.Judge once
+// the transaction has committed; one a person decides, and one it coalesced onto a pending
+// request, is not, so the model judge sees each record it holds once.
 //
 // narrowing is the GitHub App narrowing the caller will release this request's grant with, nil
 // when it asks for none. A later step of Create checks it before the request reaches a person, so
@@ -592,9 +654,13 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 			return Request{}, fmt.Errorf("%w: %s allows at most %s; ask with agent-secrets --ttl %s", ErrGrantRequiresLifetime, name, limit, limit)
 		}
 	}
-	if existing, ok, err := m.reuseLiveGrant(ctx, enr, names, lifetime, set); err != nil {
+	sorted := sortedCopy(names)
+	if existing, ok, err := m.reuseLiveGrant(ctx, enr, sorted, lifetime, set); err != nil {
 		return Request{}, err
 	} else if ok {
+		if err := m.endBesideReusedGrant(ctx, enrollmentID, sorted, existing.ID); err != nil {
+			return Request{}, err
+		}
 		return existing, nil
 	}
 	if narrowing != nil {
@@ -611,7 +677,6 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 		return Request{}, err
 	}
 	defer tx.Rollback(ctx)
-	sorted := sortedCopy(names)
 	if err := lockPendingNames(ctx, tx, enrollmentID, sorted); err != nil {
 		return Request{}, err
 	}
@@ -633,22 +698,38 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	// withheld names moved into the judge's class in between was never bounded, so it is its
 	// person's.
 	judgeHolds := e.state == "pending" && m.Judge != nil && m.judgeDecides(set, e.decisions) && judgeBounded
-	if e.state == "pending" {
-		pending, err := pendingRequest(ctx, tx, enrollmentID, sorted)
-		if err != nil {
+	// The ends run here, whatever the evaluation decided the request to, pending, granted or
+	// denied, and only once it has answered, so an ask it refuses ends nothing. ended is every
+	// request this call ended because its record is signed for another broker address, logged
+	// once the transaction that ended it has committed, whichever way Create then answers the
+	// session; kept is the oldest overlapping request it kept, one not signed for another broker
+	// address, the zero row when there is none, which the one-pending-request rule applies to for
+	// a request that needs a decision.
+	kept, ended, err := m.endSignedForAnotherBroker(ctx, tx, enrollmentID, sorted)
+	if err != nil {
+		return Request{}, err
+	}
+	if e.state == "pending" && kept.ID != "" {
+		if slices.Equal(kept.Names, sorted) && (kept.joins(lifetime) || (obj.LifetimeSeconds == nil && kept.Lifetime == nil)) {
+			if err := tx.Commit(ctx); err != nil {
+				return Request{}, err
+			}
+			logBrokerMoved(ended, kept.ID, enrollmentID)
+			existing, err := m.Get(ctx, kept.ID)
+			existing.Coalesced = true
+			return existing, err
+		}
+		refused := fmt.Errorf("%w: request %s is still pending", ErrRequestPending, kept.ID)
+		if len(ended) == 0 {
+			return Request{}, refused
+		}
+		// The requests it ended stay ended though the ask is refused. The transaction holds
+		// nothing but those ends, since a refusal writes no row, so it commits them first.
+		if err := tx.Commit(ctx); err != nil {
 			return Request{}, err
 		}
-		if pending.ID != "" {
-			if slices.Equal(pending.Names, sorted) && (pending.joins(lifetime) || (obj.LifetimeSeconds == nil && pending.Lifetime == nil)) {
-				if err := tx.Commit(ctx); err != nil {
-					return Request{}, err
-				}
-				existing, err := m.Get(ctx, pending.ID)
-				existing.Coalesced = true
-				return existing, err
-			}
-			return Request{}, fmt.Errorf("%w: request %s is still pending", ErrRequestPending, pending.ID)
-		}
+		logBrokerMoved(ended, kept.ID, enrollmentID)
+		return Request{}, refused
 	}
 	r := newRequest{
 		id: uuid.NewString(), enrollmentID: enrollmentID, reason: obj.Reason, state: e.state,
@@ -686,6 +767,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	if err := tx.Commit(ctx); err != nil {
 		return Request{}, err
 	}
+	logBrokerMoved(ended, r.id, enrollmentID)
 	store.LogGrantEvent(r.createdRequestLogEvent(enr))
 	// The model judge, for a request this call has just written pending and held for it. It is
 	// called here, past the commit and past the grant-log line, so the judge's own reads find the
@@ -701,6 +783,137 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 		})
 	}
 	return req, nil
+}
+
+// BrokerMovedDetail is the detail of a pending request Create ends because its record is signed
+// for another broker address (signedForAnotherBroker): the request's decision_detail, which its
+// session reads back as the request's own Detail, its record's cancelled event's detail, and the
+// reason of its request.cancelled audit row. It says why nobody decided the request, so a session
+// that reads it back, on either broker, learns that its ask on this one took its place.
+const BrokerMovedDetail = "the broker moved: the request was signed for another broker address, so no person and no judge on this broker could decide it, and its session's new request replaces it"
+
+// brokerMovedEnd is how Create ends such a request: cancelled by the broker, which records itself
+// as having decided it, as Cancel and an enrollment's end record their own actor, with
+// BrokerMovedDetail as its detail and, in its audit row, under "reason", the key an enrollment's
+// end gives an ended request's (enroll.endEnrollment). One value is handed to
+// store.EndPendingRequests and to endedRequestLogEvent alike, so the row and its grant-log line
+// cannot drift; nothing writes it.
+var brokerMovedEnd = store.RequestEnd{
+	State: "cancelled", Actor: "broker", DecidedBy: new("broker"), Detail: BrokerMovedDetail,
+	AuditDetail: map[string]any{"reason": BrokerMovedDetail},
+}
+
+// endSignedForAnotherBroker ends in tx each pending request of enrollmentID for one of sorted
+// whose record is signed for another broker address (signedForAnotherBroker), whatever its age
+// beside a request of this broker, with brokerMovedEnd, and keeps every other one; a request past
+// its deadline is not read at all (pendingRequests). It answers the oldest request it kept, the
+// zero row when it kept none, which Create's one-pending-request rule applies to, and the rows
+// its ends returned, which its caller logs once tx has committed (logBrokerMoved). It
+// reads the overlapping requests once, oldest first (pendingRequests), and ends any only after
+// that read has closed its rows. One read sees them all, since tx holds the advisory lock of every
+// name in sorted (lockPendingNames), so no other Create of the enrollment writes a request for one
+// of them while tx runs. An end returns no row when the broker the request was signed for decided
+// it between the read and the end: that decision holds the row's lock, the end waits on it, and
+// once the decision commits the request is no longer pending, so the end leaves the decision as
+// it is, and that request is neither kept nor ended.
+func (m *Machine) endSignedForAnotherBroker(ctx context.Context, tx pgx.Tx, enrollmentID string, sorted []string) (pendingRequestRow, []store.EndedRequest, error) {
+	pending, err := pendingRequests(ctx, tx, enrollmentID, sorted)
+	if err != nil {
+		return pendingRequestRow{}, nil, err
+	}
+	var kept pendingRequestRow
+	var ended []store.EndedRequest
+	for _, p := range pending {
+		if !m.signedForAnotherBroker(p) {
+			if kept.ID == "" {
+				kept = p
+			}
+			continue
+		}
+		rows, err := store.EndPendingRequests(ctx, tx, store.RequestByID, p.ID, brokerMovedEnd)
+		if err != nil {
+			return pendingRequestRow{}, nil, err
+		}
+		ended = append(ended, rows...)
+	}
+	return kept, ended, nil
+}
+
+// endBesideReusedGrant is endSignedForAnotherBroker for an ask a live grant answered
+// (reuseLiveGrant), which writes no request, so Create returns before its own transaction: it
+// ends each pending request of enrollmentID for one of sorted whose record is signed for another
+// broker address, commits, and then logs each end naming reused, the reused grant's request, as
+// the request the session is referred to (logBrokerMoved).
+// It reads those requests first straight on the pool, in no transaction (pendingRequests), and
+// when none is signed for another broker address (signedForAnotherBroker) it answers nil: no
+// transaction, no lock and no log line. Most asks a live grant answers find none, and a
+// transaction would cost each of them: the enrollment's lock for share assigns it a transaction
+// id, so it would commit durably a second time, beside the jti Replay writes, and wait behind any
+// writer of the enrollment row. Only when that read finds such a request does it open a short
+// transaction of its own, take the advisory locks of sorted (lockPendingNames) and then the
+// enrollment's row lock for share, in the order Create's transaction takes them, and end what
+// endSignedForAnotherBroker, reading again under those locks, finds; that second read decides
+// what is ended. The read without locks can miss only a request that reaches the enrollment after
+// it, such as one a hand-over (enroll's handOver) moves there, and the session's next ask ends
+// that request, as it would had the request arrived just after the locked read. A request the
+// broker it was signed for decides between the two reads is no longer pending at the locked read,
+// which ends nothing for it.
+// The enrollment's lock is what keeps an enrollment's end (enroll's endEnrollment), which updates
+// the enrollment and then ends all its pending requests in one statement, in whatever order that
+// statement reaches them, from holding one of these requests while this transaction holds
+// another: one of the two waits for the other's commit before it takes a row. It does not order
+// this transaction against the sweep's expiry (expirePending) or, on a broker of another address
+// with BROKER_SIGNIN=off, the sweep's denyUndecidable, which take no enrollment lock and end
+// several requests in one statement too: one of those and this transaction can lock two of the
+// session's requests in opposite orders (the expiry only in the narrow window Create's doc
+// names), and Postgres then ends one of the two with a deadlock error; the next tick or the next
+// ask runs it again, and no row is left in a wrong state. Unlike lockLiveEnrollment it does not
+// ask that the enrollment be live, since a live grant has already answered the ask. An error of it
+// is Create's, so a read, a transaction or a commit that fails answers the ask with that error and
+// logs no end.
+func (m *Machine) endBesideReusedGrant(ctx context.Context, enrollmentID string, sorted []string, reused string) error {
+	pending, err := pendingRequests(ctx, m.Store.Pool, enrollmentID, sorted)
+	if err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(pending, m.signedForAnotherBroker) {
+		return nil
+	}
+	tx, err := m.Store.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := lockPendingNames(ctx, tx, enrollmentID, sorted); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `select 1 from enrollments where id=$1 for share`, enrollmentID); err != nil {
+		return err
+	}
+	_, ended, err := m.endSignedForAnotherBroker(ctx, tx, enrollmentID, sorted)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	logBrokerMoved(ended, reused, enrollmentID)
+	return nil
+}
+
+// logBrokerMoved logs each request endSignedForAnotherBroker ended, once the transaction that
+// ended them has committed: the grant-log line of the request.cancelled audit row its end wrote,
+// then RequestEndedBrokerMovedMessage naming newRequest, the request Create refers the session
+// to. That is the request Create wrote, granted, denied or pending; the oldest kept request of
+// this broker it coalesced onto or refused the ask with ErrRequestPending for; or, for an ask a
+// live grant answered, the reused grant's request (endBesideReusedGrant). Each caller calls it
+// straight after the commit, before anything that can fail, so an end that committed is logged
+// and one that did not never is.
+func logBrokerMoved(ended []store.EndedRequest, newRequest, enrollmentID string) {
+	for _, r := range ended {
+		store.LogGrantEvent(endedRequestLogEvent(brokerMovedEnd, r.EnrollmentID, r.ID))
+		slog.Info(RequestEndedBrokerMovedMessage, "request", r.ID, "record_id", deref(r.RecordID), "new_request", newRequest, "enrollment", enrollmentID)
+	}
 }
 
 // decidedNames is the names of decisions that needed a decision — the policy answered approval —
@@ -1245,7 +1458,11 @@ const SignInOffActor = "broker:signin-off"
 // restarted pod with sign-in off takes a later one.
 // A request signed for another BROKER_PUBLIC_URL is left alone: it belongs to another broker
 // sharing this database, whose page may still be served, and this broker lists it for nobody
-// anyway. It returns the requests it denied, so the sweep wakes each one's session once the
+// anyway. Create ends such a request on its session's next ask of this broker for one of its
+// names that writes a request or that a live grant answers (BrokerMovedDetail). With sign-in off
+// no request waits, so such an ask is decided at once, denied where a name would have waited for
+// a person, and it ends that request too. A request that no valid ask reaches stays pending until
+// it expires. It returns the requests it denied, so the sweep wakes each one's session once the
 // transaction has committed, and nothing on a broker with sign-in on. A grant made before stays
 // as it was: off decides nothing new, it takes nothing back.
 func (m *Machine) denyUndecidable(ctx context.Context, now time.Time) ([]store.EndedRequest, error) {
@@ -2121,25 +2338,37 @@ func verifyRecordBody(recordID, body string) (record.Body, error) {
 // own id, its embedded request object still verifies, and it carries exactly one terminal
 // decision, an approval by the login the record names as its approver — a tampered row, a forged
 // grant with no approval event, an approval naming another login, or a second decision all fail
-// here. An automatic grant (no record_id) needs none of this and always passes. Called by Values
-// and reuseLiveGrant. A genuine dependency failure inside m.Chain.Verify (a Postgres error from
-// FetchRecord or FetchDecisions) is returned as-is rather than folded into ErrGrantChainInvalid;
-// only record.ErrChainBroken — every reason the chain itself does not verify — is wrapped.
+// here. An automatic grant (no record_id) needs none of this and always passes. A genuine
+// dependency failure inside m.Chain.Verify (a Postgres error from FetchRecord or FetchDecisions)
+// is returned as-is rather than folded into ErrGrantChainInvalid; only record.ErrChainBroken —
+// every reason the chain itself does not verify — is wrapped. It is verifyChain without the
+// record's id; the releases (checkRelease, for Values and AirlockValues) and reuseLiveGrant call
+// verifyChainForRelease, which logs a chain that fails (GrantChainInvalidMessage).
 func (m *Machine) VerifyChain(ctx context.Context, grantID string) error {
-	var recordID *string
-	if err := m.Store.Pool.QueryRow(ctx, `select r.record_id from grants g join requests r on r.id=g.request_id where g.id=$1`, grantID).Scan(&recordID); err != nil {
-		return err
+	_, err := m.verifyChain(ctx, grantID)
+	return err
+}
+
+// verifyChain is VerifyChain's whole check, and also answers the id of the credential-request
+// record the grant's chain rests on, so a release that logs a chain that fails names that record
+// without reading the grant's row a second time. The id is "" for an automatic grant, which has
+// no record and always passes, and for a grant whose row could not be read; it is the record's
+// whenever the error is ErrGrantChainInvalid.
+func (m *Machine) verifyChain(ctx context.Context, grantID string) (recordID string, err error) {
+	var id *string
+	if err := m.Store.Pool.QueryRow(ctx, `select r.record_id from grants g join requests r on r.id=g.request_id where g.id=$1`, grantID).Scan(&id); err != nil {
+		return "", err
 	}
-	if recordID == nil {
-		return nil
+	if id == nil {
+		return "", nil
 	}
-	if _, err := m.Chain.Verify(ctx, *recordID); err != nil {
+	if _, err := m.Chain.Verify(ctx, *id); err != nil {
 		if errors.Is(err, record.ErrChainBroken) {
-			return fmt.Errorf("%w: %s", ErrGrantChainInvalid, err)
+			return *id, fmt.Errorf("%w: %s", ErrGrantChainInvalid, err)
 		}
-		return err
+		return *id, err
 	}
-	return nil
+	return *id, nil
 }
 
 // RevokeGrant ends a grant a session holds — a session may end only its own grant. Revoking an
@@ -2419,13 +2648,18 @@ func logGrantRow(kind, actor string, enr enrollmentRow, requestID, grantID strin
 // line: the transition that statement wrote, who it recorded as deciding it (nobody, for an
 // expiry the broker made) and the detail it gave the request, which is also what the route reads
 // back off the request row. It takes the very store.RequestEnd its caller handed that statement,
-// so the line and the row it stands for cannot drift. The audit row the statement wrote carries
-// the column's default detail, {}. Cancel, expirePending and denyUndecidable all end requests
-// through it.
+// so the line and the row it stands for cannot drift. Its Raw is the audit row's detail as the
+// statement wrote it: end.AuditDetail, and {}, the column's default, when that is nil, never null.
+// Cancel, expirePending, denyUndecidable and Create's end of a request signed for another broker
+// address (brokerMovedEnd, whose detail names its reason) all end requests through it.
 func endedRequestLogEvent(end store.RequestEnd, enrollmentID, requestID string) store.GrantLogEvent {
 	ev := grantLogEvent("request."+end.State, end.Actor, enrollmentRow{ID: enrollmentID})
 	ev.RequestID, ev.State, ev.DecidedBy, ev.Detail = requestID, end.State, deref(end.DecidedBy), end.Detail
-	ev.Raw = rawJSON(auditDetail{})
+	detail := auditDetail(end.AuditDetail)
+	if detail == nil {
+		detail = auditDetail{}
+	}
+	ev.Raw = rawJSON(detail)
 	return ev
 }
 

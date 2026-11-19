@@ -81,6 +81,11 @@ type testServer struct {
 	ServiceLogins map[string]string
 	// registry is the server's own metrics, the answer recorder's broker_answers_total among them.
 	registry *metrics.Registry
+	// sessions is the store the enrollment route binds session names through
+	// (enroll.Service.Sessions). A test pairs two accounts on it (SetSessionPairs) before the
+	// server serves an enrollment, as cmd/broker reads BROKER_SESSION_ACCOUNT_PAIRS into it before
+	// the broker serves.
+	sessions *oauthstore.Store
 }
 
 // podAudience is the audience the test server's pod verifier checks and podToken mints for.
@@ -139,9 +144,15 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	servicesByAccount := map[string]string{workerAccount: "legion-daemon", otherAccount: "legion-daemon"}
 	enr := &enroll.Service{Store: st, Lease: time.Hour, Pod: enroll.K8sPodVerifier{Verifier: podVerifier}, ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
-	// Wired as cmd/broker/main.go wires it, so a session name belongs to one principal on this
-	// server too: the enrollment route refuses a name another principal holds.
-	enr.Sessions = oauthstore.New(st.Pool)
+	// Wired as cmd/broker/main.go wires the enrollment route, so the route refuses a name another
+	// principal holds, unless a test pairs that principal's account with the enrolling pod's
+	// (testServer.sessions), when the enrollment takes it. It is a store of its own and not the
+	// provider's (brokertest.NewOAuthProvider builds that one), so it holds none of the names the
+	// provider's policy fixes (oauthstore.Store.Reserved, which oauth.New sets on the provider's
+	// store alone): a pair here would take a name such as brokertest.ExchangeSession, which the
+	// broker, whose one store serves both routes, refuses.
+	sessions := oauthstore.New(st.Pool)
+	enr.Sessions = sessions
 
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: policytest.Store(local),
@@ -170,7 +181,7 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	adjust(&deps)
 	api.Register(mux, deps)
 
-	ts := &testServer{URL: srv.URL, Store: st, Secrets: local, podIssuer: issuer, podKey: podKey, machine: reqMachine, ServiceLogins: serviceLogins, registry: registry}
+	ts := &testServer{URL: srv.URL, Store: st, Secrets: local, podIssuer: issuer, podKey: podKey, machine: reqMachine, ServiceLogins: serviceLogins, registry: registry, sessions: sessions}
 	ts.uiToken = ts.accountToken(t, dispatchAccount, "", time.Hour)
 	return ts
 }

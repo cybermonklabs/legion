@@ -25,7 +25,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -129,7 +128,7 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 
 	api := podBroker{t: t, base: "http://" + broker.Addr, issuer: issuer, key: podKey, audience: podAudience}
 	launcher := api.logIn(service, loginAccount)
-	p := api.enroll(launcher, "airlock-pod", podAccount)
+	p := api.enroll(launcher, "airlock-pod", podAccount, "")
 	granted := api.ask(p, secretName)
 	if granted.GrantID == nil {
 		t.Fatalf("the pod's request for %s = %+v, want a grant at once", secretName, granted)
@@ -181,11 +180,7 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	db, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to the broker's database: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close(ctx) })
+	db := connectToBroker(t, databaseURL)
 	// Every read the proxy makes writes one grant.used row marked airlock; a session's own
 	// release writes one without that mark, which is why the mark is in the predicate.
 	proxyReads := func() int {

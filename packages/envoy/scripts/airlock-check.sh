@@ -1574,8 +1574,9 @@ say "gcloud=\$(GCLOUD_BROKER_INNER=1 GCLOUD_SAMI="\$GCLOUD_SAMI" bash $K7_DOTFIL
 say "gws_tier=\$(jq -r '.theorem.tiers.read.command | @tsv' $K7_DOTFILES/gws/accounts.json 2>&1 | tr '\t' ' ')"
 say "gws=\$(secret-run --reason 'gws theorem read' GWS_THEOREM_READ_OAUTH -- sh -c 'printf "Authorization: Bearer %s" "\$GWS_THEOREM_READ_OAUTH" | curl -sS -o /dev/null -w %{http_code} -H @- "https://www.googleapis.com/drive/v3/about?fields=user"' 2>&1 | tail -n 1 | tr -d '\r')"
 
-# The google-workspace skill's Bearer call to admin.googleapis.com.
-say "admin=\$(printf 'Authorization: Bearer %s' "\$GWS_THEOREM_ADMIN_OAUTH" | curl -sS -o /dev/null -w %{http_code} -H @- "https://admin.googleapis.com/admin/directory/v1/users?domain=theorem.dev" 2>&1 | tail -n 1)"
+# The google-workspace skill's Bearer call to admin.googleapis.com. Its domain is a placeholder:
+# Google refuses the fake token (401) before it reads the query, which is the answer k7 reads.
+say "admin=\$(printf 'Authorization: Bearer %s' "\$GWS_THEOREM_ADMIN_OAUTH" | curl -sS -o /dev/null -w %{http_code} -H @- "https://admin.googleapis.com/admin/directory/v1/users?domain=example.com" 2>&1 | tail -n 1)"
 
 # git push --dry-run through scripts/airlock/credential-helper, which answers the placeholder,
 # with the proxy in git's own configuration. The pod's own GIT_CONFIG_* settings are cleared for

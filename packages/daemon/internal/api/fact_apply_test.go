@@ -302,11 +302,11 @@ func TestAFactNoAgentRequestedWaitsForNothing(t *testing.T) {
 	tester := newLiveClaim(t, r.h, "LEGION-208", claim.RoleTester)
 	r.runs(t, "LEGION-208", testingPlace, tester.token)
 	written := tester.writeHandoff("test", 1)
-	assertFailure(t, r.h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "ran the suite", HandoffID: written, HandoffVersion: 1}),
+	refused(t, r.h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "ran the suite", HandoffID: written, HandoffVersion: 1}),
 		http.StatusBadRequest, "TESTER_VERDICT_REQUIRED")
 	seedIssueAt(t, r.h, "LEGION-400", phase.Implementing)
 	other := newLiveClaim(t, r.h, "LEGION-400", claim.RoleArchitect)
-	assertFailure(t, r.h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{
+	refused(t, r.h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{
 		"grantId": other.grant(t), "issue": "LEGION-301", "to": "implementing", "reason": "not this architect's tree",
 	}, nil), http.StatusForbidden, "ISSUE_OUTSIDE_TREE")
 
