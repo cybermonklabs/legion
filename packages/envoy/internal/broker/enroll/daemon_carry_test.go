@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -117,6 +118,37 @@ func TestAPodOfAnotherDaemonCannotAdoptASessionsGrants(t *testing.T) {
 				t.Fatalf("ACME's grant %s hangs off %s after ACME's daemon enrolled %s again, want its new row %s", grant, holder, session, next.ID)
 			}
 		})
+	}
+}
+
+// TestALegacyRowsWithheldNamesMoveByTheSessionRule: a row an older broker replica wrote under the
+// account alone for this daemon's login, holding a withheld name and no grant or request, is the
+// session rule's predecessor as a row of the pair is (adopt's ofThisSession, read in its where
+// clause and in its Session and Carries columns alike): the next pod of its session takes the
+// withheld name, so a replaced box does not undo what an operator took back, and the audit row
+// names the session rule.
+//
+// The control (the pull request records the run): the Session and Carries columns reading the
+// pair alone, as main's text did (`e.carry_principal=$1 and e.session_id=$2`); the row is then read
+// as the claim rule's, which moves no withheld name, and the test fails naming it.
+func TestALegacyRowsWithheldNamesMoveByTheSessionRule(t *testing.T) {
+	svc, issuer, key, acme, _ := twoDaemons(t)
+	const session = "ses_withheld"
+	first := enrolPod(t, svc, issuer, key, acme, session, "acme-pod-1")
+	withholdSecret(t, svc, first.ID, "GH_TOKEN")
+	spellAccountAlone(t, svc, first.ID)
+
+	next := enrolPod(t, svc, issuer, key, acme, session, "acme-pod-2")
+	if got := withheldNames(t, svc, next.ID); !slices.Equal(got, []string{"GH_TOKEN"}) {
+		t.Fatalf("the next pod of %s holds the withheld names %v, want [GH_TOKEN] from the legacy row %s", session, got, first.ID)
+	}
+	var rule string
+	if err := svc.Store.Pool.QueryRow(context.Background(), `select detail->>'rule' from audit
+		where kind = 'enrollment.adopted' and enrollment_id = $1 and detail->>'from' = $2::text`, next.ID, first.ID.String()).Scan(&rule); err != nil {
+		t.Fatalf("read the adoption of %s from %s: %v", next.ID, first.ID, err)
+	}
+	if rule != "session" {
+		t.Fatalf("the adoption from the legacy row names the rule %q, want \"session\"", rule)
 	}
 }
 

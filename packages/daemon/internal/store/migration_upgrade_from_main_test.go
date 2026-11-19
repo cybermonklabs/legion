@@ -232,11 +232,12 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 }
 
 // todaysMainsNewestMigration is main's newest migration at this branch's last merge of main
-// (88f2699ae3): the update ask mark's cutover, numbered after the role-holders publication
-// (20261116165926) and the reviewer's reviewed commit (20261116234034), all three after this
-// branch's claim_sessions (20261116144907). A deployment of main applies them first, so this
-// branch's daemon finds a database whose newest recorded version stands above its own new
-// migration.
+// (f27003af63): the update ask mark's cutover. It and the other migrations main numbered after
+// this branch's claim_sessions (20261116144907) — the role-holders publication (20261116165926),
+// the reviewer's reviewed commit (20261116234034), the step records' three (20261117000528,
+// 20261117004117, 20261117064152) and the pull request statuses (20261117112334) — stand above
+// it. A deployment of main applies them first, so this branch's daemon finds a database whose
+// newest recorded version stands above its own new migration.
 const todaysMainsNewestMigration = 20261117200337
 
 // thisBranchsClaimSessions is this branch's one daemon migration main has not recorded.
