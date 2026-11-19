@@ -14,6 +14,7 @@ import { answerThreadReads } from "../../__tests__/send-answers";
 import { heldDraftWords, stopReplySend } from "../../__tests__/stop-late-write";
 import { ApiError, api } from "../../api/client";
 import type { Comment } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
 import { SendStoppedError } from "../writes/keyed-write";
@@ -761,7 +762,9 @@ afterEach(() => {
 
 /** Renders the card on `CORE-1`, whose root-1 thread is unread for alice, with time and the
  *  screen in the test's hands. */
-function renderUnreadCard(expanded: boolean) {
+async function renderUnreadCard(expanded: boolean) {
+  // A reply is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads in real time.
+  await warmMarkdownRenderer();
   jest.useFakeTimers();
   const screen = installIntersectionObserver();
   const mark = answerThreadReads().mockResolvedValue(undefined);
@@ -786,7 +789,7 @@ function renderUnreadCard(expanded: boolean) {
 }
 
 test("an expanded thread is marked read once its newest reply has been on screen", async () => {
-  const card = renderUnreadCard(true);
+  const card = await renderUnreadCard(true);
   try {
     const newest = (await card.view.findByText("First reply")).closest("li");
     if (newest === null) throw new Error("expected the newest reply's item");
@@ -802,7 +805,7 @@ test("an expanded thread is marked read once its newest reply has been on screen
 });
 
 test("a collapsed thread shows no reply and marks nothing", async () => {
-  const card = renderUnreadCard(false);
+  const card = await renderUnreadCard(false);
   try {
     expect(card.screen.observed().length).toBe(0);
     await dwellOn(card.screen, screen.getByTestId(`margin-comment-${root.id}`));

@@ -29,4 +29,7 @@ export interface TokenSource {
   /** Names the identity in a refusal, without naming the token: the file read, the metadata
    *  server asked, the pool federated at, or the person whose sign-in it is. */
   describe(): string;
+  /** The person whose sign-in this is, where it is one: a broker refusal that names a person is
+   *  printed only where it names this one (`isKnownBrokerRefusal`). */
+  readonly person?: string;
 }

@@ -37,11 +37,16 @@ import type {
 import { AuthGate } from "../../app";
 import type { BroadcastRequest } from "./broadcast-plan";
 import { messageDeliveryFields } from "./delivery-fixture";
-// The live view is a lazy route of the app. Its module's first compile is not what a wait is
-// for, so the module is loaded here, with the test file, and no wait measures that load.
+// The live view and the broadcast page are lazy routes of the app, and the margin a lazy part of
+// its shell (`MarginColumn.tsx`). No row here reads the margin or a broadcast page, and a load
+// that a row starts and ends before lands in a later row, where React's report of it is outside
+// `act`. So each module is loaded here, with the test file, and no row starts or waits for it.
 import "../agent-view/AgentConversationPage";
+import "../margin/Margin";
+import "./BroadcastPage";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import type { AgentPart } from "../refs/AgentName";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
 import { resetWriteStorage } from "../writes/write-storage";
 import { orderAgents } from "./AgentsPage";
@@ -82,7 +87,17 @@ async function refuseBroadcast(): Promise<never> {
 // fixture frozen at an absolute date would age out of every retry assertion.
 const recentAttemptAt = new Date(Date.now() - 60_000).toISOString();
 
+/** When the file loaded, which most fixture times below are dated from. A time whose reading a
+ *  row asserts to the minute - a `seen` label, or the two minutes that keep a session Active - is
+ *  dated with `ago` as the row builds it instead: the page reads the clock as it draws, and random
+ *  order can run a row a minute or more after the file loaded. */
 const now = Date.now();
+
+/** `ms` before this moment. */
+function ago(ms: number): number {
+  return Date.now() - ms;
+}
+
 const agents = [
   {
     capabilities: ["aside", "btw"],
@@ -392,7 +407,9 @@ function groupCount(region: HTMLElement, group: AgentGroup): string {
 
 test("Agents lists live session activity and capability-aware actions", async () => {
   const user = userEvent.setup();
-  const page = renderAgents();
+  const page = renderAgents({
+    listedAgents: [{ ...agents[0], last_seen: ago(30_000) }, agents[1]],
+  });
 
   try {
     await screen.findByRole("heading", { name: "Agents" });
@@ -429,7 +446,7 @@ test("Agents lists live session activity and capability-aware actions", async ()
 test("Agents lists an unresponsive session with its state, neither dropped nor drawn as running", async () => {
   const stalled = {
     ...agents[0],
-    last_seen: now - 6 * 60_000,
+    last_seen: ago(6 * 60_000),
     session_id: "stalled-session",
     state: "unresponsive",
     title: "Stalled",
@@ -706,7 +723,7 @@ function session(overrides: Partial<Agent> & Pick<Agent, "session_id">): Agent {
   };
 }
 
-const minutesAgo = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
+const minutesAgo = (minutes: number) => new Date(ago(minutes * 60_000)).toISOString();
 
 test("orderAgents puts who needs you first, then open asks, then Dispatch recency with silent sessions last", () => {
   const needsYou = session({ last_activity: minutesAgo(30), open_asks: 1, session_id: "needy" });
@@ -865,21 +882,21 @@ test("Agents lists each session in its group, orders the rows inside one, and ke
   const olderActivityButNewerHeartbeat: Agent = {
     ...agents[1],
     last_activity: minutesAgo(5),
-    last_seen: now - 1_000,
+    last_seen: ago(1_000),
     session_id: "z-session",
     title: "Zulu",
   };
   const newerActivityButOlderHeartbeat: Agent = {
     ...agents[1],
     last_activity: minutesAgo(1),
-    last_seen: now - 9 * 60_000,
+    last_seen: ago(9 * 60_000),
     session_id: "a-session",
     title: "Alpha",
   };
   const noActivity: Agent = {
     ...agents[1],
     last_activity: null,
-    last_seen: now,
+    last_seen: Date.now(),
     session_id: "none-session",
     title: "None",
   };
@@ -1001,18 +1018,21 @@ test("Agents keeps a pinned session in its own group, first among its rows", asy
   }
 });
 
-/** Heard from eleven minutes ago, its last Dispatch activity half an hour old: Quiet. */
-const stale: Agent = {
-  ...agents[1],
-  last_activity: new Date(now - 30 * 60_000).toISOString(),
-  last_seen: now - 11 * 60_000,
-  session_id: "stale-session",
-  title: "Stale",
-};
+/** Heard from eleven minutes ago, its last Dispatch activity half an hour old: Quiet. Dated as a
+ *  row builds it, since a row reads its `seen 11 minutes ago`. */
+function staleAgent(): Agent {
+  return {
+    ...agents[1],
+    last_activity: minutesAgo(30),
+    last_seen: ago(11 * 60_000),
+    session_id: "stale-session",
+    title: "Stale",
+  };
+}
 
 test("Agents puts a session unseen for ten minutes in Quiet, which collapses and opens", async () => {
   const user = userEvent.setup();
-  const page = renderAgents({ listedAgents: [stale, ...agents] });
+  const page = renderAgents({ listedAgents: [staleAgent(), ...agents] });
 
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
@@ -1055,7 +1075,7 @@ test("Agents keeps a pinned session unseen for ten minutes in Quiet", async () =
   const user = userEvent.setup();
   const page = renderAgents({
     agentState: { "stale-session": { pinned_at: "2026-09-14T00:00:00Z", unread_replies: 0 } },
-    listedAgents: [...agents, stale],
+    listedAgents: [...agents, staleAgent()],
   });
 
   try {
@@ -1082,7 +1102,7 @@ test("Agents keeps a pinned session unseen for ten minutes in Quiet", async () =
 test("Agents lists a session with an open ask under Needs you alone, however long it has been silent", async () => {
   const user = userEvent.setup();
   const silentForHours: Agent = {
-    ...stale,
+    ...staleAgent(),
     last_activity: null,
     last_seen: now - 2 * 60 * 60_000,
   };
@@ -2235,7 +2255,8 @@ test("Agents replies to an issue-less exchange through the agent route, threaded
       name: "Conversation with Planner",
     });
     const replies = await within(conversation).findByRole("list", { name: "Replies" });
-    const answer = within(replies).getByText("Yes, it can.").closest("li");
+    // The reply is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    const answer = (await within(replies).findByText("Yes, it can.")).closest("li");
     if (answer === null) throw new Error("answer turn missing");
     expect(within(planner).getByRole("button", { name: "Choose issue" })).toBeTruthy();
 
@@ -2367,7 +2388,8 @@ test("a reply inherits the mode of the exchange's newest attempt even within one
       name: "Conversation with Planner",
     });
     const replies = await within(conversation).findByRole("list", { name: "Replies" });
-    const answer = within(replies).getByText("Yes, it can.").closest("li");
+    // The reply is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    const answer = (await within(replies).findByText("Yes, it can.")).closest("li");
     if (answer === null) throw new Error("answer turn missing");
     await user.click(within(answer).getByRole("button", { name: "Reply" }));
     await type(user, within(planner).getByRole("textbox", { name: "Comment" }), "Ship it.");
@@ -3396,9 +3418,10 @@ test("a broadcast Dispatch has not confirmed is tried again under its key until 
     expect(page.createBroadcast).toHaveBeenCalledTimes(1);
 
     for (const [index, wait] of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000].entries()) {
-      await tick(wait - 1);
+      // tick's last round moves the clock 1 ms: it stands at wait - 1 here, at wait after tick(0).
+      await tick(wait - 2);
       expect(page.createBroadcast).toHaveBeenCalledTimes(index + 1);
-      await tick(1);
+      await tick(0);
       expect(page.createBroadcast).toHaveBeenCalledTimes(index + 2);
       // 1 + 2 + 4 + 8 + 16 s is past the send's 30 s deadline: still the server's, not refused.
       if (index === 4) {
@@ -3741,6 +3764,8 @@ test("the header checkbox follows the filters and its count never hides a select
 
 test("the header checkbox selects a row a collapsed group hides, and the group says how many", async () => {
   const user = userEvent.setup();
+  // Planner spoke a minute before this row runs, so it is Active, outside the group it folds.
+  const planner: Agent = { ...agents[0], last_activity: minutesAgo(1) };
   // Seen half a minute ago and never heard from by Dispatch: Idle.
   const silent: Agent = {
     ...agents[0],
@@ -3749,7 +3774,7 @@ test("the header checkbox selects a row a collapsed group hides, and the group s
     session_id: "silent-session",
     title: "Silent",
   };
-  const page = renderAgents({ inboxRows: [], listedAgents: [agents[0], silent] });
+  const page = renderAgents({ inboxRows: [], listedAgents: [planner, silent] });
 
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
@@ -3820,6 +3845,8 @@ test("a refused send's row shows its message formatted on one line, with its who
 // expanded in there. Nobody can see it, so a reply that arrives then must stay unread - in the
 // navigation and on the row - until the group opens and puts the conversation back on screen.
 test("an open row a collapsed group hides marks nothing read, and opening the group reads it", async () => {
+  // A body is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads in real time.
+  await warmMarkdownRenderer();
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const asked = exchange("m1", "Still there?", "2026-09-14T01:00:00Z");
@@ -3827,7 +3854,7 @@ test("an open row a collapsed group hides marks nothing read, and opening the gr
   // arrives and after it: the group holding it does not change under the hidden row.
   const page = renderAgents({
     inboxRows: [{ ...inbox[0], author: { id: "stale-session", kind: "session" }, id: "ask-stale" }],
-    listedAgents: [stale, ...agents],
+    listedAgents: [staleAgent(), ...agents],
     messages: [asked],
   });
 
@@ -4199,16 +4226,19 @@ test("a link naming a machine opens the page filtered to it, and the filter can 
   }
 });
 
-/** A session on its own machine, so the machine filter has more than two rows to narrow. */
-const deployer: Agent = {
-  ...agents[1],
-  host: "deploy-host",
-  last_activity: new Date(now - 60_000).toISOString(),
-  last_seen: now - 10_000,
-  roles: ["deployer"],
-  session_id: "deploy-session",
-  title: "Deployer",
-};
+/** A session on its own machine, so the machine filter has more than two rows to narrow. It
+ *  spoke a minute before the row that builds it, so a row reads it as Active. */
+function deployerAgent(): Agent {
+  return {
+    ...agents[1],
+    host: "deploy-host",
+    last_activity: minutesAgo(1),
+    last_seen: ago(10_000),
+    roles: ["deployer"],
+    session_id: "deploy-session",
+    title: "Deployer",
+  };
+}
 
 /** The three filters of the row, by the concept each picks from. */
 const FILTER_LABELS = { group: "Group", machine: "Machine", role: "Role" } as const;
@@ -4239,7 +4269,7 @@ function filterOption(filter: keyof typeof FILTER_LABELS, name: string): HTMLEle
 // its own options, takes more than one, says how many are picked, and clears them.
 test("the machine filter is a searchable multi-select that keeps the rows of every machine picked", async () => {
   const user = userEvent.setup();
-  const page = renderAgents({ listedAgents: [...agents, deployer] });
+  const page = renderAgents({ listedAgents: [...agents, deployerAgent()] });
 
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
@@ -4282,7 +4312,7 @@ test("the machine filter is a searchable multi-select that keeps the rows of eve
 
 test("the group and role filters are searchable multi-selects of their own", async () => {
   const user = userEvent.setup();
-  const page = renderAgents({ listedAgents: [...agents, deployer] });
+  const page = renderAgents({ listedAgents: [...agents, deployerAgent()] });
 
   try {
     const region = await screen.findByRole("region", { name: "Agents" });

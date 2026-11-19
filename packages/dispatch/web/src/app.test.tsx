@@ -13,11 +13,14 @@ import { ApiError, api, NetworkError } from "./api/client";
 import { liveSocketFor } from "./api/live-socket";
 import type { AuthenticatedUser } from "./api/types";
 import { AuthGate } from "./app";
-// The Answers, document and project pages are lazy routes of the app. A page module's first
-// compile is not what a wait is for, so the modules are loaded here, with the test file, and no
-// wait measures that load.
+// The Answers, document and project pages are lazy routes of the app, and the margin a lazy part
+// of its shell (`MarginColumn.tsx`, which mounts it on every route). A page module's first
+// compile is not what a wait is for, and a load a row starts and ends before lands in a later row
+// as React's report of a suspended resource outside `act`. So the modules are loaded here, with
+// the test file, and no row starts or waits for that load.
 import "./features/answers/AnswersPage";
 import "./features/document/DocumentPage";
+import "./features/margin/Margin";
 import "./features/project/ProjectPage";
 import { SendStoppedError } from "./features/writes/keyed-write";
 import { plainWrite, writesOf } from "./features/writes/write-store";
@@ -911,62 +914,69 @@ test("desktop shell persists collapsed sidebars and gives the main region the fu
   ];
   // An issue route: the shell's margin controls only exist where the route has a margin, and
   // this test is about the collapse preferences surviving a remount, not about the Inbox.
-  const first = render(
-    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
-      <QueryClientProvider
-        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-      >
-        <AuthGate />
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
   try {
-    await screen.findByRole("navigation", { name: "Navigation" });
-    // The separator resizes under a held pointer, so a click would drag it rather than reach it
-    // from the keyboard, which is what this row measures.
-    screen.getByRole("separator", { name: "Resize margin" }).focus();
-    await user.keyboard("{ArrowLeft}");
-    await waitFor(() => expect(window.localStorage.getItem(marginWidthStorageKey)).toBe("408"));
-    await user.click(screen.getByRole("button", { name: "Hide sidebar" }));
-    await user.click(screen.getByRole("button", { name: "Hide margin" }));
-
-    expect(screen.getByRole("button", { name: "Show sidebar" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Show margin" })).toBeTruthy();
-    expect(screen.getByTestId("main-content")).toHaveAttribute("data-shell-layout", "full-width");
-    const main = screen.getByTestId("main-content");
-    expect(main).toHaveClass("xl:w-full");
-    expect(main).toHaveClass("xl:pl-20");
-    expect(main).toHaveClass("xl:pr-20");
-    expect(window.localStorage.getItem(sidebarStorageKey)).toBe("hidden");
-    expect(window.localStorage.getItem(marginStorageKey)).toBe("hidden");
-  } finally {
-    first.unmount();
-  }
-
-  const second = render(
-    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
-      <QueryClientProvider
-        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-      >
-        <AuthGate />
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-  try {
-    await screen.findByRole("button", { name: "Show sidebar" });
-    expect(screen.getByRole("button", { name: "Show margin" })).toBeTruthy();
-
-    await user.click(screen.getByRole("button", { name: "Show margin" }));
-    expect(screen.getByTestId("desktop-margin-shell").getAttribute("style")).toContain(
-      "width: 408px"
+    const first = render(
+      <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+        <QueryClientProvider
+          client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+        >
+          <AuthGate />
+        </QueryClientProvider>
+      </MemoryRouter>
     );
-    await user.click(screen.getByRole("button", { name: "Show sidebar" }));
+    try {
+      await screen.findByRole("navigation", { name: "Navigation" });
+      // The separator resizes under a held pointer, so a click would drag it rather than reach it
+      // from the keyboard, which is what this row measures.
+      // The margin's code arrives after the shell's first paint (`MarginColumn.tsx`), so its
+      // separator is waited for rather than read beside the navigation.
+      (await screen.findByRole("separator", { name: "Resize margin" })).focus();
+      await user.keyboard("{ArrowLeft}");
+      await waitFor(() => expect(window.localStorage.getItem(marginWidthStorageKey)).toBe("408"));
+      await user.click(screen.getByRole("button", { name: "Hide sidebar" }));
+      await user.click(screen.getByRole("button", { name: "Hide margin" }));
 
-    await screen.findByRole("navigation", { name: "Navigation" });
-    expect(screen.getByRole("button", { name: "Hide margin" })).toBeTruthy();
-    expect(screen.getByTestId("main-content")).toHaveAttribute("data-shell-layout", "standard");
+      expect(screen.getByRole("button", { name: "Show sidebar" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Show margin" })).toBeTruthy();
+      expect(screen.getByTestId("main-content")).toHaveAttribute("data-shell-layout", "full-width");
+      const main = screen.getByTestId("main-content");
+      expect(main).toHaveClass("xl:w-full");
+      expect(main).toHaveClass("xl:pl-20");
+      expect(main).toHaveClass("xl:pr-20");
+      expect(window.localStorage.getItem(sidebarStorageKey)).toBe("hidden");
+      expect(window.localStorage.getItem(marginStorageKey)).toBe("hidden");
+    } finally {
+      first.unmount();
+    }
+
+    const second = render(
+      <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+        <QueryClientProvider
+          client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+        >
+          <AuthGate />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    try {
+      await screen.findByRole("button", { name: "Show sidebar" });
+      expect(screen.getByRole("button", { name: "Show margin" })).toBeTruthy();
+
+      await user.click(screen.getByRole("button", { name: "Show margin" }));
+      expect(screen.getByTestId("desktop-margin-shell").getAttribute("style")).toContain(
+        "width: 408px"
+      );
+      await user.click(screen.getByRole("button", { name: "Show sidebar" }));
+
+      await screen.findByRole("navigation", { name: "Navigation" });
+      expect(screen.getByRole("button", { name: "Hide margin" })).toBeTruthy();
+      expect(screen.getByTestId("main-content")).toHaveAttribute("data-shell-layout", "standard");
+    } finally {
+      second.unmount();
+    }
   } finally {
-    second.unmount();
+    // A failure under the first render must not leave these to the rows after it: a spy left in
+    // place keeps the calls it recorded here, and `spyOn` on it again hands back the same mock.
     for (const read of issueReads) read.mockRestore();
     getInbox.mockRestore();
     getMyState.mockRestore();

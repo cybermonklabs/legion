@@ -206,7 +206,8 @@ test("a declined ask shows Declined and the person's note, and offers no decline
     const record = await card.findByTestId("ask-ask-1");
     expect(within(record).getByTestId("ask-resolution-badge").textContent).toBe("Declined");
     expect(record.textContent).toContain("alice declined to answer");
-    expect(record.textContent).toContain(note);
+    // The note is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    await waitFor(() => expect(record.textContent).toContain(note));
     // Dispatch's own words are the asking agent's to read, never the browser's.
     expect(record.textContent).not.toContain("The person chose not to answer");
     expect(card.queryByRole("button", { name: "Decline to answer" })).not.toBeInTheDocument();
@@ -243,7 +244,8 @@ test("a decline sends the person's note and closes the question", async () => {
     await waitFor(() => expect(sent).toEqual([{ note }]));
     const record = await card.findByTestId("ask-ask-1");
     expect(within(record).getByTestId("ask-resolution-badge").textContent).toBe("Declined");
-    expect(record.textContent).toContain(note);
+    // The note is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    await waitFor(() => expect(record.textContent).toContain(note));
     expect(card.queryByRole("dialog")).not.toBeInTheDocument();
   } finally {
     view.unmount();

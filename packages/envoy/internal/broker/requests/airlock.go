@@ -71,11 +71,13 @@ const (
 // recognizable for what it is: a string that stands for a secret rather than a secret.
 const PlaceholderPrefix = "agent-secrets-placeholder-"
 
-// placeholderAlphabet and placeholderLength are what follows the prefix: 32 characters of 62, so
-// about 190 bits, which nobody guesses and no birthday collision reaches.
+// PlaceholderAlphabet and PlaceholderLength are what follows the prefix: 32 characters of 62, so
+// about 190 bits, which nobody guesses and no birthday collision reaches. The broker's log mask
+// reads a placeholder as the prefix and at most PlaceholderLength characters of PlaceholderAlphabet
+// after it.
 const (
-	placeholderAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-	placeholderLength   = 32
+	PlaceholderAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	PlaceholderLength   = 32
 )
 
 // mintPlaceholder draws one placeholder from crypto/rand.
@@ -87,14 +89,14 @@ const (
 // always costs one read of the random source, where redrawing a byte until it falls below 248
 // loops an unbounded number of times.
 func mintPlaceholder() (string, error) {
-	draws := make([]byte, 8*placeholderLength)
+	draws := make([]byte, 8*PlaceholderLength)
 	if _, err := rand.Read(draws); err != nil {
 		return "", fmt.Errorf("mint an airlock placeholder: %w", err)
 	}
-	out := make([]byte, 0, len(PlaceholderPrefix)+placeholderLength)
+	out := make([]byte, 0, len(PlaceholderPrefix)+PlaceholderLength)
 	out = append(out, PlaceholderPrefix...)
-	for i := range placeholderLength {
-		out = append(out, placeholderAlphabet[binary.BigEndian.Uint64(draws[8*i:])%uint64(len(placeholderAlphabet))])
+	for i := range PlaceholderLength {
+		out = append(out, PlaceholderAlphabet[binary.BigEndian.Uint64(draws[8*i:])%uint64(len(PlaceholderAlphabet))])
 	}
 	return string(out), nil
 }

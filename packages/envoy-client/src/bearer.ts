@@ -1,3 +1,4 @@
+import { holdSecret } from "@legion/contracts/held-secrets";
 import {
   type CommandMode,
   type EnvoyConfigEnvironment,
@@ -73,11 +74,13 @@ export interface RequestCredential {
    * the two would reverse that. A caller that cares takes the answer as it comes and awaits only
    * a promise (`transport.ts`).
    *
-   * `signal` is the call's own deadline. A broker credential stops waiting when it ends: while
-   * the broker holds no registration for this pod's session yet, it throws
-   * `RegistrationPendingError` (`@legion/broker-client/token-client`), naming the session, and
-   * goes on trading in the background, so a later call takes the token once the registration
-   * lands. A caller that passes none waits as long as that takes. A bearer ignores it.
+   * `signal` is the call's own deadline. A broker credential fails fast, as gRPC's default call
+   * does: where the token client's last trade failed in a way its retry loop trades again on and
+   * nothing live is in hand, it throws `TradeRetryingError` at once. While the broker holds no
+   * registration for this pod's session yet, it waits until `signal` ends and then throws
+   * `RegistrationPendingError` (both `@legion/broker-client/token-errors`), naming the session;
+   * the loop goes on trading in the background, so a later call takes the token once the
+   * registration lands. A caller that passes none waits as long as that takes. A bearer ignores it.
    */
   headers(
     method: string,
@@ -88,14 +91,29 @@ export interface RequestCredential {
   /**
    * Tells the credential that the server said the token it presented for `session` (the same
    * argument `headers` takes, and nothing for the credential the caller was built with) is not
-   * live, so the next `headers` for that session presents a fresh one rather than the one in
-   * hand: Dispatch answers `401 BROKER_TOKEN_NOT_ACTIVE` for a broker token the broker no longer
-   * holds live, such as one a person's revoke ended before it lapsed, and a caller that is told
-   * so presents again once (`DispatchClient`'s `#send`). A broker credential has its client drop
-   * the token, so the next `headers` trades. A bearer has none: it holds no other token to
-   * present.
+   * live, so that token is never presented again: Dispatch answers `401 BROKER_TOKEN_NOT_ACTIVE`
+   * for a broker token the broker no longer holds live, such as one a person's revoke ended before
+   * it lapsed, and a caller that is told so presents again once (`DispatchClient`'s `#send`).
+   * `presented` is the very object of `headers`' answer the dead token went out in: where given,
+   * the credential drops that token alone, from the session it was presented for, and keeps a
+   * token it traded since and the token of a session its caller moved to in between. The next
+   * `headers` presents the token the credential holds now, and trades where it holds none. A
+   * broker credential has its client drop the token. A bearer has none: it holds no other token
+   * to present.
    */
-  stale?(session?: string): void;
+  stale?(session?: string, presented?: Readonly<Record<string, string>>): void;
+  /**
+   * The identity a presentation was made as, for `presented`, the very object one of `headers`'
+   * answers was, where the credential can present as more than one: a broker credential follows
+   * the sign-in this machine holds and the session its caller acts as, each of which can change
+   * between two presentations. Dispatch keys a write per login, the person or the service
+   * (`requestKeyLogin`, packages/envoy/internal/dispatch/api/request_keys.go), and a write that
+   * may have landed is never sent again as another identity (`DispatchClient`'s `#write`). An
+   * identity may be stricter than Dispatch's login: two identities can be one person, where the
+   * credential cannot tell that they are. A credential that presents as one holder only, a
+   * bearer, has none.
+   */
+  identity?(presented: Readonly<Record<string, string>>): string | undefined;
   /**
    * The secret this credential is presenting, which an excerpt of someone else's answer must
    * redact (`DispatchClient`'s `excerpt`), or "" while it holds none.
@@ -103,8 +121,25 @@ export interface RequestCredential {
   secret(): string;
 }
 
-/** A plain bearer: the same `Authorization` header on every request, and no proof. */
+/**
+ * The signal a request's credential waits on: `deadline`, the request's own, which ends at
+ * `deadlineMs`, less a reserve for the request itself, `min(1 s, deadlineMs / 2)`. For the
+ * listener's 5 s attempt the credential waits 4 s and the request has 1 s; for a probe's shorter
+ * deadline the two halve it. A broker credential whose wait ends with a live token in hand
+ * answers with that token (`BrokerTokenClient.token`), so the request still has its reserve to be
+ * sent and answered, rather than going out on a deadline the credential has already spent; one
+ * whose wait ends with none leaves the request its reserve to go without it, which a listener that
+ * asks for no credential answers.
+ */
+export function credentialDeadline(deadline: AbortSignal, deadlineMs: number): AbortSignal {
+  const reserveMs = Math.min(1_000, deadlineMs / 2);
+  return AbortSignal.any([deadline, AbortSignal.timeout(Math.ceil(deadlineMs - reserveMs))]);
+}
+
+/** A plain bearer: the same `Authorization` header on every request, and no proof. The token is
+ *  held, so every line this process prints is scrubbed of it. */
 export function bearerCredential(token: string): RequestCredential {
+  holdSecret(token);
   return {
     scheme: "Bearer",
     headers: () => ({ Authorization: `Bearer ${token}` }),

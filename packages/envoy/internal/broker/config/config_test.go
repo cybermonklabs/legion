@@ -2421,6 +2421,10 @@ func TestLoadRefusesAnAirlockTestSettingItCannotActOn(t *testing.T) {
 		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "-microsoft.airlock.test", "must be a host name"},
 		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "microsoft-.airlock.test", "must be a host name"},
 		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "*.airlock.test", "must be a host name"},
+		// A host airlock.HostShapeOK accepts and the rules-host grammar refuses, with the
+		// grammar's reason: config reads the authority by the grammar the rules file is read by.
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "microsoft.airlock.0x1f", "ends in a number"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", "ab--cd.airlock.test", "third and fourth characters"},
 		{"BROKER_JUDGE_TEST_SKIP_CHECKS", "skip", "must be true or false"},
 	} {
 		e := validEnv()

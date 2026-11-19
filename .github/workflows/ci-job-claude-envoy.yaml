@@ -49,6 +49,11 @@ jobs:
       # The pack step packs the package's own dist/ and legion/ (release-push.sh extract-built).
       - name: Put the checked build into CI's checkout for the pack
         run: .github/scripts/release-push.sh extract-built "$RUNNER_TEMP/claude-envoy-built.tar"
+      # tests/send-arguments.test.ts runs envoy-send's printed resend command under bash and under
+      # zsh, whose EQUALS option reads a bare `=word` as a path, and fails the zsh row on CI where
+      # zsh is missing; the runner image has no zsh.
+      - name: Install zsh
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
       - name: Test Claude Envoy plugin
         run: bun run test
         working-directory: packages/claude-envoy

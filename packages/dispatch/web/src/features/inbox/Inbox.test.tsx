@@ -1199,7 +1199,8 @@ test("an ask answered elsewhere stays in place with its recorded answer while th
     const kept = await screen.findByTestId("ask-ask-b");
     expect(kept.closest("[data-inbox-row]")).toBe(row);
     expect(within(kept).getByText("bob")).toBeTruthy();
-    expect(within(kept).getByText("JSON, always.")).toBeTruthy();
+    // The answer is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    expect(await within(kept).findByText("JSON, always.")).toBeTruthy();
     // The answer form is gone; the row keeps keyboard focus so j/k/Escape still start here.
     expect(row).toHaveFocus();
 
@@ -1580,7 +1581,8 @@ test("after the reader's own answer fails, an answer from elsewhere still holds 
 
     const kept = await screen.findByTestId("ask-ask-b");
     expect(kept.closest("[data-inbox-row]")).toBe(row);
-    expect(within(kept).getByText("YAML.")).toBeTruthy();
+    // The answer is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    expect(await within(kept).findByText("YAML.")).toBeTruthy();
   } finally {
     view.unmount();
     answerAsk.mockRestore();
@@ -3057,7 +3059,8 @@ test("the reader's own answer takes its row off the list and selects the next on
 
   try {
     const pane = await screen.findByTestId("inbox-pane");
-    await user.click(within(pane).getByRole("radio", { name: "Ship" }));
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await within(pane).findByRole("radio", { name: "Ship" }));
     await user.click(within(pane).getByRole("button", { name: "Answer" }));
 
     await waitFor(() => expect(rowIds()).toEqual(["ask-b"]));
@@ -3096,7 +3099,8 @@ test("an answer the server refuses keeps its question in the column, and a retry
 
   try {
     const pane = await screen.findByTestId("inbox-pane");
-    await user.click(within(pane).getByRole("radio", { name: "Ship" }));
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await within(pane).findByRole("radio", { name: "Ship" }));
     await user.click(within(pane).getByRole("button", { name: "Answer" }));
 
     // The optimistic removal takes the row at once; the column keeps the question, because the
@@ -4087,7 +4091,8 @@ test("an answer given from the column drops the record: Escape lands on the ques
     // The reader answers the question in front of them from inside the column. Their clicks move
     // no focus, so no blur fires: what ends the record is the column showing another question.
     const pane = screen.getByTestId("inbox-pane");
-    await user.click(within(pane).getByRole("radio", { name: "Ship" }));
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await within(pane).findByRole("radio", { name: "Ship" }));
     await user.click(within(pane).getByRole("button", { name: "Answer" }));
     await waitFor(() => expect(selectedIds()).toEqual(["ask-c"]));
     expect(rowIds()).toEqual(["ask-a", "ask-c"]);
@@ -4383,7 +4388,8 @@ test("Enter pressed inside the column belongs to the control holding it, and sti
     // A control inside the card, holding the focus the card gave it: Enter is that control's,
     // and the Inbox's own binding - which would move the focus to the answer box and swallow
     // the key with `preventDefault` - stands down.
-    const option = within(pane).getByRole("radio", { name: "Ship" });
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    const option = await within(pane).findByRole("radio", { name: "Ship" });
     option.focus();
     await user.keyboard("{Enter}");
     expect(option).toHaveFocus();
