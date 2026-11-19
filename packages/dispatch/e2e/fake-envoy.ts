@@ -328,8 +328,9 @@ function tokenOrder(sessions: readonly FakeLegionAgent[]): [number, string] {
 /** A registry read's answer for `agents`, holding the selected entries: each with `live` from the
  *  session's own registration (`registrationIsLive`) and, within its role token ordered by start,
  *  the session that replaced it and when (`replaced_by`/`replaced_at`, null for the newest), as
- *  the listener derives them at the read (`legionAgentAnswer`, `legionagents.succession`). Newest
- *  first within a role token; across tokens by role in workflow order, then by token.
+ *  the listener derives them at the read (`listenerwire.LegionAgentAnswer`,
+ *  `legionagents.succession`). Newest first within a role token; across tokens by role in workflow
+ *  order, then by token.
  *
  *  Succession is derived over every entry of each token the registry holds and the selection is
  *  applied after, so the three reads never answer one session two ways: an issue read of a token

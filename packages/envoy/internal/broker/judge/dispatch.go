@@ -14,10 +14,15 @@ import (
 )
 
 // ErrNoIssue is Dispatch answering 404 for the key a request's reason named: the key has an
-// issue key's form, as record.IssueKeyInReason reads one, and no issue carries it. It is the
-// judge's issue check failing rather than the read failing, so a run tells "no such issue" from
-// "Dispatch could not be read" and records the one it met.
+// issue key's form, as record.IssueKeyInReason reads one, and no issue carries it. The judge
+// shows the model that no such issue exists rather than handing the request over, so a run tells
+// "no such issue" from "Dispatch could not be read" and records the one it met.
 var ErrNoIssue = errors.New("dispatch holds no issue with this key")
+
+// ErrNoAsk is Dispatch answering 404 for the ask a request's reason cited: the reference has an
+// ask reference's form, as record.AskRefInReason reads one, and no ask carries that id. The judge
+// shows the model that no such ask exists, as ErrNoIssue is for the issue.
+var ErrNoAsk = errors.New("dispatch holds no ask with this id")
 
 // maxDispatchAnswer bounds what one answer is read of, as the secret minters bound an upstream
 // answer (secrets.mintResponseLimit). An issue read is a few KiB and a spec document a few tens
@@ -25,12 +30,12 @@ var ErrNoIssue = errors.New("dispatch holds no issue with this key")
 // rather than being held in memory.
 const maxDispatchAnswer = 1 << 20
 
-// Dispatch is the broker's read of Dispatch, and it is a read alone. Issue makes two GETs and
-// this type has no other method, no other verb and no body to send: nothing here writes an ask,
-// a comment, a label or a status, and nothing reads a person's own data. Both routes are authAny
-// (internal/dispatch/api/routes_table.go), and the projected ServiceAccount token Account reads
-// authenticates as a service actor holding no scope, which reaches an issue and its documents
-// and nothing that belongs to a person.
+// Dispatch is the broker's read of Dispatch, and it is a read alone. Issue makes two GETs, Ask
+// one, and this type has no other method, no other verb and no body to send: nothing here writes
+// an ask, a comment, a label or a status, and nothing reads a person's own data. All three
+// routes are authAny (internal/dispatch/api/routes_table.go), and the projected ServiceAccount
+// token Account reads authenticates as a service actor holding no scope, which reaches an issue,
+// its documents and the asks on it, and nothing that belongs to a person.
 type Dispatch struct {
 	// BaseURL is the root Dispatch's /api/v1 paths hang off.
 	BaseURL string
@@ -106,6 +111,79 @@ func (d Dispatch) Issue(ctx context.Context, key string) (Issue, error) {
 		return Issue{}, fmt.Errorf("dispatch answered %d for the spec of issue %s", status, key)
 	}
 	return issue, nil
+}
+
+// Ask is what the judge reads of one ask: which issue it belongs to, whether it is answered,
+// and the whole of the exchange a person decided — the question, the options it offered, and
+// the answer's own author, options and text. The model is shown the question with the answer,
+// since an answer's meaning is in the question it answers.
+type Ask struct {
+	// ID, IssueKey and State are the ask as Dispatch shows it. State is one of open,
+	// answered and resolved (model.SearchAsk.State); the model reads it with the rest, and
+	// a key's guidance says which it needs.
+	ID, IssueKey, State string
+	// Question is the ask's text, Options the labels it offered, AnsweredBy the login of
+	// the person who answered, Selected the option labels they chose and Text what they
+	// wrote. The last three are empty for an ask nobody has answered.
+	Question   string
+	Options    []string
+	AnsweredBy string
+	Selected   []string
+	Text       string
+}
+
+// Ask reads one ask. A 404 is ErrNoAsk — an id Dispatch holds no ask for, which the model is
+// shown as not found — and every other answer that is not 200 is an error, which hands the
+// request to its person.
+// It carries the token Account reads, asked for before the call, so a deployment whose token
+// cannot be read makes no call at all.
+func (d Dispatch) Ask(ctx context.Context, id string) (Ask, error) {
+	token, err := d.Account.Read()
+	if err != nil {
+		return Ask{}, err
+	}
+	endpoint := strings.TrimSuffix(d.BaseURL, "/") + "/api/v1/asks/" + url.PathEscape(id)
+	// Only these fields of the ask are decoded. The route answers the ask with its replies,
+	// its edits, its followers and where its anchor stands (api.askRead), and the judge reads
+	// none of that: an answer is the person's decision, and a thread under it is not.
+	var row struct {
+		Ask struct {
+			ID       string  `json:"id"`
+			IssueKey *string `json:"issue_key"`
+			State    string  `json:"state"`
+			Question string  `json:"question"`
+			Options  []struct {
+				Label string `json:"label"`
+			} `json:"options"`
+			Answer *struct {
+				User     string   `json:"user"`
+				Selected []string `json:"selected"`
+				Text     *string  `json:"text"`
+			} `json:"answer"`
+		} `json:"ask"`
+	}
+	switch status, err := d.get(ctx, endpoint, token, &row); {
+	case err != nil:
+		return Ask{}, err
+	case status == http.StatusNotFound:
+		return Ask{}, fmt.Errorf("%w: %s", ErrNoAsk, id)
+	case status != http.StatusOK:
+		return Ask{}, fmt.Errorf("dispatch answered %d for ask %s", status, id)
+	}
+	ask := Ask{ID: row.Ask.ID, State: row.Ask.State, Question: row.Ask.Question}
+	if row.Ask.IssueKey != nil {
+		ask.IssueKey = *row.Ask.IssueKey
+	}
+	for _, option := range row.Ask.Options {
+		ask.Options = append(ask.Options, option.Label)
+	}
+	if answer := row.Ask.Answer; answer != nil {
+		ask.AnsweredBy, ask.Selected = answer.User, answer.Selected
+		if answer.Text != nil {
+			ask.Text = *answer.Text
+		}
+	}
+	return ask, nil
 }
 
 // get makes one authorized GET and, on 200 alone, decodes as much of the answer as into names.

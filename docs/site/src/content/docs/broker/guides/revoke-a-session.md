@@ -146,6 +146,14 @@ source: the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 decided_by: session:2b8627f4-9a2a-4c12-85bf-910144bc0b5c
 ```
 
+The session that cancels need not be the one that asked: a request belongs to the principal that
+made it, so you cancel your own request from another box, the next pod of a Legion role cancels what
+the pod before it asked for, and a machine cancels its request after its helper restarted. Another
+person, another role of the same issue and another machine of the same fleet are refused
+`NOT_YOURS`, as is every session but the one that asked when its broker enrollment records no owner,
+which is any enrollment made before the broker recorded owners
+([Concepts](/legion/broker/concepts/#requests-and-grants)).
+
 ## End a session
 
 Ending a session's enrollment revokes all of its grants and cancels all of its pending requests
