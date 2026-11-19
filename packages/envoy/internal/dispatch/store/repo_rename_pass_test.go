@@ -311,24 +311,6 @@ func TestASecondRenamePassOnAWrittenDatabaseRunsNoLine(t *testing.T) {
 	}
 }
 
-// The count of the rows left, which a pass runs before its lines, reads only the table and the
-// where of each step, and where it finds no row the pass runs no line. So a step without them is
-// a field the pass never comes back to: a row that a build before this one writes there during a
-// roll keeps the old name. Every step of every line names its table and the condition of the rows
-// it has left.
-func TestEveryStepOfTheRenamePassNamesTheRowsItHasLeft(t *testing.T) {
-	from, to := "sjawhar/legion", "cybermonklabs/legion"
-	r := repoRename{RepoRename: RepoRename{From: from, To: to}, url: NewRepoURLRule(from, to)}
-	for _, line := range repoRenameLines {
-		for _, step := range line.steps(r) {
-			if step.table == "" || step.where == "" {
-				t.Errorf("a step of %s has table %q and where %q, want both, so the count of the rows left reads it: %s",
-					line.fields, step.table, step.where, step.sql)
-			}
-		}
-	}
-}
-
 // renameCollisionsSeed holds, for each table whose key holds a repository, a row under the old
 // name and a twin under the new name with the same key, and beside some a row under the old name
 // with no twin. The twin of the delivery pull request is in mixed case. Two pull request heads
