@@ -53,6 +53,7 @@ var corpusRefusals = []corpusRefusal{
 	// place of the library's invalid_grant sentence (registeredPodSession).
 	{oauth2.ErrInvalidGrant.WithDescription(oauthwire.PodSessionNotRegistered + ":"), "No registration says this pod may write under the session name '%s'. A pod writes under a session name its deployment registered for it.", []any{corpusSession}, "exchange.go"},
 	{oauth2.ErrInvalidGrant, "Refused: this pod's registration for session '%s' is bound to another key; a role trades only for its own session.", []any{corpusSession}, "exchange.go"},
+	{oauth2.ErrInvalidGrant, "Refused: this pod's registration for session '%s' was released; a pod trades only under a registration its registrar has not released.", []any{corpusSession}, "exchange.go"},
 }
 
 // The exchange policy's refusals of a subject token, which the broker hands on as "The subject

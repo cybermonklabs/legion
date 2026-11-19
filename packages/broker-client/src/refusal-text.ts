@@ -259,6 +259,7 @@ const KNOWN_BROKER_REFUSAL_PATTERNS: readonly RegExp[] = [
   `The session name '${SESSION_SLOT}' belongs to another identity: one the broker's configuration fixes it for, or one that has written under it within the last [0-9]{1,4} days\\. Ask under a name of your own\\.`,
   `No registration says this pod may write under the session name '${SESSION_SLOT}'\\. A pod writes under a session name its deployment registered for it\\.`,
   `Refused: this pod's registration for session '${SESSION_SLOT}' is bound to another key; a role trades only for its own session\\.`,
+  `Refused: this pod's registration for session '${SESSION_SLOT}' was released; a pod trades only under a registration its registrar has not released\\.`,
   // Dispatch's hold of a person (`membership_held`), as the wire corpus's own sentence writes it:
   // the same person each time.
   `${PERSON_SLOT}'s credentials are held by Dispatch; they work again when \\k<person> signs in to Dispatch, or when Dispatch can confirm \\k<person> with Google again`,
