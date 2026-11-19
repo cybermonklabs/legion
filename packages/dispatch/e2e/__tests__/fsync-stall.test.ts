@@ -12,7 +12,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 
-import { buildStallLibrary, endStall, stallDisk, stallEnvironment } from "../disk-stall";
+import {
+  buildStallLibrary,
+  diskStallDir,
+  diskStallVariable,
+  endStall,
+  stallDisk,
+  stallEnvironment,
+} from "../disk-stall";
 import { eventually, rowLimit, runBounded, watch } from "./bounded-subprocess";
 
 /** e2e/fsync-stall.c, the library the browser suite's disk stall preloads into Postgres
@@ -192,9 +199,9 @@ test(
   rowLimit()
 );
 
-// A stall file an earlier run left in the directory would hold the next server from its first
-// write; a build into that directory clears it, and keeps the directory's own library. The build
-// runs `cc`, so the row skips with its siblings on a host that lacks one.
+// A stall file an earlier run left in the directory would hold the row's first probe, made before
+// its own stall; a build into that directory clears it, and leaves the library it built. The
+// build runs `cc`, so the row skips with its siblings on a host that lacks one.
 test.skipIf(!live)(
   "a build clears a stall file an earlier run left behind",
   async () => {
@@ -206,6 +213,22 @@ test.skipIf(!live)(
     } finally {
       rmSync(again, { force: true, recursive: true });
     }
+  },
+  rowLimit()
+);
+
+// The loader splits LD_PRELOAD on spaces and colons, so a stall directory holding either would
+// never be loaded by the server; it is refused before anything is built. The refusal reads the
+// variable alone, so the row needs no cc.
+test(
+  "a stall directory holding a space or a colon is refused",
+  () => {
+    for (const dir of ["/tmp/stall dir", "/tmp/stall:dir"]) {
+      expect(() => diskStallDir({ [diskStallVariable]: dir }), dir).toThrow(
+        `${diskStallVariable}=${JSON.stringify(dir)} holds a space or a colon.`
+      );
+    }
+    expect(diskStallDir({ [diskStallVariable]: "/tmp/stall-dir" })).toBe("/tmp/stall-dir");
   },
   rowLimit()
 );

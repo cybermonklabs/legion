@@ -31,7 +31,8 @@ const source = fileURLToPath(new URL("./fsync-stall.c", import.meta.url));
 
 /** The directory `DISPATCH_E2E_PG_STALL_DIR` names, or undefined when it is unset or empty. A
  *  relative path is refused: the server is handed the same path, and a container resolves it
- *  against a working directory of its own. */
+ *  against a working directory of its own. So is a path holding a space or a colon: the loader
+ *  splits `LD_PRELOAD` on both, so the server would never load the library. */
 export function diskStallDir(env: NodeJS.ProcessEnv = process.env): string | undefined {
   const dir = (env[diskStallVariable] ?? "").trim();
   if (dir === "") return undefined;
@@ -39,6 +40,13 @@ export function diskStallDir(env: NodeJS.ProcessEnv = process.env): string | und
     throw new Error(
       `${diskStallVariable}=${JSON.stringify(dir)} is not an absolute path. The run's Postgres is ` +
         "given the same path, and a container would resolve a relative one against its own."
+    );
+  }
+  if (/[\s:]/u.test(dir)) {
+    throw new Error(
+      `${diskStallVariable}=${JSON.stringify(dir)} holds a space or a colon. The run's Postgres ` +
+        "preloads the library under it through LD_PRELOAD, which the loader splits on both, so " +
+        "it would never load it."
     );
   }
   return dir;
@@ -70,8 +78,9 @@ export async function buildStallLibrary(dir: string): Promise<void> {
   }
   mkdirSync(dir, { recursive: true });
   chmodSync(dir, 0o755);
-  // A stall file an earlier run left behind would hold the next server from its first write, and
-  // the row's check before its stall would fail as though the server were slow; a build clears it.
+  // A stall file an earlier run left behind would hold the row's first probe, made before its own
+  // stall, so the row would fail as though the server's flush were slow; a build clears it. (No
+  // write of the server's own would wait on it: every server this build serves runs fsync off.)
   rmSync(stallEnvironment(dir).PG_STALL_FILE, { force: true });
   const built = join(dir, library);
   try {
@@ -154,12 +163,19 @@ export async function stallServer(dir: string): Promise<string[]> {
         `than waiting out the probe's 1 s: it does not wait on ${stallEnvironment(dir).PG_STALL_FILE}`
     );
   }
-  // A maps line ends with the mapped file's whole path, after a space, so the path is matched
-  // between the two: another directory ending in this one's name does not match.
+  // A maps line ends with the mapped file's path, after a space, so the path is matched between
+  // the two: another directory ending in this one's name does not match. A library rebuilt under a
+  // running server is listed with ` (deleted)` after its path, and one preloaded through a
+  // symlinked directory under its resolved path; either reads as not loaded, which fails the row
+  // rather than passing it.
   const loaded = await sql(
     `SELECT position(' ${preloaded.replaceAll("'", "''")}' || chr(10) in pg_read_file('/proc/self/maps')) > 0`
   );
-  if (loaded !== "t") missing.push(`its processes have not loaded ${preloaded}`);
+  if (loaded !== "t") {
+    missing.push(
+      `its processes have not loaded ${preloaded}, or it was replaced since they started`
+    );
+  }
   return missing;
 }
 
