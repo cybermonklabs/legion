@@ -188,6 +188,22 @@ func TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole(t *testing.T)
 			},
 			names: []string{"the BROKER_NATS_SERVICES entry " + strconv.Quote("daemon/-/*="+adaAccount) + " names it"},
 		},
+		{
+			name: "a BROKER_API_ACCOUNTS entry names it",
+			env: func() map[string]string {
+				e := withK8sIssuer()
+				e["BROKER_SERVICE_LOGINS"] = adaLoginService + "=" + adaAccount
+				e["BROKER_API_ACCOUNTS"] = "dispatch=" + adaAccount
+				return e
+			},
+			reachable: func(cfg Config) (string, bool) {
+				caller, calls := cfg.APIAccounts[adaAccount]
+				return "BROKER_API_ACCOUNTS names " + adaAccount + " as the caller dispatch, and no other setting gives the account a role",
+					calls && caller.Name == "dispatch" && cfg.ServiceLogins[adaAccount] == adaLoginService &&
+						len(cfg.ServicesByAccount) == 0 && len(cfg.VMServicesByAccount) == 0 && len(cfg.ExchangeAccounts) == 0 && !cfg.NATS.Enabled()
+			},
+			names: []string{"BROKER_API_ACCOUNTS names it as the caller " + strconv.Quote("dispatch")},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			unmapped, err := Load(env(tc.env()))

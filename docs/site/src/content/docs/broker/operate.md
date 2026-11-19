@@ -349,7 +349,9 @@ broker refuses to start, naming the entry or the account, on:
   registers those services as owners a secret may name too;
 - a mapped account that `BROKER_EXCHANGE_ACCOUNTS` maps to another person;
 - a mapped account that a `BROKER_NATS_SERVICES` entry names, since the NATS auth service would
-  then answer a connection of the person's pod with that service's NATS grant.
+  then answer a connection of the person's pod with that service's NATS grant;
+- a mapped account that a `BROKER_API_ACCOUNTS` entry names, since that caller's routes relay
+  approvals in the name the caller gives.
 
 The pod enrols itself with `agent-secrets enroll --pod --service <its login service>`, which names
 no session. Its login, made with its own projected token, carries the person, and so does its

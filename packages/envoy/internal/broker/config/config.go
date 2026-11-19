@@ -495,8 +495,9 @@ type Config struct {
 	// and BROKER_VM_SERVICES alike as owners a secret may name. It refuses a mapped account that a
 	// BROKER_EXCHANGE_ACCOUNTS entry maps to another person. It refuses a mapped account that a
 	// BROKER_NATS_SERVICES entry names, because the NATS auth service would then answer a
-	// connection of the person's pod with a service's NATS grant. Unset, the setting maps no
-	// account.
+	// connection of the person's pod with a service's NATS grant. It refuses a mapped account that
+	// a BROKER_API_ACCOUNTS entry names, because that caller's routes relay decisions in the name
+	// the caller gives. Unset, the setting maps no account.
 	PodOperators map[string]string
 	// BROKER_K8S_OIDC_ISSUER: the issuer of the Kubernetes service-account tokens pods enroll
 	// with. Set it with BROKER_K8S_OIDC_AUDIENCE, or neither, in which case no pod can enroll.
@@ -1272,7 +1273,11 @@ func parsePodOperators(setting, value string) (map[string]string, error) {
 // BROKER_NATS_SERVICES entry names, because the NATS auth service (internal/broker/natscallout)
 // would then answer a connection of the person's pod with that entry's service grant. It reads
 // each entry's account as natscallout.ParseServices does, the text after the entry's first =,
-// which that parser holds to ParseAccount's form at the boot; this package cannot import it.
+// which that parser holds to ParseAccount's form at the boot; this package cannot import it. It
+// refuses a mapped account that a BROKER_API_ACCOUNTS entry names (cfg.APIAccounts), because the
+// named-caller routes it reaches act on the caller's word: the approval relays take the deciding
+// person's name from the caller, so the person's pod could decide any request in any person's
+// name.
 func mappedAccountRefusal(cfg *Config) error {
 	const setting = "BROKER_POD_OPERATORS"
 	if len(cfg.PodOperators) == 0 {
@@ -1313,6 +1318,9 @@ func mappedAccountRefusal(cfg *Config) error {
 		}
 		if other, exchanges := exchangePeople[account]; exchanges && record.CanonicalLogin(other) != record.CanonicalLogin(person) {
 			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_EXCHANGE_ACCOUNTS maps it to %s; one account acts for one person, so map it to the same person in both settings or take it out of one of them", setting, account, person, other)
+		}
+		if caller, calls := cfg.APIAccounts[account]; calls {
+			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_API_ACCOUNTS names it as the caller %q; that caller's routes act on the caller's word, and the approval relays take the deciding person's name from it, so take the account out of BROKER_API_ACCOUNTS or out of %s", setting, account, person, caller.Name, setting)
 		}
 		if entry, names := natsEntries[account]; names {
 			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_NATS_SERVICES entry %q names it; the NATS auth service would answer a connection of the person's pod with that service's NATS grant, so take the account out of BROKER_NATS_SERVICES or out of %s", setting, account, person, entry, setting)
