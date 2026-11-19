@@ -42,17 +42,19 @@ EOF
   exit 1
 }
 
-# go-licenses runs on this machine whatever GOOS the packages target, so it is built for the host
-# (empty GOOS and GOARCH), outside any module, once per version, toolchain and host. The host is the
-# toolchain's own GOHOSTOS and GOHOSTARCH, which a GOOS or GOARCH in the environment does not
-# change, and it is in the directory's name: a cache entry that another CPU filled can bring its
-# go-licenses here, and that binary is then at another host's path, so this one is built rather
-# than the foreign one run (an x86_64 lint that ran an arm64 one failed with "Exec format error",
-# run 44437023306).
+# go-licenses runs on this machine whatever GOOS the packages target, so it is built for the host,
+# outside any module, once per version, toolchain and host. The host is the toolchain's own
+# GOHOSTOS and GOHOSTARCH, which a GOOS or GOARCH in the environment does not change, and it is in
+# the directory's name: a cache entry that another CPU filled can bring its go-licenses here, and
+# that binary is then at another host's path, so this one is built rather than the foreign one run
+# (an x86_64 lint that ran an arm64 one failed with "Exec format error", run 44437023306). The
+# install names those two values as its GOOS and GOARCH, where an empty value would fall back to a
+# `go env -w` file's, and it builds with CGO_ENABLED=0, so whether the tool links a C library no
+# longer depends on which caller's environment builds it first.
 tool_dir="${XDG_CACHE_HOME:-$HOME/.cache}/legion/go-licenses-$GO_LICENSES_VERSION-$go_version-$go_hostos-$go_hostarch"
 tool="$tool_dir/go-licenses"
 if [ ! -x "$tool" ]; then
-  (cd / && GOOS='' GOARCH='' GOFLAGS='' GOBIN="$tool_dir" \
+  (cd / && GOOS="$go_hostos" GOARCH="$go_hostarch" CGO_ENABLED=0 GOFLAGS='' GOBIN="$tool_dir" \
     "$go_cmd" install "github.com/google/go-licenses/v2@$GO_LICENSES_VERSION")
 fi
 if [ "$1" = --install ]; then
