@@ -2116,6 +2116,84 @@ test("a failed read of the registry list leaves its last word standing: no Live 
   expect(screen.getByTestId("agent-thread-empty").textContent).toBe(LEFT_LIST_TEXT);
 });
 
+/** The registry's two words that a session is silent, beside the relay's: the list its next read
+ *  returns, the sentence the transcript says that list's word in, and whether the header keeps
+ *  its Unresponsive note beside Not answering, which only a list that holds the session does. */
+const LIST_SILENCES: readonly {
+  readonly list: Agent[];
+  readonly note: boolean;
+  readonly sentence: string;
+  readonly word: string;
+}[] = [
+  {
+    list: [{ ...agent, state: "unresponsive" }],
+    note: true,
+    sentence: MISSED_HEARTBEATS_TEXT,
+    word: "marks unresponsive",
+  },
+  { list: [], note: false, sentence: LEFT_LIST_TEXT, word: "no longer lists" },
+];
+
+// R2 (INFRA-4325, spec v4). The relay and the registry's last list can both say a session is
+// silent, and then the transcript names each in its own words: the relay's reason first, since it
+// is the one that says nothing streams, then the list's sentence as it reads alone - above the
+// messages Dispatch keeps, or in the empty slot's place. The header reads Not answering, the
+// relay's word, which no fact of the list changes: beside the Unresponsive note for a session the
+// list holds as unresponsive, and with no not-listed presence for one it no longer holds. Only a
+// session the view saw listed can leave the list, so the first read holds it.
+for (const { list, note, sentence, word } of LIST_SILENCES) {
+  test(`a session the relay says is silent and the registry ${word}: both words above Dispatch's messages, the relay's first`, async () => {
+    const view = renderLiveView({
+      agentState: {},
+      messages: conversation,
+      putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+      responding: false,
+    });
+    await screen.findByTestId("agent-footer-machine");
+    await within(screen.getByTestId("agent-thread")).findByText("Where is the dashboard?");
+    expect(screen.getByTestId("agent-silence-line").textContent).toBe(NOT_ANSWERING_NOTICE);
+
+    await nextRegistryRead(view, list);
+    await waitFor(() =>
+      expect(screen.getByTestId("agent-silence-line").textContent).toBe(
+        `${NOT_ANSWERING_NOTICE} ${sentence}`
+      )
+    );
+    expect(screen.queryByTestId("agent-thread-empty")).not.toBeInTheDocument();
+    expect(connectionStatus()).toEqual(["Not answering"]);
+    expect(
+      screen.getByTitle("Connection to the session's conversation: Not answering")
+    ).toBeTruthy();
+    const header = screen.getByTestId("agent-view-header");
+    expect(within(header).queryAllByTestId("agent-unresponsive")).toHaveLength(note ? 1 : 0);
+  });
+
+  test(`a session the relay says is silent and the registry ${word}: both words in its empty transcript, the relay's first`, async () => {
+    const view = renderLiveView({
+      agentState: {},
+      messages: [],
+      putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+      responding: false,
+    });
+    await screen.findByTestId("agent-footer-machine");
+    expect(screen.getByTestId("agent-thread-empty").textContent).toBe(NOT_ANSWERING_EMPTY_TEXT);
+
+    await nextRegistryRead(view, list);
+    await waitFor(() =>
+      expect(screen.getByTestId("agent-thread-empty").textContent).toBe(
+        `${NOT_ANSWERING_EMPTY_TEXT} ${sentence}`
+      )
+    );
+    expect(screen.queryByTestId("agent-silence-line")).not.toBeInTheDocument();
+    expect(connectionStatus()).toEqual(["Not answering"]);
+    expect(
+      screen.getByTitle("Connection to the session's conversation: Not answering")
+    ).toBeTruthy();
+    const header = screen.getByTestId("agent-view-header");
+    expect(within(header).queryAllByTestId("agent-unresponsive")).toHaveLength(note ? 1 : 0);
+  });
+}
+
 // A pick is the person's own Send of what they would type at the session's terminal: always a
 // Send, since a BTW is a side question the session does not run, and the id exactly as the
 // session listed it, even one `/model` could read a role or a level into. It asks for a session

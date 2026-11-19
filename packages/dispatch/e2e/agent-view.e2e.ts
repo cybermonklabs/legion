@@ -983,8 +983,8 @@ function connection(page: Page): Locator {
 /** A change of the registry reaches an open live view on the shell's next poll of the agent list
  *  (`AGENT_REGISTRY_POLL_MS`, `web/src/features/refs/agent-registry.ts`); this is that poll twice
  *  over. The row below waits for the poll in real time rather than jumping the page's clock to it
- *  as other rows do: its six changes would take six 15 s jumps, which leave the live socket more
- *  than 45 s without a frame unless one arrives between them. That is past the page's silence
+ *  as other rows do: its eight changes would take eight 15 s jumps, which leave the live socket
+ *  more than 45 s without a frame unless one arrives between them. That is past the page's silence
  *  limit (`LIVE_SOCKET_SILENT_MS`, read by `replaceIfSilent` in `web/src/api/live-socket.ts`), so
  *  the page would replace the socket, and the new one sends again the subscribe the row asserts
  *  is sent once. A listener that is down refuses the poll's read with no wait named, so the
@@ -1016,21 +1016,23 @@ function listedSession(
 // header reads Not answering and the line names the relay's causes. The registry's list holds the
 // session as unresponsive, which the header's note names in place of a word on the connection,
 // or no longer holds it, which the header names in place of Live; either way the line says what
-// the list says and no more, and a turn the session still streams changes neither. A lost socket
-// is the view's own connection: the header says it is reconnecting, and the relay's line stays.
-// The registry's word moves the view on its next poll, both ways, over the subscription the page
+// the list says and no more, and a turn the session still streams changes neither. Where both
+// say so, the header keeps the relay's Not answering, beside the note where the list holds the
+// session as unresponsive, and the line names each, the relay's reason first. A lost socket is
+// the view's own connection: the header says it is reconnecting, and the relay's line stays. The
+// registry's word moves the view on its next poll, both ways, over the subscription the page
 // already holds: the page asks the session for nothing again. A read of the list that fails, the
 // list refilling or the listener down, is no word of the registry's: the header says why it has
 // no list to read, and the last list's word stands beside that, in the header and in the line.
-// SLOW(>=2s): three live views, a reconnect the page draws its own wait for, and six changes of
+// SLOW(>=2s): three live views, a reconnect the page draws its own wait for, and eight changes of
 // the registry each waited on through the shell's 15 s poll of the agent list, one of them a
 // refilling list the page retries twice for before it says so.
 test("a silent session says so in the header and in a line above its messages, in the relay's words or the registry's", async ({
   browser,
 }) => {
-  // Six changes of the registry, each given `REGISTRY_POLL_TIMEOUT` and the refilling one
+  // Eight changes of the registry, each given `REGISTRY_POLL_TIMEOUT` and the refilling one
   // `REGISTRY_REFILLING_TIMEOUT`, beside three page loads and a reconnect.
-  test.setTimeout(240_000);
+  test.setTimeout(300_000);
   const stored = listedSession("01a0e0c1-0000-7000-8000-0000000043a1", "Stored");
   const empty = listedSession("01a0e0c1-0000-7000-8000-0000000043a2", "Empty");
   const answering = listedSession("01a0e0c1-0000-7000-8000-0000000043a3", "Answering");
@@ -1096,6 +1098,27 @@ test("a silent session says so in the header and in a line above its messages, i
     await expect(connection(page)).toHaveAttribute("title", CONNECTION_NOT_ANSWERING);
     await expect(view.getByTestId("agent-silence-line")).toHaveText(NOT_ANSWERING_ABOVE_TURNS);
 
+    // The registry marks it unresponsive as well. The header keeps the relay's Not answering beside
+    // the list's note, and the line names each source in its own words, the relay's reason first:
+    // it is the one that says nothing streams.
+    await setSessionState(stored.session_id, "unresponsive");
+    const unresponsive = view.getByTestId("agent-unresponsive");
+    await expect(unresponsive).toHaveText(/^Unresponsive/, { timeout: REGISTRY_POLL_TIMEOUT });
+    await expect(connection(page)).toHaveAttribute("title", CONNECTION_NOT_ANSWERING);
+    await expect(view.getByTestId("agent-silence-line")).toHaveText(
+      `${NOT_ANSWERING_ABOVE_TURNS} ${MISSED_HEARTBEATS}`
+    );
+
+    // It stops, so the list no longer holds it: the note goes, the header still reads the relay's
+    // Not answering rather than the list's not-listed presence, and the line names the relay's
+    // reason and then what the list shows.
+    await setSessionStopped(stored.session_id, true);
+    await expect(unresponsive).toHaveCount(0, { timeout: REGISTRY_POLL_TIMEOUT });
+    await expect(connection(page)).toHaveAttribute("title", CONNECTION_NOT_ANSWERING);
+    await expect(view.getByTestId("agent-silence-line")).toHaveText(
+      `${NOT_ANSWERING_ABOVE_TURNS} ${LEFT_LIST}`
+    );
+
     await page.goto(`/agents/${empty.session_id}/live`);
     await expect(view.getByTestId("agent-thread-empty")).toHaveText(NOT_ANSWERING);
     await expect(connection(page)).toHaveAttribute("title", CONNECTION_NOT_ANSWERING);
@@ -1120,7 +1143,6 @@ test("a silent session says so in the header and in a line above its messages, i
     // names that state, with when the session was last seen, in place of a word on the
     // connection, and the line says what the list says rather than the relay's causes.
     await setSessionState(answering.session_id, "unresponsive");
-    const unresponsive = view.getByTestId("agent-unresponsive");
     await expect(unresponsive).toHaveText(/^Unresponsive/, { timeout: REGISTRY_POLL_TIMEOUT });
     await expect(connection(page)).toHaveCount(0);
     await expect(view.getByTestId("agent-silence-line")).toHaveText(MISSED_HEARTBEATS);
