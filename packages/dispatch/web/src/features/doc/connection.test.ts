@@ -119,7 +119,11 @@ class OpenSocket extends EventTarget {
  * connection: what `DocumentConnection.readmit` relies on to be admitted again.
  */
 class ClosingSocket extends OpenSocket {
+  /** How many times the page closed this socket: the provider closes one again as it tidies it. */
+  closes = 0;
+
   override close(): void {
+    this.closes += 1;
     queueMicrotask(() => this.dispatchEvent(new CloseEvent("close", { code: 1000 })));
   }
 }
@@ -421,6 +425,87 @@ test("a readmitted connection reports the admission of the socket it reconnects"
       serveInYgoOrder(await socket(1), server, "read-write", artifact);
       await waitFor(() => expect(admissions).toEqual([true, false]));
       expect(OpenSocket.opened).toHaveLength(2);
+    },
+    0,
+    ClosingSocket
+  );
+});
+
+// The reopen's commit closes the room's sockets as the reopen answers the page, and the two race.
+// A page that hears the answer last may have reconnected already, and the server admits that
+// socket as the issue now is: the readmit leaves it to its own answer, so the reopen costs the
+// page one reconnect and one draw, not two.
+test("a readmit leaves the socket the server's close made the provider open while it waits for its answer", async () => {
+  const artifact = artifactId();
+  const server = serverWithHeading(100);
+  await withProvider(
+    artifact,
+    async ({ admissions, connection, socket, synced }) => {
+      const first = await socket(0);
+      serveInYgoOrder(first, server, "readonly", artifact);
+      await waitFor(() => expect(synced()).toBe(true));
+
+      first.drop();
+      const second = (await socket(1)) as ClosingSocket;
+      connection.readmit();
+      expect(second.closes).toBe(0);
+
+      serveInYgoOrder(second, server, "read-write", artifact);
+      await waitFor(() => expect(admissions).toEqual([true, false]));
+      expect(second.closes).toBe(0);
+      expect(OpenSocket.opened).toHaveLength(2);
+    },
+    0,
+    ClosingSocket
+  );
+});
+
+test("a readmit leaves a socket the server has admitted writable", async () => {
+  const artifact = artifactId();
+  const server = serverWithHeading(100);
+  await withProvider(
+    artifact,
+    async ({ admissions, connection, socket, synced }) => {
+      const first = await socket(0);
+      serveInYgoOrder(first, server, "readonly", artifact);
+      await waitFor(() => expect(synced()).toBe(true));
+      first.drop();
+      const second = (await socket(1)) as ClosingSocket;
+      serveInYgoOrder(second, server, "read-write", artifact);
+      await waitFor(() => expect(admissions).toEqual([true, false]));
+
+      connection.readmit();
+
+      expect(second.closes).toBe(0);
+      expect(OpenSocket.opened).toHaveLength(2);
+    },
+    0,
+    ClosingSocket
+  );
+});
+
+// A socket the page opened before the reopen committed - after a blip, say - may be answered
+// read-only after the page heard of the reopen: that answer is the closed issue's, so the readmit
+// closes the socket as the answer arrives, and the host is told the admission of the next one.
+test("a readmit closes the socket it found unanswered once that socket's answer is read-only", async () => {
+  const artifact = artifactId();
+  const server = serverWithHeading(100);
+  await withProvider(
+    artifact,
+    async ({ admissions, connection, socket, synced }) => {
+      const first = await socket(0);
+      serveInYgoOrder(first, server, "readonly", artifact);
+      await waitFor(() => expect(synced()).toBe(true));
+      first.drop();
+      const second = (await socket(1)) as ClosingSocket;
+      connection.readmit();
+
+      serveInYgoOrder(second, server, "readonly", artifact);
+      expect(second.closes).toBe(1);
+
+      serveInYgoOrder(await socket(2), server, "read-write", artifact);
+      await waitFor(() => expect(admissions).toEqual([true, false]));
+      expect(OpenSocket.opened).toHaveLength(3);
     },
     0,
     ClosingSocket
