@@ -259,7 +259,7 @@ run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN saying the image is not pinned by digest" \
   "$(grep -qF "UNKNOWN: sessions image: cannot run ghcr.io/cybermonklabs/agent-session:latest: ghcr.io/cybermonklabs/agent-session:latest is not pinned by digest" "$out" && echo true || echo false)"
-check "never runs docker with it" "$(lacks "--entrypoint cat ghcr.io/cybermonklabs/agent-session:latest" "$calls")"
+check "never runs docker with it" "$(grep '^docker run' "$calls" | grep -qF 'agent-session:latest' && echo false || echo true)"
 
 # The daemon's pi-envoy: the rendered legion.yaml's runtime.kubernetes.plugins.pi_envoy when it sets
 # one, else the pair `legion version` names on its second line, each judged by its release tag and

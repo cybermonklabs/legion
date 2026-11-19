@@ -12,12 +12,14 @@
 # The deployment repository, the one whose Pulumi stacks pin these images, is the operator's to
 # name with --deployment: the gate compiles in no deployment's name. Each stack's config keys are
 # under its Pulumi project's name, which the gate reads from that stack's own Pulumi.yaml (`name:`)
-# and never guesses: a stack whose Pulumi.yaml is missing or declares no name is UNKNOWN, by name.
+# and never guesses: a stack whose Pulumi.yaml is missing, declares no name or declares one Pulumi
+# refuses is UNKNOWN, by name.
 #
 # The deployment's Legion projects are the files of legion/projects/ (`<nn>-<KEY>.yaml`, one mapping
 # of a project's settings each, read in file-name order), as the deployment's legion program reads
 # them. Only a deployment with no such directory still declares them in legion/Pulumi.prod.yaml's
-# projects list, as that program did before the files (load_entries).
+# projects list, as that program did before the files (load_entries). An entry of the directory that
+# is no file, and a listing of 1,000 entries or more (GitHub lists no more), are UNKNOWN.
 #
 # Without a mode it reads the image that runs each Legion daemon: for each project, its
 # `daemonImage` when set, else its `image` (legion/README.md's `daemonImage` row). A project that runs
@@ -25,9 +27,9 @@
 # tmux` runs its daemon on the project's host VM from `host.legionWorker`'s legion, not from its
 # `image` (deployment legion/host.go, checkHost), and the gate reads no image for it: it is UNKNOWN
 # by name, and so is an entry on any runtime but `kubernetes`, the default. A project file whose
-# name is not `<nn>-<KEY>.yaml` or whose `key` is not its name's KEY, a `replicas` that is no count,
-# a `daemon` that is no boolean and an image that is no plain reference are UNKNOWN by name, never a
-# project skipped or an image cut short.
+# name is not `<nn>-<KEY>.yaml` or whose `key` is not its name's KEY, a `key` that is no project key
+# in the list, a `replicas` that is no count, a `daemon` that is no boolean and an image that is no
+# plain reference are UNKNOWN by name, never a project skipped or an image cut short.
 #
 # With --listeners it reads the listener pins instead: envoy-cluster/Pulumi.prod.yaml `envoyImage`,
 # dispatch/Pulumi.prod.yaml `listenerImage`, which that stack's program sets on its listener in place
@@ -37,12 +39,14 @@
 # that key, and the listener runs no other image. Whether the deployment declares the VM hub,
 # gcp:NatsHub, is decided from its program, never from the pin, since the hub's removal deletes the
 # pin with it (vm_hub, lib/daemon-release-gate-read-vm-hub.sh): at the head of the deployment
-# repository's default branch, fetched as one archive, a Go file that is not a test and uses
-# NewNatsHub declares it. Declared, it prints `VM HUB: <file>:<line> at <sha> uses NewNatsHub` and
-# reads the pin, a stack that sets none staying UNKNOWN; used nowhere, every file read, it prints
-# `NO VM HUB: envoy/ at <sha> declares no gcp:NatsHub` and reads no VM pin. What it cannot fetch or
-# read is UNKNOWN, a repository that declares submodules (.gitmodules) among it, since the archive
-# holds none of their code; so a missing pin never reads as a hub that is gone.
+# repository's default branch, fetched as one archive and held to the commit's tree, a Go file that
+# is not a test and uses NewNatsHub, or registers the hub's type token itself, declares it.
+# Declared, it prints `VM HUB: <file>:<line> at <sha> uses NewNatsHub` (or `registers
+# envoy-infra:gcp:NatsHub`) and reads the pin, a stack that sets none staying UNKNOWN; used
+# nowhere, every file read, it prints `NO VM HUB: envoy/ at <sha> declares no gcp:NatsHub` and
+# reads no VM pin. What it cannot fetch or read is UNKNOWN, a file the archive leaves out or changed
+# and a submodule among it, since the archive holds none of their code; so a missing pin never reads
+# as a hub that is gone. A stack pin that is no plain image reference is UNKNOWN and never read.
 #
 # With --clients it reads the clients that deliver to a session, each of which must carry the
 # client follow filter of <commit>, since an older one passes a frame in a form it does not match in
@@ -75,9 +79,10 @@
 #     (renderLegionYAML, legion/main.go:2743-2892 when this was written) and refuses a project field
 #     it does not know (parseProjects' DisallowUnknownFields, legion/main.go:4771-4774), so the
 #     linked pair decides; reading the rendering keeps the gate right if the program starts to set
-#     the key. A rendering it cannot read, a legion that links no pair where the rendering sets
-#     none, and a second line that names no pi-envoy version are UNKNOWN. A project with no
-#     daemonImage runs its daemon from its image, which is then judged both ways.
+#     the key. A rendering it cannot read or that sets no runtime.kubernetes, a legion that links no
+#     pair where the rendering sets none, and a second line that names no pi-envoy version are
+#     UNKNOWN. A project with no daemonImage runs its daemon from its image, which is then judged
+#     both ways.
 #   - A project that runs no daemon is SKIPPED, and one on a tmux host is UNKNOWN: its sessions run
 #     the host's clients. Each command runs in the image with `docker run --rm --quiet --network
 #     none --read-only --cap-drop ALL --security-opt no-new-privileges`, and every text read from
@@ -86,14 +91,18 @@
 #   - on this developer box, under --dotfiles (default ~/.dotfiles): the `@sjawhar/pi-envoy` pin of
 #     omp/plugins/package.json and the copy installed beside it; each claude-envoy@legion-plugins
 #     install the dotfiles' Claude Code plugin record holds, by its manifest; and the claude-envoy
-#     version the marketplace legion-plugins serves to .claude/settings.json. npm's install takes
-#     the `latest` dist-tag when it matches the range the marketplace names, else the highest
-#     version that matches, so the gate judges both: `latest` when it is among the versions npm
-#     matches, and the highest match. Each version is judged by the commit of its release tag
-#     (`pi-envoy-v<version>`, `claude-envoy-v<version>`). A client installed where the dotfiles'
-#     pins say nothing about it (~/.omp/plugins or a profile's plugin tree, ~/.claude, another
-#     CLAUDE_CONFIG_DIR), a link that does not resolve, and a marketplace entry it cannot read are
-#     UNKNOWN.
+#     version the marketplace legion-plugins serves to .claude/settings.json, read as Claude Code
+#     reads it: its repo at its ref, the file at its path (one inside the repository, with no `.`
+#     or `..` segment), and the package from its registry; a key of either source this gate does
+#     not read is UNKNOWN. npm's install takes the `latest` dist-tag when it matches the range the
+#     marketplace names and is not deprecated, else the highest match that is not deprecated, so
+#     the gate judges both: `latest` when it is among the
+#     versions npm matches, and that highest match; a match that declares engines, which npm ranks
+#     by the box's own node and npm versions, is UNKNOWN. Each version is judged by the commit of
+#     its release tag (`pi-envoy-v<version>`, `claude-envoy-v<version>`). A client installed where
+#     the dotfiles' pins say nothing about it (~/.omp/plugins or a profile's plugin tree, ~/.claude,
+#     another CLAUDE_CONFIG_DIR), a link that does not resolve, and a marketplace entry it cannot
+#     read are UNKNOWN.
 #
 # Each pin's org.opencontainers.image.source and .revision labels are read with `docker buildx
 # imagetools inspect`. A single image is read whole; an OCI image index, which carries no image
@@ -115,8 +124,10 @@
 # `UNKNOWN` (a label, a file, a package, a version or a comparison it could not read, a revision
 # that is no commit id, or a reader it does not read), `SKIPPED`, or `VM HUB` or `NO VM HUB`; then
 # the verdict, alone on the last line: `GATE OPEN` (exit 0) only when every pin it read passed and it
-# read at least one, `GATE SHUT` (exit 1) when any pin shut it, and `UNKNOWN` (exit 3) otherwise. A
-# usage error, a missing --deployment or both modes among them, exits 2 and reads nothing.
+# read at least one, `GATE SHUT` (exit 1) when any pin shut it, and `UNKNOWN` (exit 3) otherwise.
+# Every text it reads from outside it is printed with its control characters written as \x<hh>
+# (printable), so none can start or rewrite a line of the gate's own. A usage error, a missing
+# --deployment, both modes, or a --dotfiles without --clients among them, exits 2 and reads nothing.
 #
 # It needs bash, gh (signed in with read access to the deployment repository and cybermonklabs/legion),
 # docker with buildx, jq, base64, python3 with PyYAML and, for --clients, npm. Docker must be able to
@@ -146,6 +157,7 @@ usage() {
 mode=daemons
 deployment=""
 dotfiles=${HOME:+${HOME}/.dotfiles}
+dotfiles_given=0
 listeners=0
 clients=0
 while [ "$#" -gt 1 ]; do
@@ -154,8 +166,8 @@ while [ "$#" -gt 1 ]; do
     --clients) clients=1; shift ;;
     --deployment) deployment=$2; shift 2 ;;
     --deployment=*) deployment=${1#--deployment=}; shift ;;
-    --dotfiles) dotfiles=$2; shift 2 ;;
-    --dotfiles=*) dotfiles=${1#--dotfiles=}; shift ;;
+    --dotfiles) dotfiles=$2; dotfiles_given=1; shift 2 ;;
+    --dotfiles=*) dotfiles=${1#--dotfiles=}; dotfiles_given=1; shift ;;
     *) break ;;
   esac
 done
@@ -165,6 +177,8 @@ done
 [ -n "$deployment" ] || usage "--deployment <owner/repo> is required: the deployment repository whose stacks the gate reads"
 [[ $deployment =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || usage "--deployment ${deployment} is not <owner>/<repo>"
 [ "$listeners$clients" != 11 ] || usage "--listeners and --clients read different readers; give one"
+# A flag the run would not read is refused, never ignored: an operator who gave one meant it read.
+[ "$dotfiles_given" = 0 ] || [ "$clients" = 1 ] || usage "--dotfiles is read only by --clients"
 [ "$listeners" = 0 ] || mode=listeners
 [ "$clients" = 0 ] || mode=clients
 readonly commit=$1 deployment dotfiles mode
@@ -181,8 +195,27 @@ shut=0
 unknown=0
 compared=0
 
-first_line() { head -n 1 "$1"; }
-last_line() { tail -n 1 "$1"; }
+# printable <text>: <text> with each character that is not printable, a newline, a carriage return,
+# a tab and an escape among them, written as \x<hh> (\u<hhhh> or \U<hhhhhhhh> past U+00FF), so text
+# the gate reads from outside it (an image, an archive, a marketplace, the dotfiles, an error a
+# command printed) can neither start a line of the gate's output nor rewrite one on a terminal.
+printable() {
+  python3 -c '
+import sys
+
+def shown(c):
+    if c.isprintable():
+        return c
+    n = ord(c)
+    return "\\x%02x" % n if n < 0x100 else "\\u%04x" % n if n < 0x10000 else "\\U%08x" % n
+
+print("".join(shown(c) for c in sys.argv[1]))
+' "$1"
+}
+
+# first_line <file> and last_line <file>: that line of an error a command left, printable.
+first_line() { printable "$(head -n 1 "$1")"; }
+last_line() { printable "$(tail -n 1 "$1")"; }
 
 # fetch <path> <dest>: the text of <path> in the deployment repository on its default branch, into
 # <dest>; on failure sets $fetch_error to what could not be done and GitHub's or base64's first
@@ -191,11 +224,11 @@ fetch() {
   local encoded
   fetch_error=""
   if ! encoded=$(gh api "repos/${deployment}/contents/$1" --jq .content 2>"$work/err"); then
-    fetch_error="cannot read ${deployment} $1: $(first_line "$work/err")"
+    fetch_error="cannot read ${deployment} $(printable "$1"): $(first_line "$work/err")"
     return 1
   fi
   if ! printf '%s' "$encoded" | base64 -d >"$2" 2>"$work/err"; then
-    fetch_error="cannot decode ${deployment} $1: $(first_line "$work/err")"
+    fetch_error="cannot decode ${deployment} $(printable "$1"): $(first_line "$work/err")"
     return 1
   fi
 }
@@ -211,8 +244,10 @@ stack_file() {
 
 # project_of <stack>: sets $project to the name <stack>/Pulumi.yaml declares, the Pulumi project
 # whose own config keys <stack>/Pulumi.prod.yaml holds under `<name>:`. A file that cannot be read,
-# or that declares no name, sets $project_error naming it and returns 1: the gate guesses no
-# project's name, since a key under a guessed one would be read as the stack's own.
+# that declares no name, or whose name Pulumi would refuse (letters, digits, `_`, `.` and `-`, 1 to
+# 100 of them: ValidateProjectName, sdk/go/common/tokens/project.go) sets $project_error naming it
+# and returns 1: the gate guesses no project's name, since a key under a guessed one would be read
+# as the stack's own.
 project_of() {
   project=""
   project_error=""
@@ -221,6 +256,8 @@ project_of() {
     return 1
   fi
   if ! project=$(python3 - "$work/project.yaml" 2>"$work/err" <<'PY'
+import json
+import re
 import sys
 
 import yaml
@@ -234,6 +271,8 @@ except yaml.YAMLError as error:
     sys.exit(f"it is not YAML: {str(error).splitlines()[0]}")
 name = document.get("name") if isinstance(document, dict) else None
 if isinstance(name, str) and name.strip():
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", name.strip()):
+        sys.exit(f"its name {json.dumps(name.strip())} is no Pulumi project name")
     print(name.strip())
 PY
   ); then
@@ -276,7 +315,10 @@ load_entries() {
   fi
   entries_state=unread
   mkdir -p "$work/projects"
-  if ! names=$(gh api "repos/${deployment}/contents/legion/projects" --jq '.[] | select(.type == "file") | .name' 2>"$work/err"); then
+  # GitHub's listing names each entry with its type; the deployment's program reads every entry of
+  # the directory, so one that is no file (a link, a directory, a submodule) is not skipped but
+  # refused, and so is a listing that may have stopped at the 1,000 entries GitHub lists at most.
+  if ! names=$(gh api "repos/${deployment}/contents/legion/projects" --jq '.[] | [.type, .name] | @tsv' 2>"$work/err"); then
     if ! grep -qF 'HTTP 404' "$work/err"; then
       entries_state=failed
       entries_error="cannot list ${deployment} legion/projects: $(first_line "$work/err")"
@@ -285,8 +327,18 @@ load_entries() {
     names=""
     directory=0
   fi
-  while IFS= read -r name; do
+  if [ "$(grep -c . <<<"$names")" -ge 1000 ]; then
+    entries_state=failed
+    entries_error="${deployment} legion/projects/ holds 1000 entries or more, and GitHub lists at most 1,000, so the gate cannot read every project"
+    return 0
+  fi
+  while IFS=$'\t' read -r type name; do
     [ -n "$name" ] || continue
+    if [ "$type" != file ]; then
+      entries_state=failed
+      entries_error="${deployment} legion/projects/$(printable "$name") is a $(printable "$type"), which this gate does not read as a project file"
+      return 0
+    fi
     if ! fetch "legion/projects/$name" "$work/projects/$name"; then
       entries_state=failed
       entries_error=$fetch_error
@@ -364,11 +416,12 @@ PY
 # pod loads; and DAEMON, the image that runs its daemon (its daemonImage, else its image), and the
 # project's rendered legion.yaml, legion/testdata/<key in lower case>-legion.yaml, since what that
 # daemon gives a session is the pi-envoy it installs on a relaunch. A key that is no project key
-# names no such file, and is INVALID. A field of the wrong type (a replicas that is no count, as
-# YAML's false would equal 0; a daemon that is no boolean) or an image that is no plain reference (a
-# tab in it would cut this line, and the gate would read another image) is INVALID, never a project
-# skipped or an image cut short. When the deployment declares no project it prints ERROR and where
-# it looked.
+# ([A-Z][A-Z0-9]*, the rule legion/projects/ holds its file names to) is INVALID in either shape:
+# it names no golden, and a tab or a newline in it would cut this line, so its text could set the
+# verdict. A field of the wrong type (a replicas that is no count, as YAML's false would equal 0; a
+# daemon that is no boolean) or an image that is no plain reference (a tab in it would cut this
+# line, and the gate would read another image) is INVALID, never a project skipped or an image cut
+# short. When the deployment declares no project it prints ERROR and where it looked.
 daemon_pins() {
   python3 - "$work/entries.json" "$1" "$image_reference" <<'PY'
 import json
@@ -383,7 +436,13 @@ if not loaded["found"]:
     print(f"ERROR\tdeclares no project: {loaded['missing']}")
     sys.exit(0)
 for entry in loaded["entries"]:
-    key = entry.get("key") or "<an entry with no key>"
+    named = entry.get("key")
+    if not (isinstance(named, str) and re.fullmatch(r"[A-Z][A-Z0-9]*", named)):
+        label = "<an entry with no key>" if named is None else "<an entry>"
+        golden_note = ", so no legion/testdata golden is its own" if clients else ""
+        print(f"{label}\tINVALID\tkey {json.dumps(named)}, which is no project key{golden_note}")
+        continue
+    key = named
     replicas, daemon, runtime = entry.get("replicas"), entry.get("daemon"), entry.get("runtime")
     if "replicas" in entry and (isinstance(replicas, bool) or not isinstance(replicas, int) or replicas < 0):
         print(f"{key}\tINVALID\treplicas {json.dumps(replicas)}, which is no count of replicas")
@@ -406,11 +465,7 @@ for entry in loaded["entries"]:
     elif not images:
         print(f"{key}\tNOIMAGE")
     elif clients:
-        named = entry.get("key")
-        if not (isinstance(named, str) and re.fullmatch(r"[A-Z][A-Z0-9]*", named)):
-            print(f"{key}\tINVALID\tkey {json.dumps(named)}, which is no project key, so no legion/testdata golden is its own")
-            continue
-        golden = f"legion/testdata/{named.lower()}-legion.yaml"
+        golden = f"legion/testdata/{key.lower()}-legion.yaml"
         if "daemonImage" in images:
             print(f"{key} daemonImage\tDAEMON\t{images['daemonImage']}\t{golden}")
         if "image" in images:
@@ -479,11 +534,11 @@ read_pin() {
       for platform in $platforms; do
         [ "$platform" != unknown/unknown ] || continue
         if ! labels=$(inspect "$ref" "{{json (index .Image \"$platform\").Config.Labels}}"); then
-          printf 'UNKNOWN: %s: cannot read the %s image of %s: %s\n' "$key" "$platform" "$ref" "$(first_line "$work/err")"
+          printf 'UNKNOWN: %s: cannot read the %s image of %s: %s\n' "$key" "$(printable "$platform")" "$ref" "$(first_line "$work/err")"
           return 1
         fi
         if ! labels_of "$labels"; then
-          printf 'UNKNOWN: %s: the %s labels of %s are not JSON: %s\n' "$key" "$platform" "$ref" "$(first_line "$work/err")"
+          printf 'UNKNOWN: %s: the %s labels of %s are not JSON: %s\n' "$key" "$(printable "$platform")" "$ref" "$(first_line "$work/err")"
           return 1
         fi
         if [ -z "$first" ]; then
@@ -498,7 +553,7 @@ read_pin() {
         return 1
       fi
       if [ "$disagree" = 1 ]; then
-        printf 'UNKNOWN: %s platforms disagree: %s\n' "$key" "$answers"
+        printf 'UNKNOWN: %s platforms disagree: %s\n' "$key" "$(printable "$answers")"
         return 1
       fi
       ;;
@@ -513,7 +568,7 @@ read_pin() {
       fi
       ;;
     *)
-      printf 'UNKNOWN: %s: %s has media type %s, which is neither an image nor an index\n' "$key" "$ref" "$mediatype"
+      printf 'UNKNOWN: %s: %s has media type %s, which is neither an image nor an index\n' "$key" "$ref" "$(printable "$mediatype")"
       return 1
       ;;
   esac
@@ -592,19 +647,19 @@ judge() {
   if [ "$repo" != cybermonklabs/legion ]; then
     load_aliases
     if [ "$aliases_state" = failed ]; then
-      printf "UNKNOWN: %s: built from %s, and the repository renames of %s's Legion projects could not be read: %s\n" "$key" "$source" "$deployment" "$aliases_error"
+      printf "UNKNOWN: %s: built from %s, and the repository renames of %s's Legion projects could not be read: %s\n" "$key" "$(printable "$source")" "$deployment" "$aliases_error"
       unknown=$((unknown + 1))
       return
     fi
     if ! grep -qxF -- "$repo" "$work/aliases"; then
-      printf 'GATE SHUT: %s runs an image built from %s\n' "$key" "$source"
+      printf 'GATE SHUT: %s runs an image built from %s\n' "$key" "$(printable "$source")"
       shut=$((shut + 1))
       return
     fi
-    via="; built as $source, which the repositoryRenames of the deployment's Legion projects make one repository with $legion_source"
+    via="; built as $(printable "$source"), which the repositoryRenames of the deployment's Legion projects make one repository with $legion_source"
   fi
   if ! [[ $revision =~ ^[0-9a-f]{7,40}$ ]]; then
-    printf 'UNKNOWN: %s: %s names revision %s, which is no commit id\n' "$key" "$ref" "$revision"
+    printf 'UNKNOWN: %s: %s names revision %s, which is no commit id\n' "$key" "$ref" "$(printable "$revision")"
     unknown=$((unknown + 1))
     return
   fi
@@ -623,7 +678,7 @@ compare_revision() {
     return
   fi
   if ! IFS=$'\t' read -r status behind_by < <(jq -r '[.status, .behind_by] | @tsv' <<<"$answer" 2>"$work/err"); then
-    printf 'UNKNOWN: %s: cannot read GitHub'\''s comparison of %s...%s: %s\n' "$key" "$commit" "$revision" "$answer"
+    printf 'UNKNOWN: %s: cannot read GitHub'\''s comparison of %s...%s: %s\n' "$key" "$commit" "$revision" "$(printable "$answer")"
     unknown=$((unknown + 1))
     return
   fi
@@ -639,7 +694,7 @@ compare_revision() {
       shut=$((shut + 1))
       ;;
     *)
-      printf 'UNKNOWN: %s: GitHub compared %s...%s as %s, behind by %s\n' "$key" "$commit" "$revision" "$status" "$behind_by"
+      printf 'UNKNOWN: %s: GitHub compared %s...%s as %s, behind by %s\n' "$key" "$commit" "$revision" "$(printable "$status")" "$(printable "$behind_by")"
       unknown=$((unknown + 1))
       ;;
   esac
@@ -648,7 +703,8 @@ compare_revision() {
 # stack_pin <key> <stack> <setting>: sets $pin to the value <stack>/Pulumi.prod.yaml sets for
 # <setting> under the project name its Pulumi.yaml declares (`<project>:<setting>`, $project the
 # name) and returns 0; or prints <key>'s UNKNOWN line naming what it could not read, counts it, and
-# returns 1.
+# returns 1. A pin that is no plain image reference (a newline in it would start a line of the
+# gate's, and an option would reach docker) is UNKNOWN, never read.
 stack_pin() {
   local key=$1 stack=$2 setting=$3
   pin=""
@@ -669,6 +725,11 @@ stack_pin() {
   fi
   if [ -z "$pin" ]; then
     printf 'UNKNOWN: %s: %s/Pulumi.prod.yaml sets no %s\n' "$key" "$stack" "$setting"
+    unknown=$((unknown + 1))
+    return 1
+  fi
+  if ! [[ $pin =~ $image_reference ]]; then
+    printf 'UNKNOWN: %s: %s/Pulumi.prod.yaml sets %s to %s, which is no image reference\n' "$key" "$stack" "$setting" "$(printable "$pin")"
     unknown=$((unknown + 1))
     return 1
   fi
@@ -701,7 +762,7 @@ if [ "$mode" = listeners ]; then
   if ! vm_hub; then
     unknown=$((unknown + 1))
   elif [ "$hub" = yes ]; then
-    printf 'VM HUB: %s at %s uses NewNatsHub\n' "$hub_use" "$hub_head"
+    printf 'VM HUB: %s at %s %s\n' "$hub_use" "$hub_head" "$hub_how"
     listener envoy envoy listenerImage
   else
     printf 'NO VM HUB: envoy/ at %s declares no gcp:NatsHub\n' "$hub_head"

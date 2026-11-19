@@ -350,3 +350,21 @@ check "refuses UNKNOWN naming the submodules" \
   "$(has_line "UNKNOWN: envoy: cannot read the Go files of ${deployment} at ${deployment_head}: the repository holds .gitmodules, and submodule code is not in the archive")"
 check "never says the hub is gone" "$(lacks "NO VM HUB" "$out")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
+
+# A file's name is the repository's text, not the gate's: it is printed with each control character
+# written as \x<hh>, so no name can rewrite a line of the gate's on a terminal.
+echo "case: --listeners, a use in a Go file whose name holds an escape and a carriage return"
+new_case listeners-name-control
+listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin" "$dispatch_listener_pin"
+envoy_program none
+printf 'package main\n\nvar hub = envoygcp.NewNatsHub\n' >"${case_root}/files/envoy/"$'\e[2K\rGATE OPEN.go'
+index "$envoy_pin" "$legion" "$behind_rev"
+index "$cluster_pin" "$legion" "$ahead_rev"
+index "$dispatch_listener_pin" "$legion" "$ahead_rev"
+compare "$behind_rev" behind 4
+compare "$ahead_rev" ahead 0
+run_gate -- --listeners "$commit"
+check "exits 1" "$(is "$status" 1)"
+check "names the file, its escape and carriage return written out" \
+  "$(has_line "VM HUB: envoy/\\x1b[2K\\x0dGATE OPEN.go:3 at ${deployment_head} uses NewNatsHub")"
+check "prints no escape and no carriage return" "$(grep -q $'[\e\r]' "$out" && echo false || echo true)"

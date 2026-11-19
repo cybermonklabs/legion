@@ -2,27 +2,10 @@
 # packages/envoy/scripts/lib/daemon-release-gate-read-image-clients.sh
 #
 # The --clients reader of the images, which daemon-release-gate.sh sources; it is not run on its
-# own. It reads the gate's deployment, work, compared, unknown, first_line, last_line, fetch,
-# stack_pin (which sets pin and project) and image_reference, its compare_revision, and
-# judge_release, which lib/daemon-release-gate-read-developer-box.sh defines.
-# shellcheck disable=SC2154 # deployment, work, pin, project, fetch_error and image_reference are the gate's
-
-# printable <text>: <text> with each character that is not printable, a newline, a carriage return
-# and an escape among them, written as \x<hh> (\u<hhhh> or \U<hhhhhhhh> past U+00FF), so text read
-# from an image can neither start a line of the gate's output nor rewrite one on a terminal.
-printable() {
-  python3 -c '
-import sys
-
-def shown(c):
-    if c.isprintable():
-        return c
-    n = ord(c)
-    return "\\x%02x" % n if n < 0x100 else "\\u%04x" % n if n < 0x10000 else "\\U%08x" % n
-
-print("".join(shown(c) for c in sys.argv[1]))
-' "$1"
-}
+# own. It reads the gate's deployment, work, compared, unknown, printable, first_line, last_line,
+# fetch, stack_pin (which sets pin and refuses one that is no image reference), its
+# compare_revision, and judge_release, which lib/daemon-release-gate-read-developer-box.sh defines.
+# shellcheck disable=SC2154 # deployment, work, pin and fetch_error are the gate's
 
 # in_image <ref> <entrypoint> [<arg>...]: the output of <entrypoint> run in a container of <ref> with
 # no network, a read-only root, no capability and no gain of privileges, quiet so a pull of <ref>
@@ -43,11 +26,6 @@ in_image() {
   return "$status"
 }
 
-# image_error: the error in_image left in $work/err, printable.
-image_error() {
-  printable "$(first_line "$work/err")"
-}
-
 # load_version <ref>: runs <ref>'s /opt/legion/bin/legion version once for the run, into
 # version_reads[<ref>]: `ok` and, on the lines after it, what that printed; or `error ` and why.
 declare -A version_reads=()
@@ -57,7 +35,7 @@ load_version() {
   if text=$(in_image "$1" /opt/legion/bin/legion version); then
     version_reads[$1]="ok"$'\n'"$text"
   else
-    version_reads[$1]="error $(image_error)"
+    version_reads[$1]="error $(first_line "$work/err")"
   fi
 }
 
@@ -75,10 +53,10 @@ read_clients() {
     status=0
     text=$(in_image "$ref" cat "/opt/legion/${client}/package.json") || status=$?
     if [ "$status" = 125 ]; then
-      printf 'error cannot run %s: %s\n' "$ref" "$(image_error)"
+      printf 'error cannot run %s: %s\n' "$ref" "$(first_line "$work/err")"
       return
     elif [ "$status" != 0 ]; then
-      printf 'error %s carries no @sjawhar/%s at /opt/legion/%s/package.json: %s\n' "$ref" "$client" "$client" "$(image_error)"
+      printf 'error %s carries no @sjawhar/%s at /opt/legion/%s/package.json: %s\n' "$ref" "$client" "$client" "$(first_line "$work/err")"
       return
     fi
     name=$(jq -r '.name // ""' <<<"$text" 2>/dev/null) || name=""
@@ -139,13 +117,15 @@ except yaml.YAMLError as error:
     sys.exit(f"{name} is not YAML: {str(error).splitlines()[0]}")
 if not isinstance(document, dict):
     sys.exit(f"{name} is not a mapping")
+# A kubernetes project's render always holds runtime.kubernetes, so a golden without it is a read
+# that went wrong, not one that sets no plugins.
 node = document
-for key in ("runtime", "kubernetes"):
+for key, field in (("runtime", "runtime"), ("kubernetes", "runtime.kubernetes")):
     node = node.get(key)
     if node is None:
-        sys.exit(0)
+        sys.exit(f"{name} sets no runtime.kubernetes, which every kubernetes project's render holds")
     if not isinstance(node, dict):
-        sys.exit(f"{name}'s {'runtime' if key == 'runtime' else 'runtime.kubernetes'} is not a mapping")
+        sys.exit(f"{name}'s {field} is not a mapping")
 plugins = node.get("plugins")
 if plugins is None:
     sys.exit(0)
@@ -207,14 +187,10 @@ client_daemon() {
 # `<project>:image` under the name sessions/Pulumi.yaml declares. That image is built FROM the worker
 # image, keeps its /opt/legion/pi-envoy, which `omp plugin link` puts in the session's Oh My Pi, and
 # its pods deliver to sessions, so it is judged as a project's image is (client_image). A stack or a
-# pin the gate cannot read is UNKNOWN by name, and a pin that is no plain reference is never run.
+# pin the gate cannot read, a pin that is no plain reference among them, is UNKNOWN by name and
+# never run (stack_pin).
 sessions_image() {
   local key="sessions image"
   stack_pin "$key" sessions image || return 0
-  if ! [[ $pin =~ $image_reference ]]; then
-    printf 'UNKNOWN: %s: sessions/Pulumi.prod.yaml sets %s:image to %s, which is no image reference\n' "$key" "$project" "$(printable "$pin")"
-    unknown=$((unknown + 1))
-    return
-  fi
   client_image "$key" "$pin"
 }

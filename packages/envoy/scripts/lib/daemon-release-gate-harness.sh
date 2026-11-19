@@ -37,17 +37,24 @@ readonly dispatch_project="deployment-dispatch"
 # The fake gh. It takes the endpoint (the argument that starts `repos/`) with any `?ref=` query
 # dropped, and answers:
 #   repos/<FAKE_DEPLOYMENT>/contents/<path> --jq .content: the base64 of FAKE_ROOT/files/<path>; for
-#     a directory, `--jq '.[] | select(.type == "file") | .name'`, its file names, one a line, as
-#     GitHub's listing filtered so would, failing as a server error when FAKE_LIST_DOWN=1;
+#     a directory, GitHub's listing of it ({name, type} for each entry: file, dir or symlink, at most
+#     1,000 of them, as GitHub lists) run through the --jq query, failing as a server error when
+#     FAKE_LIST_DOWN=1;
 #   repos/<FAKE_DEPLOYMENT>/commits/HEAD: FAKE_HEAD;
+#   repos/<FAKE_DEPLOYMENT>/git/trees/<sha>: GitHub's recursive tree of FAKE_ROOT/files, each file and
+#     link a blob named by git's own hash of it, with the entries of FAKE_ROOT/tree-extra.json (a JSON
+#     list) added, `truncated` when FAKE_ROOT/tree-truncated exists;
 #   repos/<FAKE_DEPLOYMENT>/tarball/<sha>: a gzipped tar of FAKE_ROOT/files under one top directory,
 #     as GitHub's archive holds a repository, its links' targets as written (FAKE_ROOT/archive.tgz
 #     instead when it exists, and bytes that are no archive when FAKE_ROOT/corrupt-archive exists);
+#     the paths FAKE_ROOT/archive-omit lists, one a line, left out of it, and the files under
+#     FAKE_ROOT/archive-subst/ put in place of their namesakes, as export-ignore and export-subst do;
 #   repos/cybermonklabs/legion/compare/<base>...<head>: FAKE_ROOT/compare/<head>, failing as an
 #     unreachable API when FAKE_API_DOWN=1;
 #   repos/cybermonklabs/legion/commits/refs/tags/<tag>: FAKE_ROOT/tags/<tag>;
 #   repos/<owner>/<repo>/contents/.claude-plugin/marketplace.json, read raw:
-#     FAKE_ROOT/marketplaces/<owner>/<repo>.json.
+#     FAKE_ROOT/marketplaces/<owner>/<repo>.json; any other path of such a repository, read raw:
+#     FAKE_ROOT/marketplaces/<owner>/<repo>/<path>.
 # An endpoint with a file at FAKE_ROOT/refuse/<endpoint with / as _> fails with that file's text.
 # Any other call is refused as unexpected.
 cat >"${temporary_dir}/bin/gh" <<'EOF'
@@ -74,22 +81,63 @@ case "$path" in
     file="${FAKE_ROOT}/files/${path#repos/"${FAKE_DEPLOYMENT}"/contents/}"
     if [ -d "$file" ]; then
       [ "${FAKE_LIST_DOWN:-0}" != 1 ] || { echo "gh: Server Error (HTTP 500)" >&2; exit 1; }
-      [ "$query" = '.[] | select(.type == "file") | .name' ] || { echo "fake gh: unexpected listing query: $query" >&2; exit 2; }
-      find "$file" -mindepth 1 -maxdepth 1 -type f -printf '%f\n'
+      find "$file" -mindepth 1 -maxdepth 1 -printf '%f\t%y\n' | sort |
+        jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {name: .[0], type: ({"f": "file", "d": "dir", "l": "symlink"}[.[1]] // "file")}) | .[0:1000]' |
+        jq -r "$query"
       exit 0
     fi
     [ -f "$file" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
     base64 -w 76 <"$file"
     ;;
   repos/"${FAKE_DEPLOYMENT}"/commits/HEAD) echo "${FAKE_HEAD:?}" ;;
+  repos/"${FAKE_DEPLOYMENT}"/git/trees/*)
+    python3 - "${FAKE_ROOT}/files" "${FAKE_ROOT}/tree-extra.json" "${FAKE_ROOT}/tree-truncated" "${path##*/}" <<'PY'
+import hashlib
+import json
+import os
+import sys
+
+root, extra, truncated, sha = sys.argv[1:5]
+
+
+def blob(data):
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+entries = []
+for directory, dirs, files in os.walk(root):
+    for name in sorted(dirs + files):
+        path = os.path.join(directory, name)
+        relative = os.path.relpath(path, root)
+        if os.path.islink(path):
+            entries.append({"path": relative, "mode": "120000", "type": "blob", "sha": blob(os.fsencode(os.readlink(path)))})
+        elif os.path.isfile(path):
+            with open(path, "rb") as handle:
+                entries.append({"path": relative, "mode": "100644", "type": "blob", "sha": blob(handle.read())})
+        elif os.path.isdir(path):
+            entries.append({"path": relative, "mode": "040000", "type": "tree", "sha": "0" * 40})
+if os.path.exists(extra):
+    with open(extra) as handle:
+        entries += json.load(handle)
+print(json.dumps({"sha": sha, "tree": entries, "truncated": os.path.exists(truncated)}))
+PY
+    ;;
   repos/"${FAKE_DEPLOYMENT}"/tarball/*)
+    top="$(printf '%s' "$FAKE_DEPLOYMENT" | tr '/' '-')-${path##*/}"
     if [ -e "${FAKE_ROOT}/corrupt-archive" ]; then
       echo "this is no archive"
     elif [ -f "${FAKE_ROOT}/archive.tgz" ]; then
       cat "${FAKE_ROOT}/archive.tgz"
+    elif [ -f "${FAKE_ROOT}/archive-omit" ] || [ -d "${FAKE_ROOT}/archive-subst" ]; then
+      served="${FAKE_ROOT}/archive-served"
+      rm -rf "$served" && cp -a "${FAKE_ROOT}/files" "$served"
+      if [ -f "${FAKE_ROOT}/archive-omit" ]; then
+        while IFS= read -r omitted; do rm -rf "${served:?}/${omitted}"; done <"${FAKE_ROOT}/archive-omit"
+      fi
+      [ ! -d "${FAKE_ROOT}/archive-subst" ] || cp -a "${FAKE_ROOT}/archive-subst/." "$served/"
+      tar -czf - --sort=name -C "$served" --transform "s,^\\.,${top},S" .
     else
-      tar -czf - --sort=name -C "${FAKE_ROOT}/files" \
-        --transform "s,^\\.,$(printf '%s' "$FAKE_DEPLOYMENT" | tr '/' '-')-${path##*/},S" .
+      tar -czf - --sort=name -C "${FAKE_ROOT}/files" --transform "s,^\\.,${top},S" .
     fi
     ;;
   repos/cybermonklabs/legion/compare/*)
@@ -108,6 +156,12 @@ case "$path" in
     repo=${repo%/contents/*}
     [ -f "${FAKE_ROOT}/marketplaces/${repo}.json" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
     cat "${FAKE_ROOT}/marketplaces/${repo}.json"
+    ;;
+  repos/*/contents/*)
+    repo=${path#repos/}
+    file="${FAKE_ROOT}/marketplaces/${repo%%/contents/*}/${repo#*/contents/}"
+    [ -f "$file" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+    cat "$file"
     ;;
   *) echo "fake gh: unexpected api call: $endpoint" >&2; exit 2 ;;
 esac
@@ -182,19 +236,33 @@ case "$6" in
   *) echo "fake docker: unexpected format: $6" >&2; exit 2 ;;
 esac
 EOF
-# The fake npm. `npm view <spec> version --json` answers FAKE_ROOT/npm/<spec with / @ < > = as _>,
-# and `npm view <spec> dist-tags --json` that file with `.dist-tags` added; each fails as an
-# unreachable registry when FAKE_NPM_DOWN=1.
+# The fake npm. `npm view <spec> version deprecated engines --json` answers
+# FAKE_ROOT/npm/<spec with / @ < > = as _>, as npm answers it: one version as itself, several as a
+# list, each a version alone or, when one is deprecated or declares engines, an object of its fields;
+# and `npm view <spec> dist-tags --json` that file with `.dist-tags` added. With
+# `--registry=<url>`, each is answered from FAKE_ROOT/npm-registries/<url with / and : as _>/
+# instead. Each fails as an unreachable registry when FAKE_NPM_DOWN=1.
 cat >"${temporary_dir}/bin/npm" <<'EOF'
 #!/usr/bin/env bash
 printf 'npm %s\n' "$*" >>"${FAKE_CALLS:?}"
-case "$1 $3 $4" in
-  "view version --json") suffix="" ;;
+registry=""
+words=()
+for word in "$@"; do
+  case "$word" in
+    --registry=*) registry=${word#--registry=} ;;
+    *) words+=("$word") ;;
+  esac
+done
+set -- "${words[@]}"
+case "$1 ${*:3}" in
+  "view version deprecated engines --json") suffix="" ;;
   "view dist-tags --json") suffix=".dist-tags" ;;
   *) echo "fake npm: unexpected command: $*" >&2; exit 2 ;;
 esac
 [ "${FAKE_NPM_DOWN:-0}" != 1 ] || { echo "npm error code ENOTFOUND" >&2; exit 1; }
-file="${FAKE_ROOT:?}/npm/$(printf '%s' "$2" | tr '/@<>=' '_____')${suffix}"
+dir="${FAKE_ROOT:?}/npm"
+[ -z "$registry" ] || dir="${FAKE_ROOT}/npm-registries/$(printf '%s' "$registry" | tr '/:' '__')"
+file="${dir}/$(printf '%s' "$2" | tr '/@<>=' '_____')${suffix}"
 [ -f "$file" ] || { echo "npm error code E404" >&2; exit 1; }
 cat "$file"
 EOF
@@ -359,12 +427,40 @@ image: ${worker_smoke}"
 # envoy_program <declares|none>: the deployment's envoy/ program and the local module its go.mod
 # replaces, ../shared. Either way the name NewNatsHub stands in every place that is not a use: a
 # func's own name and a method's, a comment, a string and a raw string, a _test.go, and a comment
-# in testdata/ and in another program of the repository; with declares, main.go calls it.
+# in testdata/ and in another program of the repository; and the hub's type token stands where the
+# generated SDK registers it, inside the body of its own NewNatsHub, and in the SDK's switch of the
+# types it rebuilds, neither of which declares a hub; with declares, main.go calls it.
 envoy_program() {
   local dir="${case_root}/files/envoy"
   mkdir -p "$dir/sdks/gcp" "$dir/testdata" "${case_root}/files/shared" "${case_root}/files/envoy-cluster"
   printf 'module example.org/deployment/envoy\n\nreplace example.org/sdk => ./sdks/gcp // the generated SDK\n\nreplace (\n\texample.org/shared => ../shared\n\texample.org/nats v1.0.0 => example.org/nats v1.0.1\n)\n' >"$dir/go.mod"
-  printf 'package gcp\n\n// NewNatsHub registers a hub.\nfunc NewNatsHub(ctx int) error { return register("pkg:gcp:NatsHub") }\n\nfunc (m *module) NewNatsHub(name string) {}\n' >"$dir/sdks/gcp/natsHub.go"
+  cat >"$dir/sdks/gcp/natsHub.go" <<'GO'
+package gcp
+
+// NewNatsHub registers a hub.
+func NewNatsHub(ctx *pulumi.Context,
+	name string, args *NatsHubArgs, opts ...pulumi.ResourceOption) (*NatsHub, error) {
+	if args == nil {
+		args = &NatsHubArgs{}
+	}
+	var resource NatsHub
+	err := ctx.RegisterRemoteComponentResource("envoy-infra:gcp:NatsHub", name, args, &resource, opts...)
+	return &resource, err
+}
+
+func (m *module) NewNatsHub(name string) {}
+GO
+  cat >"$dir/sdks/gcp/init.go" <<'GO'
+package gcp
+
+func (m *module) Construct(ctx *pulumi.Context, name, typ, urn string) (r pulumi.Resource, err error) {
+	switch typ {
+	case "envoy-infra:gcp:NatsHub":
+		r = &NatsHub{}
+	}
+	return
+}
+GO
   printf 'package main\n\nfunc TestHub() { _ = envoygcp.NewNatsHub(ctx, "hub") }\n' >"$dir/main_test.go"
   printf 'package fixture\n\n// envoygcp.NewNatsHub(ctx, "hub") once ran here\n' >"$dir/testdata/fixture.go"
   printf 'package main\n\n// envoy/main.go gives envoygcp.NewNatsHub as Zone.\n' >"${case_root}/files/envoy-cluster/alerts.go"

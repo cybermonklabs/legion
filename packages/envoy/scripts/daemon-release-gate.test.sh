@@ -226,6 +226,13 @@ check "exits 2" "$(is "$status" 2)"
 check "names what it got" "$(grep -qF -- "--deployment example-org is not <owner>/<repo>" "$err" && echo true || echo false)"
 check "reads nothing" "$(is "$(wc -l <"$calls")" 0)"
 
+echo "case: a --dotfiles without --clients, which only --clients reads"
+new_case dotfiles-without-clients
+run_bare -- --deployment "$deployment" --dotfiles /srv/dotfiles "$commit"
+check "exits 2" "$(is "$status" 2)"
+check "says only --clients reads it" "$(grep -qF -- "--dotfiles is read only by --clients" "$err" && echo true || echo false)"
+check "reads nothing" "$(is "$(wc -l <"$calls")" 0)"
+
 echo "case: a --deployment whose value is left out"
 new_case deployment-no-value
 run_bare -- --deployment "$commit"
@@ -817,6 +824,10 @@ source "${project_root}/packages/envoy/scripts/lib/daemon-release-gate-cases-ver
 # A project's fields, read by the daemon leg and --clients alike.
 # shellcheck source=lib/daemon-release-gate-cases-project-fields.sh
 source "${project_root}/packages/envoy/scripts/lib/daemon-release-gate-cases-project-fields.sh"
+
+# The reads that can come back short, in each leg: each must shut the gate, never open it.
+# shellcheck source=lib/daemon-release-gate-cases-short-reads.sh
+source "${project_root}/packages/envoy/scripts/lib/daemon-release-gate-cases-short-reads.sh"
 
 if [ "$failures" -ne 0 ]; then
   printf '%s check(s) failed\n' "$failures"

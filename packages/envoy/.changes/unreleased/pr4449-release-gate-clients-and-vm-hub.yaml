@@ -1,12 +1,20 @@
 kind: Added
 body: |-
   `scripts/daemon-release-gate.sh --clients` reads the clients that deliver to a session: in each
-  image a running project names, both clients the worker build carries at `/opt/legion`, judged by
-  the commit the image's own `legion version` prints; and on the developer box, under `--dotfiles`
+  image a running project names, and in the agent-session image the deployment's `sessions/` stack
+  pins, both clients the worker build carries at `/opt/legion`, judged by the commit the image's own
+  `legion version` prints; for each running project's daemon, the pi-envoy that daemon installs
+  into a kept session pod (its rendered `runtime.kubernetes.plugins.pi_envoy`, else the pair its
+  legion links), by that version's release tag; and on the developer box, under `--dotfiles`
   (default `~/.dotfiles`), the pi-envoy pin and its installed copy, each claude-envoy install the
-  dotfiles record, and the claude-envoy version the `legion-plugins` marketplace serves, each by
-  its release tag. A client installed outside the dotfiles is `UNKNOWN`. `--listeners` now decides
-  from the deployment's own Go program whether the VM hub is declared: with no hub it prints
-  `NO VM HUB` and reads no VM pin, so it no longer prints `UNKNOWN` once the hub is removed. A
-  project file whose name or key the deployment's program refuses, and a project field of the
-  wrong type, are `UNKNOWN` by name.
+  dotfiles record, and the claude-envoy version the `legion-plugins` marketplace serves, read at
+  the marketplace's `path` and from its plugin's npm `registry` and skipping a deprecated version
+  as npm does, each by its release tag. A client installed outside the dotfiles, a marketplace or
+  npm key the gate does not read, and a match that declares `engines` are `UNKNOWN`. An image not
+  pinned by digest is `UNKNOWN` and never run. `--listeners` now decides from the deployment's own
+  Go program, its archive held to the commit's tree, whether the VM hub is declared by a call of
+  `NewNatsHub` or a registration of its type token: with no hub it prints `NO VM HUB` and reads no
+  VM pin, so it no longer prints `UNKNOWN` once the hub is removed. A project file whose name or key
+  the deployment's program refuses, a listed key that is no project key, and a project field of the
+  wrong type are `UNKNOWN` by name, and every text the gate reads from outside it is printed with
+  its control characters written out.

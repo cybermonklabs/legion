@@ -661,17 +661,20 @@ packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> --client
 `--deployment` names the deployment repository whose Pulumi stacks pin the readers' images; it is
 required, and the gate compiles in no deployment's name. Each stack's config keys are under its
 Pulumi project's name, which the gate reads from that stack's own `Pulumi.yaml` (`name:`): a stack
-whose `Pulumi.yaml` is missing or declares no name prints `UNKNOWN` by name, and no name is guessed.
+whose `Pulumi.yaml` is missing, declares no name, or declares one Pulumi refuses (anything but
+letters, digits, `_`, `.` and `-`) prints `UNKNOWN` by name, and no name is guessed.
 
 The deployment's Legion projects are the files of its `legion/projects/` (`<nn>-<KEY>.yaml`, one
 mapping of a project's settings each, in file-name order), as the deployment's legion program reads
 them. Only a deployment with no such directory (GitHub answers 404) still declares them in the
 projects list of `legion/Pulumi.prod.yaml`, as that program did before the files. Any other failed
-listing, a file that is not one mapping, a file that program refuses (a name that is not
-`<nn>-<KEY>.yaml`, or a `key` that is not that KEY), and a deployment that declares no project
-print `UNKNOWN` naming what the gate read. A project whose `replicas` is no count, whose `daemon`
-is no boolean, or whose image is no plain reference prints `UNKNOWN` by name: it is never skipped,
-and its image is never read cut short.
+listing, a listing of 1,000 entries or more (GitHub lists no more, so it may have stopped short),
+an entry that is no file (a link, a directory or a submodule), a file that is not one mapping, a
+file that program refuses (a name that is not `<nn>-<KEY>.yaml`, or a `key` that is not that KEY),
+and a deployment that declares no project print `UNKNOWN` naming what the gate read. A project
+whose `key` is no project key (`[A-Z][A-Z0-9]*`, which the list is held to as the files are), whose
+`replicas` is no count, whose `daemon` is no boolean, or whose image is no plain reference prints
+`UNKNOWN` by name: it is never skipped, and its image is never read cut short.
 
 Without a mode it reads the image each Legion daemon runs: each project's `daemonImage` when
 set, else its `image`; a project at `replicas: 0` or `daemon: false` prints `SKIPPED` by name. An entry at
@@ -698,14 +701,23 @@ that key, deployment `dispatch/main.go`, and the listener runs no other image), 
 pin's only reader. The hub's removal deletes the pin with it, so the gate decides the hub from the
 deployment's program, never from the pin: it fetches the deployment repository as one archive at
 the head of its default branch and reads every Go file in it that is not a `_test.go`, outside
-comments and strings, a link at its target. A use of `NewNatsHub` anywhere but as the name of the
-func that defines it declares the hub: the gate prints `VM HUB: <file>:<line> at <sha> uses
-NewNatsHub` and reads the pin, which, if absent, stays `UNKNOWN`. Used nowhere, every file read, it
-prints `NO VM HUB: envoy/ at <sha> declares no gcp:NatsHub` and reads no VM pin. A head, archive or
-file it cannot read, a hard link, a link that leaves the repository, a repository that declares
-submodules (`.gitmodules`), whose code GitHub's archive does not hold, a local `replace` or `use` of
-`envoy/go.mod` or a `go.work` that leaves it, and an `envoy/` with no Go file or no `go.mod` print
-`UNKNOWN`, so a missing pin never reads as a hub that is gone.
+comments and strings, a link at its target. GitHub makes the archive as `git archive` does, which
+leaves out each path a `.gitattributes` marks `export-ignore` and rewrites each it marks
+`export-subst`, so the gate also reads the commit's tree (`git/trees/<sha>?recursive=1`) and holds
+the archive to it: each Go and module file the tree holds must be in the archive, and each file it
+reads must be the tree's blob, by git's own hash of it. A use of `NewNatsHub` anywhere but as the
+name of the func that defines it, which Go declares only outside every brace, declares the hub, and
+so does the hub's type token, `envoy-infra:gcp:NatsHub`, written as one string, anywhere but inside
+the generated SDK's own `NewNatsHub` and as a `case` of its switch of the types it rebuilds: the
+gate prints `VM HUB: <file>:<line> at <sha> uses NewNatsHub` (or `registers
+envoy-infra:gcp:NatsHub`) and reads the pin, which, if absent, stays `UNKNOWN`. Used nowhere, every
+file read, it prints `NO VM HUB: envoy/ at <sha> declares no gcp:NatsHub` and reads no VM pin. A
+head, tree, archive or file it cannot read, a tree GitHub lists only in part, a file the archive
+leaves out or changed, a hard link, a link that leaves the repository, a submodule (a tree entry of
+type commit, or a `.gitmodules`), whose code GitHub's archive does not hold, a local `replace` or
+`use` of `envoy/go.mod` or a `go.work` that leaves it, and an `envoy/` with no Go file or no
+`go.mod` print `UNKNOWN`, so a missing pin never reads as a hub that is gone. A stack pin that is
+no plain image reference prints `UNKNOWN` and is never read.
 
 With `--clients` it reads the clients that deliver to a session, each of which must carry the
 client follow filter of `<commit>`, since an older one passes a frame in a form it does not match
@@ -736,7 +748,8 @@ in silence:
   (`renderLegionYAML`); the project files carry no `legion.yaml` key of their own. That program
   renders no `plugins` key today and refuses a project field it does not know, so the linked pair
   decides, and reading the rendering keeps the gate right if the program starts to set it. A
-  rendering it cannot read, a legion that links no pair where the rendering sets none, and a second
+  rendering it cannot read or that sets no `runtime.kubernetes` (every kubernetes project's
+  rendering holds it), a legion that links no pair where the rendering sets none, and a second
   line that names no pi-envoy version print `UNKNOWN`. A project with no `daemonImage` runs its
   daemon from its `image`, which is then judged both ways.
 - Each command runs in the image with `docker run --rm --quiet --network none --read-only
@@ -752,31 +765,42 @@ in silence:
   `claude-envoy@legion-plugins` install the dotfiles' Claude Code plugin record
   (`.claude/plugins/installed_plugins.json`) holds, by the manifest at its `installPath`, which must
   lie inside the dotfiles' `.claude`; and the claude-envoy version the marketplace `legion-plugins`
-  serves to `.claude/settings.json`. npm's install takes the `latest` dist-tag when it matches the
-  range the marketplace's `.claude-plugin/marketplace.json` names, else the highest version that
-  matches, so the gate judges both: `latest` (`npm view @sjawhar/claude-envoy dist-tags`) when it
-  is among the versions `npm view` matches to the range, and the highest of those by
-  semantic-version precedence (a release above its own pre-release), each on its own line. The
-  marketplace's `ref` is sent percent-encoded. Each version must be an exact release version and
-  is judged by the commit of its release tag, `pi-envoy-v<version>` or `claude-envoy-v<version>`. A
-  settings file that enables no `claude-envoy@legion-plugins` prints `SKIPPED`. A pi-envoy in
-  `~/.omp/plugins` or a profile's plugin tree that is not the dotfiles' copy, a claude-envoy
-  recorded in `~/.claude` or another `CLAUDE_CONFIG_DIR`, a link that does not resolve, a directory
-  the gate may not search, a marketplace entry it cannot read, a marketplace that names
-  claude-envoy twice, npm dist-tags that name no `latest`, and an npm answer that is not all
-  release versions print `UNKNOWN`. A session started before a pin moved still runs the plugin it
-  loaded: the gate reads pins and installs, not processes.
+  serves to `.claude/settings.json`. The marketplace is read as Claude Code reads it: its GitHub
+  `repo` at its `ref` (sent percent-encoded), the file at its `path`, by default
+  `.claude-plugin/marketplace.json`, and the plugin from its npm `registry` when the entry names one
+  (`npm view --registry=<url>`); a `path` with an empty, `.` or `..` segment, and any other key of
+  the marketplace source or the npm source, print `UNKNOWN`, since either may move what is
+  installed. npm's install (npm-pick-manifest) takes the `latest` dist-tag when it matches the
+  range the marketplace names and is not deprecated, else the highest match that is not deprecated
+  (the highest of all when every match is), so the gate asks
+  `npm view @sjawhar/claude-envoy@<range> version deprecated engines` and judges both: `latest`
+  (`npm view @sjawhar/claude-envoy dist-tags`) when it is among those matches, and the highest of
+  them by semantic-version precedence (a release above its own pre-release), each on its own line.
+  npm also ranks a match whose `engines` do not fit the box below the rest, which the gate cannot
+  judge, so a match that declares `engines` prints `UNKNOWN`. Each version must be an exact release
+  version and is judged by the commit of its release tag, `pi-envoy-v<version>` or
+  `claude-envoy-v<version>`. A settings file that enables no `claude-envoy@legion-plugins` prints
+  `SKIPPED`. A pi-envoy in `~/.omp/plugins` or a profile's plugin tree that is not the dotfiles'
+  copy, a claude-envoy recorded in `~/.claude` or another `CLAUDE_CONFIG_DIR`, a link that does not
+  resolve, a directory the gate may not search, a marketplace entry it cannot read, a marketplace
+  that names claude-envoy twice, npm dist-tags that name no `latest`, and an npm answer that is not
+  all release versions print `UNKNOWN`. A session started before a pin moved still runs the plugin
+  it loaded: the gate reads pins and installs, not processes.
 
 It prints a line per pin or surface (`PASS`, `GATE SHUT`, `UNKNOWN`, `SKIPPED`, `VM HUB` or
 `NO VM HUB`) and the verdict on the last: `GATE OPEN` (exit 0) only when every pin it read passed
 and it read at least one, `GATE SHUT` (exit 1), or `UNKNOWN` (exit 3) for a pin, file, package,
-version or comparison it could not read. A usage error, a missing `--deployment` or both modes
-among them, exits 2 and reads nothing. It needs `gh` with read access to both repositories, docker
-with buildx able to read each pin's registry, `jq`, python3 with PyYAML and, for `--clients`,
-`npm`. Make each registry login into a `DOCKER_CONFIG` of your own, so the shared one is
-untouched: for ghcr.io, a token holding `read:packages`, such as `gh auth token`, given to `docker
-login ghcr.io -u x --password-stdin`; for the Artifact Registry images (`<region>-docker.pkg.dev`),
-a Google login that may read them, in the same `DOCKER_CONFIG`, for example `gcloud auth
+version or comparison it could not read. Every text it reads from outside it (an image, the
+deployment's files and archive, a marketplace, npm, the dotfiles, an error a command printed) is
+printed with its control characters written as `\x<hh>`, so none can start or rewrite a line of
+the gate's own. A usage error, a missing `--deployment`, both modes, or a `--dotfiles` without
+`--clients` among them, exits 2 and reads nothing. It needs `gh` with read access to both
+repositories, docker with buildx able to read each pin's registry, `jq`, python3 with PyYAML and,
+for `--clients`, `npm`. Make each registry login into a `DOCKER_CONFIG` of your own, so the shared
+one is untouched: for ghcr.io, a token holding `read:packages`, such as `gh auth token`, given to
+`docker login ghcr.io -u x --password-stdin`; for the Artifact Registry images
+(`<region>-docker.pkg.dev`), a Google login that may read them, in the same `DOCKER_CONFIG`, for
+example `gcloud auth
 print-access-token | docker login <region>-docker.pkg.dev -u oauth2accesstoken --password-stdin`,
 or `gcloud auth configure-docker <region>-docker.pkg.dev` run with that `DOCKER_CONFIG` set, which
 makes docker ask `docker-credential-gcloud` for each pull. With only the ghcr.io login, every

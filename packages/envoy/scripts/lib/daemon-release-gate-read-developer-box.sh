@@ -3,7 +3,8 @@
 #
 # The --clients reader of the developer box and of its versions, which daemon-release-gate.sh
 # sources; it is not run on its own. It reads the gate's dotfiles (--dotfiles, default ~/.dotfiles),
-# work, unknown, first_line and last_line, and its compare_revision.
+# work, unknown, printable, first_line and last_line, and its compare_revision. Text it reads from
+# the dotfiles, a marketplace or npm is printed through printable.
 # shellcheck disable=SC2154 # dotfiles and work are the gate's
 
 # release_commit <package> <version>: sets $tag to <package>-v<version>, the release tag of that
@@ -36,7 +37,7 @@ readonly release_version='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0
 judge_release() {
   local label=$1 package=$2 version=$3 note=${4:-}
   if ! [[ $version =~ $release_version ]]; then
-    printf 'UNKNOWN: %s: %s %s is no exact release version\n' "$label" "$package" "$version"
+    printf 'UNKNOWN: %s: %s %s is no exact release version\n' "$label" "$package" "$(printable "$version")"
     unknown=$((unknown + 1))
     return
   fi
@@ -174,7 +175,7 @@ dotfiles_clients() {
     unknown=$((unknown + 1))
     return
   fi
-  local root=$dotfiles tree state own home outside="" unread="" pin installed label
+  local root=$dotfiles tree state own home outside="" unread="" pin installed label problem
   local package="$root/omp/plugins/node_modules/@sjawhar/pi-envoy"
   label="dotfiles omp/plugins/package.json"
   # Each copy an Oh My Pi plugin tree holds must be the dotfiles' own, a directory inside the
@@ -207,13 +208,14 @@ dotfiles_clients() {
     esac
   done <"$work/trees"
   if [ -n "$unread" ]; then
-    printf 'UNKNOWN: %s: cannot tell whether @sjawhar/pi-envoy is installed: %s\n' "$label" "$unread"
+    printf 'UNKNOWN: %s: cannot tell whether @sjawhar/pi-envoy is installed: %s\n' "$label" "$(printable "$unread")"
     unknown=$((unknown + 1))
   elif [ -n "$outside" ]; then
-    printf 'UNKNOWN: %s: @sjawhar/pi-envoy is installed outside %s, in %s\n' "$label" "$root" "$outside"
+    printf 'UNKNOWN: %s: @sjawhar/pi-envoy is installed outside %s, in %s\n' "$label" "$(printable "$root")" "$(printable "$outside")"
     unknown=$((unknown + 1))
   elif ! pin=$(jq -er '.dependencies["@sjawhar/pi-envoy"] | strings' "$root/omp/plugins/package.json" 2>"$work/err"); then
-    printf 'UNKNOWN: %s: it pins no @sjawhar/pi-envoy version this gate can read%s\n' "$label" "$(sed -n '1s/^/: /p' "$work/err")"
+    problem=$(first_line "$work/err")
+    printf 'UNKNOWN: %s: it pins no @sjawhar/pi-envoy version this gate can read%s\n' "$label" "${problem:+: $problem}"
     unknown=$((unknown + 1))
   else
     judge_release "$label" pi-envoy "$pin"
@@ -225,7 +227,7 @@ dotfiles_clients() {
         printf 'UNKNOWN: %s: %s/package.json is no @sjawhar/pi-envoy manifest with a version\n' "$label" "$package"
         unknown=$((unknown + 1))
       elif [ "$installed" != "$pin" ]; then
-        judge_release "$label" pi-envoy "$installed" "; the pin names $pin"
+        judge_release "$label" pi-envoy "$installed" "; the pin names $(printable "$pin")"
       fi
     fi
   fi
@@ -238,6 +240,8 @@ dotfiles_clients() {
 # ~/.claude or the CLAUDE_CONFIG_DIR this run is given, is UNKNOWN.
 dotfiles_claude_envoy() {
   local root=$1 label="dotfiles .claude/settings.json" record state own_record=absent name version enabled others marketplace repo ref query plugin range served tags latest
+  local extra file shown_file shown_range registry
+  local -a registry_args=()
   for record in "$HOME/.claude/plugins/installed_plugins.json" ${CLAUDE_CONFIG_DIR:+"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"} "$root/.claude/plugins/installed_plugins.json"; do
     state=$(entry_state "$record")
     if [ "$state" = absent ]; then
@@ -270,7 +274,7 @@ dotfiles_claude_envoy() {
     return
   fi
   if [ -n "$others" ]; then
-    printf 'UNKNOWN: %s: it enables %s, from a marketplace this gate does not read\n' "$label" "$others"
+    printf 'UNKNOWN: %s: it enables %s, from a marketplace this gate does not read\n' "$label" "$(printable "$others")"
     unknown=$((unknown + 1))
     return
   fi
@@ -293,44 +297,80 @@ dotfiles_claude_envoy() {
     printf 'SKIPPED: %s enables no claude-envoy@legion-plugins\n' "$label"
     return
   fi
+  # Claude Code reads a github marketplace's repo, ref and path (the marketplace file's path in the
+  # repository, .claude-plugin/marketplace.json when none is set), and an npm plugin's package,
+  # version and registry (https://code.claude.com/docs/en/plugins/marketplace-reference). The gate
+  # reads each as Claude Code does, and a key it does not read is UNKNOWN, since it may move what is
+  # installed.
   if ! marketplace=$(jq -c '.extraKnownMarketplaces["legion-plugins"].source // {}' "$root/.claude/settings.json" 2>"$work/err"); then
     printf 'UNKNOWN: %s: cannot read the marketplace legion-plugins it names: %s\n' "$label" "$(first_line "$work/err")"
     unknown=$((unknown + 1))
     return
   fi
-  if [ "$(jq -r '.source // ""' <<<"$marketplace")" != github ] || ! repo=$(jq -er '.repo | strings' <<<"$marketplace"); then
+  if [ "$(jq -r '.source // ""' <<<"$marketplace")" != github ] || ! repo=$(jq -er '.repo | strings' <<<"$marketplace") ||
+    ! [[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
+    ! jq -e '(.ref // "" | type == "string") and (.path // "" | type == "string")' <<<"$marketplace" >/dev/null; then
     printf 'UNKNOWN: %s: the marketplace legion-plugins it names is %s, which is no GitHub repository this gate reads\n' "$label" "$marketplace"
     unknown=$((unknown + 1))
     return
   fi
+  extra=$(jq -r 'keys_unsorted - ["source", "repo", "ref", "path"] | first // ""' <<<"$marketplace")
+  if [ -n "$extra" ]; then
+    printf 'UNKNOWN: %s: the marketplace legion-plugins it names sets %s, which this gate does not read\n' "$label" "$(printable "$extra")"
+    unknown=$((unknown + 1))
+    return
+  fi
+  # A `..` or `.` segment, or an empty one, would let GitHub's API (or the URL it is sent as) read a
+  # file the path does not name in the repository Claude Code clones.
+  if ! jq -e '.path // ".claude-plugin/marketplace.json" | split("/") | all(. != "" and . != "." and . != "..")' <<<"$marketplace" >/dev/null; then
+    printf 'UNKNOWN: %s: the marketplace legion-plugins it names sets path %s, which is no plain path inside its repository\n' "$label" "$(jq -c '.path' <<<"$marketplace")"
+    unknown=$((unknown + 1))
+    return
+  fi
   ref=$(jq -r '.ref // ""' <<<"$marketplace")
-  # The ref is one query value, so every character a URL reserves in it is percent-encoded.
+  file=$(jq -r '.path // ".claude-plugin/marketplace.json"' <<<"$marketplace")
+  shown_file=$(printable "$file")
+  # The ref is one query value and each segment of the path one path segment, so every character a
+  # URL reserves in them is percent-encoded.
   query=""
   [ -z "$ref" ] || query="?ref=$(jq -rn --arg ref "$ref" '$ref | @uri')"
-  if ! gh api -H "Accept: application/vnd.github.raw+json" "repos/$repo/contents/.claude-plugin/marketplace.json${query}" >"$work/marketplace.json" 2>"$work/err"; then
-    printf 'UNKNOWN: %s: cannot read %s .claude-plugin/marketplace.json%s: %s\n' "$label" "$repo" "${ref:+ at $ref}" "$(first_line "$work/err")"
+  if ! gh api -H "Accept: application/vnd.github.raw+json" "repos/$repo/contents/$(jq -rn --arg file "$file" '$file | split("/") | map(@uri) | join("/")')${query}" >"$work/marketplace.json" 2>"$work/err"; then
+    printf 'UNKNOWN: %s: cannot read %s %s%s: %s\n' "$label" "$repo" "$shown_file" "${ref:+ at $(printable "$ref")}" "$(first_line "$work/err")"
     unknown=$((unknown + 1))
     return
   fi
   if ! plugin=$(jq -ec '[.plugins[] | select(.name == "claude-envoy")] | if length == 1 then .[0].source else error("\(length) entries name claude-envoy") end' "$work/marketplace.json" 2>"$work/err") ||
     [ "$(jq -r '.source? // ""' <<<"$plugin")" != npm ] ||
-    [ "$(jq -r '.package? // ""' <<<"$plugin")" != "@sjawhar/claude-envoy" ]; then
-    printf 'UNKNOWN: %s: %s .claude-plugin/marketplace.json serves claude-envoy as %s, not as one entry of the npm package @sjawhar/claude-envoy\n' "$label" "$repo" "${plugin:-$(first_line "$work/err")}"
+    [ "$(jq -r '.package? // ""' <<<"$plugin")" != "@sjawhar/claude-envoy" ] ||
+    ! jq -e '.registry // "" | type == "string"' <<<"$plugin" >/dev/null; then
+    printf 'UNKNOWN: %s: %s %s serves claude-envoy as %s, not as one entry of the npm package @sjawhar/claude-envoy\n' "$label" "$repo" "$shown_file" "${plugin:-$(first_line "$work/err")}"
+    unknown=$((unknown + 1))
+    return
+  fi
+  extra=$(jq -r 'keys_unsorted - ["source", "package", "version", "registry"] | first // ""' <<<"$plugin")
+  if [ -n "$extra" ]; then
+    printf 'UNKNOWN: %s: %s %s serves claude-envoy with %s, which this gate does not read\n' "$label" "$repo" "$shown_file" "$(printable "$extra")"
     unknown=$((unknown + 1))
     return
   fi
   range=$(jq -r '.version // "latest"' <<<"$plugin")
-  if ! served=$(npm view "@sjawhar/claude-envoy@$range" version --json 2>"$work/err"); then
-    printf 'UNKNOWN: %s: npm cannot resolve @sjawhar/claude-envoy@%s: %s\n' "$label" "$range" "$(first_line "$work/err")"
+  shown_range=$(printable "$range")
+  registry=$(jq -r '.registry // ""' <<<"$plugin")
+  registry_args=()
+  [ -z "$registry" ] || registry_args=("--registry=$registry")
+  # npm's install (npm-pick-manifest) takes the `latest` dist-tag when it matches the range and is
+  # not deprecated, else the highest match that is not deprecated, the highest of all when every
+  # match is; and it ranks a match whose engines do not fit the box below the rest, which the gate
+  # cannot judge, so a match that declares engines is UNKNOWN. Where both may be installed, both are
+  # judged: `latest` when it is among the matches, and the highest of them by semantic-version
+  # precedence, where a release ranks above its own pre-release (`sort -V` ranks them the other
+  # way). Each answer must be one whole version, so no answer splits.
+  if ! served=$(npm view "@sjawhar/claude-envoy@$range" version deprecated engines --json "${registry_args[@]}" 2>"$work/err"); then
+    printf 'UNKNOWN: %s: npm cannot resolve @sjawhar/claude-envoy@%s: %s\n' "$label" "$shown_range" "$(first_line "$work/err")"
     unknown=$((unknown + 1))
     return
   fi
-  # npm's install takes the `latest` dist-tag when it matches the range, else the highest version
-  # that matches, so both are judged: `latest` when it is among the versions npm answers for the
-  # range, and the highest of those by semantic-version precedence, where a release ranks above its
-  # own pre-release (`sort -V` ranks them the other way). Each answer must be one whole version, so
-  # no answer splits.
-  if ! tags=$(npm view @sjawhar/claude-envoy dist-tags --json 2>"$work/err"); then
+  if ! tags=$(npm view @sjawhar/claude-envoy dist-tags --json "${registry_args[@]}" 2>"$work/err"); then
     printf 'UNKNOWN: %s: npm cannot read the dist-tags of @sjawhar/claude-envoy: %s\n' "$label" "$(first_line "$work/err")"
     unknown=$((unknown + 1))
     return
@@ -351,7 +391,6 @@ answer, latest = json.loads(sys.argv[1]), sys.argv[3]
 # judge_release still refuses one, since no release tag carries it.
 release = re.compile(sys.argv[2])
 build = re.compile(r"[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*")
-versions = [answer] if isinstance(answer, str) else answer
 
 
 def core(version):
@@ -364,7 +403,15 @@ def core(version):
     return head if release.fullmatch(head) else None
 
 
-if not isinstance(versions, list) or not versions or any(core(v) is None for v in versions):
+# npm answers one match as itself and several as a list: each a version alone when no match is
+# deprecated or declares engines, and each an object of its version and those fields when one does.
+matches = answer if isinstance(answer, list) else [answer]
+if all(isinstance(m, str) for m in matches):
+    matches = [{"version": m} for m in matches]
+elif not all(isinstance(m, dict) for m in matches):
+    sys.exit(1)
+versions = [m.get("version") for m in matches]
+if not versions or any(core(v) is None for v in versions):
     sys.exit(1)
 
 
@@ -375,22 +422,32 @@ def precedence(version):
     return (major, minor, patch, not pre, parts)
 
 
-# The highest match, then `latest` when it is another of the matches.
-highest = max(versions, key=precedence)
+engines = [m["version"] for m in matches if m.get("engines")]
+if engines:
+    print(f"engines {max(engines, key=precedence)}")
+    sys.exit(0)
+deprecated = {m["version"] for m in matches if m.get("deprecated")}
+# The highest match npm may take, then `latest` when it is another of them.
+highest = max([v for v in versions if v not in deprecated] or versions, key=precedence)
 print(highest)
-if latest in versions and latest != highest:
+if latest in versions and latest not in deprecated and latest != highest:
     print(latest)
 PY
-    printf 'UNKNOWN: %s: npm answers no version of @sjawhar/claude-envoy for %s\n' "$label" "$range"
+    printf 'UNKNOWN: %s: npm answers no version of @sjawhar/claude-envoy for %s\n' "$label" "$shown_range"
     unknown=$((unknown + 1))
     return
   fi
   served=$(sed -n 1p "$work/served")
   latest=$(sed -n 2p "$work/served")
-  if [ -z "$latest" ]; then
-    judge_release "$label" claude-envoy "$served" "; the version legion-plugins serves for $range"
+  if [[ $served == "engines "* ]]; then
+    printf "UNKNOWN: %s: npm's choice among the versions it matches to %s depends on the engines %s declares, which this gate does not read\n" "$label" "$shown_range" "${served#engines }"
+    unknown=$((unknown + 1))
     return
   fi
-  judge_release "$label" claude-envoy "$latest" "; the version legion-plugins serves for $range, npm's latest dist-tag"
-  judge_release "$label" claude-envoy "$served" "; the highest version npm matches to $range"
+  if [ -z "$latest" ]; then
+    judge_release "$label" claude-envoy "$served" "; the version legion-plugins serves for $shown_range"
+    return
+  fi
+  judge_release "$label" claude-envoy "$latest" "; the version legion-plugins serves for $shown_range, npm's latest dist-tag"
+  judge_release "$label" claude-envoy "$served" "; the highest version npm matches to $shown_range"
 }

@@ -160,3 +160,24 @@ run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the answer, never comparing it" \
   "$([ "$(has_line "UNKNOWN: dotfiles omp/plugins/package.json: pi-envoy 17.40.0 has no release tag pi-envoy-v17.40.0 in cybermonklabs/legion: GitHub answered main, which is no commit id")" = true ] && lacks "...main" "$calls" || echo false)"
+
+# What the marketplace and the dotfiles name is their text, not the gate's: it is printed with each
+# control character written as \x<hh>, so neither can start a line of the gate's output.
+echo "case: --clients, a marketplace range that holds a newline and a verdict"
+box_case versions-range-newline
+printf '{"name": "legion-plugins", "plugins": [{"name": "claude-envoy", "source": {"source": "npm", "package": "@sjawhar/claude-envoy", "version": "x\\nGATE OPEN"}}]}\n' \
+  >"${case_root}/marketplaces/example-org/plugins.json"
+run_gate -- --clients "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "names the range, its newline written out" \
+  "$(has_line "UNKNOWN: dotfiles .claude/settings.json: npm cannot resolve @sjawhar/claude-envoy@x\\x0aGATE OPEN: npm error code E404")"
+check "no line of its output is the range's verdict" "$(grep -q '^GATE OPEN' "$out" && echo false || echo true)"
+
+echo "case: --clients, a dotfiles pin that holds a newline and a verdict"
+box_case versions-pin-newline
+dotfiles '17.40.0\nGATE OPEN'
+run_gate -- --clients "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "names the pin, its newline written out" \
+  "$(has_line "UNKNOWN: dotfiles omp/plugins/package.json: pi-envoy 17.40.0\\x0aGATE OPEN is no exact release version")"
+check "no line of its output is the pin's verdict" "$(grep -q '^GATE OPEN' "$out" && echo false || echo true)"
