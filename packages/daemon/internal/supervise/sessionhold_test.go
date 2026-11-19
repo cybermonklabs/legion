@@ -1043,3 +1043,53 @@ func wantRefusedResume(t *testing.T, h *harness, err error) {
 		t.Fatalf("the claim is %s with %d launch failures charged, want it suspended with none rather than relaunched under a session it does not hold", c.State, c.Budgets.LaunchFailures)
 	}
 }
+
+// An operator's retry of a stopped claim, and an operator's delivery to a suspended one, relaunch
+// the session the claim records, so each is refused one the claim does not hold the way a resume is
+// (resumeRefusal): a RefusedError naming the forget-session to run, nothing launched, nothing
+// queued, and the claim left in the state it was in (the side review of 47f29c476c).
+//
+// The control (the pull request records the run): retry and deliverResuming without resumeRefusal:
+// each answers no refusal and relaunches the claim into the hold's refusal.
+func TestARetryOrDeliveryOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
+	const other = claim.Token("legion-legion-LEGION-209-tester")
+	for _, tc := range []struct {
+		name  string
+		park  func(h *harness)
+		state ClaimState
+		ask   func(h *harness) Event
+	}{
+		{"an operator's retry of a stopped claim", func(h *harness) { h.must(RequestStop{Claim: h.token}) }, StateRetired,
+			func(h *harness) Event { return RequestOperatorRetry{Claim: h.token} }},
+		{"an operator's delivery to a suspended claim", func(h *harness) { h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator}) }, StateSuspended,
+			func(h *harness) Event { return RequestDeliver{Claim: h.token, Task: "the next task"} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateReady)
+			tc.park(h)
+			h.wantState(tc.state)
+			h.store.setHold(sessionID(session), other)
+			h.restart()
+			resumes := len(h.calls("Resume"))
+
+			err := h.handle(tc.ask(h))
+			var refused *RefusedError
+			if !errors.As(err, &refused) {
+				t.Fatalf("%s recording %s, which %s holds = %v, want a refusal", tc.name, session, other, err)
+			}
+			if want := "legion claims forget-session --claim " + string(h.token); !strings.Contains(err.Error(), want) {
+				t.Fatalf("the refusal %q does not name %q", err, want)
+			}
+			if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
+				t.Fatalf("the runtime was asked to resume %d times, want none", len(calls))
+			}
+			if c := h.claim(); c.State != tc.state || c.Budgets.LaunchFailures != 0 {
+				t.Fatalf("the claim is %s with %d launch failures, want %s with none", c.State, c.Budgets.LaunchFailures, tc.state)
+			}
+			if _, ok := h.store.delivery(h.token); ok {
+				t.Fatal("the refused request left a task queued on the claim")
+			}
+		})
+	}
+}

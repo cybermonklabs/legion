@@ -2463,8 +2463,8 @@ func (m *Machine) resumeRefusal(ctx context.Context, request string) error {
 		return nil
 	}
 	return &RefusedError{State: m.claim.State, Request: request, Err: fmt.Errorf(
-		"%s records session %s, which it does not hold (%w), so relaunching it would be refused at every launch until the claim failed; give it a new session first (`legion claims forget-session --claim %s --session %s`), then resume it",
-		m.claim.Token, m.claim.Session, err, m.claim.Token, m.claim.Session)}
+		"%s records session %s, which it does not hold (%w), so relaunching it would be refused at every launch until the claim failed; give it a new session first (`legion claims forget-session --claim %s --session %s`), then ask the %s again",
+		m.claim.Token, m.claim.Session, err, m.claim.Token, m.claim.Session, request)}
 }
 
 // resumeByRule is the daemon's own resume of a suspended claim (RequestRuleResume): the same
@@ -2529,6 +2529,10 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 		// own reason answers for a claim that failed nothing, an operator's retry of a worker it
 		// stopped.
 		m.forgetSession(cmp.Or(m.claim.Failure, why))
+	} else if err := m.resumeRefusal(ctx, "retry"); err != nil {
+		// A retry that relaunches the recorded session is refused it the way a resume is
+		// (resumeRefusal), before the budgets start over.
+		return err
 	}
 	return m.revive(ctx, exemptWake(ev), func() {
 		m.claim.Budgets, m.claim.PendingCause = Budgets{}, ""
@@ -2747,6 +2751,11 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 	d := ev.(RequestDeliver)
 	if d.ID != "" && !m.claim.RuleMayResume() {
 		return fmt.Errorf("deliver %s to %s: %w", d.ID, m.claim.Token, m.current().RuleHoldError())
+	}
+	// A delivery that resumes the claim relaunches its recorded session, so it is refused one the
+	// claim does not hold before the task is queued (resumeRefusal).
+	if err := m.resumeRefusal(ctx, "deliver"); err != nil {
+		return err
 	}
 	if err := m.queue(ctx, d); err != nil {
 		return err
