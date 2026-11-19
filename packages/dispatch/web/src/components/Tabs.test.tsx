@@ -5,7 +5,11 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
 import { settle } from "../__tests__/fake-clock";
-import { installResizeObserver, layOutScrollBox, type ResizeControl } from "../__tests__/scroll-box";
+import {
+  installResizeObserver,
+  layOutScrollBox,
+  type ResizeControl,
+} from "../__tests__/scroll-box";
 import { scrollFadeTrailing, scrollFadeTrailingPx } from "../theme/classes";
 import { Tabs } from "./Tabs";
 
@@ -264,7 +268,7 @@ function issueTablist(sizes: ResizeControl) {
    *  the new width as it lays the tablist out, before any observer runs, so this does too. */
   const layOut = (client: number) => {
     box.client = client;
-    tablist.scrollLeft = tablist.scrollLeft;
+    tablist.scrollLeft = Math.min(tablist.scrollLeft, Math.max(box.scroll - client, 0));
     sizes.resize();
   };
   return { artifacts, layOut, tablist };
@@ -273,7 +277,13 @@ function issueTablist(sizes: ResizeControl) {
 test("the strip stops where its last layout puts it, not where a narrower layout before it left it", () => {
   const sizes = installResizeObserver();
   const view = render(
-    <Tabs activeTab="artifacts" ariaLabel="Issue detail" idPrefix="issue" onSelect={() => {}} tabs={issueTabs} />
+    <Tabs
+      activeTab="artifacts"
+      ariaLabel="Issue detail"
+      idPrefix="issue"
+      onSelect={() => {}}
+      tabs={issueTabs}
+    />
   );
 
   try {
@@ -302,7 +312,13 @@ test("the strip stops where its last layout puts it, not where a narrower layout
 test("a sideways scroll the reader makes stays until the strip's layout changes", () => {
   const sizes = installResizeObserver();
   const view = render(
-    <Tabs activeTab="artifacts" ariaLabel="Issue detail" idPrefix="issue" onSelect={() => {}} tabs={issueTabs} />
+    <Tabs
+      activeTab="artifacts"
+      ariaLabel="Issue detail"
+      idPrefix="issue"
+      onSelect={() => {}}
+      tabs={issueTabs}
+    />
   );
 
   try {
