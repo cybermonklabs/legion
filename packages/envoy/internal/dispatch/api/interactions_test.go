@@ -33,6 +33,14 @@ func newInteractionHandler(t *testing.T, makeDocs func(*store.Store) docs.API) (
 // that must run one request on a connection of its own (oneConnectionHandler).
 func newInteractionDeps(t *testing.T, makeDocs func(*store.Store) docs.API) (http.Handler, *store.Store, Deps) {
 	t.Helper()
+	handler, database, deps, _ := newInteractionServer(t, makeDocs)
+	return handler, database, deps
+}
+
+// newInteractionServer is newInteractionDeps, answering also the server it registered, for a test
+// that waits out the writes its requests leave running past their answers (awaitBackgroundWrites).
+func newInteractionServer(t *testing.T, makeDocs func(*store.Store) docs.API) (http.Handler, *store.Store, Deps, *server) {
+	t.Helper()
 	database := storetest.Open(t)
 	var docsAPI docs.API
 	if makeDocs != nil {
@@ -50,8 +58,9 @@ func newInteractionDeps(t *testing.T, makeDocs func(*store.Store) docs.API) (htt
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
-	return mux, database, deps
+	srv := register(mux, t.Context(), deps)
+	t.Cleanup(srv.waitBackground)
+	return mux, database, deps, srv
 }
 
 // replaceDocumentText replaces a document's text as an upload of a new version does: inside a
