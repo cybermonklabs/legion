@@ -88,15 +88,23 @@ func (h *HandshakeHold) Hold() <-chan struct{} {
 	return held
 }
 
-// HoldReconnect holds (Hold) and waits until a client's reconnect handshake is held, failing the
-// test when none is within 30 s. A bus client reconnects about a second after its connection drops
+// HoldReconnect holds (Hold) and waits until conn's reconnect handshake is held: a client's
+// CONNECT has reached the server through the hold, and nats.go keeps a read of conn's status
+// waiting, so its connection lock is held for that handshake. It fails the test when either has
+// not happened within 30 s. A bus client reconnects about a second after its connection drops
 // (ReconnectWait).
-func (h *HandshakeHold) HoldReconnect(t testing.TB) {
+func (h *HandshakeHold) HoldReconnect(t testing.TB, conn *natsgo.Conn) {
 	t.Helper()
 	select {
 	case <-h.Hold():
 	case <-time.After(30 * time.Second):
 		t.Fatal("no reconnect's CONNECT reached the server through the handshake hold within 30 s")
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for lockFree(conn) {
+		if time.Now().After(deadline) {
+			t.Fatal("nats.go still answered a read of the connection's status 30 s after a CONNECT reached the server through the hold: no handshake of it is held")
+		}
 	}
 }
 

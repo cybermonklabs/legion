@@ -192,13 +192,18 @@ func (r *stopRow) requireNoHandBack(t *testing.T, naks func() int64) {
 //   - an acknowledgement, a head-write hand-back and a job acknowledgement begun before the stop:
 //     a handler makes its answer during a held handshake, and the stop begins while it waits;
 //   - an unsubscribe while a write holds the lock: the stop drained on a moving link and its drain
-//     did not end, and the unsubscribe that ends it, once the stop's context ends, meets the lock.
+//     did not end, and the unsubscribe that ends it, once the stop's context ends, meets the lock;
+//   - a hand-back while a write holds the lock: the link is healthy and the connected read before
+//     the first hand-back the rule lets through answers, and a write then takes nats.go's lock
+//     before that hand-back's publish. Every step waits for an event: the stop's context is ended
+//     at once, the write is held from inside the hand-back (beforeHandBackPublish), and the row
+//     reads that the stop has returned and that nats.go's lock is still held.
 //
 // The negative control is the stop as it was (DrainSubscription, the hand-backs and Unsubscribe
 // inside the once with no bound): no StopDelivering answers in time. So is a hand-back that skips
 // the stop's rule (handBack), the given-up handler's in the second and third subtests; a stop that
-// withholds only when its drain did not answer, in the fourth; and an answer begun before the stop
-// with no bound, in the fifth to seventh.
+// withholds only when its drain did not answer, in the fourth; an answer begun before the stop
+// with no bound, in the fifth to seventh; and a hand-back published inline, in the ninth.
 func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 	// A stop whose calls to NATS each answer at bus.ConnLockWait answers within this past its own
 	// context, on a loaded runner.
@@ -206,7 +211,7 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 
 	t.Run("a drain NATS has not taken", func(t *testing.T) {
 		row := startStopRow(t, intakeKey, func(*intakeDelivery, intakeMessage) {}, false)
-		row.hold.HoldReconnect(t)
+		row.hold.HoldReconnect(t, row.conn)
 		for len(row.reconnected) > 0 {
 			<-row.reconnected
 		}
@@ -229,7 +234,7 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 	t.Run("a given-up handler during a held handshake", func(t *testing.T) {
 		row := startGivenUpRow(t)
 		naks := watchHandBacks(t, row.uri)
-		row.hold.HoldReconnect(t)
+		row.hold.HoldReconnect(t, row.conn)
 		const budget = 300 * time.Millisecond
 		stop := row.stopWithin(budget)
 		testnats.AnswersWithin(t, budget+slack, "StopDelivering", stop, stop)
@@ -240,7 +245,7 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 	t.Run("a stop between reconnect attempts", func(t *testing.T) {
 		row := startGivenUpRow(t)
 		naks := watchHandBacks(t, row.uri)
-		row.hold.HoldReconnect(t)
+		row.hold.HoldReconnect(t, row.conn)
 		// The held attempt ends at the client's connect timeout; nats.go then waits a second
 		// before the next, which the hold holds too.
 		testnats.AwaitLockFree(t, row.conn)
@@ -256,7 +261,7 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 	t.Run("a drain on a link that is down", func(t *testing.T) {
 		row := startGivenUpRow(t)
 		naks := watchHandBacks(t, row.uri)
-		row.hold.HoldReconnect(t)
+		row.hold.HoldReconnect(t, row.conn)
 		for len(row.reconnected) > 0 {
 			<-row.reconnected
 		}
@@ -320,13 +325,12 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 			case <-time.After(30 * time.Second):
 				t.Fatal("control: the first message never reached its handler")
 			}
-			row.hold.HoldReconnect(t)
+			row.hold.HoldReconnect(t, row.conn)
 			goOn()
-			// The answer waits on nats.go's lock from here; the stop begins while it does.
+			// The handler makes its answer from here, while the handshake is held. The stop begins
+			// 300 ms on, by when an answer with no bound still waits on nats.go's lock and holds
+			// the handler, which the stop then waits for.
 			time.Sleep(300 * time.Millisecond)
-			if row.delivery().stopping.Load() {
-				t.Fatal("control: the stop began before the handler's answer")
-			}
 			const budget = 300 * time.Millisecond
 			stop := row.stopWithin(budget)
 			testnats.AnswersWithin(t, budget+slack, "StopDelivering", stop, stop)
@@ -376,6 +380,41 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 			<-stopped
 			return nil
 		})
+		testnats.RequireLockHeld(t, row.conn)
+	})
+
+	t.Run("a hand-back while a write holds the lock", func(t *testing.T) {
+		row := startGivenUpRow(t)
+		var holding sync.Once
+		published := make(chan struct{})
+		hook := func() {
+			holding.Do(func() {
+				row.hold.HoldWriteLock(t, row.conn)
+				close(published)
+			})
+		}
+		row.delivery().beforeHandBackPublish.Store(&hook)
+		ctx, cancel := context.WithCancel(context.Background())
+		// Ended at once: the stop gives the handler up at its start, and the handler hands its
+		// message back.
+		cancel()
+		stopped := make(chan struct{})
+		go func() {
+			row.durable.StopDelivering(ctx)
+			close(stopped)
+		}()
+		select {
+		case <-published:
+		case <-stopped:
+			t.Fatal("control: the stop returned and no hand-back reached its publish, so no write held the lock as it published")
+		case <-time.After(30 * time.Second):
+			t.Fatal("control: no hand-back reached its publish within 30 s")
+		}
+		select {
+		case <-stopped:
+		case <-time.After(30 * time.Second):
+			t.Fatal("StopDelivering did not return while a write held nats.go's lock: it waited for the hand-back's publish")
+		}
 		testnats.RequireLockHeld(t, row.conn)
 	})
 }

@@ -309,13 +309,13 @@ func consumerGenerationMetadata() map[string]string {
 // handlePullRequestEnvelope): no reconcile pass catches that up, because the passes read the
 // rows that exist (ListStalePullRequestHeads), so an acknowledged envelope loses that pull
 // request's head for good and with it every `before_merge` result measured against it. It is
-// handed back with a delay (redeliverAfter), and handed back now rather than at the stop: this
-// message wants redelivering to this same process, which still holds the durable's hold and
-// still routes that key to the one goroutine it is on. The delay is what keeps a failure that
-// repeats from spinning: the write is the same write each time, so asking again within the
-// second would buy nothing. The write is idempotent (both its statements are `on conflict … do
-// update`), so a redelivery of an envelope whose write had in fact landed writes the same pair
-// again.
+// handed back with a delay (intakeDelivery.handBackOwn), and handed back now rather than at the
+// stop: this message wants redelivering to this same process, which still holds the durable's
+// hold and still routes that key to the one goroutine it is on. The delay is what keeps a
+// failure that repeats from spinning: the write is the same write each time, so asking again
+// within the second would buy nothing. The write is idempotent (both its statements are `on
+// conflict … do update`), so a redelivery of an envelope whose write had in fact landed writes
+// the same pair again.
 //
 // That hand-back is this process's own answer to the durable, and it is made only while the
 // hold still covers it (intakeDelivery.mayAnswer): a hand-back a process makes after its hold
@@ -470,18 +470,6 @@ func headWriteDeliveriesSpent(msg *natsgo.Msg) (delivered uint64, spent bool) {
 		return 0, false
 	}
 	return meta.NumDelivered, meta.NumDelivered >= headWriteMaxDeliveries
-}
-
-// redeliverAfter hands msg back to the server for redelivery in after — at once where after is
-// zero, which is the same message to the server, since nats.go adds a delay to the negative
-// acknowledgement only for a delay above zero (Msg.NakWithDelay, js.go) — and logs a hand-back
-// the server refused: the ack wait (intakeAckWait) then redelivers it, later than asked but
-// not never.
-func redeliverAfter(msg *natsgo.Msg, after time.Duration) {
-	if err := msg.NakWithDelay(after); err != nil {
-		slog.Error("dispatch delivery: hand a message back for redelivery",
-			"subject", msg.Subject, "delay", after, "error", err)
-	}
 }
 
 // handlePullRequestEnvelope processes one `kind:"pr"` envelope. Every action — opened,

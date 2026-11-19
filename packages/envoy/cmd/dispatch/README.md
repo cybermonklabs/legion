@@ -1570,6 +1570,8 @@ a `pull_request` envelope whose pull request's head row could not be stored at a
 No reconcile pass repairs a head row that was never written, since the passes read the rows that exist.
 That hand-back is the process's own answer to the durable rather than the stop's, so it is made only while the process still holds the durable's hold and the hold records the deliver subject the envelope arrived on:
 a process whose hold has lapsed publishes nothing, and the next holder's take-over, which recreates the durable at its ack floor, hands it that envelope once.
+It is withheld too when NATS does not answer within `bus.ConnLockWait` (100 ms) that the connection is connected, as every hand-back is (`intakeDelivery.handBackOwn`), since a stop waits for the handler that makes it:
+that envelope then comes back after the durable's ack wait (`intakeAckWait`, 5 min) rather than after 10 s, and so does a message whose acknowledgement NATS refused while the same read was slow or found the link down.
 The count the cap is measured against is the consumer's own (`NumDelivered`), so a take-over starts it afresh and the cap bounds the in-flight slots of one consumer rather than the deliveries of all time.
 `Intake.StopDelivering` hands the durable over, and the intake's run loop calls it when the process stops, when its hold is lost, and when a check finds the durable delivering elsewhere.
 It ends the subscription the bus client holds for it
@@ -1583,7 +1585,8 @@ The messages in their handlers get until the stop's deadline
 — to finish and be acknowledged; the handlers still running then are given up, their GitHub calls cancelled, and their messages negatively acknowledged.
 Only then does it negatively acknowledge the held messages, so NATS redelivers them at once to the next holder, which can then not start a pull request's or run's next message while this process still works on the one before it.
 The stop's drain and unsubscribe, and the acknowledgements and hand-backs of the handlers it waits for, whether begun before the stop or after, each wait for NATS at most `bus.ConnLockWait` (100 ms), since nats.go holds its connection lock through a reconnect's dial and handshake: a call NATS has not taken by then goes on without its caller (`callNATS`).
-The one call left unbounded is a hand-back's publish once NATS has answered that the connection is connected.
+A hand-back publish NATS has not taken in that time lands once NATS takes it (`intakeDelivery.publishHandBack`), and the run loop releases the hold only after it has, at the latest at the hold's loss deadline (`heldDurable.awaitHandBacks`):
+a hand-back that landed after a standby had recreated the durable would move that message's pending entry on the standby's consumer.
 Every one of those answers, a given-up handler's, a held message's and one a refused acknowledgement makes alike, passes one rule (`intakeDelivery.handBack`).
 Once the stop has begun it is withheld unless NATS took the stop's drain on a live link, and any hand-back is withheld when NATS does not answer within `bus.ConnLockWait` that the connection is connected:
 nothing then says when the server has the subscription's interest gone, and a hand-back would wait for the reconnect.
@@ -1591,7 +1594,7 @@ It is withheld too once the hold's loss deadline has passed, as the head-write h
 from that moment the durable the answer names may be one a take-over has recreated, where it would move the new holder's pending entry for that message and have it delivered a second time.
 A holder whose stop runs on past the lapse — one frozen and resumed, one whose handler was given up a margin after the deadline — therefore publishes nothing, and the take-over's recreate at the ack floor hands those messages to the new holder once.
 A message withheld for either reason stays outstanding, and the take-over's recreate at the ack floor hands it to the next holder once, or the durable redelivers it after its ack wait.
-Last it waits for a drain it began to end, cut short by that deadline, and the run loop releases the durable's hold, so a standby takes it over at once rather than at the hold's lapse.
+Last it waits for a drain it began to end, cut short by that deadline, and the run loop releases the durable's hold once its hand-backs have landed, so a standby takes it over at once rather than at the hold's lapse.
 A take-over under way when the context ends — a standby's poll
 — spends the same deadline rather than starting one of its own:
 its own bounds (`takeOverFinishWithin`, 10 s, and the hold's deadline) end it inside that budget, and no attempt starts once the context has ended.

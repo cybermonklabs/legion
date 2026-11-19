@@ -2,7 +2,7 @@ package roles
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -30,9 +30,10 @@ func lockedWithin(mu *sync.Mutex, wait time.Duration) bool {
 // answer to the client's CONNECT, nats.go holds its connection lock, and the open's STREAM.INFO
 // waits for it. The open was made under b.mu with no context, so it held b.mu until the handshake
 // attempt ended, long after the read that made it had answered its caller: every other read of
-// Buckets waited behind it. While a read made during the hold waits on its open, a second caller
-// takes b.mu within 150 ms of trying, from 200 ms into the read; the read answers its caller at its
-// own bound; and b.mu is free within testnats.HeldHandshakeAnswerWait of that answer.
+// Buckets waited behind it. A second caller tries for b.mu from the moment a read made during the
+// hold begins until that read has answered, again and again, and must take it within
+// bus.ConnLockWait each time it tries; the read answers its caller at its own bound; and b.mu is
+// free within testnats.HeldHandshakeAnswerWait of that answer.
 //
 // The role bucket does not exist, so no read keeps a handle and the read in the hold opens one, as
 // a first read after a reconnect does. The controls: nats.go's lock is still held when the two
@@ -40,7 +41,8 @@ func lockedWithin(mu *sync.Mutex, wait time.Duration) bool {
 // hold and one after its release answer the role's empty claim, so the row's answers are the
 // hold's. The negative control is bucket as it was (OpenKeyValue with context.Background() under
 // b.mu): the second caller does not take b.mu, and b.mu is still held when the wait ends. An open
-// under b.mu that ended at the read's bound would fail the second caller's take too.
+// under b.mu bounded by anything longer than bus.ConnLockWait fails the second caller too, since it
+// keeps trying for as long as the read takes.
 func TestABucketsOpenHoldsNoLockAcrossAHeldHandshake(t *testing.T) {
 	_, url := testnats.Start(t)
 	hold := testnats.StartHandshakeHold(t, url)
@@ -56,36 +58,36 @@ func TestABucketsOpenHoldsNoLockAcrossAHeldHandshake(t *testing.T) {
 	}
 
 	conn := client.Connection()
-	hold.HoldReconnect(t)
-	// The read's own bound, inside the answer wait. From 200 ms into it, by when the read is
-	// waiting on its open, the second caller tries for b.mu and must take it within 150 ms: a b.mu
-	// held from 200 ms into the read to 350 ms into it fails the row, and one let go before 200 ms
-	// passes it.
-	const (
-		readWait    = time.Second
-		secondAfter = 200 * time.Millisecond
-		secondFor   = 150 * time.Millisecond
-	)
+	hold.HoldReconnect(t, conn)
+	// The read's own bound, inside the answer wait.
+	const readWait = time.Second
+	read := make(chan struct{})
 	answers := testnats.AnswersWhileHeld(t, "a read of the role's claim, and a second caller of b.mu,",
 		func() error {
+			defer close(read)
 			ctx, cancel := context.WithTimeout(t.Context(), readWait)
 			defer cancel()
 			_, err := buckets.RoleClaim(ctx, "reviewer")
 			return err
 		},
 		func() error {
-			time.Sleep(secondAfter)
-			if !lockedWithin(&buckets.mu, secondFor) {
-				return errors.New("b.mu was held while the read waited on its open")
+			for tries := 1; ; tries++ {
+				select {
+				case <-read:
+					return nil
+				default:
+				}
+				if !lockedWithin(&buckets.mu, bus.ConnLockWait) {
+					return fmt.Errorf("try %d did not take b.mu within %s while the read waited on its open", tries, bus.ConnLockWait)
+				}
 			}
-			return nil
 		})
 	testnats.RequireLockHeld(t, conn)
 	if answers[0] == nil {
 		t.Fatal("a read of the role's claim answered nil while the handshake was held, want its bound's error")
 	}
 	if answers[1] != nil {
-		t.Fatalf("a second caller of b.mu, from %s to %s after the read began: %v", secondAfter, secondAfter+secondFor, answers[1])
+		t.Fatalf("a second caller of b.mu, trying while the read waited: %v", answers[1])
 	}
 	if !lockedWithin(&buckets.mu, testnats.HeldHandshakeAnswerWait) {
 		t.Fatalf("b.mu was still held %s after the read answered %v: the open that read made holds it through the handshake", testnats.HeldHandshakeAnswerWait, answers[0])

@@ -36,7 +36,7 @@ func heldHandshakeClient(t *testing.T) (*Client, *testnats.HandshakeHold) {
 // connection under the window's pin held the pin until the handshake attempt ended: the send that
 // held it gave no answer, and every other send of the window waited behind it. Sends of one window
 // made at once while the handshake is held each answer ErrUnavailable: two sends and a Probe of a
-// window pinned before the hold within 600 ms, at the check's bounded read (ConnLockWait), and two
+// window pinned before the hold within 600 ms, since the check waits for nothing, and two
 // first sends of a window made during it within 250 ms past their 400 ms wait for a connection,
 // which two sends that waited one behind the other would miss.
 //
@@ -78,9 +78,9 @@ func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 		if err := w.pinToSend(); err != nil {
 			t.Fatalf("control: the window's first send could not pin the connection before the hold: %v", err)
 		}
-		hold.HoldReconnect(t)
-		// Each answers at the check's bounded read (ConnLockWait), so within half a second on a
-		// loaded runner.
+		hold.HoldReconnect(t, w.conn)
+		// The check reads nats.go's own report that the life ended, so each answers at once:
+		// within 600 ms on a loaded runner.
 		probe := func() error { return w.Probe(time.Second) }
 		unavailable(t, "a send or probe of the pinned window", testnats.AnswersWithin(t, 600*time.Millisecond, "a send or probe of the pinned window", w.pinToSend, w.pinToSend, probe))
 		testnats.RequireLockHeld(t, w.conn)
@@ -93,7 +93,7 @@ func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 			t.Fatalf("control: a window could not pin the connection before the hold: %v", err)
 		}
 		conn := client.Connection()
-		hold.HoldReconnect(t)
+		hold.HoldReconnect(t, conn)
 		// The first send's wait for a connection. Two first sends that waited one behind the other
 		// would answer at twice it, past the answer wait below; side by side they answer at it.
 		const wait = 400 * time.Millisecond
@@ -120,20 +120,37 @@ func heardReconnects(client *Client) <-chan struct{} {
 }
 
 // A window pinned after nats.go has reconnected its connection, and before the client has heard of
-// that reconnect, keeps its pin once the client hears of it. nats.go marks a reconnected connection
-// connected before its callback goroutine runs the client's onReconnect, which is what closes the
-// connection-event channel a pin takes, so a check that took any event since the pin for a loss
-// refused a good connection in that gap. The row holds the gap open: a disconnect hook, which runs on
-// that callback goroutine ahead of the reconnect's callback, waits until the window has pinned.
+// that reconnect, keeps its pin once the client hears of it; and a window pinned before the drop
+// refuses the reconnected connection before the client has heard of the drop, before it has heard of
+// the reconnect, and after. nats.go marks a reconnected connection connected before its callback
+// goroutine runs the client's onDisconnect and onReconnect, and onDisconnect waits for the client's
+// lock, which a caller of Client.Connected holds while nats.go's lock keeps it waiting. So a check
+// that waited for the client to hear of an event let the old window send on the reconnected
+// connection in that gap, and a check that took any client event since the pin for a loss refused
+// the new window's good connection once the client heard.
+//
+// The row holds both gaps open. It holds the client's lock through the drop and the reconnect, as
+// that caller would, so the client has heard of neither; then a disconnect hook, which runs on
+// nats.go's callback goroutine ahead of the reconnect's callback, holds the client between hearing of
+// the drop and hearing of the reconnect. Every step waits for an event: nats.go reconnected with the
+// reconnect counted, the hook entered, the client's reconnect hook run.
 //
 // The controls: nats.go reads the connection connected, with the reconnect counted, before the
-// window pins; and the client has heard of the reconnect before the window's second send, so that
-// send's check reads the reconnect's event. The negative control is a check that takes any
-// connection event since the pin for a loss: the second send answers ErrUnavailable.
+// windows are checked; the client has heard of neither event at the first check, of the drop alone
+// at the next, and of the reconnect by the last; and a window pinned after the client heard sends.
+// The negative controls: a check that reads nothing of nats.go's until the client has heard of an
+// event (this change's earlier 0ef5b85b85) lets the old window send before the client hears of the
+// drop; a check that takes any client event since the pin for a loss (earlier 184231c372) refuses
+// the new window once the client heard; and a check that compares the reconnect count with >= rather
+// than == lets the old window send once the client heard.
 func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
 	before := conn.Stats().Reconnects
+	old := client.WindowUntil(nil).(*window)
+	if err := old.pinToSend(); err != nil {
+		t.Fatalf("control: the old window's first send, before the drop, answered %v, want nil", err)
+	}
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
 	var released sync.Once
@@ -148,13 +165,14 @@ func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
 	})
 	heard := heardReconnects(client)
 
+	// The client's lock, held as a caller of Client.Connected holds it while it waits for
+	// nats.go's lock. Let go before the client closes, whose Close takes it.
+	client.mu.Lock()
+	var unlocked sync.Once
+	unlock := func() { unlocked.Do(client.mu.Unlock) }
+	t.Cleanup(unlock)
 	hold.Cut()
 	hold.Restore()
-	select {
-	case <-entered:
-	case <-time.After(30 * time.Second):
-		t.Fatal("control: the client's disconnect hook never ran after the cut")
-	}
 	deadline := time.Now().Add(30 * time.Second)
 	for conn.Status() != nats.CONNECTED || conn.Stats().Reconnects == before {
 		if time.Now().After(deadline) {
@@ -163,13 +181,30 @@ func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	select {
-	case <-heard:
-		t.Fatal("control: the client heard of the reconnect while its disconnect hook held nats.go's callbacks, so the gap was not held")
+	case <-entered:
+		t.Fatal("control: the client heard of the drop while the row held its lock, so the first gap was not held")
 	default:
+	}
+	if err := old.pinToSend(); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("the old window's send on the reconnected connection, before the client heard of the drop, answered %v, want ErrUnavailable", err)
+	}
+	unlock()
+	select {
+	case <-entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("control: the client's disconnect hook never ran once the row let the client's lock go")
+	}
+	select {
+	case <-heard:
+		t.Fatal("control: the client heard of the reconnect while its disconnect hook held nats.go's callbacks, so the second gap was not held")
+	default:
+	}
+	if err := old.pinToSend(); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("the old window's send on the reconnected connection, before the client heard of the reconnect, answered %v, want ErrUnavailable", err)
 	}
 	w := client.WindowUntil(nil).(*window)
 	if err := w.pinToSend(); err != nil {
-		t.Fatalf("control: the window's first send, after nats.go had reconnected, answered %v, want nil", err)
+		t.Fatalf("control: the new window's first send, after nats.go had reconnected, answered %v, want nil", err)
 	}
 	open()
 	select {
@@ -178,7 +213,13 @@ func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
 		t.Fatal("control: the client did not hear of the reconnect within 30 s of the disconnect hook's release")
 	}
 	if err := w.pinToSend(); err != nil {
-		t.Fatalf("the window's next send, once the client heard of the reconnect its pin already counted, answered %v, want nil", err)
+		t.Errorf("the new window's next send, once the client heard of the reconnect its pin already counted, answered %v, want nil", err)
+	}
+	if err := old.pinToSend(); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("the old window's send on the reconnected connection, once the client heard of the reconnect, answered %v, want ErrUnavailable", err)
+	}
+	if err := client.WindowUntil(nil).(*window).pinToSend(); err != nil {
+		t.Errorf("control: a window pinned once the client heard of the reconnect answered %v, want nil", err)
 	}
 }
 

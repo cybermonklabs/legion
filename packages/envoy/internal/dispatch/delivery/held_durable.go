@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -224,6 +225,9 @@ type heldDurable struct {
 	mu sync.Mutex
 	// delivering is the latest subscription subscribe made, which StopDelivering stops.
 	delivering *intakeDelivery
+	// awaitingHandBacks is set while stop waits for the hand-backs of the delivery it stopped
+	// before it releases the hold (awaitHandBacks).
+	awaitingHandBacks atomic.Bool
 }
 
 // newHeldDurable builds the delivery from config's durable on natsClient, taking its hold and
@@ -657,17 +661,19 @@ func (d *heldDurable) check(ctx context.Context) {
 	d.subject = ""
 }
 
-// stop is the end of run: it stops delivering under ctx, the run's stop deadline, then releases
-// the hold, so a standby takes the durable over at once and is redelivered whatever this intake
-// handed back. A hold whose token still records a take-over's start (intakeHoldToken) is lapsed
-// instead, which frees it as Release does and keeps the row, so the next holder reads that start.
-// The release runs on a context of its own: it is one statement, and it must reach the database
-// even when the stop's budget has run out.
+// stop is the end of run: it stops delivering under ctx, the run's stop deadline, waits for the
+// hand-backs NATS had not taken when that stop returned (awaitHandBacks), then releases the hold,
+// so a standby takes the durable over at once and is redelivered whatever this intake handed back.
+// A hold whose token still records a take-over's start (intakeHoldToken) is lapsed instead, which
+// frees it as Release does and keeps the row, so the next holder reads that start. The release
+// runs on a context of its own: it is one statement, and it must reach the database even when the
+// stop's budget has run out.
 func (d *heldDurable) stop(ctx context.Context) {
 	d.StopDelivering(ctx)
 	if d.hold == nil {
 		return
 	}
+	d.awaitHandBacks()
 	release := d.hold.Release
 	if d.recorded.start != 0 {
 		release = d.hold.Lapse
@@ -678,4 +684,37 @@ func (d *heldDurable) stop(ctx context.Context) {
 		slog.Error("dispatch delivery: release the intake's hold", "name", d.name, "error", err)
 	}
 	d.hold, d.subject = nil, ""
+}
+
+// awaitHandBacks waits for every hand-back publish of the delivery the stop stopped that NATS had
+// not taken when the stop went on without it (intakeDelivery.publishHandBack), at most until the
+// hold's loss deadline. A hand-back is a publish at the message's reply subject, which names the
+// durable rather than the consumer: one that landed after the release had let a standby take the
+// durable over, and recreate it under the same name, would move that message's pending entry on the
+// standby's consumer and have it delivered a second time. Past the loss deadline the standby may take
+// the durable over whatever this intake does, so the wait ends there. That wait is the cost of the
+// bound on the publish: a take-over can wait up to the hold's margin while a hand-back waits out a
+// reconnect's handshake, where before the stop itself waited for it.
+func (d *heldDurable) awaitHandBacks() {
+	d.mu.Lock()
+	delivery := d.delivering
+	d.mu.Unlock()
+	if delivery == nil {
+		return
+	}
+	landed := delivery.handBacksLanded()
+	select {
+	case <-landed:
+		return
+	default:
+	}
+	d.awaitingHandBacks.Store(true)
+	defer d.awaitingHandBacks.Store(false)
+	lapse := time.NewTimer(time.Until(d.hold.Deadline()))
+	defer lapse.Stop()
+	select {
+	case <-landed:
+	case <-lapse.C:
+		slog.Warn("dispatch delivery: a hand-back NATS has not taken is still on its way at the hold's loss deadline; releasing the hold", "name", d.name)
+	}
 }

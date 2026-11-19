@@ -51,9 +51,24 @@ type intakeDelivery struct {
 	// once (giveBack).
 	released bool
 	// withheld says the stop's hand-backs are withheld (handBack). It is read only once the stop
-	// has begun, and starts true: the stop clears it only when NATS took its drain on a live link,
-	// and a connected read that does not answer sets it again (mayHandBack).
+	// has begun, and starts true: the stop clears it only when NATS took its drain on a live link
+	// and no connected read had failed by then (readFailed); once the stop has begun, a connected
+	// read that does not answer, or answers that the connection is not connected, sets it again
+	// (mayHandBack).
 	withheld bool
+	// readFailed is set once a connected read made after the stop began has failed (mayHandBack),
+	// so the stop's drain does not clear the withholding that read set.
+	readFailed bool
+	// publishing counts the hand-back publishes NATS has not answered yet (publishHandBack), and
+	// published is closed each time that count falls to zero: the hold's release waits for it
+	// (heldDurable.awaitHandBacks).
+	publishing int
+	published  chan struct{}
+
+	// beforeHandBackPublish, when set, runs before each hand-back is published, after the rule has
+	// let it through (publishHandBack). It is nil outside tests: a test sets it to take nats.go's
+	// connection lock in that moment.
+	beforeHandBackPublish atomic.Pointer[func()]
 }
 
 // intakeMessage is one message on its way to its key's handler, with its envelope when keying
@@ -167,11 +182,11 @@ func stopContext(ctx context.Context) (stopping context.Context, release func())
 // It returns once a drain it began has ended -- at the latest intakeDrainWait after the last
 // handler returned, or as ctx ends if that is sooner, when it unsubscribes instead. The drain gives
 // up the subscription's registration on the client (bus.Client.DrainSubscription), so that no
-// reconnect binds it again and a later subscribe on the same client starts afresh. The stop's own
-// calls to NATS, and the answers of the handlers it waits for, wait for NATS at most
-// bus.ConnLockWait each (callNATS): nats.go holds its connection lock, which every call to NATS
-// waits for, through a reconnect's dial and handshake. The one call left unbounded is a hand-back's
-// publish once NATS has answered that the connection is connected (handBack).
+// reconnect binds it again and a later subscribe on the same client starts afresh. Every call to
+// NATS the stop waits for -- its own, and the answers of the handlers it waits for, hand-backs
+// included -- waits for NATS at most bus.ConnLockWait (callNATS): nats.go holds its connection
+// lock, which every call to NATS waits for, through a reconnect's dial and handshake. A hand-back
+// NATS has not taken by then lands later, and the hold's release waits for it (publishHandBack).
 //
 // run calls it as its ctx ends, under its stop deadline (stopContext), and when the hold is lost
 // or the durable no longer delivers here, under a budget of its own (stopDeliveringWithin). It is
@@ -213,9 +228,11 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 		draining, answered := callNATS("drain the intake's subscription", func() (*natsgo.Subscription, error) {
 			return d.nats.DrainSubscription(d.sub)
 		})
-		if answered && draining != nil {
-			d.withhold(false)
+		d.mu.Lock()
+		if answered && draining != nil && !d.readFailed {
+			d.withheld = false
 		}
+		d.mu.Unlock()
 		// Returns once every handler has, which a handler given up (abandon) does promptly: its
 		// GitHub calls and its writes run under its context, and its answer to NATS waits at most
 		// bus.ConnLockWait (handBack, acknowledge, handBackOwn).
@@ -245,19 +262,14 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 	})
 }
 
-// withhold sets whether the stop's hand-backs are withheld (handBack).
-func (d *intakeDelivery) withhold(withheld bool) {
-	d.mu.Lock()
-	d.withheld = withheld
-	d.mu.Unlock()
-}
-
 // callNATS makes call, one call to NATS named by what, where the stop waits for it -- a call of the
 // stop's own, or a handler's answer, which the stop waits for (keyedRunner.wait) -- and waits for it
 // at most bus.ConnLockWait. A call NATS has not answered by then goes on, on a goroutine of its own
-// (bus.Bounded), holding nothing, and answered is false. Its failure is logged when it ends, with
-// attrs; a connection already closed is how a call that outlived the stop ends when the client
-// closes at shutdown, and is logged as that rather than as an error.
+// (bus.Bounded), and answered is false. That goroutine holds nothing of the stop's; a call through
+// the bus client that holds the client's own lock while it reads nats.go's state (Connected, and
+// DrainSubscription through it) holds that lock until nats.go answers. Its failure is logged when
+// it ends, with attrs; a connection already closed is how a call that outlived the stop ends when
+// the client closes at shutdown, and is logged as that rather than as an error.
 func callNATS[T any](what string, call func() (T, error), attrs ...any) (value T, answered bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), bus.ConnLockWait)
 	defer cancel()
@@ -313,12 +325,14 @@ func (d *intakeDelivery) giveBack(msg *natsgo.Msg) {
 //     (heldDurable.run), and only the part of it that runs past that deadline is withheld.
 //   - Once the stop has begun, withheld unless NATS took the stop's drain on a live link (stop).
 //   - Withheld when NATS does not answer a read of whether the connection is connected within
-//     bus.ConnLockWait (callNATS), or answers that it is not (mayHandBack): the publish would wait
-//     for nats.go's connection lock, which a reconnect's handshake holds, and the stop waits for the
-//     handlers that make it and for its own hand-backs. Once the stop has begun, that read withholds
-//     every later hand-back too. The publish is made on the caller's goroutine and never left to
-//     finish on its own: one that landed after the hold was released could reach a recreated
-//     durable. So a handshake that begins between the read and the publish is waited out.
+//     bus.ConnLockWait (callNATS), or answers that it is not (mayHandBack): a hand-back on a link
+//     that is down, or in a reconnect's handshake, would wait for the reconnect. Once the stop has
+//     begun, that read withholds every later hand-back too.
+//
+// The publish itself waits for NATS at most bus.ConnLockWait too (publishHandBack), since the stop
+// waits for the handlers that make it and for its own hand-backs: a write to a slow socket can take
+// nats.go's connection lock between the read and the publish. One NATS has not taken by then lands
+// later, and the hold's release waits for it, so it cannot land on a durable a standby recreated.
 //
 // A message withheld is not lost: it was never acknowledged, so it stays outstanding, and the
 // take-over's recreate at the durable's ack floor hands it to the new holder once, or the durable
@@ -335,7 +349,7 @@ func (d *intakeDelivery) handBack(msg *natsgo.Msg) {
 		slog.Info("dispatch delivery: the hand-back is withheld, so the message is left with the durable", "subject", msg.Subject)
 		return
 	}
-	redeliverAfter(msg, 0)
+	d.publishHandBack(msg, 0)
 }
 
 // handBackOwn publishes msg's hand-back after after, the answer a handler makes of its own
@@ -353,13 +367,54 @@ func (d *intakeDelivery) handBackOwn(msg *natsgo.Msg, after time.Duration) {
 		slog.Info("dispatch delivery: the hand-back is withheld, so the envelope whose head row was not stored is left with the durable", "subject", msg.Subject)
 		return
 	}
-	redeliverAfter(msg, after)
+	d.publishHandBack(msg, after)
+}
+
+// publishHandBack publishes msg's hand-back after after, waiting for NATS at most
+// bus.ConnLockWait (callNATS). A publish NATS has not taken by then goes on, on a goroutine of its
+// own, and is counted until it lands (publishing): the hold's release waits for every such publish
+// of the delivery it stopped, at most until the hold's loss deadline (heldDurable.awaitHandBacks),
+// so none lands on a durable the standby recreated once the release let it take over.
+func (d *intakeDelivery) publishHandBack(msg *natsgo.Msg, after time.Duration) {
+	if hook := d.beforeHandBackPublish.Load(); hook != nil {
+		(*hook)()
+	}
+	d.mu.Lock()
+	if d.publishing == 0 {
+		d.published = make(chan struct{})
+	}
+	d.publishing++
+	d.mu.Unlock()
+	callNATS("hand a message back for redelivery", func() (struct{}, error) {
+		defer func() {
+			d.mu.Lock()
+			d.publishing--
+			if d.publishing == 0 {
+				close(d.published)
+			}
+			d.mu.Unlock()
+		}()
+		return struct{}{}, msg.NakWithDelay(after)
+	}, "subject", msg.Subject, "delay", after)
+}
+
+// handBacksLanded is closed once no hand-back publish of this delivery is still waiting for NATS
+// (publishHandBack), and already closed when none is.
+func (d *intakeDelivery) handBacksLanded() <-chan struct{} {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.publishing == 0 {
+		landed := make(chan struct{})
+		close(landed)
+		return landed
+	}
+	return d.published
 }
 
 // mayHandBack reports whether a hand-back may be published now (handBack): once the stop has
 // begun, only while it has not withheld its hand-backs; and only when NATS answers within
 // bus.ConnLockWait that the connection is connected. Once the stop has begun, a read that does not
-// withholds every later hand-back of the stop's.
+// withholds every later hand-back of the stop's, which the stop's drain then does not undo.
 func (d *intakeDelivery) mayHandBack() bool {
 	if d.stopping.Load() {
 		d.mu.Lock()
@@ -376,7 +431,9 @@ func (d *intakeDelivery) mayHandBack() bool {
 		return true
 	}
 	if d.stopping.Load() {
-		d.withhold(true)
+		d.mu.Lock()
+		d.withheld, d.readFailed = true, true
+		d.mu.Unlock()
 	}
 	return false
 }
