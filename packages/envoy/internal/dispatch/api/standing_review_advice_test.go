@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -32,6 +33,48 @@ func askStandingReview(t *testing.T, handler http.Handler, issueKey string) *sta
 		"question": standingReviewQuestion, "actor": adviceSessionActor("session-asking"),
 	})
 	return adviceFromResponse(t, asked.Code, asked.Body.String()).StandingReview
+}
+
+// standingReviewQuote is the passage of restoreSpec the anchored cases quote. No live edit they
+// make touches it, so every question they open finds it. Its words appear in no question.
+const standingReviewQuote = "Announce the dates."
+
+// askAnchoredStandingReview opens standingReviewQuestion on the issue as askStandingReview does,
+// anchored on standingReviewQuote in its specification, and answers the version the anchor is
+// pinned to and the review the write's advice carried, nil when it carried none.
+func askAnchoredStandingReview(t *testing.T, handler http.Handler, issueKey string) (int, *standingReview) {
+	t.Helper()
+	asked := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issueKey+"/asks", map[string]any{
+		"question": standingReviewQuestion, "actor": adviceSessionActor("session-asking"),
+		"anchor": map[string]any{"artifact": "spec", "quote": standingReviewQuote},
+	})
+	advice := adviceFromResponse(t, asked.Code, asked.Body.String())
+	ask := decodeBody[struct {
+		Anchor model.Anchor `json:"anchor"`
+	}](t, asked)
+	return ask.Anchor.Version, advice.StandingReview
+}
+
+// approveThenEditLive writes restoreSpec into a new issue's spec, has alice approve version 1 and
+// then changes the spec's paragraph in the live document, storing no version: the documents
+// settle nothing for an hour, and the change goes into the live document as an upload's does
+// (replaceDocumentText), so version 1 stays the newest the table holds until a write snapshots
+// the document. It answers the handler, the issue's key, its spec's id and a writer that puts
+// markdown into the live document the same way.
+func approveThenEditLive(t *testing.T, project string) (http.Handler, string, string, func(markdown string)) {
+	t.Helper()
+	handler, database, documents := settlingCarryDocuments(t, time.Hour)
+	issue := createInteractionIssue(t, handler, project, "Edited live", restoreSpec)
+	reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", standingReviewReason)
+	editLive := func(markdown string) {
+		t.Helper()
+		if _, err := replaceDocumentText(database, documents, issue.PrimaryArtifactID, markdown,
+			model.Actor{Kind: "session", ID: "session-0123456789abcdef"}); err != nil {
+			t.Fatalf("write the live document: %v", err)
+		}
+	}
+	editLive(strings.Replace(restoreSpec, "behind a flag.", "behind a flag and a canary.", 1))
+	return handler, issue.Key, issue.PrimaryArtifactID, editLive
 }
 
 // A person's review of the version the specification is at now is named, whether they approved or
@@ -145,6 +188,69 @@ func TestAskAdviceNamesACarriedReviewAndTheVersionItsReasonGives(t *testing.T) {
 	if !review.At.After(approval.CreatedAt) {
 		t.Fatalf("standing review at = %s, want the carry's own time, after alice's own review at %s",
 			review.At, approval.CreatedAt)
+	}
+}
+
+// A question anchored on the specification pins its anchor to a stored version, and where the
+// live text has changed since the newest one, the anchor's snapshot writes the next version in
+// the question's own transaction (resolveAnchor), queued until Commit runs it. Alice approved
+// version 1 and the spec was then edited live, so the question's own write leaves the document at
+// version 2, which nobody has reviewed: the advice names nothing. The table still holds version 1
+// as the newest when the advice is read, so the rule takes the version off the question's ledger
+// (docs.Ledger.PendingVersionNumber); read off the table, it would name alice's approval of the
+// text this very write moved past.
+func TestAskAdviceNamesNoReviewOfTheVersionAnAnchorsSnapshotSupersedes(t *testing.T) {
+	handler, issueKey, _, _ := approveThenEditLive(t, "STANDSNAP")
+
+	version, review := askAnchoredStandingReview(t, handler, issueKey)
+	if version != 2 {
+		t.Fatalf("the anchor is pinned to version %d, want 2, the version its snapshot of the live edit writes", version)
+	}
+	if review != nil {
+		t.Fatalf("standing review = %#v, want none: alice reviewed version 1, and the question's own write leaves version 2", review)
+	}
+}
+
+// The live text put back to the text alice approved, the next anchored question's snapshot
+// writes version 3, which holds version 1's text byte for byte, so the restore carries her
+// approval to it in the same transaction (docs.carryApproval). The advice names that carry:
+// alice's approval, pinned to version 3 and naming version 1. The version and the carry are both
+// queued when the advice is read, and the table holds version 2 as the newest, which a read of it
+// would set against the carry's version 3 and so name nothing. The carry's time is its row's: the
+// advice is read before the write phase stores that row, and names the time the row then holds.
+func TestAskAdviceNamesTheApprovalAnAnchorsSnapshotCarries(t *testing.T) {
+	handler, issueKey, artifactID, editLive := approveThenEditLive(t, "STANDBACK")
+	if version, _ := askAnchoredStandingReview(t, handler, issueKey); version != 2 {
+		t.Fatalf("the first anchor is pinned to version %d, want 2, the version its snapshot of the live edit writes", version)
+	}
+	editLive(restoreSpec)
+
+	version, review := askAnchoredStandingReview(t, handler, issueKey)
+	if version != 3 {
+		t.Fatalf("the anchor is pinned to version %d, want 3, the version its snapshot of the restored text writes", version)
+	}
+	if review == nil {
+		t.Fatal("the question's advice named no review; want alice's approval, carried to version 3")
+	}
+	if review.CarriedFromVersion != 1 {
+		t.Fatalf("standing review = %#v, want a carry naming version 1, the version alice approved", review)
+	}
+	if review.By != "alice" || review.State != "approved" || review.Version != 3 {
+		t.Fatalf("standing review = %#v, want alice's approval pinned to version 3", review)
+	}
+	if review.Reason != "" {
+		t.Fatalf("standing review reason = %q, want none on a carry: that reason is Dispatch's own sentence", review.Reason)
+	}
+	listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/reviews", nil, "alice")
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list reviews: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	stored := decodeBody[[]model.ArtifactReview](t, listed)
+	if len(stored) == 0 || stored[0].Version != 3 || stored[0].State != "approved" {
+		t.Fatalf("reviews = %#v, want the carry to version 3 newest", stored)
+	}
+	if review.At.IsZero() || !review.At.Equal(stored[0].CreatedAt) {
+		t.Fatalf("standing review at = %s, want the stored carry's own time %s", review.At, stored[0].CreatedAt)
 	}
 }
 
