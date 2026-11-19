@@ -3842,6 +3842,59 @@ else
     ending_result "$gateway_case" 2 '^check\.sh cannot run --replay now: GitHub gave no answer that judges f-github-read.*exited 22.*GitHub answered 502, a server error' "$out"
 fi
 
+# 126. A row whose curl of GitHub's REST API exits 22 and whose read again is answered 404 Not
+# Found fails replay-command (test round 39). The architect's rule of round 39 makes a 4xx that
+# is not about the reader's credential, and is no rate limit, an answer about the record: GitHub
+# holds no such pull request, review or commit, which is a verdict on the row. Cases 119, 121,
+# 122 and 125 hold the endings that cannot run, and case 124 holds Dispatch's 404 as a FAIL, but
+# no case held GitHub's, so a gate that read every GitHub 4xx as an outage passed them all. The
+# case plants case 119's row with a curl of the case's own first on PATH that answers the row's
+# read and the gate's read again of api.github.com with 404 and GitHub's error JSON, and expects
+# --replay to fail replay-command, naming the row, its exit 22, the 404 and GitHub's message.
+NOTFOUND_CASE="$WORK/github-not-found"
+mkdir -p "$NOTFOUND_CASE/bin"
+cat >"$NOTFOUND_CASE/bin/curl" <<'STUB'
+#!/bin/sh
+case " $* " in
+*" https://api.github.com/"*) ;;
+*) exec REAL_CURL "$@" ;;
+esac
+body='' dump='' format='' previous=''
+for word in "$@"; do
+    case "$previous" in
+    -o) body=$word ;;
+    -D) dump=$word ;;
+    -w) format=$word ;;
+    esac
+    previous=$word
+done
+if [ -n "$body" ]; then
+    cat ANSWER/body >"$body"
+    [ -z "$dump" ] || cat ANSWER/headers >"$dump"
+    [ -z "$format" ] || printf '404'
+    exit 0
+fi
+cat ANSWER/body
+printf 'curl: (22) The requested URL returned error: 404\n' >&2
+exit 22
+STUB
+sed -i -e "s|REAL_CURL|'$(command -v curl)'|" -e "s|ANSWER|'$NOTFOUND_CASE'|g" "$NOTFOUND_CASE/bin/curl"
+chmod +x "$NOTFOUND_CASE/bin/curl"
+printf '{\n  "message": "Not Found",\n  "documentation_url": "https://docs.github.com/rest/pulls/reviews#list-reviews-for-a-pull-request",\n  "status": "404"\n}\n' >"$NOTFOUND_CASE/body"
+printf 'HTTP/2 404\r\ncontent-type: application/json; charset=utf-8\r\nx-ratelimit-limit: 5000\r\nx-ratelimit-remaining: 4990\r\nx-ratelimit-resource: core\r\n\r\n' >"$NOTFOUND_CASE/headers"
+dir="$(fresh github-not-found)"
+cat "$ANSWER_CASE/row" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+out="$(PATH="$NOTFOUND_CASE/bin:$ANSWER_CASE/bin:$PATH" fixture_run "$dir" --replay)"
+notfound_case="a row whose curl of GitHub's REST API exits 22 and whose read again is answered 404 Not Found fails replay-command, naming the row, its exit 22, the status and GitHub's message"
+if [ "$(cat "$out/status" 2>/dev/null)" = 2 ]; then
+    # A cannot-run ending is the defect this case pins, so it fails the case rather than
+    # leaving it unrun: the gate took GitHub's answer about the record for an outage.
+    case_failed "$notfound_case" "the gate read GitHub's 404 as no verdict: $(tail -1 "$out/text" | cut -c1-300)"
+else
+    case_result "$notfound_case" \
+        "replay-command: f-github-read ran its command and a read inside it failed: .*exited 22, and GitHub answered 404: Not Found" "$out"
+fi
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
