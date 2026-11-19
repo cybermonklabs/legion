@@ -222,3 +222,39 @@ test("the preload puts back the spy of quietConsoleError a row leaves, even past
     );
   }
 });
+
+// The preload's last `afterEach`, which runs the network report and then the act check after every
+// reset and restore above it. Each of the fixture's two leaking rows makes a request nothing
+// answers, draws an act message while `console.error` is quiet, and leaves that spy, a fake clock
+// and a `<Timestamp>` tick armed on it; each must fail with one report naming both, and every row
+// must start clean, which the fixture's `afterAll` checks. With the two checks in two hooks, the
+// network report's throw skips the act check, and the act message fails a later row or the file
+// instead; with the network report registered early, its throw also skips every reset and restore
+// after it, and the next row starts on the fake clock the leaking row left, which that `afterAll`
+// reports as one more failed row, named `(unnamed)`.
+test("the preload's last afterEach fails a row on its request and its act message at once, after every reset", async () => {
+  const run = await runFixture("act-rule-final-hook.fixture.tsx");
+  expectFailedSummary(run, { fail: "2", pass: "1" });
+  const failed = failedRows(run.output);
+  const leaking = "rows that leave everything the preload puts back";
+  const reports = {
+    [`${leaking} > another fails on its request and its act message in one report`]: {
+      component: "CountAnotherRowLeaves",
+      request: "GET /api/v1/nothing-answers/another",
+    },
+    [`${leaking} > one fails on its request and its act message in one report`]: {
+      component: "CountOneRowLeaves",
+      request: "GET /api/v1/nothing-answers/one",
+    },
+  };
+  // Neither `(unnamed)` nor the row that leaves nothing: every row started clean, and that row
+  // passed.
+  expect([...failed.keys()].sort()).toEqual(Object.keys(reports).sort());
+  for (const [name, { component, request }] of Object.entries(reports)) {
+    expect(failed.get(name)).toContain(
+      `error: requests reached the network, answered by nothing: ${request}\n` +
+        "React printed 1 act message(s) in or before this row:\n" +
+        `  update outside act in ${component}`
+    );
+  }
+});

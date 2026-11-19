@@ -39,12 +39,13 @@ base) rather than once per run. The checks it serves run by hand, before the mer
 Between those hand runs CI holds the plugin-pack part of the property itself. The plugin-pack
 step's `-run` and the daemon-go race step's `-skip` are both built from one list,
 PLUGIN_PACK_TESTS in ci_job_reads.py, and check-ci-filters.sh pins each step's whole script, so an
-edit to either step's text is refused (a step whose script is not its pinned text counts as
-reading every Go file) and the two cannot come to name different tests. ci_job_reads.py's
-hold_plugin_pack_tests() refuses, at import, a name in that list that the package no longer
-declares and a test of agentmodels_omp_test.go the list does not name. What CI does not see is
-what this script decides: a (package, function) pair two steps of one run run without a declared
-reason, and one some step compiles while no step runs it.
+edit to either step's text is refused (a step whose script is not its pinned text fails, naming
+the step and the first line that differs, and on that line each test its -run or -skip names and
+the pin does not, or the other way round) and the two cannot come to name different tests.
+ci_job_reads.py's hold_plugin_pack_tests() refuses, at import, a name in that list that the
+package no longer declares and a test of agentmodels_omp_test.go the list does not name. What CI
+does not see is what this script decides: a (package, function) pair two steps of one run run
+without a declared reason, and one some step compiles while no step runs it.
 
 It starts no service and needs no Postgres, no NATS, no Docker and no Pulumi: it never runs a
 test. `go test -list` builds the test binary and asks it for its names, and each `TestMain` of the
@@ -373,7 +374,7 @@ AUDITED_SCRIPTS = {
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
                 "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
         },
-        sha256="8b74a560950b2575a79a9e8fe46093c0d3395a5bbb7b741522923468784989ce",
+        sha256="63269be64d58884d1e539a965a2f70e2024d3de79abb7fc4efc98bb5f55b5cb4",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.

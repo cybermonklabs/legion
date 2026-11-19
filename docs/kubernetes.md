@@ -88,11 +88,12 @@ It carries:
   The launcher installs it once per launcher process, before any role starts:
   it unpacks the check into a staging directory, records the tag there, runs the check once with `--help` to see that it names its own shapes, and renames the result over `/legion/scratch/leak-check/` (`checkInstall`, `internal/launcher/leakcheck.go`).
   Every role is told that copy as `PUBLIC_LEAK_CHECK` (`mainEnvironment`, `internal/runtime/sandbox/manifest.go`, which names the install's own constant).
-  Each role's `legion worker-shim` only reads the install, and starts no agent when the install is absent or records another tag (`spawnOnce`, `internal/shim/shim.go`).
+  Each role's `legion worker-shim` only reads the install, and starts no agent when the install is absent, records another tag or its tag file is refused (`spawnOnce`, `internal/shim/shim.go`).
   Where the environment names no check, the shim names the install for everything it starts.
   The pod holds no credential for that repository and reads no repository mapping.
   A launcher whose process installed its pin says so in its hello and is pushed nothing, and a launcher of an older image names no tag and is pushed nothing.
   A new launcher process installs over what the directory held, so the controller's persistent volume never keeps an old check.
+  The tag file is read without following a link or waiting on a fifo, and one that is no regular file or is past 256 bytes is read as no install of the pin (`installedTag`).
   A start whose check could not be installed is never sent, and is charged as a launch failure.
   The claim then carries the refusal's sentence as `leakCheckCause`, which begins `the shared public leak check could not be installed:` and says what failed.
   The daemon and the image pins move together, and a rollback of one is a rollback of the other:
@@ -1163,6 +1164,10 @@ A save the database refuses is logged and tried again at the next save, and the 
 A resume looks the transcript's row up first, so the recreated-workspace notice below is decided from its last save.
 Then the launcher writes each row to its path, but only where the file is missing or holds part of the row:
 a longer file, which a relaunch into the same pod leaves, is not shortened.
+The launcher reads a file there only as a regular file, and no further than one byte past its row, which is all that decision needs;
+it opens a file it saves, and writes the marker below, the same way.
+So a link, a fifo or anything else that is no regular file at one of those paths is refused at once in words naming it:
+a resume over it fails, and a save is tried again at the next save.
 Then Claude Code starts.
 On a fresh session the launcher writes `<transcript>.legion-saved` beside the transcript once its first save has committed, and the claim boot of claude-envoy waits for that file as well as the transcript before it registers the session.
 A transcript the daemon has recorded is then always in the table: otherwise the next pod's resume would be refused, and three refusals retire the claim.
@@ -2173,7 +2178,7 @@ A Dispatch without the route answers `404 NOT_FOUND` "no route for …", and the
 While it waits, each issue's row logs `outbox row waits` and no ERROR line: INFO at its first run, DEBUG after, and from its seventh retry, about two minutes after the first run, one WARN line at each run.
 That WARN line means a fault only once the Dispatch release that has the route is live: then the daemon reaches a Dispatch that does not serve the route.
 The daemon retries a `5xx` as a failure, with one ERROR line `outbox row failed` at each run.
-A refusal no retry changes ends the row (`stepRecordRefused` in `internal/daemon/outbox.go`): `404 ISSUE_NOT_FOUND`, a coded `400` such as `STEP_INPUT`, `403 STEP_WRITER` and `409 STEP_OTHER_ISSUE`; the record keeps what reached Dispatch before it.
+A refusal no retry changes ends the row (`recordRefused` in `internal/daemon/outbox.go`): `404 ISSUE_NOT_FOUND`, a coded `400` such as `STEP_INPUT`, `403 STEP_WRITER` and `409 STEP_OTHER_ISSUE`; the record keeps what reached Dispatch before it.
 
 The rollback needs no statement for the kind's rows: they stay in the outbox.
 An earlier release puts the kind in no outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs such a row, and a row left in place holds back no other row.
@@ -2217,6 +2222,39 @@ The block above witnesses every project's issues with a row in `step_starts`, an
 A daemon left on this release while another rolls back would read the other project's witnesses as its own: it would end a run of its own that started after the rollback at the moment of that rollback, before its own start, and a later end would land on an earlier record's id.
 No statement can scope the roll forward to one project, since the database records each migration once.
 Roll back and roll forward every daemon of one database in the same change, and run the block above only when all of them are stopped.
+
+#### Rolling back the release that rates each plan
+
+This release adds one outbox kind, `plan_record`; its migration `20261117023932_outbox_kinds_with_the_plan_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
+That migration writes the whole list, the role-holders publication's kind and `step_record` among its kinds, and its version stands above `20261117000528_outbox_kinds_with_the_step_record`, so it writes the list last on any database.
+A `plan_record` row writes the plan one run of an issue carries out onto Dispatch (`PUT /api/v1/issues/{key}/plans/{id}`), when the run's work starts.
+This release also writes the rating a retro gave the plan as a `step_record` row that carries `rating` and `rating_reason`, which the daemon sends to the record's rating route (`PUT /api/v1/issues/{key}/steps/{id}/rating`).
+That migration changes no column.
+The daemon and Dispatch deploy in either order: a Dispatch without the plan route or the rating route answers `404 NOT_FOUND` "no route for …", and the row waits as a role holders' publication does ([Rolling back the release that publishes each issue's role sessions to Dispatch](#rolling-back-the-release-that-publishes-each-issues-role-sessions-to-dispatch)), logging `outbox row waits` and no ERROR line, until Dispatch has the route.
+
+Run this with the daemon of the project that rolls back stopped, before its earlier image is pinned, with `<PROJECT>` replaced by the project's key: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`:
+
+```sql
+-- The writes of the runs' plans and of the retros' ratings onto Dispatch, of one project.
+delete from outbox where kind = 'plan_record' and split_part(issue, '-', 1) = '<PROJECT>';
+delete from outbox where kind = 'step_record' and payload->>'rating' is not null
+  and split_part(issue, '-', 1) = '<PROJECT>';
+```
+
+The header of `20261117023932_outbox_kinds_with_the_plan_record.up.sql` carries this same block.
+
+**Each project rolls back on its own.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and the outbox is one table for all of them, but each daemon runs only its own project's rows (`DueRows` in `record/store.go`).
+So one project can roll back while another stays on this release, and each delete names the project: a daemon left on this release still sends its own plans and ratings.
+
+Each deleted row is a write the daemon does not send again; the rollback deletes no node of Dispatch.
+A deleted `plan_record` row whose plan had not reached Dispatch leaves that run with no plan: the read of the project's finished issues then shows the plan of the highest generation Dispatch holds for the issue, whether that run came before the deleted one or after it (`madePlan.newerThan` in `workflowstore/read.go`), and no plan where Dispatch holds none.
+A deleted rating row whose rating had not reached Dispatch leaves that retro's record with no rating, and nothing else of the issue changes.
+A row can stand after its write reached Dispatch, when the daemon stopped, or failed to record the row as done, after the write (it runs such a row again when its lease expires, `settle` in `daemon/outbox.go`); that plan or rating stays in Dispatch.
+An earlier release puts `plan_record` in no outbox lane (`laneKinds` in `record/outbox.go`), so a `plan_record` row left in place is never decoded or run, and it writes its plan at the roll forward.
+A rating row left in place is not harmless in the same way: the release that records each step decodes a `step_record` row strictly and knows no `rating`, so it fails that row's decode at every attempt, logs the failure each time and retries it on its backoff until the roll forward.
+
+The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
 
 #### Rolling back the release whose update round ends at its bound
 
@@ -2366,9 +2404,10 @@ The same log names each pod running as a ServiceAccount other than `runtime.kube
 — `sandbox runtime: <sandbox> runs as ServiceAccount <account>, the configured ServiceAccount is
 <account>; its agents hold that identity until the pod is replaced — by its update round where a round covers the pod, by the next launch of one of its roles where none does` (`accountDrift`, warned by the same function)
 — one warning per Sandbox per kind of drift, so a pod holding both is named twice.
-A pod runs as the account it was created with for its whole life, so changing `service_account` reaches a running pod only by replacing it, and which replacement that is follows the pod's kind (`accountDrift` in `relaunch.go`, `roundCovers` in `drift.go`):
+A pod runs as the account it was created with for its whole life, so changing `service_account` reaches a running pod only by replacing it, and which replacement that is follows the pod's kind (`accountDrift` in `sandbox.go`, read by `relaunch` in `relaunch.go`, `roundCovers` in `drift.go`):
 a pod an update round covers — every issue pod — is replaced by that round, which asks every role in it to push its work and ends the pod once every role has answered or at the round's bound, and a pod no round covers — the project controller's — by the next launch of any of its roles, which interrupts the roles live in it once: they end with the pod and resume in the new one, as a moved worker stream already makes them (below).
 Its agents hold the old account's identity until then.
+Under the secrets broker, `BROKER_SESSION_ACCOUNT_PAIRS` has to be live on the broker before the change, pairing the old account with the new, or the broker refuses each live role's session name to its pod on the new account (`403 SESSION_HELD`) and the role's grants, pending requests and withheld secrets stay behind (the item on moving the daemon's pods in [Operator configuration](#operator-configuration)).
 For the account, the pod's kind decides, not the one exemption a stale-plugin install has: such a launch keeps a pod a round covers for the account as for every other drift, and replaces a pod no round covers for the account whatever it is installing, since no round will ever come for such a pod.
 The daemon-launched controller's pod is in scope for both warnings, and for the account's replacement, which happens only when the controller's process is being started anyway.
 An unset `service_account` is read as the namespace's `default` on both sides, so a pod running as `default` under a deployment that names none has not drifted at all.
@@ -2710,7 +2749,8 @@ Neither has cybermonklabs/legion#3983, which landed after it at the same contrac
 Contract 132, cybermonklabs/legion#3715, has no section of its own here either: its one migration, `20261111214351_issue_released_for_wait.up.sql`, adds the nullable column `issues.released_for_wait_at`, and its header gives no step, since migrations here are forward-only.
 Contract 123, cybermonklabs/legion#3793, has no section of its own here either: the header of its migration, `20261113090512_phase_entry_moved_back.up.sql`, gives its steps, which are none at the rollback and one statement, `update phases set entry_moved_back = true;`, before a roll-forward across it.
 To roll a release at contract 146 back to contract 144 instead, the release just before it, run the block below alone: that release keeps the six columns, and its sweep passes over every architect, since it chooses a role through `workflow.OpenPhaseRole`, which names none for an architect.
-A rollback of the release that records each step to any release before it, contract 144 and contract 87 among them, also takes the steps of that release's own section above, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), whose way back runs first: its witness reads `phases.entry`, which the phase entry's block, the eleven statements of the rollback to contract 87 below, drops.
+A rollback of the release that rates each plan to any release before it, contract 144 and contract 87 among them, also takes the steps of that release's own section above, [Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan).
+A rollback of the release that records each step to any release before it also takes the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), whose way back runs first: its witness reads `phases.entry`, which the phase entry's block, the eleven statements of the rollback to contract 87 below, drops.
 The block below is the way back of those four migrations, and the header of each carries it:
 
 ```sh
@@ -2835,6 +2875,7 @@ The migrations recorded above this one are these.
 20261116234034_phase_reviewed_head adds `phases.reviewed_head` and `pending_task_deliveries.round_named`, and appends the review round's two sentences to each task a reviewer's row stores in `phases.entry_task`, one of the six, building nothing on it; a rollback past it runs that migration's own way back too ([Rolling back the release that keeps the commit a reviewer last read](#rolling-back-the-release-that-keeps-the-commit-a-reviewer-last-read)), so that the roll-forward adds the two columns again at their defaults and, after this block's own roll-forward fills the tasks afresh, appends the sentences to them.
 20261117000528_outbox_kinds_with_the_step_record writes the outbox's kind check again with `step_record` added to the role-holders publication's list and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step).
 20261117004117_step_starts adds the tables `step_starts` and `step_starts_rollback` and the function `step_run_witness`, which reads `phases.entry` and writes none of the six, so the block holds over it and leaves the three standing, which the earlier release names in no statement; the way back of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), runs before the block, while `phases.entry` stands.
+20261117023932_outbox_kinds_with_the_plan_record writes the outbox's kind check again with `plan_record` added to the step record's list and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan).
 20261117064152_step_starts_roll_forward writes `step_starts`, `step_starts_rollback` and the `step_record` rows it adds to `outbox`, reads `phases.entry` through `step_run_witness` and writes none of the six, so the block holds over it, and the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), re-arm it for the roll forward.
 20261117112334_pull_request_statuses, of cybermonklabs/legion#4299, adds `pull_requests.statuses` at its default, the empty list, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; the way back in its own header drops the column.
 20261117200337_update_ask_marks_at_delivery, of cybermonklabs/legion#4337, clears `claims.update_tasked_at` on each claim whose update ask of the round it records still waits in the outbox, and touches none of the six either, so the block holds over it; it alters no table and has no down file, so it leaves nothing for the block to reverse.
@@ -2981,6 +3022,8 @@ Its other calls get the same sentence — a claim route answers `{"error": …}`
 the operator's own controller instead gets `…: run legion controller start from the release built with this daemon`, since there is no pod for the daemon to relaunch it in.
 A claim whose launch installs no plugin (a Claude Code role in a pod) is never refused on its contract: nothing relaunches it, so it is served on its old contract until the update round over its pod brings a new image.
 Every other undecodable request body is logged `api: refused an undecodable request body` naming the route and the decoder's error.
+A string anywhere in a request body, a member's name or its value, that holds a NUL character (U+0000), which PostgreSQL's text and jsonb cannot hold, makes the body undecodable too:
+its route acts on nothing in it, and it is answered 400 `invalid request body: <place> holds a NUL character (U+0000) at character <n>, which the daemon cannot store` (or a stale caller's refusal, as any undecodable body is), naming the string's place in the body (`planReason`, `tasks[0].text`) and the character's place in the string, counted from 1 in code points, and never the string itself.
 A relaunched process that registers still on the old contract is charged as a launch failure (the claim remembers `PluginRelaunchFor`), ending, like any other exhausted budget, in a `worker-died`.
 The contract shows on every claim view — `GET /legion/v1/state`, `legion state --json`, `read_record`'s `pluginContract` field
 — on `legion claims list`'s line, whose last three columns are the claim's `updateRound`, the `updateHead` its worker reported (`-` for neither) and the tool call its agent is in (`-` for none), and on the state's controller locator.
@@ -4931,8 +4974,8 @@ the daemon asks its `/healthz` first, whose `streams` counts the tars it is send
 stream` and leaves the pod to a later sweep, because the replacement would end every one of those tars, failing each fetch reading one and making its issue pod again.
 A cache of an earlier release answers no `streams`, and one whose `/healthz` cannot be read is replaced at once, as before.
 A launch whose cache cannot be made fails, naming why.
-The cache of a repository the mapping no longer names is annotated `legion.dev/cache-unmapped-at` at the sweep that finds it so, kept for `runtime.kubernetes.repository_cache.retain_hours` (168 by default), and then deleted with its volume and Secret;
-mapped again before that, it loses the annotation and stays.
+The cache of a repository that neither the mapping nor a live issue record of the project names any more is annotated `legion.dev/cache-unmapped-at` at the sweep that finds it so, kept for `runtime.kubernetes.repository_cache.retain_hours` (168 by default), and then deleted with its volume and Secret (`Options.Mapped`, `internal/runtime/sandbox/types.go`, which the daemon fills from the mapping and the live records, `refreshCacheRepositories`);
+named again before that, by the mapping or by a record, it loses the annotation and stays.
 A cache the sweep cannot make or repair — its owner's token cannot be minted, say — is a warning naming it, tried again at the next sweep.
 The boot census refuses a Sandbox labelled `legion.dev/cache` that is not one this runtime builds (no repository annotation, or another container or claim template), by name.
 
@@ -6056,7 +6099,8 @@ Every end of an issue pod is therefore the end of that pod's disk, and the ends 
   A pod the launch finds suspended, ended, with a failed init container, with a role's launcher Secret that no longer binds it, or on a Sandbox of the disk shape before this release is replaced too ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses), [Cutting over to the pod-owned disk](#cutting-over-to-the-pod-owned-disk)).
   The account the pod runs as is not one of those, though it is fixed for the pod's life: a round covers every issue pod, so a change of `runtime.kubernetes.pod.service_account` is answered by each pod's own update round, the end below, which asks every role in it to push and replaces the pod once every role has answered or at the round's bound.
   Such a change therefore costs an issue pod only the work its roles did not push before the pod went, and a deployment moving its pods to another account need not drain its trees by hand first.
-  It still costs the identity: until its round has replaced it a pod's agents hold the identity the old account grants, so an old account is deleted only once no live pod of it is left, and how fast a fleet moves is what `pod_update_max_open_rounds` and `pod_update_rounds_per_minute` bound, each round also waiting, until its bound, for every running turn in its pod to end (below);
+  It still costs the identity: until its round has replaced it a pod's agents hold the identity the old account grants, so an old account is deleted only once no live pod of it is left, and how fast a fleet moves is what `pod_update_max_open_rounds` and `pod_update_rounds_per_minute` bound, each round also waiting, until its bound, for every running turn in its pod to end (below).
+  Under the secrets broker, `BROKER_SESSION_ACCOUNT_PAIRS` has to be live on the broker before the change, pairing the old account with the new, or the broker refuses each live role's session name to its pod on the new account (`403 SESSION_HELD`) and the role's grants, pending requests and withheld secrets stay behind (the item on moving the daemon's pods in [Operator configuration](#operator-configuration));
 
 - **an update round replaces the pod**, once every role in it has answered or at the round's bound (below).
   A live pod whose configuration has merely drifted is never replaced where it is found, because that would end every role's turn in it and delete the disk with everything unpushed on it;
@@ -6953,7 +6997,7 @@ each issue's pod (every role of it alike) and the image probe's.
   a projected `service_account_token` must last at least 600 s, the least the API server issues, and its `audience` may not still hold a `${…}` placeholder, which nothing expands.
   `volume_mounts` are read-only unless `read_only: false`, and may use `sub_path`.
   `service_account` is the pods' ServiceAccount (unset, pods run as the namespace's `default` ServiceAccount); it may not still hold a `${…}` placeholder, which nothing expands, as a projected token's `audience` may not.
-  Changing it replaces each live issue or controller pod at the next launch of one of its roles, and each repository cache's pod at the first boot, sweep or new issue pod of its repository that finds it serving no stream; an issue pod's disk goes with its pod ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).
+  Changing it reaches a running pod only by replacing it, which the item after this one describes.
   A name or path that collides with Legion's own is refused at load, naming both:
   a variable the runtime, the worker image's `ENV` or every launch sets, a volume name Legion uses, or a mount at, under or above a path Legion mounts, the image owns, or a tool runs from, or `workspace-init`'s state home (`/home/legion/.local/state`, where `workspace-init` keeps the XDG state it provisions the issue under:
   no role's agent keeps its Oh My Pi state there any more
@@ -6971,6 +7015,13 @@ each issue's pod (every role of it alike) and the image probe's.
   [`deploy/kubernetes/operator-route/`](../deploy/kubernetes/operator-route/README.md) is an example of one, the one the Go live harnesses run on:
   a `models.yml` and a settings overlay from a ConfigMap, and a mounted token its key command reads.
   Its README lists what an operator supplies and how `pod` and `provider_keys` compose.
+
+- **A change of `runtime.kubernetes.pod.service_account`** reaches a running pod only by replacing it ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)):
+  an update round replaces each issue pod a claim names, the next launch of the controller's role replaces the controller's pod, and a repository cache's pod is replaced at the first boot, sweep or new issue pod of its repository that finds it serving no stream;
+  the sweep does not replace the pod of the cache of a repository that neither the mapping nor a live issue record of the project names any more, and that pod goes when the cache's retention deletes the cache ([The repository cache](#the-repository-cache)).
+  An issue pod's disk goes with its pod.
+  Under the secrets broker the replacement also costs each live role its session name, until `BROKER_SESSION_ACCOUNT_PAIRS` pairs the old account with the new:
+  the broker refuses that name to the role's pod on the new account (`403 SESSION_HELD`), so the role's grants, pending requests and withheld secrets stay behind, and the setting has to be live on the broker before the change (the `BROKER_SERVICES` item below, and the item after it).
 
 - **Dispatch's public dashboard.**
   Every pod reaches Dispatch at `dispatch_url`, usually an in-cluster address nobody outside the cluster can open.
@@ -7433,7 +7484,7 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - The daemon logs in as the service `legion-daemon`, and its pods run as the ServiceAccount `runtime.kubernetes.pod.service_account` names (`default` when unset, above).
   A broker configured with that account for `legion-daemon`, such as `BROKER_SERVICES=legion-daemon=system:serviceaccount:legion:<the account the pods run as>`, gives a secret tagged `owner=legion-daemon` to every such pod at once and to no other session (the broker's concepts page, "Owner and tier").
-  When the daemon's pods run as several accounts, the setting names each in a `legion-daemon=` entry of its own.
+  When the daemon's pods run as several accounts, as they do while a change of `service_account` moves them, the setting names each in a `legion-daemon=` entry of its own.
   The broker refuses to start with a namespace's `default` account in `BROKER_SERVICES`, since every pod there that names no account runs as it, so pods that receive service-owned secrets name a dedicated account.
   The daemon's own ServiceAccount, which logs in, is a different account from its pods', and it is named in `BROKER_SERVICE_LOGINS`, not `BROKER_SERVICES`;
   the broker refuses to start with an account in `BROKER_SERVICE_LOGINS` that is a namespace's `default`, since every pod running as it could then log in as the daemon.
@@ -7452,6 +7503,23 @@ each issue's pod (every role of it alike) and the image probe's.
   So the enrollment can stay live until the pod is replaced, at the latest when its issue closes, plus one lease (`BROKER_LEASE_SECONDS`).
   To end it at once, anyone signed in to Dispatch revokes the daemon's login on Dispatch's machine-login page (`/credentials/machine`), the row `legion-daemon on <namespace>/<account>` whose **Approved by** reads `No one:` and the daemon's ServiceAccount, which ends every session it enrolled;
   the daemon logs in again with its token under a new credential, which enrolls the pods it launches next, and a pod already running stays without secrets until it is replaced (`docs/site/src/content/docs/broker/guides/revoke-a-session.md`, "End a machine's login").
+
+- **Moving the daemon's pods to another ServiceAccount under the secrets broker.**
+  The broker holds each session name for the principal that claimed it, and a pod's principal is the account its projected token proves, so a role whose next pod runs as the new account is refused its own session name (`403 SESSION_HELD`):
+  the daemon logs `supervise: agent-secrets: enrollment refused; waiting for the shim's next hello`, the pod runs with no enrollment, and the role's grants, pending requests and withheld secrets stay on the old account's enrollment.
+  `BROKER_SESSION_ACCOUNT_PAIRS` pairs two accounts, in whitespace-separated `<account>=<account>` entries such as `system:serviceaccount:legion:legion-worker=system:serviceaccount:legion:<project>-worker`, and either account of a pair takes a session name the other holds:
+  the role's next pod on the new account enrolls under its own name, its enrollment takes the grants, pending requests and withheld secrets the old account's enrollments of that name hold where a login of the daemon's own account enrolled them, since a pod's grants follow its account and the account of the login that enrolled it (the broker's concepts page, "Requests and grants"), and the broker logs the take at WARN, `broker: an enrollment took a session name from the account paired with its own`,
+  or `broker: the token exchange took a session name from the account paired with its own` where the pod's own token exchange took the name before the pod enrolled, and the enrollment then logs no take of its own.
+  So before changing `service_account`, give the broker both settings and redeploy it:
+  the new account's `legion-daemon=` entry in `BROKER_SERVICES` (above), without which the broker refuses each pod of that account `403 POD_NOT_LAUNCHED`, and the pair, which its start line then names, `session account pairs state=on pairs=<pairs>`.
+  Where `runtime.kubernetes.agent_secrets.exchange_audience` is set (below), the new account also needs an entry of its own in `BROKER_EXCHANGE_ACCOUNTS`, without which the broker refuses the daemon's registration of each of its pods' sessions `403 POD_ACCOUNT_NOT_LISTED`, and refuses each token those pods trade.
+  A pair works both ways, so moving the pods back needs no change of the setting.
+  A pair added after a role's enrollment was refused takes effect at that role's next enrollment, which the daemon makes at the shim's next hello, on a redial of its connection or at the claim's next generation (above):
+  the old enrollment's grants and pending requests come across while the broker still keeps them, `BROKER_SESSION_CARRY_SECONDS` (12 hours by default) after that enrollment ended, and its withheld secrets come across at that next enrollment whenever it comes.
+  While a pair stands, a pod of either account can claim any session name the other holds, not only its own role's, so where several projects' pods shared the old account, a pod of one project's new account can claim a name the old account holds for another project's role, and takes none of what that role's session holds, which another daemon's login enrolled.
+  Two things bound this: the daemon gives each role only its own name, and a name leaves the old account once its role's pod has moved.
+  So move the pods' account alone: a daemon whose own login moves to another account in the same change enrols the new pods under another launcher, and they take none of what the old pods held.
+  Remove the pairs with the old account once no live pod runs as it.
 
 - **`runtime.kubernetes.agent_secrets.exchange_audience`** gives every enrolled pod an identity the broker's exchange trades for a broker token of a session's own (dispatch://INFRA-840).
   Each pod then also carries a projected token of its ServiceAccount for that audience, an hour long, in a volume of its own (`agent-secrets-exchange`), mounted read-only at `/var/run/legion/agent-secrets-exchange/token` in the container its roles run in, and every role is told `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` and `AGENT_SECRETS_MACHINE_TOKEN_FILE` naming that file, beside the enrollment it already holds.
@@ -7607,10 +7675,12 @@ A `named` token naming a project fails until every broker replica, Dispatch and 
 The grant issues no refresh token, so each renewal is a fresh trade that Dispatch is asked about again.
 
 A session name belongs to one principal — the service account, the workflow, the Google account, or the person
-— and the broker refuses `invalid_grant` to another principal that names it (`claimSession`, `packages/envoy/internal/broker/oauth/exchange.go`).
-A claim holds the name for `oauthstore.SessionRetention`, 90 days, past the expiry of the token the claim was made for (`BindSession`, `packages/envoy/internal/broker/oauthstore/exchange.go`).
+— and the broker refuses `invalid_grant` to another principal that names it (`claimSession`, `packages/envoy/internal/broker/oauth/exchange.go`), but for a service account `BROKER_SESSION_ACCOUNT_PAIRS` pairs with a holding service account:
+that account's claim takes the name, which the broker logs at WARN as `broker: the token exchange took a session name from the account paired with its own` (the item on moving the daemon's pods in [Operator configuration](#operator-configuration)).
+A claim, a pair's take among them, holds the name for `oauthstore.SessionRetention`, 90 days, past the expiry of the token the claim was made for (`BindSession`, `packages/envoy/internal/broker/oauthstore/exchange.go`).
 A name an entry fixes is held for that entry with no expiry:
 the broker reserves it for the entry unless another principal holds it (`ReserveSessions`, the same file), and the entry's own exchange takes it from any other holder.
+No pair takes a name an entry fixes, whoever holds it.
 
 A resource server reads such a token back with `POST /v1/oauth/introspect` (`packages/envoy/internal/broker/api/handlers_introspect.go`).
 It authenticates with its own Kubernetes service-account token, or, on a machine that holds no Kubernetes token, with that machine's own Google identity token, of an account the broker lists in `BROKER_API_ACCOUNTS` (`<caller>=system:serviceaccount:<namespace>:<name>`, or `<caller>=google:<service account email>`).

@@ -2410,6 +2410,44 @@ package api
 // #4180 and #4193) and 159 (#4049 and #4175), so 160 is still the lowest number above main's 152
 // that no open head declares.)
 //
+// 168: the completion that ends the retro rates the plan the issue ran. `POST
+// /legion/v1/handoff/complete` (`api.HandoffCompleteRequest`, contracts'
+// `LegionHandoffCompleteRequest`) takes two optional fields: `planRating`, a whole number from 1
+// (the plan cost the work) to 5 (the plan fit the work), and `planReason`, why, in one to 2,000
+// characters counted as Unicode code points and not all blank, the two together
+// (`PLAN_RATING_INPUT`). The agent that does the retro gives them, so the completion that ends the
+// retro takes them, and every other completion and a production check's report are refused them
+// (`PLAN_RATING_UNEXPECTED`). Which completion ends the retro the workflow judges where it ends
+// it, on the issue as the completion's own transaction reads it (`TriggerRetroCompleted`), and its
+// own refusals, a held issue's 409 among them, come first. A claim whose plugin declared this
+// contract or a later one must rate (`PLAN_RATING_REQUIRED`), so a plugin built from this commit
+// sends both on its retro; a plugin below it never sends them, and its retro, where the daemon
+// serves its claim (`staleClaim`: a claim in a turn, in an update round, with no plugin install,
+// or on a daemon that relaunches onto no plugin), completes with no rating
+// (`api.PlanRatingContract`).
+// Every refusal is a 400 that records nothing, so the same completion, corrected, is taken: the
+// route writes `PLAN_RATING_INPUT` and a report's `PLAN_RATING_UNEXPECTED` before the fact is
+// applied, and the workflow refuses the rest with the fact left unspent (`intake.Result.Unspent`).
+// The route hands the two to the workflow on the completion's fact as one value
+// (`intake.HandoffComplete.PlanRating`), beside whether the claim must rate (`MustRate`).
+// `readBody` refuses an unknown field, so a plugin sending them to a daemon below 168 would have
+// every retro refused; the bump is why the two never meet. No shape of `GET /legion/v1/state`
+// moves, so no caller is served a narrower one.
+// The decoder of every request body (`decodeJSON`) also refuses a body any string of which, a
+// member's name and an earlier copy of a repeated member included, holds U+0000, which
+// PostgreSQL's text and jsonb cannot hold: 400 `invalid request body` naming the string's place and
+// where in it the character stands (`unstorableJSON`), or first the stale-caller 409 where the
+// route can name a stale caller (`readBody`'s identity check), as for any body that does not
+// decode. A route that stored such a string answered 500 before, and one that only compared it
+// took it; every route now refuses it before it reads the body.
+// (This entry takes 168, the lowest number above main's 160 that no open pull request declared
+// when the merge of 2026-11-19 brought main in at c70a80228d: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 235 open pull requests, made between
+// 2026-11-19T08:26:23Z and 08:26:52Z, found each of 161 to 166 declared, 167 declared by #4030,
+// #4485, #4493 and this change's own head before this merge, and nothing above 167. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
 // 172: dispatch://INFRA-2694 -- the daemon shapes every answer down to the contract the caller's
 // own plugin speaks, and reads every request an older plugin still sends, so a roll that replaces
 // one pod at a time leaves the `legion` tool working in every pod it has not replaced yet. A
@@ -2471,6 +2509,11 @@ package api
 // Contract 160 is served with no code of its own here: its two shapes are on the launcher's
 // wire, which the image probe pairs by number, and its one state key is a settings key, so a
 // caller at 160 is served what one at 152 is, and 160's records are 152's under its own number.
+// Contract 168 is served with no code of its own here: it moves no key path or value of any
+// answer, so a caller at 168 is served what one at 160 is, and 168's records are 160's under its
+// own number. Its two request fields, `planRating` and `planReason`, are read by name, so this
+// contract's record of `POST /legion/v1/handoff/complete` holds them, and a plugin at 168, which
+// sends them on its retro, and one below it, which never does, are both read.
 // Contract 146 is one of the contracts served down here too, by its row of shaping.go's
 // stateNarrowings, and this contract is served above it: a caller below 146 is served every
 // issue without `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (`withoutEntryTimes`,
@@ -2652,7 +2695,10 @@ package api
 // where the reading of the 234 open pull requests at 2026-11-19T08:37:12Z gave 161 to 167 to
 // other heads and 168 to none, and 172 at a later round, when #3993, #4175 and #4488 had taken
 // 168 too, where the reading of the 233 open pull requests at 2026-11-19T13:36:20Z gave
-// 161 to 171 to other heads and 172 to none. 87 was free when this head took it and was gone
+// 161 to 171 to other heads and 172 to none, and 172 again at the merge that brought main in at
+// 168 (#4488), which is below it, where the reading of the 241 open pull requests at
+// 2026-11-19T17:51:41Z gave 169 to 171 to other heads and 172 to this change alone. 87 was free
+// when this head took it and was gone
 // when the head was pushed: the gate holds a head against main alone and sees no other head's
 // number, so
 // a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request of this

@@ -154,6 +154,8 @@
       "grantId",
       "handoffId",
       "handoffVersion",
+      "planRating",
+      "planReason",
       "summary",
       "verdict",
       "wakeAt"

@@ -257,35 +257,31 @@ func TestTheHeldSuspensionRefusalNamesEachDoorsOwnLiveStates(t *testing.T) {
 					if refusalServer().refuseHeldSuspension(recorder, refusalRequest(), token, state, role, door.op) {
 						t.Fatal("the refusal reported true, want the false every caller returns as its own answer")
 					}
-					var failure Failure
-					decodeInto(t, recorder, &failure)
 					wantCode := claimUnsettled
 					if state == supervise.StateWorking {
 						wantCode = claimInATurn
 					}
-					if recorder.Code != http.StatusConflict || failure.Code != wantCode {
-						t.Fatalf("refusal = %d %s, want %d %s", recorder.Code, failure.Code, http.StatusConflict, wantCode)
-					}
+					message := refused(t, recorder, http.StatusConflict, wantCode)
 
-					clauses := strings.SplitN(sentenceNaming(t, failure.Error, startsAgainName(role)), ", and ", 2)
+					clauses := strings.SplitN(sentenceNaming(t, message, startsAgainName(role)), ", and ", 2)
 					if len(clauses) != 2 {
 						t.Fatalf("the sentence of what reaches the claim is %q, want a clause for each of the two", clauses[0])
 					}
 					if named := statesNamed(clauses[0], all); !slices.Equal(named, stopped) {
-						t.Errorf("%s reaches %v in the refusal, want %v: %q", startsAgainName(role), named, stopped, failure.Error)
+						t.Errorf("%s reaches %v in the refusal, want %v: %q", startsAgainName(role), named, stopped, message)
 					}
 					if !strings.Contains(clauses[1], door.op.name) {
 						t.Errorf("the second clause is %q, want it to name %s", clauses[1], door.op.name)
 					}
 					if named := statesNamed(clauses[1], all); !slices.Equal(named, live) {
-						t.Errorf("%s reaches %v in the refusal, want %v: %q", door.op.name, named, live, failure.Error)
+						t.Errorf("%s reaches %v in the refusal, want %v: %q", door.op.name, named, live, message)
 					}
 					want := slices.Concat(stopped, live)
 					slices.SortFunc(want, func(a, b supervise.ClaimState) int {
 						return slices.Index(all, a) - slices.Index(all, b)
 					})
-					if named := statesNamed(failure.Error, all); !slices.Equal(named, want) {
-						t.Errorf("the refusal names %v, want %v: %q", named, want, failure.Error)
+					if named := statesNamed(message, all); !slices.Equal(named, want) {
+						t.Errorf("the refusal names %v, want %v: %q", named, want, message)
 					}
 				})
 			}

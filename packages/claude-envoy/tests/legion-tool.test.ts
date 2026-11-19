@@ -5,6 +5,7 @@ import type { LegionRole } from "@legion/contracts"
 import type { LegionPhase } from "@legion/contracts/legion-api"
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
+import { stateAtPhase } from "@legion/pi-shared/test/daemon-state"
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest"
 import { legion, name, version } from "../package.json" with { type: "json" }
 import { executeLegionTool, legionToolDefinition } from "../src/legion-tool"
@@ -79,11 +80,16 @@ interface Request {
   readonly body: unknown
 }
 
-async function daemon(options: { readonly daemonContract?: number } = {}): Promise<{
+/** A stub daemon answering the golden fixtures, `state` in place of `state.json` when given. */
+async function daemon(
+  options: { readonly daemonContract?: number; readonly state?: unknown } = {},
+): Promise<{
   readonly client: LegionDaemonClient
   readonly requests: Request[]
 }> {
-  const state = (await daemonFixture("state.json")) as { issues: Record<string, unknown> }
+  const state = (options.state ?? (await daemonFixture("state.json"))) as {
+    issues: Record<string, unknown>
+  }
   const answers: Record<string, unknown> = {
     "/legion/v1/state": state,
     "/legion/v1/grants": await daemonFixture("grant.json"),
@@ -178,6 +184,9 @@ test("declares the six phase-worker operations under one op, and names the Envoy
       since: { type: "string" },
       summary: { type: "string" },
       verdict: { enum: ["pass", "pending", "fail"] },
+      wake_at: { type: "string" },
+      plan_rating: { type: "integer", minimum: 1, maximum: 5 },
+      plan_reason: { type: "string" },
       reason: { type: "string" },
       round: { type: "string" },
     },
@@ -229,6 +238,40 @@ test("handoff_complete finds the record and commit for the issue's phase and the
       },
     },
   ])
+})
+
+// The agent that does the retro rates the plan in the completion that ends it, through this tool
+// as through every host's: the two fields reach the daemon under its own names.
+test("the retro's handoff_complete sends its rating of the plan as planRating and planReason", async () => {
+  const { client, requests } = await daemon({ state: stateAtPhase("retro") })
+  const lookups: string[] = []
+  const standing = "c".repeat(40)
+  const reason = "The reviewer's second round found what the plan had left out."
+  await executeLegionTool(
+    {
+      daemon: client,
+      claim: () => implementer,
+      handoffReport: async (phase: LegionPhase, role: LegionRole) => {
+        lookups.push(`${phase} ${role}`)
+        return { commit: standing }
+      },
+      branchHead: noBranchHead,
+    },
+    { op: "handoff_complete", summary: "Retro done.", plan_rating: 3, plan_reason: reason },
+  )
+  expect(lookups).toEqual(["retro implementer"])
+  expect(requests.at(-1)).toEqual({
+    method: "POST",
+    path: "/legion/v1/handoff/complete",
+    body: {
+      grantId: "grant-for-one-command",
+      summary: "Retro done.",
+      verdict: "",
+      commit: standing,
+      planRating: 3,
+      planReason: reason,
+    },
+  })
 })
 
 test("a handoff report the pane refuses posts nothing and mints nothing", async () => {

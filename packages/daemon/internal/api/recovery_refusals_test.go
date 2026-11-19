@@ -196,7 +196,7 @@ func TestACompactionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsUnsettled(t
 
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-				wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+				refusedSaying(t, recorder, http.StatusConflict, claimUnsettled,
 					parkedRelaunchRefusal(token, wantCompactionReaches))
 			})
 		}
@@ -216,7 +216,7 @@ func TestAFreshSessionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsUnsettled
 
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
-				wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+				refusedSaying(t, recorder, http.StatusConflict, claimUnsettled,
 					parkedRelaunchRefusal(token, wantFreshSessionReaches))
 				if after := h.stored(token); after.State != supervise.StateWorking || after.Session != "ses_implementer" {
 					t.Errorf("the refused claim is %s recording session %q, want the working claim the park left on the session it had",
@@ -292,7 +292,7 @@ func TestARecoveryRefusedWhileTheStalePluginRefreshWaitsItsTurnNamesTheLaunchInF
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+			refusedSaying(t, recorder, http.StatusConflict, claimUnsettled,
 				parkedRelaunchRefusal(token, wantCompactionReaches))
 		})
 	}
@@ -303,7 +303,7 @@ func TestARecoveryRefusedWhileTheStalePluginRefreshWaitsItsTurnNamesTheLaunchInF
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
-			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+			refusedSaying(t, recorder, http.StatusConflict, claimUnsettled,
 				parkedRelaunchRefusal(token, wantFreshSessionReaches))
 		})
 	}
@@ -680,7 +680,7 @@ func TestARecoveryRefusedOverALiveProcessNamesTheTurn(t *testing.T) {
 
 					recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-					wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimInATurn,
+					refusedSaying(t, recorder, http.StatusConflict, claimInATurn,
 						inATurnRefusal(token, door.cutsTheTurn, door.reaches))
 					if got := processReads(h) - reads; got != 1 {
 						t.Errorf("the request read the claim's process %d times, want the one read its answer turns on", got)
@@ -715,7 +715,7 @@ func TestARecoveryRefusedWhenTheRuntimeCouldNotReadTheProcess(t *testing.T) {
 
 					recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-					wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+					refusedSaying(t, recorder, http.StatusConflict, claimUnsettled,
 						unreadableProcessRefusal(token, door.reaches))
 					if got := processReads(h) - reads; got != 1 {
 						t.Errorf("the request read the claim's process %d times, want the one read it was refused for", got)
@@ -748,7 +748,7 @@ func TestACompactionOverADeadProcessNamesTheFreshSession(t *testing.T) {
 
 					recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-					wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimNotRunning, notRunningRefusal(token))
+					refusedSaying(t, recorder, http.StatusConflict, claimNotRunning, notRunningRefusal(token))
 					if got := processReads(h) - reads; got != 1 {
 						t.Errorf("the request read the claim's process %d times, want the one read its answer turns on", got)
 					}
@@ -840,7 +840,7 @@ func TestACompactionOfTheControllerOverADeadProcessNamesTheOperatorsSuspendAndRe
 
 				recorder := h.operator(http.MethodPost, route+"compact", nil)
 
-				wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimNotRunning, deadControllerRefusal(token))
+				refusedSaying(t, recorder, http.StatusConflict, claimNotRunning, deadControllerRefusal(token))
 				if got := processReads(h) - reads; got != 1 {
 					t.Errorf("the request read the controller's process %d times, want the one read its answer turns on", got)
 				}
@@ -1042,7 +1042,7 @@ func TestAFreshSessionThatStoppedTheClaimAndCouldNotStartItSaysNotRestartedInIts
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
-			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimInATurn,
+			refusedSaying(t, recorder, http.StatusConflict, claimInATurn,
 				inATurnRefusal(token, "a fresh session would cut that turn off", wantFreshSessionReaches))
 			if got := processReads(h) - reads; got != 1 {
 				t.Errorf("the request read the claim's process %d times, want the one read its answer turns on", got)
@@ -1196,7 +1196,7 @@ func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *
 			if !answered {
 				t.Fatal("the read answered nothing, want the refusal of the parked relaunch")
 			}
-			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled, parkedRelaunchRefusal(token, door.reaches))
+			refusedSaying(t, recorder, http.StatusConflict, claimUnsettled, parkedRelaunchRefusal(token, door.reaches))
 			if got := processReads(h) - reads; got != 0 {
 				t.Errorf("the runtime was asked %d times, want nothing asked of a process a parked launch replaces", got)
 			}
@@ -1216,7 +1216,7 @@ func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *
 		if suspended {
 			t.Fatal("the suspension landed, want it refused for the parked relaunch")
 		}
-		wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled, parkedRelaunchRefusal(token, wantFreshSessionReaches))
+		refusedSaying(t, recorder, http.StatusConflict, claimUnsettled, parkedRelaunchRefusal(token, wantFreshSessionReaches))
 		if now := m.View(); now.State != supervise.StateWorking || !relaunchWaits(now) || now.SuspensionHeld {
 			t.Errorf("the claim is %s with wake %+v and a suspension held %v, want it left working under the parked relaunch with nothing held",
 				now.State, now.WakeWaiting, now.SuspensionHeld)
@@ -1280,7 +1280,7 @@ func TestAFreshSessionsSuspensionRefusedAsWorkingIsAnsweredByASecondRead(t *test
 			if suspended {
 				t.Fatal("the suspension landed, want it refused for the claim in a turn")
 			}
-			wantFreshSessionRefusal(t, recorder, http.StatusConflict, row.code, row.message(token))
+			refusedSaying(t, recorder, http.StatusConflict, row.code, row.message(token))
 			if got := processReads(h) - reads; got != 1 {
 				t.Errorf("the step read the claim's process %d times, want the one read made again after the refusal", got)
 			}
@@ -1330,7 +1330,7 @@ func TestARecoveryStepRefusesAWorkingClaimThatRecordsNoProcessAsUnsettled(t *tes
 			if !answered {
 				t.Fatal("the read answered nothing, want the refusal of a claim that records no process")
 			}
-			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled, unrecordedProcessRefusal(token, door.reaches))
+			refusedSaying(t, recorder, http.StatusConflict, claimUnsettled, unrecordedProcessRefusal(token, door.reaches))
 			if got := processReads(h) - reads; got != 0 {
 				t.Errorf("the runtime was asked %d times, want nothing asked of a claim that records no process", got)
 			}
@@ -1381,7 +1381,7 @@ func TestARecoveryRefusedAsWorkingWhoseLaterViewIsNotWorkingAnswersThatTheClaimM
 
 			door.refuse(routeServer(h), recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token, view)
 
-			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled, movedClaimRefusal(token, door.reaches))
+			refusedSaying(t, recorder, http.StatusConflict, claimUnsettled, movedClaimRefusal(token, door.reaches))
 			if got := processReads(h) - reads; got != 0 {
 				t.Errorf("the runtime was asked %d times, want nothing asked of a claim that is not working", got)
 			}
@@ -1614,7 +1614,7 @@ func TestARecoveryRefusedUnderAHeldSuspensionSaysTheClaimStopsWorking(t *testing
 
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-				wantFreshSessionRefusal(t, recorder, http.StatusConflict, held.code,
+				refusedSaying(t, recorder, http.StatusConflict, held.code,
 					heldSuspensionRefusal(token, freshSessionName, "a compaction", wantCompactionLive))
 			})
 		}
@@ -1625,7 +1625,7 @@ func TestARecoveryRefusedUnderAHeldSuspensionSaysTheClaimStopsWorking(t *testing
 
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
-				wantFreshSessionRefusal(t, recorder, http.StatusConflict, held.code,
+				refusedSaying(t, recorder, http.StatusConflict, held.code,
 					heldSuspensionRefusal(token, freshSessionName, "a fresh session", wantFreshSessionLive))
 				if m, _ := h.supervisor.Machine(token); !m.View().SuspensionHeld {
 					t.Errorf("the refused claim holds no suspension, want the one the refusal left held")
@@ -1662,7 +1662,7 @@ func TestACompactionRefusedUnderAHeldSuspensionOverTheControllerNamesItsKeeper(t
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
 
-	wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+	refusedSaying(t, recorder, http.StatusConflict, claimUnsettled,
 		heldSuspensionRefusal(token, controllerKeeperName, "a compaction", wantCompactionLive))
 }
 

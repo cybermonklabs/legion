@@ -121,6 +121,10 @@
       "types": "./src/jj-attribution.ts",
       "bun": "./src/jj-attribution.ts"
     },
+    "./test/daemon-state": {
+      "types": "./test/daemon-state.ts",
+      "bun": "./test/daemon-state.ts"
+    },
     "./test/cross-imports": {
       "types": "./test/cross-imports.ts",
       "bun": "./test/cross-imports.ts"

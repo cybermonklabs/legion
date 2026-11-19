@@ -1045,7 +1045,7 @@ func TestTheHeaderRefusesNoCallerAndMovesNoStaleRefusal(t *testing.T) {
 			ClaimToken: token, SessionID: session, Secret: current.Secret, Generation: current.Generation,
 		}, stated),
 		http.StatusConflict, claim.StalePluginContract(recorded, DaemonAPIVersion).Message)
-	wantFailure(t, h.request(http.MethodPost, "/legion/v1/grants", GrantRequest{
+	refused(t, h.request(http.MethodPost, "/legion/v1/grants", GrantRequest{
 		SessionID: session, Secret: current.Secret, Tree: "LEGION-208", Issue: "LEGION-208",
 	}, stated), http.StatusConflict, "STALE_PLUGIN_CONTRACT")
 
