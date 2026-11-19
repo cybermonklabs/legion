@@ -229,10 +229,10 @@ type ClusteredHubListenerArgs struct {
 	// tailnet hosts: none when unset, and at least one without tailnet, where no tailnet host
 	// forwards to it.
 	ClientNamespaces []string `pulumi:"clientNamespaces,optional"`
-	// Any further address a client dials the listener by, beyond the names it always serves:
-	// <serviceName>.<tailnetDnsName> with tailnet, and its cluster Service's name with
-	// clientNamespaces. Only where the listener serves with no credential: one that requires a
-	// credential serves /v1 to any Host and reads no ENVOY_ALLOWED_HOSTS, so it refuses this.
+	// Any further address a client dials the listener by, beyond <serviceName>.<tailnetDnsName>,
+	// which it always serves with tailnet. Only where the listener serves with no credential: one
+	// that requires a credential serves /v1 to any Host and reads no ENVOY_ALLOWED_HOSTS, so it
+	// refuses this.
 	AllowedHosts []string `pulumi:"allowedHosts,optional"`
 	// The credential the listener requires of a caller, which it checks itself
 	// (ENVOY_OIDC_ISSUER, ENVOY_OIDC_AUDIENCE, ENVOY_OIDC_ACCOUNTS): a projected Kubernetes
@@ -241,8 +241,13 @@ type ClusteredHubListenerArgs struct {
 	// listener is the hub's own listener input or has clientNamespaces, since its NetworkPolicy
 	// alone would let every pod it admits send as any session, and refused on a tailnet.listener
 	// without clientNamespaces, which serves the tailnet hosts with no credential. oidcIssuer is an
-	// https URL, such as the hub's own cluster's,
+	// https URL with no user, query or fragment, an empty one included, such as the hub's own
+	// cluster's,
 	// https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>.
+	// A listener that requires the credential must run legion-envoy-v30.32.0 or later, the first
+	// release whose listener reads ENVOY_OIDC_ACCOUNTS: an older one admits every subject the
+	// issuer signs for the audience, and image, a digest, says nothing the component could refuse
+	// it by.
 	OidcIssuer   string   `pulumi:"oidcIssuer,optional"`
 	OidcAudience string   `pulumi:"oidcAudience,optional"`
 	OidcAccounts []string `pulumi:"oidcAccounts,optional"`

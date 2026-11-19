@@ -224,15 +224,19 @@ type DispatchArgs struct {
 	// from, such as Google's health-check and proxy ranges, which the component renders as ipBlock
 	// peers on 8766 in the app's own NetworkPolicy, beside allowedNamespaces' peers, so one policy
 	// selects the Dispatch pods. Each is a CIDR net.ParseCIDR takes, written as its network
-	// (10.0.0.0/8, not 10.1.2.3/8). It needs publicOrigin, the origin that load balancer serves.
-	// Unset renders no such peer.
+	// (10.0.0.0/8, not 10.1.2.3/8), with a prefix longer than /0: 0.0.0.0/0 or ::/0 would admit
+	// every address to 8766, past the load balancer and IAP alike. It needs publicOrigin, the
+	// origin that load balancer serves. Unset renders no such peer.
 	LoadBalancerSourceRanges []string `pulumi:"loadBalancerSourceRanges,optional"`
 	// NetworkEndpointGroupName names the standalone network endpoint group GKE makes for the app's
 	// Service on 8766, which the deployment's load balancer takes as its backend: the Service gets
-	// the annotation cloud.google.com/neg: {"exposed_ports":{"8766":{"name":"<name>"}}}
-	// (https://cloud.google.com/kubernetes-engine/docs/how-to/standalone-neg). It is a Compute
-	// Engine resource name, a lowercase letter, then up to 62 lowercase letters, digits or hyphens,
-	// not ending in a hyphen. It needs publicOrigin. Unset renders no annotation.
+	// the annotation cloud.google.com/neg: {"exposed_ports":{"8766":{"name":"<name>"}},"zones":["*"]}
+	// (https://cloud.google.com/kubernetes-engine/docs/how-to/standalone-neg). "zones":["*"] has GKE
+	// pre-provision the group in every zone of the cluster's region, empty until a pod runs there,
+	// so the load balancer's backend can name it in each zone; that needs GKE 1.36.2-gke.3104000 or
+	// later, a Preview feature. It is a Compute Engine resource name, a lowercase letter, then up to
+	// 62 lowercase letters, digits or hyphens, not ending in a hyphen. It needs publicOrigin. Unset
+	// renders no annotation.
 	NetworkEndpointGroupName string `pulumi:"networkEndpointGroupName,optional"`
 
 	// AgentSecretsUrl and agentSecretsAudience turn on Dispatch's secrets-broker relay together:
@@ -1222,7 +1226,9 @@ var negNameRule = regexp.MustCompile(`^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$`)
 // publicOrigin: a Dispatch on the tailnet is reached through its front door and one in the sandbox
 // inside its cluster, and neither has a load balancer to admit or to name a group for. Each range
 // must be a CIDR written as its network, which net.ParseCIDR takes and which is the network it
-// names, so the rule admits what it says; the name must be negNameRule's.
+// names, so the rule admits what it says, and with a prefix longer than /0: 0.0.0.0/0 or ::/0
+// would admit every address to 8766, past the load balancer, and IAP with it. The name must be
+// negNameRule's.
 func refuseDispatchEntrance(args *DispatchArgs) error {
 	for _, in := range []dispatchInput{
 		{"loadBalancerSourceRanges", len(args.LoadBalancerSourceRanges) > 0},
@@ -1239,6 +1245,9 @@ func refuseDispatchEntrance(args *DispatchArgs) error {
 		}
 		if network.String() != cidr {
 			return fmt.Errorf("loadBalancerSourceRanges[%d] %q must be written as the network it names, %s", i, cidr, network)
+		}
+		if ones, _ := network.Mask.Size(); ones == 0 {
+			return fmt.Errorf("loadBalancerSourceRanges[%d] %q admits every address to 8766, past the load balancer and IAP alike: name the load balancer's own ranges, such as 130.211.0.0/22", i, cidr)
 		}
 	}
 	if name := args.NetworkEndpointGroupName; name != "" && !negNameRule.MatchString(name) {
@@ -1415,6 +1424,12 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	// DISPATCH_OIDC_ISSUER and DISPATCH_OIDC_AUDIENCE together or not at all.
 	if args.OidcIssuer != "" && args.OidcAudience == "" {
 		return dispatchSettings{}, errors.New("oidcAudience is required when oidcIssuer is set")
+	}
+	// The issuer is the URL Dispatch discovers keys from and compares every token's iss to, so it is
+	// held to the shape the hub listener's is: an empty query or fragment, which url.Parse reads as
+	// none, is not the issuer a token names.
+	if args.OidcIssuer != "" && !issuerURL(args.OidcIssuer) {
+		return dispatchSettings{}, fmt.Errorf("oidcIssuer %q must be an https URL with a host and no user, query or fragment, such as https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>", args.OidcIssuer)
 	}
 	var appSet, appMissing []string
 	for _, in := range []struct{ input, value string }{

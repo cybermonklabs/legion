@@ -90,9 +90,10 @@ func TestDispatchNamesItsNetworkEndpointGroup(t *testing.T) {
 }
 
 // Each input is refused without publicOrigin, by its own name, in every mode that has none: on
-// the tailnet and in the sandbox. A range that is no CIDR, or is written other than as its
-// network, and a name that is no Compute Engine resource name, are refused too. Control: the
-// arguments every row edits resolve.
+// the tailnet and in the sandbox. A range that is no CIDR, is written other than as its network,
+// or is /0, which admits every address past the load balancer and IAP, and a name that is no
+// Compute Engine resource name, are refused too, and so is an oidcIssuer with an empty query or
+// fragment. Control: the arguments every row edits resolve.
 func TestDispatchRefusesAnEntranceItHasNoOriginFor(t *testing.T) {
 	needs := func(input string) string {
 		return input + " needs publicOrigin: it describes the deployment's own load balancer, which serves Dispatch at that origin, " +
@@ -133,6 +134,26 @@ func TestDispatchRefusesAnEntranceItHasNoOriginFor(t *testing.T) {
 			a.LoadBalancerSourceRanges = []string{"35.191.0.0/16", "130.211.1.2/22"}
 			return a
 		}, `loadBalancerSourceRanges[1] "130.211.1.2/22" must be written as the network it names, 130.211.0.0/22`},
+		{"the whole IPv4 space", func() *gcp.DispatchArgs {
+			a := dispatchEntranceArgs()
+			a.LoadBalancerSourceRanges = []string{"35.191.0.0/16", "0.0.0.0/0"}
+			return a
+		}, `loadBalancerSourceRanges[1] "0.0.0.0/0" admits every address to 8766, past the load balancer and IAP alike`},
+		{"the whole IPv6 space", func() *gcp.DispatchArgs {
+			a := dispatchEntranceArgs()
+			a.LoadBalancerSourceRanges = []string{"::/0"}
+			return a
+		}, `loadBalancerSourceRanges[0] "::/0" admits every address to 8766, past the load balancer and IAP alike`},
+		{"an issuer with an empty query", func() *gcp.DispatchArgs {
+			a := dispatchEntranceArgs()
+			a.OidcAudience, a.OidcIssuer = dispatchOidcAudience, dispatchOidcIssuer+"?"
+			return a
+		}, `oidcIssuer "` + dispatchOidcIssuer + `?" must be an https URL with a host and no user, query or fragment`},
+		{"an issuer with an empty fragment", func() *gcp.DispatchArgs {
+			a := dispatchEntranceArgs()
+			a.OidcAudience, a.OidcIssuer = dispatchOidcAudience, dispatchOidcIssuer+"#"
+			return a
+		}, `oidcIssuer "` + dispatchOidcIssuer + `#" must be an https URL with a host and no user, query or fragment`},
 		{"a group name with an uppercase letter", func() *gcp.DispatchArgs {
 			a := dispatchEntranceArgs()
 			a.NetworkEndpointGroupName = "Example-neg"
@@ -149,7 +170,10 @@ func TestDispatchRefusesAnEntranceItHasNoOriginFor(t *testing.T) {
 			require.ErrorContains(t, err, row.want)
 		})
 	}
-	for _, args := range []*gcp.DispatchArgs{dispatchArgs(), dispatchSandboxArgs(), dispatchEntranceArgs()} {
+	withIssuer := dispatchEntranceArgs()
+	withIssuer.OidcAudience, withIssuer.OidcIssuer = dispatchOidcAudience, dispatchOidcIssuer
+	withIssuer.LoadBalancerSourceRanges = []string{"35.191.0.0/16", "2600:2d00:1:b029::/64", "203.0.113.7/32"}
+	for _, args := range []*gcp.DispatchArgs{dispatchArgs(), dispatchSandboxArgs(), dispatchEntranceArgs(), withIssuer} {
 		_, err := gcp.ResolveDispatch(args)
 		require.NoError(t, err)
 	}

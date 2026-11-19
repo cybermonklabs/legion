@@ -217,8 +217,7 @@ func clusteredHubListenerCredentialFor(args *ClusteredNatsHubArgs, l *ClusteredH
 	blank := func(value string) bool {
 		return strings.ContainsFunc(value, unicode.IsSpace) || strings.ContainsFunc(value, unicode.IsControl)
 	}
-	issuer, err := url.Parse(l.OidcIssuer)
-	if blank(l.OidcIssuer) || err != nil || issuer.Scheme != "https" || issuer.Host == "" || issuer.User != nil || issuer.RawQuery != "" || issuer.Fragment != "" {
+	if blank(l.OidcIssuer) || !issuerURL(l.OidcIssuer) {
 		return nil, core.InputErrorf(path+".oidcIssuer", "%s.oidcIssuer %q must be an https URL with a host and no user, query or fragment, such as https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>", path, l.OidcIssuer)
 	}
 	if blank(l.OidcAudience) {
@@ -237,4 +236,14 @@ func clusteredHubListenerCredentialFor(args *ClusteredNatsHubArgs, l *ClusteredH
 		seen[account] = i
 	}
 	return &clusteredHubListenerCredential{issuer: l.OidcIssuer, audience: l.OidcAudience, accounts: l.OidcAccounts}, nil
+}
+
+// issuerURL is whether raw is an OIDC issuer a verifier can discover: an https URL with a host and
+// no user, no query and no fragment, an empty one of either included (`https://host?`,
+// `https://host#`), which url.Parse reads as none but which is not the issuer a token names, as
+// agentSecretsUrl's check refuses them.
+func issuerURL(raw string) bool {
+	issuer, err := url.Parse(raw)
+	return err == nil && issuer.Scheme == "https" && issuer.Host != "" && issuer.User == nil &&
+		issuer.RawQuery == "" && !issuer.ForceQuery && issuer.Fragment == "" && !strings.Contains(raw, "#")
 }

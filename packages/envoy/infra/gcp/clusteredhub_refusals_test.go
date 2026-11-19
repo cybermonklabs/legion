@@ -272,6 +272,16 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 			[]string{`listener.oidcIssuer "http://issuer.example.com" must be an https URL`}},
 		{"an issuer with a query", func(a *A) { ownListener(a).OidcIssuer = clusteredListenerIssuer + "?x=1" }, "listener.oidcIssuer",
 			[]string{"must be an https URL with a host and no user, query or fragment"}},
+		// An empty query or fragment, which url.Parse reads as none, is refused too, as
+		// agentSecretsUrl's check refuses one: it is not the issuer a token names.
+		{"an issuer with an empty query", func(a *A) { ownListener(a).OidcIssuer = clusteredListenerIssuer + "?" }, "listener.oidcIssuer",
+			[]string{`must be an https URL with a host and no user, query or fragment`}},
+		{"an issuer with an empty fragment", func(a *A) {
+			l := withCredential(listener(a))
+			l.ClientNamespaces = []string{"legion"}
+			l.OidcIssuer = clusteredListenerIssuer + "#"
+		}, "tailnet.listener.oidcIssuer",
+			[]string{`tailnet.listener.oidcIssuer "` + clusteredListenerIssuer + `#" must be an https URL with a host and no user, query or fragment`}},
 		{"an issuer with no host", func(a *A) { ownListener(a).OidcIssuer = "https:///v1" }, "listener.oidcIssuer", []string{"must be an https URL with a host"}},
 		{"an audience with a space", func(a *A) { ownListener(a).OidcAudience = "envoy hub" }, "listener.oidcAudience",
 			[]string{`listener.oidcAudience "envoy hub" holds whitespace or a control character`}},

@@ -1159,6 +1159,12 @@ reaches it:
   projected ServiceAccount token that issuer signed for that audience, of a subject the list
   names; any other request gets 401, whatever the NetworkPolicy admits. It renders no
   `ENVOY_ALLOWED_HOSTS`, since a listener that requires a bearer serves `/v1` to any `Host`.
+  Its image must be `legion-envoy-v30.32.0` or later, the first release whose listener reads
+  `ENVOY_OIDC_ACCOUNTS`. An older listener reads the issuer and audience, so it still requires a
+  bearer, but takes no account list and admits every subject that issuer signs a token for the
+  audience, so any pod the NetworkPolicy admits could call `/v1` as any session. The component
+  reads the image only as a digest, which says nothing of its release, so it cannot refuse an
+  older one: the deployment pins a digest of that release or later.
 
 The hub's own NetworkPolicy `<n>` admits this pod to NATS's 4222 beside the hosts.
 
