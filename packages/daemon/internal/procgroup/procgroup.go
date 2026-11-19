@@ -181,11 +181,12 @@ func Err(err error) error {
 // and only when the start succeeded. The pod's launcher is its container's PID 1 and reaps every
 // exited child it does not hold, so it passes one that holds the child out of that reaper until
 // its own wait has read the exit (internal/launcher's pidGuard): a child that reaper took first
-// fails its own wait with `waitid: no child processes`, or under gVisor at times `waitid: no such
-// process`. Every other process passes NoReaper. There is no default: every caller names the one
-// it runs under, so code the launcher reaches cannot start a child through one it did not choose
-// (internal/launcher's TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt reads
-// every start that process reaches).
+// fails its own wait with `waitid: no child processes`, or under gVisor at times `wait: no child
+// processes` or `waitid: no such process`. Every other process passes NoReaper. There is no
+// default: every caller names the one it runs under, so code the launcher reaches cannot start a
+// child through one it did not choose (internal/launcher's
+// TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt reads every start that process
+// reaches).
 type Starter func(cmd *exec.Cmd) (done func(), err error)
 
 // NoReaper is the Starter of a process that reaps no child it did not start itself: cmd.Start,

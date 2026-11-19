@@ -51,7 +51,8 @@ func noGraphQL(record string) string {
 // GH_TOKEN, GITHUB_TOKEN and SSLKEYLOGFILE it was given (readCalls reads it), writes its standard
 // input to stdin, and then does what then says.
 func curlStandIn(record, stdin, then string) string {
-	return `printf 'argv=%s\tghtoken=%s\tgithubtoken=%s\tsslkeylog=%s\n' "$*" "${GH_TOKEN-unset}" "${GITHUB_TOKEN-unset}" "${SSLKEYLOGFILE-unset}" >> ` +
+	return `printf 'argv=%s\tghtoken=%s\tgithubtoken=%s\tsslkeylog=%s\thttpsproxy=%s\tallproxy=%s\tcertfile=%s\tcertdir=%s\tcabundle=%s\n' "$*" "${GH_TOKEN-unset}" "${GITHUB_TOKEN-unset}" "${SSLKEYLOGFILE-unset}" ` +
+		`"${HTTPS_PROXY-unset}" "${ALL_PROXY-unset}" "${SSL_CERT_FILE-unset}" "${SSL_CERT_DIR-unset}" "${CURL_CA_BUNDLE-unset}" >> ` +
 		shQuote(record) + "\n" + "cat > " + shQuote(stdin) + "\n" + then
 }
 
@@ -118,6 +119,8 @@ func newTransportRig(t *testing.T, rest string, graphql func(record string) stri
 		OnVisibility: func(source VisibilitySource) { rig.sources = append(rig.sources, source) },
 		Env:          append(append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()), extra...),
 	})
+	// The guard's curl is the stand-in, where the guard would otherwise run curlProgram.
+	rig.guard.curl = filepath.Join(bin, "curl")
 	return rig
 }
 
@@ -364,8 +367,10 @@ func TestOnlyATransportFailureOfGhIsReadThroughCurl(t *testing.T) {
 // and never in its argv or its environment. The token is the caller's GH_TOKEN, else its
 // GITHUB_TOKEN, which gh would have sent, and else what `gh auth git-credential get` answers, which
 // is asked only then. curl reads no .curlrc (-q first) and no netrc, takes https alone, and asks
-// GitHub's REST API for the repository with GitHub's media type. The caller's SSLKEYLOGFILE, a file
-// OpenSSL would write the connection's keys to, does not reach curl.
+// GitHub's REST API for the repository with GitHub's media type. Of the caller's environment its
+// proxy reaches it, so a host that reaches GitHub through one reaches it the same way, and no trust
+// store and no TLS key log do: a proxy the caller names with a CA curl trusted would read the
+// token's header, where with the system's own CAs it sees only a TLS tunnel.
 func TestCurlCarriesTheTokenOnItsStandardInput(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -380,7 +385,8 @@ func TestCurlCarriesTheTokenOnItsStandardInput(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			keys := "SSLKEYLOGFILE=" + filepath.Join(t.TempDir(), "keys")
-			rig := newTransportRig(t, ghTLSTimeout, noGraphQL, curlAnswers("private"), answersTheRefs, append(tc.extra, keys)...)
+			mitm := []string{"HTTPS_PROXY=http://127.0.0.1:1", "ALL_PROXY=http://127.0.0.1:1", "SSL_CERT_FILE=/dev/null", "SSL_CERT_DIR=/dev/null", "CURL_CA_BUNDLE=/dev/null"}
+			rig := newTransportRig(t, ghTLSTimeout, noGraphQL, curlAnswers("private"), answersTheRefs, append(append(tc.extra, keys), mitm...)...)
 			if visibility, err := rig.guard.Visibility(bound(t), theRepo); err != nil || visibility != Private {
 				t.Fatalf("read %q, %v; want curl's private", visibility, err)
 			}
@@ -406,9 +412,14 @@ func TestCurlCarriesTheTokenOnItsStandardInput(t *testing.T) {
 					t.Errorf("curl ran as %q, want %q in it", argv, want)
 				}
 			}
-			for _, key := range []string{"ghtoken", "githubtoken", "sslkeylog"} {
+			for _, key := range []string{"ghtoken", "githubtoken", "sslkeylog", "certfile", "certdir", "cabundle"} {
 				if got := calls[0][key]; got != "unset" {
 					t.Errorf("curl ran with %s=%q, want it unset", key, got)
+				}
+			}
+			for _, key := range []string{"httpsproxy", "allproxy"} {
+				if got := calls[0][key]; got != "http://127.0.0.1:1" {
+					t.Errorf("curl ran with %s=%q, want the caller's proxy, http://127.0.0.1:1", key, got)
 				}
 			}
 			if stdin, err := os.ReadFile(rig.curlStdin); err != nil || string(stdin) != "Authorization: Bearer "+tc.token+"\n" {
@@ -462,17 +473,19 @@ func TestTransportTokenWithALineBreakIsNeverSent(t *testing.T) {
 	}
 }
 
-// With no curl on PATH, the read after gh's transport failure goes on to ls-remote, whose refs read
-// public. PATH holds the stand-ins alone, so the test's own curl cannot answer.
+// With no curl at the guard's curlProgram, the read after gh's transport failure goes on to
+// ls-remote, whose refs read public.
 func TestTransportFailureWithNoCurlIsReadWithLsRemote(t *testing.T) {
 	bin, git := t.TempDir(), filepath.Join(t.TempDir(), "git")
 	writeProgram(t, bin, "gh", ghTLSTimeout)
 	writeProgram(t, bin, "git", "echo ran >> "+shQuote(git)+"\n"+answersTheRefs)
 	var sources []VisibilitySource
-	visibility, err := New(Options{
+	guard := New(Options{
 		OnVisibility: func(source VisibilitySource) { sources = append(sources, source) },
 		Env:          append(fixtureenv.Isolated(t.TempDir()), "PATH="+bin, "XDG_STATE_HOME="+t.TempDir()),
-	}).Visibility(bound(t), theRepo)
+	})
+	guard.curl = filepath.Join(t.TempDir(), "curl")
+	visibility, err := guard.Visibility(bound(t), theRepo)
 	if err != nil || visibility != Public {
 		t.Fatalf("read %q, %v; want public", visibility, err)
 	}
@@ -481,6 +494,25 @@ func TestTransportFailureWithNoCurlIsReadWithLsRemote(t *testing.T) {
 	}
 	if want := []VisibilitySource{VisibilityFromLsRemote}; !slices.Equal(sources, want) {
 		t.Errorf("the guard reported the sources %q, want %q", sources, want)
+	}
+}
+
+// The curl read runs the guard's own curl and never the first curl on the caller's PATH, which the
+// caller put there and which would be handed the token on its standard input: a curl first on
+// PATH, ahead of the stand-in's own directory, never runs, and the guard's curl answers.
+func TestCurlReadNeverRunsTheCurlFirstOnPath(t *testing.T) {
+	rig := newTransportRig(t, ghTLSTimeout, noGraphQL, curlAnswers("private"), answersTheRefs)
+	hostile, record := t.TempDir(), filepath.Join(t.TempDir(), "hostile")
+	writeProgram(t, hostile, "curl", "cat > "+shQuote(record)+"\n"+curlAnswers("private"))
+	rig.guard.opts.Env = append(fixtureenv.Isolated(t.TempDir()), "PATH="+hostile+":"+rig.bin, "XDG_STATE_HOME="+t.TempDir())
+	if visibility, err := rig.guard.Visibility(bound(t), theRepo); err != nil || visibility != Private {
+		t.Fatalf("read %q, %v; want the guard's curl's private", visibility, err)
+	}
+	if got, err := os.ReadFile(record); err == nil {
+		t.Errorf("the curl first on PATH ran and was handed %q", got)
+	}
+	if calls := readCalls(t, rig.curl); len(calls) != 1 {
+		t.Errorf("the guard's curl ran %d times, want once", len(calls))
 	}
 }
 

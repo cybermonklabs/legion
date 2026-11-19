@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // roleClaimHandBackRig is one listener's whole set of v1 routes over one listener's stores: a
@@ -302,7 +303,7 @@ func TestTheRoleLookupReportsTheHandBackMark(t *testing.T) {
 	if err := rig.deps.sessions.Delete(context.Background(), sessionID); err != nil {
 		t.Fatalf("end %s's session: %v", sessionID, err)
 	}
-	var lapsed roleHolderError
+	var lapsed listenerwire.RoleRefusal
 	rig.decodeLookup(http.StatusNotFound, &lapsed)
 	if lapsed.Holder != sessionID || !lapsed.HandedBack {
 		t.Fatalf("the 404 of a lapsed holder that handed the role back is %+v, want %q's claim marked handed back", lapsed, sessionID)

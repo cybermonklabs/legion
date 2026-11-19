@@ -91,9 +91,11 @@ func (s *server) denyRecord(w http.ResponseWriter, r *http.Request, needs power)
 // than in authenticate. It then reads the record's kind, before anything else about the caller:
 // a secret request answers 403 DECIDE_ON_BROKER_PAGE naming its page on the broker, whether or
 // not the caller holds a ServiceAccount token, since no token makes one decidable here and a
-// caller turned away with 401 or ACCOUNT_NOT_LISTED would be told the wrong thing to do; on a
-// broker with BROKER_SIGNIN=off, which serves no page, the refusal names the setting and no page.
-// Nothing is written and no body is read for that refusal. Every other record is then authenticated
+// caller turned away with 401 or ACCOUNT_NOT_LISTED would be told the wrong thing to do — except
+// one the model judge holds now (requests.Machine.JudgeHolds), which no person decides until the
+// judge gives it up: it answers 403 JUDGE_DECIDES and links no page. On a broker with
+// BROKER_SIGNIN=off, which serves no page, the refusal names the setting and no page. Nothing is
+// written and no body is read for any of these refusals. Every other record is then authenticated
 // exactly as the other account routes are (accountCaller: the ServiceAccount token and
 // BROKER_API_ACCOUNTS), and the caller's name must carry needs, the power its row declares, as
 // authenticate requires of every other route a listed caller's token authenticates
@@ -113,6 +115,15 @@ func (s *server) decideRecord(w http.ResponseWriter, r *http.Request, approve bo
 	}
 	kind, kindErr := s.deps.Machine.RecordKind(r.Context(), recordID)
 	if kindErr == nil && kind != record.KindLauncherCredential {
+		// Only the hold is read, not the record: a record signed for another BROKER_PUBLIC_URL
+		// verifies for no broker but its own, and is refused DECIDE_ON_BROKER_PAGE as before. A
+		// read of the hold that failed is refused the same way, since no secret request is
+		// decided here either way.
+		if held, err := s.deps.Machine.JudgeHolds(r.Context(), recordID); err == nil && held {
+			writeError(w, http.StatusForbidden, "JUDGE_DECIDES",
+				"the model judge is deciding this secret request; no person approves or denies it unless the judge cannot decide it")
+			return
+		}
 		// A broker with BROKER_SIGNIN=off serves no page, so approveURL names none, since every
 		// /approve path is a 404 there, and the refusal says why nobody can decide it.
 		page := s.approveURL(recordID)

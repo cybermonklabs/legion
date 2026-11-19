@@ -425,3 +425,49 @@ func TestGrantLogLogsOneLinePerAuditRowAndNotOnePerTransaction(t *testing.T) {
 		t.Fatalf("the two lines are %v, want the two audit rows the revoke wrote, in the table's order: %v", got, logged[len(logged)-2:])
 	}
 }
+
+// TestACancelByAnotherEnrollmentOfTheOwnerNamesTheRequestsEnrollment: any enrollment of the
+// owner that made a request cancels it (OwnerAndState), and the request.cancelled audit row names the
+// enrollment the request hangs off. The grant-log line carries the ids that row names, so it names
+// that enrollment too, not the caller's, while the actor on both is the caller's session; and the
+// request's detail says another session of the owner cancelled it. The request's own session
+// cancelling still reads as before.
+func TestACancelByAnotherEnrollmentOfTheOwnerNamesTheRequestsEnrollment(t *testing.T) {
+	capture, m, enr, key, _ := newGrantLogFixture(t, "sess-owner-cancel")
+	ctx := context.Background()
+	other, _ := newEnrollment(t, m.Store, "session", "box-other-"+t.Name(), new(fixtureOperator), nil)
+	if _, err := m.Store.Pool.Exec(ctx, `update enrollments set owner=$3 where id in ($1,$2)`, enr, other, "person:"+fixtureOperator); err != nil {
+		t.Fatalf("give both enrollments the person's owner: %v", err)
+	}
+	cancelled := func(t *testing.T, caller, wantDetail string) {
+		t.Helper()
+		req, err := m.Create(ctx, enr, signRequest(t, m, key, "never mind", "DEEL_API_KEY"), "", nil)
+		if err != nil || req.RecordID == nil {
+			t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want pending", req, err)
+		}
+		if err := m.Cancel(ctx, req.ID, caller); err != nil {
+			t.Fatalf("Cancel as %s: %v", caller, err)
+		}
+		var audited, actor, detail string
+		if err := m.Store.Pool.QueryRow(ctx, `select a.enrollment_id::text, a.actor, r.decision_detail from audit a join requests r on r.id = a.request_id
+			where a.kind='request.cancelled' and a.request_id=$1`, req.ID).Scan(&audited, &actor, &detail); err != nil {
+			t.Fatalf("read the request.cancelled row of %s: %v", req.ID, err)
+		}
+		if audited != enr || actor != "session:"+caller {
+			t.Fatalf("the request.cancelled row names enrollment %s and actor %s, want the request's own %s and the caller's session:%s", audited, actor, enr, caller)
+		}
+		line := lineFor(t, loggedLines(t, capture, store.GrantLogMessage), "request.cancelled", req.ID)
+		if line.attrs["enrollment_id"] != audited || line.attrs["actor"] != actor {
+			t.Fatalf("the grant-log line names enrollment %v and actor %v, want the row's %s and %s", line.attrs["enrollment_id"], line.attrs["actor"], audited, actor)
+		}
+		if detail != wantDetail || line.attrs["detail"] != wantDetail {
+			t.Fatalf("the cancel's detail is %q on the request and %v on the line, want %q", detail, line.attrs["detail"], wantDetail)
+		}
+	}
+	t.Run("another enrollment of the owner", func(t *testing.T) {
+		cancelled(t, other, "cancelled by another session of the owner that made it")
+	})
+	t.Run("the request's own enrollment", func(t *testing.T) {
+		cancelled(t, enr, "cancelled by the requesting session")
+	})
+}

@@ -818,6 +818,7 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 		return err
 	}
 	result, runErr := runCommand(ctx, run, argv, source.env, cloneDir)
+	result.Stderr = source.scrub(result.Stderr)
 	_, err = checkedResult(argv, result, runErr)
 	return err
 }

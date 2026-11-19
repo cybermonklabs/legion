@@ -101,7 +101,7 @@ func runGitCredential(_ context.Context, args []string, stdout, stderr io.Writer
 		fmt.Fprintf(stderr, "legion git-credential: %v; answering nothing\n", err)
 		return 1
 	}
-	hosts, err := os.ReadFile(filepath.Join(dir, ghconfig.HostsFile))
+	hosts, err := ghconfig.ReadRegular(filepath.Join(dir, ghconfig.HostsFile))
 	if err != nil {
 		fmt.Fprintf(stderr, "legion git-credential: %v; answering nothing\n", err)
 		return 1

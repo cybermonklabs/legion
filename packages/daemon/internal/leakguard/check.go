@@ -152,8 +152,9 @@ type child struct {
 	// stderr, where it is not nil, takes the child's standard error apart from the standard
 	// output run answers, which the GraphQL visibility read needs to read gh's body alone
 	// (Guard.graphQLVisibility), the curl read to read curl's answer alone
-	// (Guard.curlVisibility), and the token read to quote gh's error without its output
-	// (Guard.ghToken). Nil answers the two together.
+	// (Guard.curlVisibility), the token read to quote gh's error without its output
+	// (Guard.ghToken), and a git read of a push's records to quote git's error without the push's
+	// content (Guard.git). Nil answers the two together.
 	stderr io.Writer
 }
 

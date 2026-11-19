@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // capturingHandler records every slog record it is asked to handle, so a test can assert that
@@ -31,7 +32,8 @@ func (h capturingHandler) WithGroup(string) slog.Handler { return h }
 
 func TestNotifySendsTargetSessionPayloadAndBearerToken(t *testing.T) {
 	var gotMethod, gotPath, gotAuth string
-	var gotBody sendBody
+	// The body is read as the listener's send route reads it.
+	var gotBody listenerwire.SendRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
 		gotPath = r.URL.Path
@@ -61,9 +63,15 @@ func TestNotifySendsTargetSessionPayloadAndBearerToken(t *testing.T) {
 	if gotBody.Source != "envoy" {
 		t.Fatalf("source: got %q, want %q (contracts.Envelope.Validate's enum has no agent-secrets entry)", gotBody.Source, "envoy")
 	}
+	if gotBody.Message != "secret request approved" {
+		t.Fatalf("message: got %q, want %q", gotBody.Message, "secret request approved")
+	}
 
+	if gotBody.Payload == nil {
+		t.Fatal("the send carried no payload")
+	}
 	var payload secretRequestPayload
-	if err := json.Unmarshal([]byte(gotBody.Payload), &payload); err != nil {
+	if err := json.Unmarshal([]byte(*gotBody.Payload), &payload); err != nil {
 		t.Fatalf("payload is not JSON-encoded text: %v", err)
 	}
 	if payload.Type != "secret-request" {
