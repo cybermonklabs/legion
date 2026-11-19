@@ -743,9 +743,6 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		epoch    uint64
 	)
 	for {
-		// The try's hook runs on the record this try read, before anything of the try is
-		// written: the listener publishes the takeover record of the holder it names there, so
-		// every claim that lands has its record first (RoleClaimRequest.BeforeTry).
 		if req.BeforeTry != nil {
 			if hookErr := req.BeforeTry(tries, oldClaim); hookErr != nil {
 				r.rollBackClaimTopic(ctx, req, roleTopic)

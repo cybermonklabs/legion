@@ -159,7 +159,7 @@ func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 // handOverSweptLane is one handover the sweep started, for a caller holding role's guard: it hands
 // role's kept lane over within roleKeepHandoverWindow on the listener's clock (handOverKeptRole),
 // after the passes of records, the role's takeover records that are not finished as the sweep
-// listed them, where it has any (handOverTakenRole), logs it where every failed handover is logged
+// listed them (handOverTakenRole), logs it where every failed handover is logged
 // (reportKeptRoleDrain), and returns the sequence the role's wake read starts from
 // (raiseKeptRoleWake), 0 for a handover after which the role's wake report is not raised again.
 // That sequence is the copy inside its hour the handover's walk with no holder stopped at, when
@@ -173,15 +173,7 @@ func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 func handOverSweptLane(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, records []bus.StoredTakeoverRecord) uint64 {
 	handoverCtx, cancel := context.WithTimeout(ctx, roleKeepHandoverWindow)
 	defer cancel()
-	var (
-		handover keptRoleHandover
-		err      error
-	)
-	if len(records) > 0 {
-		handover, err = handOverTakenRole(handoverCtx, cfg, role, records)
-	} else {
-		handover, err = handOverKeptRole(handoverCtx, cfg, role, cfg.now)
-	}
+	handover, err := handOverTakenRole(handoverCtx, cfg, role, records)
 	reportKeptRoleDrain(cfg, role, err)
 	if !roleKeepable(roles.Resolution{State: handover.resolved}) {
 		return 0

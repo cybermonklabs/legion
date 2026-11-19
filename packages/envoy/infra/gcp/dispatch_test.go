@@ -1562,11 +1562,8 @@ func TestDispatchFrontDoorAloneWritesItsTLSSecret(t *testing.T) {
 		}
 	}
 
-	var accounts []string
-	for _, r := range registrationsOf(m, "kubernetes:core/v1:ServiceAccount") {
-		accounts = append(accounts, r.Name)
-	}
-	require.ElementsMatch(t, []string{"example-dispatch", "example-dispatch-listener", "example-dispatch-tailnet"}, accounts)
+	require.ElementsMatch(t, []string{"example-dispatch", "example-dispatch-listener", "example-dispatch-tailnet"},
+		registrationNames(registrationsOf(m, "kubernetes:core/v1:ServiceAccount")))
 	for _, workload := range dispatchWorkloads {
 		require.Equal(t, workload.deployment, deploymentPodTemplate(t, m, workload.deployment)["spec"].(map[string]any)["serviceAccountName"],
 			"%s runs as the account of its own name", workload.deployment)
@@ -2702,11 +2699,8 @@ func TestDispatchGrantsTheAzureKeyAccessorOnlyWithTheKeyForm(t *testing.T) {
 	setAzureKey(args)
 	m, err := runDispatch(t, args, true)
 	require.NoError(t, err)
-	var members []string
-	for _, r := range registrationsOf(m, "gcp:secretmanager/secretIamMember:SecretIamMember") {
-		members = append(members, r.Name)
-	}
-	require.ElementsMatch(t, []string{"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor", "example-dispatch-azure-embed-key-accessor"}, members)
+	require.ElementsMatch(t, []string{"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor", "example-dispatch-azure-embed-key-accessor"},
+		registrationNames(registrationsOf(m, "gcp:secretmanager/secretIamMember:SecretIamMember")))
 	inputs := m.Named(t, "gcp:secretmanager/secretIamMember:SecretIamMember", "example-dispatch-azure-embed-key-accessor").Inputs.Mappable()
 	require.Equal(t, azureEmbedKeySecret, inputs["secretId"])
 	require.Equal(t, "roles/secretmanager.secretAccessor", inputs["role"])
@@ -2812,11 +2806,8 @@ func TestDispatchRegistersTheChatTokenSecretOnlyWithTheEndpointForm(t *testing.T
 	spec := class["spec"].(map[string]any)
 	require.Equal(t, "gke", spec["provider"])
 	require.Equal(t, "- resourceName: "+chatTokenSecret+"/versions/latest\n  path: token\n", spec["parameters"].(map[string]any)["secrets"])
-	var members []string
-	for _, r := range registrationsOf(m, "gcp:secretmanager/secretIamMember:SecretIamMember") {
-		members = append(members, r.Name)
-	}
-	require.ElementsMatch(t, []string{"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor", "example-dispatch-chat-token-accessor"}, members)
+	require.ElementsMatch(t, []string{"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor", "example-dispatch-chat-token-accessor"},
+		registrationNames(registrationsOf(m, "gcp:secretmanager/secretIamMember:SecretIamMember")))
 	inputs := m.Named(t, "gcp:secretmanager/secretIamMember:SecretIamMember", "example-dispatch-chat-token-accessor").Inputs.Mappable()
 	require.Equal(t, chatTokenSecret, inputs["secretId"])
 	require.Equal(t, "roles/secretmanager.secretAccessor", inputs["role"])

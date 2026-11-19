@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
@@ -152,10 +151,10 @@ func (f *roleForwarder) publish(sessionID string) {
 
 // refreshStaleRoleForward resolves the holder of forward's role again, for a forward whose
 // resolution was roles.ForwardFenceAge old when its publish started, by the rules the lane's own
-// delivery resolves and judges by (resolveCoreRoleHolder, beforeForward), and reports the forward
-// to make and whether to make one. A role with no live holder now has the message kept as the lane
-// keeps it, and a holder beforeForward refuses has it refused as the lane refuses it, each with the
-// lane's own outcome, and no forward is made.
+// delivery resolves and judges by (resolveRoleForward), and reports the forward to make and
+// whether to make one. A role with no live holder now has the message kept as the lane keeps it,
+// and a holder beforeForward refuses has it refused as the lane refuses it, each with the lane's
+// own outcome, and no forward is made.
 func refreshStaleRoleForward(cfg listenerDeliveryHandlerConfig, forward roleForward) (roleForward, bool) {
 	item := forward.item
 	cfg.attemptCache.Clear(item.DedupeKey, forward.sessionID)
@@ -164,21 +163,7 @@ func refreshStaleRoleForward(cfg listenerDeliveryHandlerConfig, forward roleForw
 		slog.String("session_id", forward.sessionID),
 		slog.String("topic", item.Topic),
 		slog.Duration("age", cfg.now().Sub(forward.resolvedAt)))
-	_, role, _ := contracts.CanonicalRole(strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix))
-	resolvedAt := cfg.now()
-	sessionID, holder, ok := resolveCoreRoleHolder(cfg, item, role)
-	if !ok {
-		return roleForward{}, false
-	}
-	verdict := beforeForward(item, sessionID, holder, func(key, recipient string) bool {
-		return cfg.dedupeCache.Seen(key, recipient) || cfg.attemptCache.Seen(key, recipient)
-	})
-	if verdict.kind != forwardAllowed {
-		applyDeliveryOutcome(cfg, item, refusedRoleForwardOutcome(verdict, item, sessionID, roleLaneRefusalLines))
-		return roleForward{}, false
-	}
-	cfg.attemptCache.Record(item.DedupeKey, sessionID)
-	return roleForward{item: item, sessionID: sessionID, resolvedAt: resolvedAt}, true
+	return resolveRoleForward(cfg, item)
 }
 
 // release frees the slot of a forward that ends with no publish and no outcome of its own to
@@ -192,8 +177,7 @@ func (f *roleForwarder) release() {
 // finish reports forward's outcome and frees its slot.
 func (f *roleForwarder) finish(forward roleForward, err error) {
 	finishRoleForward(f.cfg, forward, err)
-	<-f.slots
-	f.pending.Done()
+	f.release()
 }
 
 // outstanding is how many forwards are queued or waiting for their outcome.

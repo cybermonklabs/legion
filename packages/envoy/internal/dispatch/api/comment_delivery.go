@@ -1149,22 +1149,17 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// first, which is its only one wherever the transaction below takes a reply naming none. A
 	// read that finds nothing, or fails, asks nothing: the transaction below answers that
 	// comment, mention or attempt as it always has.
-	var roleReply roleHolderReply
-	var mentioned string
-	var attemptSession *string
-	if s.deps.Store.Pool.QueryRow(r.Context(), `
+	roleReply, err := s.roleHolderReplyOf(r.Context(), actor, `
 		select m.target, d.session_id
 		from comment_mentions m
 		left join comment_deliveries d on d.comment_id = m.comment_id and d.target = m.target and d.attempt = $3
 		where m.comment_id = $1 and m.target = coalesce($2, m.target)
 		order by m.target
 		limit 1
-	`, r.PathValue("id"), input.Target, input.Attempt).Scan(&mentioned, &attemptSession) == nil {
-		var err error
-		if roleReply, err = s.lookUpRoleHolderReply(r.Context(), mentioned, attemptSession, actor); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
+	`, r.PathValue("id"), input.Target, input.Attempt)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 
 	tx, err := s.begin(r.Context())

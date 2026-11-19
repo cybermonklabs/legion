@@ -2135,16 +2135,9 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				Soft:              body.Soft,
 				IfClaimRevision:   ifClaimRevision,
 				Supersedable:      supersedable,
-				// Before each try of the write, the takeover record of the holder that try read
-				// when it is another session (takeoverTries.beforeTry), so a claim that lands
-				// has its record and the previous holder's unread role messages are copied for
-				// the role's next holder.
-				BeforeTry: tries.beforeTry,
+				BeforeTry:         tries.beforeTry,
 			})
 			if errors.Is(err, store.ErrRoleClaimContended) {
-				// Every try of an outright claim met a write of the record between its read and
-				// its write until the request's budget ran out: nothing was written, and the
-				// client claims again.
 				w.Header().Set("Retry-After", "1")
 				writeJSONError(w, http.StatusServiceUnavailable, err.Error())
 				return

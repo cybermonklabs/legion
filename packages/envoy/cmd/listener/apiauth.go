@@ -547,6 +547,10 @@ func resolveListenerGoogleConfig(getenv func(string) string) (audience string, a
 	return audience, accounts, nil
 }
 
+// dispatchPrincipalShape is the refusal of an ENVOY_DISPATCH_PRINCIPAL of neither shape
+// (resolveListenerDispatchPrincipal).
+const dispatchPrincipalShape = "ENVOY_DISPATCH_PRINCIPAL must be one system:serviceaccount:<namespace>:<name> subject or one Google service account address, got %q"
+
 // resolveListenerDispatchPrincipal reads ENVOY_DISPATCH_PRINCIPAL, Dispatch's own principal: the
 // one verified caller whose POST /v1/messages/send may carry a role mark (sendHandler). It is a
 // projected service-account subject, system:serviceaccount:<namespace>:<name>, or a Google
@@ -566,7 +570,7 @@ func resolveListenerDispatchPrincipal(getenv func(string) string, issuer string,
 		namespace, name, found := strings.Cut(rest, ":")
 		switch {
 		case !found || namespace == "" || name == "" || strings.Contains(name, ":") || strings.ContainsFunc(value, unicode.IsSpace):
-			return "", fmt.Errorf("ENVOY_DISPATCH_PRINCIPAL must be one system:serviceaccount:<namespace>:<name> subject or one Google service account address, got %q", value)
+			return "", fmt.Errorf(dispatchPrincipalShape, value)
 		case issuer == "":
 			return "", fmt.Errorf("ENVOY_DISPATCH_PRINCIPAL %q is a service-account subject, which only a projected token proves, and needs ENVOY_OIDC_ISSUER and ENVOY_OIDC_AUDIENCE", value)
 		case len(accounts) > 0 && !slices.Contains(accounts, value):
@@ -577,7 +581,7 @@ func resolveListenerDispatchPrincipal(getenv func(string) string, issuer string,
 	address := fold.ASCII(value)
 	switch {
 	case !oidc.EmailShape.MatchString(address):
-		return "", fmt.Errorf("ENVOY_DISPATCH_PRINCIPAL must be one system:serviceaccount:<namespace>:<name> subject or one Google service account address, got %q", value)
+		return "", fmt.Errorf(dispatchPrincipalShape, value)
 	case len(googleAccounts) == 0:
 		return "", fmt.Errorf("ENVOY_DISPATCH_PRINCIPAL %q is an address, which only a Google identity token proves, and needs ENVOY_OIDC_GOOGLE_AUDIENCE and ENVOY_OIDC_GOOGLE_ACCOUNTS", value)
 	case !slices.Contains(googleAccounts, address):

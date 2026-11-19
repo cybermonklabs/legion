@@ -401,7 +401,7 @@ func (c *Client) presentsIdentity() bool {
 // token, or none; the shared token alone when shared is set (do's fallback). A failure is
 // ErrAccountToken, and the call is not made.
 func (c *Client) authorize(request *http.Request, shared bool) error {
-	if c.accountTokenFile != "" && !shared {
+	if c.presentsIdentity() && !shared {
 		token, err := accountTokenFromFile(c.accountTokenFile, time.Now())
 		if err != nil {
 			return err
@@ -557,7 +557,7 @@ func (c *Client) Unsubscribe(ctx context.Context, sessionID string, topics []str
 		request.Header.Set("Content-Type", "application/json")
 		return request, nil
 	})
-	if errors.Is(err, ErrAccountToken) || errors.Is(err, ErrUnavailable) {
+	if errors.Is(err, ErrUnavailable) {
 		return nil, err
 	}
 	if err != nil {
@@ -793,7 +793,7 @@ func (c *Client) get(ctx context.Context, route, query string) (*http.Response, 
 		}
 		return request, nil
 	})
-	if errors.Is(err, ErrAccountToken) || errors.Is(err, ErrUnavailable) {
+	if errors.Is(err, ErrUnavailable) {
 		return nil, err
 	}
 	if err != nil {
@@ -900,7 +900,7 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 	})
 	// A build or an authorization failure made no call (ErrUnavailable, ErrAccountToken); every
 	// other failure is the transport's.
-	if errors.Is(err, ErrAccountToken) || errors.Is(err, ErrUnavailable) {
+	if errors.Is(err, ErrUnavailable) {
 		return SendResult{}, err
 	}
 	if err != nil {

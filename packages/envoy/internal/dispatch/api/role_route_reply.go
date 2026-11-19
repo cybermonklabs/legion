@@ -24,6 +24,18 @@ func (r roleHolderReply) allows(route string) bool {
 	return r.holder && r.route == route
 }
 
+// roleHolderReplyOf is lookUpRoleHolderReply for the route and the attempt's session that the one
+// row query names, scanned as (route, session_id). A query that finds no row, or fails, asks
+// nothing and names no holder, so the reply's transaction answers it as it always has.
+func (s *server) roleHolderReplyOf(ctx context.Context, actor model.Actor, query string, args ...any) (roleHolderReply, error) {
+	var route string
+	var attemptSession *string
+	if s.deps.Store.Pool.QueryRow(ctx, query, args...).Scan(&route, &attemptSession) != nil {
+		return roleHolderReply{}, nil
+	}
+	return s.lookUpRoleHolderReply(ctx, route, attemptSession, actor)
+}
+
 // lookUpRoleHolderReply asks the listener whether actor holds the role route names, for a reply
 // to an attempt sent for a route to that role that names another session, or none yet
 // (attemptSession). A role's message goes to the session its claim names when Dispatch sends it

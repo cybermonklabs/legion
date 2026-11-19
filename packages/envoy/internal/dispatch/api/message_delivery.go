@@ -973,18 +973,14 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	// role, asks the listener whether that session holds the role now with nothing held
 	// (lookUpRoleHolderReply). A read that finds nothing, or fails, asks nothing: the transaction
 	// below answers that message or attempt as it always has.
-	var roleReply roleHolderReply
-	var target string
-	var attemptSession *string
-	if s.deps.Store.Pool.QueryRow(r.Context(), `
+	roleReply, err := s.roleHolderReplyOf(r.Context(), actor, `
 		select coalesce(m.target, ''), d.session_id
 		from messages m left join message_deliveries d on d.message_id = m.id and d.attempt = $2
 		where m.id = $1
-	`, r.PathValue("id"), input.Attempt).Scan(&target, &attemptSession) == nil {
-		if roleReply, err = s.lookUpRoleHolderReply(r.Context(), target, attemptSession, actor); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
+	`, r.PathValue("id"), input.Attempt)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 
 	tx, err := s.begin(r.Context())

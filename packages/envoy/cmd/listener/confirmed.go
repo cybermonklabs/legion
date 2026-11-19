@@ -411,8 +411,6 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 	forwarded.DedupeKey = roleForwardDedupePrefix + item.DedupeKey
 	resolved := first
 	for pass := 0; ; pass++ {
-		// A forward whose resolution is roles.ForwardFenceAge old or older when it starts
-		// resolves the holder again first, as the role lane's does (roleForwarder.publish).
 		if pass > 0 || !sessionIsLive(first.HolderState) || d.delivery.now().Sub(resolvedAt) >= roles.ForwardFenceAge {
 			resolvedAt = d.delivery.now()
 			resolved, err = roles.ResolveHolder(ctx, d.registry, roleHolderSessions{d.sessions}, role)

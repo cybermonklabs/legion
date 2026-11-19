@@ -1501,10 +1501,8 @@ func main() {
 		// The walk's other two outcomes beside the drop, and the one publish a walk makes that
 		// is not a forward: a dropped copy's dead letter, stored on its sender's agent subject
 		// under the message id every listener gives it (endKeptCopyWithDeadLetter).
-		roleDeadLetters:     roleDeadLetters,
-		roleKeptUndecodable: roleKeptUndecodable,
-		// A takeover claim that went on with no record because the stream was full
-		// (takeoverTries.landed).
+		roleDeadLetters:        roleDeadLetters,
+		roleKeptUndecodable:    roleKeptUndecodable,
 		roleTakeoverUnrecorded: roleTakeoverUnrecorded,
 		publishDeadLetter:      client.PublishStoredAs,
 

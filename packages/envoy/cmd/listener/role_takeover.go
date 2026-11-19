@@ -214,28 +214,23 @@ func runTakenRoleDrain(cfg listenerDeliveryHandlerConfig, role string) {
 		return
 	}
 	defer release()
-	_, err := handOverTakenRole(ctx, cfg, role, nil)
+	records, err := cfg.client.TakeoverRecords(ctx, role)
+	if err != nil {
+		cfg.logger.Warn("listener takeover copy could not read the role's takeover records",
+			slog.String("role", role),
+			slog.String("error", err.Error()))
+	}
+	_, err = handOverTakenRole(ctx, cfg, role, records)
 	reportKeptRoleDrain(cfg, role, err)
 }
 
-// handOverTakenRole runs the passes of every takeover record of role that is not finished
-// (runTakeoverPasses), so the role messages each previous holder did not read are on the role's
-// kept lane, and then hands the lane over (handOverKeptRole), for a caller holding role's guard.
-// listed is the role's records as the caller already read them - the kept lane's sweep, which
-// lists every record once a pass - and nil for a caller that has not, which has them read here:
-// the claim route's handover of the role it granted. A pass that failed is logged and leaves its
-// record to the next pass; the lane is handed over whatever the passes did.
-func handOverTakenRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, listed []bus.StoredTakeoverRecord) (keptRoleHandover, error) {
-	if listed == nil {
-		records, err := cfg.client.TakeoverRecords(ctx, role)
-		if err != nil {
-			cfg.logger.Warn("listener takeover copy could not read the role's takeover records",
-				slog.String("role", role),
-				slog.String("error", err.Error()))
-		}
-		listed = records
-	}
-	runTakeoverPasses(ctx, cfg, listed)
+// handOverTakenRole runs the passes of each of records, role's takeover records, that is not
+// finished (runTakeoverPasses), so the role messages each previous holder did not read are on the
+// role's kept lane, and then hands the lane over (handOverKeptRole), for a caller holding role's
+// guard. A pass that failed is logged and leaves its record to the next pass; the lane is handed
+// over whatever the passes did.
+func handOverTakenRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, records []bus.StoredTakeoverRecord) (keptRoleHandover, error) {
+	runTakeoverPasses(ctx, cfg, records)
 	return handOverKeptRole(ctx, cfg, role, cfg.now)
 }
 
@@ -318,18 +313,15 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 		return stored, false, fmt.Errorf("read role %s's claim: %w", record.Role, err)
 	}
 	if holder == record.Previous {
-		if lifeOver {
+		switch {
+		case lifeOver:
 			record.Finished = true
-			return written(record, true, nil)
-		}
-		if record.Next != 0 || record.FloorMissed {
+		case record.Next != 0 || record.FloorMissed:
 			record.Next, record.FloorMissed = 0, false
-			return written(record, true, nil)
+		case started.Sub(stored.Written) < takeoverRecordRefresh:
+			return stored, true, nil
 		}
-		if started.Sub(stored.Written) >= takeoverRecordRefresh {
-			return written(record, true, nil)
-		}
-		return stored, true, nil
+		return written(record, true, nil)
 	}
 	since := claimedAt.Add(-roleKeepWindow)
 	agent := contracts.LegacyAgentSubject(record.Previous)
