@@ -51,9 +51,9 @@ function renderMachines() {
 
 test("every machine the agent list names is a row with its counts and a link to its page", async () => {
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    session("a".repeat(16), "sami-devbox", PLACE),
-    session("b".repeat(16), "sami-devbox", { ...PLACE, pane_id: "%6", pane_index: 1 }),
-    session("c".repeat(16), "sami-devbox"),
+    session("a".repeat(16), "sand-devbox", PLACE),
+    session("b".repeat(16), "sand-devbox", { ...PLACE, pane_id: "%6", pane_index: 1 }),
+    session("c".repeat(16), "sand-devbox"),
     session("d".repeat(16), "legion-infra-daemon"),
   ]);
   const view = renderMachines();
@@ -62,7 +62,7 @@ test("every machine the agent list names is a row with its counts and a link to 
 
     expect(rows.map((row) => row.getAttribute("data-machine"))).toEqual([
       "legion-infra-daemon",
-      "sami-devbox",
+      "sand-devbox",
     ]);
     const [daemon, devbox] = rows;
     expect([daemon.getAttribute("data-sessions"), daemon.getAttribute("data-in-tmux")]).toEqual([
@@ -75,7 +75,7 @@ test("every machine the agent list names is a row with its counts and a link to 
       "2",
     ]);
     expect(within(devbox).getByText("3 sessions · 2 in a pane")).toBeDefined();
-    expect(within(devbox).getByRole("link").getAttribute("href")).toBe("/machines/sami-devbox");
+    expect(within(devbox).getByRole("link").getAttribute("href")).toBe("/machines/sand-devbox");
     // The one shared registry read, through the one poller every page reads behind.
     expect(agents).toHaveBeenCalledTimes(1);
   } finally {

@@ -1409,14 +1409,15 @@ check_k6() {
 # One consumer speaks gRPC, which offers h2 alone in its TLS handshake: Pulumi's gcpkms secrets
 # manager, whose Cloud KMS call the proxy carries in HTTP/2.
 #
-# The names are the consumers' own - GITHUB_ADMIN_PAT, GCLOUD_SAMI, GWS_THEOREM_READ_OAUTH and
-# the rest - and the hosts are the real ones, so this check needs a rules file the stack's does
-# not hold. That is one broker process of this check's own, on the stack's own database, store,
-# certificate authority and stand-ins, with its rules file, its own two ports and its own public
-# URL changed - the same device k4's control uses for one setting, with the public URL changed
-# too because this broker must serve the release as well as the proxy, and a session's proof is
-# verified against the public URL it was signed for. Its whole environment is the first stack
-# broker's own, read out of /proc/<pid>/environ, so nothing of the stack's settings is left out.
+# The names are the consumers' own - GITHUB_ADMIN_PAT, the gcloud login k7_names lists,
+# GWS_THEOREM_READ_OAUTH and the rest - and the hosts are the real ones, so this check needs a
+# rules file the stack's does not hold. That is one broker process of this check's own, on the
+# stack's own database, store, certificate authority and stand-ins, with its rules file, its own
+# two ports and its own public URL changed - the same device k4's control uses for one setting,
+# with the public URL changed too because this broker must serve the release as well as the proxy,
+# and a session's proof is verified against the public URL it was signed for. Its whole
+# environment is the first stack broker's own, read out of /proc/<pid>/environ, so nothing of the
+# stack's settings is left out.
 #
 # The pod sets NO_PROXY=* and GIT_CONFIG_COUNT=5 with a GitHub credential helper. NO_PROXY=* is
 # left exactly as it is: the CLI must drop it, and that it does is part of what this check
