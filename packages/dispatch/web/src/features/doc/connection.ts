@@ -143,7 +143,9 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
     // The socket the server last answered (its Authenticated frame), and whether it admitted that
     // socket read-only.
     let admitted: { readOnly: boolean; socket: WebSocket } | undefined;
-    // The socket a readmit found unanswered: a read-only answer closes it (`readmit`).
+    // The socket a readmit found unanswered: a read-only answer closes it (`readmit`). It may name
+    // a socket that closed before it answered; no later socket can equal that one, so each later
+    // socket is judged by its own admission, as if no readmit had found it.
     let readmitOnAnswer: WebSocket | undefined;
     const WebSocketPolyfill = class extends globalThis.WebSocket {
       constructor(url: string, protocols?: string | string[]) {
@@ -215,8 +217,8 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
         if (socket !== null && socket === readmitOnAnswer) {
           readmitOnAnswer = undefined;
           if (readOnly) {
-            // An admission the server decided before the readmit asked for a new one: the
-            // provider reconnects, and the next socket's admission is the one the host is told of.
+            // A read-only answer on a socket the readmit found unanswered: the provider
+            // reconnects, and the next socket's admission is the one the host is told of.
             socket.close();
             return;
           }

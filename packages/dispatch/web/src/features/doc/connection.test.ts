@@ -440,13 +440,9 @@ test("a readmit leaves the socket the server's close made the provider open whil
   const server = serverWithHeading(100);
   await withProvider(
     artifact,
-    async ({ admissions, connection, socket, synced }) => {
-      const first = await socket(0);
-      serveInYgoOrder(first, server, "readonly", artifact);
-      await waitFor(() => expect(synced()).toBe(true));
-
-      first.drop();
-      const second = (await socket(1)) as ClosingSocket;
+    async (harness) => {
+      const { admissions, connection } = harness;
+      const second = await loadReadOnlyThenDrop(harness, server, artifact);
       connection.readmit();
       expect(second.closes).toBe(0);
 
@@ -465,12 +461,9 @@ test("a readmit leaves a socket the server has admitted writable", async () => {
   const server = serverWithHeading(100);
   await withProvider(
     artifact,
-    async ({ admissions, connection, socket, synced }) => {
-      const first = await socket(0);
-      serveInYgoOrder(first, server, "readonly", artifact);
-      await waitFor(() => expect(synced()).toBe(true));
-      first.drop();
-      const second = (await socket(1)) as ClosingSocket;
+    async (harness) => {
+      const { admissions, connection } = harness;
+      const second = await loadReadOnlyThenDrop(harness, server, artifact);
       serveInYgoOrder(second, server, "read-write", artifact);
       await waitFor(() => expect(admissions).toEqual([true, false]));
 
@@ -492,12 +485,9 @@ test("a readmit closes the socket it found unanswered once that socket's answer 
   const server = serverWithHeading(100);
   await withProvider(
     artifact,
-    async ({ admissions, connection, socket, synced }) => {
-      const first = await socket(0);
-      serveInYgoOrder(first, server, "readonly", artifact);
-      await waitFor(() => expect(synced()).toBe(true));
-      first.drop();
-      const second = (await socket(1)) as ClosingSocket;
+    async (harness) => {
+      const { admissions, connection, socket } = harness;
+      const second = await loadReadOnlyThenDrop(harness, server, artifact);
       connection.readmit();
 
       serveInYgoOrder(second, server, "readonly", artifact);
@@ -506,6 +496,40 @@ test("a readmit closes the socket it found unanswered once that socket's answer 
       serveInYgoOrder(await socket(2), server, "read-write", artifact);
       await waitFor(() => expect(admissions).toEqual([true, false]));
       expect(OpenSocket.opened).toHaveLength(3);
+    },
+    0,
+    ClosingSocket
+  );
+});
+
+// The socket a readmit found unanswered may drop before its answer: a blip, or the server's own
+// room close after the socket's sync. The provider's next socket is judged by its own admission:
+// a read-only one is reported and kept, as any socket's is, and the next readmit closes it.
+test("a readmit judges the socket after one it found unanswered dropped by that socket's own admission", async () => {
+  const artifact = artifactId();
+  const server = serverWithHeading(100);
+  await withProvider(
+    artifact,
+    async (harness) => {
+      const { admissions, connection, socket } = harness;
+      const second = await loadReadOnlyThenDrop(harness, server, artifact);
+      connection.readmit();
+      // ygo's frames ahead of the token's answer reach the socket, and it drops before that answer.
+      second.receive(syncStep1Frame(Y.encodeStateVector(server), artifact));
+      second.receive(syncStep2Frame(Y.encodeStateAsUpdate(server), artifact));
+      second.receive(awarenessFrame(artifact));
+      second.drop();
+
+      const third = await closingSocket(harness, 2);
+      serveInYgoOrder(third, server, "readonly", artifact);
+      await waitFor(() => expect(admissions).toEqual([true, true]));
+      expect(third.closes).toBe(0);
+
+      connection.readmit();
+      expect(third.closes).toBe(1);
+      serveInYgoOrder(await socket(3), server, "read-write", artifact);
+      await waitFor(() => expect(admissions).toEqual([true, true, false]));
+      expect(OpenSocket.opened).toHaveLength(4);
     },
     0,
     ClosingSocket
@@ -585,6 +609,32 @@ test("a reopen and a second close name no unsent edit to a person who typed noth
     await expectNoNotice(true);
   });
 });
+
+/** The `index`th socket of a harness whose `withProvider` was handed `ClosingSocket`. */
+async function closingSocket({ socket }: ProviderHarness, index: number): Promise<ClosingSocket> {
+  const opened = await socket(index);
+  if (!(opened instanceof ClosingSocket)) {
+    throw new Error("the harness's sockets are ClosingSockets: withProvider was handed that class");
+  }
+  return opened;
+}
+
+/**
+ * Loads `server` through a read-only admission, as a closed issue's page does, and drops the
+ * socket, as the server's room close does. Returns the socket the provider reconnects with, once
+ * it has written to it and before the server has answered it.
+ */
+async function loadReadOnlyThenDrop(
+  harness: ProviderHarness,
+  server: Y.Doc,
+  artifact: string
+): Promise<ClosingSocket> {
+  const first = await harness.socket(0);
+  serveInYgoOrder(first, server, "readonly", artifact);
+  await waitFor(() => expect(harness.synced()).toBe(true));
+  first.drop();
+  return closingSocket(harness, 1);
+}
 
 /**
  * Loads `server`'s heading through a writable admission: the editor stamps the heading's id, and

@@ -344,12 +344,10 @@ export function ProofDocument({
   const readmitRef = useRef<(() => void) | undefined>(undefined);
   /** Has this document admitted again, the one way in: a blocked admission has no connection to
    *  readmit, so it re-reads the text and connects (`readmitRef`, set only while it is blocked);
-   *  a live one closes a socket admitted read-only, which the provider reconnects, and the server
-   *  decides that socket's admission afresh - which is what a reopened issue needs, since the
-   *  admission of the socket it has is the closed issue's. A socket the reopen's own close already
-   *  replaced keeps its admission (`DocumentConnection.readmit`). The new admission reaches
-   *  `onAdmission` and the pending sync alike, so the rows the read-only admission kept are
-   *  restored and sent. */
+   *  a live one asks its connection to be admitted again (`DocumentConnection.readmit` says which
+   *  sockets that closes) - which is what a reopened issue needs, since the admission of the
+   *  socket it has is the closed issue's. The new admission reaches `onAdmission` and the pending
+   *  sync alike, so the rows the read-only admission kept are restored and sent. */
   const readmit = useCallback(() => {
     const blocked = readmitRef.current;
     if (blocked !== undefined) {
@@ -1053,8 +1051,7 @@ export function ProofDocument({
   // one's, the socket is still read-only, and so is the editor. The reopen's commit closes the
   // issue's rooms on every process that hears it (`issueOpenChanged`), which readmits every
   // browser on them; this covers the sockets that close never reaches, each of which keeps the
-  // read-only admission it was given. That close and the reopen's answer race, so the provider may
-  // already have reconnected when this runs: the connection leaves that socket be.
+  // read-only admission it was given.
   useEffect(() => {
     setQuoteRefusal(undefined);
     editorRef.current?.setAccess(editorAccess(page, isClosed, schemaReadOnlyRef.current));
