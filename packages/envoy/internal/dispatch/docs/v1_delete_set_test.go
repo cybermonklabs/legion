@@ -11,37 +11,25 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 )
 
-// readV1DeleteSet is update's delete set as eachV1DeleteRange reads it, and whether it read.
-func readV1DeleteSet(update []byte) (map[crdt.ClientID][]crdt.IDRange, bool) {
-	read := crdt.NewIDSet()
-	ok := eachV1DeleteRange(update, func(client crdt.ClientID, clock, length uint64) {
-		read.Add(client, clock, length)
-	})
-	return rangesByClient(read), ok
+// readV1Ranges is update's struct ranges and delete set as eachV1Range reads them, each by client
+// and merged as an IDSet merges them, and whether it read.
+func readV1Ranges(update []byte) (structs, deletes map[crdt.ClientID][]crdt.IDRange, ok bool) {
+	held, deleted := crdt.NewIDSet(), crdt.NewIDSet()
+	ok = eachV1Range(update, held.Add, deleted.Add)
+	return rangesByClient(held), rangesByClient(deleted), ok
 }
 
-// rangesByClient is set's ranges by client, merged as the set merges them.
-func rangesByClient(set *crdt.IDSet) map[crdt.ClientID][]crdt.IDRange {
-	ranges := make(map[crdt.ClientID][]crdt.IDRange)
-	if set == nil {
-		return ranges
-	}
-	for _, client := range set.Clients() {
-		ranges[client] = set.Ranges(client)
-	}
-	return ranges
-}
-
-// The delete set the reader finds past an update's structs is the one ygo's own decoder finds
-// there (crdt.ContentIDsFromUpdateV1, which decodes every struct into a document to reach it), for
-// the frames a browser sends and the states a room answers with: each frame a docstest peer's
-// transaction makes of an edit of each kind the editor writes, the crafted frames docstest builds
-// (a link whose attribute nests values, a chain of blocks nested deep), whole states, and
+// The struct ranges and the delete set the reader finds in an update are the ones ygo's own
+// decoder finds there (crdt.ContentIDsFromUpdateV1, which decodes every struct into a document to
+// reach them), for the frames a browser sends and the states a room answers with: each frame a
+// docstest peer's transaction makes of an edit of each kind the editor writes, typing past U+FFFF
+// among them, the crafted frames docstest builds (a link whose attribute nests values, a chain of
+// blocks nested deep), whole states, rows merged across a gap in their client's clocks, and
 // hand-written frames of every kind of content the decoder reads and the editor never writes -
 // JSON content as JSON text and as the lib0 Any values an earlier Yjs build wrote, binary content,
-// a type by its name, a subdocument, Any content nested deep. Each frame cut short by its last
-// byte, which its delete set holds, reads as no delete set at all.
-func TestTheDeleteSetReaderReadsWhatYgosDecoderReads(t *testing.T) {
+// a type by its name, a subdocument, Any content nested deep, a GC run and a skip. Each frame cut
+// short by its last byte, which its delete set holds, reads as no update at all.
+func TestTheV1ReaderReadsTheStructsAndDeleteSetYgosDecoderReads(t *testing.T) {
 	doc := seededDocumentCopy(t)
 	fragment := doc.GetXmlFragment(fragmentName)
 	text := func() *crdt.YXmlText { return paragraphTextsOf(fragment)[0] }
@@ -53,11 +41,18 @@ func TestTheDeleteSetReaderReadsWhatYgosDecoderReads(t *testing.T) {
 		}
 		return update
 	}
+	runs := typedRuns(t, doc, "one ", "two ", "three ")
+	gapped, err := crdt.MergeUpdatesV1(runs[0], runs[2])
+	if err != nil {
+		t.Fatalf("merge the first run and the last: %v", err)
+	}
 	frames := []struct {
 		name   string
 		update []byte
 	}{
 		{"typing", edit(func(txn *crdt.Transaction) { text().Insert(txn, 0, "typed ahead ", nil) })},
+		{"typing past U+FFFF", edit(func(txn *crdt.Transaction) { text().Insert(txn, 3, "naïve – 😀 𝄞 typing", nil) })},
+		{"runs merged across a gap", gapped},
 		{"a delete inside a run", edit(func(txn *crdt.Transaction) { text().Delete(txn, 2, 5) })},
 		{"a replace", edit(func(txn *crdt.Transaction) {
 			text().Delete(txn, 0, 3)
@@ -99,18 +94,22 @@ func TestTheDeleteSetReaderReadsWhatYgosDecoderReads(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ygo's decoder does not read the frame: %v", err)
 			}
-			want := rangesByClient(ids.Deletes)
-			got, ok := readV1DeleteSet(frame.update)
+			wantStructs, wantDeletes := rangesByClient(ids.Inserts), rangesByClient(ids.Deletes)
+			gotStructs, gotDeletes, ok := readV1Ranges(frame.update)
 			if !ok {
-				t.Fatalf("the reader did not read the %d-byte frame's delete set, which ygo reads as %v", len(frame.update), want)
+				t.Fatalf("the reader did not read the %d-byte frame, whose structs ygo reads as %v and delete set as %v",
+					len(frame.update), wantStructs, wantDeletes)
 			}
-			if !maps.EqualFunc(got, want, slices.Equal) {
-				t.Fatalf("the reader read the delete set %v, where ygo's decoder reads %v", got, want)
+			if !maps.EqualFunc(gotStructs, wantStructs, slices.Equal) {
+				t.Fatalf("the reader read the struct ranges %v, where ygo's decoder reads %v", gotStructs, wantStructs)
 			}
-			if _, ok := readV1DeleteSet(frame.update[:len(frame.update)-1]); ok {
-				t.Fatalf("the frame cut short by its last byte read as a whole delete set")
+			if !maps.EqualFunc(gotDeletes, wantDeletes, slices.Equal) {
+				t.Fatalf("the reader read the delete set %v, where ygo's decoder reads %v", gotDeletes, wantDeletes)
 			}
-			t.Logf("%d bytes, delete set %v", len(frame.update), got)
+			if _, _, ok := readV1Ranges(frame.update[:len(frame.update)-1]); ok {
+				t.Fatalf("the frame cut short by its last byte read as a whole update")
+			}
+			t.Logf("%d bytes, struct ranges %v, delete set %v", len(frame.update), gotStructs, gotDeletes)
 		})
 	}
 }
@@ -141,7 +140,7 @@ func TestTheDeleteSetReaderRefusesWhatYgosDecoderRefuses(t *testing.T) {
 			if _, err := crdt.ContentIDsFromUpdateV1(frame.update); err == nil {
 				t.Fatal("ygo's decoder reads the frame, so it is no frame the reader must refuse")
 			}
-			if _, ok := readV1DeleteSet(frame.update); ok {
+			if _, _, ok := readV1Ranges(frame.update); ok {
 				t.Fatal("the reader read a delete set past a struct ygo's decoder refuses")
 			}
 		})

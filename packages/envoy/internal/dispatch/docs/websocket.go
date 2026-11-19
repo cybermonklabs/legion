@@ -1304,42 +1304,37 @@ func (s *Service) classifyDrained(room string, instance *roomInstance, logged cr
 // the drain of the room's pending queue the commit ended with landed, a browser's frame parked
 // behind the clocks the write supplied, which no row holds (classifyDrained). A commit carries
 // what its apply integrated of written and what its drain landed, so without a drain it holds
-// nothing written does not: each client's structs within the clocks written's reach, and each
-// deleted clock among written's. It is read from the two updates' headers and delete sets, with
-// no content decoded (crdt.ParseUpdateMeta, eachV1DeleteRange), and costs a server write the two
-// passes over its bytes; a browser's keystroke never reaches it. An update either of them cannot
-// read is answered as carrying more, which has the room store the commit itself: a row too many,
-// and nothing lost.
-//
-// A drained struct of a client written carries clocks of, in a gap inside written's own reach,
-// is not seen, since the header gives each client's lowest and highest clock alone: written would
-// have to leave a client's clocks unbroken on either side of a struct it never held, which the
-// rows one process stored in order do not [INFERENCE].
+// nothing written does not: each clock of its structs among the clocks of written's, and each
+// deleted clock among written's deleted clocks. Both are compared clock by clock, so a struct the
+// drain landed inside a gap of written's own clocks for a client - where written holds a Skip -
+// is beyond it, as one past their end is. They are read from the two updates' structs and delete
+// sets, one pass over each, with no content decoded (eachV1Range), which costs a server write
+// the two passes over its bytes; a browser's keystroke never reaches it. An update either of them
+// cannot read is answered as carrying more, which has the room store the commit itself: a row
+// too many, and nothing lost.
 func carriesBeyond(update, written []byte) bool {
-	from, to, err := crdt.ParseUpdateMeta(update)
-	if err != nil {
+	held, deleted := crdt.NewIDSet(), crdt.NewIDSet()
+	if !eachV1Range(written, held.Add, deleted.Add) {
 		return true
 	}
-	writtenFrom, writtenTo, err := crdt.ParseUpdateMeta(written)
-	if err != nil {
-		return true
-	}
-	for client, end := range to {
-		if reach, held := writtenTo[client]; !held || from[client] < writtenFrom[client] || end > reach {
-			return true
-		}
-	}
-	deleted := crdt.NewIDSet()
-	if !eachV1DeleteRange(written, func(client crdt.ClientID, clock, length uint64) { deleted.Add(client, clock, length) }) {
-		return true
-	}
+	heldRanges, deletedRanges := rangesByClient(held), rangesByClient(deleted)
 	beyond := false
-	read := eachV1DeleteRange(update, func(client crdt.ClientID, clock, length uint64) {
-		if !beyond && !rangesCover(deleted.Ranges(client), clock, length) {
-			beyond = true
-		}
+	read := eachV1Range(update, func(client crdt.ClientID, clock, length uint64) {
+		beyond = beyond || !rangesCover(heldRanges[client], clock, length)
+	}, func(client crdt.ClientID, clock, length uint64) {
+		beyond = beyond || !rangesCover(deletedRanges[client], clock, length)
 	})
 	return beyond || !read
+}
+
+// rangesByClient is set's ranges by client, sorted and merged as the set keeps them.
+func rangesByClient(set *crdt.IDSet) map[crdt.ClientID][]crdt.IDRange {
+	clients := set.Clients()
+	ranges := make(map[crdt.ClientID][]crdt.IDRange, len(clients))
+	for _, client := range clients {
+		ranges[client] = set.Ranges(client)
+	}
+	return ranges
 }
 
 // rangesCover reports whether ranges, sorted and merged as an IDSet keeps them, cover every clock

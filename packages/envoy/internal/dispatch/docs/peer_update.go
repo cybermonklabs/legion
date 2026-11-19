@@ -1268,7 +1268,7 @@ func (a *roomApplies) splitsUnderPressure(structs uint64, full bool) int {
 // first is an update carrying a client group of the history a rebuild replaced - a group of a
 // client the rebuilt history lists as retired, starting below the clock it had reached
 // (retiredMapName), or a delete range of such a client starting there, read from the update's own
-// header and its delete set (crdt.ParseUpdateMeta, eachV1DeleteRange, neither of which decodes
+// header and its delete set (crdt.ParseUpdateMeta, eachV1Range, neither of which decodes
 // any content) (refusedBeforeApply). It comes
 // from a browser that held the document before the rebuild and still holds that history:
 // applied, its whole-state message would put the old document beside the rebuilt one, every
@@ -1524,7 +1524,7 @@ func (s *Service) underPressure(room string) bool {
 //
 // The history is read from the update's structs and from its delete set alike: a struct group of
 // a retired client starting below the clock that client had reached (crdt.ParseUpdateMeta), and a
-// delete range of one starting there (eachV1DeleteRange). A delete of the replaced history is as
+// delete range of one starting there (eachV1Range). A delete of the replaced history is as
 // much of it as an edit of it, and it would never land: the rebuilt room holds none of a retired
 // client's clocks, so the range would park in the room for as long as it stayed loaded.
 //
@@ -1566,7 +1566,7 @@ func (s *Service) refusedBeforeApply(info websocket.PeerUpdateInfo, weighing *ro
 	var deleted crdt.ClientID
 	var deletedAt, retiredAt uint64
 	replaced := false
-	read := eachV1DeleteRange(info.Update, func(client crdt.ClientID, clock, _ uint64) {
+	read := eachV1Range(info.Update, func(crdt.ClientID, uint64, uint64) {}, func(client crdt.ClientID, clock, _ uint64) {
 		if at, listed := retired[client]; listed && clock < at && !replaced {
 			deleted, deletedAt, retiredAt, replaced = client, clock, at, true
 		}

@@ -1149,7 +1149,7 @@ func TestEveryRefusalOfTheHookCarriesItsOwnCodeAndReason(t *testing.T) {
 			// A delete of the replaced history is as much of it as an edit of it, and the rebuilt
 			// room holds none of a retired client's clocks, so it would park for as long as the
 			// room stayed loaded: a frame of deletes alone, which names no struct for the header
-			// to read, is read from its delete set (refusedBeforeApply, eachV1DeleteRange).
+			// to read, is read from its delete set (refusedBeforeApply, eachV1Range).
 			name: "a delete of the history a rebuild replaced", code: contracts.DocumentTooLargeCloseCode, reason: contracts.DocumentRebuiltCloseReason,
 			refusal: func(t *testing.T) (*Service, *crdt.Doc, []byte, any) {
 				service, room, replica := rebuiltRoom(t, ordinary, rebuilt)

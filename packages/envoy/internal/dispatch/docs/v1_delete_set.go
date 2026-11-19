@@ -10,14 +10,29 @@ import (
 	"github.com/reearth/ygo/crdt"
 )
 
-// eachV1DeleteRange calls each with every range of update's delete set, update being a V1 update,
-// in the order the update holds them, and reports whether the update read through to its delete
-// set's end. A V1 update holds its structs first and its delete set after them, so the structs are
-// read too, but only to pass them: each struct's header, its origins or its parent, and the length
-// of its content, with no content decoded, no value built and nothing allocated. The library has
-// no such reader: crdt.ParseUpdateMeta reads the structs and never the delete set, and
-// crdt.ContentIDsFromUpdateV1, the one reader of an update's delete set it offers, decodes every
-// struct and value into a document of its own first, with no bound on the values it builds.
+// eachV1Range reads update, a V1 update, in one pass: it calls structs with each struct's client,
+// the clock it starts at and the clocks it takes, and deletes with every range of its delete set,
+// each in the order the update holds them, and reports whether the update read through to its
+// delete set's end. A V1 update holds its structs first and its delete set after them. A struct
+// is read only to pass it: its header, its origins or its parent, and the length of its content,
+// with no content decoded, no value built and nothing allocated. The library has no such reader:
+// crdt.ParseUpdateMeta reads the structs and never the delete set, and keeps no more of a client's
+// structs than the lowest clock they start at and the highest they reach, and
+// crdt.ContentIDsFromUpdateV1, the one reader of an update's struct ranges and delete set it
+// offers, decodes every struct and value into a document of its own first, with no bound on the
+// values it builds. Each callback is called as the reader reaches what it reads, before it has
+// read the bytes after that, so what a callback was called with is the update's only where the
+// reader reports true.
+//
+// A struct takes the clocks the library's decoder counts for it (decodeStructsV1 and
+// contentIDsFromStructs, crdt/merge.go and crdt/contentmap.go in theorem-labs/ygo
+// v1.55.1-theorem.9): a GC run its length, and an item its content's length - a deletion's
+// length, a JSON or Any item's count of values, a string's UTF-16 units, and one for content of
+// any other kind. A Skip run, which only stands for clocks the update does not hold, and a struct
+// of no clocks are passed and not called, as the decoder keeps neither. A struct reaching past
+// the highest clock the decoder lets one reach (maxV1Clock) reads as false. A client named by two
+// groups has the structs of both called, where the decoder keeps the later group's alone; Yjs and
+// ygo write each client's structs as one group.
 //
 // It passes a struct as the library's own scan of a frame passes one (pendingScanner.item and
 // .content, crdt/pending_budget.go:758-960 in theorem-labs/ygo v1.55.1-theorem.9), so the two read
@@ -34,14 +49,22 @@ import (
 // What it reads costs a pass over the update's bytes and nothing else, so a caller may read it
 // where it reads the update's header (refusedBeforeApply, carriesBeyond), under the load slot the
 // hook takes for an update past unslottedApplyBytes (weighPeerUpdate).
-func eachV1DeleteRange(update []byte, each func(client crdt.ClientID, clock, length uint64)) bool {
+func eachV1Range(update []byte, structs, deletes func(client crdt.ClientID, clock, length uint64)) bool {
 	r := v1Reader{rest: update, ok: true}
 	for groups := r.uint(); groups > 0 && r.ok; groups-- {
-		structs := r.uint()
-		r.uint() // the group's client
-		r.uint() // the clock its first struct starts at
-		for ; structs > 0 && r.ok; structs-- {
-			r.passStruct()
+		count := r.uint()
+		client := crdt.ClientID(r.uint())
+		clock := r.uint()
+		for ; count > 0 && r.ok; count-- {
+			length, skip := r.passStruct()
+			if !r.ok || clock > maxV1Clock || length > maxV1Clock+1-clock {
+				r.ok = false
+				break
+			}
+			if !skip && length > 0 {
+				structs(client, clock, length)
+			}
+			clock += length
 		}
 	}
 	for clients := r.uint(); clients > 0 && r.ok; clients-- {
@@ -49,14 +72,19 @@ func eachV1DeleteRange(update []byte, each func(client crdt.ClientID, clock, len
 		for ranges := r.uint(); ranges > 0 && r.ok; ranges-- {
 			clock, length := r.uint(), r.uint()
 			if r.ok {
-				each(client, clock, length)
+				deletes(client, clock, length)
 			}
 		}
 	}
 	return r.ok
 }
 
-// maxAnyDepth is how deep eachV1DeleteRange follows lib0 Any arrays and maps inside one another:
+// maxV1Clock is the highest clock the library's decoder lets a struct reach, 2^53 - 1, the largest
+// integer a JavaScript number holds exactly (structEnd, crdt/update.go in theorem-labs/ygo
+// v1.55.1-theorem.9): a struct that starts or ends past it reads as false.
+const maxV1Clock = 1<<53 - 1
+
+// maxAnyDepth is how deep eachV1Range follows lib0 Any arrays and maps inside one another:
 // the depth past which the library's own reader refuses a value (anycodec.MaxDepth, 100, in
 // theorem-labs/ygo v1.55.1-theorem.9), so a value it refuses does not read here either.
 const maxAnyDepth = 100
@@ -147,13 +175,13 @@ func (r *v1Reader) bytes() []byte {
 	return read
 }
 
-// passStruct passes one struct of a client group.
-func (r *v1Reader) passStruct() {
+// passStruct passes one struct of a client group and answers the clocks it takes, and whether it
+// is a Skip run, which holds none of the clocks it passes.
+func (r *v1Reader) passStruct() (length uint64, skip bool) {
 	info := r.byte()
 	tag := info & v1TagBits
 	if tag == v1GC || tag == v1Skip {
-		r.uint()
-		return
+		return r.uint(), tag == v1Skip
 	}
 	if info&v1Origin != 0 {
 		r.uint()
@@ -174,31 +202,36 @@ func (r *v1Reader) passStruct() {
 			r.bytes()
 		}
 	}
-	r.passContent(tag)
+	return r.passContent(tag), false
 }
 
-// passContent passes an item's content of kind tag.
-func (r *v1Reader) passContent(tag byte) {
+// passContent passes an item's content of kind tag and answers the clocks it takes: a deletion's
+// length, a JSON or Any item's count of values, a string's UTF-16 units, and one for content of
+// any other kind (crdt.Content.Len).
+func (r *v1Reader) passContent(tag byte) uint64 {
 	switch tag {
 	case v1Deleted:
-		r.uint()
+		return r.uint()
 	case v1JSON:
 		n := r.uint()
 		if n > uint64(len(r.rest)) {
 			r.ok = false
-			return
+			return 0
 		}
 		start := r.rest
 		if r.passJSON(n) {
-			return
+			return n
 		}
 		// Not JSON text: an earlier Yjs build wrote the same values as lib0 Any, which the
 		// library reads where the bytes start as one does (decodeContent's fallback).
 		r.rest, r.ok = start, len(start) > 0 && start[0] >= 116 && start[0] <= 127
-		for ; n > 0 && r.ok; n-- {
+		for left := n; left > 0 && r.ok; left-- {
 			r.passAny(0)
 		}
-	case v1Binary, v1String, v1Embed:
+		return n
+	case v1String:
+		return utf16Units(r.bytes())
+	case v1Binary, v1Embed:
 		r.bytes()
 	case v1Format:
 		r.bytes()
@@ -212,9 +245,11 @@ func (r *v1Reader) passContent(tag byte) {
 			r.bytes() // an element's or a hook's name
 		}
 	case v1Any:
-		for n := r.uint(); n > 0 && r.ok; n-- {
+		n := r.uint()
+		for left := n; left > 0 && r.ok; left-- {
 			r.passAny(0)
 		}
+		return n
 	case v1Doc:
 		r.bytes()
 		r.passAny(0)
@@ -224,7 +259,26 @@ func (r *v1Reader) passContent(tag byte) {
 		r.uint()
 	default:
 		r.ok = false
+		return 0
 	}
+	return 1
+}
+
+// utf16Units is the UTF-16 units text, UTF-8, takes, which are the clocks a string item takes
+// (crdt.ContentString.Len): one for each byte that starts a character and one more for each that
+// starts a character of four bytes, one past U+FFFF, as the library's frame scan counts them
+// (utf16Units, crdt/pending_budget.go in theorem-labs/ygo v1.55.1-theorem.9).
+func utf16Units(text []byte) uint64 {
+	var units uint64
+	for _, b := range text {
+		if b&0xc0 != 0x80 {
+			units++
+		}
+		if b >= 0xf0 {
+			units++
+		}
+	}
+	return units
 }
 
 // passJSON passes n JSON texts and reports whether each read as one, as the library's frame
