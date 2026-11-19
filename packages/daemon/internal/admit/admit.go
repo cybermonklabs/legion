@@ -52,10 +52,11 @@ type Admission struct {
 	// names none (config.Config.StalledTreeNotice).
 	stalledTreeNotice time.Duration
 
-	// mu guards pending, target and catchingUp, the only Admission state a caller outside its own
-	// transactions touches: the daemon's boot-owned poll calls Held on every tick, outside any
-	// transaction and the database's own advisory fact lock, concurrently with whatever release
-	// call currently holds both while it clears them.
+	// mu guards pending, stamps, target and catchingUp, the only Admission state a caller outside
+	// its own transactions touches: the daemon's boot-owned poll calls Held on every tick, outside
+	// any transaction and the database's own advisory fact lock, concurrently with whatever release
+	// call currently holds both while it clears them, and a release's hook that runs late clears
+	// them on the commit watcher's goroutine (clearReleased).
 	mu sync.Mutex
 	// pending holds, for every key Reconcile found the Dispatch consumer still needs to catch up
 	// before an admission decision on it is safe, the boot listing's own summary of that key —
@@ -66,7 +67,10 @@ type Admission struct {
 	// distinguishes one held key's own catching-up from another's. release applies every key's
 	// own summary — exactly as Reconcile's own immediate path would — before it clears them, so a
 	// key the stream never gets around to explaining still lands on what the listing already knew.
-	pending map[string]intake.DispatchIssue
+	pending map[string]heldSummary
+	// stamps counts the writes into pending, so each held summary carries the write that put it
+	// there (heldSummary.stamp), and a release clears only the holds it applied (clearReleased).
+	stamps uint64
 	// target is the notification stream's own last sequence Reconcile captured when it found the
 	// first record behind: every key in pending releases once the Dispatch consumer's position
 	// has Reached it. Zero means nothing is held.
@@ -161,7 +165,7 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 		log = slog.Default()
 	}
 	return &Admission{store: store, engine: engine, cap: cap, project: project, log: log, now: time.Now,
-		source: experiment.CryptoSource, pending: make(map[string]intake.DispatchIssue),
+		source: experiment.CryptoSource, pending: make(map[string]heldSummary),
 		unclassifiedLogged: make(map[string]uint64)}
 }
 
@@ -328,9 +332,9 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 		return released, nil, err
 	}
 	a.mu.Lock()
-	summary, held := a.pending[observation.Key]
+	hold, held := a.pending[observation.Key]
 	a.mu.Unlock()
-	if held && observation.Seq <= summary.Seq {
+	if held && observation.Seq <= hold.summary.Seq {
 		// Reconcile already holds this key on the listing's own summary because it found it
 		// behind the stream: an unrecorded key has no record to fence a live event against, so
 		// a replay at or behind that summary's own sequence — a nak's redelivery, the outbox's
@@ -876,15 +880,7 @@ func (a *Admission) Reconcile(ctx context.Context, tx pgx.Tx, summaries []intake
 	}
 
 	if len(deferred) > 0 {
-		a.mu.Lock()
-		for key, summary := range deferred {
-			a.pending[key] = summary
-		}
-		a.holds++
-		if target > a.target {
-			a.target = target
-		}
-		a.mu.Unlock()
+		a.holdDeferred(deferred, target)
 		a.log.Info("admission reconcile: holding roots for the Dispatch consumer to reach a stream position",
 			"count", len(deferred), "target", target, "ack_floor", position.AckFloorStream)
 	}
@@ -2382,6 +2378,29 @@ func (a *Admission) Holds() uint64 {
 	return a.holds
 }
 
+// heldSummary is the summary pending holds for a key, with the write into pending that put it there
+// (Admission.stamps), so a release clears the key only while pending still holds the write the
+// release applied (clearReleased).
+type heldSummary struct {
+	summary intake.DispatchIssue
+	stamp   uint64
+}
+
+// holdDeferred holds each key of deferred on its summary until the Dispatch consumer reaches
+// target, and counts the deferral (Holds).
+func (a *Admission) holdDeferred(deferred map[string]intake.DispatchIssue, target int64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for key, summary := range deferred {
+		a.stamps++
+		a.pending[key] = heldSummary{summary: summary, stamp: a.stamps}
+	}
+	a.holds++
+	if target > a.target {
+		a.target = target
+	}
+}
+
 // refreshHeldSummary keeps a held, unrecorded key's own pending summary — the one release
 // eventually applies — current with a live event that is newer than it but creates no record: an
 // event moving the key out of todo, or taking its label off, teaches nothing to the record (there
@@ -2392,15 +2411,16 @@ func (a *Admission) Holds() uint64 {
 func (a *Admission) refreshHeldSummary(observation intake.DispatchIssue) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	summary, held := a.pending[observation.Key]
-	if !held || observation.Seq <= summary.Seq {
+	hold, held := a.pending[observation.Key]
+	if !held || observation.Seq <= hold.summary.Seq {
 		return
 	}
-	a.pending[observation.Key] = intake.DispatchIssue{
+	a.stamps++
+	a.pending[observation.Key] = heldSummary{summary: intake.DispatchIssue{
 		Key: observation.Key, Seq: observation.Seq, Status: observation.Status, Title: observation.Title,
 		Parent: observation.Parent, Rank: observation.Rank, HandedOver: observation.HandedOver,
 		ResolvedRepo: observation.ResolvedRepo, Ancestry: observation.Ancestry,
-	}
+	}, stamp: a.stamps}
 }
 
 // release applies the Dispatch consumer's current position: once it has Reached target, every key
@@ -2412,15 +2432,8 @@ func (a *Admission) refreshHeldSummary(observation intake.DispatchIssue) {
 // resolved while a failed commit leaves nothing of this release durable, so the next
 // promote-triggering call would trust an unreleased hold's authority.
 func (a *Admission) release(ctx context.Context, tx pgx.Tx, position intake.DispatchConsumerPosition) ([]string, error) {
-	a.mu.Lock()
-	caughtUp := len(a.pending) > 0 && position.Reached(a.target)
-	var releasing map[string]intake.DispatchIssue
-	if caughtUp {
-		releasing = maps.Clone(a.pending)
-	}
-	a.mu.Unlock()
-
-	var released []string
+	releasing := a.releasable(position)
+	caughtUp := releasing != nil
 	if caughtUp {
 		issues, err := a.store.LiveIssues(ctx, tx, a.project)
 		if err != nil {
@@ -2431,7 +2444,11 @@ func (a *Admission) release(ctx context.Context, tx pgx.Tx, position intake.Disp
 			return nil, err
 		}
 		live := record.LiveRoots(issues, facts)
-		held := slices.SortedFunc(maps.Values(releasing), func(x, y intake.DispatchIssue) int { return cmp.Compare(x.Key, y.Key) })
+		held := make([]intake.DispatchIssue, 0, len(releasing))
+		for _, hold := range releasing {
+			held = append(held, hold.summary)
+		}
+		slices.SortFunc(held, func(x, y intake.DispatchIssue) int { return cmp.Compare(x.Key, y.Key) })
 		for _, summary := range parentsFirst(held) {
 			if err := a.applySummary(ctx, tx, summary, live); err != nil {
 				return nil, err
@@ -2447,14 +2464,34 @@ func (a *Admission) release(ctx context.Context, tx pgx.Tx, position intake.Disp
 	}
 	a.log.Info("admission: the Dispatch consumer has caught up; releasing held roots",
 		"count", len(releasing), "ack_floor", position.AckFloorStream, "idle", position.Idle, "admitted", admitted)
-	intake.OnCommit(ctx, func() {
-		a.mu.Lock()
-		for key := range releasing {
+	intake.OnCommit(ctx, func() { a.clearReleased(releasing) })
+	return returned, nil
+}
+
+// releasable is every key pending holds, with the write that holds it, once position has reached
+// the target Reconcile captured; nil while nothing is held or the consumer is behind it.
+func (a *Admission) releasable(position intake.DispatchConsumerPosition) map[string]heldSummary {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.pending) == 0 || !position.Reached(a.target) {
+		return nil
+	}
+	return maps.Clone(a.pending)
+}
+
+// clearReleased clears each key of releasing that pending still holds on the write the release
+// applied. A release's hook can run after a later refresh or a later hold of the same key, on the
+// commit watcher's goroutine when the store could say only later that the release committed
+// (store.OnCommit), and it must not clear what it did not apply: such a key stays held for a
+// release of its own.
+func (a *Admission) clearReleased(releasing map[string]heldSummary) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for key, applied := range releasing {
+		if a.pending[key].stamp == applied.stamp {
 			delete(a.pending, key)
 		}
-		a.mu.Unlock()
-	})
-	return append(released, returned...), nil
+	}
 }
 
 // ownSlots is the slots of issues, this project's. The slots table is shared by every project's
