@@ -557,7 +557,9 @@ test("the count and the tree read a tie by one rule for a statement, whatever ad
   const waitingDecisions = waitingIn(root).filter((id) => id.startsWith("decisions-md#"));
   expect(waitingDecisions).toEqual(["decisions-md#b-short", "decisions-md#b-slugged"]);
   const listed = coverageStatements(planned, coverage);
-  for (const decision of reviewed.decisions) {
+  const tied = reviewed.decisions ?? [];
+  expect(tied).toHaveLength(5);
+  for (const decision of tied) {
     const alone: IssueDecisions = { ...reviewed, decisions: [decision] };
     const counted = waitingOnReader(planned, "alice", alone, listed, [], documents);
     const marked = waitingDecisions.includes(`decisions-md#b-${decision.block_id}`);
