@@ -104,6 +104,13 @@ func ServiceAccountLogin(email string) (login string, ok bool) {
 // provider id captured.
 var writerAudience = regexp.MustCompile(`^//iam\.googleapis\.com/projects/[0-9]+/locations/global/workloadIdentityPools/([a-z0-9-]{4,32})/providers/([a-z0-9-]{4,32})$`)
 
+// WriterAudienceForm is ValidWriterAudience's rule in words: the form of a workload identity
+// provider's full resource name and the rule each of its two ids holds to, Google's reserved gcp-
+// prefix included. The loader's, the launcher's and the proxy's refusals of an audience and the
+// key table's description all name it, so each says the whole rule, and in the same words.
+const WriterAudienceForm = "//iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>," +
+	" each id 4 to 32 characters of a-z, 0-9 and - that does not start with gcp-"
+
 // ValidWriterAudience reports whether audience is the full resource name of a workload identity
 // provider:
 //

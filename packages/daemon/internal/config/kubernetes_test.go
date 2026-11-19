@@ -577,19 +577,29 @@ func TestLoadForValidationSettlesTheSessionStore(t *testing.T) {
 const testWriterAudience = "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/legion-session-writer/providers/example-cluster"
 
 // writerAudienceRefusal is the loader's answer to a writer_audience of another form than a
-// provider's full resource name.
+// provider's full resource name. It spells the whole rule out, the gcp- prefix Google keeps for
+// itself included, so a refusal of a pool or provider id that starts with it says why.
 func writerAudienceRefusal(value string) string {
 	return fmt.Sprintf("runtime.kubernetes.session_database.writer_audience %q must be a workload identity provider's full resource name,"+
 		" //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>,"+
-		" each id 4 to 32 characters of a-z, 0-9 and -", value)
+		" each id 4 to 32 characters of a-z, 0-9 and - that does not start with gcp-", value)
+}
+
+// brokerAudienceRefusal is the loader's answer to a writer_audience that is the broker's audience
+// member (audience or exchange_audience): every role of a pod reads the broker's tokens.
+func brokerAudienceRefusal(member string) string {
+	return "runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.agent_secrets." + member +
+		" (both " + testWriterAudience + "): the broker's tokens are mounted where every role of a pod reads them, and the writer token is the launcher's alone"
 }
 
 // `legion config check` (LoadForValidation) and the daemon's boot (Load) refuse the same
 // writer_audience files with the same words, so no file the check passes fails the boot and no
 // file the boot would refuse passes the check. Refused are: the member without
 // `impersonate_service_account`, since the writer token signs in only by impersonating that
-// account; a value that is not a provider's full resource name; a blank value; and the member
-// under `postgres`, where `session_database` as a whole is inert and refused. The App keys are
+// account; a value that is not a provider's full resource name, a pool id that starts with
+// Google's reserved `gcp-` among them; a blank value; the member under `postgres`, where
+// `session_database` as a whole is inert and refused; and a value that is the broker's
+// `audience` or `exchange_audience`, whose tokens every role of a pod reads. The App keys are
 // commands that fail, so a boot load that got past the session store would fail on them instead.
 func TestConfigCheckAndTheBootLoadRefuseAWriterAudienceWithoutTheAccountOrOfAnotherForm(t *testing.T) {
 	const database = "{instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam"
@@ -631,6 +641,13 @@ func TestConfigCheckAndTheBootLoadRefuseAWriterAudienceWithoutTheAccountOrOfAnot
 			want: writerAudienceRefusal("https:" + testWriterAudience),
 		},
 		{
+			name: "a pool id that starts with gcp-",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account +
+				", writer_audience: \"//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/gcp-session-writer/providers/example-cluster\"}\n"),
+			want: writerAudienceRefusal("//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/gcp-session-writer/providers/example-cluster"),
+		},
+		{
 			name: "of another form and without impersonate_service_account",
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: " + database + ", writer_audience: legion-session-writer}\n"),
@@ -647,6 +664,22 @@ func TestConfigCheckAndTheBootLoadRefuseAWriterAudienceWithoutTheAccountOrOfAnot
 			body: withSessionStore("    session_store: postgres\n    session_dsn_secret: SESSION_DSN\n" +
 				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n"),
 			want: "runtime.kubernetes.session_database is not used when runtime.kubernetes.session_store is postgres; remove it",
+		},
+		{
+			name: "the broker's audience",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n" +
+				"    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
+				"      audience: \"" + testWriterAudience + "\"\n"),
+			want: brokerAudienceRefusal("audience"),
+		},
+		{
+			name: "the broker's exchange audience",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n" +
+				"    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
+				"      exchange_audience: \"" + testWriterAudience + "\"\n"),
+			want: brokerAudienceRefusal("exchange_audience"),
 		},
 	} {
 		for _, loader := range []struct {

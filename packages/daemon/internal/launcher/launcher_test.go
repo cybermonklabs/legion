@@ -618,7 +618,7 @@ func newFleetDialed(t *testing.T, grace time.Duration, roles ...string) *fleet {
 // requireRoleNamespaces first.
 func newFleetDialedOf(t *testing.T, cfg Config, roles ...string) *fleet {
 	t.Helper()
-	scratch := namespaceScratch(t)
+	scratch := namespaceScratch(t, "")
 	f := &fleet{
 		t: t, rolesDir: filepath.Join(scratch, "roles"), home: filepath.Join(scratch, "home"),
 		fixed: filepath.Join(scratch, "fixed"), result: make(chan error, 1), stderr: &lockedBuffer{},
@@ -1345,7 +1345,7 @@ func TestAWriterAudienceIsRefusedWithoutItsAccountInAnotherFormOrInTheSingleRole
 		"no service account": {with(rolesDir, noAccount),
 			"launcher: --session-writer-audience needs --session-impersonate-service-account: the writer token signs in to Cloud SQL only by impersonating that service account"},
 		"another form": {with(rolesDir, otherForm),
-			`launcher: --session-writer-audience "` + otherForm.WriterAudience + `" is not a workload identity provider's full resource name, //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>`},
+			`launcher: --session-writer-audience "` + otherForm.WriterAudience + `" is not a workload identity provider's full resource name, ` + ompsessions.WriterAudienceForm},
 		"the single-role form": {with(singleRole, writerDatabase),
 			"launcher: --session-writer-audience needs the roles-dir form (--roles-dir): the single-role form runs its agent in the container's own namespaces, where the writer token would be in the agent's view"},
 	} {

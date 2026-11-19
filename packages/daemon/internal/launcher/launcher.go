@@ -126,11 +126,12 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	// PID 1 adopts every orphan of its PID namespace and must reap it. The controller's pod runs
-	// one role, whose processes are this namespace's; an issue pod's roles each have a namespace
-	// of their own, whose init reaps theirs, but anything else started in the container (a
-	// `kubectl exec` and what it leaves behind) is this process's. The reaper never waits on a
-	// generation's own process, whose exit its manager reads.
+	// PID 1 adopts every orphan of its PID namespace and must reap it. The single-role form, the
+	// controller's pod without a writer audience, runs its one role's processes in this
+	// namespace. In the roles-dir form each role has a namespace of its own, whose init reaps its
+	// processes, but anything else started in the container (a `kubectl exec` and what it leaves
+	// behind) is this process's. The reaper never waits on a generation's own process, whose exit
+	// its manager reads.
 	if os.Getpid() == 1 {
 		exits := make(chan os.Signal, 1)
 		signal.Notify(exits, syscall.SIGCHLD)
@@ -140,20 +141,22 @@ func Run(ctx context.Context, cfg Config) error {
 	if cfg.RolesDir == "" {
 		return managers[0].serveUntil(ctx, address)
 	}
-	// The clone's stale git locks, swept for the life of the pod (gitLockSweep). This is an
-	// issue pod's roles container: the single-role form returned above is the project
-	// controller's pod, whose working directory is no jj workspace and whose generations carry
-	// no workspace at all. The first pass is this call's, before serveTestPG, which starts a
-	// PostgreSQL: the first pass's rule is that no process of the container holds a lock yet.
-	// Only a launcher that is the container's first process sweeps, as only that one runs the
-	// memory guard below, since only it sees every process that may hold a lock; any other logs
-	// a line instead (serveGitLockSweep).
+	// The clone's stale git locks, swept for the life of the pod (gitLockSweep). This is a
+	// roles-dir container: an issue pod's, or the project controller's where the session
+	// database names a writer audience. The controller's working directory is no jj workspace
+	// and its generations carry no workspace at all, so there the sweep finds no clone, writes
+	// one line and sweeps nothing (newGitLockSweep, learn). The first pass is this call's, before
+	// serveTestPG, which starts a PostgreSQL: the first pass's rule is that no process of the
+	// container holds a lock yet. Only a launcher that is the container's first process sweeps,
+	// as only that one runs the memory guard below, since only it sees every process that may
+	// hold a lock; any other logs a line instead (serveGitLockSweep).
 	locks := serveGitLockSweep(ctx, managers)
 	// The pod's one memory guard, before the test database and any role start, so it watches
 	// both from their first process; only a launcher that is the container's first process runs
 	// one, as only that one runs the reaper above, and any other logs a line instead
 	// (serveMemoryGuard). Its loop is waited on with the roles below, as the test database's
-	// ticker is.
+	// ticker is. The controller's pod is handed no settings for it, so there it runs at its
+	// defaults only until the controller's first acknowledgement turns it off (serve).
 	memory := serveMemoryGuard(ctx, cfg, managers, pids)
 	// The pod-local metadata endpoint, before any role starts: a role's first Google client finds
 	// it listening, and a role is told its address only once it listens (metadataEnv). Its server
@@ -209,9 +212,13 @@ func Run(ctx context.Context, cfg Config) error {
 
 // serveVolumeTrim runs the pod's cache trimmer until ctx ends or the trimmer switches itself off
 // (trimmer.run), and answers a channel closed once its loop has returned, so Run can wait for it
-// as it waits for the test database's ticker (serveTestPG). The controller's pod gets none:
-// Run's single-role branch returns before this is reached, since that launcher runs one role, its
-// volume belongs to its Sandbox rather than to an issue, and no architect would read its report.
+// as it waits for the test database's ticker (serveTestPG). The controller's pod trims nothing:
+// that launcher runs one role, its volume belongs to its Sandbox rather than to an issue, and no
+// architect would read its report. In its single-role form Run returns before this is reached.
+// Where the session database names a writer audience, its roles-dir form reaches here and builds
+// a trimmer, but the controller's acknowledgement carries no VolumeTrim (launcherHelloAck in
+// internal/runtime/sandbox), so that trimmer waits for settings that never come and reads,
+// deletes and reports nothing (trimmer.awaitSettings).
 //
 // The trimmer runs only where the launcher is PID 1 of its PID namespace (containerInit), which in
 // an issue pod is the container's first process, as the memory guard and the git lock sweep do
@@ -244,9 +251,10 @@ func Run(ctx context.Context, cfg Config) error {
 // starts from, the pod's shared config home and the mount points a role's own directories are
 // bound at. Every path a role's namespace replaces is an empty filesystem in that namespace, and
 // the deleter is the one thing that keeps a link a role left in a cache out of them (RoleCover,
-// volumedelete.go). Only an issue pod's container reaches here, and that is the launcher that
-// names a roles directory. guard is the launcher's pidGuard, which each sweep's deleter starts
-// through so PID 1's reaper leaves its exit to the deleter's own wait (startRemover).
+// volumedelete.go). Only a launcher that names a roles directory reaches here: an issue pod's
+// container, or the controller's where the session database names a writer audience. guard is
+// the launcher's pidGuard, which each sweep's deleter starts through so PID 1's reaper leaves its
+// exit to the deleter's own wait (startRemover).
 func serveVolumeTrim(ctx context.Context, m *manager, guard *pidGuard) <-chan struct{} {
 	done := make(chan struct{})
 	if !containerInit() {
@@ -527,8 +535,8 @@ func (c Config) validateSessionDatabase() error {
 		return errors.New("launcher: --session-writer-audience needs --session-impersonate-service-account:" +
 			" the writer token signs in to Cloud SQL only by impersonating that service account")
 	case !ompsessions.ValidWriterAudience(audience):
-		return fmt.Errorf("launcher: --session-writer-audience %q is not a workload identity provider's full resource name,"+
-			" //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>", audience)
+		return fmt.Errorf("launcher: --session-writer-audience %q is not a workload identity provider's full resource name, %s",
+			audience, ompsessions.WriterAudienceForm)
 	case c.RolesDir == "":
 		return errors.New("launcher: --session-writer-audience needs the roles-dir form (--roles-dir):" +
 			" the single-role form runs its agent in the container's own namespaces, where the writer token would be in the agent's view")
@@ -661,9 +669,10 @@ type manager struct {
 	// gitLocks is the pod's one sweep of the clone's stale git locks, which every role manager
 	// of the container shares: the first role start that carries a workspace tells it which
 	// clone to sweep, when the container's working directory did not (gitLockSweep.learn). It is
-	// nil where the launcher runs no sweep: the controller's pod, and a roles launcher that is
+	// nil where the launcher runs no sweep: the single-role form, and a roles launcher that is
 	// not the container's first process (serveGitLockSweep); learn, its one use, takes a nil
-	// sweep for one with nothing to learn.
+	// sweep for one with nothing to learn. The controller's roles-dir form, under a writer
+	// audience, holds a sweep that never finds a clone (newGitLockSweep).
 	gitLocks *gitLockSweep
 	// check is the launcher process's one install of the shared public leak check, which every
 	// role manager of the container shares as it shares restore.
@@ -675,11 +684,12 @@ type manager struct {
 	// metadataAddress is the address this launcher serves the pod-local metadata endpoint at, which
 	// every generation it starts is told (metadataEnv); "" when it serves none.
 	metadataAddress string
-	// memoryGuard is the pod's one memory guard, which every role manager of an issue pod's
+	// memoryGuard is the pod's one memory guard, which every role manager of a roles-dir
 	// container shares: each connection's acknowledgement hands it the daemon's settings
-	// (serve). It is nil in the controller's pod, in a launcher that is not its container's
+	// (serve). It is nil in the single-role form, in a launcher that is not its container's
 	// first process, which run none, and in a microVM pod's launcher, which runs the guest watch
-	// instead (serveMemoryGuard).
+	// instead (serveMemoryGuard). The controller's roles-dir form, under a writer audience, holds
+	// one that the controller's first acknowledgement turns off, since it carries no settings.
 	memoryGuard *memoryguard.Guard
 	// memoryKills are the reports of this role's processes stopped for memory that no connection
 	// has carried yet, oldest first, at most maxWaitingMemoryKills (queueMemoryKill). reportWriter

@@ -637,9 +637,10 @@ func readAdvertiseHost(value *yaml.Node, key string) (*string, error) {
 // refusal names what replaced it, which is what `legion config check` shows the operator to edit;
 // skills_repository is refused whatever its value, a null one included (namesKey). The sandbox's
 // rules that read the block's scheduling, pod and agent_secrets too are checked once all four are
-// read (checkSandboxAgainstTheBlock). What depends on keys outside the block is checked once the
-// whole file is read (checkKubernetesKeys), and the reservations the file leaves out are filled
-// when the block is settled (resolveKubernetes).
+// read (checkSandboxAgainstTheBlock), and so is the session database's writer audience against the
+// broker's two audiences (checkWriterAudienceAgainstTheBroker). What depends on keys outside the
+// block is checked once the whole file is read (checkKubernetesKeys), and the reservations the
+// file leaves out are filled when the block is settled (resolveKubernetes).
 func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, errors.New("runtime.kubernetes must be a mapping")
@@ -730,6 +731,9 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 		return nil, err
 	}
 	if err := checkSandboxAgainstTheBlock(block); err != nil {
+		return nil, err
+	}
+	if err := checkWriterAudienceAgainstTheBroker(block); err != nil {
 		return nil, err
 	}
 	return block, nil
@@ -1056,6 +1060,30 @@ func checkSandboxAgainstTheBlock(block *Kubernetes) error {
 				return fmt.Errorf("%s.%s must differ from %s.workload_pool (both %s) while an issue pod runs in a microVM: the cluster projects one volume per audience, and the pool's token is the launcher's alone",
 					agentSecretsKey, member.name, metadataKey, pool)
 			}
+		}
+	}
+	return nil
+}
+
+// checkWriterAudienceAgainstTheBroker refuses a session database writer audience
+// (session_database.writer_audience) that is also a broker audience (agent_secrets.audience or
+// exchange_audience). The three tokens have one subject, the pod's ServiceAccount, and a pod that
+// enrolls with the broker mounts the broker's two where every role of the pod reads them
+// (podTokenMounts in internal/runtime/sandbox). So with equal values a role's process could read
+// the broker's token, exchange it as the writer token and sign in as the session database's
+// service account, past the socket's peer check, and the writer token must be the launcher's
+// alone. Each refusal names both keys and the value.
+func checkWriterAudienceAgainstTheBroker(block *Kubernetes) error {
+	writer, secrets := block.SessionStore.Database.WriterAudience, block.AgentSecrets
+	if writer == "" || secrets == nil {
+		return nil
+	}
+	for _, member := range []struct{ name, audience string }{
+		{"audience", secrets.Audience}, {"exchange_audience", secrets.ExchangeAudience},
+	} {
+		if member.audience == writer {
+			return fmt.Errorf("%s.writer_audience must differ from %s.%s (both %s): the broker's tokens are mounted where every role of a pod reads them, and the writer token is the launcher's alone",
+				sessionDatabaseKey, agentSecretsKey, member.name, writer)
 		}
 	}
 	return nil
@@ -1966,9 +1994,8 @@ func readSessionDatabase(value *yaml.Node) (ompsessions.Database, error) {
 	}
 	if database.WriterAudience != "" {
 		if !ompsessions.ValidWriterAudience(database.WriterAudience) {
-			return ompsessions.Database{}, fmt.Errorf("%s.writer_audience %q must be a workload identity provider's full resource name,"+
-				" //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>,"+
-				" each id 4 to 32 characters of a-z, 0-9 and -", sessionDatabaseKey, database.WriterAudience)
+			return ompsessions.Database{}, fmt.Errorf("%s.writer_audience %q must be a workload identity provider's full resource name, %s",
+				sessionDatabaseKey, database.WriterAudience, ompsessions.WriterAudienceForm)
 		}
 		if database.ImpersonateServiceAccount == "" {
 			return ompsessions.Database{}, fmt.Errorf("%s.writer_audience needs %s.impersonate_service_account:"+

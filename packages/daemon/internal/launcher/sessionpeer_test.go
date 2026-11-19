@@ -26,7 +26,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
-	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -321,34 +320,10 @@ type writerRig struct {
 	dialer   *sessionDialer
 }
 
-// socketScratch is a directory with room under it for socket, the path relative to it of a socket
-// a generation binds or a role connects to (testtmp.Dir). It is outside /tmp, as namespaceScratch
-// is, because role-init binds the role's own /tmp over it, and a roles directory or a fixed root
-// under /tmp would then be gone from the role's view.
-func socketScratch(t *testing.T, socket string) string {
-	t.Helper()
-	if dir := testtmp.Dir(t, socket); !strings.HasPrefix(dir, "/tmp/") {
-		return dir
-	}
-	home := os.Getenv("HOME")
-	if home == "" {
-		skipOutsideCI(t, "no directory outside /tmp for a socket's directory: TMPDIR is under /tmp and HOME is unset")
-	}
-	dir, err := os.MkdirTemp(home, "lg")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	if path := filepath.Join(dir, socket); len(path) > 107 {
-		skipOutsideCI(t, "the socket path %s is longer than a unix socket path holds", path)
-	}
-	return dir
-}
-
 func newWriterRig(t *testing.T, database ompsessions.Database, dialer *sessionDialer) *writerRig {
 	t.Helper()
 	r := &writerRig{log: &lockedBuffer{}, dialer: dialer}
-	r.rolesDir = socketScratch(t, filepath.Join("tester", RolePrivateDir, shimwire.GenerationDir(9), ompsessions.SocketName))
+	r.rolesDir = namespaceScratch(t, filepath.Join("tester", RolePrivateDir, shimwire.GenerationDir(9), ompsessions.SocketName))
 	for _, name := range []string{RoleLauncherDir, RoleGHDir, RolePrivateDir, RoleStateDir, RoleAgentSecretsDir} {
 		if err := os.MkdirAll(filepath.Join(r.rolesDir, "tester", name), 0o755); err != nil {
 			t.Fatal(err)
@@ -802,12 +777,12 @@ func startPeerGeneration(t *testing.T) *peerGeneration {
 	t.Helper()
 	requireRoleNamespaces(t)
 	useTraceScope(t, "1\n")
-	scratch := namespaceScratch(t)
+	scratch := namespaceScratch(t, "")
 	exe := roleExecutable(t, scratch)
 	home, homeMounts := filepath.Join(scratch, "home"), filepath.Join(scratch, "home-mounts")
 	// The fixed root is where the role finds its socket, so it is short, as the image's
 	// /var/run/legion is.
-	fixed := socketScratch(t, filepath.Join(RolePrivateDir, shimwire.GenerationDir(9), ompsessions.SocketName))
+	fixed := namespaceScratch(t, filepath.Join(RolePrivateDir, shimwire.GenerationDir(9), ompsessions.SocketName))
 	for _, dir := range []string{filepath.Join(fixed, RoleGHDir), filepath.Join(fixed, RolePrivateDir), filepath.Join(fixed, RoleStateDir),
 		filepath.Join(fixed, RoleAgentSecretsDir), home, homeMounts} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {

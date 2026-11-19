@@ -16,7 +16,7 @@
         "annotations": {
           "cluster-autoscaler.kubernetes.io/safe-to-evict": "false",
           "karpenter.sh/do-not-disrupt": "true",
-          "legion.dev/pod-shape": "{\"image\":\"ghcr.io/cybermonklabs/legion-worker@sha256:1d10089a0000000000000000000000000000000000000000000000000000beef\",\"resources\":{\"limits\":{\"cpu\":\"1\",\"ephemeral-storage\":\"10Gi\",\"memory\":\"4Gi\"},\"requests\":{\"cpu\":\"1\",\"ephemeral-storage\":\"1Gi\",\"memory\":\"4Gi\"}},\"disk\":\"20Gi\",\"writer_audience\":\"//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/legion-writers/providers/legion-cluster\"}"
+          "legion.dev/pod-shape": "{\"image\":\"ghcr.io/cybermonklabs/legion-worker@sha256:1d10089a0000000000000000000000000000000000000000000000000000beef\",\"resources\":{\"limits\":{\"cpu\":\"1\",\"ephemeral-storage\":\"10Gi\",\"memory\":\"4Gi\"},\"requests\":{\"cpu\":\"1\",\"ephemeral-storage\":\"1Gi\",\"memory\":\"4Gi\"}},\"disk\":\"20Gi\"}"
         },
         "labels": {
           "legion.dev/project": "legion",

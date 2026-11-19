@@ -63,13 +63,6 @@ const podShapeAnnotation = "legion.dev/pod-shape"
 // volumes and mounts are runtime.kubernetes.pod's alone (Options.Pod), and resources the pod
 // kind's one reservation. Sandbox is where a microVM pod runs (sandboxShape), and nil for a gVisor
 // pod, which so records exactly what it recorded before the sandbox setting existed.
-// WriterAudience is the session database's writer audience (Database.WriterAudience) of the
-// controller's pod alone: it decides that pod's layout, the launcher's roles-dir form with it and
-// the single-role form without (controllerPod.launcherContainer), so a configuration that adds or
-// drops it is drift of the controller's shape as well as of its session store
-// (movedSessionStore). An issue pod's layout is the same with it and without it, and its session
-// store's drift already names the change, so its shape records none; neither does a controller's
-// pod without it, so that shape encodes byte for byte as it did before the setting existed.
 //
 // The field order is fixed and encoding/json's own: Go sorts a map's keys, so a ResourceList
 // encodes the same whatever order it was built in, and a resource.Quantity marshals as its own
@@ -77,13 +70,12 @@ const podShapeAnnotation = "legion.dev/pod-shape"
 // fleet would read as drifted at once — which TestPodShapeEncodesEqualConfigurationsIdentically
 // holds this to.
 type podShapeRecord struct {
-	Image          string                      `json:"image"`
-	Resources      corev1.ResourceRequirements `json:"resources"`
-	Volumes        []corev1.Volume             `json:"volumes,omitempty"`
-	Mounts         []corev1.VolumeMount        `json:"mounts,omitempty"`
-	Disk           string                      `json:"disk"`
-	Sandbox        *sandboxShape               `json:"sandbox,omitempty"`
-	WriterAudience string                      `json:"writer_audience,omitempty"`
+	Image     string                      `json:"image"`
+	Resources corev1.ResourceRequirements `json:"resources"`
+	Volumes   []corev1.Volume             `json:"volumes,omitempty"`
+	Mounts    []corev1.VolumeMount        `json:"mounts,omitempty"`
+	Disk      string                      `json:"disk"`
+	Sandbox   *sandboxShape               `json:"sandbox,omitempty"`
 }
 
 // sandboxShape is the sandbox a microVM issue pod runs in, as its shape records it: the
@@ -111,11 +103,10 @@ type sandboxMetadataShape struct {
 
 // podShape is the configuration a pod of kind is built from now, as its template's annotation
 // records it: the image every container runs, the kind's own reservation (podKind.resources), the
-// operator's volumes and mounts, the size of the pod's disk, for a pod that runs in a microVM,
-// where that microVM runs (microVM, launch.microVM; nil for a gVisor pod, which records no
-// sandbox), and for the controller's pod, the writer audience that decides its layout
-// (podShapeRecord.WriterAudience). An encoding failure is unreachable — every field is an API
-// object or a string — and is logged and recorded as no shape, compared by image alone.
+// operator's volumes and mounts, the size of the pod's disk, and, for a pod that runs in a
+// microVM, where that microVM runs (microVM, launch.microVM; nil for a gVisor pod, which records
+// no sandbox). An encoding failure is unreachable — every field is an API object or a string — and
+// is logged and recorded as no shape, compared by image alone.
 //
 // Every field is settled when the runtime is built and never written again, so the runtime calls
 // this once per kind and sandbox, as it is built, and keeps what it answers (podShapes,
@@ -129,18 +120,14 @@ func podShape(r *Runtime, kind podKind, microVM *MicroVM) string {
 			where.Metadata = &sandboxMetadataShape{WorkloadPool: endpoint.WorkloadPool, IdentityProvider: endpoint.IdentityProvider}
 		}
 	}
-	record := podShapeRecord{
+	encoded, err := json.Marshal(podShapeRecord{
 		Image:     r.image,
 		Resources: kind.resources(r),
 		Volumes:   r.pod.Volumes,
 		Mounts:    r.pod.VolumeMounts,
 		Disk:      r.volumeSize.String(),
 		Sandbox:   where,
-	}
-	if _, controller := kind.(controllerPod); controller {
-		record.WriterAudience = r.sessionWriterAudience()
-	}
-	encoded, err := json.Marshal(record)
+	})
 	if err != nil {
 		r.log.Error("sandbox runtime: the pod shape cannot be encoded; pods will be compared by image alone", "error", err)
 		return ""
@@ -199,10 +186,9 @@ func (r *Runtime) storedShapeKey(kind podKind, u *unstructured.Unstructured) pod
 
 // podShapeDrift names what the pod of the Sandbox read as s was built from that the runtime would
 // build a pod from otherwise now (want, podShape), one short phrase per key: `image`, `resources`,
-// `volumes`, `mounts`, `disk`, `sandbox` or `writer_audience`, with what the pod holds and would
-// be handed now. `sandbox` is where a microVM pod runs (sandboxShape) and null for a gVisor pod,
-// so a pod whose issue moved from one sandbox to the other reads null on one side;
-// `writer_audience` is the controller's pod's, and empty on the side without one.
+// `volumes`, `mounts`, `disk` or `sandbox`, with what the pod holds and would be handed now.
+// `sandbox` is where a microVM pod runs (sandboxShape) and null for a gVisor pod, so a pod whose
+// issue moved from one sandbox to the other reads null on one side.
 // Nil means nothing drifted.
 //
 // It reads the stored Sandbox's template, never the pod: GKE Autopilot rewrites a pod's
@@ -250,7 +236,6 @@ func podShapeDrift(s *sandbox, want string) []string {
 		drifted = append(drifted, "disk "+was.Disk+", now "+now.Disk)
 	}
 	named("sandbox", was.Sandbox, now.Sandbox)
-	named("writer_audience", was.WriterAudience, now.WriterAudience)
 	return drifted
 }
 

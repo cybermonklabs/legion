@@ -201,7 +201,8 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 	case cfg.WriterAudience != "" && cfg.ImpersonateServiceAccount == "":
 		return nil, errors.New("sessionproxy: WriterAudience and WriterTokenFile need ImpersonateServiceAccount: the writer token signs in only by impersonating that service account")
 	case cfg.WriterAudience != "" && !ompsessions.ValidWriterAudience(cfg.WriterAudience):
-		return nil, fmt.Errorf("sessionproxy: WriterAudience %q is not a workload identity provider's full resource name, //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>", cfg.WriterAudience)
+		return nil, fmt.Errorf("sessionproxy: WriterAudience %q is not a workload identity provider's full resource name, %s",
+			cfg.WriterAudience, ompsessions.WriterAudienceForm)
 	case cfg.WriterTokenFile != "" && !filepath.IsAbs(cfg.WriterTokenFile):
 		return nil, fmt.Errorf("sessionproxy: WriterTokenFile %q is not an absolute path", cfg.WriterTokenFile)
 	}

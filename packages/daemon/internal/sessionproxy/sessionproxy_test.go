@@ -457,8 +457,7 @@ func TestStartRefusesAWriterTokenNamedByHalfOrWithoutItsAccount(t *testing.T) {
 		},
 		{
 			"the project's id in place of its number", account, byID, tokenFile,
-			fmt.Sprintf("sessionproxy: WriterAudience %q is not a workload identity provider's full resource name,"+
-				" //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>", byID),
+			fmt.Sprintf("sessionproxy: WriterAudience %q is not a workload identity provider's full resource name, %s", byID, ompsessions.WriterAudienceForm),
 		},
 		{
 			"a token file by a relative path", account, testWriterAudience, "session-writer/token",

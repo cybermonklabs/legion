@@ -1031,7 +1031,8 @@ Under Workload Identity Federation for GKE, the pod's cloud identity is the prin
 Cloud SQL takes only a user, a service account or a group as an IAM database login, so that principal cannot have a login.
 
 `impersonate_service_account` names a Google service account for the pods to sign in as.
-Each pod's proxy impersonates that account with the pod's own credentials, for both of the connector's token sources, and signs in as it (`connectorOptions`, `internal/sessionproxy`).
+Each pod's proxy impersonates that account for both of the connector's token sources, and signs in as it (`connectorOptions`, `internal/sessionproxy`).
+It impersonates the account with the pod's own credentials, or, where `writer_audience` is set, with a token that only the launcher reads (below).
 Both sources must be the account's, because Google says that "the IAM account that you use to start the connector must be the same account that authenticates to the database" ([Log in using IAM database authentication](https://cloud.google.com/sql/docs/postgres/iam-logins)).
 A deployment that sets the member makes these four things true in Google Cloud:
 
@@ -1074,19 +1075,24 @@ The proxy's socket then admits only the launcher and the generation's Oh My Pi p
 The loader holds the value to `ompsessions.ValidWriterAudience` (`internal/ompsessions/store.go`), and the launcher and the proxy hold to the same rule.
 The project is its number in decimal digits, never its id.
 The pool and the provider are each 4 to 32 characters of `a-z`, `0-9` and `-`, and neither starts with `gcp-`, which Google keeps for itself.
-`legion config check` and the daemon's boot load refuse the same files with the same words (`readSessionDatabase`, `internal/config/kubernetes.go`):
+`legion config check` and the daemon's boot load refuse the same files with the same words (`readSessionDatabase` and `checkWriterAudienceAgainstTheBroker`, `internal/config/kubernetes.go`):
 
 - the member without `impersonate_service_account`:
   `runtime.kubernetes.session_database.writer_audience needs runtime.kubernetes.session_database.impersonate_service_account: the writer token signs in to Cloud SQL only by impersonating that service account`
 
 - a value of another form:
-  `runtime.kubernetes.session_database.writer_audience "<value>" must be a workload identity provider's full resource name, //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>, each id 4 to 32 characters of a-z, 0-9 and -`
+  `runtime.kubernetes.session_database.writer_audience "<value>" must be a workload identity provider's full resource name, //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>, each id 4 to 32 characters of a-z, 0-9 and - that does not start with gcp-`
 
 - a blank value:
   `runtime.kubernetes.session_database.writer_audience must not be empty`
 
 - the member under `postgres`, where `session_database` as a whole is refused:
   `runtime.kubernetes.session_database is not used when runtime.kubernetes.session_store is postgres; remove it`
+
+- a value that is also `agent_secrets.audience` or `agent_secrets.exchange_audience`:
+  `runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.agent_secrets.audience (both <value>): the broker's tokens are mounted where every role of a pod reads them, and the writer token is the launcher's alone`, and likewise `runtime.kubernetes.agent_secrets.exchange_audience`.
+  All three tokens have the pod's ServiceAccount as their subject, and every role of a pod that enrolls with the broker reads the broker's two (`podTokenMounts`, `manifest.go`).
+  With equal values, a role's process could exchange the broker's token as the writer token and sign in as the account.
 
 A deployment that sets the member makes these four things true:
 
@@ -1119,6 +1125,9 @@ Turn `writer_audience` on in this order:
 
 A daemon before the release that adds `writer_audience` refuses the member by name, as a key it does not know.
 The worker image moves with the daemon at that release's daemon API contract, so a rollback takes back the file, the daemon and the image together.
+A pod created under the member keeps `--session-writer-audience` in its launcher's command for its whole life.
+A daemon before that release sends no `agentExecutable` in a start command, so the launcher of such a pod refuses every Oh My Pi start into it until the pod is replaced (`newSessionPeer`, `internal/launcher/sessionpeer.go`).
+So replace those pods as part of the rollback.
 Once the account's grant to the pod's own principal is gone, a release without `writer_audience` cannot sign in: its proxy impersonates the account with the pod's own credentials, and Google refuses them.
 So restore that grant before such a rollback.
 
@@ -2837,7 +2846,7 @@ Contract 141, cybermonklabs/legion#3575, has its own section below, which gives 
 Its one migration, `20261111045636_experiment_assignments.up.sql`, adds the table `experiment_assignments`, which a release before it names in no statement, so that release boots with the table and its rows in place, and the block below touches neither the table nor that migration's row.
 No release declares 138, 139 or 140: the contract went from 137 to 141 in that one change, so a rollback from 141 to 137 crosses no other contract.
 Contract 137, cybermonklabs/legion#4046, has no section of its own here: it adds no migration, and a daemon before it refuses `impersonate_service_account` as an unknown key, so a rollback below it takes back `legion.yaml`, the daemon and the worker image together, as [Selecting the store](#selecting-the-store) says.
-Contract 171, cybermonklabs/legion#4495, has no section of its own here either: it adds no migration, and a daemon before it refuses `writer_audience` as an unknown key, so a rollback below it takes back `legion.yaml`, the daemon and the worker image together, and restores the account's grant to the pod's own principal where the deployment removed it, as [Selecting the store](#selecting-the-store) says.
+Contract 171, cybermonklabs/legion#4495, has no section of its own here either: it adds no migration, and a daemon before it refuses `writer_audience` as an unknown key, so a rollback below it takes back `legion.yaml`, the daemon and the worker image together, restores the account's grant to the pod's own principal where the deployment removed it, and replaces every pod created under `writer_audience`, as [Selecting the store](#selecting-the-store) says.
 Contract 133, cybermonklabs/legion#3937, has no section of its own here either: its one migration, `20261112070503_pull_request_state_read_at.up.sql`, adds the column `pull_requests.state_read_at` at a default every row takes, which a release before it neither reads nor writes, since its pull request reads and its insert name each column they touch, and its header gives no step.
 Neither has cybermonklabs/legion#3983, which landed after it at the same contract: its one migration, `20261113082415_claim_ended_work.up.sql`, adds the nullable column `claims.ended_work`, which a release before it names in no statement, and its header gives no step.
 Contract 132, cybermonklabs/legion#3715, has no section of its own here either: its one migration, `20261111214351_issue_released_for_wait.up.sql`, adds the nullable column `issues.released_for_wait_at`, and its header gives no step, since migrations here are forward-only.
@@ -3459,7 +3468,7 @@ an operator who knows the root volume raises `ephemeral_storage_request` so the 
 - a `session_store` that keeps sessions as files (`pvc`), and an omitted `session_store`, which settles to it and is the same refusal rather than a default;
   a `session_store` other than `pvc`, `postgres` or `cloudsql-iam`;
   `postgres` without `session_dsn_secret`, or with one that is empty or not a Secret data key (`[-._a-zA-Z0-9]+`);
-  `cloudsql-iam` without `session_database`, or with one that is not a mapping, names a member but `instance`, `name`, `user`, `impersonate_service_account` and `writer_audience`, leaves one of the three required members empty or `impersonate_service_account` or `writer_audience` blank, or whose `instance` is not a connection name the Cloud SQL connector uses whole (`project:region:instance`, or `domain:project:region:instance` for a domain-scoped project, with no whitespace), whose `impersonate_service_account` is not a Google service account's email, whose `user` is not that account's IAM login (its email without `.gserviceaccount.com`), whose `writer_audience` is not a workload identity provider's full resource name (`//iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>`), or that names `writer_audience` without `impersonate_service_account`;
+  `cloudsql-iam` without `session_database`, or with one that is not a mapping, names a member but `instance`, `name`, `user`, `impersonate_service_account` and `writer_audience`, leaves one of the three required members empty or `impersonate_service_account` or `writer_audience` blank, or whose `instance` is not a connection name the Cloud SQL connector uses whole (`project:region:instance`, or `domain:project:region:instance` for a domain-scoped project, with no whitespace), whose `impersonate_service_account` is not a Google service account's email, whose `user` is not that account's IAM login (its email without `.gserviceaccount.com`), whose `writer_audience` is not a workload identity provider's full resource name (`//iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>`), or that names `writer_audience` without `impersonate_service_account` or with the value of `agent_secrets.audience` or `agent_secrets.exchange_audience`, whose tokens every role of a pod reads;
   a `session_dsn_secret` under `cloudsql-iam`; and a `session_database` under `postgres` (an inert key is refused, never ignored).
   At boot the daemon also refuses, under `postgres`, a `session_dsn_secret` that is the providers Secret's `NATS_NKEY_SEED` and a `provider_keys` entry that reads the same key (the shim would export the URL into Oh My Pi's environment)
   — neither can arise under `cloudsql-iam`, where no pod mounts a session key
@@ -8112,7 +8121,7 @@ The roles-dir form changes five things for the controller:
 - The controller's home overlay, its `/tmp` and `/var/tmp` and its own config home are on the role homes volume, a disk `emptyDir` that counts against the controller pod's ephemeral storage ([Issue sizing](#issue-sizing-one-reservation-per-pod)).
 
 Without the member, the controller's pod is the pod this section describes above.
-A writer audience added, dropped or changed is a moved session store, and the controller's pod shape records the audience too (`movedSessionStore`, `podShapeRecord`), so the next launch into the controller's pod replaces it.
+A writer audience added, dropped or changed is a moved session store (`movedSessionStore`), so the next launch into the controller's pod replaces it.
 
 The Sandbox is the claim's alone, where an issue's is its tree's.
 A release of the claim (a switch back, or `legion claims stop`) deletes it, and its role Secret and volume with it.

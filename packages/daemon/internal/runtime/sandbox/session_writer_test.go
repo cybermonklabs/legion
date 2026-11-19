@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"encoding/json"
 	"io"
 	"maps"
 	"path/filepath"
@@ -379,40 +378,6 @@ func TestADaemonKeepsTheControllersPodItsOwnConfigurationBuiltInEitherLayout(t *
 				t.Errorf("the start command's PI_CONFIG_FILES is %q, want %s among it: the pod it runs in mounts that overlay", files, overlay)
 			}
 		})
-	}
-}
-
-// The controller's pod records in its shape the writer audience that decides its layout, so a
-// configuration that adds, drops or changes it reads as that pod's shape drift, named
-// writer_audience. An issue pod's shape records none, its layout being the same with a writer
-// audience and without, and a controller's pod without one records no such key at all, so its
-// shape is the one it recorded before the setting existed.
-func TestTheControllersShapeRecordsTheWriterAudienceThatDecidesItsLayout(t *testing.T) {
-	plain, writer := storeRuntime(t, cloudSQLImpersonatingStore), storeRuntime(t, cloudSQLWriterStore)
-	if held, now := plain.podShapes[issueInGVisor], writer.podShapes[issueInGVisor]; held != now {
-		t.Errorf("an issue pod's shape moves with the writer audience:\n%s\n%s", held, now)
-	}
-	if shape := plain.podShapes[controllerInGVisor]; strings.Contains(shape, "writer_audience") {
-		t.Errorf("the controller's shape without a writer audience is %s, want no writer_audience key", shape)
-	}
-	var record podShapeRecord
-	if err := json.Unmarshal([]byte(writer.podShapes[controllerInGVisor]), &record); err != nil || record.WriterAudience != testWriterAudience {
-		t.Errorf("the controller's shape under a writer audience records %q (%v), want %q", record.WriterAudience, err, testWriterAudience)
-	}
-	built := func(shape string) *sandbox {
-		return &sandbox{Spec: sandboxSpec{PodTemplate: podTemplate{Metadata: podMetadata{Annotations: map[string]string{podShapeAnnotation: shape}}}}}
-	}
-	for name, tc := range map[string]struct{ held, now *Runtime }{
-		"added":   {plain, writer},
-		"dropped": {writer, plain},
-	} {
-		drifted := podShapeDrift(built(tc.held.podShapes[controllerInGVisor]), tc.now.podShapes[controllerInGVisor])
-		if len(drifted) != 1 || !strings.HasPrefix(drifted[0], "writer_audience ") || !strings.Contains(drifted[0], testWriterAudience) {
-			t.Errorf("a writer audience %s reads as %q, want one reason naming writer_audience and the audience", name, drifted)
-		}
-	}
-	if drifted := podShapeDrift(built(writer.podShapes[controllerInGVisor]), writer.podShapes[controllerInGVisor]); len(drifted) > 0 {
-		t.Errorf("the controller's pod built under the same writer audience reads as %q", drifted)
 	}
 }
 

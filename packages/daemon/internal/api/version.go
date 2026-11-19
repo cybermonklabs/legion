@@ -2406,8 +2406,12 @@ package api
 // pi-legion to this number, refuses such an image at boot instead, as it did for 137's flag. An
 // older daemon refuses the member by name (`internal/config`'s readSessionDatabase), so it
 // renders neither the flag nor the controller's roles-dir form. An older launcher ignores
-// `agentExecutable`. A deployment that sets no writer audience renders no fifth flag, and its
-// launcher reads no `agentExecutable`, so its pods carry the command they carried before. (The
+// `agentExecutable`. A pod created under the member keeps `--session-writer-audience` in its
+// launcher's command for its life, and an older daemon sends no `agentExecutable`, so after a
+// rollback that launcher refuses every Oh My Pi start into the pod (`internal/launcher`'s
+// newSessionPeer) until the pod is replaced. So replace those pods as part of the rollback. A
+// deployment that sets no writer audience renders no fifth flag, and its launcher reads no
+// `agentExecutable`, so its pods carry the command they carried before. (The
 // number was first read at 2026-11-19T10:30Z-10:34Z as 170, the lowest above main's 160 (46795520,
 // #3519's INFRA-2009) that no open pull request of cybermonklabs/legion declared, with the `take`
 // of .github/scripts/check-daemon-api-contract.sh, while this branch's base, 4eec2cc2, still

@@ -57,10 +57,14 @@ var containerInit = func() bool { return os.Getpid() == 1 }
 // report would have told the role.
 const maxWaitingMemoryKills = 32
 
-// serveMemoryGuard runs the issue pod's one memory watch and each role's sender of that watch's
-// kill reports until ctx ends, and answers a channel closed once all of them have returned, so Run
-// can wait for it as it waits for the test database's ticker (serveTestPG). The controller's pod
-// runs none: Run's single-role branch returns before this is reached.
+// serveMemoryGuard runs the pod's one memory watch and each role's sender of that watch's kill
+// reports until ctx ends, and answers a channel closed once all of them have returned, so Run can
+// wait for it as it waits for the test database's ticker (serveTestPG). The controller's pod runs
+// none in its single-role form: Run's single-role branch returns before this is reached. Where the
+// session database names a writer audience, the controller's roles-dir form reaches here and
+// builds the guard. The controller's acknowledgement carries no MemoryGuard (launcherHelloAck in
+// internal/runtime/sandbox), so that guard runs at its defaults only until the first
+// acknowledgement, which turns it off (serve), and off it ends nothing.
 //
 // The watch runs only where the launcher is the container's first process (containerInit). Any
 // other launcher logs one line and runs none: no manager then holds a guard, so serve hands no
