@@ -8,7 +8,7 @@ import {
 import { type FormEvent, type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { api, apiErrorMessage, type WriteBounds } from "../../api/client";
+import { ApiError, api, apiErrorMessage, type WriteBounds } from "../../api/client";
 import { accessGroupsQuery, projectAccessQuery, whoAmIQuery } from "../../api/queries";
 import type { AccessGroup, ProjectAccess } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -109,6 +109,62 @@ function accessOperation(project: string, change: AccessChange): AccessOperation
         label: `Name ${project}'s Slack channels`,
         part: "slack",
         refusal: `Couldn't name ${project}'s Slack channels.`,
+      };
+  }
+}
+
+/** What the owner who pressed the Private switch reads when Dispatch refuses it, by the refusal's
+ *  code, and whether Retry is offered. Dispatch's own words for these refusals are written for the
+ *  deployment's operator (a table, an envoy-dispatch command, a setting, the hub's bucket) and
+ *  stay in the server's log and record, so none of them is drawn here: each code the route
+ *  answers (`api/project_access.go`) has a sentence that says what the owner can do, and a code
+ *  this dashboard does not know has one that names nothing of Dispatch's. Only
+ *  PRIVATE_PROJECTS_UNAVAILABLE, the hub refusing the project's record for now, offers Retry:
+ *  every other answer stays the same until someone changes the deployment, the store or the
+ *  project, and the switch itself can still be pressed. */
+function switchRefusal(
+  project: string,
+  visibility: "public" | "private",
+  code: string | undefined
+): { readonly message: string; readonly retry: boolean } {
+  switch (code) {
+    case "PRIVATE_PROJECTS_OFF":
+      return {
+        message:
+          "This deployment cannot make a project private yet: ask its operator to set up private projects.",
+        retry: false,
+      };
+    case "PRIVATE_PROJECT_NOT_PROVISIONED":
+      return {
+        message: `This deployment has not set up ${project} to be private: ask its operator to set it up.`,
+        retry: false,
+      };
+    case "PRIVATE_PROJECTS_INCOMPLETE":
+      return {
+        message: `This deployment is not ready to keep ${project} private yet: ask its operator to finish setting up private projects.`,
+        retry: false,
+      };
+    case "PRIVATE_PROJECTS_UNAVAILABLE":
+      return {
+        message: `Dispatch could not make ${project} private just now: try again in a moment.`,
+        retry: true,
+      };
+    case "PROJECT_OWNER_REQUIRED":
+      return { message: `Only ${project}'s owner can change who may see it.`, retry: false };
+    case "PROJECT_NOT_FOUND":
+      return {
+        message: `You can no longer see ${project}, so you cannot change who may see it.`,
+        retry: false,
+      };
+    case "PROJECT_ACCESS_INPUT":
+      return {
+        message: "Dispatch did not take this change: reload the page and press the switch again.",
+        retry: false,
+      };
+    default:
+      return {
+        message: `Dispatch did not make ${project} ${visibility}: if this keeps happening, ask the deployment's operator.`,
+        retry: false,
       };
   }
 }
@@ -221,10 +277,10 @@ const rowClass = `flex min-h-11 items-center justify-between gap-3 border-b px-4
  * private, and to give it to another person. Only the owner changes any of it, so every control
  * is disabled for anyone else, with the reason as its title and on the page above them; whether
  * the reader is the owner is `/auth/whoami`'s `login` against the answer's `owner`, read from the
- * identity the shell already holds. A deployment that cannot make a project private refuses the
- * switch with a 409 (PRIVATE_PROJECTS_OFF, PRIVATE_PROJECT_NOT_PROVISIONED,
- * PRIVATE_PROJECTS_INCOMPLETE or PRIVATE_PROJECTS_UNAVAILABLE), and the switch shows Dispatch's
- * own reason beside it.
+ * identity the shell already holds. Dispatch refuses the switch with a code (PRIVATE_PROJECTS_OFF,
+ * PRIVATE_PROJECT_NOT_PROVISIONED, PRIVATE_PROJECTS_INCOMPLETE, PRIVATE_PROJECTS_UNAVAILABLE and
+ * others), and the switch shows beside it the owner's sentence for that code (`switchRefusal`),
+ * never Dispatch's own words, which are the operator's.
  */
 export function ProjectAccessPanel({ project }: { project: string }): ReactNode {
   const ids = useId();
@@ -307,11 +363,17 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
     if (operation.part !== part) {
       return null;
     }
+    // Dispatch's answer to the switch is said in the owner's words; a request Dispatch did not
+    // answer, and every other part's refusal, keeps the operation's line and its Retry.
+    const shown =
+      refused.change.kind === "visibility" && refused.error instanceof ApiError
+        ? switchRefusal(project, refused.change.visibility, refused.error.code)
+        : { message: apiErrorMessage(refused.error, operation.refusal), retry: true };
     return (
       <div className="mt-3">
         <QueryError
-          message={apiErrorMessage(refused.error, operation.refusal)}
-          onRetry={() => write.save(refused.change)}
+          message={shown.message}
+          onRetry={shown.retry ? () => write.save(refused.change) : undefined}
           retrying={pendingOf((change) => accessOperation(project, change).part === part)}
         />
       </div>
