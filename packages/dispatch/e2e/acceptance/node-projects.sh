@@ -334,50 +334,102 @@ census_complete "$section" "after the backfill"
 #
 # The tick reads an event only once the event horizon has passed it (events.Horizon), and the
 # horizon trails the oldest transaction holding a transaction id anywhere on the Postgres instance,
-# in any database: a shared test instance's other runs, an operator's open psql. While one such
-# transaction older than a few seconds stays open, the server cannot read this event, so that time
-# is the instance's and not the server's: the wait counts only the seconds no such transaction
-# holds the instance, up to 180 of them, within an overall bound of 30 minutes, and a failure names
-# the last transaction that held it.
+# in any database. A transaction of another database - a shared test instance's other runs, an
+# operator's open psql - is not the server's: while one older than 5 s holds an id (events'
+# horizonStallAfter, and horizontest.OwnHoldBound), the wait does not count that time against
+# its budget. A transaction of this run's own database held that long is the defect the horizon's
+# own test waits fail on (docs/testing.md, "A test that waits for the event feed's first frame"),
+# so it fails the section at once, named. The holders are read as events.StallHolderSQL reads
+# them, the oldest transaction id first, a prepared transaction's as well as a backend's. A role
+# that is neither a superuser nor a member of pg_read_all_stats reads no xact_start of another
+# role's backend, so it cannot tell a long hold from a short one: such a role waives no hold, and
+# its failure says so.
+#
+# The budget is 180 s with no such hold, six of the tick's 30 s intervals, within an overall bound
+# of 30 minutes, three times objectPassInterval, measured on the shell's clock (SECONDS), not
+# counted in polls. A holder whose id came after the server's observation does not hold the event
+# but is counted all the same, so while another database keeps a transaction open, a server that
+# never runs the pass fails only at the overall bound. A hold longer than objectPassInterval lets
+# the tick's timed pass run while the event waits; that pass writes the message's node before its
+# event is read, and no quiet interval follows it. So when the message has its node while no
+# cursor has reached its event, the section sends another message and waits for that one's pass.
 section=pass
-query "$section" "an earlier build sends a direct message with its event and no node" "
-  with message as (
-    insert into messages (issue_key, author, body, target)
-    values (null, '{\"kind\":\"user\",\"id\":\"$person\"}', 'Before the control $stamp.', 'session:$agent')
-    returning id
-  ), event as (
-    insert into events (seq, type, actor, payload, notify)
-    select 0, 'message.created', '{\"kind\":\"user\",\"id\":\"$person\"}', jsonb_build_object('id', message.id::text), false
-    from message
-    returning id
-  )
-  select message.id::text || ' ' || event.id from message, event"
-read -r before written <<<"$answer"
-unheld=0 holder=""
-for attempt in $(seq 1 1800); do
+query "$section" "read whether this role reads every backend's transaction start" "
+  select coalesce((select rolsuper from pg_roles where rolname = current_user), false)
+      or pg_has_role(current_user, 'pg_read_all_stats', 'member')"
+sees_holders="$answer"
+# send_earlier_message: as an earlier build would, a direct message with its event and no node,
+# its id in $before and its event's in $written.
+send_earlier_message() {
+  query "$section" "an earlier build sends a direct message with its event and no node" "
+    with message as (
+      insert into messages (issue_key, author, body, target)
+      values (null, '{\"kind\":\"user\",\"id\":\"$person\"}', 'Before the control $stamp.', 'session:$agent')
+      returning id
+    ), event as (
+      insert into events (seq, type, actor, payload, notify)
+      select 0, 'message.created', '{\"kind\":\"user\",\"id\":\"$person\"}', jsonb_build_object('id', message.id::text), false
+      from message
+      returning id
+    )
+    select message.id::text || ' ' || event.id from message, event"
+  read -r before written <<<"$answer"
+}
+send_earlier_message
+waited_from=$SECONDS unheld=0 holder="" resent=0
+while :; do
+  poll_from=$SECONDS
   query "$section" "read whether the server's object pass has run after event $written" "
-    select exists (select 1 from block_index_event_cursors where event_id >= $written and object_nodes_owed_at is null)
-       and exists (select 1 from graph_nodes where kind = 'message' and id = '$before')"
-  [[ "$answer" == t ]] && break
-  query "$section" "read the oldest transaction holding the instance's event horizon" "
-    select coalesce((select format('backend %s in database %s, open since %s: %s', pid, datname, xact_start, left(query, 80))
+    select case when exists (select 1 from block_index_event_cursors where event_id >= $written and object_nodes_owed_at is null)
+        then 'reached' else 'below' end
+      || ' ' || case when exists (select 1 from graph_nodes where kind = 'message' and id = '$before') then 'node' else 'none' end"
+  read -r cursor node <<<"$answer"
+  [[ "$cursor" == reached && "$node" == node ]] && break
+  if [[ "$cursor" == below && "$node" == node ]]; then
+    resent=$((resent + 1))
+    send_earlier_message
+  fi
+  query "$section" "read the oldest transaction that holds the event horizon back" "
+    with holder as (
+      select format('backend %s (application %s), open since %s: %s', pid, coalesce(application_name, ''), xact_start,
+          left(coalesce(query, ''), 80)) as name, coalesce(datname::text, '') as database, xact_start as started,
+        age(backend_xid) as age
       from pg_stat_activity
-      where backend_xid is not null and pid <> pg_backend_pid() and xact_start < now() - interval '5 seconds'
-      order by xact_start limit 1),
-    (select format('prepared transaction %s in database %s, since %s', gid, database, prepared)
-      from pg_prepared_xacts where prepared < now() - interval '5 seconds' order by prepared limit 1), '')"
-  if [[ -n "$answer" ]]; then
-    holder="$answer"
-  else
-    unheld=$((unheld + 1))
-  fi
-  if [[ "$unheld" -ge 180 || "$attempt" -ge 1800 ]]; then
-    fail "$section" "the server's object pass runs" \
-      "no cursor past event $written without a debt, and no node of message $before, after ${attempt} s, ${unheld} s of them with no other transaction holding the instance's event horizon; the last one that held it: ${holder:-none}"
-  fi
+      where backend_xid is not null and pid <> pg_backend_pid()
+      union all
+      select format('prepared transaction %s, prepared at %s', gid, prepared), database::text, prepared, age(transaction)
+      from pg_prepared_xacts
+    )
+    select coalesce(
+      (select 'own ' || name from holder
+        where database = current_database() and started < now() - interval '5 seconds' order by age desc limit 1),
+      (select 'other ' || name || ', in database ' || database from holder
+        where database is distinct from current_database() and started < now() - interval '5 seconds' order by age desc limit 1),
+      '')"
+  held=0
+  case "$answer" in
+  own\ *)
+    fail "$section" "no transaction of this run's database holds the event horizon back" \
+      "${answer#own } has held a transaction id in this run's database for more than 5 s, which holds the server's event readers back"
+    ;;
+  other\ *)
+    holder="${answer#other }"
+    [[ "$sees_holders" == t ]] && held=1
+    ;;
+  esac
   sleep 1
+  ((held)) || unheld=$((unheld + SECONDS - poll_from))
+  if ((unheld >= 180 || SECONDS - waited_from >= 1800)); then
+    blind=""
+    [[ "$sees_holders" == t ]] ||
+      blind="; this role reads no other role's transaction start (it is no superuser and holds no pg_read_all_stats), so no hold was waived"
+    fail "$section" "the server's object pass runs" \
+      "no cursor past event $written without a debt and no node of message $before, after $((SECONDS - waited_from)) s, $unheld s of them with no transaction of another database holding the event horizon back; the last one that held it: ${holder:-none}$blind"
+  fi
 done
-pass "$section" "the server's object pass wrote the node of message $before after event $written and owes nothing"
+resends=""
+((resent == 0)) || resends=", sent $resent more time(s) because a timed pass wrote an earlier message's node while a hold kept its event back"
+pass "$section" "the server's object pass wrote the node of message $before after event $written and owes nothing$resends"
 
 section=control
 query "$section" "take the ask's node away" "
