@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -240,9 +241,10 @@ func (h *harness) mapRepository(repository string) {
 }
 
 // mapRenamedRepository maps one repository and records the full `owner/name` it is called today,
-// as Settings → Repositories does for a renamed repository: repo_projects.renamed_to is the one
-// place Dispatch holds a rename, and an operator declares it, since GitHub answers 404 for the
-// installation of the name the repository was renamed away from.
+// as Settings → Repositories did for a renamed repository: repo_projects.renamed_to is the one
+// place Dispatch holds a rename, and an operator declared it, since GitHub answers 404 for the
+// installation of the name the repository was renamed away from. The harness's Reconciler then
+// takes the pairs read after the seed, as a boot reads them (store.ReadRepoRenames).
 func (h *harness) mapRenamedRepository(repository, renamedTo string) {
 	h.t.Helper()
 	h.mapRepository(repository)
@@ -251,6 +253,11 @@ func (h *harness) mapRenamedRepository(repository, renamedTo string) {
 	`, repository, renamedTo); err != nil {
 		h.t.Fatalf("record that %s is called %s today: %v", repository, renamedTo, err)
 	}
+	pairs, err := store.ReadRepoRenames(h.ctx, h.pool)
+	if err != nil {
+		h.t.Fatalf("read the rename pairs: %v", err)
+	}
+	h.reconciler.Renames = refs.NewRenames(pairs)
 }
 
 // issueInRepository records one issue naming repository as its own, as an issue write does: an

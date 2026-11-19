@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // TestAttributionMatchesGitHubURLsWhateverTheirCase: GitHub spells an owner and a repository as
@@ -73,7 +74,7 @@ func TestAttributingStoredPullRequestsTakesEverySourceInOrder(t *testing.T) {
 		}
 	}
 
-	if _, err := AttributePullRequests(ctx, pool, 100); err != nil {
+	if _, err := unrenamed().AttributePullRequests(ctx, pool, 100); err != nil {
 		t.Fatalf("attribute: %v", err)
 	}
 	for _, row := range rows {
@@ -108,7 +109,7 @@ func TestAttributingAStoredPullRequestTitledAfterAnotherRepositorysIssueKeepsIts
 		t.Fatalf("seed the stored pull request: %v", err)
 	}
 
-	if _, err := AttributePullRequests(ctx, pool, 100); err != nil {
+	if _, err := unrenamed().AttributePullRequests(ctx, pool, 100); err != nil {
 		t.Fatalf("attribute: %v", err)
 	}
 	if got := storedIssueKey(t, ctx, pool, "acme/gadgets", 220); got != own {
@@ -125,7 +126,8 @@ func TestAttributingAStoredPullRequestTitledAfterAnotherRepositorysIssueKeepsIts
 // keys its row by the canonical name (upsertHeadUnderCanonicalName), so this table is where a
 // row under the old name is actually stored: the rows the merged-PR search and the envelopes
 // wrote before the operator recorded the pair keep the old name for good, and the issue's
-// Delivery timeline must still credit them.
+// Delivery timeline must still credit them. The pair is seeded by SQL and the Renames read
+// after it, as a boot reads it.
 func TestAttributingAStoredPullRequestUnderARepositorysOldNameCreditsItsIssue(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedRenamedGadgets(t, ctx, pool)
@@ -141,7 +143,7 @@ func TestAttributingAStoredPullRequestUnderARepositorysOldNameCreditsItsIssue(t 
 		t.Fatalf("seed the stored pull request under %s: %v", gadgetsOldRepo, err)
 	}
 
-	if _, err := AttributePullRequests(ctx, pool, 100); err != nil {
+	if _, err := NewAttributor(renamesOf(t, ctx, pool)).AttributePullRequests(ctx, pool, 100); err != nil {
 		t.Fatalf("attribute: %v", err)
 	}
 	if got := storedIssueKey(t, ctx, pool, gadgetsOldRepo, 240); got != own {
@@ -153,10 +155,9 @@ func TestAttributingAStoredPullRequestUnderARepositorysOldNameCreditsItsIssue(t 
 // TestAttributingAStoredPullRequestReadsOneCanonicalNameFromTwoMappingsOfOneRepository: the
 // renaming rule answers one name however many rows name it. repo_projects' primary key is the
 // repository's own spelling, so two mappings whose names differ only by case can exist — direct
-// SQL or a hand repair, which 20261105075455_repo_projects_renamed_to expects — and the rule is
-// spliced into statements as an expression (refs.CanonicalRepoSQL, attributionHeld): a scalar
-// subquery over both rows would fail the whole statement with `more than one row returned by a
-// subquery`, taking intake, the head refresh and this pass with it.
+// SQL or a hand repair, which 20261105075455_repo_projects_renamed_to expects. The boot reads
+// them as one pair (store.ReadRepoRenames), so the rule spliced into the statement
+// (refs.CanonicalRepoSQL, attributionHeld) names the old name once and answers one new name.
 func TestAttributingAStoredPullRequestReadsOneCanonicalNameFromTwoMappingsOfOneRepository(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedRenamedGadgets(t, ctx, pool)
@@ -181,12 +182,45 @@ func TestAttributingAStoredPullRequestReadsOneCanonicalNameFromTwoMappingsOfOneR
 		t.Fatalf("seed the stored pull request under %s: %v", gadgetsOldRepo, err)
 	}
 
-	if _, err := AttributePullRequests(ctx, pool, 100); err != nil {
+	if _, err := NewAttributor(renamesOf(t, ctx, pool)).AttributePullRequests(ctx, pool, 100); err != nil {
 		t.Fatalf("attribute with two mappings of one name: %v", err)
 	}
 	if got := storedIssueKey(t, ctx, pool, gadgetsOldRepo, 241); got != own {
 		t.Fatalf("the issue of the row stored under %s = %s, want %s: both mappings name %s",
 			gadgetsOldRepo, got, own, gadgetsRepo)
+	}
+}
+
+// TestAStoredPullRequestOnTheNewNameIsCreditedByAnIssueItCitesUnderTheOldName: the cited-issue
+// source compares every spelling of each URL the body cites (refs.URLSpellingsSQL over the
+// batch's own column), so a pull request on the new name whose body cites an issue under the
+// old name credits the Dispatch issue that links it under the new name. Its title names nothing.
+func TestAStoredPullRequestOnTheNewNameIsCreditedByAnIssueItCitesUnderTheOldName(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	seedRenamedGadgets(t, ctx, pool)
+	own := seedGadgetsIssue(t, ctx, pool, 13)
+	if _, err := pool.Exec(ctx, `
+		insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'github')
+	`, own, "https://github.com/"+gadgetsRepo+"/issues/600"); err != nil {
+		t.Fatalf("link %s to its GitHub issue under the new name: %v", own, err)
+	}
+
+	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
+	if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{
+		Repo: gadgetsRepo, Number: 242, Title: "Work that names no issue",
+		URL: "https://github.com/" + gadgetsRepo + "/pull/242", Author: "octocat",
+		CreatedAt: &merged, MergedAt: &merged,
+		Attribution: &AttributionInputs{CitedIssues: []string{"https://github.com/OldCo/Gadgets/issues/600"}},
+	}); err != nil {
+		t.Fatalf("seed the stored pull request under %s: %v", gadgetsRepo, err)
+	}
+
+	if _, err := NewAttributor(renamesOf(t, ctx, pool)).AttributePullRequests(ctx, pool, 100); err != nil {
+		t.Fatalf("attribute: %v", err)
+	}
+	if got := storedIssueKey(t, ctx, pool, gadgetsRepo, 242); got != own {
+		t.Fatalf("the issue of %s#242 = %s, want %s: its body cites the issue %s links, under %s",
+			gadgetsRepo, got, own, own, gadgetsOldRepo)
 	}
 }
 
@@ -217,7 +251,7 @@ func TestAttributingABatchPicksEachRowsOwnRepositorysIssue(t *testing.T) {
 		}
 	}
 
-	if _, err := AttributePullRequests(ctx, pool, 100); err != nil {
+	if _, err := unrenamed().AttributePullRequests(ctx, pool, 100); err != nil {
 		t.Fatalf("attribute: %v", err)
 	}
 	if got := storedIssueKey(t, ctx, pool, "acme/widgets", 230); got != widgets {
@@ -248,7 +282,7 @@ func TestAStoredPullRequestTitledAfterTwoOfItsOwnIssuesTakesTheFirst(t *testing.
 		t.Fatalf("seed the stored pull request: %v", err)
 	}
 
-	if _, err := AttributePullRequests(ctx, pool, 100); err != nil {
+	if _, err := unrenamed().AttributePullRequests(ctx, pool, 100); err != nil {
 		t.Fatalf("attribute: %v", err)
 	}
 	if got := storedIssueKey(t, ctx, pool, "acme/widgets", 221); got != "ATTR-221" {
@@ -301,7 +335,7 @@ func TestTheAttributionBackfillStaysWithinItsCallBudget(t *testing.T) {
 		})
 	}
 
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), refs.Renames{}).runOnce(ctx)
 
 	if n := calls.Load(); n > attributionBackfillCalls || n == 0 {
 		t.Fatalf("one pass made %d attribution calls; want between 1 and the budget of %d", n, attributionBackfillCalls)

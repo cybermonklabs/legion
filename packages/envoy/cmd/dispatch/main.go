@@ -46,6 +46,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -365,6 +366,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The rename pairs are read once, here, before any part that reads them is built: the API,
+	// the delivery reconcile and intakes and the CI reconcile are each given this one value
+	// (refs.Renames). A read that fails does not stop the boot: it is logged, and the process
+	// serves with no pairs, so an old name reads as a repository of its own until a later boot
+	// reads the pairs.
+	renamesCtx, cancelRenames := context.WithTimeout(ctx, repoRenamesReadTimeout)
+	renamePairs, renamesErr := store.ReadRepoRenames(renamesCtx, database.Pool)
+	cancelRenames()
+	if renamesErr != nil {
+		slog.Error("dispatch: read the renamed repositories' pairs; serving with none", "error", renamesErr)
+	}
+	renames := refs.NewRenames(renamePairs)
+
 	// document_search (migration 20261101182447) holds each document's latest search vector,
 	// 20261101182454's trigger keeps it in step from the deploy on, and this fills it for the
 	// documents stored before that. It runs here, in committed batches, rather than as migration
@@ -521,6 +535,7 @@ func main() {
 		Docs:           documentService,
 		Embedder:       embedder,
 		Events:         broker,
+		Renames:        renames,
 		App:            appCfg,
 		AgentStream:    agentStream,
 		AgentPublisher: agentPublisher,
@@ -908,7 +923,7 @@ func main() {
 	// ciInstance is filled in once this process is registered, below, and each pass records its
 	// counts in ci_reconcile_passes under the id it then holds.
 	ciInstance := &registeredInstance{}
-	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, ciReconcileInterval, ciInstance)
+	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, ciReconcileInterval, ciInstance, renames)
 	if err != nil {
 		slog.Error("dispatch: open the CI reconcile pass", "error", err)
 		os.Exit(1)
@@ -938,7 +953,7 @@ func main() {
 	// (it never touches it); the NATS consumer that catches events between reconcile passes needs
 	// a client, exactly like the outbox above. Both take the event broker: each writes
 	// issue.deployed on a pull request's issue once its shipping run is known (LEGION-781).
-	reconcile := delivery.NewReconcile(database.Pool, appCtx.GitHub(), broker)
+	reconcile := delivery.NewReconcile(database.Pool, appCtx.GitHub(), broker, renames)
 	if boot.ReconcileAtStart {
 		reconcile.FirstPassAtStart()
 	}
@@ -968,7 +983,7 @@ func main() {
 		connectIntake := func(name string) (*bus.Client, error) {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
 		}
-		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake)
+		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake, renames)
 		if err != nil {
 			slog.Error("dispatch delivery: connect NATS", "error", err)
 			os.Exit(1)
@@ -1628,6 +1643,11 @@ func publishDashboard(ctx context.Context, pool *store.Pool, webDistDir string, 
 // 2026-10-11 production dump (3,739 asks, 82,153 events) the restoration and its marking of the
 // documents it leaves owed took 0.17-0.77 s.
 const decidedWordingRestoreTimeout = 30 * time.Second
+
+// repoRenamesReadTimeout bounds the boot's read of the rename pairs (store.ReadRepoRenames).
+// The read is of a table of tens of rows, so the bound is reached only when another session
+// holds a lock on that table, and a boot that waited for it would not serve.
+const repoRenamesReadTimeout = 30 * time.Second
 
 // restoreDecidedWordings is the boot's restoration of the wording each decided ask was decided on,
 // where a task of an earlier release reworded it, and its marking owed of each such block ask's own

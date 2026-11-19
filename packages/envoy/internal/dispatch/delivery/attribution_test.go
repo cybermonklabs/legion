@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -44,7 +45,7 @@ func seedAttributionIssues(t *testing.T, ctx context.Context, pool *store.Pool, 
 
 func resolvedKey(t *testing.T, ctx context.Context, pool *store.Pool, facts attributionFacts) (string, attributionSource) {
 	t.Helper()
-	key, source, err := resolveStoredIssueKey(ctx, pool, facts.Repo, facts.URL, attributionInputsFrom(facts))
+	key, source, err := unrenamed().resolveStoredIssueKey(ctx, pool, facts.Repo, facts.URL, attributionInputsFrom(facts))
 	if err != nil {
 		t.Fatalf("resolveStoredIssueKey(%+v): %v", facts, err)
 	}
@@ -455,7 +456,7 @@ func TestReconcileBackfillsAttributionInputsOnce(t *testing.T) {
 	})
 	noRuns(t, fake)
 
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), refs.Renames{})
 	reconcile.runOnce(ctx)
 	reconcile.runOnce(ctx)
 
@@ -523,7 +524,7 @@ func TestCompletingAPullRequestWhoseCommitsFailLeavesItPartial(t *testing.T) {
 	})
 	noRuns(t, fake)
 
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), refs.Renames{})
 	reconcile.runOnce(ctx)
 	first, err := ScanPullRequest(pool.QueryRow(ctx, `select `+PullRequestColumns+` from delivery_pull_requests where number = 180`))
 	if err != nil {
@@ -568,13 +569,13 @@ func TestAttributingStoredPullRequestsWalksTheTableInBatches(t *testing.T) {
 		}
 		return n
 	}
-	if _, err := AttributePullRequests(ctx, pool, 2); err != nil {
+	if _, err := unrenamed().AttributePullRequests(ctx, pool, 2); err != nil {
 		t.Fatalf("first pass: %v", err)
 	}
 	if n := checked(); n != 2 {
 		t.Fatalf("after one pass of 2: %d rows checked, want 2", n)
 	}
-	if _, err := AttributePullRequests(ctx, pool, 2); err != nil {
+	if _, err := unrenamed().AttributePullRequests(ctx, pool, 2); err != nil {
 		t.Fatalf("second pass: %v", err)
 	}
 	if n := checked(); n != 4 {
@@ -585,7 +586,7 @@ func TestAttributingStoredPullRequestsWalksTheTableInBatches(t *testing.T) {
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-191"}, map[string][]string{
 		"ATTR-191": {"https://github.com/acme/widgets/pull/194"},
 	})
-	changed, err := AttributePullRequests(ctx, pool, 2)
+	changed, err := unrenamed().AttributePullRequests(ctx, pool, 2)
 	if err != nil {
 		t.Fatalf("third pass: %v", err)
 	}
@@ -622,7 +623,7 @@ func TestReconcileCreditsAPullRequestAnIssueLinksLater(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 	})
 	noRuns(t, fake)
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), refs.Renames{})
 
 	reconcile.runOnce(ctx)
 	issueOf := func() *string {

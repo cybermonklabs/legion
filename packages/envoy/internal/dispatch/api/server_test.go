@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -63,6 +64,10 @@ type testServerOptions struct {
 	// store is the database the server runs on; nil opens one of its own (storetest.Open). A
 	// test that counts a read's round trips passes a traced store (storetest.Traced).
 	store *store.Store
+	// renames is the rename pairs the server is given, as a boot gives its own (Deps.Renames).
+	// A test that seeds a pair by SQL reads them from its store after the seed (readRenames) and
+	// passes that store too. The zero value holds no pairs.
+	renames refs.Renames
 	// app and githubAPIBase wire the GitHub App access-check client at a fake
 	// GitHub; both nil/empty leaves the client in its "no app credentials"
 	// state (every check answers ErrNoAppKey).
@@ -267,6 +272,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		ServerURL:              testServerURL,
 		Docs:                   documentService,
 		Events:                 broker,
+		Renames:                options.renames,
 		App:                    options.app,
 		GitHubAPIBase:          options.githubAPIBase,
 		TestHooksEnabled:       options.testHooks,

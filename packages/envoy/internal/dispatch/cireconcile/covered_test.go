@@ -72,9 +72,10 @@ func (h *harness) collateMappingsAsADeploymentDoes() {
 		h.t.Skip("a PostgreSQL built with ICU must serve these tests: ICU is what holds the mapping under one known collation weighing punctuation last, an order the Go comparison that seeks into it does not follow")
 	}
 	// ICU's `ka-shifted` weighs punctuation only where the letters are equal, which is the rule
-	// glibc's en_US was measured to follow. Both name columns take it: the canonical name of a
-	// row is a coalesce of the two (refs.CanonicalRepoSQL), and Postgres derives no collation at
-	// all for a coalesce whose arms carry different ones.
+	// glibc's en_US was measured to follow. Both name columns take it, as a deployment's database
+	// holds both under one collation, though the pass reads only repo: the rename pairs are read
+	// once at boot (refs.Renames), and the canonical name of a row is repo or a case over it
+	// (refs.CanonicalRepoSQL).
 	for _, statement := range []string{
 		`create collation punctuation_last (provider = icu, locale = 'en-US-u-ka-shifted')`,
 		`alter table repo_projects

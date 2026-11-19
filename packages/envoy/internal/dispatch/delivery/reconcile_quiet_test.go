@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -88,12 +89,12 @@ func quietReconcilePass(t *testing.T, prs int) []string {
 	})
 	noRuns(t, fake)
 	github := fake.newTestClient()
-	NewReconcile(pool, github, events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, github, events.NewBroker(), refs.Renames{}).runOnce(ctx)
 
 	before := timelineRows(t, ctx, pool)
 	changesBefore := latestChange(t, ctx, pool)
 	recorder := &storetest.StatementRecorder{}
-	NewReconcile(storetest.Traced(t, pool, recorder, nil), github, events.NewBroker()).runOnce(ctx)
+	NewReconcile(storetest.Traced(t, pool, recorder, nil), github, events.NewBroker(), refs.Renames{}).runOnce(ctx)
 
 	settings, err := GetSettings(ctx, pool)
 	if err != nil {

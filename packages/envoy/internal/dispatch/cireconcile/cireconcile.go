@@ -84,6 +84,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -120,6 +121,11 @@ type Reconciler struct {
 	// Pool reads the repositories a pass covers: the ones repo_projects maps to a project, and
 	// the ones issues name as their own (covered).
 	Pool *store.Pool
+	// Renames is the rename pairs the boot read (store.ReadRepoRenames). covered names each
+	// repository by its canonical name under them, so no pass asks GitHub about a name a
+	// repository was renamed away from. The zero value holds no pairs, which names every
+	// repository as it is stored.
+	Renames refs.Renames
 	// GitHub reads the repositories, their open pull requests and each head's check objects, as
 	// the App the listener's webhook is of (R5: no credential of its own).
 	GitHub *githubapp.Client

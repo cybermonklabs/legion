@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -82,6 +83,9 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 // time settingsWake is signalled -- in the server, the shared listener's wake on SettingsChannel --
 // so no message and no timer reads the row. A nil settingsWake reads it once.
 //
+// renames is the rename pairs the process read at boot. Intake attributes each pull request and
+// keys its head row by them (NewAttributor, built here once).
+//
 // The returned stop, called once ctx is cancelled, waits for both intakes' Runs and the cache's,
 // then closes both clients. Each Run returns only once it has stopped delivering and released its
 // hold (heldDurable.stop): a message in its handler then finishes and is acknowledged before stop
@@ -104,7 +108,7 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 // every envoy-dispatch process one delivers from each durable at a time -- and so that neither
 // intake's take-over can block the other's, which one lease over both durables did (the
 // measurement is on consumerLease).
-func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}) (stop func(), err error) {
+func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, renames refs.Renames) (stop func(), err error) {
 	if github == nil {
 		slog.Info("dispatch delivery: no GitHub App key — the intakes are idle")
 		return func() {}, nil
@@ -119,7 +123,7 @@ func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, e
 		return nil, fmt.Errorf("connect the job intake: %w", err)
 	}
 	settings := newSettingsCache(pool, settingsWake)
-	intake := newIntake(intakeClient, pool, leases.events, github, broker, settings)
+	intake := newIntake(intakeClient, pool, leases.events, github, broker, settings, NewAttributor(renames))
 	var running sync.WaitGroup
 	running.Go(func() { settings.Run(ctx) })
 	running.Go(func() { intake.Run(ctx) })

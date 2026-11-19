@@ -434,7 +434,7 @@ type PriorityIssue struct {
 // resolves to; at most one mapping of a project is its default. RenamedTo is the full
 // `owner/name` this repository is called today, null for one that was never renamed: Dispatch
 // holds both names of one repository, and the canonical name is what this field reads, else the
-// repository's own (refs.CanonicalRepo).
+// repository's own (refs.Renames.Canonical, over the pairs the boot reads).
 type RepoProject struct {
 	Repo      string    `json:"repo"`
 	Project   string    `json:"project"`

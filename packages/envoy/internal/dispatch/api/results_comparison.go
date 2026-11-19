@@ -16,9 +16,9 @@ import (
 // commit stands against that, and whether a pass of the check stands. It holds no policy about
 // GitHub: what is asked, how long an answer is believed and what is written back are
 // delivery's (delivery/branch.go, delivery/commit_pull_reads.go, delivery.HeadsAttributedTo,
-// delivery.ReadThroughCommitPulls). What lives here is the choice of bases (comparedWith,
-// measuredBranches) and one memo per read, so a tab listing twenty results against a handful
-// of commits costs a handful of round trips.
+// delivery.Attributor.ReadThroughCommitPulls). What lives here is the choice of bases
+// (comparedWith, measuredBranches) and one memo per read, so a tab listing twenty results
+// against a handful of commits costs a handful of round trips.
 
 // comparisonReader answers one read of one issue's results: for each check the bases its
 // results are compared with, and for each result where its commit stands among them.
@@ -647,8 +647,8 @@ func (c *comparisonReader) measuredBranches(
 }
 
 // readThroughHead teaches Dispatch the pull requests GitHub names for a result's commit
-// (delivery.ReadThroughCommitPulls) and reports whether GitHub named one whose head is that
-// commit, which is the only answer worth reading the stored heads again for.
+// (delivery.Attributor.ReadThroughCommitPulls) and reports whether GitHub named one whose head
+// is that commit, which is the only answer worth reading the stored heads again for.
 //
 // It asks GitHub only where GitHub's answer can repair the result, since listCheckResults
 // places every result of every check and the Verification tab reads them all again on every
@@ -704,7 +704,7 @@ func (c *comparisonReader) readThroughHead(ctx context.Context, result model.Che
 	if !c.server.commitPulls.Claim(*repo, result.CommitSHA, now) {
 		return false
 	}
-	written, atHead, err := delivery.ReadThroughCommitPulls(
+	written, atHead, err := c.server.deps.Attributor.ReadThroughCommitPulls(
 		ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, c.server.deps.Events,
 		*repo, result.CommitSHA, now)
 	if err != nil {
@@ -739,14 +739,14 @@ func (c *comparisonReader) headStoredAt(ctx context.Context, repo, sha string) b
 
 // checkIssueRepository is the repository a check's issue resolves to: its own, the nearest one
 // above it, or its project's default (refs.IssueRepository), under the canonical name that
-// repository is called today (refs.CanonicalRepo). It answers three states, and every caller
-// says which it has: a repository; nil answered, the issue that resolves to none; and nil
-// unanswered, either read having failed, where Dispatch cannot say which of the two the issue
-// is. q is the pool or transaction the two reads are made on.
+// repository is called today (refs.Renames.Canonical over Deps.Renames). It answers three
+// states, and every caller says which it has: a repository; nil answered, the issue that
+// resolves to none; and nil unanswered, the read having failed, where Dispatch cannot say which
+// of the two the issue is. q is the pool or transaction the read is made on.
 //
 // The three were two before dispatch://INFRA-1522, one nil standing for both nothings, and
 // every caller of this read had to guess which of them it held. They part here, where the
-// reads are made and the error is in hand, because the guess has one right answer and it is
+// read is made and the error is in hand, because the guess has one right answer and it is
 // not the same one at each call site: an issue that resolves to no repository is a fact about
 // the work, and no pass of such a check stands, while a read of Dispatch's own that did not
 // answer is model.ReasonReadFailed, and a database hiccup must not make a reviewer refuse an
@@ -758,8 +758,8 @@ func (c *comparisonReader) headStoredAt(ctx context.Context, repo, sha string) b
 // GitHub names for that commit (results.go, refuseUnknownCommit and readThroughPullRequests).
 // An issue recorded under a name that was renamed away would otherwise have the App asked
 // about that name, which GitHub answers 404 for, and every result of that issue would read
-// unknown. A repository with no rename is its own canonical name, so this costs one read and
-// changes no answer for it.
+// unknown. The pairs were read once at boot, so the canonical name costs no read, and a
+// repository with no pair is its own canonical name.
 //
 // Both routes resolve through this one function: two hand-kept copies of this resolve are how
 // a refusal and a result's answer come to name different repositories.
@@ -789,11 +789,7 @@ func (s *server) checkIssueRepository(ctx context.Context, q refs.Queryer, issue
 	if repo == nil {
 		return nil, true
 	}
-	canonical, err := refs.CanonicalRepo(ctx, q, *repo)
-	if err != nil {
-		slog.Warn("dispatch: canonical name of a check's repository", "issue", issueKey, "repo", *repo, "error", err)
-		return nil, false
-	}
+	canonical := s.deps.Renames.Canonical(*repo)
 	return &canonical, true
 }
 

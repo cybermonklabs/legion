@@ -204,11 +204,11 @@ func (r *Reconciler) appAbsent(row string, mapped bool, err error, asked bool, c
 // covered is every repository a pass covers, each named as the repository is called today: every
 // repository repo_projects maps to a project, and every repository an issue names as its own.
 // A name is the row's or the issue's own `owner/name`, lower-cased with any `.git` stripped as
-// both are stored (api's canonicalRepo), or, where a mapping names a rename, what its
-// renamed_to names. The two halves are read as one statement, which answers each distinct name
-// once -- a repository a mapping names and an issue names too is one repository to read, as
-// are two issues naming one repository -- and the answer is ordered, so two passes read GitHub
-// in the same order.
+// both are stored (api's canonicalRepo), or, where a rename pair's old name is that name, the
+// pair's new name (Reconciler.Renames). The two halves are read as one statement, which
+// answers each distinct name once -- a repository a mapping names and an issue names too is one
+// repository to read, as are two issues naming one repository -- and the answer is ordered, so
+// two passes read GitHub in the same order.
 //
 // mapped is the names among them a mapping names, whether or not an issue names them too. It
 // is what tells a repository the App is missing from by an operator's fault from one an issue
@@ -256,18 +256,19 @@ func (r *Reconciler) appAbsent(row string, mapped bool, err error, asked bool, c
 // installation, so RepositoryToken fails for it and the repository is skipped with `ci
 // reconcile skipped a repository it holds no token for`, a WARN every pass would log for ever
 // about a name no one can read by design. The rule is the server's one renaming rule spliced in
-// rather than written again here (refs.CanonicalRepoSQL), so this read and every other reader
-// of the rule cannot come to different answers. It applies to both halves, since a rename is a
-// fact about the repository and not about the row or the issue that names it: an issue recorded
-// under a name that was renamed away is a head read under the name the repository has today,
-// which is the one answer delivery's attribution holds that issue to as well (attributionHeld).
+// rather than written again here (refs.CanonicalRepoSQL over Reconciler.Renames, the pairs the
+// boot read), so this read and every other reader of the rule cannot come to different
+// answers. It applies to both halves, since a rename is a fact about the repository and not
+// about the row or the issue that names it: an issue recorded under a name that was renamed
+// away is a head read under the name the repository has today, which is the one answer
+// delivery's attribution holds that issue to as well (attributionHeld).
 func (r *Reconciler) covered(ctx context.Context) (repositories []string, mapped map[string]struct{}, err error) {
 	rows, err := r.Pool.Query(ctx, `select named.repository, bool_or(named.mapped)
 		from (
-			select `+refs.CanonicalRepoSQL("mapping.repo")+` collate "C" as repository, true as mapped
+			select `+refs.CanonicalRepoSQL(r.Renames, "mapping.repo")+` collate "C" as repository, true as mapped
 			from repo_projects mapping
 			union all
-			select `+refs.CanonicalRepoSQL("issue.repo")+` collate "C", false
+			select `+refs.CanonicalRepoSQL(r.Renames, "issue.repo")+` collate "C", false
 			from issues issue where issue.repo is not null
 		) named
 		group by named.repository

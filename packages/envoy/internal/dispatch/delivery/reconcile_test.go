@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // TestReconcileCatchesAMissedPullRequest proves the plan's "a missed event appears by the next
@@ -51,7 +52,7 @@ func TestReconcileCatchesAMissedPullRequest(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), refs.Renames{})
 	reconcile.runOnce(ctx)
 
 	pr, err := ScanPullRequest(pool.QueryRow(ctx, `select `+PullRequestColumns+` from delivery_pull_requests where repo = $1 and number = $2`, "acme/widgets", 50))
@@ -119,7 +120,7 @@ func TestReconcileCatchesAMissedDeployRun(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), refs.Renames{})
 	reconcile.runOnce(ctx)
 
 	run, err := ScanRun(pool.QueryRow(ctx, `select `+RunColumns+` from delivery_runs where repo = $1 and run_id = $2`, "acme/widgets", int64(900)))
@@ -160,7 +161,7 @@ func TestReconcileRecordsAMissingPermissionByNameAndDoesNotAdvanceLastReconcileA
 	fake.permissions = map[string]string{"contents": "read", "pull_requests": "read"}
 	client := fake.newTestClient()
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), refs.Renames{})
 	reconcile.runOnce(ctx)
 
 	after, err := GetSettings(ctx, pool)
@@ -209,7 +210,7 @@ func TestReconcileNeverWipesACompletePullRequestsAttribution(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), refs.Renames{})
 	reconcile.runOnce(ctx)
 
 	pr, err := ScanPullRequest(pool.QueryRow(ctx, `select `+PullRequestColumns+` from delivery_pull_requests where repo = $1 and number = $2`, "acme/widgets", 60))
@@ -247,7 +248,7 @@ func TestReconcileClearsLastErrorOnceItSucceedsAgain(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), refs.Renames{})
 	reconcile.runOnce(ctx)
 
 	after, err := GetSettings(ctx, pool)
@@ -294,7 +295,7 @@ func TestReconcileMarksA404PullRequestUnfetchableAndSkipsItUntilItRecovers(t *te
 		mustEncode(t, w, map[string]any{"total_count": 0, "workflow_runs": []any{}})
 	})
 	client := fake.newTestClient()
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), refs.Renames{})
 
 	reconcile.runOnce(ctx)
 	pr, err := ScanPullRequest(pool.QueryRow(ctx, `select `+PullRequestColumns+` from delivery_pull_requests where repo = $1 and number = $2`, "acme/widgets", 70))
@@ -376,7 +377,7 @@ func TestReconcileWorkflowFailureStopsThePassFromReportingSuccess(t *testing.T) 
 	})
 	client := fake.newTestClient()
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), refs.Renames{})
 	reconcile.runOnce(ctx)
 
 	run, err := ScanRun(pool.QueryRow(ctx, `select `+RunColumns+` from delivery_runs where repo = $1 and run_id = $2`, "acme/widgets", int64(900)))
@@ -444,7 +445,7 @@ func TestReconcileMarksA404RunJobsUnfetchableAndSkipsItUntilItRecovers(t *testin
 		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
 	})
 	client := fake.newTestClient()
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), refs.Renames{})
 
 	reconcile.runOnce(ctx)
 	after, err := GetSettings(ctx, pool)
@@ -537,7 +538,7 @@ func TestReconcilePartialPullRequestsStopsOnRateLimitInsteadOfRetryingAtFullConc
 	})
 	client := fake.newTestClient()
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), refs.Renames{})
 	reconcile.runOnce(ctx)
 
 	got := attempts.Load()
@@ -622,7 +623,7 @@ func TestReconcileWorkflowStopsAtTheFirstRateLimitAndCapsLastError(t *testing.T)
 		mustEncode(t, w, map[string]any{"jobs": []any{}})
 	})
 	client := fake.newTestClient()
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), refs.Renames{})
 
 	until := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
 	err := reconcile.reconcileWorkflow(ctx, "acme", "widgets", "acme/widgets", ".github/workflows/deploy.yml", DeliveryRunKindDeploy, Production{}, until)
@@ -698,7 +699,7 @@ func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) 
 		t.Fatalf("store the stale head: %v", err)
 	}
 
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), refs.Renames{}).runOnce(ctx)
 
 	head := readHead(t, ctx, pool, "acme/widgets", 55)
 	if head.HeadSHA != headNow {
@@ -778,7 +779,7 @@ func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *test
 	// older rule left is written and then stamped with that rule's number.
 	stampLegacyAttributionRule(t, ctx, pool, "acme/gadgets", 60)
 
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), refs.Renames{}).runOnce(ctx)
 
 	head := readHead(t, ctx, pool, "acme/gadgets", 60)
 	if head.IssueKey == nil || *head.IssueKey != own {
@@ -846,7 +847,7 @@ func TestReconcileReadsAMergedHeadItReJudgedOnlyOnce(t *testing.T) {
 	}
 	stampLegacyAttributionRule(t, ctx, pool, "acme/gadgets", 61)
 
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), refs.Renames{})
 	reconcile.runOnce(ctx)
 	head := readHead(t, ctx, pool, "acme/gadgets", 61)
 	if head.IssueKey != nil {

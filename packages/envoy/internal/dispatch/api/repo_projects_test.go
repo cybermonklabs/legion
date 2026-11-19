@@ -372,7 +372,7 @@ type renamedRepoProject struct {
 // canonicalised as the route's own path is, answered by the listing, kept by a write that does
 // not name it — the page sends {project, default} and nothing else — and cleared by "". Every
 // pair that would put a canonical name two steps away, or point a repository at itself, is
-// refused, which is what lets refs.CanonicalRepo read one row and stop.
+// refused, which is what lets refs.Renames.Canonical take one step and stop.
 func TestRepoProjectRenamedToIsSetKeptClearedAndHeldToOneStep(t *testing.T) {
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{

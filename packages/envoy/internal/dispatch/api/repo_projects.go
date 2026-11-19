@@ -13,7 +13,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -78,7 +77,7 @@ type putRepoProjectInput struct {
 // moved a mapping's project or its default in the dashboard. A pair naming this mapping's own
 // repository, one naming a repository that is itself renamed, and one on a repository another
 // mapping is already renamed to are each refused (400 INVALID_REPO_PROJECT), so the canonical
-// name of a repository is reached in one step and no cycle exists (refs.CanonicalRepo).
+// name of a repository is reached in one step and no cycle exists (refs.Renames.Canonical).
 func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 	repo, err := repoProjectPath(r)
 	if err != nil {
@@ -417,12 +416,13 @@ func parseRepoRename(repo string, raw *string) (*string, error) {
 // refuseRepoRenameChain holds the rename graph to one step for a write that sets the pair
 // repo → renamedTo: it refuses a target that is itself renamed, and refuses renaming a
 // repository some other mapping is already renamed to. Either would put the canonical name of
-// a repository two steps away, which no reader walks (refs.CanonicalRepo takes one step), and
-// together they make a cycle impossible. The target's own step is read through
-// refs.CanonicalRepo, the rule itself, so what this route refuses and what every reader resolves
-// are one answer: a target that canonicalises to itself is the end of the chain, compared
-// without case as every comparison of a repository is, since the column's own check refuses only
-// a rename to the identical spelling.
+// a repository two steps away, which no reader walks (refs.Renames.Canonical takes one step),
+// and together they make a cycle impossible. The target's own step is read from the table
+// itself, not from the pairs the boot read (refs.Renames), because this route writes the pairs
+// and must see a pair written since the boot. The read compares the target's name without case,
+// as every comparison of a repository is. A target with no pair is the end of the chain, and so
+// is one whose pair names it again in another case, since the column's own check refuses only a
+// rename to the identical spelling.
 //
 // It takes one lock over the whole graph first, since the rows it must hold still are not this
 // mapping's own: the writer already holds its own mapping's locks by here
@@ -443,9 +443,12 @@ func refuseRepoRenameChain(ctx context.Context, tx pgx.Tx, repo, renamedTo strin
 	case !errors.Is(err, pgx.ErrNoRows):
 		return err
 	}
-	onwards, err := refs.CanonicalRepo(ctx, tx, renamedTo)
-	if err != nil {
-		return err
+	var onwards string
+	if err := tx.QueryRow(ctx, `
+		select coalesce(max(renamed_to), $1) from repo_projects
+		where lower(repo) = lower($1) and renamed_to is not null
+	`, renamedTo).Scan(&onwards); err != nil {
+		return fmt.Errorf("read the rename of %s: %w", renamedTo, err)
 	}
 	if strings.EqualFold(onwards, renamedTo) {
 		return nil
