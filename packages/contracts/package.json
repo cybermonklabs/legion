@@ -33,6 +33,16 @@
       "types": "./src/trailing-slash.ts",
       "bun": "./src/trailing-slash.ts",
       "default": "./dist/trailing-slash.js"
+    },
+    "./held-secrets": {
+      "types": "./src/held-secrets.ts",
+      "bun": "./src/held-secrets.ts",
+      "default": "./dist/held-secrets.js"
+    },
+    "./log-text": {
+      "types": "./src/log-text.ts",
+      "bun": "./src/log-text.ts",
+      "default": "./dist/log-text.js"
     }
   },
   "main": "dist/index.js",
@@ -42,7 +52,7 @@
     "check:go": "bun run scripts/gen-go.ts --check",
     "gen:api": "bun run scripts/gen-api.ts",
     "check:api": "bun run scripts/gen-api.ts --check",
-    "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/legion-api.ts src/trailing-slash.ts --outdir dist --target bun --format esm",
+    "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/legion-api.ts src/trailing-slash.ts src/log-text.ts src/held-secrets.ts --outdir dist --target bun --format esm",
     "build:dispatch": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts --outdir dist --target bun --format esm",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test",

@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
@@ -11,6 +12,9 @@ import { forgetKeyedLayerMemory } from "../dispatch-http";
 // own idea of them.
 
 const makeDirectory = temporaryDirectories("dispatch-inbox");
+
+/** The Dispatch bearer the command is handed. */
+const TOKEN = fixtureSecret("dsp");
 
 const VIEWER = "alice@example.com";
 const SNOOZED_ID = "33333333-3333-4333-8333-333333333333";
@@ -249,7 +253,7 @@ async function runInbox(): Promise<{ code: number; stdout: string; stderr: strin
     {
       HOME: stateDir,
       DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-      DISPATCH_TOKEN: "test-token",
+      DISPATCH_TOKEN: TOKEN,
       DISPATCH_STATE_DIR: stateDir,
       DISPATCH_HOST: "omp",
       DISPATCH_SESSION_ID: "ses-1",

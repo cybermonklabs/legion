@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { IssueSteps, StepRecord } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   type FakeDispatchFetch,
@@ -423,7 +424,7 @@ describe("dispatch steps on the command line", () => {
         DISPATCH_HOST: "omp",
         DISPATCH_SESSION_ID: "ses-1",
         DISPATCH_URL: server.url,
-        DISPATCH_TOKEN: "test-token",
+        DISPATCH_TOKEN: fixtureSecret("dsp"),
         DISPATCH_STATE_DIR: stateDir,
       },
       {

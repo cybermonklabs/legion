@@ -2821,12 +2821,16 @@ The sender is the session that a secrets-broker token proves, else the request's
 `dispatch` or `envoy`. It does not count a message with no sender either, which is how the Legion
 daemon sends its notices.
 
-So the count is bound to a session only where callers present secrets-broker tokens. A caller
-that presents one and names another session in the body gets `403`. A caller that the listener
-admits on a bearer, or with no credential where `/v1` is open, names the sender itself in
-`source_session`. Such a caller can send under another session's id and spend that session's
-count, which then takes up to `burst × 60 ÷ rate` seconds to fill again. That caller can already
-send messages as that session.
+A secrets-broker token names the session that the listener counts. A caller that presents one
+and names another session in the body gets `403`. A caller that the listener admits on a bearer, or
+with no credential where `/v1` is open, names the sender itself in `source_session`. Such a caller
+can send under another session's id and spend that session's count, which then takes up to
+`burst × 60 ÷ rate` seconds to fill again. That caller can already send messages as that session.
+
+A token does not make a message with another `source` count. The agents' own Envoy tools send
+the source `agent` and give the agent no argument for it, so the limit counts each of their
+messages that has a sender. A caller that writes its own request can give another source, so the
+limit is not a security boundary.
 
 A message that finds its sender's count at 0 is answered HTTP `429`. The listener does not store
 it, keep it for a later holder of a role or report a wake for it. `Retry-After` gives the whole

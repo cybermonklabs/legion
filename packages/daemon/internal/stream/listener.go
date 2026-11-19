@@ -53,9 +53,10 @@ type HelloResolver func(bootToken string) (c claim.Token, generation uint64, sta
 // a launcher never binds a claim's child shim connection or emits an agent Event. An accepted
 // launcher's acknowledgement is the resolver's whole answer, which the listener writes as it is
 // given: every member the daemon hands a launcher on that line (the memory guard's settings,
-// shimwire.LauncherHelloAck.MemoryGuard, among them) is decided where the launcher is accepted,
-// so a change that adds a member edits the one constructor that builds the ack and never this
-// listener. A refusal returns the zero ack, which nothing writes.
+// shimwire.LauncherHelloAck.MemoryGuard, and the cache trimmer's, LauncherHelloAck.VolumeTrim,
+// among them) is decided where the launcher is accepted, so a change that adds a member edits the
+// one constructor that builds the ack and never this listener. A refusal returns the zero ack,
+// which nothing writes.
 type LauncherResolver func(shimwire.LauncherHello) (LauncherHandler, shimwire.LauncherHelloAck, string)
 
 // LauncherHandler owns one authenticated launcher connection after the listener has written its
