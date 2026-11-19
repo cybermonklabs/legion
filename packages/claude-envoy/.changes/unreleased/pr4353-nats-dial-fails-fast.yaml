@@ -20,7 +20,11 @@ body: |-
   `/new` made during an outage completes on the new connection; and the live view takes a new id's
   control subject only once the connection is admitted as that id. The Agents page's live view of a
   Claude Code session follows a `/clear` the session's mod reported before the view started,
-  including under the session's broker token.
+  including under the session's broker token. A channel server whose NATS connection closes for
+  good after it connects but before its subscriptions reach the server no longer fails its start,
+  which left a Claude Code or Codex session without Envoy for its life: it dials a new connection as
+  it does for a connection lost later, and tells the session once that it receives nothing and once
+  that it receives again; a stop meanwhile still exits as an asked-for stop.
 time: 2026-11-17T21:43:12Z
 custom:
     Issue: pr4353

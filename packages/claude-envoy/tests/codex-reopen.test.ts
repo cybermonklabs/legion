@@ -6,48 +6,27 @@
 // a stand-in `codex` binary that writes each `codex queue` it is asked for to a file, which is how
 // every line reaches an idle Codex session (`../src/codex/codex-delivery`).
 import { expect, test } from "bun:test"
-import { chmod, readFile, writeFile } from "node:fs/promises"
+import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { agentStreamControlSubject, legacyAgentSubject } from "@legion/contracts"
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
-import {
-  codexSessionRecordFile,
-  processStarted,
-  writeCodexSessionRecord,
-} from "../src/codex/codex-session-record"
 import { waitFor } from "./channel-session-harness"
-import { count, PROCESS_WAIT_MS, ROW_TIMEOUT_MS, startReopenServer } from "./reopen-server"
+import {
+  CODEX_QUEUED,
+  codexSession as codexSessionFor,
+  count,
+  PROCESS_WAIT_MS,
+  ROW_TIMEOUT_MS,
+  startReopenServer,
+} from "./reopen-server"
 
 /** A Codex thread id, in the shape Codex gives one. */
 const SESSION = "019a0f3c-5b1e-7d2a-9c4f-0b1d2e3f4a5b"
 const CONTROL = agentStreamControlSubject(SESSION)
 const DIRECT = legacyAgentSubject(SESSION)
 /** What every `codex queue` call wrote, one call after another. */
-const QUEUED = "queued.log"
-
-/**
- * The record the plugin's `SessionStart` hook writes for this test's process, and the stand-in
- * `codex` binary it names, which appends each message `codex queue` is handed to `QUEUED`.
- */
-async function codexSession(stateDirectory: string): Promise<void> {
-  const started = processStarted(process.pid)
-  if (started === undefined) throw new Error("this process's start cannot be read")
-  const codex = join(stateDirectory, "codex")
-  await writeFile(
-    codex,
-    `#!/bin/sh\nfor arg in "$@"; do printf '%s\\n' "$arg"; done >> '${join(stateDirectory, QUEUED)}'\n`,
-  )
-  await chmod(codex, 0o755)
-  await writeCodexSessionRecord(codexSessionRecordFile(stateDirectory, process.pid), {
-    codex_executable: codex,
-    codex_home: join(stateDirectory, "codex-home"),
-    codex_started: started,
-    cwd: stateDirectory,
-    session_id: SESSION,
-    source: "startup",
-    transcript_path: null,
-  })
-}
+const QUEUED = CODEX_QUEUED
+const codexSession = codexSessionFor(SESSION)
 
 test(
   "a Codex session's NATS connection closed for good is dialed again: the relay reopens on a new connection at a new epoch, and the end of the outage is told once",

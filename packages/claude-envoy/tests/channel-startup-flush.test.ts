@@ -2,6 +2,7 @@
 // time the connection redials, and a channel server whose hub was restarting as it started must
 // come up once the connection is back, not end the Claude Code session's channel for good.
 import { expect, test } from "bun:test"
+import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import { startChannelSession } from "../src/envoy-channel-server"
 import { SessionIdentity } from "../src/session-identity"
 import {
@@ -41,6 +42,8 @@ test("a startup flush the redial rejects is asked again, and the session registe
   }
 })
 
+// A session given no way to replace its connection (`ChannelSessionOptions.reopen`) cannot start
+// without it; the channel servers give theirs one, and the rows after these show what it does.
 test("a startup flush on a connection closed for good still fails the start", async () => {
   const nats = new FakeNats([])
   nats.failFlushes = 1
@@ -133,4 +136,74 @@ test("a connection closed for good while the startup flush is pending ends the s
     outcome: "the NATS connection closed before its subscriptions reached the server",
     registered: false,
   })
+})
+
+// The channel servers give every session a way to replace its connection, since neither Claude
+// Code nor Codex starts a channel server again: a start whose connection closed for good before
+// its flush goes on, and the session registers with its relay once the new connection is there.
+test("with a way to replace it, a connection closed for good while the startup flush is pending is replaced, and the session registers with its relay on the new one", async () => {
+  const calls: string[] = []
+  const nats = new FakeNats(calls)
+  nats.stallFlush = true
+  const replacement = new FakeNats(calls)
+  const reopened = Promise.withResolvers<void>()
+  const identity = new SessionIdentity("ses_start_replaced", "/tmp")
+  setTimeout(() => {
+    void nats.closeForGood(
+      Object.assign(new Error("'Authorization Violation'"), {
+        name: "NatsError",
+        code: "AUTHORIZATION_VIOLATION",
+      }),
+    )
+  }, 100)
+  const session = await startChannelSession(
+    sessionOptions(identity, scratchState(), {
+      connection: nats,
+      client: recordingClient(calls),
+      heartbeatMs: 60_000,
+      reopen: async () => {
+        await reopened.promise
+        return { connection: replacement }
+      },
+    }),
+  )
+  const registered = (): boolean => calls.some((call) => call.startsWith("subscribe ses_start_"))
+  try {
+    // Started with no live connection: nothing registered with a relay it does not hold.
+    expect(registered()).toBe(false)
+    reopened.resolve()
+    await waitFor(async () => registered(), "the registration on the new connection")
+    expect(replacement.subscriptions.has(deliverSubject("ses_start_replaced"))).toBe(true)
+  } finally {
+    await session.shutdown()
+  }
+})
+
+// A close the server makes itself is no loss to replace: a stop aborts the start signal and then
+// closes the connection, and the start ends as a stop, dialing nothing.
+test("with a way to replace it, a stop that closes the connection while the startup flush is pending ends the start and dials nothing", async () => {
+  const stopping = new AbortController()
+  const calls: string[] = []
+  const nats = new FakeNats(calls)
+  nats.stallFlush = true
+  let dials = 0
+  setTimeout(() => {
+    stopping.abort()
+    void nats.closeForGood()
+  }, 100)
+  const started = startChannelSession(
+    sessionOptions(new SessionIdentity("ses_start_stopped", "/tmp"), scratchState(), {
+      connection: nats,
+      client: recordingClient(calls),
+      heartbeatMs: 60_000,
+      startSignal: stopping.signal,
+      reopen: async () => {
+        dials += 1
+        return { connection: new FakeNats() }
+      },
+    }),
+  )
+  await expect(started).rejects.toThrow(STOPPING)
+  expect(dials).toBe(0)
+  expect(calls.some((call) => call.startsWith("subscribe ses_start_"))).toBe(false)
 })

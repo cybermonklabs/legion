@@ -1,14 +1,19 @@
-// A whole channel-server process for the rows whose NATS connection closes for good while the
-// session runs (`envoy-channel-reopen.test.ts`, the Claude Code host; `codex-reopen.test.ts`, the
-// Codex host): its NATS servers are a gate in front of a fake hub, and its listener a stand-in that
-// gives every registration the session's consumer. Real nats.js and real time: the server's own
-// dial waits are what those rows watch.
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+// A whole channel-server process for the rows whose NATS connection closes for good, while the
+// session runs or as it starts (`envoy-channel-reopen.test.ts`, `codex-reopen.test.ts`,
+// `envoy-channel-start-reopen.test.ts`): its NATS servers are a gate in front of a fake hub, and
+// its listener a stand-in that gives every registration the session's consumer. Real nats.js and
+// real time: the server's own dial waits are what those rows watch.
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import type { DeliveryRequest } from "@legion/envoy-client/transport"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import {
+  codexSessionRecordFile,
+  processStarted,
+  writeCodexSessionRecord,
+} from "../src/codex/codex-session-record"
 import { SERVER_START_MS, waitFor } from "./channel-session-harness"
 import { FakeNatsServer } from "./fake-nats-server"
 import { type NatsGate, natsGate } from "./nats-gate"
@@ -24,6 +29,37 @@ export const ROW_TIMEOUT_MS = 180_000
 /** How many times `text` holds `part`. */
 export function count(text: string, part: string): number {
   return text.split(part).length - 1
+}
+
+/** The file in a Codex server's state directory that every `codex queue` call wrote to. */
+export const CODEX_QUEUED = "queued.log"
+
+/**
+ * A `prepare` for a Codex server (`--host codex`) of thread `sessionId`: the record the plugin's
+ * `SessionStart` hook writes for this test's process, which stands in for the `codex` process, and
+ * the stand-in `codex` binary it names, which appends each message `codex queue` is handed to
+ * `CODEX_QUEUED`: how every line reaches an idle Codex session (`../src/codex/codex-delivery`).
+ */
+export function codexSession(sessionId: string): (stateDirectory: string) => Promise<void> {
+  return async (stateDirectory) => {
+    const started = processStarted(process.pid)
+    if (started === undefined) throw new Error("this process's start cannot be read")
+    const codex = join(stateDirectory, "codex")
+    await writeFile(
+      codex,
+      `#!/bin/sh\nfor arg in "$@"; do printf '%s\\n' "$arg"; done >> '${join(stateDirectory, CODEX_QUEUED)}'\n`,
+    )
+    await chmod(codex, 0o755)
+    await writeCodexSessionRecord(codexSessionRecordFile(stateDirectory, process.pid), {
+      codex_executable: codex,
+      codex_home: join(stateDirectory, "codex-home"),
+      codex_started: started,
+      cwd: stateDirectory,
+      session_id: sessionId,
+      source: "startup",
+      transcript_path: null,
+    })
+  }
 }
 
 /**

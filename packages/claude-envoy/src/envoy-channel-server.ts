@@ -965,19 +965,59 @@ function lostConnectionReason(lost: LostConnection): string {
   return why === undefined ? "it closed and named no error" : natsFailureReason(why)
 }
 
+/** A start's flush that the connection's close for good ended, with the flush error that showed
+ *  the close where one did (`flushThroughRedials`). */
+interface ClosedBeforeFlush {
+  readonly error: unknown
+}
+
+/** Why a start without a way to replace its connection ended: it closed for good before the
+ *  session's subscriptions reached the server. Named as a log may print it (`natsFailureReason`),
+ *  with no cause, which an error printed whole would print with it. */
+function closedStart(closed: ClosedBeforeFlush): Error {
+  return closed.error === undefined
+    ? new Error(START_CLOSED)
+    : new Error(`${START_CLOSED}: ${natsFailureReason(closed.error)}`)
+}
+
+/** How long the start waits for nats.js to settle a closed connection's `closed()`. */
+const CLOSE_ERROR_WAIT_MS = 1_000
+
+/**
+ * The error a connection closed for good closed with (nats.js's `closed()`), if any: nats.js marks
+ * the connection closed a moment before it settles `closed()`, so the read is bounded, and a
+ * connection that settles nothing in that time is taken to have closed naming no error.
+ */
+async function closeErrorOf(connection: ChannelConnection): Promise<unknown> {
+  const waited = Promise.withResolvers<undefined>()
+  const timer = setTimeout(() => waited.resolve(undefined), CLOSE_ERROR_WAIT_MS)
+  try {
+    return await Promise.race([
+      connection.closed().then(
+        (error) => error,
+        (error: unknown) => error,
+      ),
+      waited.promise,
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /**
  * Flushes `connection`, asking again while the connection redials: nats.js rejects every pending
  * flush with DISCONNECT each time it redials (`protocol.js`'s `prepare`), and a hub that is
  * restarting, or whose auth service is away, as a channel server starts is a hub it reconnects to,
- * not one that fails the session's start. The start ends, naming why, the moment `signal` aborts
- * (the process is stopping) or the connection closes for good — before an attempt, while a flush
- * is pending, during the wait to ask again, and after a flush that succeeded once stopping began —
- * since nats.js's close leaves a pending flush unsettled, so only watching the connection sees it.
+ * not one that fails the session's start. Resolves undefined once a flush reached the server. The
+ * start ends the moment `signal` aborts (the process is stopping), with `START_STOPPING`. A
+ * connection that closes for good meanwhile is answered with `ClosedBeforeFlush`, for the start to
+ * replace — before an attempt, while a flush is pending, and during the wait to ask again — since
+ * nats.js's close leaves a pending flush unsettled, so only watching the connection sees it.
  */
 async function flushThroughRedials(
   connection: ChannelConnection,
   signal: AbortSignal | undefined,
-): Promise<void> {
+): Promise<ClosedBeforeFlush | undefined> {
   const ended = Promise.withResolvers<"stopping" | "closed">()
   const check = (): void => {
     if (signal?.aborted === true) ended.resolve("stopping")
@@ -985,15 +1025,6 @@ async function flushThroughRedials(
   }
   const watch = setInterval(check, REDIAL_FLUSH_RETRY_MS)
   signal?.addEventListener("abort", check)
-  // A stop is its own reason; a closed connection is named with the flush error that showed it,
-  // as a log may print it (`natsFailureReason`), and keeps no cause, which an error printed whole
-  // would print with it.
-  const failure = (why: "stopping" | "closed", error?: unknown): Error =>
-    why === "stopping"
-      ? new Error(START_STOPPING)
-      : error === undefined
-        ? new Error(START_CLOSED)
-        : new Error(`${START_CLOSED}: ${natsFailureReason(error)}`)
   try {
     for (;;) {
       check()
@@ -1002,19 +1033,21 @@ async function flushThroughRedials(
         (error: unknown) => ({ flushed: false as const, error }),
       )
       const outcome = await Promise.race([attempt, ended.promise])
-      if (outcome === "stopping" || outcome === "closed") throw failure(outcome)
+      if (outcome === "stopping") throw new Error(START_STOPPING)
+      if (outcome === "closed") return { error: undefined }
       if (outcome.flushed) {
-        if (signal?.aborted === true) throw failure("stopping")
-        return
+        if (signal?.aborted === true) throw new Error(START_STOPPING)
+        return undefined
       }
       check()
-      if (signal?.aborted === true) throw failure("stopping", outcome.error)
-      if (connection.isClosed()) throw failure("closed", outcome.error)
+      if (signal?.aborted === true) throw new Error(START_STOPPING)
+      if (connection.isClosed()) return { error: outcome.error }
       const waited = await Promise.race([
         Bun.sleep(REDIAL_FLUSH_RETRY_MS).then(() => "asked again" as const),
         ended.promise,
       ])
-      if (waited !== "asked again") throw failure(waited, outcome.error)
+      if (waited === "stopping") throw new Error(START_STOPPING)
+      if (waited === "closed") return { error: outcome.error }
     }
   } finally {
     clearInterval(watch)
@@ -1043,6 +1076,11 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   let connectionLost: LostConnection | undefined
   /** Whether a new connection is being dialed or set up now (`reopenConnection`): one at a time. */
   let reopening = false
+  /** The connections whose close for good the session has taken up (`connectionClosed`), and
+   *  those it watches (`watchConnection`): each once, whether the start found the connection
+   *  closed, its watch did, or a reopen opened it while the session was still starting. */
+  const lostConnections = new WeakSet<ChannelConnection>()
+  const watchedConnections = new WeakSet<ChannelConnection>()
   /**
    * What this session does with a person's direct messages, for the id now bound: the record is
    * kept per session id (`./user-turn-state`), so a `/clear` builds another one. Undefined until
@@ -1365,9 +1403,18 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     subscribeRelay(owner)
   }
 
-  /** Subscribes `owner`'s subject on the connection held now, each message to the relay. Throws
-   *  where the connection cannot take a subscription (it is closed or draining). */
+  /**
+   * Subscribes `owner`'s subject on the connection held now, each message to the relay. On a
+   * connection closed for good, which nats.js refuses a subscribe on, it subscribes nothing: the
+   * subject is taken on the connection that replaces it (`reopenFor`), as it is for a connection
+   * lost after the subscribe. Throws where the connection cannot take a subscription otherwise (it
+   * is draining).
+   */
   const subscribeRelay = (owner: Relay): void => {
+    if (connection.isClosed()) {
+      owner.subscription = undefined
+      return
+    }
     const subscription = connection.subscribe(owner.delivery.subject)
     owner.subscription = subscription
     owner.stopped = undefined
@@ -2142,13 +2189,10 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   // The session's delivery record comes first, so a redelivery of a frame it was shown before is
   // dropped against it. The topics it followed come back with it: a session the listener reaped
   // (ten minutes after it stopped) still follows them, and its consumer still holds them. Its
-  // relay comes with it too, restored and subscribed before the first registration asks for it.
-  // nats.js refuses a subscribe on a connection closed for good, and the start then fails naming
-  // that, as the flush below does for a connection that closes after the subscribe.
-  const remembered = await restoreDelivery().catch((error: unknown) => {
-    if (!connection.isClosed()) throw error
-    throw new Error(`${START_CLOSED}: ${natsFailureReason(error)}`)
-  })
+  // relay comes with it too, restored and subscribed before the first registration asks for it;
+  // on a connection already closed for good it is subscribed on the one that replaces it
+  // (`subscribeRelay`), as the flush below finds.
+  const remembered = await restoreDelivery()
   // What this session has already done with the messages Dispatch sent it, before any frame can
   // arrive: an attempt a process before this one spent must not be spent again.
   await restoreTurns()
@@ -2169,7 +2213,20 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   })
   // The subscriptions reach the server before the first registration routes anything to them,
   // through any redial the connection is making as the session starts.
-  await flushThroughRedials(connection, options.startSignal)
+  const closedBeforeFlush = await flushThroughRedials(connection, options.startSignal)
+  if (closedBeforeFlush !== undefined) {
+    // A session with no way to replace its connection cannot start without it.
+    if (options.reopen === undefined) throw closedStart(closedBeforeFlush)
+    // Neither Claude Code nor Codex starts a channel server again, so failing the start here would
+    // leave the session without Envoy for its life: the start goes on, and the connection is
+    // replaced as one lost while the session runs is (`connectionClosed`). The first registration
+    // below is refused naming why, which tells the session once that it receives nothing, and the
+    // new connection's tells it that it receives again. A stop asked for meanwhile still ends the
+    // start as a stop: a close the server makes itself dials nothing.
+    const closeError = await closeErrorOf(connection)
+    if (options.startSignal?.aborted === true) throw new Error(START_STOPPING)
+    connectionClosed(connection, closeError ?? closedBeforeFlush.error)
+  }
   await serialized(async () => {
     // Best-effort, as the interests read above is: a listener that refuses this registration
     // because it can give the session no consumer (`inboundOutage` tells the session
@@ -2257,14 +2314,17 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     requestHeartbeat()
   }
   /**
-   * The session's connection closed for good while the session runs, and not by its shutdown:
-   * nats.js gave up on it (a repeated authorization refusal under an nkey seed or no credential),
-   * or something closed it. Until a new connection is live the session holds no relay subject, so
-   * its registration is refused naming why (`relayMissing`), and the session is told once that it
-   * receives nothing; a new connection is dialed at once (`reopenConnection`).
+   * The session's connection closed for good, and not by its shutdown: nats.js gave up on it (a
+   * repeated authorization refusal under an nkey seed or no credential), or something closed it,
+   * while the session ran or before its start's subscriptions reached the server. Until a new
+   * connection is live the session holds no relay subject, so its registration is refused naming
+   * why (`relayMissing`), and the session is told once that it receives nothing; a new connection
+   * is dialed at once (`reopenConnection`). A function declaration: the start calls it before the
+   * session's watch of its connection begins.
    */
-  const connectionClosed = (closed: ChannelConnection, closeError: unknown): void => {
-    if (shuttingDown || closed !== connection) return
+  function connectionClosed(closed: ChannelConnection, closeError: unknown): void {
+    if (shuttingDown || closed !== connection || lostConnections.has(closed)) return
+    lostConnections.add(closed)
     connectionLost = { closeError, dialError: undefined }
     // Ended with its connection: nothing is relayed until a new one takes the subject again.
     if (relay !== undefined) relay.subscription = undefined
@@ -2361,6 +2421,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * closes, and a close for good is `connectionClosed`'s.
    */
   function watchConnection(watched: ChannelConnection): void {
+    // A reopen during the start watches its connection before the start's own watch begins.
+    if (watchedConnections.has(watched)) return
+    watchedConnections.add(watched)
     void (async () => {
       try {
         for await (const status of watched.status()) {
