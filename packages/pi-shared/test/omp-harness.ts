@@ -194,10 +194,28 @@ function reaped(child: Subprocess): boolean {
   return child.exitCode !== null || child.signalCode !== null;
 }
 
-/** Whether any process of the group `child` leads is left, a zombie included. */
-function groupLeft(child: Subprocess): boolean {
+/** The leader of a process group `endGroup` ends: its pid, and whether it has exited and its
+ *  parent has reaped it. */
+interface GroupLeader {
+  readonly pid: number;
+  readonly reaped: () => boolean;
+}
+
+/** The start time /proc gives `pid` (its stat's 22nd field, clock ticks since boot), or undefined
+ *  once no process has that pid. */
+function startTime(pid: number): string | undefined {
   try {
-    process.kill(-child.pid, 0);
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether any process of the group `leader` leads is left, a zombie included. */
+function groupLeft(leader: GroupLeader): boolean {
+  try {
+    process.kill(-leader.pid, 0);
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
@@ -205,32 +223,33 @@ function groupLeft(child: Subprocess): boolean {
   }
 }
 
-/** Sends `signal` to `child`, until Bun has reaped it, and to every process of its group; a group
- *  already gone is none. */
-function signalGroup(child: Subprocess, signal: NodeJS.Signals): void {
-  if (!reaped(child)) child.kill(signal);
-  try {
-    process.kill(-child.pid, signal);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+/** Sends `signal` to `leader`, until it is reaped, and to every process of its group; a process
+ *  or group already gone is none. */
+function signalGroup(leader: GroupLeader, signal: NodeJS.Signals): void {
+  for (const pid of leader.reaped() ? [-leader.pid] : [leader.pid, -leader.pid]) {
+    try {
+      process.kill(pid, signal);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
   }
 }
 
-/** Resolves true once `child` and its group are gone, false once `ms` have passed first. A gone
+/** Resolves true once `leader` and its group are gone, false once `ms` have passed first. A gone
  *  group sends no event, so it is polled. */
-async function goneWithin(child: Subprocess, ms: number): Promise<boolean> {
+async function goneWithin(leader: GroupLeader, ms: number): Promise<boolean> {
   const deadline = performance.now() + ms;
   for (;;) {
-    if (reaped(child) && !groupLeft(child)) return true;
+    if (leader.reaped() && !groupLeft(leader)) return true;
     if (performance.now() >= deadline) return false;
     await Bun.sleep(20);
   }
 }
 
-/** Each process still running in the group `child` leads, as `pid <pid> (<command line>)`, read
- *  from /proc, the leader among them until Bun has reaped it. A process with no command line (one
+/** Each process still running in the group `leader` leads, as `pid <pid> (<command line>)`, read
+ *  from /proc, the leader among them until it is reaped. A process with no command line (one
  *  exiting) is named by the name its stat gives. */
-function groupProcesses(child: Subprocess): string[] {
+function groupProcesses(leader: GroupLeader): string[] {
   const named: string[] = [];
   let entries: string[] = [];
   try {
@@ -243,7 +262,7 @@ function groupProcesses(child: Subprocess): string[] {
       const stat = readFileSync(`/proc/${entry}/stat`, "utf8");
       // The fields after the command's closing parenthesis: state, ppid, pgrp, ...
       const pgrp = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[2]);
-      if (pgrp !== child.pid) continue;
+      if (pgrp !== leader.pid) continue;
       const command =
         readFileSync(`/proc/${entry}/cmdline`, "utf8").replaceAll("\0", " ").trim() ||
         stat.slice(stat.indexOf("(") + 1, stat.lastIndexOf(")"));
@@ -252,33 +271,50 @@ function groupProcesses(child: Subprocess): string[] {
       // The process ended while the list was read.
     }
   }
-  if (!reaped(child) && !named.some((each) => each.startsWith(`pid ${child.pid} `))) {
-    named.unshift(`pid ${child.pid} (omp)`);
+  if (!leader.reaped() && !named.some((each) => each.startsWith(`pid ${leader.pid} `))) {
+    named.unshift(`pid ${leader.pid} (omp)`);
   }
   return named;
 }
 
 /**
- * Ends `child`, an omp started with `detached` so that it leads a process group of its own, with
- * every process of that group: `ask` asks them to end (`asked` says how, for the error), they get
- * OMP_END_MS to be gone, then SIGKILL and OMP_KILL_MS. A group that needed the SIGKILL fails the
- * call, naming each process that was still running, so no case waits on one past the bound and
- * none outlives its case unnamed. A group already gone returns at once, asking nothing.
+ * Ends `leader`, an omp that leads a process group of its own, with every process of that group:
+ * `ask` asks them to end (`asked` says how, for the error), they get OMP_END_MS to be gone, then
+ * SIGKILL and OMP_KILL_MS. A group that needed the SIGKILL fails the call, naming each process
+ * that was still running, so no case waits on one past the bound and none outlives its case
+ * unnamed. A group already gone returns at once, asking nothing.
  */
-async function endGroup(child: Subprocess, asked: string, ask: () => void): Promise<void> {
-  if (reaped(child) && !groupLeft(child)) return;
+async function endGroup(leader: GroupLeader, asked: string, ask: () => void): Promise<void> {
+  if (leader.reaped() && !groupLeft(leader)) return;
   ask();
-  if (await goneWithin(child, OMP_END_MS)) return;
-  const running = groupProcesses(child);
-  signalGroup(child, "SIGKILL");
-  const killed = await goneWithin(child, OMP_KILL_MS);
+  if (await goneWithin(leader, OMP_END_MS)) return;
+  const running = groupProcesses(leader);
+  signalGroup(leader, "SIGKILL");
+  const killed = await goneWithin(leader, OMP_KILL_MS);
   const after = killed
     ? `SIGKILL ended them within ${OMP_KILL_MS} ms`
-    : `still running ${OMP_KILL_MS} ms after SIGKILL: ${groupProcesses(child).join(", ")}`;
+    : `still running ${OMP_KILL_MS} ms after SIGKILL: ${groupProcesses(leader).join(", ")}`;
   throw new Error(
-    `omp's process group (pid ${child.pid}) did not end within ${OMP_END_MS} ms of ${asked}; ` +
+    `omp's process group (pid ${leader.pid}) did not end within ${OMP_END_MS} ms of ${asked}; ` +
       `still running then: ${running.join(", ")}; ${after}`
   );
+}
+
+/**
+ * Pushes onto `cleanup` the end of the group an omp leads that this process did not start: tmux
+ * starts a pane's command as the leader of a group of its own, and a command that `exec`s omp
+ * leaves omp that leader, under `pid`. The end is `spawnRpc`'s (`endGroup`), and `cleanupHook`
+ * counts it as one omp. Its parent reaps the leader, so the leader is gone once /proc holds no
+ * process with its pid and the start time it had here; a later process given the same pid is
+ * never signalled.
+ */
+export function cleanupEndsGroup(pid: number, cleanup: Cleanup): void {
+  const started = startTime(pid);
+  const leader: GroupLeader = {
+    pid,
+    reaped: () => started === undefined || startTime(pid) !== started,
+  };
+  pushOmpEnd(cleanup, () => endGroup(leader, "SIGTERM", () => signalGroup(leader, "SIGTERM")));
 }
 
 /**
@@ -628,7 +664,8 @@ export function spawnRpc(
       detached: true,
     }
   );
-  pushOmpEnd(cleanup, () => endGroup(child, "SIGTERM", () => signalGroup(child, "SIGTERM")));
+  const leader: GroupLeader = { pid: child.pid, reaped: () => reaped(child) };
+  pushOmpEnd(cleanup, () => endGroup(leader, "SIGTERM", () => signalGroup(leader, "SIGTERM")));
 
   const stderr = new Response(child.stderr).text();
   const closed = (async (): Promise<never> => {
@@ -653,7 +690,7 @@ export function spawnRpc(
       child.stdin.flush();
     },
     end() {
-      return endGroup(child, "its stdin closing", () => {
+      return endGroup(leader, "its stdin closing", () => {
         if (!reaped(child)) child.stdin.end();
       });
     },
@@ -750,9 +787,10 @@ export function spawnInteractive(
     terminal,
     detached: true,
   });
+  const leader: GroupLeader = { pid: child.pid, reaped: () => reaped(child) };
   pushOmpEnd(cleanup, async () => {
     try {
-      await endGroup(child, "SIGTERM", () => signalGroup(child, "SIGTERM"));
+      await endGroup(leader, "SIGTERM", () => signalGroup(leader, "SIGTERM"));
     } finally {
       terminal.close();
       emulator.dispose();
