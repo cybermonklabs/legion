@@ -21,6 +21,7 @@ import { storedReading } from "./stored-reading";
 import {
   type Draft,
   type TreeContext,
+  titleReading,
   treeContext,
   treeDrafts,
   withShortAddresses,
@@ -113,10 +114,11 @@ export interface NodeChip {
    *  read answered with no reading or one that holds no words, the page's word for the block's
    *  kind (`NODE_TYPE_NAMES`) for a block of this issue whose document the tree read, and `""`
    *  for another issue's block; a whole document's word on the page, `Spec` and not `spec.md`;
-   *  an ask's, a comment's and a message's stored text read to plain words (`plainWords`); and
-   *  anything else's name as that read answers it. `""` for a block and for anything else
-   *  until the read answers, and for a target that is gone. The page publishes this same name
-   *  for every link beside the tree to draw (`targetNaming`). */
+   *  an ask's, a comment's and a message's stored text read to plain words (`plainWords`); an
+   *  issue's title as its own row's line reads it (`titleWords`); and anything else's name as
+   *  that read answers it. `""` for a block and for anything else until the read answers, and
+   *  for a target that is gone. The page publishes this same name for every link beside the tree
+   *  to draw (`targetNaming`). */
   readonly name: string;
   /** The target's own `dispatch://` address. */
   readonly ref: string;
@@ -460,13 +462,14 @@ export function nodeWords(node: TreeNode): string {
  * title, and of a child issue, its title, is no markdown and carries no reading, and the places
  * that draw a whole title draw it as written: the header (`slots/header.tsx`) and the list of an
  * issue's children (`ChildrenTab.tsx`). Its line is read from that text as a reading of one
- * paragraph holding one text run, so nothing in it is parsed, each run of white space is one
- * space and the ends are trimmed, and a bare address in it is written short as on every other
- * node's line. So `1. Migrate the table` keeps its label, ``Add `x` flag`` its backticks and
- * `Fix <script> handling` its tag, where a parse would read the first as a list item with no
- * label and leave out the marks of the other two, and the address of
- * ``Fix `x` for dispatch://CORE-3`` is written short beside the backticks it keeps:
- * ``Fix `x` for CORE-3``.
+ * paragraph holding one text run (`tree-drafts.ts`'s `titleReading`), so nothing in it is
+ * parsed, each run of white space is one space and the ends are trimmed, and a bare address in
+ * it is written short as on every other node's line. So `1. Migrate the table` keeps its label,
+ * ``Add `x` flag`` its backticks and `Fix <script> handling` its tag, where a parse would read
+ * the first as a list item with no label and leave out the marks of the other two, and the
+ * address of ``Fix `x` for dispatch://CORE-3`` is written short beside the backticks it keeps:
+ * ``Fix `x` for CORE-3``. A chip naming an issue, and the name the page publishes for it, are
+ * these words too (`titleWords`), so a link to a child draws the title its row draws.
  *
  * Every place that draws one line for a node cuts it from these words: a parent's line under a
  * filter (`presets.ts`) and a chip naming a block (`buildIssueTree`) here, and a row's first
@@ -493,21 +496,17 @@ export function lineWordsRaw(node: {
 }
 
 /** `lineWords`' walk, the one both `lineWords` and `lineWordsRaw` read by: a title node's text
- *  read as a reading of one paragraph holding one text run (`lineWords`' doc says why), else the
- *  first block of the node's reading, and where the node has none the first block of its stored
- *  text's reading (`storedReading`), each read to words by `firstBlock`, the white space of a
- *  title and of a stored text collapsed. The node holds its stored text's reading, so it is
- *  remembered while the node lives. */
+ *  read as a reading of one paragraph holding one text run (`titleReading`; `lineWords`' doc
+ *  says why), else the first block of the node's reading, and where the node has none the first
+ *  block of its stored text's reading (`storedReading`), each read to words by `firstBlock`, the
+ *  white space of a title and of a stored text collapsed. The node holds its stored text's
+ *  reading, so it is remembered while the node lives. */
 function lineWordsBy(
   node: { readonly text: string; readonly tree?: DisplayTree; readonly type?: NodeType },
   firstBlock: (reading: DisplayTree) => string
 ): string {
   if (node.type === "issue" || node.type === "child_issue") {
-    const title: DisplayTree = {
-      content: [{ content: [{ text: node.text, type: "text" }], type: "paragraph" }],
-      type: "doc",
-    };
-    return firstBlock(title).replace(/\s+/gu, " ").trim();
+    return firstBlock(titleReading(node.text)).replace(/\s+/gu, " ").trim();
   }
   if (node.tree !== undefined) return firstBlock(node.tree);
   return firstBlock(storedReading(node.text, node)).replace(/\s+/gu, " ").trim();

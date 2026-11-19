@@ -276,10 +276,17 @@ export function coverageStatements(
  *   markup and no word of it (R21).
  * - **A whole document** - a `spec` or an `artifact` reference naming no block - by the page's
  *   word for it (`documentWord`), and never by its file name.
+ * - **An issue** - the read answers that its target is one - by its title as the line of the
+ *   issue's own row reads it (`titleWords`): as written, each run of white space one space, and
+ *   each bare address written as its target's short form, so a chip and a link draw the title
+ *   the row draws, `Follow CORE-3 up` and not `Follow dispatch://CORE-3 up`. It is never cut:
+ *   an issue's name is its whole title.
  * - **Anything else** by the read's `name` for it. An ask's, a comment's and a message's name is
  *   the question or the body as stored, which is markdown whose marks are no word of it (R21),
- *   so it is read to plain words (`plainWords`); an issue's and a component's name is a title,
- *   which is no markdown, and is left as the read gives it.
+ *   so it is read to plain words (`plainWords`). A component's name is a title too, which is no
+ *   markdown, and is left as the read gives it, its addresses as written: the short form is the
+ *   rule of a line that draws an issue's or a child issue's title, and no node of the tree is a
+ *   component, so no row's line reads its name.
  */
 export function treeContext(
   reads: IssueTreeReads,
@@ -326,6 +333,7 @@ export function treeContext(
     if (target?.kind === "ask" || target?.kind === "comment" || target?.kind === "message") {
       return plainWords(target.name, target);
     }
+    if (target?.kind === "issue") return titleWords(target.name);
     return blockWords(target?.name ?? "");
   };
   // One chip per reference, made the first time it is asked for: a tree asks once for every
@@ -446,6 +454,29 @@ export function plainWordsRaw(markdown: string): string {
   return wordsOf(storedReading(markdown)).replace(/\s+/gu, " ").trim();
 }
 
+/** A title as the page reads it: a reading of one paragraph holding the title as one text run,
+ *  so nothing in it is parsed, since a title is no markdown (`issue-tree.ts`'s `lineWords` says
+ *  why). The line of the issue and of a child issue is read from it (`lineWords`, `lineWordsRaw`),
+ *  and so is the name of a chip naming an issue (`titleWords`), so a row and a chip read one
+ *  title by one rule. */
+export function titleReading(title: string): DisplayTree {
+  return {
+    content: [{ content: [{ text: title, type: "text" }], type: "paragraph" }],
+    type: "doc",
+  };
+}
+
+/** The words of a title on one line, as the line of the issue's own row reads them
+ *  (`lineWords`): its reading (`titleReading`) with each bare address written as its target's
+ *  short form (`withShortAddresses`), each run of white space one space and the ends trimmed.
+ *  Nothing cuts them: they are the name a chip naming an issue draws, and the name the page
+ *  publishes for it (`treeContext`), which a link draws whole. */
+export function titleWords(title: string): string {
+  return wordsOf(withShortAddresses(titleReading(title)))
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
 /**
  * `words` with each bare `dispatch://` address in them written as its target's short form, as a
  * link to it draws it (`shortForm`): `dispatch://CORE-2` reads `CORE-2`, and
@@ -480,8 +511,9 @@ export function addressesAsShortForms(words: string): string {
  * by the node that carries it, a stored text's by every caller that reads that text
  * (`storedReading`). A run whose address is written short is a copy, and so is each node above
  * it; a node that holds no address to write short is answered as it is, so a text with none
- * copies nothing. A line cut from a reading's first block (`issue-tree.ts`'s `firstBlockWords`)
- * and a stored text read to plain words (`plainWords`) are written short by this one walk.
+ * copies nothing. A line cut from a reading's first block (`issue-tree.ts`'s `firstBlockWords`),
+ * a stored text read to plain words (`plainWords`) and a title's words (`titleWords`) are
+ * written short by this one walk.
  */
 export function withShortAddresses(node: DisplayTree): DisplayTree {
   return shortAddressesIn(node, false);

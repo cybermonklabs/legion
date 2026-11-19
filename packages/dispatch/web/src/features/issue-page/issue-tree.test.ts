@@ -38,6 +38,7 @@ import {
 } from "./issue-tree";
 import { NODE_TYPE_NAMES, nodeStateWord, PRESET_NAMES } from "./page-words";
 import { filterSignals, presetView } from "./presets";
+import { knownIssueKeys, rowReferences, rowReferenceWords } from "./row-references";
 import {
   addressesAsShortForms,
   blockNodeId,
@@ -1436,6 +1437,35 @@ test("a plan task written `**1\\. …**` keeps its label in its line, from its r
   }
 });
 
+/** Titles as an issue stores them, each with the words of its line and, where they differ from
+ *  those, the words of its line with every address as written (`lineWordsRaw`). */
+const TITLES: readonly (readonly [title: string, words: string, raw?: string])[] = [
+  ["1. Migrate the table", "1. Migrate the table"],
+  ["Add `x` flag", "Add `x` flag"],
+  ["Fix <script> handling", "Fix <script> handling"],
+  ["Follow dispatch://CORE-3 up", "Follow CORE-3 up", "Follow dispatch://CORE-3 up"],
+  [
+    "1. Fix `x` for dispatch://CORE-3/spec#b-r1",
+    "1. Fix `x` for CORE-3 spec block",
+    "1. Fix `x` for dispatch://CORE-3/spec#b-r1",
+  ],
+  ["Migrate the table\n- then drop it", "Migrate the table - then drop it"],
+  ["  Migrate   the\n\ntable  ", "Migrate the table"],
+];
+
+/** A child issue `key` of the issue, titled `title`, as the issue read lists it. */
+function childIssue(key: string, title: string): IssueChild {
+  return {
+    active_at: "2026-11-05T00:00:00Z",
+    external_links: [],
+    key,
+    status: "todo",
+    subtree_done: 0,
+    subtree_total: 0,
+    title,
+  };
+}
+
 // A title is no markdown: the header draws the issue's as written, and the list of an issue's
 // children each child's (`slots/header.tsx`, `ChildrenTab.tsx`). The line of the issue and of a
 // child issue is so its text as written, each run of white space one space, but for a bare
@@ -1445,36 +1475,9 @@ test("a plan task written `**1\\. …**` keeps its label in its line, from its r
 // blank line would lose what follows it. A caller that names each reference itself reads the
 // line with every address as written (`lineWordsRaw`).
 test("the line of the issue and of a child issue is its title as written, its addresses short", () => {
-  const titles: readonly (readonly [title: string, words: string, raw?: string])[] = [
-    ["1. Migrate the table", "1. Migrate the table"],
-    ["Add `x` flag", "Add `x` flag"],
-    ["Fix <script> handling", "Fix <script> handling"],
-    ["Follow dispatch://CORE-3 up", "Follow CORE-3 up", "Follow dispatch://CORE-3 up"],
-    [
-      "1. Fix `x` for dispatch://CORE-3/spec#b-r1",
-      "1. Fix `x` for CORE-3 spec block",
-      "1. Fix `x` for dispatch://CORE-3/spec#b-r1",
-    ],
-    ["Migrate the table\n- then drop it", "Migrate the table - then drop it"],
-    ["  Migrate   the\n\ntable  ", "Migrate the table"],
-  ];
-  for (const [title, words, raw = words] of titles) {
+  for (const [title, words, raw = words] of TITLES) {
     const root = buildIssueTree({
-      issue: {
-        ...issueDetails([]),
-        children: [
-          {
-            active_at: "2026-11-05T00:00:00Z",
-            external_links: [],
-            key: "CORE-2",
-            status: "todo",
-            subtree_done: 0,
-            subtree_total: 0,
-            title,
-          },
-        ],
-        title,
-      },
+      issue: { ...issueDetails([]), children: [childIssue("CORE-2", title)], title },
     });
     expect(lineWords(root), title).toBe(`${KEY} ${words}`);
     expect(lineWordsRaw(root), title).toBe(`${KEY} ${raw}`);
@@ -1482,6 +1485,47 @@ test("the line of the issue and of a child issue is its title as written, its ad
     expect(child?.type, title).toBe("child_issue");
     expect(child === undefined ? "" : lineWords(child), title).toBe(words);
     expect(child === undefined ? "" : lineWordsRaw(child), title).toBe(raw);
+  }
+});
+
+// R22: the batched read names an issue by its title as stored, and a chip naming a child issue,
+// the name the page publishes for it and the link a row draws for it by that name read the
+// title by the rule the child's own line reads it by (`titleWords`), whole: a bare address in it
+// reads as its target's short form and its white space collapses, so a comment citing
+// `dispatch://CORE-2`, titled `Follow dispatch://CORE-3 up`, links `CORE-2` and
+// `Follow CORE-3 up`, the line CORE-2's own row reads, and never the address as written.
+test("a chip, a published name and a row's link name a child issue by the line its row reads", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const cited = "dispatch://CORE-2";
+  const citing = { ...comment("c1", "2026-11-05T01:00:00Z"), body: `See ${cited} first.` };
+  for (const [title, words] of TITLES) {
+    const reads = {
+      comments: [citing],
+      decisions: decisions([
+        { ...decision("d1", "Keep it.", []), links: [linkTo(cited, "issue")] },
+      ]),
+      issue: { ...issueDetails([spec, made]), children: [childIssue("CORE-2", title)] },
+      targets: [
+        { gone: false, kind: "issue", name: title, ref: cited },
+      ] satisfies ReferenceTarget[],
+    };
+    const root = buildIssueTree(reads);
+    const child = nodeOf(root, "CORE-2");
+    const line = child === undefined ? "" : lineWords(child);
+    expect(line, title).toBe(words);
+    const chips = nodeOf(root, blockNodeId("decisions-md", "d1"))?.chips;
+    expect(
+      chips?.map(({ name, ref }) => ({ name, ref })),
+      title
+    ).toEqual([{ name: line, ref: cited }]);
+    const { names } = targetNaming(reads);
+    expect([...names], title).toEqual([[cited, line]]);
+    const links = rowReferences(nodeOf(root, citing.id)?.text ?? "", knownIssueKeys(names));
+    expect(
+      links.map((link) => rowReferenceWords(link, names)),
+      title
+    ).toEqual([{ key: "CORE-2", words: line }]);
   }
 });
 
