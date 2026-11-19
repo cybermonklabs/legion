@@ -184,8 +184,9 @@
 // still counts, and six growers that together outrun what one kill frees, which this issue's
 // tester measured ending a 4 GiB pod while the guard waited the whole wait, are ended one at each
 // reading below the urgent share, and at a reading at or above it every one that grew over
-// the window and, where the decision holds a process that is not new to the stay, every
-// one new to it with memory of its own: at 8023d298 this issue's tester measured one kill a
+// the window, after a kill every one the guard read at the reading before that grew since that
+// kill (endKnown, below), and, where the decision holds a process that is not new to the stay,
+// every one new to it with memory of its own: at 8023d298 this issue's tester measured one kill a
 // reading leave the pod 2.8 MiB from the kill point after a first reading at the mark of 93.88%
 // (`4g-t4latepool-r2`), and at a82a9f2c 26.5 MiB after one at 93.95% that read six growers once
 // each (`4g-latepool-4tpqx`). At a reading at or above the urgent share where the processes it may
@@ -193,7 +194,17 @@
 // own is a reason to end the next as growth since the kill is, under the same floor: the urgent
 // rule ends it at that reading though it has not grown since the kill, so the processes new to the
 // stay that the read-on at the mark did not reach end at the next such reading (urgentNew,
-// INFRA-3531 R1 of spec version 43, verification version 36). Where none of these holds, the guard
+// INFRA-3531 R1 of spec version 43, verification version 36). At a reading at or above the urgent
+// share, once every killed process has exited or the wait has passed, the guard first reads again,
+// one at a time, the smaps of the processes it read at the reading before, in the order that
+// reading ranked them, and ends each one that grew since the previous kill as soon as it reads
+// it, the first by its tier, where those processes hold the floor with the sizes read again, and
+// the rest by the urgent rule; only then does it list the processes, and that full read takes
+// those reads in place of its own and decides only the rest, the urgent rule's kills (endKnown,
+// INFRA-3531 R1 of spec version 43, in the order verification version 36 states). In the tester's
+// run r17 at 41d4f45b the full read of the reading at 95.16%, after two readings that showed
+// nothing grown since the kill, took 205 ms before the guard ended the four growers left, and the
+// reading came 12.3 MiB from the 4 GiB kill point. Where none of these holds, the guard
 // ends nothing and decides again at the next reading, until the wait has passed; then it gives the
 // rise up with reason not fallen, so a rise that is a protected process's own, Oh My Pi's, in
 // which nothing it may end grows, costs at most one kill below the urgent share (INFRA-3531 R1 of
@@ -345,16 +356,18 @@ type Classifier func(t *Table) map[int]Class
 // a reading at or above the urgent share, one that grew over the window or, where the decision
 // holds a process that is not new to the stay, one new to it that holds memory of its own
 // (endUrgent, and readOn after the first kill at the mark, INFRA-3531 R1 of spec versions 39, 41,
-// 42 and 43), and Sizes where the sizes it was chosen by came from (sizesBand, sizesReread,
-// sizesSearch or sizesReading), each ruleKernel and sizesKernel for a process the guest kernel
-// killed (INFRA-3531 R3 of spec version 31). LessParent is how much of its size its rank did not
-// count, as a fork that runs its parent's program (candidate.lessParent), 0 for every other process
-// and every kill of the guest kernel (INFRA-3531 R1 of spec version 33). NewRead is what the reads
-// at the reading at the mark read of the processes new to the stay, for a first kill those reads
-// decided (newRead.field), and the same for each kill of the urgent rule beside it, which carries
-// the first kill's: how many they read, and of those how many hold memory of their own, the
-// read-on's reads among them (readOn); "" for every other kill, which the line writes as `-`. The
-// ended line carries the four (writeKill); the report on the wire carries none of them.
+// 42 and 43), or, at such a reading after a kill, one the guard read at the reading before that
+// grew since that kill (endKnown, spec version 43), and Sizes where the sizes it was chosen by came
+// from (sizesBand, sizesReread, sizesSearch or sizesReading), each ruleKernel and sizesKernel for a
+// process the guest kernel killed (INFRA-3531 R3 of spec version 31). LessParent is how much of its
+// size its rank did not count, as a fork that runs its parent's program (candidate.lessParent), 0
+// for every other process and every kill of the guest kernel (INFRA-3531 R1 of spec version 33).
+// NewRead is what the reads at the reading at the mark read of the processes new to the stay, for
+// a first kill those reads decided (newRead.field), and the same for each kill of the urgent rule
+// beside it, which carries the first kill's: how many they read, and of those how many hold memory
+// of their own, the read-on's reads among them (readOn); "" for every other kill, which the line
+// writes as `-`. The ended line carries the four (writeKill); the report on the wire carries none
+// of them.
 type Kill struct {
 	shimwire.LauncherMemoryKill
 	Role       string
@@ -426,11 +439,11 @@ const (
 	// at each reading in the band below the mark, which it holds for the next reading (held).
 	armed phase = iota
 	// waiting has sent the kills of a reading, one or, at a reading at or above the urgent share,
-	// beside the first every process that grew over the window and, where the decision holds a
-	// process that is not new to the stay, every one new to it with memory of its own (endAt,
-	// endUrgent, readOn), and reads those sizes while a process it killed there has not exited
-	// and the wait has not passed, and from then on decides at each reading whether to end the
-	// next (watch).
+	// beside the first every process that grew over the window, after a kill every one it read at
+	// the reading before that grew since that kill, and, where the decision holds a process that
+	// is not new to the stay, every one new to it with memory of its own (endAt, endUrgent, readOn,
+	// endKnown), and reads those sizes while a process it killed there has not exited and the wait
+	// has not passed, and from then on decides at each reading whether to end the next (watch).
 	waiting
 	// stopped has given up on this rise, reads no size and acts on nothing until the reading is
 	// below the mark.
@@ -594,6 +607,10 @@ type Guard struct {
 	// (sameProgram), before it reads it. The tests set it to count those reads; production leaves
 	// it nil.
 	argsRead func(pid int)
+	// counterRead, when set, is called before each read of the cgroup's counter (readCounter), on
+	// the guard's loop. The tests set it to order those reads against the kills of a reading;
+	// production leaves it nil.
+	counterRead func()
 	// memfdLink is how the link of a descriptor that holds a memfd starts (heldMemfdBytes):
 	// memfdPrefix, as New sets it. The tests set their fake pod's own, since a fake descriptor's
 	// link must lead to a file the guard can stat.
@@ -626,7 +643,9 @@ type Guard struct {
 	stoppedAt      time.Time
 	stoppedLeftOut int
 	// memfds are the memfds an assessment's sizes have counted (addHeldMemfds), emptied at each
-	// assessment and kept for the next.
+	// assessment and kept for the next; at an urgent reading of the wait the reads again before
+	// the full read (endKnown) empty them and count theirs, and that reading's assessment goes on
+	// from them.
 	memfds map[memfdID]bool
 	// sizes are the reads of the size of each process the latest assessment could end (keepSizes):
 	// those within growthWindow before it, oldest first, which a process's growth is measured by,
@@ -654,11 +673,13 @@ type Guard struct {
 	// atKill are the sizes, by process, as of the previous kill of the rise, from which growth
 	// since that kill is measured (grownSinceKill), which says whether the guard goes on after it:
 	// the sizes the decision that sent the kill read (keepKillSizes), the assessment of the reading
-	// (act) or the held processes as endHeld decided on them, and for a process that decision did
-	// not read, its first read after the kill. A size is dropped once the reading's table no longer
-	// lists its process (dropEnded), and not for a reading that did not read it. They are emptied
-	// when the wait after the kill ends (endWait), and nothing keeps one while the guard is armed,
-	// so they are empty at each kill; their storage is kept from one kill to the next.
+	// (act), the held processes as endHeld decided on them, or, for the early kills of an urgent
+	// reading of the wait (endKnown), that reading's assessment, which takes their reads again;
+	// and for a process that decision did not read, its first read after the kill. A size is
+	// dropped once the reading's table no longer lists its process (dropEnded), and not for a
+	// reading that did not read it. They are emptied when the wait after the kill ends (endWait),
+	// and nothing keeps one while the guard is armed, so they are empty at each kill; their
+	// storage is kept from one kill to the next.
 	atKill map[procKey]uint64
 	// atFirstKill are the sizes, by process, as of the first kill of this stay in the band, kept
 	// the same way, from which the order's third tier measures growth (sinceStayKill);
@@ -671,6 +692,22 @@ type Guard struct {
 	// reportKills writes once every one of them is sent; their storage is kept from one reading's
 	// kills to the next.
 	sent []sentKill
+	// lastRead are the processes the guard may end that it read at the previous reading of the
+	// wait after a kill, at the sizes it read and in the order that reading ranked them (rank):
+	// the assessment that a kill was decided on (act), or the one that followed a kill on the
+	// band's held reads (decide), and the assessment of each reading of the wait (watch).
+	// lastTable is that reading's table. At an urgent reading of the wait the guard reads them
+	// again first (endKnown). Both are let go of where the wait ends (endWait).
+	lastRead  []candidate
+	lastTable *Table
+	// rereads are the smaps sizes, by process, that endKnown read at a reading before its full
+	// read, which that reading's assessment takes in place of reads of its own, so that the
+	// reads again add no read (assess); it empties them. They keep their storage.
+	rereads map[procKey]uint64
+	// prior are the kills of the wait that an early kill at an urgent reading of it ends
+	// (endKnown, sendFirst): the full read of that reading leaves out each of them that has not
+	// exited, as the wait did, and then lets go of them. They keep their storage.
+	prior []killedProc
 
 	scans    sync.WaitGroup
 	scanMu   sync.Mutex
@@ -710,6 +747,7 @@ func New(cfg Config) *Guard {
 		atKill:       map[procKey]uint64{},
 		atFirstKill:  map[procKey]uint64{},
 		stays:        map[procKey]bandStay{},
+		rereads:      map[procKey]uint64{},
 		scanMemfds:   map[memfdID]bool{},
 	}
 	if g.clock == nil {
@@ -970,9 +1008,11 @@ func (g *Guard) decide(now time.Time, s Settings, on bool, reading, limit uint64
 		if sent {
 			// The kill is sent on the sizes the decision read, which are the sizes as of it; this
 			// reading's, read after the kill, are the window's newest reads and the first reads
-			// after the kill of the processes the decision did not hold.
+			// after the kill of the processes the decision did not hold, and what the wait's first
+			// reading reads again first at or above the urgent share (endKnown).
 			if a, ok := g.assessAt(now); ok {
 				g.keepKillSizes(decided, a.endable)
+				g.lastRead, g.lastTable = a.endable, a.table
 			}
 			return
 		}
@@ -1789,6 +1829,19 @@ func (g *Guard) rereadOrder(c candidate) (tier int, growth uint64) {
 // above it, in a stay with history, it can also cost each process new to the stay with memory of
 // its own, which the urgent rule ends at the reading of that kill or at a later reading of the
 // wait at or above that share.
+//
+// At a reading at or above the urgent share, once every killed process has exited or the wait has
+// passed, the guard first reads again the processes it read at the reading before, the most
+// likely grower first, and ends each that grew since the previous kill as it reads it, before the
+// full read lists the processes (endKnown, INFRA-3531 R1 of spec version 43, in the order of
+// verification version 36): in the tester's run r17 at 41d4f45b the full read of the urgent
+// reading, 95.16%, took 205 ms before the kills of the four growers left, and the reading came
+// 12.3 MiB from the 4 GiB kill point. Where it so sends a kill, the full read, which takes those
+// reads in place of its own, decides only the rest: it leaves out each process killed at this
+// reading and each of the wait before that has not exited, and adds the kills the urgent rule
+// asks for (endUrgent); the sizes as of the kills are that reading's, and every line and report
+// comes last (reportKills). Where it sends none, or below the urgent share, the wait decides as
+// above.
 func (g *Guard) watch(now time.Time, s Settings, reading, limit, mark uint64) {
 	w := &g.wait
 	// Each handle is asked before the scan, so a process that exits after the scan read it is
@@ -1801,13 +1854,27 @@ func (g *Guard) watch(now time.Time, s Settings, reading, limit, mark uint64) {
 	}
 	w.fallen = w.fallen || fell(w.reading, reading, mark)
 	passed := !now.Before(w.deadline)
+	// early is whether the reads again before the full read sent a kill: w is then the wait of
+	// this reading's kills, and prior holds the kills of the wait before them.
+	early := (exited || passed) && reading >= urgentShare(limit, s.ActPercent) && g.endKnown(now, s, reading, limit)
 	a, ok := g.assessAt(now)
-	if !ok {
+	if !ok || g.isDead() {
+		// The guard has turned off for good, at the full read or at a kill (die); the kills it sent
+		// still have their lines and reports.
+		if early {
+			g.closePrior()
+			g.reportKills(reading, limit, sizesReading, "")
+		}
 		return
 	}
-	for _, k := range w.kills {
-		if !k.exited {
-			a.leaveOut(k.key)
+	// A killed process that has not exited is left out: one of the wait's and, after early kills,
+	// one of the wait before them (prior) and each killed at this reading, which its kill found
+	// running (signalKill).
+	for _, kills := range [...][]killedProc{g.prior, w.kills} {
+		for _, k := range kills {
+			if !k.exited {
+				a.leaveOut(k.key)
+			}
 		}
 	}
 	// At every reading of the wait, so that a process first read after a kill has its first read
@@ -1817,15 +1884,94 @@ func (g *Guard) watch(now time.Time, s Settings, reading, limit, mark uint64) {
 	grown := g.grownSinceKill(a.endable, a.table)
 	rank(a.endable)
 	switch {
+	case early:
+		g.closePrior()
+		clear(g.atKill)
+		g.endUrgent(s, reading, limit, a.endable)
+		g.reportKills(reading, limit, sizesReading, "")
+		g.keepKillSizes(a.endable, nil)
 	case !exited && !passed:
 		// The wait goes on.
 	case w.fallen || ((grown || urgentNew(s, reading, limit, a.endable)) && a.endableBytes >= share(limit, s.FloorPercent)):
 		g.endWait()
 		g.act(now, s, reading, limit, &a)
+		return
 	case passed:
 		g.endWait()
 		g.stopRise(now, reasonNotFallen, reading, limit, &a)
+		return
 	}
+	g.lastRead, g.lastTable = a.endable, a.table
+}
+
+// endKnown reads again, at a reading at or above the urgent share in the wait after a kill, taken
+// at now, once every process killed there has exited or the wait has passed (watch), the smaps of
+// the processes the guard may end that it read at the reading before (lastRead), one at a time, in
+// the order that reading ranked them (rank), and answers whether it sent a kill. It ends each one
+// whose read shows it grew since the previous kill, its size as of that kill (atKill) plus
+// growthNoise or more, as soon as it has read it, before the next read: the first by its tier
+// (sendFirst), where the processes it read at the reading before hold the floor at their sizes
+// there, with the sizes read again, and every other by the urgent rule (sendUrgent). It reads no
+// process killed in this wait or whose kill failed (triedHere). Each read has the process's
+// descriptors at what the reading before counted for them (descriptorBytes), is kept as its read
+// at now (keepSize), which sets its growth over the window, and in rereads, which the full read of
+// the reading takes in place of a read of its own (assess), so the order adds no read; and the
+// fork discount and the growth since the stay's first kill are set again by it (discountFork,
+// atFirstKill), which the first kill's rule names. One whose smaps it cannot read it leaves to the
+// full read. Before its first kill it moves the wait's kills to prior, since that kill starts the
+// wait afresh.
+//
+// This is INFRA-3531 R1 of spec version 43 in the order verification version 36 states: "at an
+// urgent reading after a kill, every process the guard already knows grew since the previous kill
+// is ended before the guard reads the other processes for that reading". In the tester's run r17
+// at 41d4f45b the kills at 86.60% and 89.96% each ended one of six growers, the two readings after
+// the second showed nothing grown since it, and the growers stepped before the next, 95.16%, where
+// the guard listed and read every process for 205 ms before it ended the four left; the reading
+// came 12.3 MiB from the 4 GiB kill point. The growers rank first there by their growth since the
+// stay's first kill, before the probe's 2.4 GB parent and its sleeping forks, which grow by none
+// of the order's tiers, so they are read first.
+func (g *Guard) endKnown(now time.Time, s Settings, reading, limit uint64) bool {
+	defer g.releaseSmaps()
+	floor := share(limit, s.FloorPercent)
+	known := slices.DeleteFunc(g.lastRead, func(c candidate) bool { return g.triedHere(&c) })
+	clear(g.memfds)
+	var cache argsCache
+	sent := false
+	kept := known[:0]
+	for i, c := range known {
+		key := procKey{pid: c.PID, start: c.StartTime}
+		size, err := g.size(c.PID, g.memfds)
+		if err != nil {
+			continue
+		}
+		g.rereads[key] = size
+		c.size = size + c.descriptorBytes
+		g.keepSize(now, &c)
+		g.discountFork(&c, g.lastTable, &cache)
+		c.sinceFirstKill = keepGrowth(g.atFirstKill, key, c.size)
+		kept = append(kept, c)
+		switch {
+		case keepGrowth(g.atKill, key, c.size) == 0:
+		case sent:
+			g.sendUrgent(c)
+		case sizeSum(kept)+sizeSum(known[i+1:]) >= floor:
+			g.prior = append(g.prior[:0], g.wait.kills...)
+			sent = g.sendFirst(now, s, reading, c)
+		}
+	}
+	if !sent {
+		g.prior = g.prior[:0]
+	}
+	return sent
+}
+
+// closePrior lets go of the kills of the wait before the early kills of an urgent reading
+// (endKnown), once the full read of that reading has left out each of them that has not exited.
+func (g *Guard) closePrior() {
+	for _, k := range g.prior {
+		_ = k.handle.Close()
+	}
+	g.prior = g.prior[:0]
 }
 
 // urgentNew is whether, at a reading at or above the urgent share (urgentShare), cs, the processes
@@ -1898,9 +2044,11 @@ func fell(atKill, reading, mark uint64) bool { return reading < atKill || readin
 // was not an armed guard's in the band), the held first has exited or its pid names another process
 // (its start time changed), or the held sizes, or the sizes read again, are under the floor or name
 // no process. It decides every kill after a kill of the rise too (watch), on each reading's own
-// sizes (sizesReading). The kills, one or, at a reading at or above the urgent share, every
-// process that grew over the window and, where a process of a is not new to the stay, every one
-// new to it with memory of its own, are endAt's (endUrgent).
+// sizes (sizesReading), but where, at an urgent reading of the wait, the reads again before the
+// full read have ended a process that grew since the kill (endKnown). The kills, one or, at a
+// reading at or above the urgent share, every process that grew over the window and, where a
+// process of a is not new to the stay, every one new to it with memory of its own, are endAt's
+// (endUrgent). a is what the next reading of the wait reads again first (lastRead).
 func (g *Guard) act(now time.Time, s Settings, reading, limit uint64, a *assessment) {
 	if len(a.endable) == 0 || a.endableBytes < share(limit, s.FloorPercent) {
 		g.stopRise(now, reasonNothingToEnd, reading, limit, a)
@@ -1908,6 +2056,7 @@ func (g *Guard) act(now time.Time, s Settings, reading, limit uint64, a *assessm
 	}
 	if g.endAt(now, s, reading, limit, a.endable, sizesReading, "") {
 		g.keepKillSizes(a.endable, nil)
+		g.lastRead, g.lastTable = a.endable, a.table
 	}
 }
 
@@ -1930,9 +2079,11 @@ func (g *Guard) endAt(now time.Time, s Settings, reading, limit uint64, cs []can
 }
 
 // sendFirst sends the first kill of the reading taken at now, of first, the first in the order of
-// ends, with the rule that put it first (candidate.rule), and answers whether it sent it. Each
-// kill is signalKill's: a process that ended or whose pid another process took is not killed, and
-// then nothing is sent. Once it is sent, the wait after the kills of the reading starts (watch): it
+// ends or, at an urgent reading of the wait, the first process read again that grew since the
+// kill (endKnown), with the rule that put it first (candidate.rule), and answers whether it sent
+// it. Each kill is signalKill's: a process that ended or whose pid another process took is not
+// killed, and then nothing is sent. Once it is sent, the wait after the kills of the reading
+// starts (watch), in place of any wait before it, whose kills endWait or endKnown has taken: it
 // lasts while one of them has not exited, and no longer than the wait setting. Each kill of the
 // reading is at its own time by the guard's clock (Kill.At), and none has its line and report
 // before every kill of the reading is sent (reportKills).
@@ -1965,7 +2116,9 @@ func (g *Guard) sendFirst(now time.Time, s Settings, reading uint64, first candi
 // which ended one of them, and the pod came 26.5 MiB from the kill point (`4g-latepool-4tpqx`). A
 // fork whose parent's size covers its own ranks at nothing and is not ended for urgency. Below the
 // urgent share it ends nothing. At the reading at the mark the processes new to the stay that the
-// reads of the decision did not reach are the read-on's, after these kills (readOn).
+// reads of the decision did not reach are the read-on's, after these kills (readOn). At an urgent
+// reading of the wait where the reads again before the full read sent kills (endKnown), cs is the
+// full read's processes with those killed at that reading left out, and these kills follow theirs.
 //
 // Whether the decision holds a process that is not new to the stay, one read at two readings of it
 // in a row before the one decided on, is taken on cs, the set the decision is made on, once the
@@ -2347,8 +2500,11 @@ func (a *assessment) leaveOut(key procKey) {
 // alike. The processes it may end are the only ones whose files it reads, so they alone are the
 // holders and the mappers of memfds among which a memfd counts once (addHeldMemfds). Each size is
 // kept as read at now, the time of the reading the assessment is made at, and its growth measured
-// from the reads kept before it (keepSizes).
+// from the reads kept before it (keepSizes). A process whose smaps the reads again before it at an
+// urgent reading of the wait read (endKnown, rereads) takes that read and is not read twice, the
+// memfds that read found mapped counted already; it lets go of those reads.
 func (g *Guard) assess(now time.Time) (assessment, error) {
+	defer clear(g.rereads)
 	t, err := scan(g.proc)
 	if err != nil {
 		return assessment{}, err
@@ -2356,17 +2512,22 @@ func (g *Guard) assess(now time.Time) (assessment, error) {
 	g.applyKillFailures(t)
 	classes := g.classes(t)
 	a := assessment{table: t}
-	clear(g.memfds)
+	if len(g.rereads) == 0 {
+		clear(g.memfds)
+	}
 	for _, p := range t.Processes() {
 		if _, unread := t.unread[p.PID]; unread || p.PID == g.self || classes[p.PID].Protected {
 			continue
 		}
-		size, err := g.size(p.PID, g.memfds)
-		if err != nil {
-			if !errors.Is(err, fs.ErrNotExist) && !endedSince(filepath.Join(g.proc, strconv.Itoa(p.PID)), p.StartTime) {
-				t.unread[p.PID] = fmt.Errorf("read the smaps: %w", err)
+		size, reread := g.rereads[procKey{pid: p.PID, start: p.StartTime}]
+		if !reread {
+			var err error
+			if size, err = g.size(p.PID, g.memfds); err != nil {
+				if !errors.Is(err, fs.ErrNotExist) && !endedSince(filepath.Join(g.proc, strconv.Itoa(p.PID)), p.StartTime) {
+					t.unread[p.PID] = fmt.Errorf("read the smaps: %w", err)
+				}
+				continue
 			}
-			continue
 		}
 		a.endable = append(a.endable, candidate{Process: p, role: classes[p.PID].Role, size: size})
 	}
@@ -2512,13 +2673,15 @@ func (g *Guard) forgetSizes() {
 // first read after the kill (INFRA-3531 R1: a process's growth since the kill is its size at this
 // reading less its size at the reading the kill was sent at, or less its first size read after the
 // kill for a process the guard first read then). act decides on the assessment of the reading, read
-// before the kill, and has no after. A kill on the band's held reads (decide) keeps the held
-// processes at the sizes endHeld decided on, each its held size, its read again or the search's
-// read of it, and the assessment that follows the kill for the rest: a size read after the kill is
-// not the size as of it, and at 7356e0f6, in `8g-latepool-q56hm`, a guard that kept that
-// assessment's sizes counted the growers' step between the reading at the mark and its read after
-// the kill as before the kill, saw no growth at the next two readings, not fallen and 28 MiB above
-// the kill's reading, and waited.
+// before the kill, and has no after. The early kills of an urgent reading of the wait (endKnown,
+// watch) keep that reading's assessment too, with no after: it is made after them, takes the
+// reads again they were decided on, and for every other process is its first read after those
+// kills. A kill on the band's held reads (decide) keeps the held processes at the sizes endHeld
+// decided on, each its held size, its read again or the search's read of it, and the assessment
+// that follows the kill for the rest: a size read after the kill is not the size as of it, and at
+// 7356e0f6, in `8g-latepool-q56hm`, a guard that kept that assessment's sizes counted the growers'
+// step between the reading at the mark and its read after the kill as before the kill, saw no
+// growth at the next two readings, not fallen and 28 MiB above the kill's reading, and waited.
 //
 // A held process whose program after the kill is not the one the decision read it running
 // (sameIdentity) takes its first read after the kill: the band read it before its exec, and its
@@ -2830,9 +2993,10 @@ func (g *Guard) stopRise(now time.Time, reason string, reading, limit uint64, a 
 	g.stoppedAt, g.stoppedLeftOut = now, 0
 }
 
-// endWait lets go of the processes a waiting guard holds, and of the sizes as of their kill
-// (atKill): the wait ends at the next kill of the rise, which keeps its own, and when the rise
-// ends. The kills keep their storage for the next.
+// endWait lets go of the processes a waiting guard holds, of the sizes as of their kill (atKill)
+// and of the processes it read at the wait's last reading (lastRead): the wait ends at the next
+// kill of the rise, which keeps its own, and when the rise ends. The kills keep their storage for
+// the next.
 func (g *Guard) endWait() {
 	if g.phase != waiting {
 		return
@@ -2842,6 +3006,7 @@ func (g *Guard) endWait() {
 	}
 	g.wait = afterKill{kills: g.wait.kills[:0]}
 	clear(g.atKill)
+	g.lastRead, g.lastTable = nil, nil
 	g.phase = armed
 }
 
@@ -2902,7 +3067,11 @@ func (g *Guard) closeWindow() {
 
 // readCounter reads the cgroup's counter into the window, keeps now as when it last read it
 // (counterAt), and answers it: 0 when it cannot be read, which it is not the guard's to act on.
+// It calls counterRead first, where a test has set it.
 func (g *Guard) readCounter(now time.Time) uint64 {
+	if g.counterRead != nil {
+		g.counterRead()
+	}
 	g.counterAt = now
 	data, err := g.counterFile.read()
 	if err != nil {

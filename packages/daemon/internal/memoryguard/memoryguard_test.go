@@ -7086,3 +7086,117 @@ func TestMemoryGuardEndsAtAnUrgentReadingAfterAKillEachGrowerItKnowsAsItReadsItB
 		t.Fatalf("the guard ended %+v, want %+v; the log:\n%s", got, want, log)
 	}
 }
+
+// Every kill of a reading is sent before the guard reads the cgroup's counter for that reading,
+// which costs about 18 ms under gVisor (reportKills), and a test sees that order through the hook
+// on the counter read (counterRead), as it sees the smaps reads through theirs (INFRA-3531 R1 of
+// spec version 43, verification version 36). The pod has lateGrowersAtTheMark's shape: an agent,
+// a parent of a 2.4 GB block and its three sleeping forks read across the band, and six growers
+// started after the band's last reading. At the first reading at the mark, 92.53%, at or above
+// the urgent share, with each smaps read taking 22 ms, the guard ends pid 805 by the new tier and
+// pid 804 beside it by the urgent rule, and reads on to end pids 803 and 802 (readOn). At the next
+// reading, 93.00%, pids 801 and 800 have grown since that kill: the guard reads them again first
+// and ends each as it reads it, before it lists the processes (endKnown), pid 801 by the new tier,
+// since the reading at the mark first read it after its kill, and pid 800 by the urgent rule. At
+// both readings the counter is read only once the last kill is sent; a guard that read it in
+// endUrgent, before the urgent kills, would read it between the kills of the reading at the mark.
+func TestMemoryGuardReadsTheCounterOfAnUrgentReadingOnlyAfterItsLastKillAtTheMarkAndInTheWait(t *testing.T) {
+	at := func(hundredths uint64) uint64 { return podLimit / 10000 * hundredths >> 10 << 10 }
+	pod := newFakePod(t)
+	parent := fakeProcess{pid: 700, ppid: 100, start: 5000, exe: "/usr/bin/python3.13", args: latepoolArgs, anon: latepoolBlock - 40*mib}
+	pod.add(agent(podLimit/4), parent)
+	pod.setAnon(at(7600))
+	var mu sync.Mutex
+	// readings are the events of each reading in order: its listings of the processes (the
+	// classifier's calls), its smaps reads, its kills (the signal's) and its counter reads.
+	var readings [][]string
+	note := func(event string) {
+		mu.Lock()
+		defer mu.Unlock()
+		readings[len(readings)-1] = append(readings[len(readings)-1], event)
+	}
+	classify := protect("tester", 100)
+	h := newHarness(t, pod, func(t *Table) map[int]Class {
+		note("list")
+		return classify(t)
+	})
+	exit := exitFreeing(pod, 0)
+	h.signal.onKill = func(pid int) bool {
+		note("kill " + strconv.Itoa(pid))
+		return exit(pid)
+	}
+	h.g.counterRead = func() { note("counter") }
+	h.g.smapsRead = func(pid int) { note("read " + strconv.Itoa(pid)) }
+	_, perRead := slowMark(h)
+	slow := h.g.observe
+	h.g.observe = func(now time.Time, reading, limit uint64) {
+		mu.Lock()
+		readings = append(readings, nil)
+		mu.Unlock()
+		slow(now, reading, limit)
+	}
+	h.run()
+	for i, r := range []uint64{8000, 8400, 8440} {
+		if i == 0 {
+			for j := range 3 {
+				pod.add(fakeProcess{pid: 701 + j, ppid: 700, start: uint64(5100 + 100*j), exe: "/usr/bin/python3.13", args: latepoolArgs, anon: latepoolBlock})
+			}
+			pod.resize(&parent, latepoolBlock)
+		}
+		pod.setAnon(at(r))
+		h.tick()
+	}
+	h.requireKilled()
+	growers := make([]*fakeProcess, 6)
+	for i := range growers {
+		growers[i] = &fakeProcess{pid: 800 + i, ppid: 700, start: uint64(6000 + i), exe: "/usr/bin/python3.13", args: growArgs, anon: uint64(64+i) * mib}
+		pod.add(*growers[i])
+	}
+	pod.setAnon(at(9253))
+	perRead.Store(int64(22 * time.Millisecond))
+	h.tick()
+	perRead.Store(0)
+	h.requireKilled(805, 804, 803, 802)
+	for _, g := range growers[:2] {
+		pod.resize(g, g.anon+64*mib)
+	}
+	pod.setAnon(at(9300))
+	h.tick()
+	h.requireKilled(805, 804, 803, 802, 801, 800)
+	mu.Lock()
+	events := slices.Clone(readings)
+	mu.Unlock()
+	for i, reading := range events {
+		counted := false
+		for _, e := range reading {
+			switch {
+			case e == "counter":
+				counted = true
+			case counted && strings.HasPrefix(e, "kill "):
+				t.Fatalf("at reading %d the guard sent the %s after it read the counter for that reading; that reading's events: %q", i+1, e, reading)
+			}
+		}
+	}
+	// inOrder is whether want are events of got in that order, other events between them.
+	inOrder := func(got, want []string) bool {
+		for _, e := range got {
+			if len(want) > 0 && e == want[0] {
+				want = want[1:]
+			}
+		}
+		return len(want) == 0
+	}
+	if want := []string{"kill 805", "kill 804", "read 803", "kill 803", "read 802", "kill 802", "counter"}; !inOrder(events[4], want) {
+		t.Fatalf("the reading at the mark's events are %q, want %q among them in that order: the read-on's kills after the first two", events[4], want)
+	}
+	if want := []string{"read 801", "kill 801", "read 800", "kill 800", "list", "counter"}; !inOrder(events[5], want) {
+		t.Fatalf("the urgent reading of the wait's events are %q, want %q among them in that order: the early kills before the listing", events[5], want)
+	}
+	want := []endedChoice{
+		{805, "new", "search", 0}, {804, "urgent", "search", 0}, {803, "urgent", "search", 0}, {802, "urgent", "search", 0},
+		{801, "new", "reading", 0}, {800, "urgent", "reading", 0},
+	}
+	if got := endedChoices(h); !slices.Equal(got, want) {
+		t.Fatalf("the guard ended %+v, want %+v; the log:\n%s", got, want, strings.Join(h.log.all(), "\n"))
+	}
+}
