@@ -927,11 +927,98 @@ type PullRequest struct {
 	// GitHub's answer and that answer is UNKNOWN while the head is queued, so a move made after a
 	// later read would read as no conflict.
 	ConflictingHead string
+	// ConflictRead is a first read of the record's head that found it conflicting with its base,
+	// which no second read has confirmed or released yet (dispatch://INFRA-4374 R2), nil while the
+	// record holds none. GitHub computes mergeability in a background job and can answer
+	// CONFLICTING about a base it has not caught up with, so one read acts on nothing: the daemon
+	// acts on a conflict only once a second CONFLICTING read of the same head and the same base
+	// branch, made at least a minute after the first (ConflictRead.At), confirms it.
+	//
+	// Who writes and clears it: workflow's mergeability. A CONFLICTING read that finds no first
+	// read of its head and base branch writes one, queues the conflict_confirm read that asks
+	// GitHub again once the minute has passed, and acts on nothing: ConflictingHead above is
+	// written only at the confirmation. A MERGEABLE read, from any reader, clears it, and so does
+	// the confirmation, which hands the conflict to ConflictingHead and the act on it (R0). An
+	// UNKNOWN read leaves it as it is, as it leaves ConflictingHead; when the conflict_confirm
+	// row's last read still answers UNKNOWN, the fact that row applies
+	// (intake.ConflictConfirmDone) clears it. After any of these clears the next CONFLICTING read
+	// is a first read again.
+	//
+	// Who reads it: mergeability, to tell a confirming read from a first one; the conflict_confirm
+	// row's executor in internal/daemon, which finishes without a read once the record no longer
+	// holds a first read of the row's head; and the log line of the read that releases it, which
+	// names both reads.
+	//
+	// It is GitHub's answer about a head and a base, as ConflictingHead is, not the issue's run's,
+	// so a new generation keeps it (Store.ClearGeneration). It is no part of a head run's
+	// judgement (Judgement), so a replay of the run leaves it as it is (classify's replayRun and
+	// withJudgement), and so does a move of the head (classify's advance): it names its own head,
+	// and a read of another head confirms nothing of it.
+	ConflictRead *ConflictRead
+	// MergeForward is the daemon's ask that the implementer merge the base forward onto a head
+	// whose conflict was confirmed and acted on (dispatch://INFRA-4374 R1), nil while none stands.
+	// The issue keeps its phase, and the ask is a message on the implementer's role topic rather
+	// than a phase start: it names the head and the base branch of the conflict, the phase the
+	// issue stood in and stays in, why the act was needed, when it was asked, and, once a new
+	// head arrives, that head (MergeForward.Landed).
+	//
+	// Who writes it: Engine.mergeForward, in the transaction that queues the merge_forward rows,
+	// and pullRequestSynchronized, which sets Landed on the first head that moves off
+	// MergeForward.Head and ReviewAsked when that landing asks the reviewer to read the merge.
+	// What clears it: any transition into implementing, the issue leaving the workflow, and a new
+	// generation (Store.ClearGeneration), since it is an ask of the run before.
+	//
+	// Who reads it: Engine.mergeForward, which asks once for each head, so a later confirmed
+	// conflict or a transition at the head it names sends nothing (an ask made in implementing
+	// covers implementing only); the merge_forward row's executor in internal/daemon, which
+	// finishes undelivered once the record's ask no longer names the row's head; Engine.handoff,
+	// which refuses a completion at MergeForward.Head once the record's head has moved off it
+	// (HANDOFF_HEAD_MERGED_FORWARD); and the merger's start task, which waits for the reviewer's
+	// approval of the landed head when the reviewer was asked to read it.
+	//
+	// It is no part of a head run's judgement (Judgement), so a replay of the run and a move of
+	// the head leave it as it is (classify's replayRun, withJudgement and advance): the arrival of
+	// a new head is what Landed records, not a reason to drop the ask.
+	MergeForward *MergeForward
 	// MergeSHA is the merge commit GitHub reported for the pull request, which the production
 	// check's agent looks for in production: empty until the merge, and for a pull request merged
 	// before the column existed. Nothing fills it later — no compare is left to — so the check's
 	// task says the commit is unknown and the agent reads it from GitHub (workflow.checkTask).
 	MergeSHA string
+}
+
+// ConflictRead is a first CONFLICTING read of a pull request's head (PullRequest.ConflictRead):
+// the head GitHub answered about, the base branch it answered against, and when that read was
+// made. Base is the branch's name, the one the read named (intake.PullRequestMergeability.Base)
+// or else the recorded PullRequest.Base, and never a commit: GitHub's base.sha does not name the
+// base commit its mergeability was computed against, and a conflict with a newer base is still a
+// conflict, so a push to the base between the two reads does not start the two reads again. It
+// is stored as the jsonb of pull_requests.conflict_read (migration 20261119003157), null for nil.
+type ConflictRead struct {
+	Head string    `json:"head"`
+	Base string    `json:"base"`
+	At   time.Time `json:"at"`
+}
+
+// MergeForward is the daemon's ask that the implementer merge Base forward onto Head
+// (PullRequest.MergeForward). Phase is the phase the issue stood in when the daemon asked, and
+// stays in. Why is the first of R0's reasons that held (dispatch://INFRA-4374 R0), as one word:
+// `merge-next` (the issue stands in accepting, retro or merging, PastReview),
+// `base-rules-unread` (the daemon could not read the base branch's rules),
+// `base-requires-current` (a ruleset of the base requires a pull request to be current with it)
+// or `required-check-not-green` (a check the base requires did not succeed on Head). AskedAt is
+// when the ask was written. Landed is the first new head that arrived after the ask, "" until
+// one does; ReviewAsked is whether that landing asked the reviewer to read the merge, which it
+// does when the issue stands past review. It is stored as the jsonb of
+// pull_requests.merge_forward (migration 20261119003157), null for nil.
+type MergeForward struct {
+	Head        string      `json:"head"`
+	Base        string      `json:"base"`
+	Phase       phase.Phase `json:"phase"`
+	Why         string      `json:"why"`
+	AskedAt     time.Time   `json:"askedAt"`
+	Landed      string      `json:"landed,omitempty"`
+	ReviewAsked bool        `json:"reviewAsked,omitempty"`
 }
 
 // HeadRun is a pull request's head run (PullRequest.Run): Anchor, the judgement before the run's
