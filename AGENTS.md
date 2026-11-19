@@ -849,11 +849,11 @@ Each item below names a task and where its code is, then notes on it.
 - **Tests** — co-located `__tests__/` dirs, Bun test runner (`bun:test`)
 
 - **The slow test suites run in the merge queue, not on a pull-request push**
-  — ten jobs of `ci.yaml` (`envoy-go`, `envoy-go-race`, `envoy-go-race-api`, `envoy-go-claim-model`, `envoy-go-race-docs`, `envoy-go-docs-finalizers`, `dispatch-memory`, `dispatch-multiprocess`, `dispatch-two-builds` and `envoy-smoke`) are held back on a pull request, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from.
+  — nine jobs of `ci.yaml` (`envoy-go`, `envoy-go-race`, `envoy-go-race-api`, `envoy-go-race-docs`, `envoy-go-docs-finalizers`, `dispatch-memory`, `dispatch-multiprocess`, `dispatch-two-builds` and `envoy-smoke`) are held back on a pull request, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from.
   The browser suite (`dispatch-browser`, whose called workflow builds the Go commands its stacks run in a `binaries` job of its own) runs on every pull request that changes what it reads, in its two-project `pull-request` lane; the label puts it on the full lane the merge queue runs.
   A worker adds the label `full-ci` to its pull request only to check a fix for a slow-suite failure that took the pull request out of the queue, to get a held-back job run at the head when a check of its issue names that job as its `ci_check`, when a person asks, or when the change touches `packages/envoy/internal/dispatch/store/migrations/**` or `packages/envoy/internal/pgmigrate/**`, where the label goes on before the approval: a migration is proven by the suites that run against a migrated database, and #2983's merge-group run 42464051293 is what a pull request without it leaves to the queue.
   The label is read from the pull request as the run's own event carries it, so it takes effect at the next push, not when it is added.
-  The worker takes it off again once that run has passed, because the label stays on the pull request and every later push would run the ten again, and the browser suite's full lane with them.
+  The worker takes it off again once that run has passed, because the label stays on the pull request and every later push would run the nine again, and the browser suite's full lane with them.
   The exception is a held-back job that a check of the worker's issue names as its `ci_check`: without the label that job reads `skipped` at every later head, which leaves the check no pass, so the label stays on for as long as the issue has such a check.
 
 - **Release jobs keep credentials away from dependency code**
