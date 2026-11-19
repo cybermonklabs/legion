@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
@@ -162,6 +163,19 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 // issue's pull request, which is R2. It runs before the settlement is applied, so the woken role
 // is told of the settlement the same transaction records.
 //
+// A settlement wakes only where it is the settlement checks applies for the record's head: the
+// wake builds the candidate checks applies (settlementCandidate) and asks the apply step itself
+// (classify.ApplyCheckSettlement), and wakes only when that applies it and leaves the record with
+// the settlement's head as its head and as the head its checks stand at. The second half is not
+// implied by the first while a head run is open, where applied says only that the replay with the
+// settlement changed the judgement. The answer is read and dropped here: checks applies the
+// settlement and stores it in this same transaction. So a settlement of another head wakes
+// nobody, whether an old head's or one of a head the record has not reached yet (its synchronize
+// has not arrived), and checks' drop line names it (logUnappliedSettlement); and a redelivery of a
+// settlement already applied wakes nobody either, since it applies nothing (dispatch://INFRA-4135
+// R4; dispatch://INFRA-945 R3 item 2 wakes on a settlement the daemon records for the head of the
+// issue's pull request).
+//
 // Only the worker of the pod's open phase is woken: the settlement is that worker's business and
 // no one else's, and an architect reads it from its own notices. A head that settles again as each
 // of its checks finishes wakes the pod no second time, because the role's resume is still open.
@@ -172,6 +186,10 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil {
 		return "", err
+	}
+	if settled, applied := classify.ApplyCheckSettlement(*pr, settlementCandidate(fact)); !applied ||
+		settled.CheckedHead != fact.HeadSHA || settled.HeadSHA != fact.HeadSHA {
+		return "", nil
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
 	if err != nil || issue == nil {

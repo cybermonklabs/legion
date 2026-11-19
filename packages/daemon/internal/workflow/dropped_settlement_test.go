@@ -62,7 +62,7 @@ func (laterHandlerFails) Apply(context.Context, pgx.Tx, intake.Fact) (intake.Res
 //   - a settlement of a head a push replaced before its last check run finished, as a deployment
 //     repository's 7b52b7c1 was by fe771e3a's push, says it stands for no head the record holds and
 //     names the recorded head, the checked head, that no head run is open and the issue, and it
-//     tells no role;
+//     wakes nobody and tells no role;
 //   - the same with the record at fe771e3a reached by a synchronize whose push has not arrived,
 //     so a head run is open, names the run open;
 //   - so does a settlement of a head whose synchronize has not arrived yet, with a run open;
@@ -74,9 +74,12 @@ func (laterHandlerFails) Apply(context.Context, pgx.Tx, intake.Fact) (intake.Res
 //   - the replaced head's settlement delivered ten times writes one line.
 //
 // A drop whose transaction rolls back writes nothing, and its retry that commits writes the line.
+// No drop wakes the released implementer or tells a role: none queues a start row or records a
+// resume past what the facts before it left (wakeOnSettlement, dispatch://INFRA-4135 R4).
 //
 // Negative control: at ac57d598 checks returns with no line on a missing record and on every
-// settlement it does not apply, so no row finds its line.
+// settlement it does not apply, so no row finds its line, and the wake reads no head, so the
+// replaced head's settlement wakes the implementer.
 func TestADroppedSettlementLogsWhy(t *testing.T) {
 	const dev = "legion-implementer[bot]"
 	// replacedHead is the head the pull request held until a push replaced it with nextHead, and
@@ -134,15 +137,23 @@ func TestADroppedSettlementLogsWhy(t *testing.T) {
 				t.Fatalf("the facts before the settlement logged %q, want no drop", lines)
 			}
 			told := roleMessageCount(t, rig.pool)
+			starts, resumes := len(wakeStarts(t, rig.pool)), len(wakeResumes(t, rig.pool))
 			for i := range max(tc.times, 1) {
 				rig.apply(fmt.Sprintf("settlement-%d", i), tc.deliver)
 			}
-			// No dropped settlement tells a role. Whether it wakes the released implementer is the
-			// wake's own rule (wakeOnSettlement), which still wakes on a settlement of any head
-			// here; that a settlement of a head the record does not hold wakes nobody is the
-			// next task's to assert (dispatch://INFRA-4135 R4).
+			// No dropped settlement tells a role or wakes the released implementer: a settlement
+			// wakes only where checks applies it for the record's head (wakeOnSettlement). Where
+			// the facts before it woke the implementer, its resume is still open, so those rows
+			// would wake nobody either way; the rows of a head the record does not hold are the
+			// ones this rule alone holds.
 			if got := roleMessageCount(t, rig.pool); got != told {
 				t.Fatalf("the dropped settlement queued %d role messages, want none", got-told)
+			}
+			if got := wakeStarts(t, rig.pool); len(got) != starts {
+				t.Fatalf("after the dropped settlement the supervise start rows = %+v, want the %d before it and no other", got, starts)
+			}
+			if got := wakeResumes(t, rig.pool); len(got) != resumes {
+				t.Fatalf("after the dropped settlement the pod resumes = %v, want the %d before it and no other", got, resumes)
 			}
 			lines := droppedSettlementLines(rig.logged.String())
 			if tc.line == "" {

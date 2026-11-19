@@ -53,8 +53,7 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	// statuses it holds for the head, since a settlement's statuses are merged into those per
 	// context and a context it leaves out stays as it is kept (classify.ApplySettlement,
 	// intake.PullRequestChecks.StatusesUnread).
-	candidate := classify.SettlementCandidate{Head: fact.HeadSHA, CheckRuns: fact.CheckRuns, Generation: fact.Generation, Snapshot: fact.Snapshot,
-		Failing: fact.Failing, Cancelled: fact.Cancelled, Statuses: fact.Statuses}
+	candidate := settlementCandidate(fact)
 	told := settledChecks(*pr)
 	settled, applied := classify.ApplyCheckSettlement(*pr, candidate)
 	if !applied {
@@ -98,6 +97,16 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.tellChecks(ctx, tx, pr, told, woken)
+}
+
+// settlementCandidate is the settlement fact as the apply step reads it, and the one place it is
+// built from the fact: checks applies it, and the wake (wakeOnSettlement) asks the apply step
+// whether it applies before it wakes anyone, so the two read one candidate and cannot drift. It is
+// the fact as delivered: a list of commit statuses the decoder could not read is no status here,
+// whatever the wake's task names in its place.
+func settlementCandidate(fact intake.PullRequestChecks) classify.SettlementCandidate {
+	return classify.SettlementCandidate{Head: fact.HeadSHA, CheckRuns: fact.CheckRuns, Generation: fact.Generation, Snapshot: fact.Snapshot,
+		Failing: fact.Failing, Cancelled: fact.Cancelled, Statuses: fact.Statuses}
 }
 
 // logUnappliedSettlement names a settlement checks does not apply to pr, the record as it stood
