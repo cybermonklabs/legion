@@ -95,6 +95,9 @@ type takeoverFaultSet struct {
 	// relay's claim read and of its copy of a frame in place of either.
 	relayClaimRead func(role string) error
 	relayCopy      func(role string, frameSeq uint64) error
+	// claimRecordWrite, when it returns an error, is the answer of the claim route's write of a
+	// takeover record in place of the write.
+	claimRecordWrite func(role, previous string) error
 }
 
 // takeoverFaults is the takeover copy's seam set, nil outside the tests that force a fault.
@@ -110,8 +113,14 @@ func faults() *takeoverFaultSet {
 
 // takeoverBeforeTry is the claim route's hook on each try of a claim's write
 // (store.RoleClaimRequest.BeforeTry): when the claim record that try read names a holder other than
-// the claimant, it writes a takeover record for that holder first, so a claim that lands always
-// has its record. A record that did not store ends the claim with nothing written.
+// the claimant, it writes a takeover record for that holder first, so a claim that lands has its
+// record. A record the stream refused because it holds its byte limit (bus.ErrStreamFull) lets the
+// claim go on with no record, with one Error line naming the role, the previous holder and the
+// claimant, counted on envoy_role_takeover_unrecorded_total: a full stream refuses every write
+// until it has room, the copies of the previous holder's messages included, so refusing the claim
+// too would hold the role with a holder that may have stopped for as long as the stream stays
+// full. Every other record that did not store ends the claim with nothing written, which the claim
+// route answers 503, and its client claims again.
 func takeoverBeforeTry(cfg listenerDeliveryHandlerConfig, claimant, role string) func(context.Context, store.RoleClaim) error {
 	try := 0
 	return func(ctx context.Context, read store.RoleClaim) error {
@@ -121,7 +130,17 @@ func takeoverBeforeTry(cfg listenerDeliveryHandlerConfig, claimant, role string)
 			return nil
 		}
 		if err := publishTakeover(ctx, cfg, role, previous); err != nil {
-			return err
+			if !errors.Is(err, bus.ErrStreamFull) {
+				return err
+			}
+			if cfg.roleTakeoverUnrecorded != nil {
+				cfg.roleTakeoverUnrecorded.Inc()
+			}
+			cfg.logger.Error("listener role claim goes on with no takeover record: the stream is full, so the previous holder's unread role messages are not copied for the role's next holder",
+				slog.String("role", role),
+				slog.String("previous_session_id", previous),
+				slog.String("session_id", claimant),
+				slog.String("error", err.Error()))
 		}
 		if hook := faults().beforeClaimTry; hook != nil {
 			return hook(role, previous, try)
@@ -137,6 +156,11 @@ func takeoverBeforeTry(cfg listenerDeliveryHandlerConfig, claimant, role string)
 func publishTakeover(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, previous string) error {
 	if _, ok := bus.SessionConsumerName(previous); !ok {
 		return nil
+	}
+	if refuse := faults().claimRecordWrite; refuse != nil {
+		if err := refuse(role, previous); err != nil {
+			return fmt.Errorf("record role %s's takeover from %s: %w", role, previous, err)
+		}
 	}
 	writeCtx, cancel := context.WithTimeout(ctx, takeoverRecordWindow)
 	defer cancel()
