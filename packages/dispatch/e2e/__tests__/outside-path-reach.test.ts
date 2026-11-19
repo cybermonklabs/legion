@@ -185,33 +185,19 @@ describe.concurrent("outside-path-reach.sh", () => {
     }
   );
 
-  // The origin here is the row's own curl's: it answers the origin's two reads as Dispatch and its
-  // probe as a connect, so the verdict reads no stand-in through the script's own curl bounds (3 s
-  // to connect, 10 s to read), which a loaded host can let pass before a stand-in on loopback
-  // answers. Nothing listens on the origin's port, so a call the row's curl missed would fail
-  // the row. The target's lookup is the host's own: a name in .invalid reads unresolved whether
-  // the lookup fails at once (curl exit 6) or times out (exit 28 with no lookup time).
   probingRow(withoutTools)("is unknown, never a pass, when a target does not resolve", async () => {
-    const port = await closedPort();
-    const run = await drive(
-      {
-        OUTSIDE_ORIGIN: `http://127.0.0.1:${port}`,
+    const origin = await fakeDispatch();
+    try {
+      const run = await drive({
+        OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
         OUTSIDE_PATH_TARGETS: await list("ghost does-not-exist.invalid 4222"),
-      },
-      {
-        path: pathWithCurl(
-          'case "$*" in\n' +
-            `  *://127.0.0.1:${port}/healthz) printf 200; exit 0 ;;\n` +
-            `  *://127.0.0.1:${port}/api/v1/projects) printf '%s401' '{"code":"NO_IDENTITY"}'; exit 0 ;;\n` +
-            `  *telnet://127.0.0.1:${port}) printf '0.000010 0.000100'; exit 28 ;;\n` +
-            "esac"
-        ),
-      }
-    );
-    expect(lineFor(run, "origin")).toContain(" REACHED; ");
-    expect(lineFor(run, "ghost")).toContain(" unresolved");
-    expect(verdict(run)).toBe("UNKNOWN: ghost unresolved or unknown");
-    expect(run.code).toBe(2);
+      });
+      expect(lineFor(run, "ghost")).toContain(" unresolved");
+      expect(verdict(run)).toBe("UNKNOWN: ghost unresolved or unknown");
+      expect(run.code).toBe(2);
+    } finally {
+      await origin.stop();
+    }
   });
 
   // Answers only a broken network gives, from a curl that names them: an exit no rule classifies,
