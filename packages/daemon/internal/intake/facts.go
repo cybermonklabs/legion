@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -1417,43 +1418,6 @@ type Result struct {
 	Unspent   bool
 }
 
-type commitHooksKey struct{}
-
-// WithCommitHooks scopes OnCommit to one transaction: the returned function runs, in order, every
-// hook registered on the returned context, and the transaction's owner calls it once the
-// transaction has committed, never when it rolls back. ApplyFact is that owner for every fact.
-// The hook list is not goroutine-safe: a transaction's handlers run one after another on one
-// goroutine, and OnCommit must only be called on that goroutine.
-func WithCommitHooks(ctx context.Context) (context.Context, func()) {
-	hooks := &[]func(){}
-	return context.WithValue(ctx, commitHooksKey{}, hooks), func() {
-		for _, hook := range *hooks {
-			hook()
-		}
-	}
-}
-
-// OnCommit runs fn once the transaction ctx scopes has committed. Handler state kept in memory,
-// and the journal line saying what a fact did, must never claim more than what committed: a later
-// handler's failure rolls the transaction back, and a fact retried after a failed commit would say
-// it twice. OnCommit panics on a context no WithCommitHooks scopes, since a handler run outside
-// ApplyFact has no commit to wait for.
-func OnCommit(ctx context.Context, fn func()) {
-	hooks, ok := ctx.Value(commitHooksKey{}).(*[]func())
-	if !ok {
-		panic("intake.OnCommit outside a transaction's commit scope (intake.WithCommitHooks)")
-	}
-	*hooks = append(*hooks, fn)
-}
-
-// CommitScoped reports whether ctx is within a transaction's commit scope (WithCommitHooks): a
-// caller that wants a hook to run once the write it just made has committed can tell a transaction
-// that will commit from a write made outside any scope, which has no commit to wait for.
-func CommitScoped(ctx context.Context) bool {
-	_, ok := ctx.Value(commitHooksKey{}).(*[]func())
-	return ok
-}
-
 // Refusal is a committed API response or JetStream log record, never a transaction failure.
 type Refusal struct {
 	Status  int
@@ -1509,7 +1473,8 @@ type Pool interface {
 // (settleObserved): the handlers see its view only while the workflow records no such issue. A
 // fact a durable consumer delivered (withStreamPosition) records that consumer's stream position
 // in the same transaction (recordStreamPosition), so a consumer found missing is created at the
-// last message it applied (openConsumer).
+// last message it applied (openConsumer). The fact commits through store.Transact, so a fact whose
+// commit's reply is lost is reported by what the store says of it.
 //
 // Facts apply one at a time. Handlers read and rewrite whole records, and admission's slots span
 // every tree, so two facts in flight together would each act on what the other is about to change;
@@ -1523,77 +1488,61 @@ type Pool interface {
 // is cross-tree lock ordering, which is a deadlock a daemon supervising long-lived agents would
 // hold until a human noticed. Serial facts are a throughput cost; that is the trade being made.
 func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
-	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return Result{}, err
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback(ctx)
-		}
-	}()
-	if err := SerializeFacts(ctx, tx); err != nil {
-		return Result{}, fmt.Errorf("serialize fact %s/%s: %w", source, eventID, err)
-	}
-
-	fresh, err := record.NewStore().MarkProcessed(ctx, tx, source, eventID)
-	if err != nil {
-		return Result{}, err
-	}
-	// A duplicate records its position too: it is acknowledged as applied, so its consumer is past
-	// it either way.
-	if err := recordStreamPosition(ctx, tx); err != nil {
-		return Result{}, err
-	}
-	if !fresh {
-		if err := tx.Commit(ctx); err != nil {
-			return Result{}, err
-		}
-		committed = true
-		return Result{Duplicate: true}, nil
-	}
-
-	fact, apply, err := settleObserved(ctx, tx, fact)
-	if err != nil {
-		return Result{}, err
-	}
-	if !apply {
-		handlers = nil
-	}
-	ctx, committedHooks := WithCommitHooks(ctx)
-	ctx, settle := OpenSettlers(ctx, handlers...)
 	var result Result
-	for _, handler := range handlers {
-		candidate, err := handler.Apply(ctx, tx, fact)
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := SerializeFacts(ctx, tx); err != nil {
+			return fmt.Errorf("serialize fact %s/%s: %w", source, eventID, err)
+		}
+		fresh, err := record.NewStore().MarkProcessed(ctx, tx, source, eventID)
 		if err != nil {
-			return Result{}, err
+			return err
 		}
-		if result.Refusal == nil && candidate.Refusal != nil {
-			result.Refusal = candidate.Refusal
+		// A duplicate records its position too: it is acknowledged as applied, so its consumer is
+		// past it either way.
+		if err := recordStreamPosition(ctx, tx); err != nil {
+			return err
 		}
-		result.Unspent = result.Unspent || candidate.Unspent
-	}
-	if err := settle(ctx, tx); err != nil {
+		if !fresh {
+			result = Result{Duplicate: true}
+			return nil
+		}
+
+		fact, apply, err := settleObserved(ctx, tx, fact)
+		if err != nil {
+			return err
+		}
+		if !apply {
+			handlers = nil
+		}
+		ctx, settle := OpenSettlers(ctx, handlers...)
+		for _, handler := range handlers {
+			candidate, err := handler.Apply(ctx, tx, fact)
+			if err != nil {
+				return err
+			}
+			if result.Refusal == nil && candidate.Refusal != nil {
+				result.Refusal = candidate.Refusal
+			}
+			result.Unspent = result.Unspent || candidate.Unspent
+		}
+		if err := settle(ctx, tx); err != nil {
+			return err
+		}
+		// A refused report of a production check leaves its event unmarked, so a report sent
+		// again — the same look and verdict, which is the same fact id its route mints (api's
+		// checkReport) — applies instead of being answered as one already received. Beside it, a
+		// handler leaves a fact unmarked only where the refusal's cause can clear without changing
+		// the fact's id (Result.Unspent). An unmarked refusal of any other fact would make a
+		// refused handoff apply on its next delivery, which those refusals exist to stop
+		// (dispatch://INFRA-714/spec R12).
+		_, report := fact.(CheckReport)
+		if (report && result.Refusal != nil) || result.Unspent {
+			return record.NewStore().ForgetProcessed(ctx, tx, source, eventID)
+		}
+		return nil
+	}); err != nil {
 		return Result{}, err
 	}
-	// A refused report of a production check leaves its event unmarked, so a report sent again —
-	// the same look and verdict, which is the same fact id its route mints (api's checkReport) —
-	// applies instead of being answered as one already received. Beside it, a handler leaves a
-	// fact unmarked only where the refusal's cause can clear without changing the fact's id
-	// (Result.Unspent). An unmarked refusal of any other fact would make a refused handoff apply
-	// on its next delivery, which those refusals exist to stop (dispatch://INFRA-714/spec R12).
-	_, report := fact.(CheckReport)
-	if (report && result.Refusal != nil) || result.Unspent {
-		if err := record.NewStore().ForgetProcessed(ctx, tx, source, eventID); err != nil {
-			return Result{}, err
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return Result{}, err
-	}
-	committed = true
-	committedHooks()
 	return result, nil
 }
 

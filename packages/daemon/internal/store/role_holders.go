@@ -123,14 +123,3 @@ func (s *Store) PublishRoleHolders(woken func(issue string)) {
 func (s *Store) queuesRoleHolders(c supervise.Claim) bool {
 	return s.roleHoldersQueued.Load() != nil && holdsIssueRole(c)
 }
-
-// committedClaim is told each claim write whose transaction has committed, queued whether that
-// write queued the publication of its issue.
-func (s *Store) committedClaim(c supervise.Claim, queued bool) {
-	if !queued {
-		return
-	}
-	if woken := s.roleHoldersQueued.Load(); woken != nil {
-		(*woken)(c.Issue)
-	}
-}

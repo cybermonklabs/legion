@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -528,7 +529,7 @@ func TestAFreshSessionStartsTheClaimWhenThePhaseRestartIsRefused(t *testing.T) {
 }
 
 // ruleResumingRestart is the phase's restart with the outbox lane behind it: the fact's own
-// commit hook posts the rule's resume that lane posts once the fact commits (intake.OnCommit,
+// commit hook posts the rule's resume that lane posts once the fact commits (store.OnCommit,
 // which is how the lane is woken), and that resume is what relaunches a claim no operator
 // suspended. The hook runs after the commit, as the lane does, because a machine event posted
 // inside the fact's transaction would wait on the fact lock that transaction holds.
@@ -540,7 +541,7 @@ type ruleResumingRestart struct {
 }
 
 func (r *ruleResumingRestart) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
-	intake.OnCommit(ctx, func() {
+	store.OnCommit(ctx, func() {
 		r.posted = true
 		r.failed = r.resume()
 	})

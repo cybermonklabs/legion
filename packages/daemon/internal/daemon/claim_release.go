@@ -9,8 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
@@ -227,7 +227,7 @@ func (w *workflowRuntime) releaseParkedClaims(ctx context.Context, tx pgx.Tx, sc
 		if err := w.records.Enqueue(ctx, tx, row); err != nil {
 			return fmt.Errorf("queue the Dispatch claim release of %s: %w", key, err)
 		}
-		intake.OnCommit(ctx, func() {
+		store.OnCommit(ctx, func() {
 			w.log.Info("workflow: boot queues a Dispatch claim release for an issue out of the workflow",
 				"issue", issue.Key, "tree", issue.Tree, "status", issue.Status)
 		})

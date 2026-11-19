@@ -596,43 +596,37 @@ func TestANewerLabeledEventInTheWindowBetweenReleasesCommitAndItsCommitHookIsRec
 
 	// release's own transaction commits here — its advisory lock is transaction-scoped and frees
 	// right at commit — but its commit hook, which clears pending, has not run yet: the exact
-	// window a concurrent event can land in.
-	tx, err := pool.Begin(context.Background())
-	if err != nil {
-		t.Fatalf("begin release tx: %v", err)
-	}
-	applied, committed := intake.WithCommitHooks(context.Background())
-	if _, err := admission.Apply(applied, tx, intake.DispatchConsumerPosition{AckFloorStream: 10}); err != nil {
+	// window a concurrent event can land in. The hook registered first runs first, so the newer
+	// labeled todo event lands in that window: LEGION-RACE is still in pending.
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		store.OnCommit(ctx, func() {
+			if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "label-added-in-race-window", intake.DispatchIssue{
+				Key: "LEGION-RACE", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated", Status: "todo", Title: "race", Rank: "A", HandedOver: true,
+			}, engine, admission); err != nil {
+				t.Fatalf("apply the racing event: %v", err)
+			}
+			var recorded bool
+			if err := pool.QueryRow(context.Background(), "select exists(select 1 from issues where key = $1)", "LEGION-RACE").Scan(&recorded); err != nil {
+				t.Fatalf("query LEGION-RACE record: %v", err)
+			}
+			if !recorded {
+				t.Fatal("LEGION-RACE not recorded in the race window, want it recorded despite pending still (momentarily) holding it")
+			}
+			var slotted bool
+			if err := pool.QueryRow(context.Background(), "select exists(select 1 from slots where issue = $1)", "LEGION-RACE").Scan(&slotted); err != nil {
+				t.Fatalf("query LEGION-RACE slot: %v", err)
+			}
+			if slotted {
+				t.Fatal("LEGION-RACE already slotted before pending cleared, want it recorded but not yet promoted (that transaction's own promote still saw it held)")
+			}
+		})
+		_, err := admission.Apply(ctx, tx, intake.DispatchConsumerPosition{AckFloorStream: 10})
+		return err
+	}); err != nil {
 		t.Fatalf("apply position fact: %v", err)
 	}
-	if err := tx.Commit(context.Background()); err != nil {
-		t.Fatalf("commit release tx: %v", err)
-	}
 
-	// The newer labeled todo event lands in that window: LEGION-RACE is still in pending.
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "label-added-in-race-window", intake.DispatchIssue{
-		Key: "LEGION-RACE", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated", Status: "todo", Title: "race", Rank: "A", HandedOver: true,
-	}, engine, admission); err != nil {
-		t.Fatalf("apply the racing event: %v", err)
-	}
-	var recorded bool
-	if err := pool.QueryRow(context.Background(), "select exists(select 1 from issues where key = $1)", "LEGION-RACE").Scan(&recorded); err != nil {
-		t.Fatalf("query LEGION-RACE record: %v", err)
-	}
-	if !recorded {
-		t.Fatal("LEGION-RACE not recorded in the race window, want it recorded despite pending still (momentarily) holding it")
-	}
-	var slotted bool
-	if err := pool.QueryRow(context.Background(), "select exists(select 1 from slots where issue = $1)", "LEGION-RACE").Scan(&slotted); err != nil {
-		t.Fatalf("query LEGION-RACE slot: %v", err)
-	}
-	if slotted {
-		t.Fatal("LEGION-RACE already slotted before pending cleared, want it recorded but not yet promoted (that transaction's own promote still saw it held)")
-	}
-
-	// The commit hook finally runs, clearing pending — exactly what ApplyFact would have done right
-	// after its own commit.
-	committed()
+	// The release's commit hook has run after the racing event's, clearing pending.
 	if admission.Held() {
 		t.Fatal("Held() = true after the commit hook ran, want the hold cleared")
 	}
@@ -688,24 +682,21 @@ func TestPollHoldReleaseRetriesAFailedClosingPass(t *testing.T) {
 	})
 
 	// The exact window between the commit and its hook leaves LEGION-RACE recorded but unpromoted once
-	// pending clears.
-	tx, err := pool.Begin(context.Background())
-	if err != nil {
-		t.Fatalf("begin release tx: %v", err)
-	}
-	applied, committed := intake.WithCommitHooks(context.Background())
-	if _, err := admission.Apply(applied, tx, intake.DispatchConsumerPosition{AckFloorStream: 10}); err != nil {
+	// pending clears: the hook registered first, which applies the racing event, runs before the
+	// release's own.
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		store.OnCommit(ctx, func() {
+			if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "label-added-in-race-window", intake.DispatchIssue{
+				Key: "LEGION-RACE", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated", Status: "todo", Title: "race", Rank: "A", HandedOver: true,
+			}, engine, admission); err != nil {
+				t.Fatalf("apply the racing event: %v", err)
+			}
+		})
+		_, err := admission.Apply(ctx, tx, intake.DispatchConsumerPosition{AckFloorStream: 10})
+		return err
+	}); err != nil {
 		t.Fatalf("apply position fact: %v", err)
 	}
-	if err := tx.Commit(context.Background()); err != nil {
-		t.Fatalf("commit release tx: %v", err)
-	}
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "label-added-in-race-window", intake.DispatchIssue{
-		Key: "LEGION-RACE", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated", Status: "todo", Title: "race", Rank: "A", HandedOver: true,
-	}, engine, admission); err != nil {
-		t.Fatalf("apply the racing event: %v", err)
-	}
-	committed()
 	if admission.Held() {
 		t.Fatal("Held() = true after the commit hook ran, want the hold cleared")
 	}
@@ -725,25 +716,23 @@ func TestPollHoldReleaseRetriesAFailedClosingPass(t *testing.T) {
 }
 
 // reconcileAdmission runs admission's boot reconcile as the workflow runtime does (reconcile): in
-// its own transaction, settling the runs its writes end before it commits, and running the commit
-// hooks it registered once that commits.
+// its own transaction (store.Transact), settling the runs its writes end before it commits, and
+// running the commit hooks it registered once that commits.
 func reconcileAdmission(t *testing.T, pool *store.Pool, admission *admit.Admission, summaries []dispatch.IssueSummary, target int64, position intake.DispatchConsumerPosition) {
 	t.Helper()
 	listed := make([]intake.DispatchIssue, len(summaries))
 	for i, summary := range summaries {
 		listed[i] = intake.ListedIssue(summary)
 	}
-	scoped, committed := intake.WithCommitHooks(context.Background())
-	scoped, settle := intake.OpenSettlers(scoped, admission)
-	if err := pgx.BeginFunc(scoped, pool, func(tx pgx.Tx) error {
-		if err := admission.Reconcile(scoped, tx, listed, target, position); err != nil {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		ctx, settle := intake.OpenSettlers(ctx, admission)
+		if err := admission.Reconcile(ctx, tx, listed, target, position); err != nil {
 			return err
 		}
-		return settle(scoped, tx)
+		return settle(ctx, tx)
 	}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	committed()
 }
 
 // The three admission log lines this proof reads, each the one an operator reads in the daemon's
@@ -826,6 +815,10 @@ func TestAHeldRootKeepsItsPlaceOnTheRuntimeUntilItsOwnReleaseAdmitsIt(t *testing
 	testwait.Eventually(t, "the held root takes the free slot once the quiet stream's idle ticker releases it", func() bool {
 		return slices.Contains(tickSlotted(t, pool), "LEGION-HELD")
 	})
+	// The cancel can land while the release's commit is on its way to the server, already visible
+	// to tickSlotted; store.Transact waits for that commit's reply, and reads its outcome from the
+	// store when the reply is lost, so once done closes, the slot the release took has its line in
+	// the log.
 	cancel()
 	<-done
 
@@ -840,7 +833,7 @@ func TestAHeldRootKeepsItsPlaceOnTheRuntimeUntilItsOwnReleaseAdmitsIt(t *testing
 		case strings.Contains(line, slotTakenMessage):
 			takenLines = append(takenLines, line)
 			// The release is logged inline, within its own transaction, while a slot taken is
-			// logged by intake.OnCommit once that transaction has committed, so a slot reported
+			// logged by store.OnCommit once that transaction has committed, so a slot reported
 			// before the release is one the pass took while the root was still held.
 			takenBeforeRelease = takenBeforeRelease || releaseLine == ""
 		}

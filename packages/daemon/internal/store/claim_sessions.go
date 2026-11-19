@@ -119,8 +119,7 @@ func (s *Store) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []sup
 		kinds[i], names[i] = string(h.Kind), h.Name
 	}
 	var freed []supervise.Hold
-	var queued bool
-	if err := s.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `delete from claim_sessions h
 			using unnest($3::text[], $4::text[]) as f(kind, name)
 			where h.project = $1 and h.claim = $2 and h.kind = f.kind and h.name = f.name
@@ -131,12 +130,10 @@ func (s *Store) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []sup
 		if freed, err = pgx.CollectRows(rows, scanHold); err != nil {
 			return err
 		}
-		queued, err = s.putClaim(ctx, tx, c)
-		return err
+		return s.putClaim(ctx, tx, c)
 	}); err != nil {
 		return nil, fmt.Errorf("release the names of %s: %w", c.Token, err)
 	}
-	s.committedClaim(c, queued)
 	slices.SortFunc(freed, supervise.CompareHolds)
 	return freed, nil
 }

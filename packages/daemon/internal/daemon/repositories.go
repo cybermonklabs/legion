@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -2437,14 +2438,13 @@ func (w *workflowRuntime) tellWaitingArchitects(ctx context.Context, tellings []
 		return nil
 	}
 	now := time.Now().UTC()
-	scoped, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, told := range notices {
 			row, err := record.NewOutboxRow(told.issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: told.reason}, now)
 			if err != nil {
 				return err
 			}
-			if err := w.records.Enqueue(scoped, tx, row); err != nil {
+			if err := w.records.Enqueue(ctx, tx, row); err != nil {
 				return err
 			}
 		}
@@ -2452,7 +2452,6 @@ func (w *workflowRuntime) tellWaitingArchitects(ctx context.Context, tellings []
 	}); err != nil {
 		return fmt.Errorf("tell the architects of the children the recovery left unrecorded: %w", err)
 	}
-	committed()
 	return nil
 }
 
@@ -2607,7 +2606,7 @@ func (w *workflowRuntime) heardAtBoot(ctx context.Context) ([]ghrepo.Repository,
 // repository no project maps gets the same event and cache service as work in a mapped one (R5),
 // with no mapping change and no restart. The workflow calls it inside the transaction that writes
 // the record (workflow.Config.HearRepository), and the consumer's filters change once that
-// transaction has committed and never before (intake.OnCommit), so an admission rolled back
+// transaction has committed and never before (store.OnCommit), so an admission rolled back
 // subscribes to nothing. That is what keeps the stream call out of the transaction and out of
 // the fact serializer as well (INFRA-3169): a commit hook runs after the commit returned the
 // connection to the pool and released the advisory lock the serializer holds for the
@@ -2619,7 +2618,7 @@ func (w *workflowRuntime) heardAtBoot(ctx context.Context) ([]ghrepo.Repository,
 // (heardPending), which the refresher's next read of the mapping publishes in full: nothing
 // inside the transaction can fail on it, so no JetStream trouble rolls an admission back.
 func (w *workflowRuntime) hearRecorded(ctx context.Context, recorded string) {
-	if w.consumers == nil || recorded == "" || !intake.CommitScoped(ctx) {
+	if w.consumers == nil || recorded == "" || !store.CommitScoped(ctx) {
 		return
 	}
 	repo, err := ghrepo.Parse("GitHub's spelling of the repository an issue was recorded on", recorded)
@@ -2627,7 +2626,7 @@ func (w *workflowRuntime) hearRecorded(ctx context.Context, recorded string) {
 		w.log.Warn("workflow: a record names a repository GitHub intake cannot hear", "repo", recorded, "error", err)
 		return
 	}
-	intake.OnCommit(ctx, func() {
+	store.OnCommit(ctx, func() {
 		w.cacheRepository(repo)
 		if err := w.hearRepository(ctx, repo); err != nil {
 			w.heardPending.Store(true)

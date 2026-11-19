@@ -18,9 +18,9 @@ import (
 	"github.com/sjawhar/envoy/subjectforms"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
@@ -354,13 +354,13 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 	if err != nil {
 		return fmt.Errorf("the copy is a notice the outbox refuses: %w", err)
 	}
-	queued, superseded := false, false
+	superseded := false
 	// The re-hold is its own transaction, so it owns the commit hook the row's write registers
-	// (projectRecords, intake.OnCommit), as ApplyFact does for a fact's rows.
-	scoped, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
+	// (projectRecords, store.OnCommit), as ApplyFact does for a fact's rows, and the hook that
+	// logs the copy it queued.
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if notice.CatchUp != nil {
-			recorded, err := r.records.Issue(scoped, tx, issue)
+			recorded, err := r.records.Issue(ctx, tx, issue)
 			if err != nil {
 				return err
 			}
@@ -368,26 +368,28 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 				return nil
 			}
 		}
-		fresh, err := r.records.MarkProcessed(scoped, tx, "envoy-exception", mark)
+		fresh, err := r.records.MarkProcessed(ctx, tx, "envoy-exception", mark)
 		if err != nil || !fresh {
 			return err
 		}
-		queued = true
+		store.OnCommit(ctx, func() {
+			r.log.Info("outbox notice re-held: the listener could not forward it to its architect's session",
+				"issue", issue, "kind", notice.Kind, "topic", topic, "key", key, "reason", reason)
+		})
 		// A copy of a catch-up whose row still claims decisions (the confirmed route's answer, in the
 		// row's own run) takes those claims over before the row finishes and its deletion releases
 		// them, so no other start or catch-up names what the copy will.
 		if notice.CatchUp != nil && notice.CatchUp.Kept != nil && reported.claims != 0 {
-			id, err := r.records.EnqueueID(scoped, tx, row)
+			id, err := r.records.EnqueueID(ctx, tx, row)
 			if err != nil {
 				return err
 			}
-			return r.records.MoveKeptClaims(scoped, tx, reported.claims, id)
+			return r.records.MoveKeptClaims(ctx, tx, reported.claims, id)
 		}
-		return r.records.Enqueue(scoped, tx, row)
+		return r.records.Enqueue(ctx, tx, row)
 	}); err != nil {
 		return err
 	}
-	committed()
 	if superseded {
 		// The copy this re-hold would have queued is the only thing that would have taken the row's
 		// claims on (MoveKeptClaims), so what the row named is handed over here exactly as a
@@ -404,10 +406,6 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 		}
 		r.log.Info("outbox catch-up not re-held: a newer catch-up supersedes it; what it named is handed over",
 			"issue", issue, "key", key, "generation", notice.CatchUp.Generation, "launch", notice.CatchUp.Launch, "reason", reason)
-	}
-	if queued {
-		r.log.Info("outbox notice re-held: the listener could not forward it to its architect's session",
-			"issue", issue, "kind", notice.Kind, "topic", topic, "key", key, "reason", reason)
 	}
 	return nil
 }
@@ -575,23 +573,24 @@ func (r *outbox) releaseWaiting(ctx context.Context, architects ...claim.Token) 
 		return nil
 	}
 	// The release is its own transaction, so it owns the commit hooks the expedites register
-	// (projectRecords, intake.OnCommit): each released notice's lane is woken once they commit.
-	scoped, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
+	// (projectRecords, store.OnCommit), each released notice's lane woken once they commit, and the
+	// hook that logs the release.
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, row := range released {
-			if err := r.records.ExpediteOutbox(scoped, tx, row, now); err != nil {
+			if err := r.records.ExpediteOutbox(ctx, tx, row, now); err != nil {
 				return err
 			}
 		}
+		store.OnCommit(ctx, func() {
+			ids := make([]int64, len(released))
+			for i, row := range released {
+				ids[i] = row.ID
+			}
+			r.log.Info("outbox notices released: their architect is ready", "architects", architects, "rows", ids)
+		})
 		return nil
 	}); err != nil {
 		return fmt.Errorf("release the notices waiting for %v: %w", architects, err)
 	}
-	committed()
-	ids := make([]int64, len(released))
-	for i, row := range released {
-		ids[i] = row.ID
-	}
-	r.log.Info("outbox notices released: their architect is ready", "architects", architects, "rows", ids)
 	return nil
 }

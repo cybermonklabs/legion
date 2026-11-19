@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // EmptyResponse is every accepted mutating route whose caller needs no result beyond success.
@@ -712,19 +713,17 @@ func (s *server) tellReleaseWait(w http.ResponseWriter, r *http.Request, grant c
 		return true
 	}
 	// The notice is its own transaction, so it owns the commit hook its write registers (the
-	// daemon's projectRecords, intake.OnCommit), as ApplyFact does for a fact's rows.
-	scoped, committed := intake.WithCommitHooks(r.Context())
-	if err := pgx.BeginFunc(scoped, s.pool, func(tx pgx.Tx) error {
+	// daemon's projectRecords, store.OnCommit), as ApplyFact does for a fact's rows.
+	if err := store.Transact(r.Context(), s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		row, err := record.NewOutboxRow(grant.Issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: reason}, time.Now().UTC())
 		if err != nil {
 			return err
 		}
-		return s.records.Enqueue(scoped, tx, row)
+		return s.records.Enqueue(ctx, tx, row)
 	}); err != nil {
 		writeFailure(w, http.StatusInternalServerError, "NOTICE_UNAVAILABLE", fmt.Sprintf("could not tell the architect that %s waits", child.Key))
 		return false
 	}
-	committed()
 	return true
 }
 
@@ -770,10 +769,9 @@ func (s *server) scheduleChildReleaseRetry(w http.ResponseWriter, r *http.Reques
 	var retry record.ReleaseRetry
 	var exhausted, told, backoff bool
 	// The retry is its own transaction, so it owns the commit hook the stalled notice's write
-	// registers (the daemon's projectRecords, intake.OnCommit), as ApplyFact does for a fact's rows.
-	scoped, committed := intake.WithCommitHooks(r.Context())
-	if err := pgx.BeginFunc(scoped, s.pool, func(tx pgx.Tx) error {
-		current, err := s.records.ReleaseRetry(scoped, tx, child.Key)
+	// registers (the daemon's projectRecords, store.OnCommit), as ApplyFact does for a fact's rows.
+	if err := store.Transact(r.Context(), s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		current, err := s.records.ReleaseRetry(ctx, tx, child.Key)
 		if err != nil {
 			return err
 		}
@@ -798,17 +796,16 @@ func (s *server) scheduleChildReleaseRetry(w http.ResponseWriter, r *http.Reques
 			if err != nil {
 				return err
 			}
-			if err := s.records.Enqueue(scoped, tx, row); err != nil {
+			if err := s.records.Enqueue(ctx, tx, row); err != nil {
 				return err
 			}
 			exhausted, told = true, true
 		}
-		return s.records.PutReleaseRetry(scoped, tx, retry)
+		return s.records.PutReleaseRetry(ctx, tx, retry)
 	}); err != nil {
 		writeFailure(w, http.StatusInternalServerError, "RETRY_UNAVAILABLE", fmt.Sprintf("could not record the release retry of %s", child.Key))
 		return false
 	}
-	committed()
 	if exhausted {
 		notified := "a child-release-stalled notice was queued when the attempts ran out"
 		if told {

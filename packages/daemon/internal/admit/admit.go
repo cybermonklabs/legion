@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -544,7 +545,7 @@ func (a *Admission) queuePersonHandover(ctx context.Context, tx pgx.Tx, key, obs
 	if err := a.enqueue(ctx, tx, key, record.PersonHandoverStatusWrite("todo", observedStatus), a.now()); err != nil {
 		return err
 	}
-	intake.OnCommit(ctx, func() { a.log.Info("admission: queued a person's handover", "issue", key, "source", source) })
+	store.OnCommit(ctx, func() { a.log.Info("admission: queued a person's handover", "issue", key, "source", source) })
 	return nil
 }
 
@@ -945,7 +946,7 @@ func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intak
 			return fmt.Errorf("say why %s is not admitted: %w", observation.Key, err)
 		}
 		if noted {
-			intake.OnCommit(ctx, func() {
+			store.OnCommit(ctx, func() {
 				a.log.Info("admission: not admitted; GitHub does not answer for its repository as one Legion's Apps reach", "issue", observation.Key,
 					"resolved", observation.ResolvedRepo, "reason", resolution.Refusal)
 			})
@@ -1208,7 +1209,7 @@ func (a *Admission) consumeHandover(ctx context.Context, tx pgx.Tx, fact intake.
 	if err != nil || root == nil || !root.LingersAt(fact.Generation) {
 		return err
 	}
-	intake.OnCommit(ctx, func() {
+	store.OnCommit(ctx, func() {
 		a.log.Info("admission hand-over", "issue", fact.Issue, "tree", fact.Tree, "linger", fact.Generation, "via", "outbox")
 	})
 	return a.readmit(ctx, tx, *stored, observed{
@@ -1619,7 +1620,7 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 // logSlot logs a slot released or taken once the fact commits: the issue, the slots the project
 // holds after the change, and the cap.
 func (a *Admission) logSlot(ctx context.Context, change, issue string, inUse int) {
-	intake.OnCommit(ctx, func() { a.log.Info("admission: slot "+change, "issue", issue, "slots", inUse, "cap", a.cap) })
+	store.OnCommit(ctx, func() { a.log.Info("admission: slot "+change, "issue", issue, "slots", inUse, "cap", a.cap) })
 }
 
 // promote gives each issue of the waiting line what its promotion needs — a slot, a tree opened,
@@ -2327,7 +2328,7 @@ func (a *Admission) releaseUnslotted(ctx context.Context, tx pgx.Tx, issues []re
 		if err := a.enqueue(ctx, tx, issue.Key, record.ControllerNotice{Kind: record.UnslottedNotice, Reason: reason}, a.now()); err != nil {
 			return released, err
 		}
-		intake.OnCommit(ctx, func() {
+		store.OnCommit(ctx, func() {
 			a.log.Warn("admission: released a root no tree of which runs and nothing would ever start", "issue", issue.Key, "status", issue.Status, "phase", issue.Phase, "generation", issue.Generation)
 		})
 		released = true
@@ -2428,7 +2429,7 @@ func (a *Admission) refreshHeldSummary(observation intake.DispatchIssue) {
 // case the stream never delivers the event that would otherwise have caught it up — before
 // promote decides anything, so a held key is never admitted, or left admitted, on stale
 // information. The in-memory pending set only clears once this call's own transaction has
-// actually committed (intake.OnCommit): clearing it any earlier would say a hold is
+// actually committed (store.OnCommit): clearing it any earlier would say a hold is
 // resolved while a failed commit leaves nothing of this release durable, so the next
 // promote-triggering call would trust an unreleased hold's authority.
 func (a *Admission) release(ctx context.Context, tx pgx.Tx, position intake.DispatchConsumerPosition) ([]string, error) {
@@ -2464,7 +2465,7 @@ func (a *Admission) release(ctx context.Context, tx pgx.Tx, position intake.Disp
 	}
 	a.log.Info("admission: the Dispatch consumer has caught up; releasing held roots",
 		"count", len(releasing), "ack_floor", position.AckFloorStream, "idle", position.Idle, "admitted", admitted)
-	intake.OnCommit(ctx, func() { a.clearReleased(releasing) })
+	store.OnCommit(ctx, func() { a.clearReleased(releasing) })
 	return returned, nil
 }
 
@@ -3246,7 +3247,7 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 				return fmt.Errorf("raise the phase entry of the architect of slotted root %s: %w", role.Issue.Key, err)
 			}
 			startedArchitect(role.Issue.Key)
-			intake.OnCommit(ctx, func() {
+			store.OnCommit(ctx, func() {
 				a.log.Warn("admission: a root architect's phases row named no entry, so the pass raised one and sent its work",
 					"issue", role.Issue.Key, "role", role.Role, "phase", role.Issue.Phase, "given", role.Given)
 			})
@@ -3255,12 +3256,12 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 				return fmt.Errorf("start the architect of slotted root %s again: %w", role.Issue.Key, err)
 			}
 			startedArchitect(role.Issue.Key)
-			intake.OnCommit(ctx, behind)
+			store.OnCommit(ctx, behind)
 		case sendPhaseEntry:
 			if err := a.engine.SendOwedEntry(ctx, tx, role.Issue, role.Role, role.Row); err != nil {
 				return fmt.Errorf("start the worker of slotted issue %s again: %w", role.Issue.Key, err)
 			}
-			intake.OnCommit(ctx, behind)
+			store.OnCommit(ctx, behind)
 		}
 	}
 	stalls, err := a.architectStalls(ctx, tx, read, facts, sent)
@@ -3355,7 +3356,7 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 			return finished, fmt.Errorf("finish the start %s owed a worker it can no longer reach: %w", owed.Issue, err)
 		}
 		finished = true
-		intake.OnCommit(ctx, func() {
+		store.OnCommit(ctx, func() {
 			a.log.Info("admission: finished a held start whose issue has moved past it", "issue", owed.Issue, "row", owed.ID,
 				"role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
 		})
@@ -3376,7 +3377,7 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 			return finished, fmt.Errorf("finish the start %s owed a stopped worker: %w", owed.Issue, err)
 		}
 		finished = true
-		intake.OnCommit(ctx, func() {
+		store.OnCommit(ctx, func() {
 			a.log.Info("admission: finished a held start owed a stopped worker", "issue", owed.Issue,
 				"row", owed.ID, "role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
 		})

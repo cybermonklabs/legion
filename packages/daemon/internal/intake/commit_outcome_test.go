@@ -2,11 +2,12 @@ package intake
 
 // ApplyFact measured through a proxy that holds or cuts its commit's reply on the way to a real
 // PostgreSQL (testdb.CommitFaults): a fact whose commit landed is reported applied and runs its
-// commit hooks, whatever became of the reply, and a fact whose commit never landed runs none, and
-// its retry applies.
+// commit hooks, whatever became of the reply; a fact whose commit never landed runs none, and its
+// retry applies; and a fact whose outcome the store cannot say yet runs its hooks once it can.
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -57,7 +59,7 @@ func hooked(ran *atomic.Int32) Handler {
 		if _, err := writeHandler("first", nil).Apply(ctx, tx, fact); err != nil {
 			return Result{}, err
 		}
-		OnCommit(ctx, func() { ran.Add(1) })
+		store.OnCommit(ctx, func() { ran.Add(1) })
 		return Result{}, nil
 	})
 }
@@ -179,5 +181,40 @@ func TestAFactCutBeforeItsCommitRunsNoHookAndItsRetryApplies(t *testing.T) {
 	}
 	if n := writeCount(t, rig.direct); n != 1 {
 		t.Errorf("%d writes committed after the retry, want one", n)
+	}
+}
+
+func TestAFactWhoseOutcomeTheStoreCannotSayRunsItsHooksOnceItCan(t *testing.T) {
+	rig := newFactFaultRig(t)
+	var ran atomic.Int32
+
+	fired := rig.fault.Cut(factCommitMatch, testdb.CutAfterCommitRefusing)
+	done := rig.apply(context.Background(), "event-outcome-unknown", &ran)
+	testdb.Met(t, fired)
+	got := waitApplied(t, done)
+	if !errors.Is(got.err, store.ErrCommitOutcomeUnknown) {
+		t.Fatalf("the fact whose commit landed while the store refused = %v, want store.ErrCommitOutcomeUnknown", got.err)
+	}
+	if n := ran.Load(); n != 0 {
+		t.Fatalf("the fact's hook ran %d times before the store could say it committed, want none", n)
+	}
+	if _, err := ApplyFact(context.Background(), rig.faulted, "dispatch", "event-outcome-unknown", DispatchIssue{Key: "LEGION-208"}, hooked(&ran)); err == nil {
+		t.Fatal("the retry while the store refuses = nil, want an error")
+	}
+
+	rig.fault.Refuse(false)
+	testwait.Eventually(t, "the fact's hook to run once the store says it committed", func() bool { return ran.Load() == 1 })
+	retry, err := ApplyFact(context.Background(), rig.faulted, "dispatch", "event-outcome-unknown", DispatchIssue{Key: "LEGION-208"}, hooked(&ran))
+	if err != nil {
+		t.Fatalf("the retry once the store answers = %v, want nil", err)
+	}
+	if !retry.Duplicate {
+		t.Errorf("the retry = %+v, want a duplicate: the fact committed", retry)
+	}
+	if n := ran.Load(); n != 1 {
+		t.Errorf("the hook ran %d times after the retry, want still once", n)
+	}
+	if n := writeCount(t, rig.direct); n != 1 {
+		t.Errorf("%d writes committed, want the fact's one", n)
 	}
 }

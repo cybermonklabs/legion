@@ -79,10 +79,13 @@ const (
 	// drain, which starts with the stop, gets the budget's first four fifths (8 s): a decision a
 	// route asked for runs on until the drain ends, so an operator's suspension whose process is
 	// already exiting is recorded rather than undone at the next boot. The last fifth leaves room
-	// for the work the drain's end cuts short to return before the budget runs out. Work still
-	// running at the budget's end, a call into a process that does not answer, is logged with each
-	// claim still deciding and not waited on: the next boot re-adopts each process a claim records
-	// and relaunches each launch left unrecorded. natsCloseTimeout bounds the close of the
+	// for the work the drain's end cuts short to return before the budget runs out. A commit whose
+	// caller's context the stop or the drain's end cancels waits at most store.CommitSettleBound
+	// more for its outcome, counted from that cancel (store.Transact), which fits the budget's last
+	// fifth (TestTheCommitSettleFitsTheStopsLastFifth). Work still running at the budget's end, a
+	// call into a process that does not answer, is logged with each claim still deciding and not
+	// waited on: the next boot re-adopts each process a claim records and relaunches each launch
+	// left unrecorded. natsCloseTimeout bounds the close of the
 	// workflow's NATS connection, stampTimeout the stamp, and storeCloseTimeout the store's close
 	// after it, so the daemon returns at most
 	// stopBudget+natsCloseTimeout+stampTimeout+storeCloseTimeout (24 s) after its stop begins,
@@ -2800,7 +2803,7 @@ type source struct {
 //
 // It is also where the outbox learns of its rows: every write that makes a row due — Enqueue, and
 // ExpediteOutbox — wakes the row's lane (outbox.wake) once the transaction has committed, through
-// the transaction's commit hooks (intake.OnCommit), so no lane runs a row it cannot yet read, and
+// the transaction's commit hooks (store.OnCommit), so no lane runs a row it cannot yet read, and
 // no lane polls for one. wake is nil where there is no workflow to wake: the API-only daemon, the
 // state route's reads and the stranded report.
 type projectRecords struct {
@@ -2906,7 +2909,7 @@ func (s projectRecords) PutSlot(ctx context.Context, tx pgx.Tx, slot record.Slot
 }
 
 // wakeOnCommit wakes the row's lane once the transaction that wrote it commits. A write made
-// outside a commit scope (intake.WithCommitHooks) has no commit to wait for: its lane is woken at
+// outside a commit scope (store.Transact) has no commit to wait for: its lane is woken at
 // once, and the write is logged with its caller, since a lane woken before the row is visible
 // finds nothing and the row then waits for the sweep — every transaction that writes a row is
 // meant to be scoped, and one that is not is a bug to fix where the log names.
@@ -2914,8 +2917,8 @@ func (s projectRecords) wakeOnCommit(ctx context.Context, row record.OutboxRow) 
 	if s.wake == nil {
 		return
 	}
-	if intake.CommitScoped(ctx) {
-		intake.OnCommit(ctx, func() { s.wake(row.Issue, row.Kind) })
+	if store.CommitScoped(ctx) {
+		store.OnCommit(ctx, func() { s.wake(row.Issue, row.Kind) })
 		return
 	}
 	log := s.log

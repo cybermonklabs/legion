@@ -69,10 +69,9 @@ func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
 	if !s.queuesRoleHolders(c) {
 		return upsertClaim(ctx, s.pool, c)
 	}
-	var queued bool
 	var wrote error
-	if err := s.Tx(ctx, func(tx pgx.Tx) error {
-		queued, wrote = s.putClaim(ctx, tx, c)
+	if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		wrote = s.putClaim(ctx, tx, c)
 		return wrote
 	}); err != nil {
 		if wrote == nil {
@@ -83,7 +82,6 @@ func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
 		}
 		return err
 	}
-	s.committedClaim(c, queued)
 	return nil
 }
 
@@ -283,29 +281,35 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // EnqueueRoleHolders): the agent registers, a new session takes the role, or the claim leaves a
 // state that holds it — retired, failed, suspended, or launching again. A write that changes no
 // holder queues nothing, and neither does a write that can queue none (queuesRoleHolders).
-// It answers whether it queued, so that the caller can wake the lane once tx commits
-// (committedClaim). Every claim write goes through here — PutClaim, PutClaimAndDelivery,
-// RetireDelivery and AdmitClaim — so whichever decision makes a write, the store holds the change
-// and its publication together, or neither; PutClaim alone writes on the pool when it can queue
-// none, since then nothing goes with the write.
-func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) (bool, error) {
+// It wakes the lane once tx commits, through a hook of the transaction's commit scope
+// (OnCommit), when it queued. Every claim write goes through here — PutClaim, PutClaimAndDelivery,
+// RetireDelivery, ReleaseHolds and AdmitClaim — each in a Transact of its own, so whichever
+// decision makes a write, the store holds the change and its publication together, or neither;
+// PutClaim alone writes on the pool when it can queue none, since then nothing goes with the
+// write.
+func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	if !s.queuesRoleHolders(c) {
-		return false, upsertClaim(ctx, tx, c)
+		return upsertClaim(ctx, tx, c)
 	}
 	stored, err := storedRoleHolder(ctx, tx, c)
 	if err != nil {
-		return false, fmt.Errorf("put claim %s: %w", c.Token, err)
+		return fmt.Errorf("put claim %s: %w", c.Token, err)
 	}
 	if err := upsertClaim(ctx, tx, c); err != nil {
-		return false, err
+		return err
 	}
 	if roleHolder(c.State, c.Session) == stored {
-		return false, nil
+		return nil
 	}
 	if err := EnqueueRoleHolders(ctx, tx, c.Issue, time.Now().UTC()); err != nil {
-		return false, fmt.Errorf("put claim %s: %w", c.Token, err)
+		return fmt.Errorf("put claim %s: %w", c.Token, err)
 	}
-	return true, nil
+	OnCommit(ctx, func() {
+		if woken := s.roleHoldersQueued.Load(); woken != nil {
+			(*woken)(c.Issue)
+		}
+	})
+	return nil
 }
 
 // upsertClaim writes the row of claim c on db: putClaim's transaction, or the pool for a PutClaim
@@ -714,17 +718,12 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 // never prompted again and the phase waits. It is also where a confirmation tells the decisions
 // its delivery holds, in that same transaction and for the same reason.
 func (s *Store) PutClaimAndDelivery(ctx context.Context, c supervise.Claim, d supervise.Delivery) error {
-	var queued bool
-	if err := s.Tx(ctx, func(tx pgx.Tx) (err error) {
-		if queued, err = s.putClaim(ctx, tx, c); err != nil {
+	return Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := s.putClaim(ctx, tx, c); err != nil {
 			return err
 		}
 		return putDelivery(ctx, tx, c.Token, d)
-	}); err != nil {
-		return err
-	}
-	s.committedClaim(c, queued)
-	return nil
+	})
 }
 
 // RetireDelivery removes the claim's pending delivery, fenced on its id: retiring a delivery the
@@ -747,9 +746,8 @@ func (s *Store) PutClaimAndDelivery(ctx context.Context, c supervise.Claim, d su
 // only be read from the row, so it is read here, in the same transaction as the delete that
 // found nothing.
 func (s *Store) RetireDelivery(ctx context.Context, c supervise.Claim, deliveryID string) error {
-	var queued bool
-	if err := s.Tx(ctx, func(tx pgx.Tx) (err error) {
-		if queued, err = s.putClaim(ctx, tx, c); err != nil {
+	return Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := s.putClaim(ctx, tx, c); err != nil {
 			return err
 		}
 		tag, err := tx.Exec(ctx,
@@ -775,11 +773,7 @@ func (s *Store) RetireDelivery(ctx context.Context, c supervise.Claim, deliveryI
 			}
 		}
 		return releaseKeptDecisions(ctx, tx, c.Token, deliveryID)
-	}); err != nil {
-		return err
-	}
-	s.committedClaim(c, queued)
-	return nil
+	})
 }
 
 func scanClaim(row pgx.Row) (supervise.Claim, error) {

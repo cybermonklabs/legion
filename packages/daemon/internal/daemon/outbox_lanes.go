@@ -19,7 +19,7 @@ import (
 // notices) or its role messages (the end of a role's phase), record.OutboxLane — run one at a time
 // in the order they are due, on a goroutine of its own that lives only while the issue has such
 // rows. A lane is woken by the write that commits one
-// of its rows (projectRecords, through intake.OnCommit), by the timer it arms for its next row due
+// of its rows (projectRecords, through store.OnCommit), by the timer it arms for its next row due
 // later, and by the sweep, which every outboxLease lists the lanes with a row still in the outbox
 // (record.Store.UnfinishedLanes) and wakes each: a row whose run ended without its finish or retry
 // recorded — a lost database connection, a daemon that died mid-row — keeps its lease until it
