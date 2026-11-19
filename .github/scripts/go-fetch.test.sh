@@ -65,13 +65,39 @@ printf '#!/bin/sh\necho "cp $*" >> "$GO_FETCH_TEST_CALLS.cp"\necho "cp: cannot c
   > "$work/cp-fails/cp"
 chmod +x "$work/cp-fails/cp"
 
+# A `mktemp` and a `mkdir` that fail, for the cases whose directory for the copy, or whose Pulumi
+# backend and home, cannot be made: each first on PATH only where a case puts $work/<name>-fails
+# there. Each fails, and records, the call the case is about - a call whose arguments hold the
+# copy's template or the backend - and runs the real command for every other call: the script's
+# own work directory, and the stand-in pulumi's sdks.
+for name in mktemp mkdir; do
+  case $name in
+    mktemp) fails_on=/consumer. ;;
+    mkdir) fails_on=/backend ;;
+  esac
+  mkdir -p "$work/$name-fails"
+  cat > "$work/$name-fails/$name" <<STANDIN
+#!/bin/sh
+case "\$*" in
+  *$fails_on*)
+    echo "$name \$*" >> "\$GO_FETCH_TEST_CALLS.$name"
+    echo "$name: cannot create directory: No space left on device" >&2
+    exit 1
+    ;;
+esac
+exec $(command -v "$name") "\$@"
+STANDIN
+  chmod +x "$work/$name-fails/$name"
+done
+
 # fetch <args...>: runs the script under test with the stand-ins and no waits. Leaves its stderr
 # in `err`, its exit code in `rc`, the stand-ins' calls in `calls`, the environment each pulumi
 # call saw in `pulumi_env`, each install's GOBIN in `gobin`, what package add and the build found
-# in their directory in `seen`, and the failing cp's calls in `cp_calls`. PATH_FIRST, when set,
-# goes on PATH before the stand-ins.
+# in their directory in `seen`, and the failing cp's, mktemp's and mkdir's calls in `cp_calls`,
+# `mktemp_calls` and `mkdir_calls`. PATH_FIRST, when set, goes on PATH before the stand-ins.
 fetch() {
-  rm -f "$work/calls" "$work/calls.pulumi-env" "$work/calls.gobin" "$work/calls.seen" "$work/calls.cp" "$work/count"
+  rm -f "$work/calls" "$work/calls.pulumi-env" "$work/calls.gobin" "$work/calls.seen" "$work/calls.cp" \
+    "$work/calls.mktemp" "$work/calls.mkdir" "$work/count"
   set +e
   PATH="${PATH_FIRST:+$PATH_FIRST:}$work/bin:$PATH" GO_FETCH_TEST_CALLS="$work/calls" GO_FETCH_TEST_COUNT="$work/count" \
     GO_FETCH_TEST_GOPATH="$work/gopath:$work/other-gopath" GO_FETCH_WAIT=0 "$go_fetch" "$@" > "$work/stdout" 2> "$work/stderr"
@@ -83,6 +109,8 @@ fetch() {
   gobin=$(cat "$work/calls.gobin" 2>/dev/null || true)
   seen=$(cat "$work/calls.seen" 2>/dev/null || true)
   cp_calls=$(cat "$work/calls.cp" 2>/dev/null || true)
+  mktemp_calls=$(cat "$work/calls.mktemp" 2>/dev/null || true)
+  mkdir_calls=$(cat "$work/calls.mkdir" 2>/dev/null || true)
 }
 
 cat > "$work/tools.txt" <<'TOOLS'
@@ -159,6 +187,29 @@ check "exits 1" "$(is "$rc" 1)"
 check "names the copy that failed" "$(contains "$err" "could not copy the consumer $work/consumer-src into ")"
 check "as a GitHub error" "$(contains "$err" '::error::go-fetch: could not copy')"
 check "tries the copy once: a failed copy is no fault of a service" "$(is "$(grep -c . <<< "$cp_calls")" 1)"
+check "runs neither package add nor the build" "$(is "$calls" '')"
+
+echo "case: a directory for the copy that cannot be made ends the step, naming it, and runs nothing after it"
+PATH_FIRST="$work/mktemp-fails" fetch pulumi-consumer "$work/consumer-src" "$work/plugin"
+check "exits 1" "$(is "$rc" 1)"
+check "names the directory that could not be made" \
+  "$(contains "$err" "could not make a directory under /[^ ]* for a copy of $work/consumer-src$")"
+check "as a GitHub error" "$(contains "$err" '::error::go-fetch: could not make a directory')"
+check "shows mktemp's own error" "$(contains "$err" '^mktemp: cannot create directory')"
+check "ends there: copies nothing" "$(is "$(grep -c 'could not copy' <<< "$err")" 0)"
+check "tries the directory once: a directory that cannot be made is no fault of a service" \
+  "$(is "$(grep -c . <<< "$mktemp_calls")" 1)"
+check "runs neither package add nor the build" "$(is "$calls" '')"
+
+echo "case: a Pulumi backend and home that cannot be made end the step, naming them, and run nothing after them"
+PATH_FIRST="$work/mkdir-fails" fetch pulumi-consumer "$work/consumer-src" "$work/plugin"
+check "exits 1" "$(is "$rc" 1)"
+check "names the backend and home that could not be made" \
+  "$(contains "$err" 'could not make the Pulumi backend and home under /')"
+check "as a GitHub error" "$(contains "$err" '::error::go-fetch: could not make the Pulumi backend')"
+check "shows mkdir's own error" "$(contains "$err" '^mkdir: cannot create directory')"
+check "tries them once: a backend that cannot be made is no fault of a service" \
+  "$(is "$(grep -c . <<< "$mkdir_calls")" 1)"
 check "runs neither package add nor the build" "$(is "$calls" '')"
 
 echo "case: a failed package add is tried again on a fresh copy"
