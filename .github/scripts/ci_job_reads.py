@@ -425,7 +425,6 @@ CLAUDE_ENVOY_BUILD = reads(
         ("packages/pi-legion/agents/**", "packages/claude-envoy/scripts/build.ts:231-232"),
         ("skills/**", "packages/claude-envoy/scripts/build.ts:198-202 (staged pi-legion partition); packages/claude-envoy/skills/* symlinks into ../../../skills"),
         (".bun-version", "packages/claude-envoy/scripts/build.ts:32 reads the Bun pin"),
-        (".github/scripts/check-private-names.sh", "packages/claude-envoy/scripts/verify-build.sh checks the build with it"),
         (".github/scripts/release-push.sh", "packages/claude-envoy/scripts/verify-build.sh runs its check-built; the claude-envoy job runs its extract-built"),
         (".github/workflows/release.yaml", "packages/claude-envoy/tests/build-inputs.test.ts:154 holds its $CLAUDE_ENVOY_VERSION_ARGS equal to scripts/build-inputs.txt"),
 ) + envoy_client_dep("packages/claude-envoy/src/envoy-channel-server.ts:10-84, hooks/session-hook.ts:91-109 import @legion/envoy-client/*")
@@ -441,6 +440,11 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
         ("packages/pi-shared/test/daemon-state.ts", f"{at('claude-envoy', 'Typecheck Claude Envoy plugin')}: packages/claude-envoy/tests/legion-tool.test.ts:8 imports @legion/pi-shared/test/daemon-state, so tsc compiles it in that program"),
         (".agents/plugins/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:9"),
         (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:10"),
+        (".github/actions/private-names-packed-plugin/**",
+         at("private-names", "./.github/actions/private-names-packed-plugin", job_file("claude-envoy"))),
+        (".github/scripts/check-private-names.sh", ".github/actions/private-names-packed-plugin/action.yml runs it, "
+                                                   "called by " + at("private-names", "./.github/actions/private-names-packed-plugin",
+                                                                     job_file("claude-envoy"))),
 )
 
 
@@ -2134,8 +2138,8 @@ SCRIPT_TEST_GATES = [
     harness("release_push_test", "Test release scripts", f"{SCRIPTS}/release-push.test.sh", [
         (f"{SCRIPTS}/release-push.sh", "the script under test"),
         (f"{SCRIPTS}/release-bump.sh", "release-push.sh:914 runs it for `version`, and the version cases read its refusals"),
-        (".github/workflows/release.yaml", "release-push.test.sh:1079,1093 reads it for the checkout-before-push case"),
-        ("packages/pi-legion/.changie.yaml", "release-push.test.sh:2211 copies the shipped configuration into its fold-notes fixture"),
+        (".github/workflows/release.yaml", "release-push.test.sh's worker_image_release case reads that job's step out of it and runs it"),
+        ("packages/pi-legion/.changie.yaml", "release-push.test.sh's fold-notes case for the shipped configuration copies it into its fixture"),
     ]),
     harness("release_bump_test", "Test the release version bump", f"{SCRIPTS}/release-bump.test.sh", [
         (f"{SCRIPTS}/release-bump.sh", "the script under test"),
@@ -2215,9 +2219,23 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/check-action-pins.sh", "the script under test"),
     ]),
     harness("check_private_names_test", "Test the private-name check", f"{SCRIPTS}/check-private-names.test.sh", [
+        (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names.test.sh:23 sources it for its fixtures"),
+        (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
-        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names.test.sh:525 runs it too: the pull request's text is the guard's other surface"),
-    ]),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:254 runs it too: the pull request's text is the guard's other surface"),
+    ], lib=False),
+    harness("check_private_names_terms_test", "Test the private-name check's term list", f"{SCRIPTS}/check-private-names-terms.test.sh", [
+        (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names-terms.test.sh:24 sources it for its fixtures"),
+        (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
+        (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:254 runs it, over a pull request's text naming a term"),
+    ], lib=False),
+    harness("check_private_names_keys_test", "Test the private-name check's issue-key rule", f"{SCRIPTS}/check-private-names-keys.test.sh", [
+        (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names-keys.test.sh:24 sources it for its fixtures"),
+        (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
+        (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:254 runs it, over a pull request's new text"),
+    ], lib=False),
     harness("check_plugin_names_test", "Test the plugin-name check", f"{SCRIPTS}/check-plugin-names.test.sh", [
         (f"{SCRIPTS}/check-plugin-names.sh", "the script under test"),
     ]),
@@ -2232,6 +2250,8 @@ SCRIPT_TEST_GATES = [
     harness("check_release_credentials_test", "Test the release credential check",
             f"{SCRIPTS}/check-release-credentials.test.sh", [
         (f"{SCRIPTS}/check-release-credentials.sh", "the script under test"),
+        (f"{SCRIPTS}/shell_commands.py", "check-release-credentials.sh imports it to find command position, "
+                                         "and the harness links it into each fixture"),
     ]),
     harness("repo_paths_test", "Test the repository path derivation", f"{SCRIPTS}/repo-paths.test.sh", [
         (f"{SCRIPTS}/repo-paths.sh", "the script under test"),
@@ -2487,7 +2507,7 @@ GATES = [
         (TEST_LIB, "check-private-names-port.test.sh:63 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh",
          "the frozen script every case of check-private-names-port.test.sh runs beside the "
-         "engine, symlinked into each fixture (:203,411,457,546)"),
+         "engine, symlinked into each fixture (:213,421,467,556)"),
     ) + setup_go(PRIVATE_NAMES_PORT_JOB, f"{DAEMON}/go.mod")),
 
     # What is left of the test job once the daemon's Go suite and the private-name port harness
@@ -2602,7 +2622,7 @@ GATES = [
         ("skills/**", "docs/site/generators/legion-skills.ts:15-19 reads skills/*/SKILL.md"),
         ("deploy/kubernetes/**", "docs/site/generators/legion-config.ts's exampleFiles lists every tracked deploy/kubernetes *.example/*.yml/*.yaml and its renderExamples reads each whole"),
         ("scripts/third-party-notices.ts", "docs/site/astro.config.mjs:10-15; packages/dispatch/web/vite.config.ts:6-12"),
-        (".github/scripts/check-private-names.sh", at_docs("Check the built site has no private name, internal host, or tailnet host")),
+        (".github/scripts/check-private-names.sh", at("private-names", "Check the built site has no private name, internal host, tailnet host, or term of the deployment's own list", DOCS_SITE)),
         (".github/scripts/repo-paths.sh", "docs/site/repo-paths.ts:21,25 runs it for the site's own URL, base and edit links "
                                           f"(astro.config.mjs), read by {at_docs('Build the docs site')}"),
         (f"{ENVOY}/internal/dispatch/api/routes_table.go", "docs/site/generators/dispatch-api.ts's page sources it, checked by generators/lib/markdown.ts's writePage"),
