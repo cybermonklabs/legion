@@ -72,6 +72,14 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
       verdict: "pass",
       commit: "1111111111111111111111111111111111111111",
     }),
+  dryRunResult: (client) =>
+    client.dryRunResult("DSP-1", {
+      actor,
+      check: "k1",
+      role: "implementer",
+      verdict: "pass",
+      commit: "1111111111111111111111111111111111111111",
+    }),
   issueResults: (client) => client.issueResults("DSP-1"),
   retractResult: (client) =>
     client.retractResult("result-1", { reason: "The run read a stale build.", actor }),

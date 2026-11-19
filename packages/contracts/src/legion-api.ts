@@ -945,7 +945,8 @@ const legionHeldIssue = z.object({
  * issue before its review is missing from `active` too, other than the three roots that keep
  * their slot through such a wait: it holds no slot while it waits and stands in `waiting` and in
  * `blocked`, which is how a reader tells it from an issue a person parked, which stands in none
- * of the three (the rule: "Admission" in the root AGENTS.md). An issue holding a slot is in
+ * of the three (the rule: "Admission and the `legion` label" in
+ * docs/site/src/content/docs/legion/concepts.md). An issue holding a slot is in
  * `waiting` as well while its work comes back to it, an answered root until the pass that
  * resumes it. `trees` is the root of every live tree, sorted, which a reader needs because a
  * running tree may hold no slot at all — the controller reads it where it read `active` as the

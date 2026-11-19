@@ -165,10 +165,14 @@ on:
   workflow_dispatch:
     inputs:
       # The commit main pointed at before the push the bypass check read: envoy-go-checks compares
-      # every migration it holds with this run's tree, the range the push landed. A dispatch
-      # without it fails that check, which cannot tell what the run lands.
+      # every migration it holds with this run's tree, the range the push landed. A dispatch on
+      # main without it fails that check, which cannot tell what the run lands. A dispatch on
+      # another branch without it, a full run started by hand, compares with the branch's merge
+      # base with main (.github/scripts/edited-migrations-base.sh).
       migration-base:
-        description: The commit main pointed at before the push this run tests.
+        description: >-
+          The commit main pointed at before the push this run tests. A run on main must name it;
+          a run on another branch that names none compares with the branch's merge base with main.
         type: string
         required: false
 
@@ -379,6 +383,7 @@ jobs:
       find_pr_payload_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.find_pr_payload_test }}
       merge_group_cancels_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.merge_group_cancels_test }}
       main_bypass_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.main_bypass_check_test }}
+      edited_migrations_base_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.edited_migrations_base_test }}
       dispatch_browser_latest_blobs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_latest_blobs_test }}
       dispatch_browser_run_reads_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_run_reads_test }}
       dispatch_browser_samples_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_samples_test }}
@@ -1673,6 +1678,12 @@ jobs:
               # :198-210 holds every run: step of the bypass workflow to a shell with pipefail,
               # and :216-227 holds the decision's HEAD_SHA and HEAD_MESSAGE to the push payload.
               - '.github/workflows/main-bypass-check.yaml'
+            edited_migrations_base_test: &edited_migrations_base_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/edited-migrations-base.test.sh'
+              - '.github/scripts/edited-migrations-base.sh'
             dispatch_browser_latest_blobs_test: &dispatch_browser_latest_blobs_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1829,6 +1840,7 @@ jobs:
               - *find_pr_payload_test
               - *merge_group_cancels_test
               - *main_bypass_check_test
+              - *edited_migrations_base_test
               - *dispatch_browser_latest_blobs_test
               - *dispatch_browser_run_reads_test
               - *dispatch_browser_samples_test
@@ -2945,7 +2957,6 @@ jobs:
               # them, every one read by waiting_line_texts_test.go:485; troubleshooting.md is also
               # the page the refusal table's copy is held to. The way back's guide is
               # docs/kubernetes.md, below.
-              - 'AGENTS.md'
               - 'docs/site/src/content/docs/legion/concepts.md'
               - 'docs/site/src/content/docs/legion/running-legion.md'
               - 'docs/site/src/content/docs/legion/troubleshooting.md'
@@ -2954,21 +2965,18 @@ jobs:
               - 'packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml'
               - 'packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml'
               - 'packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml'
-              - 'skills/legion-architect/references/acceptance.md'
               - 'skills/legion-controller/references/admission.md'
               - 'skills/legion-controller/references/wakes.md'
-              # The third page production_check_rule_test.go:30 holds to the production check's
-              # rule, beside AGENTS.md and concepts.md above.
+              # The second page production_check_rule_test.go:30 holds to the production check's
+              # rule, beside concepts.md above.
               - 'scripts/e2e/README.md'
               # The guide packages/envoy/internal/broker/oauth, packages/daemon/internal/runtime/sandbox
               # and packages/daemon/internal/daemon hold their committed extracts to
               # (internal/textcheck/claims_doc_test.go:43,50, reclaim_doc_test.go:51,281 and
               # way_back_doc_test.go:181).
               - 'docs/kubernetes.md'
-              # The three files packages/daemon/internal/textcheck/design_approved_wake_test.go
+              # The skill file packages/daemon/internal/textcheck/design_approved_wake_test.go
               # holds the architect's prompt to (:32-38).
-              - 'skills/legion-architect/SKILL.md'
-              - 'skills/legion-architect/references/design-gate.md'
               - 'skills/legion-architect/references/wake-routing.md'
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011, which the guard step
               # compiles with the rest of that package.
@@ -3282,9 +3290,8 @@ jobs:
               # holds each pod's grace, less its pre-stop wait, to the listener's stop budget.
               - 'packages/envoy/infra/gcp/testdata/clustered-hub-listener-pod.golden'
               - 'packages/envoy/infra/gcp/testdata/dispatch-listener-pod.golden'
-              # The documents cmd/listener/grace_margin_doc_test.go:18-20 read: each states the
+              # The documents cmd/listener/grace_margin_doc_test.go:17-18 read: each states the
               # margin a listener pod grants, held to listenerGraceMargin.
-              - 'packages/envoy/AGENTS.md'
               - 'packages/envoy/infra/README.md'
               - 'packages/envoy/infra/docs/nats-hub.md'
               # The infra module's copy of the stop budget, which
@@ -3605,9 +3612,9 @@ jobs:
               # src/__tests__/dispatch-advice.test.ts:683-690 holds every skill section a notice
               # cites to a heading of that skill's SKILL.md.
               - 'skills/**'
-              # src/__tests__/dispatch-asked-of.test.ts:374-382 reads every package's AGENTS.md,
-              # and its ALLOWED names lines of four of them, so rewording one of those lines
-              # fails that test and this job has to run for it.
+              # src/__tests__/dispatch-asked-of.test.ts:298-302 reads every package's AGENTS.md,
+              # so a line there that tells an agent to hand an ask on fails that test and this
+              # job has to run for it.
               - 'packages/*/AGENTS.md'
               # src/__tests__/dispatch-who-waits.test.ts's `no text states the old rule` reads
               # every text file git lists under these roots (OLD_RULE_ROOTS) and every AGENTS.md,
@@ -3619,7 +3626,7 @@ jobs:
               - 'packages/dispatch/e2e/**'
               - 'docs/site/src/**'
               - '**/AGENTS.md'
-              # src/__tests__/dispatch-who-waits.test.ts:783,791 reads the CLI guide's sentence on
+              # src/__tests__/dispatch-who-waits.test.ts:766,770 reads the CLI guide's sentence on
               # an assignee move, which must name the project's default assignee.
               - 'packages/envoy/cmd/dispatch/README.md'
               # src/__tests__/stream-topics.test.ts:118-121,131 reads the listener's own cases of
@@ -5370,6 +5377,7 @@ jobs:
       find_pr_payload_test: ${{ needs.changes.outputs.find_pr_payload_test }}
       merge_group_cancels_test: ${{ needs.changes.outputs.merge_group_cancels_test }}
       main_bypass_check_test: ${{ needs.changes.outputs.main_bypass_check_test }}
+      edited_migrations_base_test: ${{ needs.changes.outputs.edited_migrations_base_test }}
       dispatch_browser_latest_blobs_test: ${{ needs.changes.outputs.dispatch_browser_latest_blobs_test }}
       dispatch_browser_run_reads_test: ${{ needs.changes.outputs.dispatch_browser_run_reads_test }}
       dispatch_browser_samples_test: ${{ needs.changes.outputs.dispatch_browser_samples_test }}

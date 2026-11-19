@@ -1706,7 +1706,8 @@ What the operator does:
   The line names a `<version>_<name>.up.sql` of the file's own version and 64 lower-case hex digits, and the loader refuses the whole set, naming the file and line, for a line that begins `-- replaces:` and is written any other way, and for one that Postgres reads as part of a string literal, a dollar-quoted body or a continued string, where it would declare nothing.
   A line ending in a carriage return, as a file with CRLF line endings has, is read without it.
   Before the merge, the `envoy-go-checks` job compares every migration the base already holds with the head's file of the same version, building `./internal/pgmigrate/cmd/edited-migrations` and running it with `--base <commit>` (built and run, it exits 2 when the check could not be taken; `go run` reports every failure as exit 1).
-  The base is the first parent of the commit the run tests, on a pull request and in the merge queue; on the bypass check's run at main's tip (`main-bypass-check.yaml`, whose push can carry several commits) it is the commit main pointed at before that push, passed as ci.yaml's `migration-base` input, and a dispatch that names none fails the check.
+  The base is the first parent of the commit the run tests, on a pull request and in the merge queue; on the bypass check's run at main's tip (`main-bypass-check.yaml`, whose push can carry several commits) it is the commit main pointed at before that push, passed as ci.yaml's `migration-base` input, and a dispatch on main that names none fails the check.
+  On a dispatch of another branch that names none, a full run started by hand, the base is the branch's merge base with main (`.github/scripts/edited-migrations-base.sh` picks the base for each run).
   It fails a head file whose first replaces line is not the base's first identity, a head file that accepts no text of the base's, and a base file whose version the head no longer has a file of, each naming the lines to add, so the pull request that edits an applied migration, a comment included, meets the refusal before any database does.
   A revert of an edit is refused there too, since a database the edited release created applied the edit's text: the revert keeps the replaces lines.
 
@@ -1914,7 +1915,7 @@ a pending row that a write of this release inserts before then, naming no editor
 The table is new and its foreign key cascades with the document, so no row is refused or rewritten, and its census answers `0`.
 
 Migration `0092_refs_excerpts` adds three nullable columns to `refs` with no default (`excerpt_block_id`, `excerpt_text`, `excerpt_version`), a catalog change that rewrites no row, and the partial index `refs_excerpt_drift` over the rows whose `excerpt_version` is null:
-the stored excerpt `GET /api/v1/references` answers a document mention with, which every version write fills and the reference-excerpt reconciliation fills for every row stored before it (`packages/envoy/AGENTS.md`).
+the stored excerpt `GET /api/v1/references` answers a document mention with, which every version write fills and the reference-excerpt reconciliation fills for every row stored before it (`docs.Service.RunReferenceExcerptReconciliation`).
 On the 2026-10-10 production dump the reconciliation's first pass filled 7,498 mentions of 2,150 documents in 248 s at `GOMAXPROCS=2`.
 Its census answers `0`.
 
@@ -1922,7 +1923,7 @@ Migration `0094_issue_links` creates `issue_links`, the issues each issue waits 
 The table's two foreign keys take `SHARE ROW EXCLUSIVE` on `issues` for the migration's short transaction, so an issue write waits behind it while an issue read does not, and re-stating the view holds `graph_edges` `ACCESS EXCLUSIVE`, so a reference read waits too.
 It touches no row; its census answers `0`.
 
-Migrations `0095_user_threads` through `0099_user_threads_catch_up` build `user_threads`, the table behind the Inbox's Reply rows (`packages/envoy/AGENTS.md`), which `20261105093500` through `20261105093503` give its dismissal mark and the two indexes the Inbox list and the Dismissed view read.
+Migrations `0095_user_threads` through `0099_user_threads_catch_up` build `user_threads`, the table behind the Inbox's Reply rows, which `20261105093500` through `20261105093503` give its dismissal mark and the two indexes the Inbox list and the Dismissed view read.
 `0095` creates the table, its partial index `user_threads_unread` and its `(thread_id)` index, the functions `user_threads_login`, `user_threads_record`, `user_threads_comment` and `user_threads_message`, and the trigger on `comments`;
 `0096` adds the trigger on `asks` (`insert or update of answer`); `0097` attaches `user_threads_message` to `messages`.
 Each trigger is its own migration, so its transaction holds that one table's `SHARE ROW EXCLUSIVE` alone:
@@ -1935,7 +1936,7 @@ it moves nothing backwards, and a write the seed saw stays read.
 On a copy of the 2026-10-12 production dump (11,497 comments, 3,882 asks, 14,289 messages) the seed wrote 3,819 rows for three logins, all of them read, in 0.93 s, and `0099` ran in 0.11 s under the server's own runner and moved no row, taking `ACCESS SHARE` on the three tables it reads and `ROW EXCLUSIVE` on `user_threads` alone.
 All five censuses answer `0`: `0095`-`0097` create functions and triggers and refuse or rewrite no row, and `0098` and `0099` write only the table `0095` creates.
 
-Migration `0113_repo_projects_default_and_issue_repo` adds `repo_projects.is_default` and `issues.repo` (`packages/envoy/AGENTS.md`).
+Migration `0113_repo_projects_default_and_issue_repo` adds `repo_projects.is_default` and `issues.repo`.
 From its release on, an issue sits at most 32 links below its root, and the API refuses a write past that (`409 PARENT_INPUT`);
 the release before it did not, so `0113` refuses to apply while any issue sits more than 32 links below its root or in a parent loop, naming up to 20 of them and the repair:
 `PATCH /api/v1/issues/<ancestor>` with `{"parent": null}`, on the release still running.
@@ -1960,7 +1961,7 @@ The auto-deployer (`packages/envoy/deploy/README.md`) keeps both rules.
 Compose stops and removes the old `dispatch` container before it starts the new one.
 When a deploy fails, the auto-deployer stops the failed image and confirms the stop before it reads the schema, and when the schema has moved past the one the previous image runs against, it refuses to start that image again and exits `1` for a forward recovery.
 
-Migration `0117_architecture_sources_per_repo` lets a project import its components from more than one repository (`packages/envoy/AGENTS.md`).
+Migration `0117_architecture_sources_per_repo` lets a project import its components from more than one repository.
 `architecture_sources` gains `id`, which names a source within its project, and its primary key moves from `(project_key)` to `(project_key, id)`, with a unique index on `(project_key, repo)`, so a repository is a source of a project at most once.
 `components` gains `source_id` and a foreign key on `(project_key, source_id)` to its source's row, `on delete cascade`, so deleting a source deletes its components.
 Both columns are added with the constant default `0`, which rewrites no row, and the default is then dropped:
@@ -2010,7 +2011,7 @@ Dropping a table in the same release as the code that stopped using it is what t
 no server of any release read or wrote this one, only that person-run subcommand did, so the drop breaks no build still serving through the roll.
 Both censuses answer `0`: `0118`'s updates write only the columns it adds, and `0119` drops nothing a running build still reads.
 
-Migration `0120_artifact_reviews_event_seq` adds `artifact_reviews.event_seq`, the sequence of the `artifact.*` event each review appended on its document's owner, which `docs.QueueReview` writes in the transaction that appends the event and the approval read returns as `seq` (`packages/envoy/AGENTS.md`).
+Migration `0120_artifact_reviews_event_seq` adds `artifact_reviews.event_seq`, the sequence of the `artifact.*` event each review appended on its document's owner, which `docs.QueueReview` writes in the transaction that appends the event and the approval read returns as `seq`.
 It is nullable, so a review recorded before it reads with no `seq`, and the release before it, which names no `event_seq` in its insert, rolls beside it.
 Adding a nullable column with no default writes the catalog alone, under `artifact_reviews`' `ACCESS EXCLUSIVE` lock for milliseconds;
 it refuses and rewrites no row, and its census answers `0`.
@@ -2044,7 +2045,7 @@ a trigger on `events` would need that table's `SHARE ROW EXCLUSIVE` while holdin
 the release before it runs over the new schema unchanged, and the trigger gives every review that release writes its sequence.
 The auto-deployer is the exception, by its own rule above: once the schema has moved it refuses to start the previous tag, and recovery there is forward.
 
-Migration `0121_block_graph` creates the tables behind a document's blocks as graph nodes (`packages/envoy/AGENTS.md`, "References form one graph"):
+Migration `0121_block_graph` creates the tables behind a document's blocks as graph nodes ("Reference graph" below):
 `document_blocks`, `block_refs`, `document_block_versions`, `document_block_texts` and `document_indexed_versions`, each with a foreign key to `artifacts`, and `block_grammar_owed`, with their indexes, among them the partial `document_block_versions_owed` and `block_grammar_owed_enqueued` through which the block-index reconciliation reads what is owed.
 It creates the trigger function `block_grammar_owe`, which no trigger calls until `0123`, and re-states the `graph_edges` view with two more arms:
 a block's mentions and its `part_of` edge to its document.
@@ -2113,7 +2114,7 @@ its trigger sets an approval ask's `written_version` to `approval.version`, the 
 Its own migration, so its transaction holds `asks` `ACCESS EXCLUSIVE` alone, for milliseconds.
 It refuses and rewrites no row; its census answers `0`.
 
-Migration `0132_component_facts` creates `component_facts`, when each component was made and last changed and the digest of its own fields at its last recorded change, keyed `(project_key, id)` as `components` is, which every import keeps from then on (`packages/envoy/AGENTS.md`, "References form one graph").
+Migration `0132_component_facts` creates `component_facts`, when each component was made and last changed and the digest of its own fields at its last recorded change, keyed `(project_key, id)` as `components` is, which every import keeps from then on ("Reference graph" below).
 Its foreign key to `projects` cascades, and it has none to `components`, whose rows every import deletes and inserts again.
 Its one insert seeds a row with all three null for each component already stored: when those were made or last changed was never recorded.
 It reads `components` under `ACCESS SHARE`, and the foreign key takes `SHARE ROW EXCLUSIVE` on `projects` for the catalog change.
@@ -2236,7 +2237,7 @@ the release before this one reads `state = 'sent'`, and the wider index carries 
 Both censuses answer `0`: an index build and an index drop each refuse and rewrite no row.
 A failed concurrent build leaves an INVALID index of the new name on `message_deliveries`, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot, so one failed build stops no later boot.
 
-Migration `0142_item_blocks` creates the tables behind the blocks of a comment or message as graph nodes (`packages/envoy/AGENTS.md`, "References form one graph"):
+Migration `0142_item_blocks` creates the tables behind the blocks of a comment or message as graph nodes ("Reference graph" below):
 `comment_blocks`, `message_blocks`, `comment_block_texts`, `comment_block_state`, `message_block_state`, `comment_block_refs` and `message_block_refs`, each with a foreign key to `comments` or `messages` that cascades, with their indexes, among them the partial `comment_block_state_owed` and `message_block_state_owed` through which the block-index reconciliation reads what is owed.
 It adds the nullable `replies_to_block` to `comments` and to `messages`, a catalog change that rewrites and scans no row, with a partial index on each.
 It creates the trigger function `item_blocks_owe`, which no trigger calls until `0143`, and re-states the `graph_edges` view with six more arms:
@@ -2334,7 +2335,7 @@ it has no fallback pass, and its outbox skips an event already published, so a c
 Before rolling back past `20261101180039`, run `select count(*) from comment_fallback_copies where settled_at is null` and roll back only when it answers `0`, or let this build drain the rows first.
 
 Migration `20261101144855_block_pointer_links` gives `block_refs` a nullable `to_types text[]`, the types a typed block's `block[]` pointer may point at (null:
-any), creates the function `block_ref_listed(to_types, to_id)`, true when `to_types` is null or no current `document_blocks` row of the target has a type outside it, and re-states `graph_edges` with `0142`'s arms, its `block_refs` arm listing a row only while `block_ref_listed` holds (`packages/envoy/AGENTS.md`, the typed block rules).
+any), creates the function `block_ref_listed(to_types, to_id)`, true when `to_types` is null or no current `document_blocks` row of the target has a type outside it, and re-states `graph_edges` with `0142`'s arms, its `block_refs` arm listing a row only while `block_ref_listed` holds ("Reference graph" below states the typed block rules).
 The column is added with no default, so no row is rewritten, and the previous release, which neither reads nor writes it, keeps writing rows that hold null and so are listed as before.
 The column takes `block_refs` `ACCESS EXCLUSIVE` and the view `graph_edges` `ACCESS EXCLUSIVE` for the migration's short transaction, so a block index write and a reference read wait behind it.
 It refuses and rewrites no row; its census answers `0`.
@@ -2506,7 +2507,7 @@ each comment, each ask, each issue message and each document with a markdown ver
 Those triggers are live by then, so a write that lands while it runs is owed by its trigger, and a row a trigger has already written keeps its `enqueued_at`.
 It takes `ACCESS SHARE` on `comments`, `asks`, `messages`, `artifacts` and `artifact_versions`, which no write waits behind, and writes only `refs_grammar_owed`.
 Its census answers `0`: the one table it writes is `20261103205037`'s, which holds no row at deploy, and the rows it inserts are new work owed, not a rewrite.
-The server drains them itself, a fourth batch of `docs.Service.RunBlockIndexReconciliation` (`packages/envoy/AGENTS.md`), so the links and the edges of text stored before this release appear with no edit and no command run.
+The server drains them itself, a fourth batch of `docs.Service.RunBlockIndexReconciliation`, so the links and the edges of text stored before this release appear with no edit and no command run.
 
 Migration `20261102110000_artifact_document_roles` gives `artifacts` a nullable `role`, `verification` for the document an issue holds as `verification.md` and `plan` for its `plan.md`, null for every other document.
 The upload route sets it from the slug when it creates the row and never changes it, as `is_primary` never changes, and the Verification and Plan tabs find their document by it rather than by reading names back.
@@ -2624,7 +2625,7 @@ With it, "dismissed" is what it is on the other half
 `create function` takes no table lock and `create trigger ... after insert on messages` takes `SHARE ROW EXCLUSIVE` on `messages` for the one catalogue write, blocking that table's writers and no reader; neither reads or rewrites a row.
 Every census in the run answers `0`, and each up-file names the lock it takes and the row count its window was judged against.
 
-Migration `20261105014808_comments_answers` gives `comments` a nullable `answers`, the comment a reply answers, and re-states `graph_edges` with one more arm, `answers` from the reply to that comment (`packages/envoy/AGENTS.md`, "References form one graph").
+Migration `20261105014808_comments_answers` gives `comments` a nullable `answers`, the comment a reply answers, and re-states `graph_edges` with one more arm, `answers` from the reply to that comment ("Reference graph" below).
 A comment write climbs the reply chain to the head of the thread before it stores, which is what every thread read selects on, so `reply_to` holds the head and the comment the writer answered was lost;
 `answers` holds the comment the request named, written whenever the request named one, and `reply_to` keeps exactly the value it held before, so every thread read answers as it did.
 A reply whose `answers` and `reply_to` name the same comment is listed once, by `replies_to`, wherever `replies_to` is listed;
@@ -2667,7 +2668,7 @@ The canonical name of a repository is what its row's `renamed_to` names, else th
 both sides of the attribution's hold, the repository the results route asks GitHub about, the key every writer of a `pull_request_heads` row uses, which re-keys a row stored under an old name and drops that row, the settings route, which reads it to decide whether a rename's target is itself renamed, and the CI reconcile, which reads every repository it covers under the name it has now, so no pass asks GitHub about a name it cannot read (`cireconcile`, `Reconciler.covered`).
 A column check refuses a repository renamed to itself, and the route refuses a pair whose target is itself renamed and a rename of a repository another mapping already points at, so the canonical name is one step away and no cycle exists.
 The listener holds the other half of a rename:
-`ENVOY_GITHUB_REPOSITORY_RENAMES` publishes every GitHub envelope of the current repository a second time under its former name, so the operator who sets a mapping's `renamed_to` configures that pair too (`packages/envoy/AGENTS.md`, "Repository renames").
+`ENVOY_GITHUB_REPOSITORY_RENAMES` publishes every GitHub envelope of the current repository a second time under its former name, so the operator who sets a mapping's `renamed_to` configures that pair too (`packages/envoy/deploy/README.md`, "Listener configuration").
 Adding a nullable column with no default writes the catalog alone, so it holds `repo_projects` in `ACCESS EXCLUSIVE` for milliseconds and rewrites no row;
 the release before it neither reads nor writes the column and names its columns in every insert, so it keeps writing mappings while it still serves.
 Its census answers `0`.
@@ -3187,7 +3188,7 @@ each block the attribute points at is an edge of that kind from the typed block 
 A row whose other end is a node kind the running build does not know (a newer build's, read during a rolling deploy) is left out of every list and every count that build serves (`nodeLoaders`, `refs/graph.go`, names the kinds it knows).
 The migration refuses to run when an ask or comment anchor carries a non-uuid `artifact_id`.
 
-Each block of a document is a node of the graph too (migration `0121`; `packages/envoy/AGENTS.md`, "References form one graph").
+Each block of a document is a node of the graph too (migration `0121`).
 Its reference is the document's with `#b-` and the block's id, percent-encoded as `encodeBlockId` (`@legion/contracts`) writes it:
 `dispatch://KEY/spec#b-<id>`, `dispatch://KEY/artifact/<slug>#b-<id>` or `dispatch://PROJECT/artifact/<slug>#b-<id>`.
 Text cites a block only while its id holds at most 256 bytes decoded (`text.MaxBlockIDBytes`), and any node only while its target id, the id its edge is stored under (`text.TargetID`:
@@ -3204,11 +3205,11 @@ a document's own read also lists the links at its blocks, each edge naming its b
 A block reference pinned to a version of its document, `#b-<id>@v<N>` with N at most 9223372036854775807, reads the block as that version held it:
 the node's `pin` carries the block's text at `N` and says whether the block is `unchanged`, `changed` or `removed` since.
 `GET /api/v1/block-links?from=<document>&to=<document>` lists the links from the blocks of one document to the blocks of another.
-A typed block's `block[]` attribute holds canonical block references joined by one space, and its `targets` limit the types of the blocks it points at (`packages/envoy/AGENTS.md`, the typed block rules):
+A typed block's `block[]` attribute holds canonical block references joined by one space, and its `targets` limit the types of the blocks it points at:
 an agent's or API write introducing a pointer to an existing block of another type is refused, a browser's write never is, and every block-aware read lists a pointer's edge only while its target has an allowed type, so retyping the target hides or shows it.
 Text stored before the release, and text an earlier build writes during the roll, is indexed by the server's block-index reconciliation (lease `block-index`), with no command run.
 
-A comment and a message are blocks too (migrations `0142`-`0144`; `packages/envoy/AGENTS.md`, "References form one graph").
+A comment and a message are blocks too (migrations `0142`-`0144`).
 The server splits a body into its top-level blocks as the document parser reads them, each block the text as its author wrote it (a body the parser refuses, such as one holding block HTML, splits at blank lines into blocks of type `text`;
 a body of only whitespace has none), and names them `b1`, `b2`, …, never minting a number twice in one item.
 A block's reference is its item's with `#b-` and the id:
@@ -3269,7 +3270,7 @@ for a document's block its changed version, for a comment's block its changed re
 for an ask or comment written on a document the version its anchor names, for a block ask the version that first held its block, for an approval request the version it named when it opened, else the version current when it was written).
 A reply that names a block is part of that block.
 A fact Dispatch never recorded is `[]` for an actor list and `null` otherwise:
-a session has none, a component's makers are never recorded and its times only from this release on, a document block's maker, and a block ask's version, are known only when the block is in the document's first version or Dispatch indexed the version before the one that first held it, and a comment block's making time is not known for a block found at the first indexing of a comment already edited by then (`packages/envoy/AGENTS.md`, "References form one graph", gives each kind's sources and what counts as a change).
+a session has none, a component's makers are never recorded and its times only from this release on, a document block's maker, and a block ask's version, are known only when the block is in the document's first version or Dispatch indexed the version before the one that first held it, and a comment block's making time is not known for a block found at the first indexing of a comment already edited by then (each kind's loader in `nodeLoaders`, `refs/graph.go`, reads its sources).
 Migrations `0130`-`0134` (Database migrations above) add what the facts read:
 the version current when an unanchored comment or ask is written on a document, recorded at insert and filled for the rows already stored, and `component_facts`, which every import keeps.
 `dispatch read` prints the facts of the node it reads on a `Node:` line, before `Referenced by:`.
@@ -4134,7 +4135,7 @@ Each item below names a path with its method and identity, then its purpose.
   `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`):
   absent or null leaves the stored pair as it is, `""` clears it, and a pair naming this repository itself, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is `400 INVALID_REPO_PROJECT`.
   A mapping an issue names as its `repo` is deleted and moved like any other: an issue's own repository needs no mapping.
-  `AGENTS.md` gives the rules and the `settings.repo_project.updated` events.
+  `putRepoProject` in `internal/dispatch/api/repo_projects.go` gives the rules and the `settings.repo_project.updated` events.
 
 - `/api/v1/projects/{key}/legion/daemon` (GET, PUT, DELETE; cookie, trusted header, or bearer)
 
@@ -4423,7 +4424,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}` (PATCH; cookie, trusted header, or bearer)
 
   Update an issue's `title`, `status`, `priority`, `labels` (or `labels_add`, which adds to the labels the issue holds when the write commits;
-  not with `labels`), `route`, `external_links`, `parent`, `rank`, `assignee`, `components` or `repo` (`null` clears it); `AGENTS.md` gives each field's rules.
+  not with `labels`), `route`, `external_links`, `parent`, `rank`, `assignee`, `components` or `repo` (`null` clears it); the route's row in `internal/dispatch/api/routes_table.go` (`GET /api/v1`) and `patchIssue` in `internal/dispatch/api/issue_patch.go` give each field's rules.
   A title is trimmed, and one over 1,000 characters is `400 CAP_EXCEEDED`, as on creation.
   `expected_sequence` makes the write conditional: `409 ISSUE_CHANGED` when the issue's last event is no longer that sequence.
   A close (`status: done`) withdraws every open ask of the issue, whoever's turn it is:
@@ -4692,7 +4693,7 @@ Each item below names a path with its method and identity, then its purpose.
     `case` is the conclusion that decided it — `success` passes, and `failure`, `timed_out`, `action_required`, `startup_failure`, `stale` and a conclusion this list does not name, as GitHub wrote it, fail — or one of the cases of no result:
     `neutral`, `skipped`, `cancelled`, `not_completed`, `absent` (no run of that name at the head) and `no_head` (Dispatch holds no open or merged pull request head of the issue), each `no_result`, and `github_unreadable` (`unread`: no App key, a token GitHub would not mint, an HTTP error, a rate limit or the deadline).
     `detail` is one sentence naming the case, at most 2,000 runes; for `github_unreadable` it names GitHub's own answer, a refusal by its status and the `message` of its JSON body, never the body itself and never a token.
-    `line` is the pull-request body line for the check: `- Check <id> (before_merge): <verdict> at <sha>, from CI run <name>. <the check's words>` for a pass or a fail, and `- Check <id> (before_merge): CI run <name> has no result (<case>)` for every other state; the check's words are cut as a recorded line's reading is, at a word, to at most 80 runes, with `…` where they were cut.
+    `line` is the pull-request body line for the check: `- Check <id> (before_merge): <verdict> at <sha>, from CI run <name>. <the check's words>` for a pass or a fail, and `- Check <id> (before_merge): CI run <name> has no result (<case>)` for every other state; the run's name and the check's words are kept, and the words cut, as a recorded line's reading is (POST below), a name kept to nothing reading `the CI run the check names`, so `text` keeps an issue key the line leaves out.
 
   - For a pass or a fail its `results` hold the one result derived from that run, and nothing else:
     `id` `ci-run:<check run id>`, `role` `ci`, `actor` `{kind: "github_app", id: <the slug of the App that made the run>}`, `session` `""`, `run` the run's name, `surface` and `negative_control` the check's, `commit_sha` the head read, `created_at` the run's `completed_at`, `observed` the conclusion, then the run's output title and summary cut together to 2,000 runes, then its URL, one a line, `check_sha256` the check's own digest, the counts 0, `screenshots` `[]`, and no `event_seq`.
@@ -4726,7 +4727,25 @@ Each item below names a path with its method and identity, then its purpose.
   The result is appended as `result.recorded` on the check's own issue, naming the recording issue.
   A closed issue, the recording one or the check's, takes a result only for a check whose `when` is `after_merge` or `default_branch` — the production check after the merge
   — and refuses every other with `409 ISSUE_CLOSED`; every other write on a closed issue stays refused.
-  The answer is `{result, line}`, `line` the pull-request body line the result implies, which carries no link to Dispatch.
+  The answer is `{result, line}`, `line` the pull-request body line the result implies:
+
+  - The line is `- Check <id> (<when>): <verdict> at <commit>, recorded by <role>.` and the reading.
+    It goes into a pull request, which can be public, so the reading keeps only plain words: a word every rune of which is a visible letter, a digit or one of `. , ; : ! ? ' " - ( ) /`.
+    Every other rune drops its word whole: many of them, such as emphasis and strikethrough (`*`, `_`, `~`), code, HTML, links, escapes, character references, math, mentions and every Unicode dash, quotation mark or invisible character, can split, join, hide or forge a key or a host once the pull request renders it, and the rule allows these few runes rather than list which; `Vec<u8>`, `$PATH`, `ENVOY_TOKEN`, `a->b` and `it’s` leave the line too, while the record keeps the whole reading.
+    Of the plain words it also leaves out every one that holds `://`, a host below `.internal.` or ending in `.internal`, a Tailscale MagicDNS host, this Dispatch's own host, or an issue key of a project this Dispatch holds, judged as written and under NFKC; a public host written as `www.` and a domain, which GitHub renders as a link, stays.
+    The public text check refuses a host below `.internal.` and not one ending in `.internal`: it guards the whole repository, where names such as `metadata.google.internal` and `host.docker.internal` are well known, while the line is pasted into public text with no reader in between.
+    A key counts in any case, at the start of a word or after a character that is neither a letter nor a digit, and up to the end of its number: `ACME-12's`, `(ACME-12)` and `fix/acme-12-lines` each hold one.
+    `UTF-8`, `SHA-256` and `TEST-1` hold none while no project is called UTF, SHA or TEST, and `kernel-6.8` holds none even where KERNEL is a project, since a number that runs on into a decimal part is a version.
+    What is left, when it is longer than 80 runes, is cut at the last blank within its first 80 runes, or, where those runes hold no blank, at the limit itself, with `…` where it was cut; a cut text is judged again, since a cut at the limit can fall inside a word and leave a key the whole word did not hold; a reading of which nothing is left, before the cut or after that second judging, says `The reading holds only words this line leaves out.`, and a result with no reading says `The role recorded no reading.`
+    Words are judged only until what is kept passes 80 runes, since the cut reads no further.
+    No line is stored: each is written when it is answered, from the projects Dispatch holds then.
+
+- `/api/v1/issues/{key}/results/dry-run` (POST; cookie, trusted header, or bearer)
+
+  The dry run of a result's record, which `dispatch result --dry-run` sends: it takes the record's body and refuses it as the record does before it writes anything (`400 RESULT_INPUT`, `400 RESULT_CONTRADICTS`, `400 UNKNOWN_CHECK`, `409 CHECK_AMBIGUOUS`, `409 CHECK_PROVED_BY_CI`, `400 RESULT_COMMIT_UNKNOWN`).
+  Otherwise it answers `200 {line}`, the line the record would answer, and records nothing: no row and no event.
+  A closed issue, a screenshot and a check reworded while the record writes are refused by the record alone, since the record judges them under its locks.
+  The dry run is a path of its own, not a flag on the record: a release that does not serve it answers `404`, where it would drop a flag it did not know and record the result.
 
 - `/api/v1/issues/{key}/coverage` (GET; cookie, trusted header, or bearer)
 

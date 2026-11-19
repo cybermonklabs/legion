@@ -1198,8 +1198,9 @@ ENV_ALLOWED = frozenset({
     "GOPROXY",
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
     "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN",
-    # The commit envoy-go-checks' edited-migrations step compares a bypass run's tree with: its
-    # script passes it to the command as an argument, and go reads it nowhere.
+    # The commit envoy-go-checks' edited-migrations step compares a bypass run's tree with:
+    # .github/scripts/edited-migrations-base.sh, which that step runs, reads it and hands the base
+    # it picks to the command as an argument, and go reads it nowhere.
     "MIGRATION_BASE",
     "PREVIOUS_COMMIT",
     "TESTCONTAINERS_RYUK_DISABLED",
@@ -2712,7 +2713,8 @@ def check() -> int:
     rules.check_push_conditions(documents, problems)
     rules.check_rerun_guard(document, problems)
     rules.check_cache_round_trip(documents, problems)
-    rules.check_race_fill_packages(data.DAEMON_RACE_PACKAGES, problems)
+    rules.check_race_fill_packages(data.DAEMON_RACE_PACKAGES, data.DAEMON_RACE_FILL_JOB, problems)
+    rules.check_race_fill_scripts(data.RACE_FILL_SCRIPTS, problems)
     rules.check_workspace_table(data.WORKSPACES, problems)
     rules.check_one_merge_group_workflow(problems)
     expander, selection = Expander(files), Selection(filters, quantifiers, files)

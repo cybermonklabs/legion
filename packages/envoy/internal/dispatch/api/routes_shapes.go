@@ -732,6 +732,9 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/issues/{key}/results": {
 		Status: http.StatusCreated, Response: checkResultRecorded{}, Request: checkResultInput{},
 	},
+	"POST /api/v1/issues/{key}/results/dry-run": {
+		Status: http.StatusOK, Response: checkResultDryRun{}, Request: checkResultInput{},
+	},
 	"POST /api/v1/results/{id}/retract": {
 		Status: http.StatusCreated, Response: model.CheckResultRetraction{},
 		Request: checkResultRetractionInput{},

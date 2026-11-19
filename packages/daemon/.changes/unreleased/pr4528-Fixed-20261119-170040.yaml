@@ -1,0 +1,5 @@
+kind: Fixed
+body: The leak guard no longer reads a Lean or OCaml name as a private internal host, so a push carrying Lake's or Rocq's own sources is no longer refused. It allows a name holding a capital letter, then a segment spelled exactly `Internal`, and Lean's own cmdline-snapshots option under its `Lean` namespace; every other host below `.internal.` is still refused, in any case.
+time: 2026-11-19T17:00:40.73931353Z
+custom:
+    Issue: pr4528

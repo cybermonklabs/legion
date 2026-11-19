@@ -925,8 +925,8 @@ echo "case: rule 3 — release-asset addresses the gate's one spelling misses"
 # /releases/latest/download/<asset> answered 302 to the tagged asset, and the http:// and the
 # www.github.com spellings each answered 301 to it. None of the three is an address a job
 # assembles from pieces, and none is in a file whose name holds .test., so none is one of the two
-# bounds AGENTS.md names: each is a release asset a new install fetches with no row, no entry and
-# nothing saying so, which is the class R1 of dispatch://INFRA-1974 closes.
+# bounds this gate's header names: each is a release asset a new install fetches with no row, no
+# entry and nothing saying so, which is the class rule 3 closes.
 root=$(fixture reach-asset-spellings)
 cat > "$root/.github/workflows/spellings.yaml" <<'YAML'
 name: Spellings
@@ -1105,7 +1105,7 @@ echo "case: rule 3 — the path spellings the rule leaves open"
 # segments too. An extra slash after `download` is NOT one of them, whatever a server answers:
 # the trailing wildcard swallows it, so the rule reads that URL, and the case below this one
 # drives it.
-# AGENTS.md and this gate's header both name these as open, and a named gap is a claim: this
+# This gate's header names these as open, and a named gap is a claim: this
 # case is what holds that claim true, and it turns red the day the rule closes them.
 root=$(fixture reach-open-path-spellings)
 cat > "$root/.github/workflows/open-paths.yaml" <<'YAML'

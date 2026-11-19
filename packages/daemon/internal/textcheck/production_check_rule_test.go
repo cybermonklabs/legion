@@ -8,11 +8,11 @@ import (
 )
 
 // The production check fails a requirement still unobserved at its last look only where
-// production carries the merge, and three pages state that rule outside a prompt: the
-// repository's AGENTS.md, the e2e proof's account of the bound's look (scripts/e2e/README.md) and
-// the concepts page. This is the guide half of that check, kept apart from the prompt half for the
-// reason every test of this package is: a test that reads a guide puts the guide in its job's
-// filter, so an edit of AGENTS.md alone would start the whole daemon Go lane. The prompt half is
+// production carries the merge, and two pages state that rule outside a prompt: the e2e proof's
+// account of the bound's look (scripts/e2e/README.md) and the concepts page. This is the page half
+// of that check, kept apart from the prompt half for the reason every test of this package is: a
+// test that reads a page puts the page in its job's filter, so an edit of a page alone would start
+// the whole daemon Go lane. The prompt half is
 // internal/prompts's TestTheProductionCheckFailsAnUnobservedRequirementOnlyWhereProductionCarriesTheMerge,
 // which reads the composed tester's and implementer's prompts. Neither half alone is the
 // guarantee.
@@ -25,7 +25,7 @@ import (
 // nothing. Each page is held in both its readings (failRuleOfThePage), so that a rule or a limit
 // only an HTML comment holds, which the rendered page does not show, fails rather than passing.
 func TestThePagesFailAnUnobservedRequirementOnlyWhereProductionCarriesTheMerge(t *testing.T) {
-	for _, page := range []string{"AGENTS.md", "scripts/e2e/README.md", "docs/site/src/content/docs/legion/concepts.md"} {
+	for _, page := range []string{"scripts/e2e/README.md", "docs/site/src/content/docs/legion/concepts.md"} {
 		t.Run(page, func(t *testing.T) {
 			if err := failRuleOfThePage(shippedText(t, page)); err != nil {
 				t.Errorf("%s %v", page, err)
