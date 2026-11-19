@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
@@ -358,4 +359,39 @@ func TestParseUpdates(t *testing.T) {
 	if _, err := ParseUpdates(strings.NewReader("refs/heads/main abc\n")); err == nil {
 		t.Error("a line of three fields was read as a pre-push line")
 	}
+}
+
+// A git read of a push's records that fails quotes what git wrote on its standard error, never its
+// standard output, which is the push's own content: a stand-in git that writes a megabyte of a
+// diff's added lines to its standard output and its reason to its standard error is refused with
+// the reason alone. A standard error past gitErrorBytes is cut there, with the count of the bytes
+// left out. Each stand-in is the one git first on PATH.
+func TestAFailedGitReadQuotesItsCappedStandardErrorAlone(t *testing.T) {
+	failingGit := func(t *testing.T, script string) *Guard {
+		t.Helper()
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "git"), []byte("#!/bin/sh\n"+script+"\nexit 1\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return New(Options{Env: append(fixtureenv.Isolated(t.TempDir()), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))})
+	}
+	const content = "+the pushed line"
+	t.Run("a megabyte of the push's content on standard output", func(t *testing.T) {
+		guard := failingGit(t, "yes '"+content+"' | head -c 1048576\necho 'fatal: bad object HEAD' >&2")
+		_, err := guard.git(bound(t), t.TempDir(), "diff-tree", "HEAD")
+		if want := "git diff-tree exited 1: fatal: bad object HEAD"; err == nil || err.Error() != want {
+			t.Errorf("git = %.200v, want %q", err, want)
+		}
+	})
+	t.Run("a standard error past the cap", func(t *testing.T) {
+		guard := failingGit(t, "yes 'fatal: unable to read tree' | head -c 100000 >&2")
+		_, err := guard.git(bound(t), t.TempDir(), "diff-tree", "HEAD")
+		if err == nil {
+			t.Fatal("git = nil, want its failure")
+		}
+		said := strings.TrimPrefix(err.Error(), "git diff-tree exited 1: ")
+		if !strings.HasPrefix(said, "fatal: unable to read tree\n") || !strings.HasSuffix(said, " more bytes)") || len(said) > gitErrorBytes+len("… (100000 more bytes)") {
+			t.Errorf("git quoted %d bytes ending %q, want at most %d of its standard error and the count of the rest", len(said), said[max(0, len(said)-40):], gitErrorBytes)
+		}
+	})
 }

@@ -2,11 +2,13 @@ package leakguard
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // gitPins is the configuration every git this package starts reads last: no hook and no
@@ -383,17 +385,40 @@ func short(commit string) string {
 	return commit[:min(len(commit), 7)]
 }
 
-// git runs one git command in dir and answers its standard output and error together, failing
-// where git itself does: a record this package could not read is a setup failure, never a push
-// read as clean.
+// git runs one git command in dir and answers its standard output, failing where git itself does:
+// a record this package could not read is a setup failure, never a push read as clean. A failure
+// quotes only what git wrote on its standard error (gitSaid), never its standard output, which is
+// the push's own content (a diff, a commit's message): it can be large, and it can hold the very
+// text the guard is refusing. Reading the two apart also keeps a warning git writes on its
+// standard error out of the records parsed from its output.
 func (g *Guard) git(ctx context.Context, dir string, args ...string) (string, error) {
 	argv := gitArgv(args...)
-	status, printed, err := g.run(ctx, child{argv: argv, dir: dir})
+	var stderr bytes.Buffer
+	status, out, err := g.run(ctx, child{argv: argv, dir: dir, stderr: &stderr})
 	if err != nil {
 		return "", err
 	}
 	if status != 0 {
-		return "", fmt.Errorf("git %s exited %d: %s", args[0], status, strings.TrimSpace(printed))
+		return "", fmt.Errorf("git %s exited %d: %s", args[0], status, gitSaid(stderr.String()))
 	}
-	return printed, nil
+	return out, nil
+}
+
+// gitErrorBytes is the most of git's standard error a failure of Guard.git quotes: git says why it
+// failed in a line or a few, and a failure that wrote more is cut there rather than carried whole
+// into the setup failure a role reads.
+const gitErrorBytes = 4096
+
+// gitSaid is what a failure of Guard.git quotes of the standard error git wrote: trimmed and, past
+// gitErrorBytes, cut at the start of a character, with the count of the bytes left out.
+func gitSaid(stderr string) string {
+	said := strings.TrimSpace(stderr)
+	if len(said) <= gitErrorBytes {
+		return said
+	}
+	cut := gitErrorBytes
+	for cut > 0 && !utf8.RuneStart(said[cut]) {
+		cut--
+	}
+	return fmt.Sprintf("%s… (%d more bytes)", said[:cut], len(said)-cut)
 }
