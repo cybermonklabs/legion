@@ -271,13 +271,14 @@ func daemonPATH(o *Options) string {
 }
 
 // A pane is told the shared public leak check the daemon resolved on its own machine, by each of
-// the three routes the check documents, and is told no such variable where the daemon resolves
-// none. A pane can resolve none of the three itself — PUBLIC_LEAK_CHECK is off the allow list,
-// its XDG_CONFIG_HOME is the daemon's rather than the operator's, and the check's installer puts
-// its files on no PATH a pane has — so a pane told nothing would have every `legion gh`
-// refused. A machine that carries no check is told nothing, which refuses
-// every public write of that pane with the setup error naming the check: the honest answer, and
-// no launch failure, since Legion installs no check on a tmux machine.
+// the three routes the check documents, and is told no such variable where no place names one. A
+// pane can resolve none of the three itself — PUBLIC_LEAK_CHECK is off the allow list, its
+// XDG_CONFIG_HOME is the daemon's rather than the operator's, and the check's installer puts its
+// files on no PATH a pane has — so a pane told nothing resolves no check at all. A check the
+// machine names and does not hold (a stale PUBLIC_LEAK_CHECK, a pointer file naming a moved
+// check) is told to the pane all the same, so the pane's guard refuses its writes for the missing
+// check whatever the deployment runs, rather than taking it for no check named. None is a launch
+// failure, since Legion installs no check on a tmux machine.
 func TestAPaneIsToldTheCheckTheDaemonResolvedOnItsOwnMachine(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -323,6 +324,29 @@ func TestAPaneIsToldTheCheckTheDaemonResolvedOnItsOwnMachine(t *testing.T) {
 				// tmux's directory alone, with no HOME and no XDG_CONFIG_HOME, so each of the
 				// three places answers nothing.
 				return ""
+			},
+		},
+		{
+			name: "PUBLIC_LEAK_CHECK naming a check that is not there",
+			environ: func(t *testing.T, o *Options) string {
+				gone := filepath.Join(t.TempDir(), "moved", "public-leak-check.sh")
+				o.Environ = append(slices.Clone(o.Environ), "PUBLIC_LEAK_CHECK="+gone)
+				return gone
+			},
+		},
+		{
+			name: "a pointer file naming a check that is not there",
+			environ: func(t *testing.T, o *Options) string {
+				gone := filepath.Join(t.TempDir(), "moved", "public-leak-check.sh")
+				config := t.TempDir()
+				if err := os.MkdirAll(filepath.Join(config, "public-leak-check"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(config, "public-leak-check", "path"), []byte(gone+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				o.Environ = append(slices.Clone(o.Environ), "XDG_CONFIG_HOME="+config)
+				return gone
 			},
 		},
 	} {

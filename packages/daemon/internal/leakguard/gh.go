@@ -146,24 +146,9 @@ func (g *Guard) ghCall(ctx context.Context, req GhRequest) ([]byte, bool, error)
 		files, stdinSent = ghFileArgs(req.Args)
 	}
 	var buffered []byte
-	if check == "" && stdinSent {
-		if buffered, err = readStdin(req); err != nil {
-			return nil, false, err
-		}
-	}
-	if check != "" {
-		argv := append([]string{check, "gh-guard"}, req.Args...)
-		status, printed, err := g.run(ctx, child{argv: argv})
-		if err != nil {
-			return nil, false, sharedNotRun(whatGhCall, err, printed)
-		}
-		if status == checkWantsStdin {
-			buffered, status, printed, err = g.askAgain(ctx, argv, req)
-			if err != nil {
-				return buffered, false, err
-			}
-		}
-		if err := readStatus(whatGhCall, status, printed); err != nil {
+	switch {
+	case check != "":
+		if buffered, err = g.ghGuard(ctx, check, req); err != nil {
 			return buffered, false, err
 		}
 		if req.WritesNothing && provenCheck(check, req.ProvenCheck) {
@@ -173,6 +158,10 @@ func (g *Guard) ghCall(ctx context.Context, req GhRequest) ([]byte, bool, error)
 			// caller's rule was not proven against, the check may read the call as a write, so
 			// the guard goes on whole.
 			return buffered, true, nil
+		}
+	case stdinSent:
+		if buffered, err = readStdin(req); err != nil {
+			return nil, false, err
 		}
 	}
 	public, err := g.scanThrough(ctx, whatGhCall, req.Repo)
@@ -210,6 +199,24 @@ func (g *Guard) ghCall(ctx context.Context, req GhRequest) ([]byte, bool, error)
 		records = append(records, record)
 	}
 	return buffered, false, g.rules(ctx, whatGhCall, records)
+}
+
+// ghGuard runs the shared check at check in its gh-guard shape over req, and answers the standard
+// input it buffered for the check's second go (askAgain), nil where the check asked for none, and
+// the refusal or setup failure of the check's answer, if any (readStatus).
+func (g *Guard) ghGuard(ctx context.Context, check string, req GhRequest) ([]byte, error) {
+	argv := append([]string{check, "gh-guard"}, req.Args...)
+	status, printed, err := g.run(ctx, child{argv: argv})
+	if err != nil {
+		return nil, sharedNotRun(whatGhCall, err, printed)
+	}
+	var buffered []byte
+	if status == checkWantsStdin {
+		if buffered, status, printed, err = g.askAgain(ctx, argv, req); err != nil {
+			return buffered, err
+		}
+	}
+	return buffered, readStatus(whatGhCall, status, printed)
 }
 
 // jsonAlso is record and, where its text is a JSON document, a second record of the strings

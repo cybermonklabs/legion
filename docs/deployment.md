@@ -327,19 +327,23 @@ pushes it to the pod's launcher, which installs it ([Worker image](kubernetes.md
 So a box that writes to public repositories carries the check through the check's own installer,
 run on the machine the daemon runs on.
 A daemon that resolves none tells that pane no `PUBLIC_LEAK_CHECK`.
-What a pane's writes then meet is the deployment's leak check setting, which a tmux daemon reads
-from its process environment as a Kubernetes daemon does: `LEGION_LEAK_CHECK_REPOSITORY` and
-`LEGION_LEAK_CHECK_SHA256`, or the `leak_check` block of `legion.yaml`
-([Worker image](kubernetes.md#worker-image)).
+What a pane's `legion gh` writes then meet is the deployment's leak check setting, which a tmux
+daemon reads from its process environment as a Kubernetes daemon does:
+`LEGION_LEAK_CHECK_REPOSITORY` and `LEGION_LEAK_CHECK_SHA256`, or the `leak_check` block of
+`legion.yaml` ([Worker image](kubernetes.md#worker-image)).
 With the setting, every pane is told the checker as `LEGION_LEAK_CHECKER_SHA256`, the daemon logs
-one line per launch naming a pane it resolved no check for, and every write from that pane to a
-public repository is refused with a setup error naming the missing check.
+one line per launch naming a pane it resolved no check for, and every write that pane's
+`legion gh` makes to a public repository is refused with a setup error naming the missing check.
 A pane that resolves a check whose `public_leak_check.py` hashes to anything but that checker has
-every write refused as well, with a setup error naming the checker and the sha256 it found, so the
-check the machine's installer put there must be the one whose sha256 the setting names.
+every call of its `legion gh` refused, reads included, with a setup error naming the checker and
+the sha256 it found, so the check the machine's installer put there must be the one whose sha256
+the setting names.
+A check the machine names and does not hold (a stale `PUBLIC_LEAK_CHECK` or a pointer file naming
+a moved check) is told to the pane all the same, so its public writes are refused for the missing
+check under either setting, and the daemon logs a line per launch.
 With no setting, the daemon logs once at boot that the deployment leak check is not configured, and
-a pane with no check writes under the guard's visibility read and this repository's own
-private-name rules alone.
+a pane's `legion gh` with no check named anywhere writes under the guard's visibility read and this
+repository's own private-name rules alone.
 
 The real gh is a compiled program, so when the first `gh` on the daemon's `PATH`
 is a script (a `gh` wrapper of the box's own, as the devbox's login `PATH` heads with, or asdf's

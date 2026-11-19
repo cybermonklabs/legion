@@ -32,10 +32,10 @@ type fileLeakCheck struct {
 	CheckerSHA256 *string
 }
 
-// readLeakCheck is `leak_check`: a mapping of `repository`, an owner/name ghrepo.Parse takes, and
-// `checker_sha256`, 64 lowercase hex digits. Each member's shape is refused here, where its key is
-// known; whether the two stand together is settled once the environment's values are read
-// (resolveLeakCheck). An absent key and a null one are no block.
+// readLeakCheck is `leak_check`: a mapping of `repository` and `checker_sha256`, each a non-empty
+// string, refused here where its key is known. Whether the two stand together, and each one's
+// shape (an owner/name ghrepo.Parse takes, 64 lowercase hex digits), are settled once the
+// environment's values are read (resolveLeakCheck). An absent key and a null one are no block.
 func readLeakCheck(value *yaml.Node, key string) (*fileLeakCheck, error) {
 	if value.Tag == "!!null" {
 		return nil, nil

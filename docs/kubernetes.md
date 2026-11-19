@@ -81,7 +81,7 @@ It carries:
   The build's last step asserts that each wrapper is first on `PATH` with the real binary behind it and that the hook is root's and executable;
 
 - the shared public leak check those wrappers and that hook run, which is not in the image:
-  it is published by tag from a repository the deployment names, and the image carries the pin alone (`ARG LEAK_CHECK_TAG`, exported as `ENV LEGION_LEAK_CHECK_TAG`), so moving the pin is an image build and no deployment's to do.
+  it is published by tag from a repository the deployment names, and the image carries the pin alone (`ARG LEAK_CHECK_TAG`, exported as `ENV LEGION_LEAK_CHECK_TAG`), so moving the pin is an image build, and a deployment that names a checker (below) moves its `checker_sha256` in the same change.
   The deployment names the check with one operator setting of two values, set together or not at all: the repository it is published from (`owner/name`) and the sha256 of that tag's `leak-check/public_leak_check.py` (64 lowercase hex digits).
   They are `LEGION_LEAK_CHECK_REPOSITORY` and `LEGION_LEAK_CHECK_SHA256` in the daemon's environment, or the `leak_check` block of `legion.yaml`, whose `repository` and `checker_sha256` override the two variables one by one:
 
@@ -102,10 +102,10 @@ It carries:
   The launcher installs it once per launcher process, before any role starts:
   it unpacks the check into a staging directory, records the tag there, runs the check once with `--help` to see that it names its own shapes, and renames the result over `/legion/scratch/leak-check/` (`checkInstall`, `internal/launcher/leakcheck.go`).
   Every role is told that copy as `PUBLIC_LEAK_CHECK`, and the checker as `LEGION_LEAK_CHECKER_SHA256` (`mainEnvironment`, `internal/runtime/sandbox/manifest.go`, which names the install's own constant).
-  The role's name for the checker is not the daemon's, so a configuration a role loads, `legion start --check-config` among them, never reads one half of the daemon's setting without the other.
+  The role's name for the checker is not the daemon's, so a configuration a role loads, `legion config check` among them, never reads one half of the daemon's setting without the other.
   A `legion gh` call that writes nothing is read by the check alone only where the check's `public_leak_check.py` hashes to the sha256 this release's read rule was proven against, which the release compiles in (`ghReadsProvenCheck`, `cmd/legion/gh_reads.go`); under any other check it gets the whole guard, and the checker a role is told plays no part in it.
   Each role's `legion worker-shim` only reads the install, and starts no agent when the install is absent, records another tag, or holds a `public_leak_check.py` whose sha256 is not the checker the role is told (`leakguard.Installed`, read by `spawnOnce`, `internal/shim/shim.go`): so a pin moved without the deployment's `checker_sha256` starts no role.
-  Under the checker, the guard of every write holds the check it finds to it as well: a check whose `public_leak_check.py` hashes to anything else, or that has none, refuses the write with `LEAK CHECK SETUP ERROR: <the write>: the shared public leak check found is not the one the deployment names`, naming the checker and what it found (`Guard.sharedCheck`, `internal/leakguard/check.go`).
+  Under the checker, the guard of every write holds the check it finds to it as well: a check whose `public_leak_check.py` hashes to anything else, or that has none, refuses the call, a `legion gh` read included, with `LEAK CHECK SETUP ERROR: <the write>: the shared public leak check found is not the one the deployment names`, naming the checker and what it found (`Guard.sharedCheck`, `internal/leakguard/check.go`).
   Where the environment names no check, the shim names the install for everything it starts.
   The pod holds no credential for that repository and reads no repository mapping.
 
@@ -122,7 +122,7 @@ It carries:
   A tag of that repository is not protected, so a tag that is force-moved is served from the daemon's earlier copy until the daemon restarts.
   A tmux pane installs nothing, because no pin is set there and such a machine carries the check through the check's own installer.
   The daemon resolves that machine's check once per launch and tells the pane where it is, and the checker as `LEGION_LEAK_CHECKER_SHA256` where the deployment names one (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
-  A pane told a checker refuses its public writes where it has no check, or where its check's `public_leak_check.py` hashes to anything else; a pane of a deployment that names no check refuses none for the check's absence.
+  A pane's `legion gh`, told a checker, refuses its public writes where the pane has no check, or where its check's `public_leak_check.py` hashes to anything else; under a deployment that names no check it refuses none for the check's absence.
 
 - what a role sees when a write is refused:
   a command that wrote nothing and one of two lines on standard error:

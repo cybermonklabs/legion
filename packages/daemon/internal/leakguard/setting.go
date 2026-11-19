@@ -31,7 +31,7 @@ const RepositoryVar = "LEGION_LEAK_CHECK_REPOSITORY"
 // SHA256Var is the daemon's environment fallback for Setting.CheckerSHA256, which the file's
 // `leak_check.checker_sha256` overrides. It is the daemon's own and told to no role: a role is told
 // the checker under CheckerVar, a name the daemon's configuration never reads, so a configuration
-// loaded in a role — `legion start --check-config` in a pod reads the process environment — never
+// loaded in a role — `legion config check` in a pod reads the process environment — never
 // meets one half of the daemon's setting without the other.
 const SHA256Var = "LEGION_LEAK_CHECK_SHA256"
 

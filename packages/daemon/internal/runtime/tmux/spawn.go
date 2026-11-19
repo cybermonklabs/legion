@@ -239,8 +239,9 @@ type PaneInputs struct {
 	// (resolveLeakCheck), the pane's PUBLIC_LEAK_CHECK; "" where the machine carries none, and
 	// the pane is then told no such variable. LeakCheckSHA256 is the deployment's checker
 	// (Options.LeakCheckSHA256), the pane's leakguard.CheckerVar, "" where the deployment names
-	// no shared leak check. Told a checker and no check, the pane refuses every public write with
-	// the setup error naming the check; told neither, it refuses none for the check's absence.
+	// no shared leak check. Told a checker and no check, the pane's `legion gh` refuses every
+	// public write with the setup error naming the check; told neither, it refuses none for the
+	// check's absence.
 	LeakCheck, LeakCheckSHA256 string
 }
 
@@ -584,15 +585,23 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 	command := shimShellCommand(r.socket, path, workDir, r.legion, r.streamAddress, files[0].Path, r.providerEnvDir, inner)
 	// The check is resolved here, once per launch, in the daemon's own environment, because a
 	// pane can resolve none of the three places itself (resolveLeakCheck). A machine that carries
-	// none is no launch failure: the pane is told no PUBLIC_LEAK_CHECK, and under a deployment that
-	// names a shared leak check (Options.LeakCheckSHA256) every public write from it is refused,
-	// naming the missing check, which is the honest answer on a machine that writes to public
-	// repositories with no check. Under a deployment that names none, nothing is refused for it,
-	// and nothing is said of it here: boot has said once that no check is configured.
+	// none is no launch failure. A check this machine names and does not hold is told to the pane
+	// all the same (leakguard.NamedMissing), so the pane's `legion gh` refuses every public write
+	// for the missing check, as the daemon's own guard would, whatever the deployment runs. Where
+	// no place names a check at all, the pane is told no PUBLIC_LEAK_CHECK: under a deployment
+	// that names a shared leak check (Options.LeakCheckSHA256) its public writes are refused,
+	// naming the missing check, and under one that names none they run the guard's rules alone,
+	// and nothing is said of it here: boot has said once that no check is configured. Every other
+	// failure to resolve is said at the launch.
 	leakCheck, err := resolveLeakCheck(r.ownEnviron)
-	if err != nil && r.leakCheckSHA256 != "" {
-		r.log.Warn("tmux runtime: no shared public leak check on this machine, so every write this pane makes to a public GitHub repository will be refused; install it with the check's own installer (docs/deployment.md, \"What a pane's gh, git and jj are\")",
-			"claim", spec.Claim, "why", err)
+	if err != nil {
+		if named, ok := leakguard.NamedMissing(err); ok {
+			leakCheck = named
+		}
+		if r.leakCheckSHA256 != "" || !leakguard.NoneNamed(err) {
+			r.log.Warn("tmux runtime: the shared public leak check could not be resolved on this machine, so this pane's writes to a public GitHub repository will be refused; install it with the check's own installer (docs/deployment.md, \"What a pane's gh, git and jj are\")",
+				"claim", spec.Claim, "why", err)
+		}
 	}
 	pairs := panePairs(spec, PaneInputs{
 		StateDir: r.stateDir, Workspace: workDir, DaemonURL: r.daemonURL, EnvoyURL: r.envoyURL, NATSURLs: r.natsURLs,

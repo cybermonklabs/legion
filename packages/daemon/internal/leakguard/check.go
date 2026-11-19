@@ -103,11 +103,41 @@ func (g *Guard) Resolve() (string, error) {
 }
 
 // noneNamed is Resolve's answer where no place it looks names a check at all, as against a check
-// that is named and not there, a pointer file that cannot be read, and one that names nothing,
-// each of which is a broken setup whatever the deployment runs.
+// that is named and not there (missingCheck), a pointer file that cannot be read, and one that
+// names nothing, each of which is a broken setup whatever the deployment runs.
 type noneNamed struct{ error }
 
 func (n noneNamed) Unwrap() error { return n.error }
+
+// NoneNamed is whether err, an answer of Resolve, is that no place names a check at all: the one
+// answer under which a deployment that names no checker runs a write with no shared check
+// (sharedCheck). The tmux runtime reads it to say nothing at a launch where that is so.
+func NoneNamed(err error) bool {
+	var none noneNamed
+	return errors.As(err, &none)
+}
+
+// missingCheck is found's answer where the path a variable, an option or a pointer file names is
+// not there: a check that is named and missing, which refuses every write whatever the
+// deployment runs.
+type missingCheck struct {
+	path string
+	error
+}
+
+func (m missingCheck) Unwrap() error { return m.error }
+
+// NamedMissing is the path err, an answer of Resolve, names where a check is named and not there.
+// The tmux runtime tells a pane that path as CheckVar, so the pane's guard refuses its writes for
+// the missing check as the daemon's own guard would, though the pane cannot read the place that
+// named it.
+func NamedMissing(err error) (string, bool) {
+	var missing missingCheck
+	if errors.As(err, &missing) {
+		return missing.path, true
+	}
+	return "", false
+}
 
 // sharedCheck is the shared check a write of what runs (Resolve), or "" and no error where none is
 // named and the environment names no deployment checker (CheckerVar): a deployment that runs no
@@ -124,8 +154,7 @@ func (g *Guard) sharedCheck(what string) (string, error) {
 	checker := value(g.base(), CheckerVar)
 	check, err := g.Resolve()
 	if err != nil {
-		var none noneNamed
-		if errors.As(err, &none) && checker == "" {
+		if NoneNamed(err) && checker == "" {
 			return "", nil
 		}
 		return "", &SetupFailure{What: what, Why: whyNoCheck, Err: err}
@@ -150,7 +179,7 @@ func (g *Guard) sharedCheck(what string) (string, error) {
 // check it is than as a child process that would not start.
 func found(path, source string) (string, error) {
 	if _, err := os.Stat(path); err != nil {
-		return "", fmt.Errorf("%s names %s, which is not there: %w", source, path, err)
+		return "", missingCheck{path: path, error: fmt.Errorf("%s names %s, which is not there: %w", source, path, err)}
 	}
 	return path, nil
 }

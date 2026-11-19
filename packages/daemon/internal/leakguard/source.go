@@ -41,8 +41,8 @@ const refusalBodyBytes = 64 << 10
 //
 // A Source is used through a pointer and never copied once it has been asked.
 type Source struct {
-	// Repository is the check's repository, whose tarball a read fetches and which the daemon's
-	// token for that read is narrowed to; every cause sentence names it.
+	// Repository is the check's repository, whose tarball a read fetches, with a token minted on
+	// its owner's installation (Token); every cause sentence names it.
 	Repository ghrepo.Repository
 	// Token mints the read-only token the read is made with. Its error's text is what happened,
 	// in the words a cause sentence takes after RefusalPrefix (Cause): the daemon, which mints

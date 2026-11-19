@@ -423,9 +423,9 @@ func TestRunRecordsNoBootWhenItCannotTakeItsPort(t *testing.T) {
 }
 
 // The boot itself says once which shared leak check the deployment runs: run logs it
-// (logLeakCheck) before anything that can stop the boot, so a boot that then fails on its port has
-// logged it all the same — the not-configured line under no setting, and the configured line,
-// which names the setting's repository and checker, under the deployment's.
+// (logLeakCheck) before it takes its port, so a boot that then fails on its port has logged it all
+// the same — the not-configured line under no setting, and the configured line, which names the
+// setting's repository and checker, under the deployment's.
 func TestRunLogsTheLeakCheckLineAtBoot(t *testing.T) {
 	for _, tc := range []struct {
 		name                      string
