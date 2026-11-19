@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Sourced by the two harnesses of the private-name check, check-private-names.test.sh (the rules
-# the script spells, its modes and a pull request's text) and check-private-names-terms.test.sh
-# (the deployment's own term list, PRIVATE_NAME_TERMS): what both read and nothing either alone
-# does. It creates the run's temporary directory, tees the harness's own output to a log that
+# Sourced by the three harnesses of the private-name check: check-private-names.test.sh (the rules
+# the script spells, its modes and a pull request's text), check-private-names-terms.test.sh (the
+# deployment's own term list, PRIVATE_NAME_TERMS) and check-private-names-keys.test.sh (the
+# issue-key rule): what more than one reads and nothing one alone does. It creates the run's
+# temporary directory, tees the harness's own output to a log that
 # finish_self_log scans with the guard at the end, sources test-lib.sh, and holds the name pieces,
 # the placeholder terms, the fixture repository and the stand-in GitHub API the cases share.
 #
@@ -104,6 +105,22 @@ run_check() {
   shift
   set +e
   out=$(cd "$root" && .github/scripts/check-private-names.sh "$@" 2>&1)
+  status=$?
+  set -e
+}
+
+# run_check_as <event> <terms> <root> [path...]: run_check under that GITHUB_EVENT_NAME and
+# PRIVATE_NAME_TERMS, where `-` leaves the variable unset (a run outside Actions, a job that maps
+# no secret).
+run_check_as() {
+  local event=$1 list=$2 root=$3
+  shift 3
+  set +e
+  out=$(
+    if [ "$event" = - ]; then unset GITHUB_EVENT_NAME; else export GITHUB_EVENT_NAME=$event; fi
+    if [ "$list" = - ]; then unset PRIVATE_NAME_TERMS; else export PRIVATE_NAME_TERMS=$list; fi
+    cd "$root" && .github/scripts/check-private-names.sh "$@" 2>&1
+  )
   status=$?
   set -e
 }

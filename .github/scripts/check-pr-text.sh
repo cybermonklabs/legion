@@ -52,7 +52,8 @@
 # request with find-pr-payload.sh; that job's own check run carries the verdict as pr-title on
 # each. It runs in pr-title.yaml when a pull request is edited, the event ci.yaml does not run on
 # (that file's header says why it runs on no other); its tests are in check-private-names.test.sh,
-# and those of the term list and the issue-key rule in check-private-names-terms.test.sh.
+# those of the term list in check-private-names-terms.test.sh, and those of the issue-key rule in
+# check-private-names-keys.test.sh.
 # check-private-names.sh takes PRIVATE_NAME_TERMS, the deployment's own list, and
 # GITHUB_EVENT_NAME from this script's environment, so both of those steps map that secret: on
 # the merge queue's group the list is required (check-private-names.sh's header), and this script
@@ -588,9 +589,10 @@ AWK
     fi
     if [ -n "$stage" ]; then write_stage "$stage" net; fi
   fi
-  # Two runs of rules 6 and 7: one over the title, body, branch, items, commit messages and the
-  # files the new commits (or the net diff) add or rename, whose paths are new text too; one over
-  # the lines they add to files they only change, whose paths are not.
+  # Two runs of rules 6 and 7: one over the title, body, items, commit messages and the files the
+  # new commits (or the net diff) add, or rename to a path with a word its old path lacks, whose
+  # paths are new text too; one over the lines they add to files they only change, whose paths are
+  # not.
   for run in keyed lines_only; do
     dir=${!run}
     [ "$run" = lines_only ] && [ -z "$(ls -A "$dir")" ] && continue

@@ -352,6 +352,7 @@ jobs:
       check_action_pins_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_action_pins_test }}
       check_private_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_test }}
       check_private_names_terms_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_terms_test }}
+      check_private_names_keys_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_keys_test }}
       check_plugin_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_plugin_names_test }}
       check_fireevent_reasons_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_fireevent_reasons_test }}
       check_daemon_api_contract_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_daemon_api_contract_test }}
@@ -1507,6 +1508,14 @@ jobs:
               - '.github/scripts/check-private-names-test-lib.sh'
               - '.github/scripts/check-private-names.sh'
               - '.github/scripts/check-pr-text.sh'
+            check_private_names_keys_test: &check_private_names_keys_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-private-names-keys.test.sh'
+              - '.github/scripts/check-private-names-test-lib.sh'
+              - '.github/scripts/check-private-names.sh'
+              - '.github/scripts/check-pr-text.sh'
             check_plugin_names_test: &check_plugin_names_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1753,6 +1762,7 @@ jobs:
               - *check_action_pins_test
               - *check_private_names_test
               - *check_private_names_terms_test
+              - *check_private_names_keys_test
               - *check_plugin_names_test
               - *check_fireevent_reasons_test
               - *check_daemon_api_contract_test
@@ -4987,6 +4997,7 @@ jobs:
       check_action_pins_test: ${{ needs.changes.outputs.check_action_pins_test }}
       check_private_names_test: ${{ needs.changes.outputs.check_private_names_test }}
       check_private_names_terms_test: ${{ needs.changes.outputs.check_private_names_terms_test }}
+      check_private_names_keys_test: ${{ needs.changes.outputs.check_private_names_keys_test }}
       check_plugin_names_test: ${{ needs.changes.outputs.check_plugin_names_test }}
       check_fireevent_reasons_test: ${{ needs.changes.outputs.check_fireevent_reasons_test }}
       check_daemon_api_contract_test: ${{ needs.changes.outputs.check_daemon_api_contract_test }}

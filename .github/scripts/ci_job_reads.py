@@ -2114,16 +2114,22 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/check-action-pins.sh", "the script under test"),
     ]),
     harness("check_private_names_test", "Test the private-name check", f"{SCRIPTS}/check-private-names.test.sh", [
-        (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names.test.sh:22 sources it for its fixtures"),
-        (TEST_LIB, "check-private-names-test-lib.sh:36 sources it for check/is/summary"),
+        (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names.test.sh:23 sources it for its fixtures"),
+        (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
-        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:202 runs it too: the pull request's text is the guard's other surface"),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:225 runs it too: the pull request's text is the guard's other surface"),
     ], lib=False),
     harness("check_private_names_terms_test", "Test the private-name check's term list", f"{SCRIPTS}/check-private-names-terms.test.sh", [
         (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names-terms.test.sh:24 sources it for its fixtures"),
-        (TEST_LIB, "check-private-names-test-lib.sh:36 sources it for check/is/summary"),
+        (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
-        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:202 runs it, over a pull request's text naming a term"),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:225 runs it, over a pull request's text naming a term"),
+    ], lib=False),
+    harness("check_private_names_keys_test", "Test the private-name check's issue-key rule", f"{SCRIPTS}/check-private-names-keys.test.sh", [
+        (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names-keys.test.sh:24 sources it for its fixtures"),
+        (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
+        (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:225 runs it, over a pull request's new text"),
     ], lib=False),
     harness("check_plugin_names_test", "Test the plugin-name check", f"{SCRIPTS}/check-plugin-names.test.sh", [
         (f"{SCRIPTS}/check-plugin-names.sh", "the script under test"),

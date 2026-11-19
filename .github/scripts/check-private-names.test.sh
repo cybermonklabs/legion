@@ -4,7 +4,8 @@
 # named paths such as the built site), file names, and a pull request's title, body, branch name,
 # commits (message, author and committer), issue comments, reviews and review comments. The
 # deployment's own term list, the script's fifth rule, has a harness of its own,
-# check-private-names-terms.test.sh; the fixtures, the name pieces and the stand-in GitHub API both
+# check-private-names-terms.test.sh, and so does the issue-key rule,
+# check-private-names-keys.test.sh; the fixtures, the name pieces and the stand-in GitHub API they
 # read are check-private-names-test-lib.sh's.
 #
 # Every case names itself by an index or a neutral label, never the assembled form, since
