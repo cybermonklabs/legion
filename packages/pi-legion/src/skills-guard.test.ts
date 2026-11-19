@@ -427,7 +427,7 @@ test("a check that cannot fail is not a result, and a documented procedure count
 // merge can bring a new instance of a class the branch already answered (dispatch://INFRA-83). The
 // rule that searches the merge head for each earlier finding's class stays in both files that hold
 // it.
-test("the forward-merge re-check searches the new head for each earlier finding's class", () => {
+test("a forward merge searches the new head for each earlier finding's class", () => {
   expect(
     collapsed(path.join(staged, "legion-worker", "references", "conflicts-and-rewrites.md"))
   ).toContain(

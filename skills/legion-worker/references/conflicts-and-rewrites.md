@@ -76,8 +76,8 @@ Every path it cites is in cybermonklabs/legion.
   (`base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && jj -R "$LEGION_WORKSPACE" new legion/<KEY> "${base}@origin" -m "<message>"`, its `<message>` in the repository's own commit convention, as above) and push it the
   ordinary way, a genuine fast-forward, so the new head runs Tests
   against the new merge result, and cite that run in the PR body.
-- **The daemon's ask.** A head that conflicts with its base no longer sends the issue back to
-  `implementing`. The daemon reads GitHub twice, a minute apart, and acts on a conflict only
+- **The daemon's ask.** A head that conflicts with its base keeps the issue in its phase. The
+  daemon reads GitHub twice, a minute apart, and acts on a conflict only
   when the next step needs a mergeable head: the issue stands in `accepting`, `retro` or
   `merging`, a check the base requires has no green result on the head (GitHub runs no check on
   a conflicting head), the base requires a pull request to be current with it, or the daemon
@@ -85,9 +85,10 @@ Every path it cites is in cybermonklabs/legion.
   merge-forward message on its role topic: merge the base forward in `$LEGION_WORKSPACE`, the one
   workspace every role of the issue shares, after the working-copy check of
   `skill://legion-worker/references/foreign-path.md`, as this section says, and push the issue
-  branch. Outside `implementing` the phase is another role's: write no handoff and make no
-  completion for the merge, since the daemon told the phase's worker to stop writing the
-  workspace and tells it the new head when your push lands. In `implementing` your own
+  branch. Write no handoff and make no completion for the merge itself. In `testing`,
+  `reviewing` and `merging` the phase is another role's: the daemon told its worker to stop
+  writing the workspace and tells it the new head when your push lands. In `accepting` the phase
+  is the architect's. In `implementing` and in `retro` the phase is your own, and your
   assignment and its completion stand.
 
 ## A wrong pushed commit

@@ -158,7 +158,7 @@ commit statuses of each open head from GitHub where the Envoy App's token holds 
 permission, and the settlement names each one with its state.
 Whether the merge happens is GitHub's to decide, under the rules that repository sets.
 
-Each of those two reads is the backstop for a webhook that never arrived — GitHub can fail to
+The read as the workflow runtime starts and the read after a handoff are each the backstop for a webhook that never arrived — GitHub can fail to
 deliver one, and Dispatch's redelivery sweep gives up after five attempts — so what a GitHub event
 lost, or that still waits behind the daemon's GitHub consumer, leaves the record behind only until
 the next of them:

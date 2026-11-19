@@ -4682,8 +4682,9 @@ conflict_path=$(timeout 60 gh api "repos/$repo/pulls/$pr_number/files" --jq '.[0
   fail "read the file pull request #$pr_number changes"
 base_blob=$(timeout 60 gh api "repos/$repo/contents/$conflict_path?ref=$pr_base" --jq .sha) ||
   fail "read $conflict_path on $pr_base"
-conflict_head=$(timeout 60 gh api "repos/$repo/pulls/$pr_number" --jq .head.sha) && [ -n "$conflict_head" ] ||
+conflict_head=$(timeout 60 gh api "repos/$repo/pulls/$pr_number" --jq .head.sha) ||
   fail "read pull request #$pr_number's head"
+[ -n "$conflict_head" ] || fail "GitHub named no head for pull request #$pr_number"
 conflict_sha=$(jq -cn --arg path "$conflict_path" --arg branch "$pr_base" --arg sha "$base_blob" \
   --arg content "$(printf 'Stage 4b conflict, no takeover\n' | base64 -w0)" \
   '{message: "Stage 4b proof: conflict with the issue branch", content: $content, branch: $branch, sha: $sha}' |
@@ -4696,10 +4697,10 @@ note "the proof human committed a conflicting $conflict_path to $pr_base as $con
 # classify.ConflictNeedsMerge). Without that line every check below would hold of a daemon that
 # never read the conflict at all.
 conflict_needs_no_merge() {
-  log_lines "workflow: a confirmed conflict needs no merge yet" | jq -s -e --arg issue "$tree1" 'any(.[]; .issue == $issue)' >/dev/null
+  log_lines "workflow: a confirmed conflict needs no merge yet" | jq -s -e --arg issue "$tree1" --arg head "$conflict_head" 'any(.[]; .issue == $issue and .head == $head)' >/dev/null
 }
 on_tree "$tree1" until_true 600 "the daemon to confirm $tree1's conflict and find it needs no merge yet" conflict_needs_no_merge
-note "the daemon logged $(log_lines "workflow: a confirmed conflict needs no merge yet" | jq -c -s --arg issue "$tree1" 'map(select(.issue == $issue)) | first | {time, head, phase, required, green}')"
+note "the daemon logged $(log_lines "workflow: a confirmed conflict needs no merge yet" | jq -c -s --arg issue "$tree1" --arg head "$conflict_head" 'map(select(.issue == $issue and .head == $head)) | first | {time, head, phase, required, green}')"
 # At least two minutes after the commit, with the outbox given time to send whatever the confirmed
 # conflict asked for, nothing was sent and nothing moved. The ask's words and the hold's are the
 # daemon's own (record.MergeForwardMessage's Message), and no prompt or skill a role reads holds
@@ -4747,7 +4748,9 @@ send_agent "$tree1" implementer "Stage 4b proof merge-forward operation: the hea
 head_moved() {
   local head
   head=$(timeout 60 gh api "repos/$repo/pulls/$pr_number" --jq .head.sha) || return 1
-  [ -n "$head" ] && [ "$head" != "$conflict_head" ] || return 1
+  if [ -z "$head" ] || [ "$head" = "$conflict_head" ]; then
+    return 1
+  fi
   merged_head=$head
 }
 on_tree "$tree1" until_true 1800 "pull request #$pr_number's head to move off the conflicting head $conflict_head" head_moved

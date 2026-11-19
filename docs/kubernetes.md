@@ -6081,7 +6081,7 @@ The wakes are these:
 
 - a phase start, task, backward move, notice, merge-forward message, hook prompt, merge-queue removal message, production-check look or slot resume the daemon has for a role of the pod, a notice for a released sub-architect included, which stays that notice's owner;
 
-- a CI settlement the daemon records for the head of the issue's pull request, while a phase worker of the pod has its phase open (the Envoy listener's settlement fact: the daemon reads no check run of its own, and its own reads of a pull request run at the moments [Running Legion](https://cybermonklabs.github.io/legion/legion/running-legion/) names, on no timer).
+- a CI settlement the daemon records for the head of the issue's pull request, while a phase worker of the pod has its phase open (the Envoy listener's settlement fact: the daemon reads no check run of its own, and its own reads of a pull request run at the moments [Running Legion](https://cybermonklabs.github.io/legion/legion/running-legion/) names).
   One head can settle more than once as its checks finish, and each settlement wakes a released pod at most once;
 
 - a message published to the role topic of a role of the pod, which the Envoy listener holds and reports to the daemon.

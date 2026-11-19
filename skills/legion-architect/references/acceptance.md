@@ -162,7 +162,7 @@ move and you tell it which; from `accepting` you send an issue back only to `imp
   `implementing`, tell its implementer (`envoy_publish` to its role topic) to merge that base
   forward in its implementing round: the daemon sends no `checks-red` for such an issue, and
   tells its implementer itself only when a check the base requires has no green result on the
-  head or the base requires a current branch.
+  head, the base requires a current branch, or the daemon could not read the base's rules.
 
 ## A conflicting head
 
@@ -177,7 +177,8 @@ daemon acts once the issue enters `accepting`.
 
 When it acts, it asks the implementer, in a merge-forward message on the implementer's role
 topic, to merge the base forward in the issue workspace and push, with no handoff and no
-completion; it tells the phase's worker to stop writing the workspace; and it tells you once with
+completion; in `testing`, `reviewing` and `merging` it tells the phase's worker to stop writing
+the workspace; and it tells you once with
 a `checks-red` notice naming the phase the issue stays in, the head, the base and why. You start
 nothing for it. In `implementing` the daemon tells the implementer alone, and no notice comes to
 you.

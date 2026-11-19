@@ -1532,7 +1532,8 @@ both reads report, and only when the next step needs a mergeable head: the issue
 review, a check the base requires has no green result on the head, the base requires a current
 branch, or the daemon could not read the base's rules. Its log says which: `workflow: a conflict
 read waits for a second read` for a first read, `workflow: a second read did not confirm the
-conflict` for a read GitHub took back, `workflow: a confirmed conflict needs no merge yet` with the
+conflict` for a read GitHub took back or a second read whose attempts all answered no state (the
+merge-state reads then follow the head), `workflow: a confirmed conflict needs no merge yet` with the
 required contexts and the green ones, and `workflow: merge forward asked` with the reason. A merge
 forward keeps the phase: the implementer merges in the issue workspace and pushes with no handoff
 and no completion, the phase's worker is told to stop writing the workspace and then the new head,

@@ -418,8 +418,8 @@ Legion uses GitHub's own review mechanisms rather than labels:
   again at the new head. Past review the daemon asks the reviewer to read the merge and approve
   the new head by its SHA, or request changes, and a merger that enters `merging` while that
   approval is owed merges the new head only once the approval is on the pull request.
-- **A completion behind its phase entry.** A move the role did not make — a reviewer's own
-  request for changes, which ends the round before the reviewer completes — keeps that role's
+- **A completion behind its phase entry.** A move the role's completion did not make — a
+  reviewer's own request for changes, which ends the round before the reviewer completes — keeps that role's
   turn, its background jobs, its process and its session. Only the entry of the phase the issue
   moves to is raised, so a completion the role sends for the phase it lost
   still names the entry that phase gave it and is refused `HANDOFF_NOT_CURRENT_PHASE`;
