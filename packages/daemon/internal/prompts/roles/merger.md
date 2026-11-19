@@ -63,7 +63,7 @@ Do not request `isolated` work, create a workspace, edit files, or create a comm
    Act on the `reason` of the last removal after the newest entry:
 
    - `merged`: GitHub merged the pull request. This is not a removal. The daemon closes the issue on the merge.
-   - `failed_checks`: the queue's own `merge_group` checks failed. At a head that has not changed, queue that same head once more (step 4); send the issue back with `request_backward_move` (step 6) only on the second such removal of that head. Never re-run a merge-group run.
+   - `failed_checks`: the queue's own `merge_group` checks failed. That is work to fix. Send the issue back with `request_backward_move` (step 6).
    - `merge_conflict`: each head gets one further enqueue after a `merge_conflict` removal. Read your own `dispatch comment` on the issue to know if you already used it for this head. Do not use the timeline for this, because `beforeCommit` is empty on some removals. If you already used it, send the issue back with `request_backward_move` (step 6). If not, run the watch again. Decide by the `mergeStateStatus` that it reads now:
      - `DIRTY`: the head conflicts with the base. Merge and enqueue nothing: the daemon asks the implementer to merge the base forward while the issue stays in `merging`, and tells you so (step 6).
      - `UNKNOWN`: run the watch again on your own backoff for up to five minutes. Then decide in the same way by the state that it reads.
