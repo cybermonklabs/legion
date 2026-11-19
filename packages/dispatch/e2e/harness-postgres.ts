@@ -178,10 +178,12 @@ export interface StackDatabase {
   readonly url: string;
   /** The port it serves on, which the harness logs and no other stack shares. */
   readonly port: number;
-  /** Stops the server. `keepLog` is a run the pool keeps its logs for, a failed one: the image
-   *  provider then prints the container's whole log on stderr before the container goes, since
-   *  it is the one record of what that server said, where the binaries provider's log is a file
-   *  under the run's directory (`postgres.log`), which the pool keeps or loses with the rest. */
+  /** Stops the server. `keepLog` asks the image provider to print the container's whole log on
+   *  stderr before the container goes, since it is the one record of what that server said: the
+   *  pool asks for it for a run whose logs it keeps, a failed one, and for a stack whose start
+   *  failed, and not on a SIGTERM, whose run's outcome it does not know (`e2e/harness-pool.ts`).
+   *  The binaries provider's log is a file under the run's directory (`postgres.log`), which the
+   *  pool keeps or loses with the rest. */
   stop(keepLog: boolean): Promise<void>;
 }
 

@@ -217,8 +217,9 @@ has stopped answering. The harness makes the directory readable by every user
 and mounts all of it into a container, so it refuses one that holds anything
 but an earlier build's files.
 `e2e/read-marker-disk-stall.multiprocess.e2e.ts` stalls it so. Without the
-variable it is skipped, except where `CI` is set, where it fails naming the
-variable (`e2e/disk-stall.ts`). A server you start yourself, one a run reaches
+variable it is skipped, in an agent's shell too, which sets `CI`; on GitHub
+Actions (`GITHUB_ACTIONS=true`) it fails naming the variable
+(`e2e/disk-stall.ts`). A server you start yourself, one a run reaches
 through `DATABASE_URL`, takes part once you build the library for it, since
 the harness builds it only for a server it starts:
 

@@ -32,9 +32,11 @@ import { asUser } from "./users";
  * lets the write go (`stallServer`). The reset must then empty the table with the disk still
  * silent, true only of a database whose commits do not wait for the disk, as the harness's own
  * Postgres does not (e2e/harness-postgres.ts). It needs a Postgres that can be stalled, which
- * `DISPATCH_E2E_PG_STALL_DIR` names (e2e/disk-stall.ts), and is skipped without one, except
- * where `CI` is set: CI's multiprocess job names one, and a run of it that lost the variable
- * would skip the one row that holds it to the reset, and pass, so there the row fails instead.
+ * `DISPATCH_E2E_PG_STALL_DIR` names (e2e/disk-stall.ts), and is skipped without one, except on
+ * GitHub Actions, where `GITHUB_ACTIONS` is "true" in every step: CI's multiprocess job names one,
+ * and a run of it that lost the variable would skip the one row that holds it to the reset, and
+ * pass, so there the row fails instead. `CI` is not read, since an agent's shell sets `CI=true`
+ * too; this is the rule packages/envoy/internal/testpg/testdb/skip.go's `SkipOutsideCI` keeps.
  */
 
 const stallDir = diskStallDir();
@@ -76,10 +78,10 @@ test.afterEach(() => {
 test("a read marker whose page closed while the database's disk did not answer holds nothing the next reset empties", async ({
   browser,
 }) => {
-  if (stallDir === undefined && process.env.CI) {
+  if (stallDir === undefined && process.env.GITHUB_ACTIONS === "true") {
     throw new Error(
-      `${diskStallVariable} is unset, and CI is set: CI runs this row against a Postgres it can ` +
-        "stall (e2e/disk-stall.ts), so a CI run without one fails rather than skips it"
+      `${diskStallVariable} is unset on GitHub Actions: CI runs this row against a Postgres it ` +
+        "can stall (e2e/disk-stall.ts), so a CI run without one fails rather than skips it"
     );
   }
   test.skip(

@@ -193,8 +193,9 @@ test(
 );
 
 // A stall file an earlier run left in the directory would hold the next server from its first
-// write; a build into that directory clears it, and keeps the directory's own library.
-test(
+// write; a build into that directory clears it, and keeps the directory's own library. The build
+// runs `cc`, so the row skips with its siblings on a host that lacks one.
+test.skipIf(!live)(
   "a build clears a stall file an earlier run left behind",
   async () => {
     const again = mkdtempSync(join(tmpdir(), "fsync-stall-again-"));
