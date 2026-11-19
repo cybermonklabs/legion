@@ -57,3 +57,10 @@ export const TOKEN_TYPE_DPOP = "DPoP";
  *  whose session no registration names yet (`oauthwire.PodSessionNotRegistered`): a refusal of
  *  the broker's state that a later trade cures, which a client trades again on rather than stop. */
 export const POD_SESSION_NOT_REGISTERED = "pod_session_not_registered";
+
+/** Followed by a colon, begins the `error_description` of the broker's final `invalid_grant` for
+ *  a pod a daemon other than the one its session name is bound to registered
+ *  (`oauthwire.SessionNameNotThisRegistrars`): a name belongs for good to the daemon that first
+ *  registered it, so no later trade cures the refusal, and a client stops on it rather than trade
+ *  again. */
+export const SESSION_NAME_NOT_THIS_REGISTRARS = "session_name_not_this_registrars";

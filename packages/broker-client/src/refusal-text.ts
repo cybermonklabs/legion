@@ -8,7 +8,7 @@
 // corpus the broker's own library writes (packages/envoy/internal/broker/oauth/testdata) holds it
 // to what the broker sends.
 
-import { POD_SESSION_NOT_REGISTERED } from "./wire";
+import { POD_SESSION_NOT_REGISTERED, SESSION_NAME_NOT_THIS_REGISTRARS } from "./wire";
 
 /**
  * The refusal texts of the broker's this client prints as the broker wrote them: the ones the
@@ -260,6 +260,7 @@ const KNOWN_BROKER_REFUSAL_PATTERNS: readonly RegExp[] = [
   `No registration says this pod may write under the session name '${SESSION_SLOT}'\\. A pod writes under a session name its deployment registered for it\\.`,
   `Refused: this pod's registration for session '${SESSION_SLOT}' is bound to another key; a role trades only for its own session\\.`,
   `Refused: this pod's registration for session '${SESSION_SLOT}' was released; a pod trades only under a registration its registrar has not released\\.`,
+  `The session name '${SESSION_SLOT}' belongs to another daemon: a pod trades only under a session name the daemon that registered it holds\\.`,
   // Dispatch's hold of a person (`membership_held`), as the wire corpus's own sentence writes it:
   // the same person each time.
   `${PERSON_SLOT}'s credentials are held by Dispatch; they work again when \\k<person> signs in to Dispatch, or when Dispatch can confirm \\k<person> with Google again`,
@@ -278,16 +279,21 @@ const LIBRARY_DESCRIPTIONS: readonly string[] = [
   "The authorization server encountered an unexpected condition that prevented it from fulfilling the request.",
 ];
 const REFUSAL_CODE_PREFIX = /^[A-Z][A-Z_]{1,63}: /;
+/** The prefixes the broker writes in place of the library's sentence: a code and a colon. */
+const CODE_PREFIXES = [POD_SESSION_NOT_REGISTERED, SESSION_NAME_NOT_THIS_REGISTRARS].map(
+  (code) => `${code}: `
+);
 
-/** `text` with the library's fixed sentence, the broker's refusal code, or the pod-session
- *  prefix the broker writes in place of the library's sentence ({@link POD_SESSION_NOT_REGISTERED}
- *  and a colon), taken off its front. */
+/** `text` with the library's fixed sentence, the broker's refusal code, or one of the two
+ *  prefixes the broker writes in place of the library's sentence ({@link POD_SESSION_NOT_REGISTERED}
+ *  or {@link SESSION_NAME_NOT_THIS_REGISTRARS}, and a colon), taken off its front. */
 function brokerHint(text: string): string {
   for (const fixed of LIBRARY_DESCRIPTIONS) {
     if (text.startsWith(`${fixed} `)) return text.slice(fixed.length + 1);
   }
-  const pod = `${POD_SESSION_NOT_REGISTERED}: `;
-  if (text.startsWith(pod)) return text.slice(pod.length);
+  for (const prefix of CODE_PREFIXES) {
+    if (text.startsWith(prefix)) return text.slice(prefix.length);
+  }
   return text.replace(REFUSAL_CODE_PREFIX, "");
 }
 

@@ -8,5 +8,6 @@ body: |-
   the broker refuses to start when it equals another audience of the cluster's tokens.
   `POST /v1/oauth/exchange/pod-sessions/release` releases the session names that the caller's
   login account registered: the exchange then refuses each of those registrations with a permanent
-  `invalid_grant`, and the rows keep each name bound to that account until they expire. A release
-  revokes no access token that the exchange already issued.
+  `invalid_grant`, and each name stays bound to that account after its released rows expire, as
+  every name stays bound to the registrar that first registered it. A release revokes no access
+  token that the exchange already issued.

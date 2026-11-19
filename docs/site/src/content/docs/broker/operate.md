@@ -339,8 +339,9 @@ session name registered at `POST /v1/oauth/exchange/pod-sessions` bound to the d
 registered it, not only each registrar to the pods of its own daemon, since until then any
 `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another
 claim's session; and the daemon choosing each role's session id rather than taking its agent's
-report. The daemon already holds each session id to the claim of its project that first recorded
-it and registers no session another of its claims holds.
+report. A broker of this release carries the second of them, the session-name binding (below). The
+daemon already holds each session id to the claim of its project that first recorded it and
+registers no session another of its claims holds.
 
 A registration may also name its `generation` (0 or more, 0 when absent; a negative one is
 `400 GENERATION_INVALID`), the registrar's own order of its writes for that pod and session. The
@@ -352,25 +353,43 @@ incarnation's, changes nothing and cannot put the old key back. A registrar that
 session watch does, writes 0 as before and is answered no generation, exactly as before. A write
 that takes a registration whole (below) is applied whatever its generation.
 
-A session name belongs to the registrar that registered it. Each registration records the login
-account of the caller that wrote it, and a registrar holds a name while a live registration of that
-name names it, released or not. A registration of a held name by another registrar, for any pod, is
-refused `409 SESSION_HELD_BY_ANOTHER_REGISTRAR`, naming the session and the registrar that holds
-it, and the broker writes nothing. It logs that refusal at WARN, `broker: a pod's session
-registration was refused: another registrar holds the session name`, naming the registrar, the
-holder, the pod and the session.
+A session name belongs, for good, to the registrar that first registered it. Each registration
+records the login account of the caller that wrote it, and the name's first registration binds the
+name to that account in the table `pod_session_registrars` (migration 0039). A registration of a
+bound name by another registrar, for any pod, is refused
+`409 SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR`, naming the session and the registrar that holds it,
+and the broker writes nothing, whether the holder's registrations of the name are live, lapsed,
+released or swept. The registrar that holds a name registers any number of pods for it, as a
+relaunch does. No sweep and no route moves or removes a binding, so a daemon that stops using a
+name keeps it. The broker logs the refusal at WARN, `broker: a pod's session registration was
+refused: another registrar holds the session name`, naming the registrar, the holder, the pod and
+the session.
 
 So two daemons listed for one pod account register no pod, their own or each other's, under a name
 the other holds, and the exchange admits a pod under a name only when the registrar that holds the
 name registered that pod. Of two daemons' first writes of one name at the same moment, exactly one
-is applied, since each write locks the name before it reads who holds it.
+is applied, since the second write's binding of the name waits for the first's to commit and then
+finds the first registrar.
+
+The token exchange refuses a pod's trade under a live registration that another registrar wrote,
+or under a name bound to no registrar, `invalid_grant`, with a description that begins
+`session_name_not_this_registrars:` and names the session, never the registrar that holds it. The
+route writes no such registration: such a row was written by something other than this release's
+route.
+Like the refusal of a released registration (below), that refusal is final: both clients stop on
+it rather than trade again, since only the holding registrar's registration of that pod admits it.
+A pod that no registration names keeps the `pod_session_not_registered:` refusal. The broker logs
+the refusal at WARN, `broker: the token exchange refused a pod's trade under a session name another
+daemon holds`, naming the principal, the pod, the session, the registrar that wrote the
+registration and the holder.
 
 The registrar is the daemon's login account, never its service, which every Legion daemon shares,
 nor its pod, which a restart changes. So a daemon whose login ServiceAccount changes is a new
-registrar. The broker refuses it `409 SESSION_HELD_BY_ANOTHER_REGISTRAR` for each name that a
-registration of its old account holds, until those registrations lapse, at most 24 hours after
-their last write, or the old account releases them. Today's Legion daemon reads that `409` as
-permanent: it logs it and does not write that registration again for that role's process.
+registrar, and it cannot register the names its old account bound: the broker refuses it
+`409 SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR` for each of them, for good, after the old account's
+registrations lapse or are released too. No route moves a binding to another account yet. Today's
+Legion daemon reads that `409` as permanent: it logs it and does not write that registration again
+for that role's process.
 
 A daemon releases the session names it registered at
 `POST /v1/oauth/exchange/pod-sessions/release`, with the same login as the registration route,
@@ -412,13 +431,13 @@ only the registrar's next registration of that pod and name makes it live again.
 it at WARN, `broker: the token exchange refused a pod's trade under a registration its registrar
 released`, naming the principal, the pod, the session and the registrar.
 
-A released registration stays until it expires, at most 24 hours after its last write, and keeps
-the name bound to its registrar until then, so no other daemon takes the name while a token of the
-released pod can still be presented. The registrar's next write of that pod and name takes the
-registration whole: its key, its generation and its expiry become that write's, so a later claim
-may count its generations from lower. A registrar stops every write of the names it releases
-before it releases them, its renewal and any write in flight included, since a registration write
-after the release makes that registration live again.
+A released registration stays until it expires, at most 24 hours after its last write. The name
+stays bound to its registrar after that too, as every name stays bound to the registrar that first
+registered it (above), so a release hands no name to another daemon. The registrar's next write of
+that pod and name takes the registration whole: its key, its generation and its expiry become that
+write's, so a later claim may count its generations from lower. A registrar stops every write of
+the names it releases before it releases them, its renewal and any write in flight included, since
+a registration write after the release makes that registration live again.
 
 A release revokes no access token. A token minted before the release commits, or by an exchange
 that read the registration just before, lives to its own expiry, at most
@@ -427,7 +446,8 @@ that read the registration just before, lives to its own expiry, at most
 The token exchange does not read `BROKER_POD_REGISTRARS`: it honours a registration written while
 its entry stood until the registration lapses or its registrar releases it. So removing an entry
 and redeploying the broker stops that registrar's new registrations at once and its old ones
-within 24 hours.
+within 24 hours. The names that registrar bound stay bound to it: no other registrar registers
+them once the entry is gone, and no route moves them yet.
 
 A registration that a broker of a build before migration 0038 wrote names no registrar. It holds
 no name, and no exchange honours it: the exchange answers it as it answers no registration at all,
@@ -441,14 +461,18 @@ with any key of that pod, and its route refuses a body naming `thumbprint` or `g
 `400`, so the daemon's registrations fail. Unset `exchange_audience` in every Legion daemon before
 you roll the broker back past this release.
 
-Rolling the broker back past the release that brought migration 0038 drops the session-name
-binding and the release without a word: an older broker reads neither the registrar nor the
-release mark, so its exchange honours a released registration and a registration of any registrar,
-and its route takes a registration from every account `BROKER_SERVICE_LOGINS` lists. Unset
-`exchange_audience` in every Legion daemon before you roll the broker back past this release. In a
-roll either way, the binding holds only once no broker replica of an older build takes
-registrations, because such a replica's write neither checks the holder nor sets the registrar,
-and can extend a lapsed registration of one daemon while another daemon holds the name.
+Rolling the broker back past the release that brought migrations 0038 and 0039 drops the
+session-name binding and the release without a word: an older broker reads neither the binding,
+the registrar nor the release mark, so its exchange honours a released registration and a
+registration of any registrar, and its route takes a registration from every account
+`BROKER_SERVICE_LOGINS` lists. The table
+`pod_session_registrars` stays, and an older broker neither reads nor writes it, so a roll forward
+finds each binding as it stood before the rollback. Unset `exchange_audience` in every Legion
+daemon before you roll the broker back past this release. In a roll either way, the binding holds
+only once no broker replica of an older build takes registrations, because such a replica's write
+neither checks the binding nor sets the registrar, and another daemon's write through it can
+extend a lapsed registration that the daemon a name is bound to wrote, which the newer replicas'
+exchange then honours.
 
 Rolling the broker back past the release in which each key says who decides its requests leaves
 the column `requests.judge_until` in place, which an older broker never reads, so a request the
