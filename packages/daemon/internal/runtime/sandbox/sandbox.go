@@ -135,13 +135,14 @@ type Runtime struct {
 	// it (PodDrift, once per claim of the deployment per tick) read a string rather than
 	// marshalling that configuration again.
 	podShapes map[podShapeKey]string
-	// cacheConfig is how each repository's cache is made, over the repositories the project works
-	// now — the mapping's and those of its live issue records (Options.RepositoryCache,
-	// Options.Mapped) — and cacheDial opens every
-	// connection the health read makes (net.Dialer's own; a test routes the Service's name itself).
-	cacheConfig RepositoryCache
-	mapped      func() []ghrepo.Repository
-	cacheDial   func(ctx context.Context, network, address string) (net.Conn, error)
+	// cacheConfig is how each repository's cache is made, cacheRepositories the repositories the
+	// caches follow, those of the project's live issue records and of the launches since the
+	// daemon last read them (Options.RepositoryCache, Options.CacheRepositories), and cacheDial
+	// opens every connection the health read makes (net.Dialer's own; a test routes the Service's
+	// name itself).
+	cacheConfig       RepositoryCache
+	cacheRepositories func() []ghrepo.Repository
+	cacheDial         func(ctx context.Context, network, address string) (net.Conn, error)
 
 	// lifetime is the informers' context; a read no single caller waits for
 	// (readLauncherCredential) ends with it.
@@ -242,8 +243,8 @@ func configure(opts Options) (*Runtime, error) {
 // adopting and sweeping a claim's pod, and making, refreshing and sweeping the repository caches:
 // the provisioning token source, the roles' gh-files function and the owners it serves them for,
 // the store, the connection directory, a worker stream address a pod can dial, the repository
-// caches' configuration and the mapping they follow. A runtime that runs the image probe alone
-// (newProber) reads none of them.
+// caches' configuration and the repositories they follow. A runtime that runs the image probe
+// alone (newProber) reads none of them.
 func checkSupervision(opts Options) error {
 	refuse := func(format string, args ...any) error { return fmt.Errorf("sandbox runtime: "+format, args...) }
 	switch {
@@ -259,7 +260,7 @@ func checkSupervision(opts Options) error {
 		return refuse("no store")
 	case opts.Conns == nil:
 		return refuse("no connection directory")
-	case opts.Mapped == nil:
+	case opts.CacheRepositories == nil:
 		return refuse("no repository set for the repository caches")
 	}
 	if err := opts.RepositoryCache.check(); err != nil {
@@ -411,7 +412,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
 		sessions:    map[claim.Token]launchedSession{},
-		cacheConfig: opts.RepositoryCache, mapped: opts.Mapped,
+		cacheConfig: opts.RepositoryCache, cacheRepositories: opts.CacheRepositories,
 		cacheDial: (&net.Dialer{}).DialContext, occupiedCaches: map[string]bool{}, cacheBearers: map[string]string{},
 	}
 	if len(r.agent) == 0 {

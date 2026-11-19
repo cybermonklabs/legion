@@ -123,7 +123,7 @@ func (r *liveRig) checkSetupNegative() error {
 		return err
 	}
 	c := r.claim("setup-negative")
-	r.mapRepository(r.env.repo)
+	r.recordRepository(r.env.repo)
 	name := SandboxName(c.token)
 	if err := r.recordSandbox(name); err != nil {
 		return err

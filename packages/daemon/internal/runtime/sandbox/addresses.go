@@ -445,10 +445,10 @@ func (r *Runtime) driftedInPod(pod *corev1.Pod, role claim.Role) []movedAddress 
 // /var/run/legion/gh has no directory of that name, every `gh` call of its roles that would read
 // the token there runs unauthenticated, and only a new pod projects it.
 //
-// What a pod created now would project is what a mint really produces, not what the mapping
-// names: an owner whose every repository GitHub refuses a lease for is left out of the bundle
-// and recorded as left out (appauth's mintBundle and LeftOut), so appauth.GitHubDirs leaves it
-// out of this answer too, and a pod without it is no pod to replace. Were it named here, the
+// What a pod created now would project is what a mint really produces, not what the Apps are
+// installed on: an owner whose every repository GitHub refuses a lease for is left out of the
+// bundle and recorded as left out (appauth's mintBundle and LeftOut), so appauth.GitHubDirs leaves
+// it out of this answer too, and a pod without it is no pod to replace. Were it named here, the
 // pod would be replaced at every sweep and its replacement's bundle would lack the directory
 // again, for ever (INFRA-513). A mint that answers for it again clears the record, and the pod
 // is then replaced once, which is right.

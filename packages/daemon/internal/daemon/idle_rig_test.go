@@ -600,7 +600,7 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	opts.GitHubDirs = func(ghrepo.Repository, []appauth.AppRole) []string {
 		return []string{strings.Split(liveRepo, "/")[0]}
 	}
-	opts.Mapped = func() []ghrepo.Repository { return nil }
+	opts.CacheRepositories = func() []ghrepo.Repository { return nil }
 	opts.Tools.Legion = idleRigLegionTool(r.t, tools)
 	opts.Agent = idleRigAgentTool(r.t, tools)
 	opts.DaemonURL = r.cfg.DaemonURL

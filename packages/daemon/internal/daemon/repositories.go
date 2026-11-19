@@ -2099,11 +2099,12 @@ func heardNames(held *[]ghrepo.Repository, repo ghrepo.Repository) bool {
 }
 
 // cacheRepositories is the repositories the runtime keeps a repository cache of, read at every
-// orphan sweep and handed to it as a function that performs no I/O (sandbox.Options.Mapped): the
-// repositories of the project's live issue records, which is where the work is, and each
-// repository a launch worked since the last read of them (workLaunched). A repository gets its
-// cache — one volume and one pod — from the moment a record names it, and loses it after its
-// retention once no live record names it. Before the first read of the records it is none.
+// orphan sweep and handed to it as a function that performs no I/O
+// (sandbox.Options.CacheRepositories): the repositories of the project's live issue records, which
+// is where the work is, and each repository a launch worked since the last read of them
+// (workLaunched). A repository gets its cache — one volume and one pod — from the moment a record
+// names it, and loses it after its retention once no live record names it. Before the first read
+// of the records it is none.
 func (w *workflowRuntime) cacheRepositories() []ghrepo.Repository {
 	if cached := w.cacheRepos.Load(); cached != nil {
 		return *cached

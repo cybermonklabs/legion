@@ -86,7 +86,7 @@ func TestIssueCloseDeletesTheSandboxAfterARestart(t *testing.T) {
 			Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
 			ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
 			GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: quietLogger(),
-			RepositoryCache: defaultRepositoryCache(t), Mapped: noRepositories,
+			RepositoryCache: defaultRepositoryCache(t), CacheRepositories: noRepositories,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -431,7 +431,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 		Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, logger),
 		ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, logger),
 		GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: logger,
-		RepositoryCache: defaultRepositoryCache(t), Mapped: noRepositories,
+		RepositoryCache: defaultRepositoryCache(t), CacheRepositories: noRepositories,
 	})
 	if err != nil {
 		t.Fatal(err)

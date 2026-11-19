@@ -278,8 +278,8 @@ func TestAControllerLaunchFailsWhenItsCredentialMintRefuses(t *testing.T) {
 	}
 }
 
-// A project whose repositories have no GitHub owner to mint for (runtime.ErrNoGitHubOwner: every mapped
-// repository lacks an App) still runs its controller, with gh acting as nobody, as `legion
+// A project whose repositories have no GitHub owner to mint for (runtime.ErrNoGitHubOwner: its
+// App installed on no account) still runs its controller, with gh acting as nobody, as `legion
 // controller start` does there: the launch succeeds, its role Secret holds the launcher token and
 // an empty default owner and no gh files, its gh volume is an empty directory rather than a
 // projection of the Secret (a projection with no items would project every key, the launcher

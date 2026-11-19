@@ -912,9 +912,9 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 // that fails, a bundle Validate refuses, and a role whose bundle names another default fail the
 // launch, naming the role, since a pod whose gh holds no token would start every role unable to
 // reach GitHub. The one exception is the controller of a project with no GitHub owner to mint
-// for (runtime.ErrNoGitHubOwner, every mapped repository without an App): it runs with gh acting
-// as nobody, as `legion controller start` does there, its bundle empty — no directory, no
-// default — and its gh directory an empty one (volumes).
+// for (runtime.ErrNoGitHubOwner, its App installed on no account): it runs with gh acting as
+// nobody, as `legion controller start` does there, its bundle empty — no directory, no default —
+// and its gh directory an empty one (volumes).
 //
 // The pod projects the directories every role's bundle holds, and no more (ghDirsShared): a
 // projection item naming a key the role's Secret lacks stops the pod from starting, and the six

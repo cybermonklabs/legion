@@ -359,15 +359,24 @@ const issueVolume = "issue"
 // it names no repository, which a label value cannot hold (`/`) and a DNS-safe form of it cannot
 // be read back from. The repository is the annotation annotationCacheRepo alone, exactly as GitHub
 // names it, on the Sandbox, its pod template and its Secret (cacheRepository). The sweep marks a
-// cache whose repository left the mapping with annotationCacheUnmappedAt. cacheVolume is a cache
-// Sandbox's one claim template and cacheContainer its pod's one container.
+// cache whose repository left the cache set (Options.CacheRepositories) with
+// annotationCacheUnusedAt. cacheVolume is a cache Sandbox's one claim template and cacheContainer
+// its pod's one container.
+//
+// annotationCacheOldUnusedAt is the annotation the sweep of a release before INFRA-4401 marked such
+// a cache with. The sweep reads it because INFRA-4401's A4 requires a cache marked under it to be
+// marked again: one outside the set gets annotationCacheUnusedAt at that sweep's time and loses
+// the old one, so it retires one retention later, and one back in the set loses both. It can go
+// once no cache carries it, one runtime.kubernetes.repository_cache.retain_hours after this release
+// is deployed.
 const (
-	labelCache                = "legion.dev/cache"
-	cacheMarker               = "true"
-	annotationCacheRepo       = "legion.dev/cache-repo"
-	annotationCacheUnmappedAt = "legion.dev/cache-unmapped-at"
-	cacheVolume               = "cache"
-	cacheContainer            = "cache"
+	labelCache                 = "legion.dev/cache"
+	cacheMarker                = "true"
+	annotationCacheRepo        = "legion.dev/cache-repo"
+	annotationCacheUnusedAt    = "legion.dev/cache-unused-at"
+	annotationCacheOldUnusedAt = "legion.dev/cache-unmapped-at"
+	cacheVolume                = "cache"
+	cacheContainer             = "cache"
 )
 
 // maxNameLength is a DNS-1123 label's length: a Sandbox name is also its pod's and, were one

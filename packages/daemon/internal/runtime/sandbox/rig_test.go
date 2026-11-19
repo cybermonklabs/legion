@@ -102,8 +102,8 @@ func testOptions() Options {
 			Volume: resource.MustParse("20Gi"), Refresh: 10 * time.Minute, Retain: 168 * time.Hour,
 			Resources: reservations().Controller,
 		},
-		Mapped: func() []ghrepo.Repository { return nil },
-		Log:    slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		CacheRepositories: func() []ghrepo.Repository { return nil },
+		Log:               slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
 	}
 }
 
@@ -161,7 +161,7 @@ func staticControllerCredential(ctx context.Context, defaultOwner string) (ghcon
 }
 
 // noOwnerControllerCredential is the ControllerCredential of a project with no GitHub owner to
-// mint for (runtime.ErrNoGitHubOwner: every mapped repository lacks an App): a controller's
+// mint for (runtime.ErrNoGitHubOwner: its App installed on no account): a controller's
 // launch then writes no gh files at all and its gh acts as nobody, its gh directory an empty one.
 // It is the controller's own function that refuses, the launch asking for no bundle of any role
 // (relaunch's gitHubBundles).
@@ -174,14 +174,14 @@ func noOwnerControllerCredential(context.Context, string) (ghconfig.Bundle, erro
 // pod a rig launches projects a gh directory for each of them and has drifted from none.
 var staticDirs = []string{"acme", "sjawhar"}
 
-// addedOwner is an owner the project's mapping gained after a pod was created: no owner of
+// addedOwner is an owner the daemon came to serve after a pod was created: no owner of
 // staticDirs, and sorted between them, so a pod built before it holds no directory of that
 // name and a bundle rendered now holds one.
 const addedOwner = "globex"
 
 // servedDirs are the directories a daemon servingAddedOwner serves, sorted: staticDirs with
-// addedOwner among them, which is what appauth.GitHubDirs answers once the mapping names a
-// repository of that owner. It is derived, so a staticDirs this package edits moves it too.
+// addedOwner among them, which is what appauth.GitHubDirs answers once both Apps' bundles read
+// an installation on that owner. It is derived, so a staticDirs this package edits moves it too.
 var servedDirs = slices.Sorted(slices.Values(append(slices.Clone(staticDirs), addedOwner)))
 
 // servingAddedOwner is a restarted daemon serving one owner more: GitHubDirs answers
@@ -189,8 +189,8 @@ var servedDirs = slices.Sorted(slices.Values(append(slices.Clone(staticDirs), ad
 // directories staticCredential always renders, the controller's own among them (its launch and
 // its refresh both ask ControllerCredential), as the daemon's own answers move together
 // (appauth.GitHubDirs, appauth.GitHubCredential and appauth.ControllerCredential read one
-// mapping). A pod created before it projects no directory for the new owner and never will
-// (movedGhDirs).
+// record of the Apps' installations). A pod created before it projects no directory for the new
+// owner and never will (movedGhDirs).
 func servingAddedOwner(o *Options) {
 	o.GitHubDirs = func(ghrepo.Repository, []appauth.AppRole) []string { return servedDirs }
 	credential := func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
@@ -225,15 +225,15 @@ var renamedDirs = slices.Sorted(slices.Values([]string{recordedSmoke.Owner(), se
 // owner predicate read as the project owning that owner.
 var otherOfRecordedOwner = ghrepo.MustParse(recordedSmoke.Owner() + "/other")
 
-// installedOnMapped is the owner accounts a role's App is installed on, as a bundle reads them
+// installedOnServed is the owner accounts a role's App is installed on, as a bundle reads them
 // from GitHub at every build (appauth.OwnerInstallations): every owner of the repositories
 // served, which is the ordinary deployment and what a test that is not about an installation's
 // own reach wants.
-type installedOnMapped struct{ served func() []ghrepo.Repository }
+type installedOnServed struct{ repos func() []ghrepo.Repository }
 
-func (i installedOnMapped) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+func (i installedOnServed) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
 	owners := make([]string, 0, 2)
-	for _, repo := range i.served() {
+	for _, repo := range i.repos() {
 		if owner := strings.ToLower(repo.Owner()); !slices.Contains(owners, owner) {
 			owners = append(owners, owner)
 		}
@@ -252,21 +252,32 @@ func sourceOf(tokens appauth.Tokens, installs appauth.OwnerInstallations) appaut
 	}{tokens, installs}
 }
 
-// servingRenamed is a daemon serving repos with the smoke pair configured, built as the daemon
-// builds its own answers from one mapping (daemon's sandboxRuntime): the directories it serves,
-// the gh bundles it renders, the provisioning tokens it mints and the mapping its cache sweep
-// reads are one view of those repositories, each read one repository at a time, so a test that
-// moves the mapping moves all four together.
+// servesOneOf is the `served` predicate of a daemon serving repos, which it hands its gh bundles,
+// its directory set and its provisioning tokens (daemon's servesRepository): whether GitHub
+// answered both role Apps installed on a repository, which here is whether it is one of repos,
+// compared as GitHub names a repository, regardless of case (sameRepository).
+func servesOneOf(repos func() []ghrepo.Repository) func(ghrepo.Repository) bool {
+	return func(repo ghrepo.Repository) bool {
+		return slices.ContainsFunc(repos(), func(held ghrepo.Repository) bool { return sameRepository(held, repo) })
+	}
+}
+
+// servingRenamed is a daemon serving repos with the smoke pair configured, whose live records
+// name repos, built as the daemon builds its own answers (daemon's sandboxRuntime): the
+// directories it serves, the gh bundles it renders and the provisioning tokens it mints read one
+// served predicate (servesOneOf), each asked one repository at a time, and the cache set its
+// sweep reads is repos, so the four are one view of those repositories.
 func servingRenamed(repos ...ghrepo.Repository) func(*Options) {
 	return func(o *Options) {
-		served := func() []ghrepo.Repository { return repos }
+		listed := func() []ghrepo.Repository { return repos }
+		served := servesOneOf(listed)
 		renames := ghrepo.MustRenames(smokeRename)
 		// The two records the bundles write, as the daemon builds one pair per project and
 		// hands them to both credentials and the directory set alike: the owners each App's
 		// last bundle read installed, and what the mints found GitHub refuses.
 		installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
-		apps := sourceOf(&namedLeases{}, installedOnMapped{served: served})
-		o.Mapped = served
+		apps := sourceOf(&namedLeases{}, installedOnServed{repos: listed})
+		o.CacheRepositories = listed
 		o.Tokens = servingTokens{served: served, renames: renames}
 		o.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, nil)
 		o.ControllerCredential = appauth.ControllerCredential(apps, served, renames, installed, left, nil)
@@ -277,20 +288,17 @@ func servingRenamed(repos ...ghrepo.Repository) func(*Options) {
 }
 
 // servingTokens is the provisioning token source of a daemon that holds configured renames, as
-// the daemon builds it (implementTokens over the mapping's own serving rule): every token is
-// minted for the repository GitHub holds the recorded one under now, and names that owner as
+// the daemon builds it (implementTokens over the rename rule, ghrepo.Renames.Serving): every token
+// is minted for the repository GitHub holds the recorded one under now, and names that owner as
 // staticTokens names its own. The repository it is handed is resolved, and no address a caller
 // builds from that repository is.
 type servingTokens struct {
-	served  func() []ghrepo.Repository
+	served  func(ghrepo.Repository) bool
 	renames ghrepo.Renames
 }
 
 func (s servingTokens) Token(_ context.Context, repo ghrepo.Repository) (string, error) {
-	serving := s.renames.Serving(repo, func(candidate ghrepo.Repository) bool {
-		return ghrepo.Serves(s.served(), candidate)
-	})
-	return "ghs_provision_" + serving.Owner(), nil
+	return "ghs_provision_" + s.renames.Serving(repo, s.served).Owner(), nil
 }
 
 // launchOf is r's launch of spec as a relaunch that replaces the pod builds it: prepared, with each
