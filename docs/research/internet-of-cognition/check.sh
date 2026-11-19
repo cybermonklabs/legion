@@ -243,14 +243,15 @@
 #             own history and keeps its caches in its own IOC_CACHE
 # A case of check.test.sh plants a fault by setting one of FIXTURE_INPUTS on its own
 # command (IOC_HISTORY_REF, IOC_CACHE, IOC_OUR_TREE, IOC_EVID, IOC_TC_WORK, the five
-# program variables of PROGRAM_VARIABLES, IOC_FAKE_RATE_LIMIT, UV_OFFLINE, UV_NO_INDEX and
-# UV_FIND_LINKS), which fixture_run passes on; --self-test, and a shell that sources this
-# script as check.test.sh does, unset the caller's values of them first, so a fixture
-# reads one only from a case. fixture_run prints the directory of each run it makes, which
-# holds the run's text and its ending record (above), and check.test.sh reads each case by
-# that record. A run the self-test makes that cannot run, over the fixture or of
-# check.test.sh or --admitted, stops the self-test there, naming the run and its reason,
-# and ends it by the precedence above; it is never counted as an assertion that failed.
+# program variables of PROGRAM_VARIABLES, IOC_FAKE_RATE_LIMIT, IOC_GITHUB_HEADER_AGE,
+# UV_OFFLINE, UV_NO_INDEX and UV_FIND_LINKS), which fixture_run passes on; --self-test,
+# and a shell that sources this script as check.test.sh does, unset the caller's values of
+# them first, so a fixture reads one only from a case. fixture_run prints the directory of
+# each run it makes, which holds the run's text and its ending record (above), and
+# check.test.sh reads each case by that record. A run the self-test makes that cannot run,
+# over the fixture or of check.test.sh or --admitted, stops the self-test there, naming the
+# run and its reason, and ends it by the precedence above; it is never counted as an
+# assertion that failed.
 #
 # No recorded command may read the scratch of the pod this reading was made in, because
 # that pod's disk died with it. --replay therefore reads the two Dispatch records under
@@ -339,11 +340,25 @@
 # as the variable the table names, IOC_GITHUB_AUTH_LEGION and IOC_GITHUB_AUTH_AGENT_INFRA,
 # and env.sh's read of the review corpus, the read of GitHub's budget (github_budget) and
 # every recorded curl of GitHub's REST API send the file of the repository they read with
-# -H @"$<variable>". No line the gate prints and
-# no output a row records holds a token: a failure names a header file by its path at
-# most. The files go with the scratch, which the EXIT trap removes however the run ends,
-# and check.test.sh's case 117 holds both: a replay of the rows that send them, with a token
-# of the case's own, prints the token nowhere and leaves no header file behind.
+# -H @"$<variable>". The files are written again while the run goes on: before each row,
+# when one of them is GITHUB_HEADER_AGE seconds old, ten minutes, all are written as before
+# into a directory beside them and each is renamed over its old file (github_headers_fresh),
+# so a reader meets a whole file and each variable names one path through the run. A
+# Legion pod's git credential fill gives a GitHub App installation token, which lives one
+# hour, and a replay from a clean clone runs longer: at 882b668c one ran 3723 s, and the five
+# rows that sent the file written at its start failed together after the hour. The pod's
+# helper answers from a bundle its daemon refreshes in place, so a file written again
+# carries a live token. A row whose curl of GitHub's REST API fails is read once more by the
+# gate itself, at the URL and with the header file that curl's record names (github_answer),
+# since the row's own pipeline reads GitHub's answer, and its failure line names the status
+# and the first line of GitHub's message; a refusal for GitHub's rate limit ends the mode,
+# cannot run, of the kind source. No line the gate prints and no output a row records holds
+# a token: a failure names a header file by its path at most. The files go with the
+# scratch, which the EXIT trap removes however the run ends, and check.test.sh's case 117
+# holds both: a replay of the rows that send them, with a token of the case's own, prints
+# the token nowhere and leaves no header file behind. Case 118 holds that a row meets the
+# files written again, and case 119 that a failed read of GitHub's REST API names GitHub's
+# answer, and a refusal for its rate limit cannot run.
 #
 # The evidence it reads:
 #
@@ -431,7 +446,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # this script as check.test.sh does, first unsets its caller's FIXTURE_INPUTS, so that a
 # fixture reads one only from a case that sets it on its own command.
 FIXTURE_CARRIED="PATH HOME TMPDIR DISPATCH_URL DISPATCH_TOKEN_FILE DISPATCH_HOST DISPATCH_SESSION_ID DISPATCH_STATE_DIR IOC_CLONES http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY GOPROXY GONOPROXY GOSUMDB GONOSUMDB GOPRIVATE GOINSECURE GOTOOLCHAIN"
-FIXTURE_INPUTS="IOC_HISTORY_REF IOC_CACHE IOC_OUR_TREE IOC_EVID IOC_TC_WORK IOC_PY IOC_MASLAB_PY IOC_MASLAB_CTL IOC_MASLAB_WHEEL_CTL IOC_TC_PY IOC_FAKE_RATE_LIMIT UV_OFFLINE UV_NO_INDEX UV_FIND_LINKS"
+FIXTURE_INPUTS="IOC_HISTORY_REF IOC_CACHE IOC_OUR_TREE IOC_EVID IOC_TC_WORK IOC_PY IOC_MASLAB_PY IOC_MASLAB_CTL IOC_MASLAB_WHEEL_CTL IOC_TC_PY IOC_FAKE_RATE_LIMIT IOC_GITHUB_HEADER_AGE UV_OFFLINE UV_NO_INDEX UV_FIND_LINKS"
 if [ "${BASH_SOURCE[0]}" != "$0" ] || [ "${1:-}" = --self-test ]; then
     # shellcheck disable=SC2086
     unset $FIXTURE_INPUTS
@@ -2128,16 +2143,106 @@ private_repository_read() {
     cannot_run source " --replay: $what printed '$(head -c 160 "$file" | tr '\n' ' ')' where it names the repository's head, so git cannot read it"
 }
 
+# GITHUB_HEADER_AGE; the age in seconds at which --replay writes the GitHub header files
+# again, checked before every row it runs (github_headers_fresh). A Legion pod's git
+# credential fill gives a GitHub App installation token, which lives one hour, and a replay
+# from a clean clone runs longer than that (3723 s at 882b668c, where the five rows that
+# sent the file written at the start each failed with curl's exit 22 after the hour), so a
+# file written once sends a dead token by the run's end. The pod's helper answers from a
+# bundle its daemon refreshes in place, so a file written again carries a live token. Ten
+# minutes keeps each file well inside its token's hour, at two calls of git credential fill
+# a time. IOC_GITHUB_HEADER_AGE, one of FIXTURE_INPUTS, is check.test.sh's case 118's alone,
+# which sets 0 so that every row meets files written again; a value that is no whole number,
+# or is longer than GITHUB_HEADER_AGE, is read as GITHUB_HEADER_AGE. GITHUB_HEADERS_WRITTEN
+# is 1 once github_headers has written the files in this run.
+GITHUB_HEADER_AGE=600
+GITHUB_HEADERS_WRITTEN=0
+
 # github_headers; the GitHub header files (the header's "The GitHub tokens stand on no
 # command line"): env.sh's ioc_env_github_auth writes one per repository of its
-# ioc_env_github_table under this run's scratch, which the EXIT trap removes however the run
-# ends, and exports the variable that names it, so env.sh's read of the review corpus, the
-# read of GitHub's budget and every recorded curl of GitHub's REST API send it. A file that cannot be written is the
-# run's own scratch failing, of the kind environment.
+# ioc_env_github_table, each with umask 077, into github-headers.new under this run's
+# scratch, and each is renamed over $RUN_SCRATCH/<variable>.header, which the variable then
+# names. A rename replaces a file whole, so a reader meets the old file or the new one and
+# never one half written, and each variable names one path through the run. The EXIT trap
+# removes the scratch however the run ends. env.sh's read of the review corpus, the read of
+# GitHub's budget and every recorded curl of GitHub's REST API send the files. --replay
+# calls it before it sources env.sh, and github_headers_fresh calls it again while the rows
+# run. A file that cannot be written or renamed is the run's own scratch failing, of the
+# kind environment.
 github_headers() {
+    local new="$RUN_SCRATCH/github-headers.new" name _repo
     env_functions || cannot_run gate " --replay: env.sh, which holds how a GitHub header file is written, did not load."
-    IOC_ENV_SCRATCH="$RUN_SCRATCH" ioc_env_github_auth 2>"$RUN_SCRATCH/github-headers.err" ||
+    { mkdir -p -m 700 -- "$new" && IOC_ENV_SCRATCH="$new" ioc_env_github_auth; } 2>"$RUN_SCRATCH/github-headers.err" ||
         cannot_run environment " --replay: $(head -c 240 "$RUN_SCRATCH/github-headers.err" | tr '\n' ' ')"
+    while IFS='|' read -r name _repo; do
+        mv -f -- "$new/$name.header" "$RUN_SCRATCH/$name.header" 2>"$RUN_SCRATCH/github-headers.err" ||
+            cannot_run environment " --replay: the header file $RUN_SCRATCH/$name.header could not be renamed into place: $(head -c 240 "$RUN_SCRATCH/github-headers.err" | tr '\n' ' ')"
+        export "$name=$RUN_SCRATCH/$name.header"
+    done < <(ioc_env_github_table)
+    GITHUB_HEADERS_WRITTEN=1
+}
+
+# github_headers_fresh; before each row --replay runs, writes the GitHub header files again
+# by github_headers when one of them is GITHUB_HEADER_AGE seconds old or older by its
+# modification time, or has none to read, and does nothing in a run that wrote none. Every
+# row is checked, whatever its command, since a row reads a file through a script it runs as
+# well as on its own command line, as tc-rng-2 does through evidence/concord-build-run.sh,
+# and the check is a stat of each file.
+github_headers_fresh() {
+    [ "$GITHUB_HEADERS_WRITTEN" = 1 ] || return 0
+    local bound="${IOC_GITHUB_HEADER_AGE:-$GITHUB_HEADER_AGE}" now name _repo written stale=0
+    [[ "$bound" =~ ^[0-9]+$ ]] && [ "$bound" -le "$GITHUB_HEADER_AGE" ] || bound="$GITHUB_HEADER_AGE"
+    now="$(date +%s)"
+    while IFS='|' read -r name _repo; do
+        written="$(stat -c %Y -- "$RUN_SCRATCH/$name.header" 2>/dev/null)" && [ $((now - written)) -lt "$bound" ] || stale=1
+    done < <(ioc_env_github_table)
+    [ "$stale" = 0 ] || github_headers
+}
+
+# github_answer <output-file>; when a curl of GitHub's REST API that the row ran failed,
+# makes one read of its own of that curl's URL with the header file it sent, and names what
+# GitHub answered in IOC_GITHUB_ANSWER, its status and the first line of its body's message,
+# as "GitHub answered 401: Bad credentials". IOC_GITHUB_RATE_LIMIT is 1 when that answer is
+# GitHub's rate limit, a 403 or a 429 whose message names a rate limit or a secondary rate
+# limit, or whose x-ratelimit-remaining header is 0, and the answer then names the limit
+# its headers give. Both are empty when no curl of GitHub's REST API failed. A row records
+# what it records: a row's curl hands GitHub's body to the row's pipeline, jq in each row
+# that sends IOC_GITHUB_AUTH_LEGION, and writes into the row's output only its own line,
+# "curl: (22) The requested URL returned error: 401", so only a read of the gate's own gives
+# GitHub's message. The URL and the header file are the ones the failed curl's record names
+# (run_recorded), the read is one request, made only on a failure, and its body, its
+# headers and curl's stderr go into the run's scratch. Nothing of it is printed but the
+# status, the message's first line and the rate limit's own headers, so no token is, and a
+# header file stands in a failure line by its path at most, in IOC_FAILED_READ.
+github_answer() {
+    local out="$1" failed_status failed_declared failed_command url="" header="" code message
+    local remaining limit reset resource body="$RUN_SCRATCH/github-answer.body" dump="$RUN_SCRATCH/github-answer.headers"
+    local curl_read='^curl (.* )?(https://api\.github\.com/[^ ]*)' header_sent='(^| )-H @([^ ]+)'
+    IOC_GITHUB_ANSWER="" IOC_GITHUB_RATE_LIMIT=""
+    [ -s "$out.failed" ] || return 0
+    while IFS=$'\t' read -r failed_status failed_declared failed_command; do
+        declared_status_holds "$failed_status" "$failed_declared" && continue
+        [[ "$failed_command" =~ $curl_read ]] || continue
+        url="${BASH_REMATCH[2]}"
+        [[ "$failed_command" =~ $header_sent ]] && header="${BASH_REMATCH[2]}"
+        break
+    done <"$out.failed"
+    [ -n "$url" ] || return 0
+    rm -f -- "$body" "$dump"
+    code="$(curl -sS -o "$body" -D "$dump" -w '%{http_code}' ${header:+-H "@$header"} "$url" 2>"$body.err")"
+    if ! [[ "$code" =~ ^[1-5][0-9][0-9]$ ]]; then
+        IOC_GITHUB_ANSWER="GitHub answered nothing when the gate read $url again: $(head -c 160 "$body.err" | tr '\n' ' ')"
+        return 0
+    fi
+    message="$(jq -r 'if type == "object" and (.message | type) == "string" then .message | split("\n")[0] | .[0:240] else empty end' "$body" 2>/dev/null)"
+    IOC_GITHUB_ANSWER="GitHub answered $code${message:+: $message}"
+    case "$code" in 403 | 429) ;; *) return 0 ;; esac
+    IFS='|' read -r remaining limit reset resource < <(awk -F ': *' '{ sub(/\r$/, "") } { v[tolower($1)] = $2 }
+        END { printf "%s|%s|%s|%s\n", v["x-ratelimit-remaining"], v["x-ratelimit-limit"], v["x-ratelimit-reset"], v["x-ratelimit-resource"] }' "$dump" 2>/dev/null)
+    [[ "${message,,}" == *"rate limit"* ]] || [ "$remaining" = 0 ] || return 0
+    IOC_GITHUB_RATE_LIMIT=1
+    [ -z "$limit" ] ||
+        IOC_GITHUB_ANSWER="$IOC_GITHUB_ANSWER; its ${resource:+$resource }rate limit has ${remaining:-none} of its $limit requests left${reset:+ until $(date -u -d "@$reset" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '%s' "$reset")}"
 }
 
 # unpinned_installs; prints one line per package a recorded command installs or runs with
@@ -3943,11 +4048,12 @@ mode_replay() {
     # rather than after count.py's read of the feed or an install, and a refused repository
     # is named whatever the budget. The header files are the ones env.sh's read of the
     # review corpus and the recorded curls of GitHub's REST API send, written under this
-    # run's scratch before env.sh is sourced, and the budget is read with the one of
+    # run's scratch before env.sh is sourced and again before a row when they are old
+    # (github_headers_fresh), and the budget is read with the one of
     # cybermonklabs/legion, so it is the token's budget when there is a token
     # (github_budget). The self-test's fixture builds nothing with env.sh, so it writes them
-    # only when one of its rows sends one, as check.test.sh's case 117 plants, and reads no
-    # budget.
+    # only when one of its rows sends one, as check.test.sh's cases 117 to 119 plant, and
+    # reads no budget.
     private_repository_read
     if [ "${IOC_NO_ENV:-0}" != 1 ] || claims | grep -qF 'IOC_GITHUB_AUTH_'; then
         github_headers
@@ -4034,6 +4140,9 @@ mode_replay() {
             ioc_env_unstamp "$label"
         done
         stamps="$(environment_stamps)"
+        # The GitHub header files are written again when they are old, before the row and
+        # never inside its command (the header's "The GitHub tokens stand on no command line").
+        github_headers_fresh
         run_recorded "$command" "$work/$id.out"
         changed="$({
             printf '%s\n' "$installs"
@@ -4074,10 +4183,16 @@ mode_replay() {
         fi
         # A read that failed anywhere in the row leaves its output no reading of what the
         # row claims, whatever that output still meets: a traceback has enough lines for a
-        # bound. A row whose predicate is an exit status claims the failure itself.
+        # bound. A row whose predicate is an exit status claims the failure itself. A failed
+        # curl of GitHub's REST API is read once more by the gate, and its line names what
+        # GitHub answered (github_answer); a refusal for GitHub's rate limit is no verdict on
+        # the deliverable, and the mode cannot run, of the kind source.
         if failed_read "$work/$id.out"; then
+            github_answer "$work/$id.out"
+            [ -z "$IOC_GITHUB_RATE_LIMIT" ] ||
+                cannot_run source " --replay now: GitHub's rate limit refused $id's read of its REST API, so the row's failure is no verdict on the deliverable: $IOC_GITHUB_ANSWER"
             command_failures="$command_failures $id"
-            fail replay-command "$id ran its command and a read inside it failed: $IOC_FAILED_READ, so its output is no reading of what the row claims"
+            fail replay-command "$id ran its command and a read inside it failed: $IOC_FAILED_READ${IOC_GITHUB_ANSWER:+, and $IOC_GITHUB_ANSWER}, so its output is no reading of what the row claims"
             continue
         fi
         IOC_BOUND_READ=""

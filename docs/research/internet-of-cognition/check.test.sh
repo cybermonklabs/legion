@@ -3263,6 +3263,186 @@ if case_read "$token_case" "$out"; then
     fi
 fi
 
+# 118. The GitHub header files are written again while the run goes on (the clean-clone
+# replay at 882b668c). A Legion pod's git credential fill gives a GitHub App installation
+# token, which lives one hour, and that replay ran 3723 s: env.sh's read of the review corpus
+# at its start passed with the file github_headers wrote, and about an hour later the five
+# rows that sent the same file failed together, each a curl of GitHub's REST API exiting 22.
+# --replay now writes the files again before a row when they are GITHUB_HEADER_AGE seconds
+# old (github_headers_fresh), into a directory beside them, and renames each over its old
+# file. The case sets that age to 0 by IOC_GITHUB_HEADER_AGE, so that every row meets files
+# written again, and puts first on PATH a git of the case's own whose git credential fill
+# answers each call with a token one character longer than the call before, ghs_IOCFAKE118_
+# and then one x per call so far, and runs the real git for everything else. Two rows of the
+# case's own each print the size of the file IOC_GITHUB_AUTH_LEGION names and nothing of
+# it, and a third copies the replay's recorded files out of the run's scratch before the run
+# removes it, as case 117's does. The run is bounded as case 117's is: the fixture builds
+# nothing with env.sh and reads no budget and no private repository (IOC_NO_ENV), and its
+# clone root is a directory of the case's own beside its TMPDIR. The case fails when the
+# second row's file is no longer than the first row's, so it was not written again between
+# them, when the first holds no token of the case's, when the token's prefix stands in the
+# run's whole log, in any recorded file, or in any file under the fixture, the clone root
+# or the TMPDIR, or when the run leaves any file under its TMPDIR, the header files among
+# them.
+RENEW_CASE="$WORK/github-header-renewal"
+RENEW_PREFIX=ghs_IOCFAKE118
+mkdir -p "$RENEW_CASE/bin" "$RENEW_CASE/tmp" "$RENEW_CASE/clones" "$RENEW_CASE/outputs"
+cat >"$RENEW_CASE/bin/git" <<'STUB'
+#!/bin/sh
+case " $* " in
+*" credential fill "*)
+    cat >/dev/null
+    calls=$(($(cat CALLS 2>/dev/null || printf 0) + 1))
+    printf '%s\n' "$calls" >CALLS
+    printf 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=ghs_IOCFAKE118_%s\n' "$(printf "%${calls}s" '' | tr ' ' x)"
+    exit 0
+    ;;
+esac
+exec REAL_GIT "$@"
+STUB
+sed -i -e "s|REAL_GIT|'$(command -v git)'|" -e "s|CALLS|'$RENEW_CASE/calls'|g" "$RENEW_CASE/bin/git"
+chmod +x "$RENEW_CASE/bin/git"
+dir="$(fresh github-header-renewal-fixture)"
+claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+for row in first second; do
+    jq -cn --arg id "f-header-$row" --arg claim "The GitHub header file of cybermonklabs/legion holds one header line when the $row row reads it." \
+        '{id: $id, requirement: "r7", source: "the case", kind: "behaviour", claim: $claim, mark: "verified", evidence: {surface: "cli"}, command: "wc -c \"$IOC_GITHUB_AUTH_LEGION\"", expect: {exit: 0}, output: "", note: "planted by case 118"}' >>"$claims_copy"
+done
+jq -cn --arg to "$RENEW_CASE/outputs/replay" '{id: "f-copy-outputs", requirement: "r7", source: "the case", kind: "behaviour", claim: "The recorded files of the rows before it are copied.", mark: "verified", evidence: {surface: "cli"}, command: ("cp -r \"$TMPDIR/..\" " + $to), expect: {exit: 0}, output: "", note: "planted by case 118"}' >>"$claims_copy"
+out="$(PATH="$RENEW_CASE/bin:$PATH" TMPDIR="$RENEW_CASE/tmp" IOC_CLONES="$RENEW_CASE/clones" IOC_GITHUB_HEADER_AGE=0 fixture_run "$dir" --replay)"
+renew_case="a replay writes the GitHub header files again before a row once they reach their age, and prints the token in no line and no recorded output, and leaves no header file behind"
+base_bytes="$(printf 'Authorization: Bearer %s_\n' "$RENEW_PREFIX" | wc -c)"
+if case_read "$renew_case" "$out"; then
+    leaks="$(grep -rlF "$RENEW_PREFIX" "$dir" "$RENEW_CASE/outputs" "$RENEW_CASE/clones" "$RENEW_CASE/tmp" 2>/dev/null)"
+    first="$(awk '{ print $1; exit }' "$RENEW_CASE/outputs/replay/f-header-first.out" 2>/dev/null)"
+    second="$(awk '{ print $1; exit }' "$RENEW_CASE/outputs/replay/f-header-second.out" 2>/dev/null)"
+    left="$(find "$RENEW_CASE/tmp" -mindepth 1 2>/dev/null | head -3)"
+    if [ -n "$leaks" ]; then
+        case_failed "$renew_case" "the token's prefix stands in $(printf '%s' "$leaks" | head -3 | tr '\n' ' ')"
+    elif ! [[ "$first" =~ ^[0-9]+$ && "$second" =~ ^[0-9]+$ ]]; then
+        case_failed "$renew_case" "the sizes the two rows printed were not copied, so none was read: $RUN_LINE"
+    elif [ "$first" -le "$base_bytes" ]; then
+        case_failed "$renew_case" "the header file the first row read held no token of the case's: $first bytes, where more than $base_bytes were asked"
+    elif [ "$second" -le "$first" ]; then
+        case_failed "$renew_case" "the second row read the file the first row read, $first bytes and then $second, so the file was not written again between them"
+    elif [ -n "$left" ]; then
+        case_failed "$renew_case" "the run left files under its TMPDIR: $(printf '%s' "$left" | tr '\n' ' ')"
+    else
+        case_passed "$renew_case"
+    fi
+fi
+
+# 119. A failed read of GitHub's REST API names what GitHub answered, and a refusal for
+# GitHub's rate limit is no verdict on the deliverable (the architect's ruling on the replay
+# at 882b668c). There the five rows that sent a dead token each failed with "'curl -sS
+# --fail-with-body -H @<file> https://api.github.com/<path>' exited 22" and nothing more,
+# since each hands GitHub's body to jq and the row's output holds only curl's own line, so
+# that GitHub had answered 401 was an inference. When a row's failed read is a curl of
+# GitHub's REST API, the gate now reads that curl's URL once more itself, with the header
+# file the curl sent (github_answer): its FAIL of replay-command names GitHub's status and
+# the first line of its message, and a 403 or 429 for GitHub's rate limit ends the mode,
+# cannot run, of the kind source, naming the limit. The case plants into each of two
+# fixtures one row of the case's own that runs tc-input-1's command, a curl of GitHub's
+# REST API piped into jq, and puts first on PATH a git that answers git credential fill
+# with a token of the case's own, as case 117's does, and a curl of the case's own, which
+# answers a read of api.github.com as GitHub does, with the body and the headers of the
+# answer its directory holds: to the row, the body on stdout, curl's line on stderr and
+# exit 22, and to a read with -o, the body and the headers into the files it names and the
+# status, recording what that read sent. It runs the real curl for any other address. Its
+# first answer is 401 Bad credentials: the run must fail replay-command, its FAIL line
+# naming 401 and the message, after one read of the gate's own of the row's URL with the
+# header file IOC_GITHUB_AUTH_LEGION names. Its second is a 403 whose message names the rate
+# limit and whose x-ratelimit-remaining is 0: the run must end exit 2 with no FAIL line, its
+# last line naming the limit. In neither may the token's prefix stand in the run's log.
+ANSWER_CASE="$WORK/github-answer"
+ANSWER_PREFIX=ghs_IOCFAKETOKEN119
+mkdir -p "$ANSWER_CASE/bin"
+cat >"$ANSWER_CASE/bin/git" <<'STUB'
+#!/bin/sh
+case " $* " in
+*" credential fill "*)
+    cat >/dev/null
+    printf 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=ghs_IOCFAKETOKEN119c4s3n0tAr34lt0k3n\n'
+    exit 0
+    ;;
+esac
+exec REAL_GIT "$@"
+STUB
+sed -i "s|REAL_GIT|'$(command -v git)'|" "$ANSWER_CASE/bin/git"
+chmod +x "$ANSWER_CASE/bin/git"
+for answer in 401 403; do
+    mkdir -p "$ANSWER_CASE/$answer/bin"
+    cat >"$ANSWER_CASE/$answer/bin/curl" <<'STUB'
+#!/bin/sh
+case " $* " in
+*" https://api.github.com/"*) ;;
+*) exec REAL_CURL "$@" ;;
+esac
+body='' dump='' format='' previous=''
+for word in "$@"; do
+    case "$previous" in
+    -o) body=$word ;;
+    -D) dump=$word ;;
+    -w) format=$word ;;
+    esac
+    previous=$word
+done
+status=$(cat ANSWER/status)
+if [ -n "$body" ]; then
+    printf '%s\n' "$*" >>ANSWER/reads
+    cat ANSWER/body >"$body"
+    [ -z "$dump" ] || cat ANSWER/headers >"$dump"
+    [ -z "$format" ] || printf '%s' "$status"
+    exit 0
+fi
+cat ANSWER/body
+printf 'curl: (22) The requested URL returned error: %s\n' "$status" >&2
+exit 22
+STUB
+    sed -i -e "s|REAL_CURL|'$(command -v curl)'|" -e "s|ANSWER|'$ANSWER_CASE/$answer'|g" "$ANSWER_CASE/$answer/bin/curl"
+    chmod +x "$ANSWER_CASE/$answer/bin/curl"
+    printf '%s\n' "$answer" >"$ANSWER_CASE/$answer/status"
+done
+printf '{\n  "message": "Bad credentials",\n  "documentation_url": "https://docs.github.com/rest",\n  "status": "401"\n}\n' >"$ANSWER_CASE/401/body"
+printf 'HTTP/2 401\r\ncontent-type: application/json; charset=utf-8\r\nx-ratelimit-limit: 60\r\nx-ratelimit-remaining: 59\r\n\r\n' >"$ANSWER_CASE/401/headers"
+printf '{\n  "message": "API rate limit exceeded for installation ID 119.",\n  "documentation_url": "https://docs.github.com/rest/using-the-rest-api/rate-limits-for-the-rest-api",\n  "status": "403"\n}\n' >"$ANSWER_CASE/403/body"
+printf 'HTTP/2 403\r\ncontent-type: application/json; charset=utf-8\r\nx-ratelimit-limit: 5000\r\nx-ratelimit-remaining: 0\r\nx-ratelimit-reset: 1794700800\r\nx-ratelimit-resource: core\r\n\r\n' >"$ANSWER_CASE/403/headers"
+jq -c 'select(.id == "tc-input-1") | {id: "f-github-read", requirement: "r7", source: "the case", kind: "behaviour", claim: "The input driven through the library is review 5854791039 of pull request cybermonklabs/legion#3522.", mark: "verified", evidence: {surface: "cli"}, command, expect, output: "", note: "planted by case 119"}' "$HERE/claims.jsonl" >"$ANSWER_CASE/row"
+[ -s "$ANSWER_CASE/row" ] && grep -qF 'https://api.github.com/' "$ANSWER_CASE/row" || {
+    printf 'FAIL tc-input-1 is no row of claims.jsonl that curls GitHub'"'"'s REST API, so case 119 has no command to plant\n'
+    exit 1
+}
+dir="$(fresh github-answer-401)"
+cat "$ANSWER_CASE/row" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+out="$(PATH="$ANSWER_CASE/401/bin:$ANSWER_CASE/bin:$PATH" fixture_run "$dir" --replay)"
+answer_case="a row whose curl of GitHub's REST API is answered 401 fails replay-command, naming the status and GitHub's message, read once more with the row's header file"
+if case_read "$answer_case" "$out"; then
+    reads="$(cat "$ANSWER_CASE/401/reads" 2>/dev/null)"
+    if grep -qF "$ANSWER_PREFIX" "$out/text"; then
+        case_failed "$answer_case" "the token's prefix stands in the run's log"
+    elif ! printf '%s' "$RUN_FAILED" | grep -qx replay-command ||
+        ! grep -qE "^FAIL replay-command: f-github-read ran its command and a read inside it failed: .*, and GitHub answered 401: Bad credentials, so its output is no reading of what the row claims$" "$out/text"; then
+        case_failed "$answer_case" "$(grep '^FAIL' "$out/text" | head -2 | tr '\n' ' ')$RUN_LINE"
+    elif [ "$(printf '%s\n' "$reads" | grep -c .)" != 1 ] ||
+        ! printf '%s\n' "$reads" | grep -qE -- '-H @[^ ]*/IOC_GITHUB_AUTH_LEGION\.header https://api\.github\.com/repos/cybermonklabs/legion/pulls/3522/reviews$'; then
+        case_failed "$answer_case" "the gate did not read the row's URL once with the row's header file; it read: $(printf '%s' "$reads" | head -3 | tr '\n' ' ')"
+    else
+        case_passed "$answer_case"
+    fi
+fi
+dir="$(fresh github-answer-403)"
+cat "$ANSWER_CASE/row" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+out="$(PATH="$ANSWER_CASE/403/bin:$ANSWER_CASE/bin:$PATH" fixture_run "$dir" --replay)"
+answer_case="a row whose curl of GitHub's REST API meets GitHub's rate limit cannot run, exit 2, naming the limit, and prints no FAIL"
+if grep -q '^FAIL' "$out/text"; then
+    case_failed "$answer_case" "$(grep '^FAIL' "$out/text" | head -2 | tr '\n' ' ')"
+elif grep -qF "$ANSWER_PREFIX" "$out/text"; then
+    case_failed "$answer_case" "the token's prefix stands in the run's log"
+else
+    ending_result "$answer_case" 2 \
+        "^check\\.sh cannot run --replay now: GitHub's rate limit refused f-github-read's read of its REST API, so the row's failure is no verdict on the deliverable: GitHub answered 403: API rate limit exceeded for installation ID 119\\.; its core rate limit has 0 of its 5000 requests left until [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z\$" "$out"
+fi
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
