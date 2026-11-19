@@ -1,4 +1,4 @@
-import type { Query, QueryClient, QueryKey } from "@tanstack/react-query";
+import { hashKey, type Query, type QueryClient, type QueryKey } from "@tanstack/react-query";
 
 import { ApiError } from "./client";
 
@@ -16,10 +16,11 @@ export function answeredNotFound(query: Pick<Query, "state">): boolean {
 
 /**
  * The one refresh scheduler: what happens to the queries an event batch names (`api/event-feed.ts`
- * asks, `api/event-refresh.ts` decides which). It never cancels a request, and it fetches one
- * query at most once a second:
+ * asks, `api/event-refresh.ts` decides which), and to the reads an owner of a query asks for
+ * (`ownQuery`). It never cancels a request, and it fetches one query at most once a second:
  *
- * - an inactive query is marked stale only, and fetches when something mounts it;
+ * - an inactive query is marked stale only, and fetches when something mounts it; a query an
+ *   owner holds, which no enabled observer renders, fetches only when its owner reads it;
  * - a query already fetching is fetched again once that fetch settles, so the answer composed
  *   after the event is the one shown, and the response already on its way is never discarded;
  * - a query whose last fetch began less than `MIN_REFETCH_INTERVAL_MS` ago is fetched at that
@@ -61,12 +62,14 @@ interface DeferredCheck {
 // Per QueryClient, keyed by query hash: when each query's last fetch began (from the cache's
 // `fetch` action), the moment each owed refresh was asked for, the timer that will start a
 // refresh the interval holds back, and the checks waiting for the response of a fetch that is out
-// (a first load or a refetch) to land. Every entry of a hash leaves when its query is removed.
+// (a first load or a refetch) to land. Every entry of a hash leaves when its query is removed,
+// but for `owners`, the refresh listeners of each `ownQuery` owner, which their owners remove.
 interface SchedulerState {
   readonly started: Map<string, number>;
   readonly owed: Map<string, number>;
   readonly timers: Map<string, number>;
   readonly deferred: Map<string, DeferredCheck>;
+  readonly owners: Map<string, Set<() => void>>;
 }
 
 const schedulers = new WeakMap<QueryClient, SchedulerState>();
@@ -79,6 +82,7 @@ function schedulerFor(queryClient: QueryClient): SchedulerState {
   const state: SchedulerState = {
     deferred: new Map(),
     owed: new Map(),
+    owners: new Map(),
     started: new Map(),
     timers: new Map(),
   };
@@ -144,6 +148,55 @@ export function trackQueryFetches(queryClient: QueryClient): void {
   schedulerFor(queryClient);
 }
 
+/** An owner's hold on one query (`ownQuery`). */
+export interface QueryOwner {
+  /** Asks for a fetch begun from now, under the scheduler's rules: now, when the fetch out
+   *  settles, or when the second since the last fetch began ends. It announces no refresh. */
+  readonly read: () => void;
+  /** Lets the query go, once: no listener call after it, and a read it asked for that is still
+   *  waiting is dropped, unless another owner still holds the query or an enabled observer
+   *  renders it. Its holder calls `read` no more after it, as the Steps tab clears its timers in
+   *  the same cleanup. */
+  readonly stop: () => void;
+}
+
+/**
+ * Hands the query `queryKey` names exactly to an owner that reads it on its own terms, until
+ * `stop`. `onRefresh` runs each time a refresh reaches the query - a target naming it exactly or
+ * by a prefix, or a refresh of the whole cache - which the query's state cannot tell the owner: a
+ * query already marked stale takes the mark again with no change to announce. The refresh itself
+ * fetches nothing for a query no enabled observer renders; the owner's `read` does, through the
+ * same rules as every other fetch this scheduler starts, so its reads too never cancel a request
+ * and come at most once a second. The Steps tab's catch-up is that owner
+ * (`features/steps/StepsTab.tsx`).
+ */
+export function ownQuery(
+  queryClient: QueryClient,
+  queryKey: QueryKey,
+  onRefresh: () => void
+): QueryOwner {
+  const state = schedulerFor(queryClient);
+  const hash = hashKey(queryKey);
+  const owners = state.owners.get(hash) ?? new Set<() => void>();
+  state.owners.set(hash, owners);
+  // A listener of this hold's own, so two holds that pass one function stay two.
+  const listener = () => onRefresh();
+  owners.add(listener);
+  return {
+    read: () => {
+      const requestedAt = Date.now();
+      state.owed.set(hash, Math.max(state.owed.get(hash) ?? requestedAt, requestedAt));
+      drive(state, queryClient, hash);
+    },
+    stop: () => {
+      owners.delete(listener);
+      if (owners.size === 0) {
+        state.owners.delete(hash);
+      }
+    },
+  };
+}
+
 /** Marks a query stale and, while something renders it or a fetch of it is out, records that it
  *  owes a fetch begun after `requestedAt`. A fetch out settles by clearing the stale mark, so the
  *  debt is what keeps the query stale when nothing renders it once that fetch lands (`drive`). */
@@ -173,9 +226,10 @@ function drive(state: SchedulerState, queryClient: QueryClient, hash: string): v
     // In flight: the cache subscription drives it again when it settles. Or already scheduled.
     return;
   }
-  if (!query.isActive() || query.isStatic()) {
-    // Nothing renders it, or it was left while it waited: the fetch that settled since the
-    // request cleared its stale mark, so it is marked stale again and fetches when it mounts.
+  if ((!query.isActive() && !state.owners.has(hash)) || query.isStatic()) {
+    // Nothing renders it and no owner holds it, or it was left while it waited: the fetch that
+    // settled since the request cleared its stale mark, so it is marked stale again and fetches
+    // when it mounts.
     state.owed.delete(hash);
     query.invalidate();
     return;
@@ -259,5 +313,8 @@ export function refreshQueries(queryClient: QueryClient, targets?: readonly Refr
     }
     owe(state, query, requestedAt);
     drive(state, queryClient, query.queryHash);
+    for (const listener of [...(state.owners.get(query.queryHash) ?? [])]) {
+      listener();
+    }
   }
 }

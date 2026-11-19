@@ -297,6 +297,33 @@ const HandoffPhaseRule = "a lowercase letter, then up to 31 lowercase letters, d
 // same phases.
 const HandoffPhasePattern = "^[a-z][a-z0-9-]{0,31}$"
 
+// The kinds of a run a step record names: a step a plan names, at its place from 1, and the retro
+// and the merge, which no plan names, at the place 0. The results of a run that ended. The codes of
+// the step write's refusals that no retry changes. Generated from STEP_KINDS, STEP_RESULTS and the
+// STEP_*_CODE constants in packages/contracts: Dispatch's store and route use them, and the Legion
+// daemon reads them through github.com/sjawhar/envoy/steprecord, so no word is written twice.
+const (
+	StepKindStep       = "step"
+	StepKindRetro      = "retro"
+	StepKindMerge      = "merge"
+	StepResultPassed   = "passed"
+	StepResultFailed   = "failed"
+	StepResultStopped  = "stopped"
+	StepInputCode      = "STEP_INPUT"
+	StepWriterCode     = "STEP_WRITER"
+	StepOtherIssueCode = "STEP_OTHER_ISSUE"
+)
+
+// StepAgentTextPattern is the form of the agent, the session and the model a step record names:
+// printable ASCII with no space, from 1 to 128 characters. Generated from STEP_AGENT_TEXT_PATTERN in
+// packages/contracts: Dispatch's step write refuses text outside it, and the Legion daemon, through
+// github.com/sjawhar/envoy/steprecord, leaves such text out of the records it writes.
+const StepAgentTextPattern = "^[!-~]{1,128}$"
+
+// StepAgentTextRule says StepAgentTextPattern's rule in words, which Dispatch's refusal gives.
+// Generated from STEP_AGENT_TEXT_RULE_WORDS in packages/contracts.
+const StepAgentTextRule = "printable ASCII with no space, from 1 to 128 characters"
+
 // ProjectNameMax is the longest project name, in UTF-16 units, that POST /api/v1/projects
 // accepts. Generated from PROJECT_NAME_MAX in packages/contracts so the server's refusal, the
 // Settings name field and the dispatch command cannot drift apart.

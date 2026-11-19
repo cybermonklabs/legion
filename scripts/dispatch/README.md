@@ -141,14 +141,14 @@ session, and why (sjawhar/legion#2366). The run has three steps. Every step only
    wrote in the window, one row for each session or role that the comment was owed or sent to (a
    pair). `trace.sql` writes Dispatch's whole record of one comment. Both are in
    `packages/envoy/internal/dispatch/deliveryaudit/`. Its `README.md` gives their columns.
-2. `tq receipts` (in theorem-labs/agent-infra `transcript-store/`) reads
+2. `tq receipts` (in example-org/deployment `transcript-store/`) reads
    `comments.csv` and the transcript store. It writes `receipts.tsv`, one status for each pair,
    and `receipts-counts.txt`, its counts. It owns the transcript rules: which transcript row is a
    receipt of a comment, which sessions count as the pair's session, and each pair's status.
 3. `report.ts` reads the three files and writes one markdown document and one TSV file of the
    document's pairs.
 
-theorem-labs/agent-infra's `transcript-store/comment-delivery/run.sh` does steps 1 and 2 on a dev box, which
+example-org/deployment's `transcript-store/comment-delivery/run.sh` does steps 1 and 2 on a dev box, which
 reaches both Dispatch's database and the transcript store.
 
 ### The run
@@ -173,7 +173,7 @@ psql "$DATABASE_URL" --single-transaction -q -X -v ON_ERROR_STOP=1 --csv \
   -v comment=03207432-749f-4211-9607-e378dc636807 \
   -f packages/envoy/internal/dispatch/deliveryaudit/trace.sql > trace-03207432.csv
 
-# 2. The transcript store (theorem-labs/agent-infra transcript-store/): receipts.tsv on stdout, the counts on stderr.
+# 2. The transcript store (example-org/deployment transcript-store/): receipts.tsv on stdout, the counts on stderr.
 tq receipts --comments comments.csv --from "$FROM" > receipts.tsv 2> receipts-counts.txt
 
 # 3. The document, and the TSV file of its pairs.

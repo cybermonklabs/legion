@@ -693,6 +693,9 @@ jobs:
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
               - 'packages/envoy/testnatsimages/*'
+              # The daemon reads a step record's words and the form of its agent text through
+              # this one public package, for the same reason.
+              - 'packages/envoy/steprecord/*'
             # The Dispatch server, `go list -deps ./cmd/dispatch` in packages/envoy (its embedded
             # migrations and pmdoc schema included): what the daemon's outbox test builds
             # (internal/testbuild/testbuild.go:112, called from
@@ -760,6 +763,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/dispatch/texttreefill/*'
               - 'packages/envoy/internal/dispatch/texttrees/*'
+              - 'packages/envoy/internal/dispatch/workflowstore/*'
               - 'packages/envoy/internal/envconf/*'
               - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
@@ -902,6 +906,8 @@ jobs:
               # nats-server versions the daemon refuses, for the same reason.
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
+              # The door onto a step record's words and the form of its agent text, for the same reason.
+              - 'packages/envoy/steprecord/*'
             # The listener's packages, `go list -deps ./cmd/listener` in packages/envoy.
             listener_command: &listener_command
               - 'packages/envoy/cmd/listener/*'
@@ -1050,6 +1056,7 @@ jobs:
               - '!packages/daemon/internal/daemon/review_range_live_test.go'
               - '!packages/daemon/internal/daemon/role_prompt_rule_live_test.go'
               - '!packages/daemon/internal/daemon/share_volumes_live_test.go'
+              - '!packages/daemon/internal/daemon/step_records_live_test.go'
               - '!packages/daemon/internal/daemon/sub_architect_live_test.go'
               - '!packages/daemon/internal/runtime/sandbox/live_app_test.go'
               - '!packages/daemon/internal/runtime/sandbox/live_cache_test.go'
@@ -1097,6 +1104,7 @@ jobs:
               - 'packages/envoy/sessiontiming/*'
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
+              - 'packages/envoy/steprecord/*'
               - 'packages/envoy/testnatsimages/*'
               - 'packages/contracts/**'
               - 'packages/envoy-client/**'
@@ -1147,6 +1155,7 @@ jobs:
               - '!packages/daemon/internal/daemon/review_range_live_test.go'
               - '!packages/daemon/internal/daemon/role_prompt_rule_live_test.go'
               - '!packages/daemon/internal/daemon/share_volumes_live_test.go'
+              - '!packages/daemon/internal/daemon/step_records_live_test.go'
               - '!packages/daemon/internal/daemon/sub_architect_live_test.go'
               - '!packages/daemon/internal/dispatch/**/*_test.go'
               - '!packages/daemon/internal/envlisting/**/*_test.go'
@@ -2079,6 +2088,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/dispatch/texttreefill/*'
               - 'packages/envoy/internal/dispatch/texttrees/*'
+              - 'packages/envoy/internal/dispatch/workflowstore/*'
               - 'packages/envoy/internal/envconf/*'
               - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
@@ -2399,6 +2409,7 @@ jobs:
               - 'packages/envoy/sessiontiming/*'
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
+              - 'packages/envoy/steprecord/*'
               - *go_workspace
               # The guides and docs the skills guard sweeps (src/skills-guard.test.ts:143-148).
               - 'AGENTS.md'
@@ -2772,11 +2783,12 @@ jobs:
             # reaches testdata and goldens across the module.
             # Of packages/daemon the job reads the .go files its own file_copy_test.go walks,
             # the .go files the supervise pins type-check from source - internal/supervise and
-            # every package of this module it imports - and the committed copies its text checks
-            # hold to the texts they copy; and its credential-argument check reads every text file
-            # of the repository, so `**` below selects the job for every change but one under
-            # docs/plans or docs/superpowers. The patterns after it name what the other checks
-            # read, which `**` covers too, so that each read keeps its reason here.
+            # every package of this module it imports - the prompt below, the committed copies
+            # its text checks hold to the texts they copy, and the store's migrations; and its
+            # credential-argument check reads every text file of the repository, so `**` below
+            # selects the job for every change but one under docs/plans or docs/superpowers. The
+            # patterns after it name what the other checks read, which `**` covers too, so that
+            # each read keeps its reason here.
             text_checks:
               - *ci_router
               - '.github/workflows/ci-job-text-checks.yaml'
@@ -2788,16 +2800,20 @@ jobs:
               - '**'
               - '!docs/plans/**'
               - '!docs/superpowers/**'
-              # The prompt design_approved_wake_test.go:33-39 holds the resume's wake to, the copy
-              # of the phrase it reads in place of importing internal/workflow (:23-24), and the
-              # committed extract reclaim_doc_test.go:43 holds the guide's paragraph to.
+              # The prompt design_approved_wake_test.go:32-38 holds the resume's wake to, the copy
+              # of the phrase it reads in place of importing internal/workflow (:26-27), and the
+              # committed extract reclaim_doc_test.go:50 holds the guide's paragraph to.
               - 'packages/daemon/internal/prompts/roles/architect-root.md'
               - 'packages/daemon/internal/workflow/design_approved_wake_extract.txt'
               - 'packages/daemon/internal/runtime/sandbox/reclaim_doc_extract.txt'
-              # The seven copies of shipped texts that readExtract (waiting_line_texts_test.go:380)
+              # The store's migrations, which the text checks read through migrations.All to hold
+              # the guide to them: its list of those above the phase entry, and its way back of the
+              # step records, to the block the roll forward's header carries.
+              - 'packages/daemon/internal/store/migrations/*.up.sql'
+              # The seven copies of shipped texts that readExtract (waiting_line_texts_test.go:475)
               # reads to hold them to the texts themselves: the waiting line's four, the two way
-              # backs' (way_back_doc_test.go:70) and the troubleshooting page's refusal table's
-              # (troubleshooting_refusals_doc_test.go:36), each committed beside the package whose
+              # backs' (way_back_doc_test.go:110) and the troubleshooting page's refusal table's
+              # (troubleshooting_refusals_doc_test.go:41), each committed beside the package whose
               # own check reads it. They are .txt files, which the module's `**/*.go` above does
               # not match.
               - 'packages/daemon/cmd/legion/awaiting_summary_extract.txt'
@@ -2808,7 +2824,7 @@ jobs:
               - 'packages/daemon/internal/daemon/upgrade_way_back_extract.txt'
               - 'packages/daemon/internal/workflow/waiting_line_words_extract.txt'
               # The shipped texts the waiting line's four copies are held to, and the ban over
-              # them, every one read by waiting_line_texts_test.go:390; troubleshooting.md is also
+              # them, every one read by waiting_line_texts_test.go:485; troubleshooting.md is also
               # the page the refusal table's copy is held to. The way back's guide is
               # docs/kubernetes.md, below.
               - 'docs/site/src/content/docs/legion/concepts.md'
@@ -2826,8 +2842,8 @@ jobs:
               - 'scripts/e2e/README.md'
               # The guide packages/envoy/internal/broker/oauth, packages/daemon/internal/runtime/sandbox
               # and packages/daemon/internal/daemon hold their committed extracts to
-              # (internal/textcheck/claims_doc_test.go:36,43, reclaim_doc_test.go:44,167 and
-              # way_back_doc_test.go:94).
+              # (internal/textcheck/claims_doc_test.go:43,50, reclaim_doc_test.go:51,277 and
+              # way_back_doc_test.go:132).
               - 'docs/kubernetes.md'
               # The skill file packages/daemon/internal/textcheck/design_approved_wake_test.go
               # holds the architect's prompt to (:32-38).
@@ -3188,6 +3204,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/store/migrations/**'
               - 'packages/envoy/internal/dispatch/text/**'
               - 'packages/envoy/internal/dispatch/texttrees/*'
+              - 'packages/envoy/internal/dispatch/workflowstore/*'
               - 'packages/envoy/internal/fixtureenv/*'
               - 'packages/envoy/internal/githubappjwt/*'
               # The fake timer cmd/listener's repair and grant-guard tests share.
@@ -3706,6 +3723,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/text/**/*_test.go'
               - '!packages/envoy/internal/dispatch/texttreefill/**/*_test.go'
               - '!packages/envoy/internal/dispatch/texttrees/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/workflowstore/**/*_test.go'
               - '!packages/envoy/internal/envconf/**/*_test.go'
               - '!packages/envoy/internal/fileowner/**/*_test.go'
               - '!packages/envoy/internal/fold/**/*_test.go'
@@ -3742,6 +3760,7 @@ jobs:
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
+              - '!packages/envoy/steprecord/**/*_test.go'
               # END generated
             # The API race job. Not packages/envoy/**, as envoy_go_race has: that root was here
             # because internal/dispatch/api's lock_level_test.go, event_insert_guard_test.go and
@@ -3858,6 +3877,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/testlimits/*'
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/dispatch/texttrees/*'
+              - 'packages/envoy/internal/dispatch/workflowstore/*'
               - 'packages/envoy/internal/explaintest/*'
               - 'packages/envoy/internal/fixtureenv/*'
               - 'packages/envoy/internal/fold/*'
@@ -3956,6 +3976,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/testlimits/**/*_test.go'
               - '!packages/envoy/internal/dispatch/text/**/*_test.go'
               - '!packages/envoy/internal/dispatch/texttrees/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/workflowstore/**/*_test.go'
               - '!packages/envoy/internal/fold/**/*_test.go'
               - '!packages/envoy/internal/googleidentity/**/*_test.go'
               - '!packages/envoy/internal/kvwatch/**/*_test.go'
@@ -4188,6 +4209,8 @@ jobs:
               # nats-server versions the daemon refuses, for the same reason.
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
+              # The door onto a step record's words and the form of its agent text, for the same reason.
+              - 'packages/envoy/steprecord/*'
             # The private-name port harness, in a job of its own: it builds the `legion` binary
             # of this head (.github/scripts/check-private-names-port.test.sh:70) and holds the
             # rules that binary carries to the frozen shell script's verdicts, case for case.
@@ -4460,6 +4483,7 @@ jobs:
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
+              - '!packages/envoy/steprecord/**/*_test.go'
               # END generated
             # Every file packages/daemon/docker/worker.Dockerfile builds from, for the worker-image
             # job (.github/workflows/worker-image.yaml, which the build reads too): the root
@@ -4525,6 +4549,7 @@ jobs:
               - 'packages/envoy/sessiontiming/**'
               - 'packages/envoy/subjectforms/**'
               - 'packages/envoy/natsversion/**'
+              - 'packages/envoy/steprecord/**'
               - 'packages/envoy/testnatsimages/**'
               - '.omp-pin'
               - '.bun-version'

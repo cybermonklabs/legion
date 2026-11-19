@@ -8,8 +8,13 @@ sidebar:
 When an agent asks for a secret a person must approve, that person decides it on the secrets
 broker's own page, signed in to the broker. Only the approver the request names can decide it: the
 secret's owner, for a person's secret, or anyone who signs in to the broker, for a shared secret. A
-shared secret's request waits in every person's Inbox at once, and the first person to decide it
-decides it for everyone: it then leaves every Inbox.
+shared secret's request waits in the Inbox of the person responsible for the agent that asked: the
+person whose session it is (their own `agent-secrets login`, or the machine login they approved),
+the person a fleet machine's `BROKER_VM_EXCHANGE_ACCOUNTS` entry names, or the assignee of the
+Dispatch issue a Legion worker pod works on. Where none of these names a person, it waits in every
+person's Inbox, so no request waits where nobody sees it. Anyone signed in may still decide it from
+its page whether or not their Inbox lists it, and the first person to decide it decides it for
+everyone: it then leaves every Inbox.
 [Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret) explains which
 requests need whom.
 
@@ -31,7 +36,7 @@ model anything.
 
 ## Find it
 
-Pending requests you decide appear at the top of your Dispatch **Inbox**, under **Credential
+Pending requests you are asked to decide appear at the top of your Dispatch **Inbox**, under **Credential
 requests**, one row per request: **Secret request** with the secrets' names, or **Machine login**
 with a machine's host name ([log a machine in](/legion/broker/guides/log-a-machine-in/) covers
 those). The section is absent when nothing is listed for you, and hidden entirely when the

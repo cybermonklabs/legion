@@ -545,13 +545,20 @@ export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route)
  *  names everything its page draws only once its data is in, which is the half of this wait
  *  that is a route's own.
  *
- *  The other half is page-wide and belongs to no row, and it is two waits. No element may be
+ *  The other half is page-wide and belongs to no row, and it is three waits. No element may be
  *  left carrying `data-markdown-pending`, the mark a body wears while the parse worker owes its
  *  formatting (`web/src/features/refs/MarkdownBody.tsx`, `MarkdownPreview.tsx`). A body that
  *  long holds its own literal text until the answer lands, so a page read in between is a page
  *  of unformatted source, and it is cheap to rule out for every row at once rather than to argue
- *  per row about which bodies cross the threshold. And the shell's one Inbox number must have
- *  stopped moving (`waitForInboxCountSettled` below), which every page draws and no row names.
+ *  per row about which bodies cross the threshold. No artifact header may still wear the ring it
+ *  draws for 2 s after a link lands on its artifact (`ArtifactHeader.tsx`'s `highlighted`): a
+ *  shot inside those 2 s draws it and one after does not, so a scheme shot after a slower settle
+ *  lost it while the other kept it (CI runs 44308307388 and 44323538727 read the dark
+ *  `issue-artifact` row without it and with it). It is counted, as the pending mark is, because
+ *  most pages draw no artifact header: an assertion on the header itself waits for one to exist,
+ *  and timed out every row of a page without one (run 44326108595). And the shell's one Inbox
+ *  number must have stopped moving (`waitForInboxCountSettled` below), which every page draws
+ *  and no row names.
  *
  *  Both layers wait on this, and for the same reason. The visual one would otherwise commit a
  *  baseline of a state that lasted a few hundred milliseconds and compare every later run
@@ -564,6 +571,7 @@ export async function waitForRouteSettled(page: Page, route: ReviewedRoute): Pro
     await expect(locator).toBeVisible();
   }
   await expect(page.locator("[data-markdown-pending]")).toHaveCount(0);
+  await expect(page.locator('[data-testid="artifact-header"].ring-2')).toHaveCount(0);
   await waitForInboxCountSettled(page);
 }
 
@@ -599,6 +607,17 @@ export function railInboxLink(page: Page): Locator {
   return page.getByRole("navigation", { name: "Navigation" }).getByRole("link", { name: /^Inbox/ });
 }
 
+/** The compact top bar's Inbox badge, which carries the shell's one Inbox number below the wide
+ *  layout (`web/src/app.tsx`), where the rail is not drawn. From the wide layout up the top bar is
+ *  not drawn and this matches nothing. The settle wait below reads the number through it, and the
+ *  visual review masks it as it masks the rail's entry (e2e/visual.e2e.ts says why). */
+export function topBarInboxBadge(page: Page): Locator {
+  return page
+    .locator("header")
+    .first()
+    .getByText(/^Inbox( \d+)?$/);
+}
+
 /** Waits until the shell's Inbox number has settled: none of the requests that feed it or move it
  *  is still waiting for its answer, and the number has then held one value for
  *  `INBOX_COUNT_QUIET_MS`. The number is drawn on every page, by the sidebar's entry from the wide
@@ -617,12 +636,7 @@ export function railInboxLink(page: Page): Locator {
  *  and the window restarts whenever either fails. The requests come from `page.requests()`, the
  *  page's latest hundred, which holds every request recent enough to still be waiting. */
 async function waitForInboxCountSettled(page: Page): Promise<void> {
-  const count = wideLayout(page)
-    ? railInboxLink(page)
-    : page
-        .locator("header")
-        .first()
-        .getByText(/^Inbox( \d+)?$/);
+  const count = wideLayout(page) ? railInboxLink(page) : topBarInboxBadge(page);
   let held: string | undefined;
   let heldSince = Date.now();
   await expect
