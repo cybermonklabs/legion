@@ -80,10 +80,13 @@ func resolveLeakCheck(environ []string) (string, error) {
 // (internal/shim/config.go:59-98), so either would open panes whose OMP lacks the key. A composed
 // name (composed) is carried by every pane as surely as a runtime-owned one — panePairs sets it
 // whatever the operator wrote — so a provider key of that name is refused here as well, at boot,
-// rather than at each pane's shim. So is a name a launcher tells its own panes after the operator's
-// variables — a Claude Code pane's (runtime.ClaudeConfigDirVariable, runtime.ClaudeDisabledFeatures)
-// and a resumed Oh My Pi pane's (runtime.SessionExclusiveVariable) — since the shim of every such
-// pane would refuse to start over it.
+// rather than at each pane's shim. Besides a name every pane carries and a key whose pointer every
+// pane carries, it refuses every name runtime.PaneVariableRefusal refuses with no value, with that
+// function's reason: a variable that places the session a resume reads, one a launcher tells a
+// Claude Code pane or a resumed Oh My Pi pane after the operator's variables, a launch secret's
+// pointer. Each is refused for the reason pane_env refuses it, since the shim exports a provider
+// key into Oh My Pi's environment. A pane that is told such a name itself has a second reason: its
+// shim would refuse to start over the key.
 func readProviderKeyNames(dir string, dispatchConfigured bool) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -102,14 +105,14 @@ func readProviderKeyNames(dir string, dispatchConfigured bool) ([]string, error)
 	var names []string
 	for _, entry := range entries {
 		name := entry.Name()
+		why := runtime.PaneVariableRefusal(name, "")
 		switch {
 		case !entry.Type().IsRegular() || !runtime.IsEnvName(name):
 			return nil, fmt.Errorf("tmux runtime: provider-env entry %q is not named for an environment variable", name)
 		case carried[name] || owned(name):
 			return nil, fmt.Errorf("tmux runtime: provider key %s is a variable every pane already carries", name)
-		case name == runtime.ClaudeConfigDirVariable || slices.Contains(runtime.ClaudeDisabledFeatures, name) ||
-			name == runtime.SessionExclusiveVariable:
-			return nil, fmt.Errorf("tmux runtime: provider key %s is a variable the runtime tells a Claude Code pane or a resumed Oh My Pi pane itself", name)
+		case why != "":
+			return nil, fmt.Errorf("tmux runtime: provider key %s: %s", name, why)
 		case owned(name + "_FILE"):
 			return nil, fmt.Errorf("tmux runtime: provider key %s would not reach OMP: every pane carries %s_FILE", name, name)
 		}
