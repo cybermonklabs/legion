@@ -152,9 +152,12 @@ type pairedMove struct {
 // live grant, waits on a request nobody has answered yet and has had withheldFromReplacedPod taken
 // back from it, and was then replaced: its launcher revoked its enrollment, as the daemon does
 // when it lets the role's process go, which leaves the row dormant holding all three for the
-// session's next enrollment. The service it answers records every log line from before that
-// enrolment on, and pairs no accounts: a test pairs workerPodAccount with pairedWorkerPodAccount
-// (pairAccounts) where what it proves needs the pair.
+// session's next enrollment. Its launcher is the daemon's token login (daemonLogin), which
+// launches the pods of both accounts of the pair, as one daemon does across a move of its pods'
+// account: a pod's grants follow the pair of its account and that login (carryPrincipal). The
+// service it answers records every log line from before that enrolment on, and pairs no accounts:
+// a test pairs workerPodAccount with pairedWorkerPodAccount (pairAccounts) where what it proves
+// needs the pair.
 func replacedPod(t *testing.T) pairedMove {
 	t.Helper()
 	ctx := context.Background()
@@ -162,7 +165,10 @@ func replacedPod(t *testing.T) pairedMove {
 	issuer, key := withPodVerifier(t, svc)
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
-	m := pairedMove{svc: svc, issuer: issuer, key: key, capture: capture, cluster: mintCredential(t, svc, nil, str("legion-daemon"), "cluster"),
+	cluster := daemonLogin(t, svc)
+	svc.ServicesByAccount[workerPodAccount] = "legion-daemon"
+	svc.ServicesByAccount[pairedWorkerPodAccount] = "legion-daemon"
+	m := pairedMove{svc: svc, issuer: issuer, key: key, capture: capture, cluster: cluster,
 		oldPrincipal: exchange.AccountPrincipal(workerPodAccount), movedPrincipal: exchange.AccountPrincipal(pairedWorkerPodAccount)}
 	old, err := svc.Create(ctx, m.cluster, m.pod(t, workerPodAccount, "pod-uid-old"))
 	if err != nil {
@@ -527,6 +533,49 @@ func TestAPairedAccountsPodTakesTheNameAndWhatItCarries(t *testing.T) {
 	want := []nameTake{{Level: slog.LevelWarn, Session: replacedSession, From: m.oldPrincipal, To: m.movedPrincipal, Enrollment: moved.ID.String()}}
 	if got := nameTakes(m.capture); !slices.Equal(got, want) {
 		t.Fatalf("the take logged %+v, want exactly %+v: one line naming the name, the account it was taken from and the one that took it", got, want)
+	}
+}
+
+// TestAPairedAccountsPodAnotherDaemonLaunchedTakesTheNameAndNothingItCarries holds the pair to the
+// rule a pod's grants follow (carryPrincipal): the pair of its account and the login that enrolled
+// it. The pods of several daemons run as one account, so a pair that let any pod of the paired
+// account take what the session holds would hand one daemon's grants to another daemon's role. A
+// pod of the paired account that another daemon's login enrols takes the name, which is held under
+// the account alone, as an unpaired pod of another daemon is admitted under a name its own account
+// holds, and takes none of the grant, the pending request and the withheld name the replaced pod's
+// enrollment holds: they stay on it, dormant, for the next pod its own daemon enrols.
+func TestAPairedAccountsPodAnotherDaemonLaunchedTakesTheNameAndNothingItCarries(t *testing.T) {
+	ctx := context.Background()
+	m := replacedPod(t)
+	pairAccounts(t, m.svc, workerPodAccount, pairedWorkerPodAccount)
+	const otherDaemonAccount = "system:serviceaccount:other-project:legion-daemon"
+	m.svc.ServiceLogins[otherDaemonAccount] = "legion-daemon"
+	other := podRig{svc: m.svc}.login(t, otherDaemonAccount, "")
+
+	moved, err := m.svc.Create(ctx, other, m.next(t))
+	if err != nil {
+		t.Fatalf("another daemon's pod of the paired account enrolling = %v, want it enrolled: its account takes the name the pair lets it take", err)
+	}
+	if got := sessionNameHolder(t, m.svc, replacedSession); got != m.movedPrincipal {
+		t.Fatalf("the name %s is held by %q, want the moved account %q", replacedSession, got, m.movedPrincipal)
+	}
+	if holder := grantHolder(t, m.svc, m.grant); holder != m.old.ID {
+		t.Fatalf("grant %s hangs off %s, want the replaced pod's %s: another daemon's pod takes none of its grants", m.grant, holder, m.old.ID)
+	}
+	if holder := requestHolder(t, m.svc, m.request); holder != m.old.ID {
+		t.Fatalf("request %s hangs off %s, want the replaced pod's %s", m.request, holder, m.old.ID)
+	}
+	if got := withheldNames(t, m.svc, m.old.ID); !slices.Equal(got, []string{withheldFromReplacedPod}) {
+		t.Fatalf("the replaced pod withholds %v, want [%s] still", got, withheldFromReplacedPod)
+	}
+	if got := withheldNames(t, m.svc, moved.ID); len(got) != 0 {
+		t.Fatalf("another daemon's pod withholds %v, want nothing: it took nothing of the session", got)
+	}
+	if got := adoptionsOf(t, m.svc, moved.ID); len(got) != 0 {
+		t.Fatalf("another daemon's pod has enrollment.adopted rows %+v, want none", got)
+	}
+	if left := readCarryState(t, m.svc, m.old.ID); !left.Dormant || left.LiveGrants != 1 || left.Pending != 1 {
+		t.Fatalf("the replaced pod is %+v, want it dormant holding its grant and its pending request for its own daemon's next pod", left)
 	}
 }
 

@@ -456,8 +456,10 @@ type Config struct {
 	// its role holds (oauthstore.Store.BindSession). Either account of a pair takes a session name
 	// the other holds, by an enrollment or by a token exchange, and an enrollment under that name
 	// takes what the name carries: the grants, the pending requests and the withheld secrets the
-	// other account's enrollments of it hold. A pair works both ways, so moving the pods back needs
-	// no change here. A pair does not chain: with A=B and B=C, C does not take a name A holds. A
+	// other account's enrollments of it hold that a login of the same account enrolled, since a
+	// pod's grants follow its account and its launcher's (enroll.carryPrincipal), so move the pods'
+	// account and keep the launcher's. A pair works both ways, so moving the pods back needs no
+	// change here. A pair does not chain: with A=B and B=C, C does not take a name A holds. A
 	// name the configuration fixes for a principal, the session an entry of
 	// BROKER_EXCHANGE_ACCOUNTS, BROKER_EXCHANGE_READ_ACCOUNTS, BROKER_EXCHANGE_WORKFLOWS or
 	// BROKER_VM_EXCHANGE_ACCOUNTS names, is never taken. An account may be in several pairs. An

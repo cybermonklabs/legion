@@ -213,9 +213,10 @@ projected token proves, so without the pair each role's next pod, on the new acc
 its own session name (`403 SESSION_HELD`), and the session's grants, pending requests and withheld
 names stay behind. Either account of a pair takes a session name the other holds, by an enrollment
 or by a token exchange, and an enrollment under that name takes what the other account's
-enrollments of it hold ([Concepts](/legion/broker/concepts/#requests-and-grants)). A pair works
-both ways, so moving the pods back needs no change here, and it does not chain: with `A=B` and
-`B=C`, `C` does not take a name `A` holds. No pair takes a name an entry of
+enrollments of it hold that a login of the same account enrolled, so move the pods' account and
+keep the launcher's login account ([Concepts](/legion/broker/concepts/#requests-and-grants)). A
+pair works both ways, so moving the pods back needs no change here, and it does not chain: with
+`A=B` and `B=C`, `C` does not take a name `A` holds. No pair takes a name an entry of
 `BROKER_EXCHANGE_ACCOUNTS`, `BROKER_EXCHANGE_READ_ACCOUNTS`, `BROKER_EXCHANGE_WORKFLOWS` or
 `BROKER_VM_EXCHANGE_ACCOUNTS` fixes. The broker refuses to start, naming the entry, on an entry
 not of that form, a namespace's `default` account, an account paired with itself, and a pair given
