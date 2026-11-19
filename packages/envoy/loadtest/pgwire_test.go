@@ -136,7 +136,7 @@ func TestProxyCountsTheDocumentAdvisoryLockAsRoomWork(t *testing.T) {
 		{`select pg_advisory_lock(hashtext($1))`, true},
 		{`select pg_try_advisory_lock(hashtext($1))`, true},
 		{`SELECT pg_advisory_unlock(hashtext($1))`, true},
-		{`select pg_advisory_xact_lock($1)`, false}, // the events commit-order lock
+		{`select pg_advisory_xact_lock($1)`, false}, // a fixed key, as processes' registryLock takes
 		{`select pg_advisory_xact_lock(hashtext('issue-rank:' || $1))`, false},
 		{`select pg_advisory_xact_lock(hashtext('dispatch-repo-project'), hashtext($1))`, false},
 	} {

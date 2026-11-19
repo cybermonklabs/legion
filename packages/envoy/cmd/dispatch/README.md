@@ -195,8 +195,9 @@ A JWT the verifier rejects is `401 OIDC_TOKEN_INVALID` naming the reason class; 
 `DISPATCH_OIDC_ACCOUNTS` names the service accounts the deployment admits, comma-separated subjects such as `system:serviceaccount:dispatch:envoy-broker`:
 a verified token of any other account is `401 SERVICE_ACCOUNT_NOT_ADMITTED`, naming the account, before any handler reads or writes a row, on every route that reads a credential and on both sockets.
 Unset, every account whose token the issuer signs for the audience is admitted, as before the setting existed, and the boot logs one WARN saying so, `dispatch: DISPATCH_OIDC_ACCOUNTS is unset, …`, with `issuer` and `audience`.
-`DISPATCH_ACCESS_ACCOUNTS` names those of them that read the membership answer (`GET /api/v1/access/projects/{key}` and `GET /api/v1/access/person`), the secrets broker's own account in production;
-every other caller is `403 ACCESS_ACCOUNT_REQUIRED` there.
+`DISPATCH_ACCESS_ACCOUNTS` names those of them that read the membership answer (`GET /api/v1/access/projects/{key}`, `GET /api/v1/access/person` and `GET /api/v1/access/private-projects`), the secrets broker's own account in production;
+a caller with no credential, or one whose credential does not verify, is refused there as every route refuses it (`401 NO_IDENTITY` for none);
+every other caller is `403 ACCESS_ACCOUNT_REQUIRED`.
 The boot refuses either list without `DISPATCH_OIDC_AUDIENCE`, an entry that is empty or is not `system:serviceaccount:<namespace>:<name>` (naming its position), and an access account that a set `DISPATCH_OIDC_ACCOUNTS` does not list.
 
 With `DISPATCH_AGENT_SECRETS_URL` set, an access token the secrets broker issued is a fifth credential, and the only one that proves a session of its own.

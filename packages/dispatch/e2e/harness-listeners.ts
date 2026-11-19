@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
+import { usesAccessIssuer } from "./harness-access";
 import { usesFakeBroker } from "./harness-broker";
 import { usesFakeEmbedder } from "./harness-embedder";
 import type { HarnessListenerKey } from "./harness-ports";
@@ -29,6 +30,11 @@ export interface HarnessListener {
    *  variable, and hands the row the keeper's unix socket in `keeperEnv`; set, it hands the row
    *  that port in `portEnv`. */
   readonly heldAhead?: { readonly keeperEnv: string; readonly portEnv: string };
+  /** Set for a row that keeps a file a caller of the harness reads: the variable that names the
+   *  file. e2e/harness-start.ts names a path for it in the harness's own directory before any row
+   *  starts, hands that path to every row under this variable, returns it with the ports, and
+   *  removes the directory when the harness stops. The row writes the file before it reports. */
+  readonly fileVariable?: string;
   /** The line it prints once it serves, whose one group is the port it serves on. */
   readonly report: RegExp;
   /** A path that answers 200 once it is ready, when listening is not enough. */
@@ -159,6 +165,28 @@ function signInIssuerListeners(): HarnessListener[] {
   ];
 }
 
+// Under DISPATCH_E2E_ACCESS_ISSUER=1 (e2e/harness-access.ts), the dev OIDC issuer that stands in
+// for the cluster's ServiceAccount token issuer (e2e/run-access-issuer.sh): it keeps the secrets
+// broker's projected token in the file the harness names for it, and the server, started after it
+// since it takes the issuer's URL as DISPATCH_OIDC_ISSUER, lets that account read the membership
+// answer. It reports `issuer listening url=http://127.0.0.1:<port>` once the file is written, as
+// the other two issuers do.
+function accessIssuerListeners(): HarnessListener[] {
+  if (!usesAccessIssuer) return [];
+  return [
+    {
+      argv: ["bash", script("run-access-issuer.sh")],
+      bootMs: serverBootMs,
+      deployed: false,
+      fileVariable: "DISPATCH_E2E_ACCESS_TOKEN_FILE",
+      id: "access-issuer",
+      key: "accessIssuer",
+      name: "the access issuer",
+      report: /issuer listening url=http:\/\/127\.0\.0\.1:(\d+)$/,
+    },
+  ];
+}
+
 // The real secrets broker and the dev OIDC issuer it trusts (e2e/run-broker.sh), which
 // e2e/broker-approval.e2e.ts drives an approval on, started only by a run that can reach that
 // spec (e2e/harness-real-broker.ts). The issuer goes first: it is the broker's ServiceAccount
@@ -199,15 +227,17 @@ function realBrokerListeners(): HarnessListener[] {
 }
 
 // Every listener the harness can start, in the order e2e/harness-start.ts starts them: the fakes,
-// then under DISPATCH_E2E_SIGNIN=oidc the dev OIDC issuer, then the Dispatch server (in
-// two-process mode the round-robin proxy and the two servers behind it), whose environment names
-// the fakes' ports and the issuer's, then the real broker's dev issuer and the real broker, then
-// the plain-HTTP proxy, which forwards to the server's origin. A deployed run starts only those
-// marked `deployed`: its Dispatch server is already up, and the fake GitHub serves only a server
-// this run starts. The fake broker is listed exactly when the harness switch points this run's
-// server at it (e2e/harness-broker.ts), never for a deployed run, the real broker and its
-// issuer exactly when a spec of this run can reach them (e2e/harness-real-broker.ts), and the
-// fake embedder exactly when this run's server embeds there (e2e/harness-embedder.ts).
+// then under DISPATCH_E2E_SIGNIN=oidc the dev OIDC issuer, then under DISPATCH_E2E_ACCESS_ISSUER=1
+// the access issuer, then the Dispatch server (in two-process mode the round-robin proxy and the
+// two servers behind it), whose environment names the fakes' ports and the issuers', then the real
+// broker's dev issuer and the real broker, then the plain-HTTP proxy, which forwards to the
+// server's origin. A deployed run starts only those marked `deployed`: its Dispatch server is
+// already up, and the fake GitHub serves only a server this run starts. The fake broker is listed
+// exactly when the harness switch points this run's server at it (e2e/harness-broker.ts), never
+// for a deployed run, the real broker and its issuer exactly when a spec of this run can reach
+// them (e2e/harness-real-broker.ts), the fake embedder exactly when this run's server embeds there
+// (e2e/harness-embedder.ts), and the access issuer exactly when the server reads the membership
+// answer for its account (e2e/harness-access.ts).
 // e2e/harness-start.ts is the only starter: the stack pool (e2e/harness-pool.ts, which
 // Playwright's globalSetup runs), `bun run dispatch:local` (e2e/local-instance.ts) and the docs
 // media harness all start this table through it.
@@ -257,6 +287,7 @@ export const harnessListeners: readonly HarnessListener[] = [
       ]
     : []),
   ...signInIssuerListeners(),
+  ...accessIssuerListeners(),
   ...dispatchListeners(),
   ...realBrokerListeners(),
   {
