@@ -379,17 +379,22 @@ func (g *Guest) ID() string { return g.id }
 // scans a wake at each file-modified event of memory.events (wake), on this one goroutine, so the
 // wake and the scan share the watch's state with no lock. A wake does not move the next scan, which
 // comes guestInterval after the last one however many events come between. Where the event's watch
-// ends, the watch has one line, with the error that ended it, and goes on with the scan alone.
+// ends, the watch has one line, with the error that ended it, and goes on with the scan alone. A
+// step that panics turns the watch off for good with one line (step), and Run waits for ctx.
 func (g *Guest) Run(ctx context.Context) {
 	defer g.cgroup.close()
-	g.begin()
 	defer g.stopWake()
+	if !g.step(g.begin) {
+		<-ctx.Done()
+		return
+	}
 	scan := g.clock.After(guestInterval)
 	for {
 		var modified <-chan struct{}
 		if g.wakes != nil {
 			modified = g.wakes.modified
 		}
+		on := true
 		select {
 		case <-ctx.Done():
 			return
@@ -400,12 +405,33 @@ func (g *Guest) Run(ctx context.Context) {
 				g.logf(guestWakeOffLine, fmt.Sprintf("the watch of %s ended: %v", g.cgroup.kills.path, ended))
 				continue
 			}
-			g.wake(g.clock.Now())
+			on = g.step(func() { g.wake(g.clock.Now()) })
 		case <-scan:
-			g.tick(g.clock.Now())
-			scan = g.clock.After(guestInterval)
+			if on = g.step(func() { g.tick(g.clock.Now()) }); on {
+				scan = g.clock.After(guestInterval)
+			}
+		}
+		if !on {
+			g.stopWake()
+			<-ctx.Done()
+			return
 		}
 	}
+}
+
+// step runs one step of the watch, its begin, a wake or a scan, and is false where the step
+// panicked: the watch then logs its off line once, with the panic and where it was raised, and
+// reads nothing more, since the launcher runs it on a goroutine of its own and a panic that left it
+// would end the launcher, PID 1 of the pod, which ends every role's turn.
+func (g *Guest) step(run func()) (on bool) {
+	defer func() {
+		if p := recover(); p != nil {
+			g.logf(guestOffLine, fmt.Sprintf("panic: %v at %s", p, panicSite()))
+			on = false
+		}
+	}()
+	run()
+	return true
 }
 
 // begin finds the cgroup and the starting score, logs the start line and what the watch cannot

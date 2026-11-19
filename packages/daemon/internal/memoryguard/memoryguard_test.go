@@ -5973,6 +5973,35 @@ func TestMemoryGuardTurnsOffWithOneLineWhenItCannotRead(t *testing.T) {
 	}
 }
 
+// A panic in the guard's scan for the largest process, which runs on a goroutine of its own and
+// would end the launcher with it, turns the guard off for good at its next reading, on its loop
+// and before it decides on that reading: one off line names the panic and where it was raised,
+// the guard ends nothing though that reading is at the mark, asks for no next reading, and Run
+// returns at its context's end alone. The guard's first reading starts the scan.
+func TestMemoryGuardTurnsOffAtTheReadingAfterItsScanPanicked(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(fakeProcess{pid: 200, ppid: 1, args: []string{"python3", "grow.py"}, anon: 3000 * mib})
+	pod.setAnon(1000 * mib)
+	h := newHarness(t, pod, nil)
+	h.g.scanSmapsRead = func(int) { panic("a test's scan panics") }
+	h.run()
+	pod.setAnon(3600 * mib)
+	w := h.pending
+	w.fire <- h.clock.advance(w.d)
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), time.Millisecond, func() bool { return len(h.log.with("off ")) > 0 }) {
+		t.Fatalf("the guard wrote no off line after its scan panicked; the log:\n%s", strings.Join(h.log.all(), "\n"))
+	}
+	want := "launcher: memory guard: off reason=panic in the scan for the largest process: a test's scan panics at "
+	if off := h.log.with("off "); len(off) != 1 || !strings.HasPrefix(off[0], want) || !strings.Contains(off[0], "memoryguard_test.go:") {
+		t.Fatalf("the guard's off lines are %q, want one starting %q that names this test's file", off, want)
+	}
+	h.stop()
+	if len(h.clock.waits) != 0 {
+		t.Fatalf("the guard waited for another reading after its scan panicked")
+	}
+	h.requireKilled()
+}
+
 func TestMemoryGuardTurnsOffWhenPidfdOpenIsUnsupported(t *testing.T) {
 	pod := newFakePod(t)
 	pod.setAnon(3900 * mib)

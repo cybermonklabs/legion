@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -462,6 +463,40 @@ func TestGuestRaisesARolesCommandsAndKeepsItsOwnProcessesAtTheStartingScore(t *t
 	}
 	if failed := h.lines("score failed"); len(failed) != 0 {
 		t.Fatalf("the watch logged %q, want no failed score write", failed)
+	}
+}
+
+// A panic in a step of the guest watch, here its classifier's at a scan, turns the watch off for
+// good with one off line that names the panic and where it was raised: the watch asks for no next
+// scan, and Run returns at its context's end alone. A panic that left Run would end the launcher,
+// PID 1 of the pod, which runs the watch on a goroutine of its own.
+func TestGuestTurnsOffOnAPanicInAScanAndRunsOnUntilItsContextEnds(t *testing.T) {
+	const start = 300
+	pod := newFakePod(t)
+	pod.setSelfScore(start)
+	classes := guestTree(pod, start)
+	h := newGuestHarness(t, pod.proc, newFakeCgroup(t, cgroupV2).dir, classes)
+	var panicking atomic.Bool
+	h.g.classify = func(*Table) map[int]Class {
+		if panicking.Load() {
+			panic("a test's classifier panics")
+		}
+		return classes
+	}
+	h.run()
+	panicking.Store(true)
+	w := h.pending
+	w.fire <- h.clock.advance(w.d)
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), time.Millisecond, func() bool { return len(h.lines("off ")) > 0 }) {
+		t.Fatalf("the watch wrote no off line after its classifier panicked; the log:\n%s", h.logged())
+	}
+	want := "launcher: guest memory: off reason=panic: a test's classifier panics at "
+	if off := h.lines("off "); len(off) != 1 || !strings.HasPrefix(off[0], want) || !strings.Contains(off[0], "guest_test.go:") {
+		t.Fatalf("the watch's off lines are %q, want one starting %q that names this test's file", off, want)
+	}
+	h.stop()
+	if len(h.clock.waits) != 0 {
+		t.Fatalf("the watch waited for another scan after its classifier panicked")
 	}
 }
 

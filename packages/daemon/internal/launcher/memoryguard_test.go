@@ -3416,6 +3416,59 @@ func TestControllerPodMemoryGuardTurnsOffOnAnAcknowledgementWithNoSettings(t *te
 	}
 }
 
+// A panic on the controller pod's guard's loop, here in its Config.Observe at a reading at the
+// mark, turns the guard off for good with one off line that names the panic and where it was
+// raised, and the launcher, its container's first process, serves on: the guard ends nothing and
+// asks for no next reading, the launcher takes its next connection, whose acknowledgement's
+// settings reach no guard, and Run returns at its context's end (runControllerLauncher). A panic
+// that left the guard's goroutine would end this test's process, as it ends a pod's PID 1.
+func TestControllerPodMemoryGuardTurnsOffOnAPanicInItsLoopAndTheLauncherServesOn(t *testing.T) {
+	const grower = 1670
+	pod := newGuardPod(t)
+	pod.add(guardProcess{pid: grower, ppid: os.Getpid(), exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}, anon: 900 * guardMiB})
+	rig := useGuardPod(t, pod, nil)
+	var panicking atomic.Bool
+	built := newMemoryGuard
+	newMemoryGuard = func(cfg memoryguard.Config) *memoryguard.Guard {
+		cfg.Observe = func(time.Time, uint64, uint64) {
+			if panicking.Load() {
+				panic("a test's Observe panics")
+			}
+		}
+		return built(cfg)
+	}
+	t.Cleanup(func() { newMemoryGuard = built })
+	g := runControllerLauncher(t)
+	rig.started()
+	g.acceptController(controllerDefaultsAck())
+	panicking.Store(true)
+	pod.setAnon(guardHigh)
+	// The guard takes the reading and turns off; it asks the clock for no next reading, which
+	// rig.tick waits for, so the test lets it take this one reading alone.
+	w := rig.pending
+	w.fire <- rig.clock.advance(w.d)
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool { return len(guardLines(g.stderr, "off ")) > 0 }) {
+		t.Fatalf("the guard wrote no off line after its Observe panicked; the launcher's log:\n%s", g.stderr.String())
+	}
+	want := "launcher: memory guard: off reason=panic: a test's Observe panics at "
+	if off := guardLines(g.stderr, "off "); len(off) != 1 || !strings.HasPrefix(off[0], want) || !strings.Contains(off[0], "memoryguard_test.go:") {
+		t.Fatalf("the guard's off lines are %q, want one starting %q that names this test's file", off, want)
+	}
+	if kills := rig.signal.kills(); len(kills) != 0 {
+		t.Fatalf("a guard whose loop panicked killed %v at the mark, want nothing; its log:\n%s", kills, rig.log())
+	}
+	g.dropConnection()
+	g.acceptController(memoryGuardAck(70, 10, 1, 100))
+	if got := guardLines(g.stderr, "settings "); len(got) != 0 {
+		t.Fatalf("after the panic the next acknowledgement logged the settings lines %q, want none: the guard is off for good", got)
+	}
+	select {
+	case next := <-rig.clock.waits:
+		t.Fatalf("the guard asked for its next reading in %s after its loop panicked, want none", next.d)
+	default:
+	}
+}
+
 // waitingKillReport builds the tester's manager of an issue pod's launcher as Run builds it
 // (newManagers), from a configuration that says whether the pod is a microVM's, and queues report
 // on it as the pod's watch does while no connection is up (queueMemoryKill). The manager then

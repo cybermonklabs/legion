@@ -4266,6 +4266,7 @@ launcher: guest memory: hour start=<time> end=<time> current=<bytes> current_hig
 
 `off` comes once, where the watch cannot read its starting score (`reason=no readable starting score in /proc/self/oom_score_adj: <error>`) or cannot list the processes (`reason=cannot list the processes in /proc: <error>`).
 From then on the watch raises nothing and names nothing, writes each rise of the counter as `killed unnamed` at once, and still writes its hourly line from the cgroup.
+A step of the watch that panics, its start, a scan or a wake, writes `off reason=panic: <value> at <function> (<file>:<line>)` once and ends the watch: it then raises, names and writes nothing more, its hourly line included, since what the panic left of its state is not known, and the launcher, the pod's first process, runs on, where a panic that left the watch would have ended it and with it every role's turn.
 
 `kills unnamed` comes once, at the start, where the watch reads no kill counter, such as where it finds no memory cgroup or a kill file with no `oom_kill` line.
 The watch then names no kill, and it still raises scores and writes its hourly line, which do not need the counter.
@@ -6201,6 +6202,7 @@ the process scan and the smaps of the processes the guard may end still run at e
 The guard measures that largest process again, in a goroutine of its own that delays no reading, each time a new high of the hour is at least 1% of the limit above the high it last measured at.
 It takes the reading into the hour's highest and lowest, reads the counter every 5 seconds and starts that measure only once it has decided on the reading, so none of them comes between a reading at the mark and its kill.
 `off reason=` turns the guard off while the launcher runs, for one of the reasons in "What it reads" above, and a launcher that is not its container's first process writes it as `off reason=the launcher is pid <n>, not the container's first process, …`.
+A panic on the guard's loop writes `off reason=panic: <value> at <function> (<file>:<line>)`, and one in its measure of the largest process writes `off reason=panic in the scan for the largest process: <value> at …` at the next reading, before the guard decides on it; either turns the guard off for good as an unreadable pod does, so the panic ends the guard rather than the launcher, the pod's first process.
 `unread` comes once for each process the guard could not read, and `kill failed` once for each process a kill failed on, which counts unread from then on; the guard ends no such process, and each is in the `unread_processes` of a `stopped for this rise` line written while it lives.
 Read a pod's hourly lines with `kubectl logs <pod> -c roles | grep '^launcher: memory guard: hour '`.
 

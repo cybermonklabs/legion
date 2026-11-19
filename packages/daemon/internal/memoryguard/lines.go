@@ -163,7 +163,8 @@ const (
 // has the guard's own endedLine, so a reader finds a process stopped for memory by one line,
 // whichever stopped it. The start line names the cgroup's version, its directory, v2's
 // memory.oom.group and the starting score; a watch with no readable kill counter has its
-// guestKillsUnnamedLine once, and one with no readable /proc its guestOffLine once. A watch that
+// guestKillsUnnamedLine once, and one with no readable /proc its guestOffLine once, as does one
+// whose step panicked (Guest's step), which then writes nothing more. A watch that
 // reads the kill counter and does not wake on the file-modified event of memory.events (Guest's
 // wake) has its guestWakeOffLine once, with the reason: its cgroup is v1, whose memory.oom_control
 // raises no such event, or the watch of the event could not start, or it ended, with the error

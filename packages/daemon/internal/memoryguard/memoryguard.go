@@ -274,8 +274,10 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -560,8 +562,11 @@ type largest struct {
 
 // largestScan is a finished scan for the largest process, and the start of the window it was
 // started in, so a scan that finishes after its hour is over is not credited to the next one.
+// panicked is the off reason of a scan that panicked (scanLargest), which the loop turns into the
+// guard's end at its next reading (takeScan), and empty for every other scan.
 type largestScan struct {
-	window time.Time
+	window   time.Time
+	panicked string
 	largest
 }
 
@@ -843,11 +848,11 @@ func (g *Guard) Apply(w *shimwire.LauncherMemoryGuard) {
 
 // Run reads and acts until ctx ends. It logs its start line once, with the first reading; a guard
 // that cannot read the pod, or cannot end a process on this system, logs one line instead and
-// waits for ctx without reading again.
+// waits for ctx without reading again, and so does a guard whose loop panicked (step).
 func (g *Guard) Run(ctx context.Context) {
 	defer g.scans.Wait()
 	defer g.release()
-	if !g.begin() {
+	if !g.step(true) {
 		<-ctx.Done()
 		return
 	}
@@ -857,11 +862,30 @@ func (g *Guard) Run(ctx context.Context) {
 			return
 		case <-g.clock.After(g.interval()):
 		}
-		if !g.tick(false) {
+		if !g.step(false) {
 			<-ctx.Done()
 			return
 		}
 	}
+}
+
+// step is the guard's first reading (begin) or a later one (tick), and false once the guard has
+// turned off for good. A panic on the way turns the guard off for good with one line that names
+// it (diePanicked) and goes no further: the launcher runs the guard on a goroutine of its own, and
+// a panic that left it would end the launcher, PID 1 of the controller's pod, which ends the pod,
+// the very end the guard is there to prevent. Where the panic leaves the guard's state is not
+// known, so the guard reads nothing more, as where it cannot read the pod (INFRA-3531 R1).
+func (g *Guard) step(first bool) (on bool) {
+	defer func() {
+		if p := recover(); p != nil {
+			g.diePanicked(fmt.Sprintf("panic: %v at %s", p, panicSite()))
+			on = false
+		}
+	}()
+	if first {
+		return g.begin()
+	}
+	return g.tick(false)
 }
 
 // begin turns the guard off for good where it has no kill to send, and otherwise takes its first
@@ -905,7 +929,9 @@ func (g *Guard) tick(first bool) bool {
 		g.logf(startedLine, s.ActPercent, s.FloorPercent, s.Wait, s.Interval, limit, reading)
 		g.window = window{start: now, end: now.Add(time.Hour)}
 	}
-	g.rollWindow(now)
+	if !g.rollWindow(now) {
+		return false
+	}
 	g.decide(now, s, on, reading, limit)
 	if g.isDead() {
 		return false
@@ -1933,7 +1959,9 @@ func (g *Guard) watch(now time.Time, s Settings, reading, limit, mark uint64) {
 func (g *Guard) endKnown(now time.Time, s Settings, reading, limit uint64) bool {
 	defer g.releaseSmaps()
 	floor := share(limit, s.FloorPercent)
-	known := slices.DeleteFunc(g.lastRead, func(c candidate) bool { return g.triedHere(&c) })
+	// On a copy: DeleteFunc zeroes the entries it removes, and kept reuses known's array, so
+	// filtering lastRead itself would leave it holding zeroed candidates until watch sets it again.
+	known := slices.DeleteFunc(slices.Clone(g.lastRead), func(c candidate) bool { return g.triedHere(&c) })
 	clear(g.memfds)
 	var cache argsCache
 	sent := false
@@ -3013,14 +3041,18 @@ func (g *Guard) endWait() {
 // rollWindow credits a finished scan for the largest process to the window it was started in
 // (takeScan), and closes the window whose hour has passed, with its line, for the one the reading
 // taken at now falls in. It is the one part of the hour's work that runs before the guard decides
-// on the reading (tick), so that a kill's counter read counts for the window of its own hour.
-func (g *Guard) rollWindow(now time.Time) {
-	g.takeScan()
+// on the reading (tick), so that a kill's counter read counts for the window of its own hour. It is
+// false where the scan panicked, which has turned the guard off for good (takeScan).
+func (g *Guard) rollWindow(now time.Time) bool {
+	if !g.takeScan() {
+		return false
+	}
 	if !now.Before(g.window.end) {
 		g.closeWindow()
 		start, end := nextWindow(g.window.end, now)
 		g.window = window{start: start, end: end}
 	}
+	return true
 }
 
 // hour takes the reading taken at now into the hour's window, once the guard has decided on it
@@ -3109,51 +3141,66 @@ func (g *Guard) startScan(start time.Time) bool {
 	return true
 }
 
-// takeScan credits a finished scan to the window it was started in.
-func (g *Guard) takeScan() {
+// takeScan credits a finished scan to the window it was started in, and is false where the scan
+// panicked: it turns the guard off for good here, on the loop, with the scan's panic as its reason.
+func (g *Guard) takeScan() bool {
 	g.scanMu.Lock()
 	done := g.scanDone
 	g.scanDone = nil
 	g.scanMu.Unlock()
+	if done != nil && done.panicked != "" {
+		g.diePanicked(done.panicked)
+		return false
+	}
 	if done != nil && done.window.Equal(g.window.start) {
 		g.window.largest = done.largest
 	}
+	return true
 }
 
 // scanLargest finds the largest process of every process the pod shows, protected ones among
 // them: the hourly line says what held the memory, whatever the guard may end. It ranks them by
 // the sizes and in the order an assessment ranks the processes the guard may end (addHeldMemfds),
 // every process whose smaps it read being a holder and a mapper of memfds here, and shmem the
-// Shmem of the reading that started it (startScan).
+// Shmem of the reading that started it (startScan). A panic here would end the launcher as one on
+// the loop would (step), so the scan finishes with it as its off reason (largestScan.panicked),
+// and the loop turns the guard off at its next reading, since the loop's state is the loop's own.
 func (g *Guard) scanLargest(start time.Time, shmem uint64) {
 	defer g.scans.Done()
 	found := largestScan{window: start}
-	if t, err := scan(g.proc); err == nil {
-		classes := g.classes(t)
-		clear(g.scanMemfds)
-		read := make([]candidate, 0, len(t.byPID))
-		for _, p := range t.Processes() {
-			if g.scanSmapsRead != nil {
-				g.scanSmapsRead(p.PID)
-			}
-			data, err := readAll(g.smapsPath(p.PID), g.scanSmaps)
-			g.scanSmaps = data
-			if err != nil {
-				continue
-			}
-			read = append(read, candidate{Process: p, role: classes[p.PID].Role, size: smapsSize(data, g.scanMemfds)})
+	defer func() {
+		if p := recover(); p != nil {
+			found = largestScan{window: start, panicked: fmt.Sprintf("panic in the scan for the largest process: %v at %s", p, panicSite())}
 		}
-		g.scanSmaps = keepSmaps(g.scanSmaps)
-		addHeldMemfds(read, g.proc, g.memfdLink, g.scanMemfds, shmem)
-		if len(read) > 0 {
-			biggest := read[0]
-			found.pid, found.role, found.size = biggest.PID, biggest.role, biggest.size
-			found.executable = processName(biggest.Process)
-		}
+		g.scanMu.Lock()
+		g.scanDone, g.scanBusy = &found, false
+		g.scanMu.Unlock()
+	}()
+	t, err := scan(g.proc)
+	if err != nil {
+		return
 	}
-	g.scanMu.Lock()
-	g.scanDone, g.scanBusy = &found, false
-	g.scanMu.Unlock()
+	classes := g.classes(t)
+	clear(g.scanMemfds)
+	read := make([]candidate, 0, len(t.byPID))
+	for _, p := range t.Processes() {
+		if g.scanSmapsRead != nil {
+			g.scanSmapsRead(p.PID)
+		}
+		data, err := readAll(g.smapsPath(p.PID), g.scanSmaps)
+		g.scanSmaps = data
+		if err != nil {
+			continue
+		}
+		read = append(read, candidate{Process: p, role: classes[p.PID].Role, size: smapsSize(data, g.scanMemfds)})
+	}
+	g.scanSmaps = keepSmaps(g.scanSmaps)
+	addHeldMemfds(read, g.proc, g.memfdLink, g.scanMemfds, shmem)
+	if len(read) > 0 {
+		biggest := read[0]
+		found.pid, found.role, found.size = biggest.PID, biggest.role, biggest.size
+		found.executable = processName(biggest.Process)
+	}
 }
 
 // classes is the classifier's answer for t, or none.
@@ -3202,6 +3249,40 @@ func (g *Guard) die(reason string) {
 	g.dead = true
 	g.mu.Unlock()
 	g.endWait()
+}
+
+// diePanicked is die after a panic on the guard's loop or in its scan (step, takeScan), with the
+// panic as its reason. die ends the wait after a kill, whose state may be what panicked: where
+// die panics again, the guard is marked off for good all the same and the wait is dropped with its
+// handles open, so neither this end nor release meets it again, and a few descriptors stay open
+// for the pod's life rather than end it.
+func (g *Guard) diePanicked(reason string) {
+	defer func() {
+		if recover() != nil {
+			g.mu.Lock()
+			g.dead = true
+			g.mu.Unlock()
+			g.wait, g.phase = afterKill{}, armed
+		}
+	}()
+	g.die(reason)
+}
+
+// panicSite is where the panic being recovered was raised, as the function and its file and line:
+// the first frame of the stack that is not the runtime's own. It is called from the function a
+// recover runs in, whose frames and the runtime's panic frames it passes over.
+func panicSite() string {
+	var pcs [32]uintptr
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(3, pcs[:])])
+	for {
+		f, more := frames.Next()
+		if !strings.HasPrefix(f.Function, "runtime.") {
+			return fmt.Sprintf("%s (%s:%d)", f.Function, filepath.Base(f.File), f.Line)
+		}
+		if !more {
+			return "an unknown place"
+		}
+	}
 }
 
 func (g *Guard) isDead() bool {
