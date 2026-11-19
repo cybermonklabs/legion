@@ -1103,6 +1103,15 @@ for (const ground of ["page-paper", "page-pane"] as const) {
   }
 }
 
+// The page colour pairs of the `ON_PAGE` tables of `MultiSelect.tsx`, `ApprovalChip.tsx` and
+// `AskCard.tsx` that no registration above holds, so `palette.test.ts` measures each
+// (`shared-controls.tooltips.test.tsx` holds every pair of those tables registered): a picker
+// option's detail, muted words on the mark grey of its active row and of the row under the
+// pointer; and a refused filled action's words, Approve's or Answer's, muted on the hairline
+// grey it turns.
+registerText("page-muted text on page-mark", pageColor("page-muted"), pageColor("page-mark"));
+registerText("page-muted text on page-hair", pageColor("page-muted"), pageColor("page-hair"));
+
 /** The icon rail the issue page draws in place of the navigation column (R14): the prototype's
  *  `#rail`, dark in both schemes, its current entry white on a lighter ground with an accent
  *  rule at its leading edge. */

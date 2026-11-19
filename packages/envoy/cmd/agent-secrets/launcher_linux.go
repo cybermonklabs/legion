@@ -96,3 +96,21 @@ func procCommAndParent(pid int) (comm string, parent int, err error) {
 	}
 	return comm, parent, nil
 }
+
+// nearestHarness answers which of names the nearest ancestor of this process runs as, by its
+// /proc comm read as harnessName reads it, or "" when walkAncestors meets none of them, cannot
+// read a parent, or runs past its depth. A variable so a test can stand in for the process tree.
+var nearestHarness = func(names ...string) string {
+	found := ""
+	_, _, _ = walkAncestors(func(_ int, comm string) bool {
+		name := harnessName(comm)
+		for _, wanted := range names {
+			if name == wanted {
+				found = name
+				return true
+			}
+		}
+		return false
+	})
+	return found
+}
