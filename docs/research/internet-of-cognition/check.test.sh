@@ -2187,7 +2187,8 @@ one_failure_result "--admitted over a claims.jsonl holding a second row of one i
 # 93. A row reads a fact fixed in time, never the summary of a node as it stands now (test
 # round 29, the architect's note of 2026-11-16T12:58Z). At 134143b4fb n-read-1098 held the
 # whole output of `dispatch doc-read --version 97` to its checksum and counted its line
-# `Approval: approved v97 by sami@theorem.dev`. After the version's content and its Content:
+# `Approval: approved v97 by person@example.invalid`, written here with this case's
+# placeholder for the approver's address. After the version's content and its Content:
 # line the read prints the document as it stands now, its Approval: line and its open
 # anchored threads, so when an approval of version 99 was requested the checksum moved and
 # the row failed, while the approval of version 97 stood. The row now reads the approval
@@ -2205,16 +2206,16 @@ PINNED="$WORK/pinned-read"
 PINNED_SHA=f6c88506ba193386bf9b644aeab9b8b0e2d69f7935f17b2fade89fcac3838194
 mkdir -p "$PINNED/recorded/bin" "$PINNED/moved/bin"
 printf 'case-93-token\n' >"$PINNED/token"
-printf '%s\n' '[{"id":405554,"issue_key":"INFRA-1098","project":"INFRA","seq":424,"type":"artifact.approved","actor":{"kind":"user","id":"sami@theorem.dev"},"created_at":"2026-11-12T00:45:28.848044Z","payload":{"kind":"person","name":"spec.md","version":97,"artifact_id":"89c8e344-c6ad-4fa0-89c5-d252856dc817","ask_id":"b5d11b18-84de-494f-af2f-9669f338882e","content_sha256":"'"$PINNED_SHA"'"}}]' >"$PINNED/event.json"
+printf '%s\n' '[{"id":405554,"issue_key":"INFRA-1098","project":"INFRA","seq":424,"type":"artifact.approved","actor":{"kind":"user","id":"person@example.invalid"},"created_at":"2026-11-12T00:45:28.848044Z","payload":{"kind":"person","name":"spec.md","version":97,"artifact_id":"89c8e344-c6ad-4fa0-89c5-d252856dc817","ask_id":"b5d11b18-84de-494f-af2f-9669f338882e","content_sha256":"'"$PINNED_SHA"'"}}]' >"$PINNED/event.json"
 PINNED_CONTENT='## Summary
 
 Version 97 of the spec this case stands in for.
 '
-printf '%s\n\nContent: sha256:%s\nApproval: approved v97 by sami@theorem.dev\n' "$PINNED_CONTENT" "$PINNED_SHA" >"$PINNED/recorded/doc-read.txt"
+printf '%s\n\nContent: sha256:%s\nApproval: approved v97 by person@example.invalid\n' "$PINNED_CONTENT" "$PINNED_SHA" >"$PINNED/recorded/doc-read.txt"
 {
     printf '%s\n\nContent: sha256:%s\n' "$PINNED_CONTENT" "$PINNED_SHA"
     printf 'Approval: awaiting, waiting on human (requested by 01a1bb6a-b605-779a-879f-16af577b2512, ask 2ae7547f-3262-4f02-998a-e950aea19501)\n\nOpen anchored threads:\n\n'
-    printf 'comment 93930000-0000-4000-8000-000000000093 · user sami@theorem.dev · 2026-11-16T12:00:00Z\n> Version 97 of the spec this case stands in for.\nBody: Which version did I approve?\n'
+    printf 'comment 93930000-0000-4000-8000-000000000093 · user person@example.invalid · 2026-11-16T12:00:00Z\n> Version 97 of the spec this case stands in for.\nBody: Which version did I approve?\n'
     printf 'reply 93930000-0000-4000-8000-000000000094 · session 01a1bb6a-b605-779a-879f-16af577b2512 · 2026-11-16T12:01:00Z\nBody: Version 97, whose read prints\nContent: sha256:%s\n' "$(printf '0%.0s' $(seq 64))"
 } >"$PINNED/moved/doc-read.txt"
 for state in recorded moved; do
@@ -2255,10 +2256,10 @@ pinned_old() {
     case_result "the old form of n-read-1098, $2, fails once the document's approval and threads move on" "$PINNED_MISSED" "$PINNED_OUT"
 }
 pinned_old checksum "the checksum of the whole pinned read" \
-    "dispatch doc-read --issue INFRA-1098 --artifact spec --version 97 | sha256sum && dispatch doc-read --issue INFRA-1098 --artifact spec --version 97 | grep -c '^Approval: approved v97 by sami@theorem.dev'" \
+    "dispatch doc-read --issue INFRA-1098 --artifact spec --version 97 | sha256sum && dispatch doc-read --issue INFRA-1098 --artifact spec --version 97 | grep -c '^Approval: approved v97 by person@example.invalid'" \
     "{\"contains\":\"$(sha256sum <"$PINNED/recorded/doc-read.txt" | cut -d' ' -f1)\"}"
 pinned_old approval "the count of the read's Approval: line" \
-    "dispatch doc-read --issue INFRA-1098 --artifact spec --version 97 | grep -c '^Approval: approved v97 by sami@theorem.dev'" '{"equals":"1"}'
+    "dispatch doc-read --issue INFRA-1098 --artifact spec --version 97 | grep -c '^Approval: approved v97 by person@example.invalid'" '{"equals":"1"}'
 
 # 94. A predicate holds every part its claim names (the architect's note of
 # 2026-11-16T19:54Z). At f63516e5dbe tm-validate claimed that mas-ctl validate prints OK for

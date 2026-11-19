@@ -40,7 +40,7 @@ d:semantic-group a mas:SemanticGroup ;
 
 d:agent-human a mas:Agent ;
     mas:id "agent-human" ;
-    mas:name "sami@theorem.dev" ;
+    mas:name "person@example.invalid" ;
     mas:description "The person who created the issue, answered its ask, and is its assignee." ;
     mas:declared true ;
     mas:belongsToMAS d:mas-legion-infra .
@@ -111,7 +111,7 @@ d:mascall a mas:MASCall ;
 
 d:ac-human a mas:AgentCall ;
     mas:id "ac-human" ;
-    mas:name "What sami@theorem.dev wrote on the issue" ;
+    mas:name "What person@example.invalid wrote on the issue" ;
     mas:sessionId "INFRA-3134" ;
     mas:startTime "1794435342.614742"^^xsd:decimal ;
     mas:endTime "1794450367.365872"^^xsd:decimal ;

@@ -232,7 +232,7 @@ All 1323 approvals of a `plan.md` were written by a session [c-plan-approve-1].
 So the plan a worker follows is agreed between agents, and the spec it serves is agreed with a person.
 dispatch://INFRA-1066 is one instance: its plan document's approval line names a session id, not a person's address [c-plan-line-1].
 dispatch://INFRA-481 is the other side: a person approved its spec, and its approval line names a person's address and no session.
-Six of the eight approvals of its spec written before the window closes fall inside the window, the first at 2026-10-29T00:37:14Z and the last at 2026-11-10T11:39:40Z, and each was written by the person sami@theorem.dev [c-plan-approve-2].
+Six of the eight approvals of its spec written before the window closes fall inside the window, the first at 2026-10-29T00:37:14Z and the last at 2026-11-10T11:39:40Z, and each was written by a person [c-plan-approve-2].
 
 What the plan agreement does not carry is a person's reading.
 The approval of a plan is an agent's, so no part of this record shows a person agreed to the plan before the work [c-plan-gap-1].

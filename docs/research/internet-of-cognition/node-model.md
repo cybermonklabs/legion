@@ -3,7 +3,7 @@
 This page reads the node model against the work of INFRA-3134 and answers four questions about it.
 It reads `dispatch://INFRA-1098/spec` at version 97 and `dispatch://INFRA-1253/spec` at version 17.
 Both were read with `dispatch doc-read` pinned to those version numbers. A version's content is fixed, but after it the read prints the document as it stands now, its approval state and its open anchored threads, so each row whose count or search that part could move reads the content alone. Version 97's content carries `sha256:f6c88506ba193386bf9b644aeab9b8b0e2d69f7935f17b2fade89fcac3838194`, the content_sha256 of the event that approved it [n-read-1098], and version 17's content hashes to `sha256:83e7292f846a50bb37446b213209a7e7c0d5bd4c5c0a04240e6c33738193deeb` [n-read-1253].
-Version 97 of INFRA-1098's spec was approved by sami@theorem.dev, which event 405554 records at 2026-11-12T00:45:28Z [n-read-1098]; no approval of version 17 of INFRA-1253's spec was recorded at or before 2026-11-16T13:00:00Z [n-read-1253].
+Version 97 of INFRA-1098's spec was approved by a person, which event 405554 records at 2026-11-12T00:45:28Z [n-read-1098]; no approval of version 17 of INFRA-1253's spec was recorded at or before 2026-11-16T13:00:00Z [n-read-1253].
 
 A sentence quoted from either specification is evidence of what that specification says will exist, and never of what Dispatch does today.
 Each such row is marked as a claim of the project, not of its code.

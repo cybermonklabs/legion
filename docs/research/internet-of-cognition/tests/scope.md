@@ -22,7 +22,7 @@ On 2026-11-12, before 07:00Z, it held six documents: `spec` at version 7, `verif
 
 `verification.md` carries six check blocks, each with a `serves` list, a `surface`, a `run` command, a `when` and a `negative_control` [ts-issue-checks].
 
-Up to then it had one ask, `a4a66eeb-c22b-4d2d-9e7f-9e33603955c4`, opened by the architect and answered `Approve` by `sami@theorem.dev` [ts-issue-ask].
+Up to then it had one ask, `a4a66eeb-c22b-4d2d-9e7f-9e33603955c4`, opened by the architect and answered `Approve` by a person [ts-issue-ask].
 
 It had twelve comments [ts-issue-comments], one recorded handoff [ts-issue-handoff], forty-five events [ts-issue-events], no parent and no child [ts-issue-parent], and no pull request and no external link [ts-issue-pr].
 
@@ -76,7 +76,7 @@ The searches run over the five ontology Turtle files and the custom shapes file 
 
 - The status history `triage` to `todo` to `in_progress`: there is no term for a status change; `mas:Transition` is a data-flow step between two text states and carries no from-value and no to-value, so the three status writes are written here as `mas:State` nodes whose content is the word [ts-gap-status-history].
 
-- The assignee `sami@theorem.dev`: there is no assignee, owner, person or user property, and `foaf` is used only on the ontology header for its publisher, never on an instance [ts-gap-assignee].
+- The assignee, the person who created the issue: there is no assignee, owner, person or user property, and `foaf` is used only on the ontology header for its publisher, never on an instance [ts-gap-assignee].
 
 - The claim "Legion architect · INFRA-3134 since 2026-11-12T06:45:53Z · not running": there is no claim, lease or holder term [ts-gap-claim].
 
@@ -92,7 +92,7 @@ The searches run over the five ontology Turtle files and the custom shapes file 
 
 - The document versions, `spec` at 7 and `verification-md` at 4: there is no version property on any instance; `owl:versionInfo` is an annotation on the ontology header, not on a node [ts-gap-doc-version].
 
-- The approval of `spec.md` v7 by `sami@theorem.dev`: there is no approval, approver or sign-off term [ts-gap-approval].
+- The approval of `spec.md` v7 by a person: there is no approval, approver or sign-off term [ts-gap-approval].
 
 - The approved content checksum `sha256:f65c…`: there is no checksum term; `mas:nodeHash` is a dedup key over a `mas:SemanticGroup`'s session membership and is targeted at that class alone [ts-gap-checksum].
 
@@ -124,7 +124,7 @@ The searches run over the five ontology Turtle files and the custom shapes file 
 
 - The order of blocks inside a document: there is no index, ordinal or sequence property, so nothing in the graph says R1 comes before R2 [ts-gap-order].
 
-- The person: `sami@theorem.dev` is written as a `mas:Agent`, which the ontology defines as an agent type discovered from an execution trace, because there is no term for a human [ts-gap-person].
+- The person: the person who created the issue is written as a `mas:Agent`, which the ontology defines as an agent type discovered from an execution trace, because there is no term for a human [ts-gap-person].
 
 That is twenty-eight parts [ts-gap-count].
 

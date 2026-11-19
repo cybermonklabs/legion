@@ -30,7 +30,7 @@ $ dispatch doc-read --issue INFRA-1253 --artifact spec --version 17 | sha256sum
 3c1eb50debe6f6ac1b8e84f1a97f48ab34c3b69be5a0934198dd3bf68545ab81  -
 [exit 0]
 
-$ grep -c '^Approval: approved v97 by sami@theorem.dev' live1098.md
+$ grep -c '^Approval: approved v97 by <a person>' live1098.md
 1
 [exit 0]
 
@@ -79,3 +79,4 @@ $ dispatch doc-read --issue INFRA-2918 --artifact spec | grep -c 'the target car
 # Note: live1098.md and live1253.md in the commands above are the outputs of the two pinned reads,
 # "dispatch doc-read --issue INFRA-1098 --artifact spec --version 97" and the same for INFRA-1253 at version 17.
 # Each absence check is repeated in pipeline form below them, so every recorded command re-runs from a fresh pod.
+# The approval line counted above named the person who approved version 97 by an address, which this copy masks as <a person>.
