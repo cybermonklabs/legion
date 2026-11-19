@@ -5026,7 +5026,7 @@ the last is enforced by nothing, which is why it is marked where it stands:
 
 Name the workload for the issue **and for the run**, as everything else on this cluster is named for what owns it (`issue-legion-<project>-<issue key lowercased>`, `legion-<project>-<issue key lowercased>` above).
 The issue is the name's prefix, `<issue key lowercased>-<what it is>-`, which the Job's manifest carries as `metadata.generateName`;
-the run is the API server's part, five random characters it appends at each create, answering with the whole name
+the run is the API server's part, five random ASCII characters it appends at each create, answering with the whole name <!-- characters: ASCII alone, the generateName suffix the API server appends is lowercase letters and digits -->
 — for instance `infra-71-postgres-` followed by five such characters — which the sequence reads from that answer and writes into its Service.
 The issue key carries its project, so the name cannot collide with another project's.
 The rest is the server's for a reason: a name a role picks itself can be one that something else in the namespace already holds or will declare, and a Service takes its Job's name, so the Job's name is taken among the Services too, and the first anyone knows of it is another stack's apply failing `AlreadyExists`.
@@ -5110,7 +5110,7 @@ cat > "$dir/job.yaml" <<YAML
 apiVersion: batch/v1
 kind: Job
 metadata:
-  generateName: <issue key lowercased>-postgres-   # the API server adds five characters
+  generateName: <issue key lowercased>-postgres-   # the API server adds five ASCII characters
   labels: { sequence-run: "$run" }      # on the Job alone, not its pods: how the trap finds it unnamed
 spec:
   activeDeadlineSeconds: 3600           # on the Job, at most 43200
@@ -5318,7 +5318,7 @@ So each bullet below carries the date of the run behind it, and a reader runs th
 
 - *Executed from a role container on 2026-10-25, for dispatch://INFRA-232, with the sequence as this page published it then, through the role's own bash tool* (dispatch://INFRA-386 has since added the trap's ignore line, put `setsid -w` in front of the trap's `kubectl` commands and changed comments in the block):
   the block taken from this page with only its three bracketed lines filled in, each run under the name the API server gave it and a run label of its own, and a fixture changing one line of it where named.
-  As published, with reads of the workload pod's labels and of the Jobs carrying the run label added:
+  As published, with reads of the workload pod's labels and of the Jobs carrying the run label added: <!-- characters: ASCII alone, the run label is secrets.token_hex(4) and the generateName suffix is lowercase letters and digits -->
   `run: sequence-run=` and eight characters printed first, `workload: infra-232-postgres-` and five characters printed after the create, the Job admitted with its run label and listed by it, the pod carrying its Job's `batch.kubernetes.io/controller-uid` at the uid the create returned and not the run label, the Service created under the Job's name, `answered`, the trap's listing empty, `sequence: exit 0` about 90 s after the start, and no Job of that name left.
   While that run was under way, a second run stopped by a `kill -TERM -- -$$` placed right after the create, before the line that reads its answer:
   the trap printed `cleanup: no Job name was read; deleting

@@ -156,7 +156,7 @@ request pending (66.0 s), the pointer on that page's Approve (73.3 s), the broke
 approval (`b2-approve.webm` at 21.2 s, inside the clip's tail), Live grants with the grant's row
 (88.0 s and 89.5 s) and the pointer on Revoke (93.0 s). No frame read shows an error, a host but
 `example-host-build` and the two loopback addresses above, a person but `alice@example.com`, or
-the secret's value (only its length and last four characters). The session and request beats
+the secret's value (only its length and last four bytes). The session and request beats
 (23.2-54.5 s) were read as their casts' text, not frame by frame.
 
 The ids agree wherever more than one section shows them:

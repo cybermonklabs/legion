@@ -273,8 +273,8 @@ broker's own endpoints:
    asks the helper to, which calls `POST /v1/oauth/device_authorization`), naming the person who
    should approve it (the helper reads that person's Dispatch login from
    `AGENT_SECRETS_OPERATOR_FILE`).
-2. The broker answers with an eight-character confirmation code, `XXXX-XXXX`, which the machine
-   prints, and the machine polls `POST /v1/oauth/token` for the decision.
+2. The broker answers with an eight-character ASCII confirmation code, `XXXX-XXXX`, which the
+   machine prints, and the machine polls `POST /v1/oauth/token` for the decision.
 3. The person types the code into Dispatch, sees which machine is asking, and approves or denies it.
    Only the typed code selects a machine login: no link can approve one, and anyone else is refused
    `NOT_APPROVER`, since the machine's sessions act as that person.

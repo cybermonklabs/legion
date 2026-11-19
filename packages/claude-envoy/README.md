@@ -452,7 +452,7 @@ The session registers under a title, which Dispatch's Agents page shows in place
 (`ENVOY_SESSION_TITLE='review the listener' claude`), on one line. Otherwise it is the name the
 person running the session gave it — `claude -n 'review the listener'`, `--name`, or `/rename` —
 alone, with no short id after it, since a name somebody chose already tells its session apart.
-Otherwise the title is a name and the first eight characters of the session id
+Otherwise the title is a name and the first eight UTF-16 code units of the session id
 (`work:review 3084299d`, `legion 3084299d`), so two sessions in one tmux window, or in one project
 outside tmux, keep apart, and the id part follows the new id after `/clear`.
 

@@ -32,7 +32,7 @@ Each item below names a variable, then its purpose.
   write the new value followed by the old one, move every consumer to the new one, then write the new value alone.
   The first is the current value; the API accepts every value, comparing a bearer with each in constant time.
   The document websocket takes no bearer at all: it is a person's cookie connection only.
-  Whitespace at either end is ignored; startup refuses an empty entry (two whitespace characters in a row, a CR LF among them) or a repeated one, naming its position, never its value.
+  Whitespace at either end is ignored; startup refuses an empty entry (two whitespace code points in a row, a CR LF among them) or a repeated one, naming its position, never its value.
   A request that authenticates with a value after the first logs one WARN line, `dispatch: request authenticated with a previous shared agent token`, with `entry` (the value's position), `address` (the rightmost `X-Forwarded-For` entry, which is the load balancer's view of the caller, or the connection's own address without one), `user_agent` and `path`, at most once per address and User-Agent every 10 minutes, and never a token.
   Each field keeps its first 256 bytes, and the server remembers up to 10,000 callers; one past that is logged on each request.
   Callers that share an address and User-Agent share a line, so the log says whether a value on its way out is still in use, not who uses it.
@@ -1581,7 +1581,7 @@ So Postgres reads a migration's text as the census reads it ("Pre-deploy census"
 A `set` without `local` in a migration stays on its connection after the migration's transaction ends, until the runner resets the connection's session (below).
 So no later migration meets the setting.
 With `standard_conforming_strings` off, a backslash before a quote in a plain literal escapes that quote, so a text that the census reads as one statement can hold a second statement for Postgres.
-With `client_encoding` at `SJIS`, the last byte of a UTF-8 character and a backslash after it can be one character, so that backslash escapes nothing.
+With `client_encoding` at `SJIS`, the last byte of a UTF-8 character and a backslash after it can be one SJIS character (one code point), so that backslash escapes nothing.
 With `backslash_quote` off, Postgres refuses a `\'` in an `E'…'` literal, which the census reads as an escaped quote.
 The runner needs a database whose encoding holds every character of the migrations it applies: `UTF8`, or `SQL_ASCII`.
 With `client_encoding` at `UTF8`, Postgres converts the text of each migration to the database's encoding, and it stops at the first character that this encoding does not have.
@@ -4882,7 +4882,7 @@ Each item below names a status and code, then its meaning.
   Write more of the id.
   An id written short that names one item is resolved before the route's handler runs, so the handler, the project-scope check and the response all read the whole id;
   one that names none answers the 404 that route answers for a whole id that names none, and a value that is no short id at all
-  — fewer than 8 characters, or not hex — gets the answer it has always had.
+  — fewer than 8 bytes, or not hex — gets the answer it has always had.
   The ids this covers are an ask's, a comment's, a message's, a document's and a document block's;
   an id in a request body (`reply_to`, `ask_id`, `in_reply_to`) and the `artifact=` filters are read whole, since the programs that write them hold the whole id.
 
