@@ -377,11 +377,12 @@ a comment or message reply that names a block (`--reply-to <comment>#b-b2`,
 move, reword, split, deletion and restore over `PATCH /api/v1/comments/{id}` with carried ids, and
 a body holding block HTML read back byte for byte (A13); and a link pinned to a comment's block that
 reads `changed`, then `removed` (A15). It also reads the bounds the server owns and no client
-carries: a comment and a message of 48,000 characters taken and read back whole, a paragraph of
-32,001 characters refused by name, and `dispatch limits` (A8); a passage only at the end of a block
-longer than 32,000 characters found by meaning and a one-line ask option found by its text, each
-hit naming the block (A9, skipped with one `SKIP:` line on a server with no embedder); and a
-question of 2,001 characters taken by `dispatch ask` and by a document's decision block (A14).
+carries: a comment and a message of 48,000 ASCII characters taken and read back whole, a paragraph
+of 32,001 ASCII characters refused by name, and `dispatch limits` (A8); a passage only at the end
+of a block longer than 32,000 ASCII characters found by meaning and a one-line ask option found by
+its text, each hit naming the block (A9, skipped with one `SKIP:` line on a server with no
+embedder); and a question of 2,001 ASCII characters taken by `dispatch ask` and by a document's
+decision block (A14).
 Each passing check prints `PASS: <section> <what>`; the first
 failure prints `FAIL: <section> <what>: <observed>` and exits 1. Its inputs:
 
@@ -446,7 +447,7 @@ the missing plan task named only once the issue has a plan document; the gap an 
 answer names and the covered spec that earns none; `dispatch plan-approve`, refused `409
 NOT_PLAN_DOCUMENT` on a spec, and `dispatch request-approval`, refused `409
 PLAN_APPROVED_BY_REVIEW` on a plan; the one request that names a spec and its Verification
-document together; and, in the reading section, every result of a check printed with all forty
+document together; and, in the reading section, every result of a check printed with all forty hex
 characters of its commit, beside a result at a commit that repository does not hold refused
 `400 RESULT_COMMIT_UNKNOWN`. Its inputs are `DISPATCH_URL`, the bearer, `PROJECT`, and two
 optional ones:
@@ -458,7 +459,7 @@ optional ones:
   seeds a repository of its own, maps it as `PROJECT`'s default and removes the mapping on exit;
   where `PROJECT` maps one, the setup seeds that repository and maps nothing. The results of the
   check are then compared with that pull request's head, a result at the further commit — whose
-  first twelve characters are the head's — stands at none of them, and a result at a commit the
+  first twelve hex characters are the head's — stands at none of them, and a result at a commit the
   repository holds neither of is refused. Unset, one `SKIP: reading …` line stands in for the
   section, which no other way of running has a pull request's head to read.
 - `DEV_SIGNIN_LOGIN`, as `block-graph.sh` takes it. Recording a review is a person's write alone,

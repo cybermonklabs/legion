@@ -20,8 +20,8 @@ func TestMultiblockRangeIsTheTextblocksTheEditorReads(t *testing.T) {
 		{"a whole heading into a table's first cell", "# abc\n\n| Next | b |\n| --- | --- |\n| c | d |\n", "abc Next", true, true},
 		{"from part of a paragraph", "Intro abc\n\nNext\n", "abc Next", true, true},
 		{"across four textblocks", "abc\n\n| H | I |\n| --- | --- |\n| Next | d |\n", "abc H I Next", false, false},
-		{"a one-character paragraph and two cells", "a\n\n| b![i](x.png) |\n| --- |\n| c![j](y.png) |\n", "a b c", true, false},
-		{"more than 240 characters", long + "\n\nNext\n", long + " Next", false, false},
+		{"a one-letter paragraph and two cells", "a\n\n| b![i](x.png) |\n| --- |\n| c![j](y.png) |\n", "a b c", true, false},
+		{"more than 240 UTF-16 code units", long + "\n\nNext\n", long + " Next", false, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			doc, err := Parse(test.markdown)

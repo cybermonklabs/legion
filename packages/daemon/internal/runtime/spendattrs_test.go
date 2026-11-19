@@ -272,8 +272,8 @@ func TestSpendAttributesRefusalAppliesTheDetectorsOwnRules(t *testing.T) {
 		{"a member with a bare %", "theorem.project=100%", `its member "theorem.project=100%" has a value with a malformed percent escape`},
 		{"a key with a bare %", "theorem.%=legion", `its member "theorem.%=legion" has a key with a malformed percent escape`},
 		{"a percent sequence that is not valid UTF-8", "theorem.project=%FF", `its member "theorem.project=%FF" has a value with percent escapes that are not valid UTF-8`},
-		{"a 256-character decoded value", long, fmt.Sprintf("its member %q has a value of 256 characters once percent-decoded, over the detector's 255", "theorem.note="+strings.Repeat("a", 256))},
-		{"a 255-character decoded value", prefix + strings.Repeat("a", 255), ""},
+		{"a decoded value of 256 UTF-16 code units", long, fmt.Sprintf("its member %q has a value 256 long once percent-decoded, over the detector's 255", "theorem.note="+strings.Repeat("a", 256))},
+		{"a decoded value of 255 UTF-16 code units", prefix + strings.Repeat("a", 255), ""},
 		{"an empty key", "=value", `its member "=value" has an empty key`},
 		{"a member naming legion.issue", "theorem.project=legion,legion.issue=INFRA-1", `its member "legion.issue=INFRA-1" names legion.issue, which the runtime writes into every launch itself`},
 		{"a member naming legion.role, percent-encoded", "legion%2Erole=tester", `its member "legion%2Erole=tester" names legion.role, which the runtime writes into every launch itself`},
@@ -290,7 +290,7 @@ func TestSpendAttributesRefusalAppliesTheDetectorsOwnRules(t *testing.T) {
 			"\uFEFF=v", `its member "=v" has an empty key`},
 		{"a member of U+FEFF alone, which the detector trims to empty and filters away",
 			"theorem.project=legion,\uFEFF", ""},
-		{"a key of U+0085, which the detector keeps as one character and parses",
+		{"a key of U+0085, which the detector keeps as one code point and parses",
 			"\u0085=v", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

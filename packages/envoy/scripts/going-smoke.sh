@@ -212,6 +212,7 @@ class Model(http.server.BaseHTTPRequestHandler):
 
     def stream(self, text):
         """The completion, in several frames with a pause between them, then [DONE]."""
+        # characters: code points, Python's len() of a str counts them.
         say("streaming %d characters in frames of %d, %.0f ms apart" % (len(text), args.chunk, args.pause * 1000))
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")

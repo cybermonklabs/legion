@@ -1,0 +1,5 @@
+kind: Fixed
+body: A stall record cuts a long argument digest with a marker that gives the whole length with no unit, `… (5050 long in all)`, where it called that UTF-16 count characters.
+time: 2026-11-18T03:17:09.800960968Z
+custom:
+    Issue: pr4376

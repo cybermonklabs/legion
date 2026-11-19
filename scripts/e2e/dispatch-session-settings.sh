@@ -177,7 +177,7 @@ fi
 [ -x "$nats_bin" ] || fail "LEGION_E2E_NATS_BIN names $nats_bin, which is not an executable file"
 note "Oh My Pi $omp ($("$omp" --version 2>/dev/null | head -1)); nats-server $("$nats_bin" --version); Chromium $chromium"
 note "models ${models[0]} (the profile's default) and ${models[1]}; LEGION_TEST_PG_DSN set (not printed)"
-note "keys: ANTHROPIC_API_KEY ${#anthropic_key} chars, OPENAI_API_KEY ${#openai_key} chars (passed to Oh My Pi only)"
+note "keys: ANTHROPIC_API_KEY $(printf %s "$anthropic_key" | wc -c) bytes, OPENAI_API_KEY $(printf %s "$openai_key" | wc -c) bytes (passed to Oh My Pi only)"
 
 # ---- builds ------------------------------------------------------------------------------------------
 (cd "$root" && bun install --frozen-lockfile >"$evidence/logs/bun-install.log" 2>&1) || fail "bun install failed; see $evidence/logs/bun-install.log"

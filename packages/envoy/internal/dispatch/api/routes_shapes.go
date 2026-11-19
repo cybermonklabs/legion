@@ -349,7 +349,7 @@ type myRepliesQuery struct {
 // route, for a page served by a release before this one, and those five are declared on
 // GET /api/v1/search/results (searchResultsRouteQuery), the path a caller asks them of.
 type searchRouteQuery struct {
-	// Q is the text searched for, at least 2 characters and at most contracts.SearchQueryMax.
+	// Q is the text searched for, 2 to contracts.SearchQueryMax UTF-16 code units after trimming.
 	Q string `query:"q"`
 	// Project searches within one project; empty searches every project. It narrows every leg
 	// of the search rather than striking rows out of the page it answers.
@@ -365,7 +365,7 @@ type searchRouteQuery struct {
 // that path exists. The nine are written out rather than embedded because the emitter reads a
 // query struct's own fields and refuses one carrying no query tag (openapi.go, queryParameters).
 type searchResultsRouteQuery struct {
-	// Q is the text searched for, at least 2 characters and at most contracts.SearchQueryMax.
+	// Q is the text searched for, 2 to contracts.SearchQueryMax UTF-16 code units after trimming.
 	Q string `query:"q"`
 	// Project searches within one project; empty searches every project. It narrows every leg
 	// of the search rather than striking rows out of the page it answers.

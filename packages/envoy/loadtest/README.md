@@ -1644,7 +1644,7 @@ TARGET_NOT_FOUND`, `400 TARGET_SPANS_BLOCKS`, `409 TARGET_AMBIGUOUS`), and a `wi
 paragraphs, or the block's own marker, is `400 INVALID_OP`). So each op replaces a plain run of one
 line (outside code spans, emphasis, links, autolinks and inline HTML, in no fence or directive) by
 plain text that is never empty. An edit is the logged diff (`edits.diff`) when the diff is complete
-(not cut at 4,094 characters), the client's text is the version it was taken from (each context and
+(not cut at 4,094 bytes), the client's text is the version it was taken from (each context and
 removed line is where its hunk says), and every run of changed lines is either as many lines
 changed as removed, each a `replace` of the changed words widened a word at a time until unique, or
 a paragraph added between two blocks, an `insert` of it after the one-line paragraph or heading
@@ -1824,7 +1824,7 @@ command and the inputs (`replay.inputs`), and how many runs were saturated and r
 - **The edit and upload split.** U is an assumption: a named version with a diff is an upload with
   share U, else an edit.
 - **Historical version contents.** The seed's history is synthetic padding at production's sizes.
-  The text of a version whose diff was cut at 4,094 characters, or that has no diff, is a
+  The text of a version whose diff was cut at 4,094 bytes, or that has no diff, is a
   substitute of the logged size change; a created spec whose version 1 was unreadable is synthetic,
   of the logged size (`spec_sizes`).
 - **The 22:47Z restart's warm-up.** Production's Dispatch restarted at 22:47Z, 8 minutes before the
@@ -2329,7 +2329,7 @@ and about 0.82 of one of the instance's 8 cores.
 | `waiters p50 / max` | count | The backends that wait for the lock, per sample. | `commit_order_lock.waiters` |
 | `hold ms p50 / p90 / p99` | ms | Hold durations. One hold is a run of samples with the same holder pid and transaction start. It lasts from its first sample to the sample that ends it. A hold that is open at the last sample is not counted. The resolution is the sample interval. | `commit_order_lock.hold_ms` |
 | `holds seen` | count | The holds counted for `hold ms`. | `commit_order_lock.holds_observed` |
-| `what the holder was doing (share of held samples)` | text, percent | Up to four holder states, most frequent first, each with its share of held samples. A state is `<state> (<wait event type>:<wait event>)`, or `active: <query>` with the query cut to 70 characters. `idle in transaction (Client:ClientRead)` means that Postgres waits for Dispatch to send the next statement. | `commit_order_lock.holder_doing` (up to 12 entries) |
+| `what the holder was doing (share of held samples)` | text, percent | Up to four holder states, most frequent first, each with its share of held samples. A state is `<state> (<wait event type>:<wait event>)`, or `active: <query>` with the query cut to 90 code points; the table shows a state's first 70 code points, cut between two code points. `idle in transaction (Client:ClientRead)` means that Postgres waits for Dispatch to send the next statement. | `commit_order_lock.holder_doing` (up to 12 entries) |
 
 **The failed-reads mark.** `(<n> failed reads)`, or `(1 failed read)`, after the step name, in this
 table and in the ungranted-locks table, means that n of that probe's reads of `pg_locks` failed: a
@@ -2406,7 +2406,7 @@ The target names the lock:
 For each wait, the sampler records the waiter's statement and the statement of its first blocker.
 The first blocker is the backend with the lowest pid that holds the same lock, granted, in the same
 `pg_locks` read. For a relation lock, that holder can hold a mode that does not conflict with the
-wait. Each statement is the `query` of `pg_stat_activity`, cut to 80 characters.
+wait. Each statement is the `query` of `pg_stat_activity`, cut to 80 code points.
 
 The sampler reads once a second, as the lock probe now does, because each read costs Postgres CPU
 on the box it measures. Read every 20 ms with about 45 waiters at 1x, one read took 75 to 180 ms

@@ -202,7 +202,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if usingDefaultProject {
 		input.Labels = append(input.Labels, repoLabelPrefix+externalRepo)
 	}
-	labels, err := normalizeIssueLabels(input.Labels)
+	labels, err := normalizeIssueLabels("labels", input.Labels)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

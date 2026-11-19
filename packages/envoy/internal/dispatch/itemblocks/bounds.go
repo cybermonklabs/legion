@@ -22,8 +22,7 @@ type CapExceeded struct {
 }
 
 func (e *CapExceeded) Error() string {
-	return fmt.Sprintf("%s block %d (%s) is %d characters over the %d-character block limit (%d/%d)",
-		e.Field, e.Position, e.Type, e.Units-e.Limit, e.Limit, e.Units, e.Limit)
+	return fmt.Sprintf("%s block %d (%s): %d of at most %d", e.Field, e.Position, e.Type, e.Units, e.Limit)
 }
 
 // CountExceeded is a body holding more blocks than contracts.DispatchItemBlocks. Field is the

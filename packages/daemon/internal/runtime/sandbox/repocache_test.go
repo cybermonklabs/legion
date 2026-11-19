@@ -136,7 +136,7 @@ func TestCacheIdentityIsTheAnnotationAndTheNameIsNeverParsed(t *testing.T) {
 	for _, repo := range []ghrepo.Repository{cacheRepo, longRepo, ghrepo.MustParse("acme/widgets-x"), ghrepo.MustParse("acme-widgets/x")} {
 		name := CacheSandboxName(testProject, repo)
 		if len(name) > maxNameLength || !dnsLabel.MatchString(name) || !regexp.MustCompile(`-[0-9a-f]{8}$`).MatchString(name) {
-			t.Errorf("CacheSandboxName(%s) = %q (%d characters), want a DNS label of at most 63 ending in -<8 hex>", repo, name, len(name))
+			t.Errorf("CacheSandboxName(%s) = %q (%d bytes), want a DNS label of at most 63 ending in -<8 hex>", repo, name, len(name))
 		}
 		manifest := r.cacheManifest(repo)
 		if manifest.Name != name {

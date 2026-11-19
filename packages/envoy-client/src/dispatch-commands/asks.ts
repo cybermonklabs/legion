@@ -60,7 +60,7 @@ function askIDInputProblem(
   asks: readonly Pick<AskWithTrees, "id" | "question">[],
   owner: string
 ): string {
-  return `ask ids are uuids. Write the whole id, or at least its first 8 characters. ${openAskChoices(asks, owner)}`;
+  return `ask ids are uuids. Write the whole id, or at least its first 8 hex digits. ${openAskChoices(asks, owner)}`;
 }
 
 /** The line a reply on an approval request a newer version moved prints: no reply hands such a

@@ -81,8 +81,7 @@ func TestAnIssueTitlePastTheSearchVectorLimitIsRefused(t *testing.T) {
 
 	// The words end in a space, which the routes trim before they count.
 	title := strings.TrimSpace(searchtest.DistinctWords(100_000, " "))
-	want := fmt.Sprintf("title is %d characters over the %d-character limit (%d/%d)",
-		len(title)-contracts.IssueTitleMax, contracts.IssueTitleMax, len(title), contracts.IssueTitleMax)
+	want := fmt.Sprintf("title: %d of at most %d", len(title), contracts.IssueTitleMax)
 	refused := func(what string, response *httptest.ResponseRecorder) {
 		t.Helper()
 		body := response.Body.String()

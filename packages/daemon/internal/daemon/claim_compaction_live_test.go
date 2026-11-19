@@ -533,7 +533,7 @@ func (r *claimCompactionLive) operatorCompactsAPhaseWorker() {
 		token, after.Session, after.SessionFile, ended.Attrs["providerErrorRun"])
 
 	entry := r.awaitCompactionEntry(after.SessionFile, 1)
-	r.note("the session's compaction entry is method %q with a %d-character text summary %q and no snapcompact archive (preserveData %v)",
+	r.note("the session's compaction entry is method %q with a %d-byte text summary %q and no snapcompact archive (preserveData %v)",
 		entry.Method, len(entry.Summary), firstLine(entry.Summary), entry.preserveKeys())
 
 	again := r.awaitLogFrom("the owed task's next turn", from, ladderDelays[0]+time.Minute, func(record loggedRecord) bool {

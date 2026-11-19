@@ -10,6 +10,7 @@ import {
   messageStream,
   ompRoot,
   type Request,
+  runCleanup,
   sendRelayFrame,
   serveStandin,
   spawnRpc,
@@ -45,6 +46,12 @@ function setup(): { readonly binary: string; readonly nats: string } {
   return { binary: omp, nats: natsUrl };
 }
 
+/** How long a case waits for one thing the session owes it before failing on it. The two shared
+ *  hooks take it too: bun's own 5 s per hook is less than a connection to the NATS server takes
+ *  on a loaded machine, or the end of the sessions the cases shared, which the harness bounds at
+ *  OMP_TEARDOWN_MS each and the hook runs side by side. */
+const DEADLINE_MS = 30_000;
+
 // The real `connect`'s connection reports the server it reached (`getServer`); the mock's has no
 // such method. Checked once, before any case spends a binary's startup on a connection that
 // reaches no server.
@@ -60,10 +67,7 @@ beforeAll(async () => {
   } finally {
     await probe.close();
   }
-});
-
-/** How long a case waits for one thing the session owes it before failing on it. */
-const DEADLINE_MS = 30_000;
+}, DEADLINE_MS);
 
 /** How often one session may put its context usage on the wire in these cases, the interval the
  *  check names (`ENVOY_CONTEXT_FRAME_INTERVAL_MS`). */
@@ -74,11 +78,13 @@ const CONTEXT_INTERVAL_MS = 2_000;
 const SHELL_LIMIT_MS = 2_000;
 
 /** The sessions these cases share are torn down once, at the end: each boot costs the real
- *  binary's startup, and every case of a session leaves it settled for the next one. */
-const cleanup: Cleanup = [];
+ *  binary's startup, and every case of a session leaves it settled for the next one. Each session
+ *  has its own steps, and the sessions are ended side by side, so the hook waits for the slowest
+ *  one session's end, not for the sum of them. */
+const sessionCleanups: Cleanup[] = [];
 afterAll(async () => {
-  for (const step of cleanup.splice(0).reverse()) await step();
-});
+  await runCleanup(...sessionCleanups.splice(0));
+}, DEADLINE_MS);
 
 function text(reply: string): Block {
   return { type: "text", text: reply };
@@ -206,6 +212,8 @@ async function startSession(
 ): Promise<SurfaceSession> {
   const { config = [], env = {}, prepare } = options;
   const { binary, nats } = setup();
+  const cleanup: Cleanup = [];
+  sessionCleanups.push(cleanup);
   const { home, workspace, sessions } = await ompRoot(binary, "session-surface-omp-", cleanup);
   await prepare?.({ home, workspace });
 
@@ -1092,12 +1100,12 @@ test.skipIf(skip)(
 // A command that prints without end must not fill the bus, the person's page or the model's
 // context: all three copies are cut at the same bound and say so.
 test.skipIf(skip)(
-  "a Send whose command prints 20000 characters is cut at 8000 in the frame and the model's copy",
+  "a Send whose command prints 20000 ASCII characters is cut at 8000 in the frame and the model's copy",
   async () => {
     const session = await shellSession();
     const command = "!printf 'a%.0s' $(seq 1 20000)";
     const sent = await session.send(command);
-    const cut = `${command}\n\n\`\`\`\n${"a".repeat(SHELL_OUTPUT_MAX)}\n\`\`\`\n\nThe output was cut at ${SHELL_OUTPUT_MAX} characters.`;
+    const cut = `${command}\n\n\`\`\`\n${"a".repeat(SHELL_OUTPUT_MAX)}\n\`\`\`\n\nThe output was cut at ${SHELL_OUTPUT_MAX} UTF-16 code units.`;
     expect(await session.reply(sent, "the reply to the long command")).toBe(cut);
     const published = await framesFor(session, sent, "the frame of the long command");
     expect(published).toHaveLength(1);

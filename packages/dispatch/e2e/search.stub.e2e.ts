@@ -127,7 +127,7 @@ test("no results and short queries are stated, not silent @pr", async ({ page, s
   const search = page.getByRole("combobox", { name: "Search" });
 
   await search.fill("a");
-  await expect(page.getByText("Type at least 2 characters")).toBeVisible();
+  await expect(page.getByText("Type at least 2 to search (1 so far)")).toBeVisible();
   await search.fill(scene.missing);
   await expect(page.getByText(`No results for "${scene.missing}"`)).toBeVisible();
 });

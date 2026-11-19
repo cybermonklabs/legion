@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed/embedtest"
 )
@@ -73,7 +74,7 @@ func TestIsThrottledIgnoresAnUnmarkedOrFalseError(t *testing.T) {
 func TestEstimateTokensTruncatesAndDividesByFourCharsPerToken(t *testing.T) {
 	short := strings.Repeat("x", 40)
 	if got, want := EstimateTokens([]string{short}), 10; got != want {
-		t.Errorf("EstimateTokens(%d chars) = %d, want %d", len(short), got, want)
+		t.Errorf("EstimateTokens(%d chars) = %d, want %d", utf8.RuneCountInString(short), got, want)
 	}
 	long := strings.Repeat("y", MaxInputRunes+8000)
 	if got, want := EstimateTokens([]string{long}), MaxInputRunes/4; got != want {

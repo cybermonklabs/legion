@@ -96,7 +96,7 @@ test("a set inside the cap but past the request line's budget is read in batches
       const query = new URLSearchParams(batch.map((ref) => ["ref", ref])).toString();
       expect(
         query.length,
-        `a batch of ${batch.length} addresses writes ${query.length} characters of query string`
+        `a batch of ${batch.length} addresses writes ${query.length} UTF-16 code units of query string`
       ).toBeLessThanOrEqual(REFERENCE_TARGETS_MAX_QUERY_CHARS);
     }
     // Nothing is lost to the second bound either: every address is asked for, once.

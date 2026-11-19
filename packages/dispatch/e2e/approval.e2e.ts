@@ -192,8 +192,7 @@ test("a reason longer than the server takes shows the server's own refusal in th
     // What the reader is shown is the server's refusal, which names the field and the bound,
     // in place of the sentence the dialog says for a failure it cannot read.
     await expect(dialog.getByRole("alert")).toHaveText(
-      `reason is 1 characters over the ${DISPATCH_EVENT_BODY_MAX}-character limit ` +
-        `(${reason.length}/${DISPATCH_EVENT_BODY_MAX})`
+      `reason: ${reason.length} of at most ${DISPATCH_EVENT_BODY_MAX}`
     );
     await expect(dialog.getByText("Could not request changes. Try again.")).toHaveCount(0);
 
@@ -297,7 +296,7 @@ test("the agent's undo of an accidental edit to an approved spec makes that appr
   }
 });
 
-test("an undo one character away from the approved spec leaves its approval stale", async ({
+test("an undo one ASCII character away from the approved spec leaves its approval stale", async ({
   browser,
 }) => {
   const issue = await approveThenChange("The plan.", 0);

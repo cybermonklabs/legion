@@ -82,7 +82,7 @@ tells the agent who Dispatch takes it for.
 | Comments | `dispatch comment` comments on a document or replies in a thread. `dispatch suggest` proposes replacement text. `dispatch resolve-comment` resolves a thread. |
 | Messages | `dispatch message` posts a message or replies to one. |
 | Documents | `dispatch doc-read` reads a document, or the text of an uploaded file; with `--blocks` it lists the document's block ids, tokens and table rows that `dispatch doc-edit` addresses. `dispatch doc-edit` edits one in place. `dispatch artifact` uploads a file or a new document. `dispatch request-approval` asks a person to approve a document. |
-| Reading | `dispatch read` reads an issue, ask, comment, message, or document summary; an issue read lists the issue's last 10 events, `--events N` the last N, and `--all-events` every one. `dispatch search` searches everything. `dispatch related --project <KEY>` runs the related-item check a new issue or ask gets on a `--title` and `--text`, and writes nothing. `dispatch whoami` reports who Dispatch takes the agent for, and the OAuth scopes its credential holds. `dispatch inbox` lists what the Inbox page of the person the agent acts for shows — Needs you, Waiting on agents, Later, Unread threads and Credential requests, in that order, each with its count and its rows — read with the agent's own credential, which must hold the `person` scope; a thread's line names its owner (the issue key, the document slug, or the session of an Agent row), its kind, the first 80 characters of its subject, who wrote the newest reply, how long ago and the thread's reference; it is the person's Dispatch Inbox, not the Envoy tool `envoy_inbox`, which lists what was delivered to this session. |
+| Reading | `dispatch read` reads an issue, ask, comment, message, or document summary; an issue read lists the issue's last 10 events, `--events N` the last N, and `--all-events` every one. `dispatch search` searches everything. `dispatch related --project <KEY>` runs the related-item check a new issue or ask gets on a `--title` and `--text`, and writes nothing. `dispatch whoami` reports who Dispatch takes the agent for, and the OAuth scopes its credential holds. `dispatch inbox` lists what the Inbox page of the person the agent acts for shows — Needs you, Waiting on agents, Later, Unread threads and Credential requests, in that order, each with its count and its rows — read with the agent's own credential, which must hold the `person` scope; a thread's line names its owner (the issue key, the document slug, or the session of an Agent row), its kind, the first 80 UTF-16 code units of its subject, who wrote the newest reply, how long ago and the thread's reference; it is the person's Dispatch Inbox, not the Envoy tool `envoy_inbox`, which lists what was delivered to this session. |
 | Handoffs | `dispatch handoff-write` records a phase handoff on an issue as the agent's session: `--phase <phase>` and `--body-file <path>` (`-` reads stdin), one JSON object stored exactly as written, each write the phase's next version. `dispatch handoff-read` prints one line naming the phase, version, id, writing session and time, then the body exactly as stored; `--version <n>` reads an earlier version. |
 | Architecture | `dispatch architecture-sync` imports a project's architecture model now, from every source repository with a line for each, or from one with `--repo <owner/name>`. |
 
@@ -156,7 +156,7 @@ person, that is an ask, and nothing else reaches their Inbox.
 Every model request of an Oh My Pi session that reaches Dispatch, its `task` subagents' included,
 ends with a list of what people wrote to that session in the last 72 hours: answers to its asks,
 replies on its asks and in its comment threads, comments on its documents and on issues routed to
-it, mentions, and messages to it, each word for word, newest first, under 8,000 characters. A
+it, mentions, and messages to it, each word for word, newest first, under 8,000 UTF-16 code units. A
 Claude Code session gets the same list at its start, resume and compaction and when a subagent
 starts. When the list leaves older items out, its last line says how many; `dispatch answers`
 reads them all. The request waits at most 800 ms for the list and carries the last one read when
@@ -166,16 +166,16 @@ The server holds every write to a size, refuses rather than truncates, and names
 bound; `dispatch limits` prints every bound the server you write to holds, and no command carries
 a bound of its own:
 
-- an ask's question and its options together are at most 32,000 characters, with at most eight
+- an ask's question and its options together are at most 32,000 UTF-16 code units, with at most eight
   options;
 - a comment or message body is bounded block by block: each block — a paragraph, list, quote,
-  table or code block — is at most 32,000 characters, and one body holds at most 32,768 blocks.
+  table or code block — is at most 32,000 UTF-16 code units, and one body holds at most 32,768 blocks.
   A body holding a decision block (`:::ask`) is refused whatever its length, `400
   DECISION_BLOCK_IN_BODY`: nobody can answer a question there, so it belongs in the issue's own
   document, as a decision block, or in an ask opened with `dispatch ask`. To show one as an
   example, put it in a fenced code block;
 - a comment anchored to a document is also projected into that document's margin, which is bounded
-  in bytes and not by that character limit: 256 KiB per thread, and 1 MiB per document margin. A
+  in bytes and not by that UTF-16 code unit limit: 256 KiB per thread, and 1 MiB per document margin. A
   few long anchored comments therefore fill a thread or a margin where many short ones used to
   fit, and a comment or suggestion past either bound is refused `413 CAP_EXCEEDED`; a document
   keeps every comment it has had, so one whose margin is full takes more once it is split;

@@ -145,7 +145,7 @@ func TestValidateRefuses(t *testing.T) {
 		{"a name starting with a hyphen", func(a *core.Authorization) { listener(a).Name = "-listener" }, `users[0] "-listener": name`},
 		{"a name ending with a hyphen", func(a *core.Authorization) { listener(a).Name = "listener-" }, `users[0] "listener-": name`},
 		{"an empty name", func(a *core.Authorization) { listener(a).Name = "" }, `users[0] "": name`},
-		{"a name of 49 characters", func(a *core.Authorization) { listener(a).Name = strings.Repeat("a", 49) }, `users[0] "` + strings.Repeat("a", 49) + `": name`},
+		{"a name of 49 ASCII letters", func(a *core.Authorization) { listener(a).Name = strings.Repeat("a", 49) }, `users[0] "` + strings.Repeat("a", 49) + `": name`},
 		{"a pending user without a seed", func(a *core.Authorization) { pending(a).HasSeed = false }, `users[3] "example-pending": hasSeed`},
 		{"a pending user with a publish rule", func(a *core.Authorization) { pending(a).Publish = &core.Rules{Allow: []string{">"}} }, `users[3] "example-pending": publish`},
 		{"a pending user with a subscribe rule", func(a *core.Authorization) { pending(a).Subscribe = &core.Rules{Allow: []string{">"}} }, `users[3] "example-pending": subscribe`},
@@ -214,8 +214,8 @@ func TestValidateAccepts(t *testing.T) {
 		change func(a *core.Authorization)
 	}{
 		{"the placeholder", func(*core.Authorization) {}},
-		{"a one-character name", func(a *core.Authorization) { a.Users[0].Name = "a" }},
-		{"a name of 48 characters", func(a *core.Authorization) { a.Users[0].Name = strings.Repeat("a", 48) }},
+		{"a name of one ASCII letter", func(a *core.Authorization) { a.Users[0].Name = "a" }},
+		{"a name of 48 ASCII letters", func(a *core.Authorization) { a.Users[0].Name = strings.Repeat("a", 48) }},
 		{"no fallback, the fallback's user keeping a seed", func(a *core.Authorization) {
 			a.NoAuthUser = ""
 			a.Users[2].HasSeed = true

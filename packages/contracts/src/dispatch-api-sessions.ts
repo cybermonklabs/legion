@@ -15,6 +15,8 @@ import { ActorSchema, InboundBySchema } from "./dispatch-api-core";
  * without; and because the listener stores whatever a session registers and Dispatch answers it
  * unchanged, a reader that trusted the sender's cap would parse a string no tmux wrote. One
  * number here, read by both, so neither side can drift from the other.
+ * It counts UTF-16 code units: both sides compare a layout's `.length` with it, and the layout
+ * tmux writes is ASCII, so it is as many bytes.
  */
 export const TMUX_LAYOUT_MAX = 2_000;
 

@@ -5026,7 +5026,7 @@ the last is enforced by nothing, which is why it is marked where it stands:
 
 Name the workload for the issue **and for the run**, as everything else on this cluster is named for what owns it (`issue-legion-<project>-<issue key lowercased>`, `legion-<project>-<issue key lowercased>` above).
 The issue is the name's prefix, `<issue key lowercased>-<what it is>-`, which the Job's manifest carries as `metadata.generateName`;
-the run is the API server's part, five random characters it appends at each create, answering with the whole name
+the run is the API server's part, five random ASCII characters it appends at each create, answering with the whole name <!-- characters: ASCII alone, the generateName suffix the API server appends is lowercase letters and digits -->
 — for instance `infra-71-postgres-` followed by five such characters — which the sequence reads from that answer and writes into its Service.
 The issue key carries its project, so the name cannot collide with another project's.
 The rest is the server's for a reason: a name a role picks itself can be one that something else in the namespace already holds or will declare, and a Service takes its Job's name, so the Job's name is taken among the Services too, and the first anyone knows of it is another stack's apply failing `AlreadyExists`.
@@ -5110,7 +5110,7 @@ cat > "$dir/job.yaml" <<YAML
 apiVersion: batch/v1
 kind: Job
 metadata:
-  generateName: <issue key lowercased>-postgres-   # the API server adds five characters
+  generateName: <issue key lowercased>-postgres-   # the API server adds five ASCII characters
   labels: { sequence-run: "$run" }      # on the Job alone, not its pods: how the trap finds it unnamed
 spec:
   activeDeadlineSeconds: 3600           # on the Job, at most 43200
@@ -5318,7 +5318,7 @@ So each bullet below carries the date of the run behind it, and a reader runs th
 
 - *Executed from a role container on 2026-10-25, for dispatch://INFRA-232, with the sequence as this page published it then, through the role's own bash tool* (dispatch://INFRA-386 has since added the trap's ignore line, put `setsid -w` in front of the trap's `kubectl` commands and changed comments in the block):
   the block taken from this page with only its three bracketed lines filled in, each run under the name the API server gave it and a run label of its own, and a fixture changing one line of it where named.
-  As published, with reads of the workload pod's labels and of the Jobs carrying the run label added:
+  As published, with reads of the workload pod's labels and of the Jobs carrying the run label added: <!-- characters: ASCII alone, the run label is secrets.token_hex(4) and the generateName suffix is lowercase letters and digits -->
   `run: sequence-run=` and eight characters printed first, `workload: infra-232-postgres-` and five characters printed after the create, the Job admitted with its run label and listed by it, the pod carrying its Job's `batch.kubernetes.io/controller-uid` at the uid the create returned and not the run label, the Service created under the Job's name, `answered`, the trap's listing empty, `sequence: exit 0` about 90 s after the start, and no Job of that name left.
   While that run was under way, a second run stopped by a `kill -TERM -- -$$` placed right after the create, before the line that reads its answer:
   the trap printed `cleanup: no Job name was read; deleting
@@ -6715,7 +6715,7 @@ each issue's pod (every role of it alike) and the image probe's.
   The agent's OpenTelemetry detector assigns last-wins, so the daemon's pairs come last, and a launch spec may not set the name.
   A spend row names an arm (`legion.arms`, below), an issue or a role where the collector keeps it.
   The project controller's pod serves no issue and carries the role alone, and the image probe's container, which runs no role either, keeps the operator's value as the operator wrote it.
-  The value is read for its content as well as its name: load refuses a member the agent's detector would throw on — one that does not split on `=` into one key and one value, one with an empty key, one whose key or value does not percent-decode or runs past 255 characters once decoded, and one naming `legion.issue`, `legion.role` or `legion.arms`, which the runtime writes itself — naming that one member and what is wrong with it, never the rest of the value.
+  The value is read for its content as well as its name: load refuses a member the agent's detector would throw on — one that does not split on `=` into one key and one value, one with an empty key, one whose key or value does not percent-decode or runs past 255 UTF-16 code units once decoded, and one naming `legion.issue`, `legion.role` or `legion.arms`, which the runtime writes itself — naming that one member and what is wrong with it, never the rest of the value.
   One such member costs the launch every attribute of the variable, the operator's own project attribute among them, because the detector's caller catches the throw with an empty hand, and `legion config check` gives boot's verdict before a restart.
   Like every `pod.env` variable, the attributes reach a role with the start command of its next generation, in no pod specification, so no pod is replaced.
   [`deploy/kubernetes/operator-route/`](../deploy/kubernetes/operator-route/README.md) is an example of one, the one the Go live harnesses run on:
@@ -6977,7 +6977,7 @@ each issue's pod (every role of it alike) and the image probe's.
   The arm's instructions still end that launch's prompt, since the daemon writes them, so such a launch runs with part of its arm and is named in none.
   A role an experiment's `roles` leaves out names none of its arms, and a launch in no arm carries no such pair.
   So each model call says which arm's files it ran with, where the unit's recorded arm says only what the unit was drawn into.
-  The agent's telemetry takes the value up to 255 characters, so load refuses a project whose experiments, each at its longest arm's name and the memory experiment among them, would make it longer.
+  The agent's telemetry takes the value up to 255 UTF-16 code units, so load refuses a project whose experiments, each at its longest arm's name and the memory experiment among them, would make it longer.
 
 - **The draw is the unit's, and is made once.**
   A tree experiment is drawn when the tree's lifecycle row is first created, on both paths that open a tree — admission's own and the operator's `POST /legion/v1/operator/claims` — and is recorded against the tree's root key.

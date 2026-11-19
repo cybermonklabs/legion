@@ -542,7 +542,7 @@ func decodeBody[T any](t *testing.T, response *httptest.ResponseRecorder) T {
 	return value
 }
 
-// overCapCases are texts just past a cap of limit UTF-16 units, the one-character-over case and
+// overCapCases are texts just past a cap of limit UTF-16 units, the one-letter-over case and
 // one counted in UTF-16 units, each with the length the refusal names.
 func overCapCases(limit int) map[string]struct {
 	text   string
@@ -552,7 +552,7 @@ func overCapCases(limit int) map[string]struct {
 		text   string
 		length int
 	}{
-		"one character over": {strings.Repeat("a", limit+1), limit + 1},
+		"one letter over": {strings.Repeat("a", limit+1), limit + 1},
 		// 501 characters outside the Basic Multilingual Plane are 1,002 UTF-16 units.
 		"counted in UTF-16 units": {strings.Repeat("😀", limit/2+1), limit + 2},
 	}
@@ -562,7 +562,7 @@ func overCapCases(limit int) map[string]struct {
 // field of length units past a cap of limit, followed by "; hint" when hint is not empty.
 func assertCapExceeded(t *testing.T, request string, response *httptest.ResponseRecorder, field string, length, limit int, hint string) {
 	t.Helper()
-	want := fmt.Sprintf("%s is %d characters over the %d-character limit (%d/%d)", field, length-limit, limit, length, limit)
+	want := fmt.Sprintf("%s: %d of at most %d", field, length, limit)
 	if hint != "" {
 		want += "; " + hint
 	}
@@ -575,8 +575,7 @@ func assertCapExceeded(t *testing.T, request string, response *httptest.Response
 func assertBlockCapExceeded(t *testing.T, request string, response *httptest.ResponseRecorder, field string, position int, blockType string, units int) {
 	t.Helper()
 	limit := contracts.DispatchBlockUnits
-	want := fmt.Sprintf("%s block %d (%s) is %d characters over the %d-character block limit (%d/%d)",
-		field, position, blockType, units-limit, limit, units, limit)
+	want := fmt.Sprintf("%s block %d (%s): %d of at most %d", field, position, blockType, units, limit)
 	assertRefusalMessage(t, request, response, want)
 }
 

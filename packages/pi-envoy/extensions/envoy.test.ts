@@ -14954,7 +14954,7 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toMatchObject({
           body: expect.stringMatching(
             new RegExp(
-              `^!printf 'a%\\.0s' \\$\\(seq 1 20000\\)\\n\\n\`\`\`\\na{${SHELL_OUTPUT_MAX}}\\n\`\`\`\\n\\nThe output was cut at ${SHELL_OUTPUT_MAX} characters\\.$`
+              `^!printf 'a%\\.0s' \\$\\(seq 1 20000\\)\\n\\n\`\`\`\\na{${SHELL_OUTPUT_MAX}}\\n\`\`\`\\n\\nThe output was cut at ${SHELL_OUTPUT_MAX} UTF-16 code units\\.$`
             )
           ),
         });
@@ -17017,6 +17017,16 @@ console.log(JSON.stringify(args));
       timestamp: 20,
     };
 
+    // The interval rows run on the test's clock (`jest.useFakeTimers`, installed once the viewer
+    // is attached): the publisher reads `Date.now()` and arms the global `setTimeout`. On the box's
+    // clock, a box that holds the process between two events moves a message past the interval it
+    // ended inside, and a frame a row leaves owed fires in whatever row runs when it comes due. On
+    // the test's clock, time moves only when the row moves it, and a frame still owed when the row
+    // ends is dropped here with the clock: Bun runs no fake timer after `useRealTimers`.
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
     /** Every context frame the session published to its attached viewer, oldest first. */
     const publishedContext = (): { readonly tokens: number; readonly contextWindow: number }[] =>
       natsState.published
@@ -17085,6 +17095,7 @@ console.log(JSON.stringify(args));
         contextUsage: () => ({ contextWindow: 200_000, percent: tokens / 2_000, tokens }),
       });
       await attachViewer();
+      jest.useFakeTimers();
 
       await fixture.handlers.get("turn_start")?.({}, context);
       tokens = 60_000;
@@ -17105,6 +17116,7 @@ console.log(JSON.stringify(args));
         contextUsage: () => ({ contextWindow: 200_000, percent: tokens / 2_000, tokens }),
       });
       await attachViewer();
+      jest.useFakeTimers();
 
       await fixture.handlers.get("turn_start")?.({}, context);
       tokens = 60_000;
@@ -17114,7 +17126,10 @@ console.log(JSON.stringify(args));
       // that is running.
       tokens = 5;
 
-      await until(() => publishedContext().length > 1, "the frame the message's reading was owed");
+      // Held for the whole 50 ms interval set above, and published when it ends.
+      jest.advanceTimersByTime(49);
+      expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000]);
+      jest.advanceTimersByTime(1);
       expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000, 60_000]);
     });
 
@@ -17129,30 +17144,23 @@ console.log(JSON.stringify(args));
         contextUsage: () => ({ contextWindow: 200_000, percent: tokens / 2_000, tokens }),
       });
       await attachViewer();
+      jest.useFakeTimers();
 
       await fixture.handlers.get("turn_start")?.({}, context);
       tokens = 60_000;
       await fixture.handlers.get("message_end")?.({ message }, context);
       expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000]);
 
-      // The interval is up and the trailing timer is due, with nothing having let the event loop
-      // run its callback yet: this is the window the message below ends in. The loop is held on
-      // the real clock rather than awaited, and no fake one serves here: the publisher arms the
-      // global `setTimeout` and reads `Date.now()` itself, and advancing a fake clock past the
-      // interval would run the very callback this row must leave pending.
-      // Ten milliseconds past the 50 ms interval set above.
-      const due = performance.now() + 60;
-      while (performance.now() < due) {
-        // Held on purpose; see above.
-      }
+      // The interval is up and the trailing timer is due, with nothing having run its callback
+      // yet: this is the window the message below ends in. `setSystemTime` moves the clock the
+      // publisher reads past the interval without running a timer, as an event loop busy past the
+      // due time leaves the callback waiting. Ten milliseconds past the 50 ms interval set above.
+      jest.setSystemTime(Date.now() + 60);
       tokens = 70_000;
       await fixture.handlers.get("message_end")?.({ message }, context);
 
-      // The trailing timer came due before this one was armed, so the loop runs its callback
-      // first: once this resolves, a frame it would have published has been published.
-      const ran = Promise.withResolvers<void>();
-      setTimeout(ran.resolve, 0);
-      await ran.promise;
+      // Past the time the trailing timer was due: a frame it would have published has been.
+      jest.advanceTimersByTime(60);
       // Nothing older followed the newer reading, and the last frame a viewer draws is that one.
       expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000, 70_000]);
     });

@@ -178,7 +178,7 @@ func TestWhatCountsAsAReasonIsWhatIsLeftOfItTrimmed(t *testing.T) {
 		wait         bool
 	}{
 		{name: "whitespace alone is no reason", reason: " "},
-		{name: "one character is a reason", reason: "x", wait: true},
+		{name: "one ASCII character is a reason", reason: "x", wait: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()

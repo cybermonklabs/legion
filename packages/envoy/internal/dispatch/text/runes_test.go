@@ -322,7 +322,7 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		copiesNothing(t, sliced)
 	})
 
-	t.Run("each of six kinds of character at each place of 2,001 characters agrees with the reference, and copies nothing where its answer is a slice", func(t *testing.T) {
+	t.Run("each of six kinds of character at each place of 2,001 runes agrees with the reference, and copies nothing where its answer is a slice", func(t *testing.T) {
 		const characters = 2001
 		differ, cuts := 0, 0
 		var sliced []pair
@@ -344,7 +344,7 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 					}
 					if differ < 10 {
 						from := min(max(0, place-5), len(got), len(want))
-						t.Errorf("%+q at character %d, cut to %d: HeadRunes kept %d bytes, %.20q... from byte %d, want %d bytes, %.20q...", kind, place, limit, len(got), got[from:], from, len(want), want[from:])
+						t.Errorf("%+q at rune %d, cut to %d: HeadRunes kept %d bytes, %.20q... from byte %d, want %d bytes, %.20q...", kind, place, limit, len(got), got[from:], from, len(want), want[from:])
 					}
 					differ++
 				}
@@ -630,15 +630,15 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		want        string
 	}{
 		{name: "characters outside the BMP are cut at the limit", value: strings.Repeat("𠀀", 10), limit: 4, want: strings.Repeat("𠀀", 4)},
-		{name: "2,001 Chinese characters are cut at 1,967", value: strings.Repeat("界", 2001), limit: 1967, want: strings.Repeat("界", 1967)},
+		{name: "2,001 runes of 界 are cut at 1,967", value: strings.Repeat("界", 2001), limit: 1967, want: strings.Repeat("界", 1967)},
 		{name: "100 pairs of a letter and U+FFFD are cut at 50", value: strings.Repeat("a\uFFFD", 100), limit: 50, want: strings.Repeat("a\uFFFD", 25)},
 		{name: "a byte that is not UTF-8 past the cut is left out", value: strings.Repeat("界", 10) + "\xff", limit: 5, want: strings.Repeat("界", 5)},
 		{name: "a combining mark after the cut is left out", value: strings.Repeat("a\u0301", 10), limit: 3, want: "a\u0301a"},
-		{name: "2,001 Chinese characters are returned unchanged", value: strings.Repeat("界", 2001), limit: 2001, want: strings.Repeat("界", 2001)},
+		{name: "2,001 runes of 界 are returned unchanged", value: strings.Repeat("界", 2001), limit: 2001, want: strings.Repeat("界", 2001)},
 		{name: "32,000 letters are returned unchanged", value: strings.Repeat("a", 32000), limit: 32000, want: strings.Repeat("a", 32000)},
-		{name: "32,000 Chinese characters are returned unchanged", value: strings.Repeat("界", 32000), limit: 32000, want: strings.Repeat("界", 32000)},
+		{name: "32,000 runes of 界 are returned unchanged", value: strings.Repeat("界", 32000), limit: 32000, want: strings.Repeat("界", 32000)},
 		{name: "32,001 letters are cut at 32,000", value: strings.Repeat("a", 32001), limit: 32000, want: strings.Repeat("a", 32000)},
-		{name: "32,001 Chinese characters are cut at 32,000", value: strings.Repeat("界", 32001), limit: 32000, want: strings.Repeat("界", 32000)},
+		{name: "32,001 runes of 界 are cut at 32,000", value: strings.Repeat("界", 32001), limit: 32000, want: strings.Repeat("界", 32000)},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			allocations := testing.AllocsPerRun(100, func() { sink = HeadRunes(row.value, row.limit) })

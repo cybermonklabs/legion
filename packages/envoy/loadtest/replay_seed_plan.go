@@ -370,7 +370,7 @@ func reviewFor(ans *replayAskAnswer) (map[string]any, error) {
 		}
 		return map[string]any{"state": "changes_requested", "reason": *ans.Text}, nil
 	}
-	return nil, fmt.Errorf("approval option %d characters long is neither Approve nor Request changes", len(ans.Selected[0]))
+	return nil, fmt.Errorf("approval option %d bytes long is neither Approve nor Request changes", len(ans.Selected[0]))
 }
 
 // --- issue fields --------------------------------------------------------------------------------

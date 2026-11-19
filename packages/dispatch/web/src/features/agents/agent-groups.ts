@@ -4,17 +4,14 @@ import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 /** Dispatch activity this recent is a session someone is working with right now. */
 const ACTIVE_WITHIN_MS = 2 * 60_000;
 
-/** Past this much silence from the registry the session is Quiet. It is the ten minutes the
- *  Agents page has always folded `Inactive` on, which it takes from here, so one session does
- *  not sit in two groups' worth of rules. */
+/** Past this much silence from the registry the session is Quiet. */
 export const QUIET_AFTER_MS = 10 * 60_000;
 
 /**
  * Which of the four groups a session's row belongs in.
  *
- * `quiet` is not today's `Inactive` fold: that one holds every session unseen for ten minutes
- * whatever it is owed, while a session with an open ask for the viewer is `needs-you` however
- * long it has been silent.
+ * `quiet` takes a session the registry has not seen for ten minutes only when nothing is owed:
+ * a session with an open ask for the viewer is `needs-you` however long it has been silent.
  */
 export type AgentGroup = "needs-you" | "active" | "idle" | "quiet";
 

@@ -1360,7 +1360,7 @@ func readClaimSource(value *yaml.Node, key string) (*corev1.PersistentVolumeClai
 		return nil, err
 	}
 	if len(validation.IsDNS1123Subdomain(name)) != 0 {
-		return nil, fmt.Errorf("%s.name %q is no PersistentVolumeClaim's name: a claim is named with lowercase letters, digits, '-' and '.', starting and ending with a letter or digit, in at most 253 characters", key, name)
+		return nil, fmt.Errorf("%s.name %q is no PersistentVolumeClaim's name: a claim is named with lowercase letters, digits, '-' and '.', starting and ending with a letter or digit, in at most 253 ASCII characters", key, name)
 	}
 	return &corev1.PersistentVolumeClaimVolumeSource{ClaimName: name}, nil
 }

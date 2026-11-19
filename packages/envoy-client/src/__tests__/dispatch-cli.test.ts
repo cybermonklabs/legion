@@ -29,10 +29,7 @@ const human = { kind: "human", id: "h" };
  *  units long, past the bound it holds each block to, worded as `itemblocks.CapExceeded` words
  *  it. The fake server below answers it, and the command prints it as it came. */
 function blockCapRefusal(block: number, units: number): string {
-  return (
-    `body block ${block} (paragraph) is ${units - DISPATCH_BLOCK_UNITS} characters over the ` +
-    `${DISPATCH_BLOCK_UNITS}-character block limit (${units}/${DISPATCH_BLOCK_UNITS})`
-  );
+  return `body block ${block} (paragraph): ${units} of at most ${DISPATCH_BLOCK_UNITS}`;
 }
 
 /** The same refusal as the command prints it: a refusal Dispatch gives a code is printed with
@@ -930,7 +927,7 @@ describe("the dispatch CLI", () => {
   // INFRA-370: `dispatch comment` and `dispatch message` carry no length of their own. A body of
   // 40,000 characters in paragraphs posts whole, because Dispatch bounds a body block by block,
   // and the command sends the text it was handed, not a cut of it.
-  test("a comment and a message of 40,000 characters in paragraphs are posted whole", async () => {
+  test("a comment and a message of 40,000 UTF-16 code units in paragraphs are posted whole", async () => {
     const whole = paragraphsOf(40_000);
 
     for (const command of ["comment", "message"] as const) {
@@ -1414,7 +1411,7 @@ describe("the dispatch CLI", () => {
     const pictureLine = /\n(- picture: [^\n]*)/.exec(claude.stdout)?.[1];
     expect(pictureLine).toBeDefined();
     // The file holds the whole result, its picture lines included.
-    const marker = /\(the full result, (\d+) characters: (\S+)\)/.exec(claude.stdout);
+    const marker = /\(the full result, (\d+) long: (\S+)\)/.exec(claude.stdout);
     const written = `${text}\n${pictureLine}`;
     expect(marker?.[1]).toBe(String(written.length));
     expect(readFileSync(marker?.[2] ?? "", "utf-8")).toBe(written);
@@ -2410,10 +2407,25 @@ describe("fitOutput", () => {
     );
   });
 
+  /** The marker an output past its limit carries, read back: the length it states and the file,
+   *  each checked against the full result (the text and the picture lines), so a row fails the
+   *  moment the marker's sentence is not true of the case. */
+  const markerOf = (out: string, text: string, pictures: readonly string[]): string => {
+    const full = [text, ...pictures].join("\n");
+    const found = /\(the full result, (\d+) long: (\S+)\)/.exec(out);
+    expect(found).not.toBeNull();
+    expect(Number(found?.[1])).toBe(full.length);
+    expect(found?.[2]).toBe(write(full));
+    expect(found?.[0]).toBe(`(the full result, ${full.length} long: ${write(full)})`);
+    return found?.[0] ?? "";
+  };
+
   test("cuts the result text first, keeping every line after it and naming the full result", () => {
     const out = fitOutput("x".repeat(200), ["- picture: a"], ["follow notice", "note"], 120, write);
     expect(out.length).toBeLessThanOrEqual(120);
-    expect(out).toContain("(the full result, 213 characters: /state/out/213.md)");
+    expect(markerOf(out, "x".repeat(200), ["- picture: a"])).toBe(
+      "(the full result, 213 long: /state/out/213.md)"
+    );
     expect(out).toEndWith("\n- picture: a\nfollow notice\nnote");
   });
 
@@ -2426,13 +2438,21 @@ describe("fitOutput", () => {
     expect(out.length).toBeLessThanOrEqual(200);
     expect(out).toEndWith("\nfollow notice\nnote");
     expect(out).toMatch(/\n\(\d+ more picture lines? left out: see the full result\)\n/);
-    expect(out).toContain("(the full result, ");
+    markerOf(out, "x".repeat(50), pictures);
   });
 
   test("when the kept lines alone pass the limit, the output is cut to it and names the file first", () => {
     const out = fitOutput("x".repeat(50), ["- picture: a"], ["n".repeat(500)], 200, write);
     expect(out.length).toBe(200);
-    expect(out).toStartWith("(the full result, 63 characters: /state/out/63.md)");
+    expect(out).toStartWith("(the full result, 63 long: /state/out/63.md)");
+    markerOf(out, "x".repeat(50), ["- picture: a"]);
+  });
+
+  test("a full result shorter than the limit, with kept lines that pass it, is named by its own length", () => {
+    const text = "x".repeat(500);
+    const out = fitOutput(text, [], ["n".repeat(700)], 1000, write);
+    expect(out.length).toBeLessThanOrEqual(1000);
+    expect(markerOf(out, text, [])).toBe("(the full result, 500 long: /state/out/500.md)");
   });
 
   test("an unbounded limit returns every line as given", () => {

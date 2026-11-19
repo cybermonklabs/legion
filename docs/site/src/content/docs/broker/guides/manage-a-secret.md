@@ -205,7 +205,7 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   carries, each the part of a Google scope after `https://www.googleapis.com/auth/`, separated by
   spaces, so the shell quotes it: `--scopes "cloud-platform bigquery"`. Without it the token
   carries `cloud-platform` alone. The short names keep the list inside an AWS tag value's 256
-  characters. A comma, a whole scope URL, a capital letter, and a scope named twice are each
+  Unicode characters. A comma, a whole scope URL, a capital letter, and a scope named twice are each
   refused before anything is written.
 - **`--admin true`** is optional. It marks a secret whose grant is an administrator's, which the
   broker cannot read off the type: an admin console password and a personal API key are both

@@ -507,7 +507,7 @@ test("with Dispatch hanging and no list ever read, the failure line names the wa
   expectReadBudget(run, Number(waited?.[1]))
 }, 20_000)
 
-test("a list past the cap stays under 8,000 characters with the left-out line", async () => {
+test("a list past the cap stays under 8,000 UTF-16 code units with the left-out line", async () => {
   const dispatch = standinDispatch()
   const items = Array.from({ length: 12 }, (_, index) =>
     answer(`ask-${index}`, `${index}: ${"word ".repeat(180)}`, index + 1),
@@ -534,7 +534,7 @@ test("a list past the cap stays under 8,000 characters with the left-out line", 
   expect(shown).toBeDefined()
   expect((shown as string).length).toBeLessThan(8_000)
   expect(shown).toMatch(
-    /\n\n\d+ older items left out to stay under 8,000 characters: run `dispatch answers` to read every one in full\.$/,
+    /\n\n\d+ older items left out to stay under 8,000 UTF-16 code units: run `dispatch answers` to read every one in full\.$/,
   )
 }, 20_000)
 

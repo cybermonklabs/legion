@@ -226,7 +226,7 @@ describe("zodSchemaApi", () => {
     });
     expect(result.success).toBe(false);
     expect(result.error?.issues.map((issue) => issue.message)).toEqual([
-      `is 50 characters over the ${ISSUE_TITLE_MAX}-character limit (${ISSUE_TITLE_MAX + 50}/${ISSUE_TITLE_MAX})`,
+      `${ISSUE_TITLE_MAX + 50} of at most ${ISSUE_TITLE_MAX}`,
     ]);
   });
 
@@ -361,7 +361,7 @@ describe("dispatchToolSpecs", () => {
     ]);
   });
 
-  test("dispatch_search rejects a one-character query and a limit above 50", () => {
+  test("dispatch_search rejects a query of one UTF-16 code unit and a limit above 50", () => {
     const schema = schemaFor("dispatch_search");
 
     expect(schema.safeParse({ query: "a" }).success).toBe(false);
@@ -369,17 +369,32 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ query: "ok", limit: 50, project: "LEGION" }).success).toBe(true);
   });
 
-  test("dispatch_search accepts a query at the limit and refuses one character over by name", () => {
+  test("dispatch_search counts its query in UTF-16 code units, the unit its description names", () => {
+    const schema = schemaFor("dispatch_search");
+
+    // One emoji is one character and two UTF-16 code units, so the query's minimum of 2 takes it,
+    // as the server's does; "é" is one of each, so both refuse it.
+    expect(schema.safeParse({ query: "🙂" }).success).toBe(true);
+    expect(schema.safeParse({ query: "é" }).success).toBe(false);
+    const tool = dispatchToolSpecs.find((candidate) => candidate.name === "dispatch_search");
+    if (tool === undefined) throw new Error("dispatch_search spec is missing");
+    const argumentsSchema = tool.arguments(schemaApi) as unknown as { query: z.ZodString };
+    expect(argumentsSchema.query.description).toBe(
+      `Keyword, phrase, or websearch expression; 2 to ${SEARCH_QUERY_MAX} UTF-16 code units.`
+    );
+  });
+
+  test("dispatch_search accepts a query at the limit and refuses one UTF-16 code unit over by name", () => {
     const schema = schemaFor("dispatch_search");
 
     expect(schema.safeParse({ query: "x".repeat(SEARCH_QUERY_MAX) }).success).toBe(true);
     const over = schema.safeParse({ query: "x".repeat(SEARCH_QUERY_MAX + 1) });
     expect(over.error?.issues.map((issue) => issue.message)).toEqual([
-      `is 1 characters over the ${SEARCH_QUERY_MAX}-character limit (${SEARCH_QUERY_MAX + 1}/${SEARCH_QUERY_MAX}); search with a short phrase of a few words, not a passage`,
+      `${SEARCH_QUERY_MAX + 1} of at most ${SEARCH_QUERY_MAX}; search with a short phrase of a few words, not a passage`,
     ]);
   });
 
-  test("issue tools accept a title at 1,000 characters and refuse one over", () => {
+  test("issue tools accept a title at 1,000 UTF-16 code units and refuse one over", () => {
     for (const [tool, args] of [
       ["dispatch_issue", { project: "DSP" }],
       ["dispatch_issue_update", { issue: "DSP-1" }],
@@ -389,7 +404,7 @@ describe("dispatchToolSpecs", () => {
       expect(schema.safeParse({ ...args, title: "x".repeat(1000) }).success).toBe(true);
       const over = schema.safeParse({ ...args, title: "x".repeat(1001) });
       expect(over.error?.issues.map((issue) => issue.message)).toEqual([
-        `is 1 characters over the ${ISSUE_TITLE_MAX}-character limit (1001/${ISSUE_TITLE_MAX})`,
+        `1001 of at most ${ISSUE_TITLE_MAX}`,
       ]);
     }
   });
@@ -735,7 +750,7 @@ describe("dispatchToolSpecs", () => {
     );
     const over = schema.safeParse({ key: "CORE", name: "n".repeat(PROJECT_NAME_MAX + 1) });
     expect(over.error?.issues.map((issue) => issue.message)).toEqual([
-      `is 1 characters over the ${PROJECT_NAME_MAX}-character limit (${PROJECT_NAME_MAX + 1}/${PROJECT_NAME_MAX})`,
+      `${PROJECT_NAME_MAX + 1} of at most ${PROJECT_NAME_MAX}`,
     ]);
   });
 

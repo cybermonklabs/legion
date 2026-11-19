@@ -1187,7 +1187,7 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 	refusal := refused(t, h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{
 		"grantId": architect.grant(t), "issue": "LEGION-208", "reason": overBlock,
 	}, nil), http.StatusBadRequest, "CLOSE_REASON_TOO_LONG")
-	if want := "block 1 (text) is 48 characters over the 32000-character block limit"; !strings.Contains(refusal, want) {
+	if want := "block 1 (text): 32048 of at most 32000"; !strings.Contains(refusal, want) {
 		t.Fatalf("refusal = %q, want it naming %q", refusal, want)
 	}
 	if got := facts.recorded(); len(got) != 1 {
@@ -1207,7 +1207,7 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 		t.Fatalf("close with a reason of six blocks = %d: %s", closedLong.Code, closedLong.Body)
 	}
 	if got := facts.recorded(); len(got) != 2 || got[1] != (intake.CloseRoot{Issue: "LEGION-208", Reason: long}) {
-		t.Fatalf("close facts = %#v, want the 40,000-character reason applied whole", got)
+		t.Fatalf("close facts = %#v, want the reason of 40,000 ASCII characters applied whole", got)
 	}
 }
 
@@ -1245,7 +1245,7 @@ func TestAnArchitectsCloseIsRefusedForWhatItsPostHolds(t *testing.T) {
 			want: []string{fmt.Sprintf("body is 1 blocks over the %d-block limit", dispatchbody.ItemBlocks)}},
 		{name: "a reason that ends inside an open code fence",
 			reason: "see log\n\n```\n" + strings.Repeat("y", 31980), code: "CLOSE_REASON_TOO_LONG", takenAlone: true,
-			want: []string{fmt.Sprintf("block 2 (code_block) is 28 characters over the %d-character block limit", dispatchbody.BlockUnits)}},
+			want: []string{fmt.Sprintf("block 2 (code_block): %d of at most %d", dispatchbody.BlockUnits+28, dispatchbody.BlockUnits)}},
 		{name: "a reason holding a decision block",
 			reason: "The transport is still open.\n\n" + theDecisionBlock + "\n", code: "CLOSE_REASON_DECISION_BLOCK",
 			want: []string{"the reason holds a decision block", "body block 2 (ask) holds a decision block, which nobody can answer where it stands",

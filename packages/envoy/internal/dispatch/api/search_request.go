@@ -366,8 +366,8 @@ func parseSearchFilters(w http.ResponseWriter, query url.Values) (status, author
 		author = strings.TrimSpace(values[0])
 		if len(values) != 1 || !searchAuthorPattern.MatchString(author) || itemblocks.Units16(author) > searchAuthorMax {
 			writeError(w, "INVALID_AUTHOR", http.StatusBadRequest, fmt.Sprintf(
-				"author must be one actor id - a person's login or a session id, with no whitespace - of at most %d characters",
-				searchAuthorMax))
+				"author must be one actor id - a person's login or a session id, with no whitespace - at most %d long, and this one is %d",
+				searchAuthorMax, itemblocks.Units16(author)))
 			return "", "", nil, false
 		}
 	}

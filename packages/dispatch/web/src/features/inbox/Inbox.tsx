@@ -1516,7 +1516,7 @@ export function Inbox({
       onChange={(event) => typeQuery(event.target.value)}
       placeholder="Issue, title, question or author"
       ref={searchRef}
-      title={`At most ${SEARCH_QUERY_MAX} characters`}
+      title={`${(filter.q ?? "").length} of at most ${SEARCH_QUERY_MAX}`}
       type="search"
       value={filter.q ?? ""}
     />

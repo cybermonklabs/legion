@@ -1451,13 +1451,14 @@ no_second_source:
 YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
+# characters: code points, check-ci-tools.sh counts the why with len() of a Python str.
 check "quotes the placeholder and says how much the gate wants" \
   "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: this entry's why is TODO, which says nothing a reader could act on. Write at least 40 characters naming which second source was looked for, why there is none today, and what building one would take.")"
 
 echo "case: a no_second_source entry whose why is a placeholder padded past the length bound"
-# Every placeholder the gate knows is shorter than the 40 characters it wants, so the case above
+# Every placeholder the gate knows is shorter than the 40 code points it wants, so the case above
 # would be refused on length alone and the list of placeholders would never be read. This one is
-# 41 characters of `unknown` and padding: only the list refuses it.
+# 41 ASCII characters of `unknown` and padding: only the list refuses it.
 root=$(fixture decline-padded-placeholder-why)
 cat > "$root/.github/workflows/solo.yaml" <<YAML
 name: Solo
@@ -1481,6 +1482,7 @@ no_second_source:
 YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
+# characters: code points, check-ci-tools.sh counts the why with len() of a Python str.
 check "refuses the padded placeholder, which is long enough for the length bound" \
   "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: this entry's why is unknown . . . . . . . . . . . . . . . . ., which says nothing a reader could act on. Write at least 40 characters naming which second source was looked for, why there is none today, and what building one would take.")"
 

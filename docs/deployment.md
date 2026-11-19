@@ -494,7 +494,7 @@ provider_keys:
   The loader reads this one value for its content as well as its name: it
   refuses a member the agent's OpenTelemetry detector would throw on — one that is no single
   `key=value`, one with an empty key, one whose key or value does not percent-decode or is longer
-  than 255 characters once decoded, and one naming `legion.issue`, `legion.role` or
+  than 255 UTF-16 code units once decoded, and one naming `legion.issue`, `legion.role` or
   `legion.arms`, which the runtime writes itself — and names that member and what is wrong with it, never the rest of the
   value. One such member costs the pane every attribute of the variable, the operator's own among
   them, because the detector's caller catches the throw with an empty hand.

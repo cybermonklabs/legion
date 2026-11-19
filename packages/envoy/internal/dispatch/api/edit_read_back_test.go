@@ -214,18 +214,18 @@ func TestDocumentEditReadBackBoundIsCharactersNotBytes(t *testing.T) {
 	}{
 		{name: "control: 1000 Latin letters read back whole", blocks: []string{strings.Repeat("a", 1000)}},
 		{name: "control: 2001 Latin letters are cut", blocks: []string{strings.Repeat("a", 2001)}, printed: 1967},
-		{name: "1000 Chinese characters read back whole", blocks: []string{strings.Repeat("界", 1000)}},
-		{name: "2000 Chinese characters read back whole", blocks: []string{strings.Repeat("界", 2000)}},
-		{name: "2001 Chinese characters are cut", blocks: []string{strings.Repeat("界", 2001)}, printed: 1967},
-		{name: "2000 characters outside the BMP read back whole", blocks: []string{strings.Repeat("𠀀", 2000)}},
-		{name: "2001 characters outside the BMP are cut", blocks: []string{strings.Repeat("𠀀", 2001)}, printed: 1967},
+		{name: "1000 Chinese code points read back whole", blocks: []string{strings.Repeat("界", 1000)}},
+		{name: "2000 Chinese code points read back whole", blocks: []string{strings.Repeat("界", 2000)}},
+		{name: "2001 Chinese code points are cut", blocks: []string{strings.Repeat("界", 2001)}, printed: 1967},
+		{name: "2000 code points outside the BMP read back whole", blocks: []string{strings.Repeat("𠀀", 2000)}},
+		{name: "2001 code points outside the BMP are cut", blocks: []string{strings.Repeat("𠀀", 2001)}, printed: 1967},
 		{
-			name:    "700 Chinese characters read back whole before a Latin block is cut",
+			name:    "700 Chinese code points read back whole before a Latin block is cut",
 			blocks:  []string{strings.Repeat("界", 700), strings.Repeat("a", 1500)},
 			printed: 1265,
 		},
 		{
-			name:    "two paragraphs of 1000 Chinese characters are cut for their blank line",
+			name:    "two paragraphs of 1000 Chinese code points are cut for their blank line",
 			blocks:  []string{strings.Repeat("界", 1000), strings.Repeat("界", 1000)},
 			printed: 965,
 		},
@@ -245,7 +245,7 @@ func TestDocumentEditReadBackBoundIsCharactersNotBytes(t *testing.T) {
 			}
 			if row.printed == 0 {
 				if written != markdown {
-					t.Fatalf("%d characters, inside the 2,000-character bound, read back as %d characters: %.80q",
+					t.Fatalf("%d characters, inside the bound of 2,000 code points, read back as %d characters: %.80q",
 						sent, held, written)
 				}
 				return
@@ -268,14 +268,14 @@ func TestDocumentEditReadBackBoundIsCharactersNotBytes(t *testing.T) {
 			piece := entries[last]
 			printed := utf8.RuneCountInString(piece)
 			if !utf8.ValidString(piece) || !strings.HasPrefix(row.blocks[last], piece) {
-				t.Fatalf("written cut %.80q, want a piece of the last block cut between two characters", piece)
+				t.Fatalf("written cut %.80q, want a piece of the last block cut between two code points", piece)
 			}
 			if printed != row.printed {
 				t.Fatalf("written cut the last block after %d characters, want %d: the cut falls where the bound leaves no more room",
 					printed, row.printed)
 			}
 			if want := docs.ReadBackCutLine(utf8.RuneCountInString(row.blocks[last])-printed, 1); entries[last+1] != want {
-				t.Fatalf("written ends %q after %d characters, want %q", entries[last+1], printed, want)
+				t.Fatalf("written ends %q after %d code points, want %q", entries[last+1], printed, want)
 			}
 		})
 	}

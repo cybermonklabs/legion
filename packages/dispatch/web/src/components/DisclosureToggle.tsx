@@ -23,8 +23,8 @@ export function ChevronIcon({ expanded }: { expanded: boolean }): ReactNode {
 }
 
 /** The one fold control: a labelled chevron button that reveals rows beneath it (the Agents
- * page's `Inactive (N)` sessions and `Show N older` exchanges, a component's `Show N done`
- * issues). `textClassName` is the text tone of the surface it sits on: the canvas by default,
+ * page's `Show N older` exchanges, a component's `Show N done` issues, an Inbox band's heading).
+ * `textClassName` is the text tone of the surface it sits on: the canvas by default,
  * `textSecondaryOnSurface` inside a card. */
 export function DisclosureToggle({
   expanded,

@@ -121,9 +121,9 @@ Once approved, the waiting `agent-secrets` collects the grant and replaces itsel
 `DEMO_API_KEY` set in its environment. This command prints only the value's length:
 
 ```console
-$ agent-secrets DEMO_API_KEY --reason "Deploy the example service" -- sh -c 'echo "deploying with a ${#DEMO_API_KEY}-character key"'
+$ agent-secrets DEMO_API_KEY --reason "Deploy the example service" -- sh -c 'echo "deploying with a key ${#DEMO_API_KEY} long"'
 agent-secrets: DEMO_API_KEY from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
-deploying with a 18-character key
+deploying with a key 18 long
 ```
 
 The grant outlives the command: it lasts 15 minutes for a human-tier secret such as this one and

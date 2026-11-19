@@ -263,7 +263,7 @@ func TestAnIDPrefixNamesOneItemOnEveryOwnerFreeRoute(t *testing.T) {
 				status      int
 				code        string
 			}{
-				{"a seven-character value", prefixes.one[:7], route.shortStatus, route.shortCode},
+				{"a seven-hex-character value", prefixes.one[:7], route.shortStatus, route.shortCode},
 				{"a prefix nothing carries", prefixes.none, http.StatusNotFound, route.notFoundCode},
 				{"a whole uuid nothing carries", unknown, http.StatusNotFound, route.notFoundCode},
 			} {

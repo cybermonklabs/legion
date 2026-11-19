@@ -651,7 +651,7 @@ func TestAnAsksTextIsWeighedBeforeItIsRendered(t *testing.T) {
 	askID := server.blockAsks(t, issue.Key, 1)[0]
 	question := strings.Repeat("_\n", 12_999)
 	for _, description := range []struct{ name, text string }{
-		{"6,000 characters of )_", strings.Repeat(")_", 3_000)},
+		{"6,000 ASCII characters of )_", strings.Repeat(")_", 3_000)},
 		{"3,000 lines", strings.Repeat("a\n", 3_000)},
 	} {
 		body, err := json.Marshal(map[string]any{
@@ -686,8 +686,8 @@ func TestAnAsksTextIsWeighedBeforeItIsRendered(t *testing.T) {
 // may hold (INFRA-370), each taken against a document their deleted blocks had left small, then all
 // forty blocks returned in one edit, leave the document within 1 MiB, the edit and its settlement
 // hold at most the bound, and so does each cold read of the document. An answer of 900,000
-// characters, which this test took before that bound, is refused with 400 CAP_EXCEEDED saying how
-// far over the bound it is, so no answer reaches a block longer than that. Before settlement
+// characters, which this test took before that bound, is refused with 400 CAP_EXCEEDED naming its
+// length and the bound, so no answer reaches a block longer than that. Before settlement
 // weighed what it writes back, twenty-four such answers left a 21.6 MB document whose cold text
 // read held 373 MiB, and four reads at once over 1,000 MiB.
 func TestReturnedAnswersCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T) {
@@ -714,9 +714,9 @@ func TestReturnedAnswersCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T
 	issue := server.createIssue(t, "Returned answers", spec.String())
 	askIDs := server.blockAsks(t, issue.Key, asks)
 	refusal := server.send(t, http.MethodPost, "/api/v1/asks/"+askIDs[0]+"/answer", "application/json", bytes.NewReader(tooLong), http.Header{"X-Dispatch-User": {"alice"}})
-	t.Logf("a 900,000-character answer: %d %.200s", refusal.status, refusal.body)
-	if refusal.status != http.StatusBadRequest || !strings.Contains(string(refusal.body), `"code":"CAP_EXCEEDED"`) || !strings.Contains(string(refusal.body), "(900000/32000)") {
-		t.Errorf("a 900,000-character answer answered %d %.300s, want 400 CAP_EXCEEDED naming its length", refusal.status, refusal.body)
+	t.Logf("an answer of 900,000 ASCII characters answered %d %.200s", refusal.status, refusal.body)
+	if refusal.status != http.StatusBadRequest || !strings.Contains(string(refusal.body), `"code":"CAP_EXCEEDED"`) || !strings.Contains(string(refusal.body), "text: 900000 of at most 32000") {
+		t.Errorf("an answer of 900,000 ASCII characters answered %d %.300s, want 400 CAP_EXCEEDED naming its length", refusal.status, refusal.body)
 	}
 	for index, askID := range askIDs {
 		if answer := server.send(t, http.MethodPost, "/api/v1/asks/"+askID+"/answer", "application/json", bytes.NewReader(body), http.Header{"X-Dispatch-User": {"alice"}}); answer.status != http.StatusOK {

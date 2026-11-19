@@ -39,7 +39,7 @@ const MOST_VISITS = 5;
 
 console.log('\n=== Block ids cost ===');
 
-await test('one character into a 10,000-block document reads only what it changed', async () => {
+await test('one ASCII character into a 10,000-block document reads only what it changed', async () => {
   const { schema } = await createHeadlessProof();
   const paragraphs: ProseMirrorNode[] = [];
   for (let i = 1; i <= BLOCKS; i += 1) {
@@ -71,7 +71,7 @@ await test('one character into a 10,000-block document reads only what it change
     assert(next.doc.child(middle).textContent.startsWith('x'), 'the character was not inserted');
     assert(blockIdOf(next.doc.child(middle)) === `b-${middle + 1}`, 'the edited block lost its id');
     assert(read !== null, 'the plugin did not report what it read');
-    console.log(`  10,000 blocks, one character inserted: ${read} nodes read in ${elapsed.toFixed(1)}ms`);
+    console.log(`  10,000 blocks, one ASCII character inserted: ${read} nodes read in ${elapsed.toFixed(1)}ms`);
     assert(read <= MOST_VISITS, `nodes read = ${read}, expected at most ${MOST_VISITS}`);
   } finally {
     setBlockIdVisitCounter(null);

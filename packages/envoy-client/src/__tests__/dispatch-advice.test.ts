@@ -457,7 +457,7 @@ describe("Dispatch write advice", () => {
     );
   });
 
-  test("caps open-ask pointers at two and truncates questions to 80 characters", async () => {
+  test("caps open-ask pointers at two and truncates questions to 80 UTF-16 code units", async () => {
     const rawAdvice = advice({
       your_open_asks: [
         { id: "ask-1", question: "A".repeat(81) },

@@ -177,7 +177,7 @@ Values selected in one column match any of them, except Labels, which uses all-o
 Different columns narrow one another.
 Each option count applies the search and every other column's filter, not its own column's picks.
 The **Search issues** box matches every word across keys, titles, epics, assignees, creators, claim holders and labels.
-A word of five or more characters can be one edit away.
+A word of five or more UTF-16 code units can be one edit away.
 
 The Board keeps the **Filters** strip: Labels requires every selected label, and Search matches keys and titles.
 The List and Board share **Needs you** (open asks) and **Unread** (unseen activity).
@@ -201,7 +201,7 @@ reads **not running**.
 
 ## Creating an issue
 
-Press `c` anywhere. Pick the project, type a title of up to 1,000 characters, and optionally the
+Press `c` anywhere. Pick the project, type a title of up to 1,000 UTF-16 code units, and optionally the
 first line of the spec. A short moment after you stop typing the title, Dispatch lists the items
 it already holds on the same subject — issues, asks, comments, messages and documents — each a
 link that opens in a new tab, so your draft stays as you left it. When it searched and found

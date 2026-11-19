@@ -156,7 +156,7 @@ request pending (66.0 s), the pointer on that page's Approve (73.3 s), the broke
 approval (`b2-approve.webm` at 21.2 s, inside the clip's tail), Live grants with the grant's row
 (88.0 s and 89.5 s) and the pointer on Revoke (93.0 s). No frame read shows an error, a host but
 `example-host-build` and the two loopback addresses above, a person but `alice@example.com`, or
-the secret's value (only its length and last four characters). The session and request beats
+the secret's value (only its length and last four bytes). The session and request beats
 (23.2-54.5 s) were read as their casts' text, not frame by frame.
 
 The ids agree wherever more than one section shows them:
@@ -169,14 +169,14 @@ The ids agree wherever more than one section shows them:
 | Request `051f399b-4571-4dec-902e-e0d9666247a0` | `request` prints it waiting; `ran-result` types it into `agent-secrets status` |
 | Record `4a9929c86c33…7711b274` | the address `request`'s waiting line prints; the page `approve` approves on |
 | Grant `870026c5-9988-46ad-a058-0c36ad2abbb4` | `ran-result`'s status; `grants` lists one live grant, on that session |
-| `DEMO_API_KEY reached this command: 31 characters, ending in 7f3a` | `open` and `ran`; the rig's made-up value is 31 characters and ends in `7f3a` |
+| `DEMO_API_KEY reached this command: 31 characters, ending in 7f3a` <!-- characters: ASCII alone, check-demo-key.sh prints the length of the rig's made-up ASCII key --> | `open` and `ran`; the rig's made-up value is 31 ASCII characters and ends in `7f3a` |
 
 Script to screen, line by line (narration as `build.py` places it, the screen from the recorder's
 marks and the frames read):
 
 | At | Narration | On screen |
 | --- | --- | --- |
-| 0.1 s | This command just got a key that a person approved. | The request command, its line `waiting for alice@example.com to approve it on the secrets broker: http://127.0.0.1:40925/approve/4a9929c8…`, the page this take approved on, and `DEMO_API_KEY reached this command: 31 characters, ending in 7f3a`, one still to 4.3 s. The key arrives live at 75.9 s. |
+| 0.1 s | This command just got a key that a person approved. | The request command, its line `waiting for alice@example.com to approve it on the secrets broker: http://127.0.0.1:40925/approve/4a9929c8…`, the page this take approved on, and `DEMO_API_KEY reached this command: 31 characters, ending in 7f3a` <!-- characters: ASCII alone, check-demo-key.sh prints the length of the rig's made-up ASCII key -->, one still to 4.3 s. The key arrives live at 75.9 s. |
 | 5.3 s | First, the machine logs in, and prints a code to enter in Dispatch. | `agent-secrets machine login` typed from 5.8 s; `machine login code: HTRT-BND5` and `enter it at http://127.0.0.1:46431/credentials/machine` by 9.0 s. |
 | 12.4 s | There, alice types it into the machine login page. | Enter machine login code, with Needs you 1 beside Inbox; the code typed from 13.6 s; the sidebar reads Signed in as alice@example.com. |
 | 17.5 s | It names example-host-build. She approves it. | The record by 16.9 s, read at 17.5 s: Identifiers example-host-build, Lifetime 30 days, Approver alice@example.com. Approve clicked at 21.5 s. |
@@ -189,7 +189,7 @@ marks and the frames read):
 | 60.0 s | Opening it signs her in to the broker. | The broker's sign-in between that click and its page, which lands at 63.0 s. |
 | 64.7 s | The broker's own page shows the session, the lifetime, and the reason. | The broker's page, read at 66.0 s: Signed in as alice@example.com, Approve a secret request, Secrets DEMO_API_KEY, Requested by (verified by the broker) a session enrollment, operator alice@example.com, runtime example-host-build:1915275:33681364, the agent's reason, Lasts once approved until the session ends, Approver alice@example.com, State pending. |
 | 72.1 s | She approves it there. | The pointer on that page's Approve, read at 73.3 s and clicked at 73.2 s; the page then reads What happened, `DEMO_API_KEY: granted (approved by alice@example.com at …)`, and State approved by alice@example.com. |
-| 74.6 s | The waiting command gets the key, and runs. | The waiting cursor from 74.4 s; `DEMO_API_KEY reached this command: 31 characters, ending in 7f3a` at 75.9 s, about 2.7 s after the click. |
+| 74.6 s | The waiting command gets the key, and runs. | The waiting cursor from 74.4 s; `DEMO_API_KEY reached this command: 31 characters, ending in 7f3a` <!-- characters: ASCII alone, check-demo-key.sh prints the length of the rig's made-up ASCII key --> at 75.9 s, about 2.7 s after the click. |
 | 81.5 s | Its status says alice decided it. | `agent-secrets status ` typed from 78.8 s, then the request id jumped at 81.0 s; `state: granted`, `grant_id: 870026c5-…` and `decided_by: alice@example.com` by 81.6 s. |
 | 87.1 s | Settings lists the live grant, with alice as its approver. | Settings clicked at 85.6 s, scrolled to Live grants by 87.6 s, read at 88.0 s and 89.5 s: the session on example-host-build, DEMO_API_KEY, Granted `Approved by alice@example.com`, Expires When the session ends. |
 | 92.4 s | Each live grant has a Revoke button. | The pointer on Revoke at 90.6 s, read at 93.0 s; it leaves the button before the clip's last second. |

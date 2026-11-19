@@ -108,9 +108,9 @@ func TestBothReadersRefuseWhatTheDetectorWouldThrowOn(t *testing.T) {
 			absent: []string{"theorem.project", "theorem.credential", "gateway"},
 		},
 		{
-			name:   "a value over 255 characters once decoded",
+			name:   "a value over 255 UTF-16 code units once decoded",
 			value:  "theorem.project=legion,theorem.note=" + long + ",theorem.credential=gateway",
-			reason: `its member "theorem.note=` + long + `" has a value of 256 characters once percent-decoded, over the detector's 255`,
+			reason: `its member "theorem.note=` + long + `" has a value 256 long once percent-decoded, over the detector's 255`,
 			absent: []string{"theorem.project", "theorem.credential", "gateway"},
 		},
 		{

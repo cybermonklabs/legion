@@ -38,8 +38,8 @@ export const movedRowNotes: Record<string, string> = {
     "the row is read inside the issues table; everything the palette does in it is main's",
   "polish.stub.e2e.ts › project filters stay collapsed until needed and margin asks use the compact composer @pr":
     "the project list half is the table: there is no collapsed filter strip to open, so the row asserts the table is drawn with no popover open, picks a label in the column filter and reads the trigger's own name. The board, inbox, margin and agents halves, and every screenshot, are main's",
-  "project.stub.e2e.ts › a 1,000-character table search stays inside the page @phone @pr":
-    'renamed from "a 1,000-character search filter\'s chip ends in an ellipsis inside its row": the table has no filter chip, so the claim the same 1,000 characters make is that the search box and the page stay inside the viewport at both widths',
+  "project.stub.e2e.ts › a table search of 1,000 ASCII characters stays inside the page @phone @pr":
+    'renamed from "a 1,000-character search filter\'s chip ends in an ellipsis inside its row": the table has no filter chip, so the claim the same 1,000 ASCII characters make is that the search box and the page stay inside the viewport at both widths <!-- characters: ASCII alone, the old filter was the same run of the letter x this row searches -->',
   "project.stub.e2e.ts › a table keeps its key whole and uses its title cell without overflowing the phone @phone @pr":
     "renamed from \"a list row keeps its key whole and gives the title the row's width\": the row is a table row, so the title's room is its own cell rather than the row, and the row also asserts that the box scrolls sideways instead of the page",
   "project.stub.e2e.ts › clearing the table search keeps the next keystroke in the search box @pr":

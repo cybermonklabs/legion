@@ -1055,7 +1055,7 @@ describe("DispatchClient", () => {
       "echo=[redacted] end",
     ],
     [
-      "cut short by its last 10 characters",
+      "cut short by its last 10 ASCII characters",
       `<p>echo=${pieceBearer.slice(0, -10)} end</p>`,
       "echo=[redacted] end",
     ],
@@ -1106,7 +1106,7 @@ describe("DispatchClient", () => {
   // itself costs 0.01 s idle and 0.19 s at most under those loops. The limit is a bound on work,
   // not a hang guard, and it stays on the row rather than taking the suite's 30 s default, which
   // the defect's idle cost would pass.
-  test("redacts a bearer of one character repeated from a 64 KiB body in bounded time", async () => {
+  test("redacts a bearer of one ASCII character repeated from a 64 KiB body in bounded time", async () => {
     const { fetchImpl } = fakeFetch([
       new Response("x".repeat(64 * 1024), {
         status: 502,

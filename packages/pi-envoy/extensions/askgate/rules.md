@@ -390,12 +390,14 @@ The last line of your reply is exactly one JSON object and nothing follows it.
 - `{"decision":"revise","reason":"…"}` — an enumerated failure is visible in the text. `reason` names each failure that applies by its number and gate, quotes the words in the call that show it, and carries the fix: the rewritten `question` (and options) to send, or the retraction ("retract with `dispatch resolve-ask --ask <id> --kind retracted`, do X, record it in the report"). When several failures apply, one `revise` names every one of them, by number and gate. Never `revise` on a non-finding, on the server's own facts, or on anything you have to infer.
 
 A rewritten `question` for `dispatch ask` or `dispatch edit-ask` is at most
-2,000 characters, Dispatch's limit, and the `ref` line and the lines an
-`--image` appends count toward it. Count your rewrite and cut it to fit,
-rather than send a question Dispatch refuses. Do not cut it below that limit
-to save room: a question names its concrete case before its choice, and that
-takes the space. A rewritten `summary` for `dispatch request-approval` has
-what its approval question leaves of the same 2,000.
+2,000 UTF-16 code units, and the `ref` line and the lines an `--image` appends
+count toward it: the agent is handed your reason cut to 8 KiB, which holds a
+rewrite that long whole. Count your rewrite and cut it to fit, rather than let
+the cut drop its end, where the options and the recommendation sit. Do not cut
+it below that limit to save room: a question names its concrete case before
+its choice, and that takes the space. A rewritten `summary` for
+`dispatch request-approval` has what its approval question leaves of the same
+2,000.
 
 The agent may resend the call unchanged with an override (`--advisor-rebuttal '<one line>'` on a command line, `advisor_rebuttal` in a device call's JSON); the harness sends that through and records it. After two `revise` answers on the same target the harness sends the third attempt without asking you. You never escalate, repeat, or follow up.
 

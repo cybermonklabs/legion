@@ -141,8 +141,8 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   For every `library/golang` row whose upstream names a tag, `mirror-ci-images.sh` also reads the image's own `GOLANG_VERSION` (`crane config`) and refuses a row whose upstream tag names another Go.
   No read of a floating upstream tag can do that work, because it cannot tell a row labelled wrongly now from one labelled rightly long ago.
   An `oven/bun` image declares its version nowhere, so the two builds that run those bytes refuse any Bun but the one `.bun-version` pins.
-  An `upstream:` row's tag is the upstream repository's last path element, then the upstream tag when the row names one, then the first eight characters of the digest, so one tag names one digest.
-  A `built:` row's tag is its Dockerfile's name without the `.Dockerfile` suffix, then those same eight characters.
+  An `upstream:` row's tag is the upstream repository's last path element, then the upstream tag when the row names one, then the first eight hex characters of the digest, so one tag names one digest.
+  A `built:` row's tag is its Dockerfile's name without the `.Dockerfile` suffix, then those same eight hex characters.
   `ci.yaml`'s `ci-images` job runs that copy and then the package half of the gate, in that order, and it is the one copy path:
   it runs on every event `ci.yaml` runs on — a pull request, a merge group and a dispatch — and a failed copy is re-run with `gh run rerun` where the run is a pull request's, since every job of a re-run attempt of a merge-group run skips.
   Adding a copy is one edit of that file.
@@ -836,7 +836,7 @@ Each item below names a task and where its code is, then notes on it.
 
 - **Strict mode** — `strict: true` in tsconfig
 
-- **Biome** — double quotes, semicolons, ES5 trailing commas, 100 char width
+- **Biome** — double quotes, semicolons, ES5 trailing commas, a line width of 100
 
 - **Imports** — `node:` prefix for builtins, `type` keyword for type-only imports
 

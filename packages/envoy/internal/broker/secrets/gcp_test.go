@@ -482,7 +482,7 @@ func TestGCPValidNameAndPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.ValidName(fakePrefix + strings.Repeat("a", 256)); err == nil {
-		t.Fatal("ValidName accepted a 270-character id")
+		t.Fatal("ValidName accepted an id of 270 ASCII characters")
 	}
 	if err := store.ValidName(fakePrefix + "has.dot"); err == nil {
 		t.Fatal("ValidName accepted a dot")

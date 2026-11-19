@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# The script reads its name check in this locale whatever the caller's is: under C.UTF-8,
+# [a-zA-Z] admits the ASCII letters alone and ${#name} counts code points. Under en_US.UTF-8 the
+# range admits accented letters too, so a name of 40 "é", 80 bytes, passed a check of 63.
+export LC_ALL=C.UTF-8
 
 if (($# < 1 || $# > 2)); then
   printf 'usage: %s <dump-file> [database-name]\n' "$0" >&2

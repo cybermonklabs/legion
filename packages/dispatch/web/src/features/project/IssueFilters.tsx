@@ -102,7 +102,7 @@ export function IssueFilters({ project }: { project: string }): ReactNode {
               className={`mt-1 block min-h-11 rounded-lg px-3 py-2 text-sm font-normal ${inputClasses(true)}`}
               maxLength={SEARCH_QUERY_MAX}
               onChange={(event) => filters.setSearch(event.target.value)}
-              title={`At most ${SEARCH_QUERY_MAX} characters`}
+              title={`${filters.search.length} of at most ${SEARCH_QUERY_MAX}`}
               type="search"
               value={filters.search}
             />

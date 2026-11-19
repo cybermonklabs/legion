@@ -402,7 +402,7 @@ function fenced(output: string): string {
  */
 export function shellCommandReport(line: string, result: ShellCommandResult): string {
   const parts = [line, result.output === "" ? NOTHING_PRINTED : fenced(result.output)];
-  if (result.cut) parts.push(`The output was cut at ${SHELL_OUTPUT_MAX} characters.`);
+  if (result.cut) parts.push(`The output was cut at ${SHELL_OUTPUT_MAX} UTF-16 code units.`);
   if (result.status !== undefined) parts.push(result.status);
   return parts.join(SHELL_COMMAND_REPORT_SEPARATOR);
 }

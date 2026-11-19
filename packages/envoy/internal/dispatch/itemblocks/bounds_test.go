@@ -95,8 +95,8 @@ func TestCheckPassesABodyInsideBothBounds(t *testing.T) {
 // type, how far over it is and the bound.
 func TestCheckRefusesABlockOverTheBlockBound(t *testing.T) {
 	body := "a\n\n" + strings.Repeat("x", contracts.DispatchBlockUnits+1)
-	err := requireRefusal(t, "a second paragraph one character over", body,
-		"body block 2 (paragraph) is 1 characters over the 32000-character block limit (32001/32000)")
+	err := requireRefusal(t, "a second paragraph one unit over", body,
+		"body block 2 (paragraph): 32001 of at most 32000")
 	var capExceeded *CapExceeded
 	if !errors.As(err, &capExceeded) {
 		t.Fatalf("Check returned %T, want *CapExceeded", err)
@@ -118,9 +118,9 @@ func TestCheckRefusesABodyOverTheBlockCount(t *testing.T) {
 // A rune outside the Basic Multilingual Plane counts as the two UTF-16 units it is sent as, so
 // half as many of them fit one block as characters of the plane do.
 func TestCheckCountsARuneOutsideTheBasicPlaneAsTwoUnits(t *testing.T) {
-	requireRefusal(t, "16,001 astral characters", strings.Repeat("🙂", 16_001),
-		"body block 1 (paragraph) is 2 characters over the 32000-character block limit (32002/32000)")
-	requirePasses(t, "16,000 astral characters", strings.Repeat("🙂", 16_000))
+	requireRefusal(t, "16,001 astral runes", strings.Repeat("🙂", 16_001),
+		"body block 1 (paragraph): 32002 of at most 32000")
+	requirePasses(t, "16,000 astral runes", strings.Repeat("🙂", 16_000))
 }
 
 // A block is measured as its author wrote it, never as pmdoc.Render would write it: a table whose

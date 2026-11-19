@@ -7,10 +7,10 @@ body: |-
   reaches is unchanged, since the tag's own list still bounds it. Dispatch takes such an owner
   as an architecture source repository, where the input refusal `SOURCE_INPUT` answered before.
   A value no login can be is refused as it was: one holding a dot or a slash, one starting with
-  a hyphen or an underscore, and one over 39 characters. `agent-secrets --github-token` now reads
-  no release at all from a token-command answer whose installation key is a GitHub token form, so
-  no refusal of that command can carry such a key; a login that merely opens like one, `ghs_acme`,
-  is read as the account it is.
+  a hyphen or an underscore, and one past GitHub's limit of 39. `agent-secrets --github-token` now
+  reads no release at all from a token-command answer whose installation key is a GitHub token
+  form, so no refusal of that command can carry such a key; a login that merely opens like one,
+  `ghs_acme`, is read as the account it is.
 time: 2026-11-16T16:49:35.000000000Z
 custom:
     Issue: pr3730

@@ -945,11 +945,20 @@ function wholeAbove(box: { y: number; height: number } | null, composerTop: numb
   return box !== null && box.y >= 0 && box.y + box.height <= composerTop;
 }
 
-/** Whole cards above the composer, of the rows a reader sees. */
+/** Whole cards above the composer, of the rows a reader sees. Every drawn card's box is read in
+ *  one evaluation in the page, so the boxes are of one moment of the list. The list is windowed
+ *  and redraws its window after a scroll, once the page has taken the scroll event: a count of
+ *  the cards followed by a read of each by its index asks for an index the redraw may have
+ *  dropped in between, and that read waits for it until the action timeout. A card with no box
+ *  counts as none above, as `boundingBox` answers `null` for it. */
 async function wholeCardsAbove(agents: Locator, composer: Locator): Promise<number> {
   const composerTop = (await composer.boundingBox())?.y ?? 0;
-  const boxes = await Promise.all(
-    (await shownAgentRows(agents.page()).all()).map((card) => card.boundingBox())
+  const boxes = await shownAgentRows(agents.page()).evaluateAll((cards) =>
+    cards.map((card) => {
+      if (card.getClientRects().length === 0) return null;
+      const { height, y } = card.getBoundingClientRect();
+      return { height, y };
+    })
   );
   return boxes.filter((box) => wholeAbove(box, composerTop)).length;
 }
@@ -1029,9 +1038,11 @@ test("on a phone the open composer keeps its height budget at forty recipients, 
     expect(await drawn.count()).toBeLessThanOrEqual(40);
 
     // The defined offset: the first card scrolled to the top of the viewport (scrollY 431),
-    // message empty. Two whole cards and the third card's checkbox are above the composer.
+    // message empty. Two whole cards and the third card's checkbox are above the composer. Each
+    // count of whole cards below is a floor, and is polled as the drawn count above is: the
+    // window draws its cards after the scroll.
     await scrollFirstCardToTop();
-    expect(await wholeCardsAbove(agents, composer)).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => wholeCardsAbove(agents, composer)).toBeGreaterThanOrEqual(2);
     expect(await checkboxAbove(2)).toBe(true);
 
     // The operator's moment: from that offset, a message filled until the box stops growing,
@@ -1041,7 +1052,7 @@ test("on a phone the open composer keeps its height budget at forty recipients, 
     // and the next card's checkbox.
     await fillUntilStable(message);
     expect(await composerHeight()).toBeLessThanOrEqual(viewport.height * 0.45);
-    expect(await wholeCardsAbove(agents, composer)).toBeGreaterThanOrEqual(1);
+    await expect.poll(() => wholeCardsAbove(agents, composer)).toBeGreaterThanOrEqual(1);
     expect(await checkboxAbove(2)).toBe(true);
 
     // The defined offset again, filled (scrollY 431, cards at 0-166 and 178-344, composer top
@@ -1049,7 +1060,7 @@ test("on a phone the open composer keeps its height budget at forty recipients, 
     // (another chrome line, taller chips, an inline error) turns it red, and that is the budget
     // working, not a flaky test. Empty, the height clause does the discriminating.
     await scrollFirstCardToTop();
-    expect(await wholeCardsAbove(agents, composer)).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => wholeCardsAbove(agents, composer)).toBeGreaterThanOrEqual(2);
 
     // The recipients are one line that scrolls sideways to its last chip.
     const chips = composer.getByRole("list", { name: "Selected agents" });
@@ -2020,9 +2031,10 @@ test("an agent row is one line at 1440, and at 390 puts the age and the whole pa
           client: element.clientWidth,
           scroll: element.scrollWidth,
         }));
-      expect(clipped.scroll, "the 64-character name is shortened on screen").toBeGreaterThan(
-        clipped.client
-      );
+      expect(
+        clipped.scroll,
+        "the name of 64 UTF-16 code units is shortened on screen"
+      ).toBeGreaterThan(clipped.client);
     }
   } finally {
     await context.close();
@@ -2082,7 +2094,7 @@ test("an agent row's directory is still shown beside the longest name in use, so
     const box = await directory.boundingBox();
     expect(
       Math.round(box?.width ?? 0),
-      `the directory beside the 64-character name is ${Math.round(box?.width ?? 0)}px wide, ` +
+      `the directory beside the name of 64 UTF-16 code units is ${Math.round(box?.width ?? 0)}px wide, ` +
         `against ${Math.round(control?.width ?? 0)}px in the same row with a short name`
     ).toBeGreaterThan(0);
     await expect(directory).toBeVisible();

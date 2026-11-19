@@ -633,9 +633,7 @@ describe("executeDispatchTool", () => {
     const ref = "dispatch://DSP-41/ask/ab";
     const question = "x".repeat(DISPATCH_EVENT_BODY_MAX - 10);
     const sent = `${question}\n\nRef: ${ref}`;
-    const refusal =
-      `question and options is 21 characters over the ${DISPATCH_EVENT_BODY_MAX}-character ` +
-      `limit (${DISPATCH_EVENT_BODY_MAX + 21}/${DISPATCH_EVENT_BODY_MAX})`;
+    const refusal = `question and options: ${DISPATCH_EVENT_BODY_MAX + 21} of at most ${DISPATCH_EVENT_BODY_MAX}`;
     const questions: unknown[] = [];
     const fetchImpl = async (_url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       questions.push(JSON.parse(String(init?.body)).question);
@@ -882,7 +880,7 @@ describe("executeDispatchTool", () => {
     expect(failure).toBeInstanceOf(ToolInputError);
     if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
     expect(failure.problems).toEqual([
-      `ask ids are uuids. Write the whole id, or at least its first 8 characters. The open asks of this issue are: 01234567… ${firstReleaseQuestion}, 01234567… ${secondReleaseQuestion}, 89abcdef… A third release. When?.`,
+      `ask ids are uuids. Write the whole id, or at least its first 8 hex digits. The open asks of this issue are: 01234567… ${firstReleaseQuestion}, 01234567… ${secondReleaseQuestion}, 89abcdef… A third release. When?.`,
     ]);
     // The problem is the id, not which flags the command takes (INFRA-1522 R16).
     expect(failure.message).not.toContain("Allowed flags");
@@ -890,7 +888,7 @@ describe("executeDispatchTool", () => {
     expect(requests).toEqual(["/api/v1/issues/DSP-41"]);
   });
 
-  test("replies under the ask an 8-character prefix names", async () => {
+  test("replies under the ask a prefix of 8 hex digits names", async () => {
     const requests: string[] = [];
 
     const result = await replyToAsk("89abcdef", replyToAskServer(requests));
@@ -1882,7 +1880,7 @@ describe("executeDispatchTool", () => {
     expect(requests).toEqual(["/api/v1/search?q=the"]);
   });
 
-  test("dispatch_search rejects a one-character query before any request", async () => {
+  test("dispatch_search rejects a query of one UTF-16 code unit before any request", async () => {
     let requests = 0;
     const fetchImpl = (() => {
       requests += 1;
@@ -1900,7 +1898,7 @@ describe("executeDispatchTool", () => {
         exec: repoExec("owner/repo"),
         fetchImpl,
       })
-    ).rejects.toThrow(/2 characters/);
+    ).rejects.toThrow(/--query: 1 of at least 2/);
     expect(requests).toBe(0);
   });
 
@@ -1924,7 +1922,7 @@ describe("executeDispatchTool", () => {
         fetchImpl,
       })
     ).rejects.toThrow(
-      `- --query ${overCapMessage(length, SEARCH_QUERY_MAX)}; search with a short phrase of a few words, not a passage\n`
+      `- --query: ${overCapMessage(length, SEARCH_QUERY_MAX)}; search with a short phrase of a few words, not a passage\n`
     );
     expect(requests).toBe(0);
   });
@@ -4427,11 +4425,11 @@ describe("executeDispatchTool", () => {
     expect(requests).toEqual(["/api/v1/limits"]);
     expect(result.details).toEqual(bounds);
     expect(result.text.split("\n")).toEqual([
-      "One block of a body - a paragraph, list, quote, table or code block: 32,000 characters (UTF-16 units).",
+      "One block of a body - a paragraph, list, quote, table or code block: 32,000 UTF-16 code units.",
       "Blocks in one body: 32,768.",
-      "An ask's question and its options together: 32,000 characters (UTF-16 units).",
+      "An ask's question and its options together: 32,000 UTF-16 code units.",
       "Options on one ask: 8.",
-      "The body an event carries whole: 32,000 characters (UTF-16 units); a longer body reaches a reader cut, and the item itself holds the rest.",
+      "The body an event carries whole: 32,000 UTF-16 code units; a longer body reaches a reader cut, and the item itself holds the rest.",
       "One request: 1,048,576 bytes.",
       "One markdown document: 1,048,576 bytes.",
       "One handoff body: 32,768 bytes.",
@@ -5139,7 +5137,7 @@ describe("executeDispatchTool", () => {
         exec: repoExec("owner/repo"),
         fetchImpl,
       })
-    ).rejects.toThrow(/title is 1 characters over the 1000-character limit \(1001\/1000\)/);
+    ).rejects.toThrow(/title: 1001 of at most 1000/);
   });
 
   /**
@@ -11510,7 +11508,7 @@ describe("executeDispatchTool", () => {
     expect(stored.startsWith(printed)).toBe(true);
     expect(printed.endsWith("\n")).toBe(true);
     expect(problem).toContain(
-      ` The text below is cut after ${printed.length} of its ${stored.length} characters: change the line named above and send the text again.`
+      ` The text below is cut at ${printed.length} of its ${stored.length}: change the line named above and send the text again.`
     );
   });
 
@@ -11551,10 +11549,10 @@ describe("executeDispatchTool", () => {
     if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
     const problem = failure.problems[0] ?? "";
     expect(problem).toContain(
-      `${JSON.stringify(long.slice(0, 200))} (cut after 200 of its ${long.length} characters)`
+      `${JSON.stringify(long.slice(0, 200))} (cut at 200 of its ${long.length})`
     );
     expect(problem).toContain(
-      `${JSON.stringify(storedLine.slice(0, 200))} (cut after 200 of its ${storedLine.length} characters)`
+      `${JSON.stringify(storedLine.slice(0, 200))} (cut at 200 of its ${storedLine.length})`
     );
     // The whole line never reaches the refusal.
     expect(problem).not.toContain(long);
@@ -14959,7 +14957,7 @@ describe("executeDispatchTool", () => {
     }
   });
 
-  test("resolves an 8-character ask id prefix against the issue's asks", async () => {
+  test("resolves an ask id prefix of 8 hex digits against the issue's asks", async () => {
     const full = "7430fab3-1c2d-4e5f-8a9b-0c1d2e3f4a5b";
     const requested: string[] = [];
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {

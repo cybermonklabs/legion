@@ -193,7 +193,7 @@ fi
 [ -n "$node_selector" ] || refuse "no --node-selector: the namespace's admission requires the deployment's compute class, which is in the deployment's own declaration"
 case "$prefix" in
   *-) ;;
-  *) refuse "the prefix $prefix does not end in a hyphen; the API server appends five characters to it" ;;
+  *) refuse "the prefix $prefix does not end in a hyphen; the API server appends five ASCII characters to it" ;;
 esac
 if [ -z "$namespace" ]; then
   [ -r "$namespace_file" ] || refuse "no --namespace and no $namespace_file: this pod holds no projected Kubernetes credential, so it can start no workload"
@@ -297,8 +297,8 @@ render_manifest() { # render_manifest <arm> <image> <run label> <file>
 apiVersion: batch/v1
 kind: Job
 metadata:
-  # The API server names the run: five characters it appends at the create, so no name this script
-  # picks can be one another workload of the namespace already holds.
+  # The API server names the run: five ASCII characters it appends at the create, so no name this
+  # script picks can be one another workload of the namespace already holds.
   generateName: ${prefix}${1}-
   # On the Job's own metadata and never on its pod template, so no pod carries it and it can never
   # be read as the namespace's reachability label.

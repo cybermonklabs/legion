@@ -246,14 +246,14 @@ func TestParseBodyRefusesAnEnrollmentFourthFieldThatIsNotAPodSlot(t *testing.T) 
 	}
 	longest := "a" + strings.Repeat("b", 62)
 	if _, err := ParseBody(withEnrollment("pod\tuid-1\t-\t" + longest)); err != nil {
-		t.Fatalf("a 63-character slot must parse: %v", err)
+		t.Fatalf("a slot of 63 ASCII letters must parse: %v", err)
 	}
 	for name, enrollment := range map[string]string{
 		"empty fourth field":      "pod\tuid-1\t-\t",
 		"uppercase slot":          "pod\tuid-1\t-\tImplementer-g1",
 		"leading digit":           "pod\tuid-1\t-\t1mplementer",
 		"leading hyphen":          "pod\tuid-1\t-\t-implementer",
-		"64-character slot":       "pod\tuid-1\t-\t" + longest + "c",
+		"slot 64 long":            "pod\tuid-1\t-\t" + longest + "c",
 		"slot on a box":           "box\tbox-1\tsjawhar\timplementer-g1",
 		"slot on a host":          "host\thost-1\tsjawhar\timplementer-g1",
 		"slot on a machine login": "-\t-\t-\timplementer-g1",

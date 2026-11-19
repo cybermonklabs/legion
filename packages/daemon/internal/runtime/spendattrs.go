@@ -207,10 +207,10 @@ func SpendAttributesRefusal(value string) string {
 			return fmt.Sprintf("its member %q has a value with %s", trimmed, problem)
 		}
 		if n := spendUTF16Len(decodedKey); n > SpendAttributeLimit {
-			return fmt.Sprintf("its member %q has a key of %d characters once percent-decoded, over the detector's 255", trimmed, n)
+			return fmt.Sprintf("its member %q has a key %d long once percent-decoded, over the detector's 255", trimmed, n)
 		}
 		if n := spendUTF16Len(decodedValue); n > SpendAttributeLimit {
-			return fmt.Sprintf("its member %q has a value of %d characters once percent-decoded, over the detector's 255", trimmed, n)
+			return fmt.Sprintf("its member %q has a value %d long once percent-decoded, over the detector's 255", trimmed, n)
 		}
 		if decodedKey == SpendIssueAttribute || decodedKey == SpendRoleAttribute {
 			return fmt.Sprintf("its member %q names %s, which the runtime writes into every launch itself", trimmed, decodedKey)

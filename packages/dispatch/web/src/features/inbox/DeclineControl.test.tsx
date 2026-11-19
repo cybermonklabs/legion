@@ -246,7 +246,7 @@ test("a decline sends the person's note and closes the question", async () => {
   }
 });
 
-test("the decline dialog counts what is left to write, and sends no note when empty", async () => {
+test("the decline dialog counts what is written against its bound, and sends no note when empty", async () => {
   const user = userEvent.setup();
   const open = openAsk();
   const declined = declinedAsk("");
@@ -268,11 +268,11 @@ test("the decline dialog counts what is left to write, and sends no note when em
     const dialog = card.getByRole("dialog", { name: "Decline to answer" });
     const field = within(dialog).getByLabelText("Note (optional)");
     expect(field).toHaveAttribute("maxlength", String(DISPATCH_EVENT_BODY_MAX));
-    expect(within(dialog).getByText(`${DISPATCH_EVENT_BODY_MAX} characters left`)).toBeTruthy();
+    expect(within(dialog).getByText(`0 of at most ${DISPATCH_EVENT_BODY_MAX}`)).toBeTruthy();
 
     await user.click(field);
     await user.paste("Four");
-    expect(within(dialog).getByText(`${DISPATCH_EVENT_BODY_MAX - 4} characters left`)).toBeTruthy();
+    expect(within(dialog).getByText(`4 of at most ${DISPATCH_EVENT_BODY_MAX}`)).toBeTruthy();
 
     await user.clear(field);
     await user.click(within(dialog).getByRole("button", { name: "Decline to answer" }));

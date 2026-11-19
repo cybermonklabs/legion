@@ -21,6 +21,45 @@ const OTHER_ID = ROOT_ID.replace("b4a9", "dead");
  * `CI`, which agent harnesses on the devbox export), as `ompNatsGuard` reads them. */
 const JJ = Bun.which("jj");
 const ON_ACTIONS = process.env.GITHUB_ACTIONS === "true";
+/** The real-jj case's bound on all its jj commands together, in milliseconds. Each command waits
+ * for its jj to exit, and the one still running when the bound passes is killed and named. The 34
+ * commands took 10 to 13 s on the devbox at a 1-minute load of 340, and passed 60 s in 4 of 20
+ * runs of this file at 1-minute loads of 508 to 704. */
+const JJ_COMMANDS_BOUND_MS = 240_000;
+/** What bun gives the real-jj case past JJ_COMMANDS_BOUND_MS, in milliseconds: time to kill the
+ * command that passed it and for the case's own file writes. bun's bound on a case must never be
+ * the one that passes first, because bun runs afterEach while a case it timed out still runs:
+ * here, jj in the repository that afterEach removes. */
+const JJ_CASE_MARGIN_MS = 30_000;
+/** Each afterEach's bound on removing its case's directories, in milliseconds. A hook that states
+ * no bound gets bun's 5 s, and this file's afterEach passed that in 16 of 20 runs on the devbox at
+ * a 1-minute load of 466 to 703, removing the real-jj case's repository (about 230 entries). */
+const REMOVE_BOUND_MS = 30_000;
+/** bun's bound on each afterEach, in milliseconds: past REMOVE_BOUND_MS, so that the removal's own
+ * bound passes first and names the directories it left. */
+const AFTER_EACH_BOUND_MS = REMOVE_BOUND_MS + 5_000;
+
+/** Whether `work` settles within `ms` milliseconds; a rejection of `work` rejects. Real time is
+ * required: a jj process and the filesystem are outside bun, and its fake timers cannot advance
+ * them. */
+async function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolean> {
+  const passed = Promise.withResolvers<false>();
+  const timer = setTimeout(() => passed.resolve(false), ms);
+  try {
+    return await Promise.race([work.then(() => true), passed.promise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Removes `dirs`, or fails naming them when the removal has not finished within
+ * REMOVE_BOUND_MS. */
+async function removeWithin(dirs: readonly string[]): Promise<void> {
+  const removed = Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  if (!(await settlesWithin(removed, REMOVE_BOUND_MS))) {
+    throw new Error(`removing ${dirs.join(" ")} did not finish within ${REMOVE_BOUND_MS} ms`);
+  }
+}
 
 describe("sessionIdFromTranscript", () => {
   it("extracts the resumable id from a top-level transcript", () => {
@@ -47,9 +86,7 @@ describe("exportJjSessionAttribution", () => {
     dirs.push(dir);
     return dir;
   }
-  afterEach(async () => {
-    await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
-  });
+  afterEach(() => removeWithin(dirs.splice(0)), AFTER_EACH_BOUND_MS);
   /** The overlay the writer wrote under `dir`. */
   async function overlayText(dir: string): Promise<string> {
     return await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8");
@@ -323,7 +360,7 @@ describe("exportJjSessionAttribution", () => {
     ["a value holding a single quote", "ACME-7'"],
     ["a value holding a backslash", "ACME\\-7"],
     ["a value holding a newline", "ACME-7\nDispatch: OTHER-1"],
-    ["a project part over ten characters", "ABCDEFGHIJK-7"],
+    ["a project part over ten ASCII characters", "ABCDEFGHIJK-7"],
     ["a lowercase key", "acme-7"],
   ])("writes the session line alone for %s", async (_name, issueKey) => {
     const dir = await stateDir();
@@ -430,7 +467,7 @@ describe("exportJjSessionAttribution", () => {
     ["a session id holding a single quote", "s'1"],
     ["a session id holding a slash", "../s-1"],
     ["a session id holding a backslash", "s\\1"],
-    ["a session id over 128 characters", "s".repeat(129)],
+    ["a session id over 128 ASCII characters", "s".repeat(129)],
   ])("leaves the environment untouched and writes nothing for %s", async (_name, sessionId) => {
     const dir = await stateDir();
     const env: NodeJS.ProcessEnv = {};
@@ -472,6 +509,10 @@ describe("exportJjSessionAttribution", () => {
       expect(chain).toBe(`${base}:${path.join(state, `omp-attribution-${ROOT_ID}.toml`)}`);
       const repo = path.join(root, "repo");
       await mkdir(repo);
+      // Each command waits for its jj to exit, within what is left of the case's bound on its jj
+      // commands; the one still running when that bound passes is killed, and the case fails
+      // naming it, before bun's own bound on the case can pass.
+      const deadline = Date.now() + JJ_COMMANDS_BOUND_MS;
       const jj = async (...args: string[]): Promise<string> => {
         const child = Bun.spawn([JJ, ...args], {
           cwd: repo,
@@ -480,11 +521,19 @@ describe("exportJjSessionAttribution", () => {
           stdout: "pipe",
           stderr: "pipe",
         });
-        const [code, stdout, stderr] = await Promise.all([
+        const done = Promise.all([
           child.exited,
           new Response(child.stdout).text(),
           new Response(child.stderr).text(),
         ]);
+        if (!(await settlesWithin(done, deadline - Date.now()))) {
+          child.kill("SIGKILL");
+          await child.exited;
+          throw new Error(
+            `jj ${args.join(" ")} (pid ${child.pid}) had not exited when the case's ${JJ_COMMANDS_BOUND_MS} ms bound on its jj commands passed; the case killed it`
+          );
+        }
+        const [code, stdout, stderr] = await done;
         if (code !== 0) throw new Error(`jj ${args.join(" ")} exited ${code}: ${stderr}`);
         return stdout;
       };
@@ -535,7 +584,7 @@ describe("exportJjSessionAttribution", () => {
       );
       expect(await duplicateOf(undefined)).toBe("");
     },
-    60_000
+    JJ_COMMANDS_BOUND_MS + JJ_CASE_MARGIN_MS
   );
 });
 
@@ -547,9 +596,7 @@ describe("paneAttributionOptions", () => {
 
 describe("resolvedWorkspace", () => {
   const dirs: string[] = [];
-  afterEach(async () => {
-    await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
-  });
+  afterEach(() => removeWithin(dirs.splice(0)), AFTER_EACH_BOUND_MS);
   async function scratch(): Promise<string> {
     const dir = await mkdtemp(path.join(tmpdir(), "jj-attribution-resolve-"));
     dirs.push(dir);
@@ -603,24 +650,22 @@ describe("userConfigChain", () => {
     await chmod(path.join(dir, "jj"), 0o755);
     return { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: dir };
   }
-  afterEach(async () => {
-    await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
-  });
-  /** The wrapper's child pid, once it has written it. */
-  async function pidFrom(pidFile: string): Promise<number> {
-    const deadline = Date.now() + 3_000;
-    while (Date.now() < deadline) {
-      const pid = await readFile(pidFile, "utf8")
-        .then((value) => Number(value.trim()))
-        .catch(() => 0);
-      if (Number.isInteger(pid) && pid > 0) return pid;
-      await Bun.sleep(10);
-    }
-    throw new Error(`jj wrapper did not write ${pidFile}`);
+  afterEach(() => removeWithin(dirs.splice(0)), AFTER_EACH_BOUND_MS);
+  /** The child pid the wrapper wrote to `pidFile`, or undefined when it wrote none. Read once
+   * userConfigChain has returned: by then the wrapper has exited, or its group has been sent
+   * SIGKILL, so there is no later write to wait for, and a pid it had not written counts as none. */
+  async function writtenPid(pidFile: string): Promise<number | undefined> {
+    const pid = Number((await readFile(pidFile, "utf8").catch(() => "")).trim());
+    return Number.isInteger(pid) && pid > 0 ? pid : undefined;
   }
+  /** The largest bound the forked-child case tries, in milliseconds. */
+  const FORK_BOUND_MAX_MS = 6_400;
+  /** bun's bound on the forked-child case, in milliseconds: the bounds it tries add up to 12.6 s,
+   * and `stops` waits up to 3 s. */
+  const FORK_CASE_BOUND_MS = 30_000;
 
-  // Real-time polling is required here: the wrapper's pidfile and the kernel reaping its child
-  // are external OS state, which Bun's fake timers cannot advance.
+  // Real-time polling is required here: the kernel reaping the child is external OS state, which
+  // Bun's fake timers cannot advance.
   /** The kernel has reaped the child once signal 0 says it no longer exists. */
   async function stops(pid: number): Promise<boolean> {
     const deadline = Date.now() + 3_000;
@@ -654,44 +699,72 @@ describe("userConfigChain", () => {
     expect(exported.JJ_CONFIG).toBeUndefined();
   });
 
-  it("kills a wrapper's forked child when jj times out", async () => {
-    const pidFile = path.join(await mkdtemp(path.join(tmpdir(), "jj-attribution-child-")), "pid");
-    dirs.push(path.dirname(pidFile));
-    const env = await withJj(`sleep 30 & echo $! > ${JSON.stringify(pidFile)}; wait`);
-    const started = Date.now();
-    await userConfigChain(200, env);
-    const pid = await pidFrom(pidFile);
-    try {
-      expect(Date.now() - started).toBeLessThan(5_000);
-      expect(await stops(pid)).toBe(true);
-    } finally {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // The expected path: the process group killed it first.
+  // The bound must pass after the wrapper has forked its child and written the child's pid, or the
+  // group it kills holds no child to check, and a loaded host can take longer than a short bound to
+  // get the wrapper there. So the case doubles the bound until a run has written the pid.
+  it(
+    "kills a wrapper's forked child when jj times out",
+    async () => {
+      for (let bound = 200; bound <= FORK_BOUND_MAX_MS; bound *= 2) {
+        const pidFile = path.join(
+          await mkdtemp(path.join(tmpdir(), "jj-attribution-child-")),
+          "pid"
+        );
+        dirs.push(path.dirname(pidFile));
+        const env = await withJj(`sleep 30 & echo $! > ${JSON.stringify(pidFile)}; wait`);
+        const started = Date.now();
+        await userConfigChain(bound, env);
+        const returnedAfter = Date.now() - started;
+        const pid = await writtenPid(pidFile);
+        if (pid === undefined) continue;
+        try {
+          expect(returnedAfter).toBeLessThan(bound + 5_000);
+          expect(await stops(pid)).toBe(true);
+        } finally {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {
+            // The expected path: the process group killed it first.
+          }
+        }
+        return;
       }
-    }
-  });
+      throw new Error(
+        `jj wrapper wrote no child pid before a bound of up to ${FORK_BOUND_MAX_MS} ms passed`
+      );
+    },
+    FORK_CASE_BOUND_MS
+  );
 
-  it("kills a wrapper's detached child after jj returns a config path", async () => {
-    const pidFile = path.join(await mkdtemp(path.join(tmpdir(), "jj-attribution-child-")), "pid");
-    dirs.push(path.dirname(pidFile));
-    const env = await withJj(
-      `sleep 30 </dev/null >/dev/null 2>&1 & echo $! > ${JSON.stringify(pidFile)}; printf '/u/a.toml\\n'`
-    );
-    const paths = await userConfigChain(200, env);
-    const pid = await pidFrom(pidFile);
-    try {
-      expect(paths).toBe("/u/a.toml");
-      expect(await stops(pid)).toBe(true);
-    } finally {
+  it(
+    "kills a wrapper's detached child after jj returns a config path",
+    async () => {
+      const pidFile = path.join(await mkdtemp(path.join(tmpdir(), "jj-attribution-child-")), "pid");
+      dirs.push(path.dirname(pidFile));
+      const env = await withJj(
+        `sleep 30 </dev/null >/dev/null 2>&1 & echo $! > ${JSON.stringify(pidFile)}; printf '/u/a.toml\\n'`
+      );
+      // The code's own bound: the case waits for jj to return the path, and the wrapper writes
+      // the pid before it prints the path.
+      const paths = await userConfigChain(JJ_CONFIG_PATH_TIMEOUT_MS, env);
+      const pid = await writtenPid(pidFile);
       try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // The expected path: the process group killed it first.
+        expect(paths).toBe("/u/a.toml");
+        if (pid === undefined) throw new Error(`jj wrapper returned without writing ${pidFile}`);
+        expect(await stops(pid)).toBe(true);
+      } finally {
+        if (pid !== undefined) {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {
+            // The expected path: the process group killed it first.
+          }
+        }
       }
-    }
-  });
+    },
+    // Past the code's bound on jj, by the 3 s `stops` waits and some.
+    JJ_CONFIG_PATH_TIMEOUT_MS + 5_000
+  );
 
   it("bounds jj at 10 s, inside the 30 s Oh My Pi gives the session_start handler", () => {
     expect(JJ_CONFIG_PATH_TIMEOUT_MS).toBe(10_000);

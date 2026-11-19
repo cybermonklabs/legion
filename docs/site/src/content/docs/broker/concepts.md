@@ -273,8 +273,8 @@ broker's own endpoints:
    asks the helper to, which calls `POST /v1/oauth/device_authorization`), naming the person who
    should approve it (the helper reads that person's Dispatch login from
    `AGENT_SECRETS_OPERATOR_FILE`).
-2. The broker answers with an eight-character confirmation code, `XXXX-XXXX`, which the machine
-   prints, and the machine polls `POST /v1/oauth/token` for the decision.
+2. The broker answers with an eight-character ASCII confirmation code, `XXXX-XXXX`, which the
+   machine prints, and the machine polls `POST /v1/oauth/token` for the decision.
 3. The person types the code into Dispatch, sees which machine is asking, and approves or denies it.
    Only the typed code selects a machine login: no link can approve one, and anyone else is refused
    `NOT_APPROVER`, since the machine's sessions act as that person.
@@ -399,7 +399,7 @@ marked with tags or annotations:
   (`cloud-platform bigquery`). A secret without it mints the `cloud-platform` scope alone, which
   is what every such secret minted before the tag existed, and a changed list reaches the token
   at the next release. The names are the short ones because an AWS tag value holds at most 256
-  characters, which five whole scope URLs are longer than. A comma, a list naming no scope, a
+  Unicode characters, which five whole scope URLs are longer than. A comma, a list naming no scope, a
   whole scope URL, a name with a capital letter, and a name given twice are each refused
   `scopes-malformed`. Set it with `agent-secrets secret create|retag --scopes "<scope> <scope>"`.
 - **`admin`** is optional, and `true` is its only value; anything else is refused
@@ -566,7 +566,7 @@ a list. A secret with no list writes the same bytes into the digest that it alwa
 ## Requests and grants
 
 A session asks for one or more secrets by name in a **request**, signed with its key and carrying a
-reason of at most 400 characters; a request that reaches a person must carry one.
+reason of at most 400 characters (Unicode code points); a request that reaches a person must carry one.
 The broker evaluates every name
 (`packages/envoy/internal/broker/requests/machine_state.go`):
 

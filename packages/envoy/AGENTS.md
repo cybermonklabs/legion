@@ -1250,7 +1250,7 @@ The engine's reading of each shape is `pmdoc/testdata/typed-fence-lines.json`, w
 Accepting a suggestion (`POST /api/v1/comments/{id}/accept`, `docs/marks.go` `applySuggestion`, its checks in `docs/accept.go`) writes blocks, so it stores what reads back as the live document, and refuses what cannot, naming `replace_with`.
 A table the splice cut is padded to its width as the browser editor's table plugin pads it (`padCutTables`, `pmdoc.PadTables`), where the browser's accept writes the replacement where `Splice` does (`padsLikeTheBrowser`):
 inline text, code's literal text, an empty replacement (which deletes the matched text, by this accept's own rule, where the browser's accept of an empty suggestion only clears its mark), or block content over exactly the two textblocks the browser's accept replaces whole (`pmdoc.MultiblockRange`, which reads each textblock one position short of its end as the editor does), the first of them a document-level block.
-Other block content over a table, such as a list over one cell's whole text, or one running from a paragraph in a callout, a quote or a list item, or from one character into a paragraph or heading, is not padded.
+Other block content over a table, such as a list over one cell's whole text, or one running from a paragraph in a callout, a quote or a list item, or from one code point into a paragraph or heading, is not padded.
 Nor is anything running from one table into the next, or from one body row into another (`joinsTwo`), which the browser can join into one table or row, even where the browser's result would read as the padded one would;
 the reject refuses a join of two tables the same way.
 A range from the header row into the first body row is padded, since those rows cannot join.
@@ -1800,7 +1800,7 @@ One sibling may wait on another, but a child cannot wait on its parent and a par
 Artifact targets are addressed by `ref_key`, artifact sources by uuid; each arm has the index its `to`/`from` predicate needs.
 `GET /api/v1/references?to=|from=` reads the view;
 `envoy-dispatch rebuild-refs` reparses every source and reconciles the index (the text is the truth), deleting edges whose source no longer exists, marks every document, comment, message and ask owed a block index (below), and refuses to run without `dispatch.server_url`.
-A document mention's backlink excerpt - the innermost block holding the target's first mention, its id the `#b-<id>` jump and its markdown cut to 480 characters - is stored on the `refs` row (`excerpt_block_id`, `excerpt_text`, `excerpt_version`, migration 0092) when the mention is indexed, cut from a render of the version's tree that the write already makes:
+A document mention's backlink excerpt - the innermost block holding the target's first mention, its id the `#b-<id>` jump and its markdown cut to 480 code points - is stored on the `refs` row (`excerpt_block_id`, `excerpt_text`, `excerpt_version`, migration 0092) when the mention is indexed, cut from a render of the version's tree that the write already makes:
 every renderer of a version's tree takes the block offsets from its own render (`pmdoc.RenderWithBlockOffsets`;
 `renderTreeWithOffsets`, `documentMarkdownWithOffsets`), and a `docs.renderedTree` carries the tree, the markdown and the offsets together to `docs.indexDocument` (`writeVersionTx`, and an upload's and a seeded spec's `docs.Service.IndexDocumentReferences`, which take the transaction's recorded rendering from the ledger), which indexes the version's references, excerpts and blocks from one `text.ExtractAt` of its markdown, so the route reads no document and no write renders its tree for the excerpts (LEGION-531).
 An edit, a named version, a seed, a rebuild and a settlement render the tree once;
@@ -2309,7 +2309,7 @@ A block of kind 6 runs to the first blank line as kind 7 does and is not exempt,
 A block of kind 7, one complete tag and nothing else, interrupts a paragraph in neither parser, so a lone tag continuing one, lazily or not, is read as inline HTML and refused nowhere;
 the refusal is a document's, so a textblock's inline markdown, which lands inside a paragraph the document already holds, keeps such a line (`dropHTMLFlowLines`).
 A task list item's marker (`[ ]`, `[x]` or `[X]` opening a list item's first paragraph) is read as the browser editor's parser reads it (`taskList`):
-followed by a space or a tab and then more text on the line, or by a line ending the paragraph continues past, and it takes only the one character after it.
+followed by a space or a tab and then more text on the line, or by a line ending the paragraph continues past, and it takes only the one space, tab or line ending after it.
 Goldmark's took the marker with anything after it, so it read a link opening a list item (`- [x](https://…)`) as a checked task.
 
 Front matter is read as the browser editor's parser reads it (`pmdoc.parseFrontmatterBlock`):
@@ -2841,8 +2841,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   it reads every open row up front and writes each one back after the lookups and event appends the rows before it cost, so a whole-column write would erase what another writer put in that anchor in between - the block id `BackfillAnchorBlocks` pins (LEGION-149).
 
 - The quote a refresh reads is the first contiguous run of the row's mark (`pmdoc.FindMark`), so text written inside an anchor must carry its mark.
-  Two marks of one type may cover one character (two readers' comments, suggestions or asks:
-  the record marks declare `excludes: ''`), so `pmdoc.MarkSpans` and `FindMark` match a run by the mark's type and id, never by the first mark of the type on it, and the server stores a record mark under y-prosemirror's overlapping-mark key shape `<type>--<8 characters>` (`pmdoc.markAttributeKey`, with its own digest), which both readers strip.
+  Two marks of one type may cover the same text (two readers' comments, suggestions or asks:
+  the record marks declare `excludes: ''`), so `pmdoc.MarkSpans` and `FindMark` match a run by the mark's type and id, never by the first mark of the type on it, and the server stores a record mark under y-prosemirror's overlapping-mark key shape `<type>--<8 base64 characters>` (`pmdoc.markAttributeKey`, with its own digest), which both readers strip.
   A `replace` through the edit route, and the text an accepted suggestion writes inline or into code, takes every comment, suggestion and ask mark that covers all of the text it replaces (`pmdoc.AnchorMarksCovering`, the accepted suggestion's own mark excepted):
   replacing a word, the first or last word, or the whole quote leaves the anchor over the new text, and the refreshed quote is its whole current extent.
   A replace that runs past an anchor's edge rewrote text outside it too, so that anchor keeps only the text the replace left alone, and one covering the whole anchor and more orphans it.
@@ -2866,7 +2866,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   a first request, on a document nobody approved, carries no `approved` key, and a version move re-encodes the whole approval, so it survives it.
   Its question is `Approve <name> (version <N>)?`, followed by the request's `summary`:
   what the human is approving and nothing else, since an approval request carries nothing new.
-  A summary is trimmed and must hold text (`400 SUMMARY_INPUT`), and one that would take the question past the ask cap is `400 CAP_EXCEEDED` naming `summary` and the characters left for it, counted against the longest version the request can reach (ten digits, the most `asks_approval_kind_check` admits), so no later version move takes the question past the cap;
+  A summary is trimmed and must hold text (`400 SUMMARY_INPUT`), and one that would take the question past the ask cap is `400 CAP_EXCEEDED` naming `summary` and the UTF-16 code units left for it, counted against the longest version the request can reach (ten digits, the most `asks_approval_kind_check` admits), so no later version move takes the question past the cap;
   both are checked on every request, including one that opens nothing, and a request without one gets the bare question.
   An open approval ask follows every document version in the same transaction, preserving its thread and summary:
   the move rewords its question to the new version, stamps `edited_at` and appends `ask.edited`, while `requested_version` remains the version the agent last handed to the human, so a moved request is Waiting on agents.
@@ -2973,7 +2973,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   by the two sequences when both carry one, a sequenced request after one that carries none, and by `(created_at, id)` when neither does.
 
 - `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` accept up to 20 labels.
-  Dispatch trims labels, preserves case, removes case-insensitive duplicates, and returns `400 LABELS_INPUT` for blank or over-40-character labels;
+  Dispatch trims labels, preserves case, removes case-insensitive duplicates, and returns `400 LABELS_INPUT` for blank labels or labels over 40 UTF-16 code units;
   every label update emits `issue.updated` with its labels.
   `PATCH` also takes `labels_add` instead of `labels` (both together are `400 LABELS_INPUT`):
   the labels it names are merged, under the issue's row lock, into the labels the issue holds when the write commits, normalized as above and held to the same 20, so a label another writer added after the caller read the issue survives.
@@ -3205,7 +3205,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   the importer passes over such an entry in silence, and its author expects it to count.
   `runnerlog.Say` (`internal/runnerlog`, which imports only the standard library) writes every line but the usage, starting it with the fixed text `architecture-check: ` whatever the format, and `runnerlog.Printable` escapes the whole line, so a `##[` that the fixed text and the rest make together is escaped too:
   each control character (Cc), since a GitHub runner ends a line at `\n` and `\r` and reads a command from a line starting `::` after its leading white space and from a `##[` anywhere;
-  the `[` of every `##[` as `\x5b`, since only a literal `##[` names a command: the runner's search can pass over an ignorable character, but it reads the name three characters after the match's start and accepts only a name of its registered commands, compared without regard to case, so a name read through an ignorable character starts at `#`, `[` or that character, and no command the runner defines has that name (actions/runner at `8cfa1049f86781d141056082d73802d56cd2b433`: `ActionCommand.TryParse` reads it at `cmdIndex = prefixIndex + Prefix.Length`, and `ActionCommandManager`'s `_registeredCommands` is a `StringComparer.OrdinalIgnoreCase` set);
+  the `[` of every `##[` as `\x5b`, since only a literal `##[` names a command: the runner's search can pass over an ignorable character, but it reads the name three UTF-16 code units after the match's start and accepts only a name of its registered commands, compared without regard to case, so a name read through an ignorable character starts at `#`, `[` or that character, and no command the runner defines has that name (actions/runner at `8cfa1049f86781d141056082d73802d56cd2b433`: `ActionCommand.TryParse` reads it at `cmdIndex = prefixIndex + Prefix.Length`, and `ActionCommandManager`'s `_registeredCommands` is a `StringComparer.OrdinalIgnoreCase` set);
   and each format character (Cf, invisible or reordering text), the line separator U+2028 (Zl) and the paragraph separator U+2029 (Zp), which the runner does not end a line at (it reads lines with `StreamReader.ReadLine`) but a log viewer can show as a line break, and each byte not UTF-8, for a log reader.
   `--allow-empty` reads a directory that holds no note, and one that does not exist, as the empty set, exit 0 with a count of 0, as the server reads a missing directory as the empty model;
   git keeps no empty directory, so a repository with no note yet has no directory at all.
@@ -3596,7 +3596,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - Keep Envoy API-level with the agent harnesses it serves.
   Do not add DB introspection or harness-specific hidden coupling unless there is no API path.
 
-- Dispatch caps (`CAP_EXCEEDED` 400) read `<field> is N characters over the M-character limit (L/M)` (`capExceededError`, UTF-16 units) or `<field> is N over the M-item limit (C/M)` for counts;
+- Dispatch caps (`CAP_EXCEEDED` 400) read `<field>: L of at most M` (`capExceededError`, UTF-16 units, the words naming no unit; `overCapMessage` in `packages/contracts/src/tool-schema.ts` is its client twin) or `<field> is N over the M-item limit (C/M)` for counts;
   `GET /asks/{id}`, `/comments/{id}`, and `/issues/{key}/messages/{id}` resolve an id written short to the one item of that kind which carries it before the handler runs, answer `409 ID_AMBIGUOUS` where two or more do and their own `404 NOT_FOUND` where none does, and answer any other non-uuid id with 400 `<KIND>_ID_INPUT` (`requireUUIDPath`, behind `api/id_prefix.go`);
   a document-edit quote miss (`TARGET_NOT_FOUND`) names the three nearest blocks, a `# Title` quote selects a heading, and a quote opening with a list marker (`- x`, `5. x`, a task box `[ ]` or `[x]` allowed after it) that matches no text as written selects an item of that kind of list whose text starts with the rest, its number not matched and its box matching only a task item in that state (`pmdoc.ParseListItemQuote`, `listItemQuoteMatches`), a miss saying what the marker means and quoting the text without it;
   a quote written as a table row's cells, its ` | ` the boundary between cells rather than text a cell holds, names instead the run of one row's cells its parts match (`tableRowQuoted`), and a quote reaching from one table cell into another names both cells, a move anchor included, which is refused as an insert anchor is.
@@ -3611,7 +3611,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - A comment, comment-edit, message, broadcast and delivery-reply body is bounded block by block rather than as a whole: `contracts.DispatchBlockUnits` (32,000 UTF-16 units) on each block of it and `contracts.DispatchItemBlocks` (32,768) on how many blocks it holds, generated from `DISPATCH_BLOCK_UNITS` and `DISPATCH_ITEM_BLOCKS` in `packages/contracts` rather than spelled here, and published by `GET /api/v1/limits`:
   `itemblocks.Check` is the one check and `blockBoundError` the one refusal, called from `comment_create.go`, `comment_actions.go`, `messages.go`, `broadcasts.go`, `comment_delivery.go` and `message_delivery.go`.
-  A block over the bound is `400 CAP_EXCEEDED` reading `body block N (<type>) is K characters over the 32000-character block limit (L/M)`, and a body over the count reads `body is K blocks over the 32768-block limit (C/M)`;
+  A block over the bound is `400 CAP_EXCEEDED` reading `body block N (<type>): L of at most M`, and a body over the count reads `body is K blocks over the 32768-block limit (C/M)`;
   the count is checked first, so a body built to break the indexer is refused for how many blocks it holds.
   A body holding a decision block (`:::ask{…}`) is `400 DECISION_BLOCK_IN_BODY` reading `body block N (<type>) holds a decision block, which nobody can answer where it stands`, and then where the question belongs: the issue's own document, as a decision block there, or an ask opened with the `dispatch ask` command, a fenced code block being how a body shows such a block as an example (`itemblocks.DecisionBlock`, worded there and nowhere else).
   Both bounds are checked before it, so a body that also breaks one keeps the bound's refusal, its wording and its code.
@@ -3621,8 +3621,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Change any of them in `packages/contracts/src/dispatch-tools.ts` and regenerate (`bun run gen:go` there), never in `internal/contracts/generated.go`.
 
 - Caller text PostgreSQL cannot store (`text.Storable`) is refused before anything is written (`api/storable_text.go`, positions in UTF-16 units from 1):
-  a U+0000, which neither its text nor its jsonb holds, is `400 NUL_CHARACTER` reading `<field> holds a NUL character (U+0000) at character N, which Dispatch cannot store`, and a byte that is not UTF-8, which its text does not hold, is `400 INVALID_UTF8` reading `<field> holds a byte that is not UTF-8 (0xFF) at character N, which Dispatch cannot store`.
-  A name the caller wrote (a JSON member's, a query parameter's, a multipart field's) is named with a U+0000 in it written as the six characters `\u0000`, so no refusal sends the character back.
+  a U+0000, which neither its text nor its jsonb holds, is `400 NUL_CHARACTER` reading `<field> holds a NUL (U+0000) at position N, which Dispatch cannot store`, and a byte that is not UTF-8, which its text does not hold, is `400 INVALID_UTF8` reading `<field> holds a byte that is not UTF-8 (0xFF) at position N, which Dispatch cannot store`.
+  A name the caller wrote (a JSON member's, a query parameter's, a multipart field's) is named with a U+0000 in it written as the six ASCII characters `\u0000`, so no refusal sends the character back.
   The input layer checks once, not each route:
   `decodeJSON` walks every string and member name of the body it decoded (`unstorableJSON`, naming `title`, `options[1].label`, `ops[0].attributes.title`), and so do the two readers that read a JSON body themselves (an artifact upload's, a credential relay's);
   JSON carries no byte that is not UTF-8 past decoding, which writes it as U+FFFD, so these refuse only a U+0000.
@@ -3632,7 +3632,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The check covers every parameter, field and member a request carries, including ones no handler reads.
   A new reader of caller text goes through one of these.
 
-- Listener message APIs preserve the human `message` as a one-line `payload_summary` of at most 160 characters;
+- Listener message APIs preserve the human `message` as a one-line `payload_summary` of at most 160 code points;
   when it differs, the complete message is `payload`.
   A supplied `payload` for `/v1/messages/publish` wins over the derived value.
 
@@ -5744,7 +5744,7 @@ The session is the caller's own claim, like `actor` on a write, so this keeps a 
 Direct-conversation text also reaches every authenticated caller through that caller's `events` view on `/ws/live`; nothing in Dispatch restricts it by session.
 The command sends the host's session id.
 
-Messages thread: `in_reply_to` names a message in the same conversation - a message of the same issue, or, for `POST /api/v1/agents/{session_id}/messages`, an issue-less message whose thread root targets that same session (400 `MESSAGE_INPUT` otherwise) - and the reply's event and delivery frame carry `reply_body`, the parent's first 160 characters, or, for a reply that names a block of its parent (`in_reply_to_block`), that block's first 160.
+Messages thread: `in_reply_to` names a message in the same conversation - a message of the same issue, or, for `POST /api/v1/agents/{session_id}/messages`, an issue-less message whose thread root targets that same session (400 `MESSAGE_INPUT` otherwise) - and the reply's event and delivery frame carry `reply_body`, the parent's first 160 code points, or, for a reply that names a block of its parent (`in_reply_to_block`), that block's first 160.
 A reply is recorded as `message.answered`;
 the broker's `Notify` treats it exactly like `message.created` (quiet when the payload has a `target`, else the user-actor rule), so a human's reply on a plain agent message wakes the issue's route and the parent message's author (`notifications.agent.<session>`, correlated `re:` the parent with `reply_body`) instead of being recorded silently.
 A human's reply that names no `target` inherits the thread's:
@@ -6386,7 +6386,7 @@ a secret scheduled for deletion (AWS `DeletedDate`, GCP `expire_time`) is one th
 and the value check comes after every other reason, so a secret refused for a tag or its key is logged for that (`secrets.Local` gives a secret created without a value no version, as Secrets Manager does);
 a secret with no current value that is `Listing.Unfilled` (it carries `secrets.CreateLabel`, the label `agent-secrets secret create` puts on a secret it makes before its value, and holds no version at all) and whose listing's `Created` (AWS `CreatedDate`, GCP `create_time`; `secrets.Local` answers `LocalSecret.CreatedAt` and nothing when it is unset) is less than `policy.PendingValueWindow` (10 minutes, the time that create reads the value before it discards the secret) old is `policy.ReasonPendingValue`, a create still waiting for its value, and any other secret with no current value, an older one or one whose listing names no creation time among them, is `ReasonNoCurrentValue`;
 an owner tag naming a service is refused as malformed unless `Loader.Services` lists it, which `cmd/broker` fills with the distinct services of `BROKER_SERVICES` and `BROKER_VM_SERVICES` together (`serviceNames`);
-and `Loader.secretName` asks `Store.ValidName` whether a name can exist in the store at all (Secrets Manager's 512-character limit;
+and `Loader.secretName` asks `Store.ValidName` whether a name can exist in the store at all (Secrets Manager's 512-character limit on its ASCII names;
 Secret Manager's 255-character `[A-Za-z0-9_-]` id), so no lookup is made for one that cannot.
 `secrets.GCP` counts against Secret Manager's 600-a-minute per-project read quota for every call but `AccessSecretVersion` (`TestGCPReadQuotaCost` pins a `List` at 1+N, a `Describe` at 2, a `Read` at 1), so `Current.RefreshOne` anchors a reread only when it changed the live answer, and `NewGCPClient` retries `UNAVAILABLE` (not `RESOURCE_EXHAUSTED`) on `ListSecrets`, `GetSecret` and `GetSecretVersion`.
 `secrets.GCP` opens Secret Manager under Application Default Credentials (`NewGCPClient`:
@@ -6425,7 +6425,7 @@ The list narrows who may ask and bounds no grant by itself.
 `requesters-not-owner` again refuses a service entry on a secret the deployment binds to a `dev-<name>` account, at either tier, since such a token is one person's own;
 `scopes-type` refuses a `scopes` tag on any type but `google-service-account`, and `admin-tier` and `admin-requesters` refuse an admin secret that is not human tier or that names no requesters.
 `policy.TagScopes` and `policy.ParseScopes` are the one statement of which OAuth scopes a `google-service-account` secret's token carries: scope names separated by white space, each the part of a Google scope after `https://www.googleapis.com/auth/` and held to `^[a-z0-9][a-z0-9._-]*$`, answered sorted and each once (a comma is refused `ErrScopesComma`, a list naming no scope `ErrScopesMissing`, an entry that is no scope name `ErrScopesEntry`, a whole scope URL among them, and a name given twice `ErrScopesDuplicate`, each logged `scopes-malformed`), which the loader and `agent-secrets secret` create and retag all apply, and `Secret.ScopeURLs` puts the prefix back for the minter.
-The tag holds short names because the AWS store keeps its annotations as AWS tags and an AWS tag value holds at most 256 characters, which five whole scope URLs are longer than;
+The tag holds short names because the AWS store keeps its annotations as AWS tags and an AWS tag value holds at most 256 Unicode characters, which five whole scope URLs are longer than;
 a secret carrying none mints `cloud-platform` alone, as every token of this type did before the tag existed, and a changed list reaches the token at the next release, since the minter reads the snapshot the release checked.
 `policy.TagAdmin` marks a secret whose grant is an administrator's, `"true"` its only value and anything else `admin-malformed`:
 the broker cannot tell such a secret from its type, an admin console password and a personal API key both being stored strings, so the program that declares the secret says so, and the rules above then hold it to human tier, a requesters list and an hour's cap.

@@ -276,7 +276,7 @@ export const envoyToolSpecs = [
         .describe("The thread's root ts, which keeps the reply in the mention's thread."),
       text: schema
         .string({ min: 1, max: SLACK_POST_TEXT_MAX })
-        .describe(`The reply, in Slack mrkdwn, at most ${SLACK_POST_TEXT_MAX} characters.`),
+        .describe(`The reply, in Slack mrkdwn, at most ${SLACK_POST_TEXT_MAX} UTF-16 code units.`),
     }),
     operation: EnvoyToolOperation.slackPost,
   },

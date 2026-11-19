@@ -1764,7 +1764,7 @@ check "fails once the closure reads a file outside the filter" "$(is "$status" 1
 check "and names it with the exact entry's run" \
   "$(contains "$out" '::error file=mod/other/other.go::app reads mod/other/other.go.*"Test the app" (its pinned script): go test of each package of the loop (go list -deps)')"
 
-echo "case: a step one character off its pinned script falls to everything"
+echo "case: a step one ASCII character off its pinned script falls to everything"
 root=$(fixture exact-step-changed)
 exact_step_table "$root"
 replace "$root/.github/workflows/ci.yaml" "-count=1" "-count=2"

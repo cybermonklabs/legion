@@ -262,7 +262,7 @@ func (f *fakeAWS) secretsManager(w http.ResponseWriter, call string, body []byte
 		var in struct{ SecretId, SecretString, ClientRequestToken string }
 		if err := decode(body, &in); err != nil || in.SecretId != awsSecret || in.SecretString == "" ||
 			len(in.ClientRequestToken) < 32 || len(in.ClientRequestToken) > 64 {
-			f.reject(w, fmt.Sprintf("PutSecretValue (%v): a SecretString and a ClientRequestToken of 32 to 64 characters, nothing else", err))
+			f.reject(w, fmt.Sprintf("PutSecretValue (%v): a SecretString and a ClientRequestToken of 32 to 64 bytes, nothing else", err))
 			return
 		}
 		f.tokens = append(f.tokens, in.ClientRequestToken)

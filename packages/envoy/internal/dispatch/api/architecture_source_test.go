@@ -655,18 +655,18 @@ func TestArchitectureSourceInputValidation(t *testing.T) {
 	// login as GitHub serves them, so what no login can be is refused: a dot, a slash, an opening
 	// hyphen or underscore, and more than GitHub's 39 characters.
 	for name, input := range map[string]struct{ repo, branch string }{
-		"extra segment":            {"legion/arch%2Fdeep", "main"},
-		"whitespace":               {"legion/ar%20ch", "main"},
-		"missing branch":           {"legion/arch", "  "},
-		"owner charset":            {"leg!on/arch", "main"},
-		"owner dot":                {"le.gion/arch", "main"},
-		"owner slash":              {"leg%2Fion/arch", "main"},
-		"owner edge dash":          {"-legion/arch", "main"},
-		"owner edge underscore":    {"_legion/arch", "main"},
-		"owner past 39 characters": {strings.Repeat("a", 40) + "/arch", "main"},
-		"dot-dot after .git trim":  {"legion/...git", "main"},
-		"dot after .git trim":      {"legion/..git", "main"},
-		"empty after .git trim":    {"legion/.git", "main"},
+		"extra segment":                   {"legion/arch%2Fdeep", "main"},
+		"whitespace":                      {"legion/ar%20ch", "main"},
+		"missing branch":                  {"legion/arch", "  "},
+		"owner charset":                   {"leg!on/arch", "main"},
+		"owner dot":                       {"le.gion/arch", "main"},
+		"owner slash":                     {"leg%2Fion/arch", "main"},
+		"owner edge dash":                 {"-legion/arch", "main"},
+		"owner edge underscore":           {"_legion/arch", "main"},
+		"owner past GitHub's limit of 39": {strings.Repeat("a", 40) + "/arch", "main"},
+		"dot-dot after .git trim":         {"legion/...git", "main"},
+		"dot after .git trim":             {"legion/..git", "main"},
+		"empty after .git trim":           {"legion/.git", "main"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			response := dispatchRequest(t, handler, http.MethodPut, sourcePath("CORE", input.repo), map[string]string{"branch": input.branch}, "alice")

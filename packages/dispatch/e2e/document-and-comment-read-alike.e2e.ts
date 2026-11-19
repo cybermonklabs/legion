@@ -248,7 +248,7 @@ test("a NUL reads as the replacement character in the spec editor and in a past 
     createIssue({ project: "CORE", spec: "a\u0000b\n", title: "A raw NUL" }, agentSession)
   );
   expect(raw.code).toBe("NUL_CHARACTER");
-  expect(raw.error).toContain("spec holds a NUL character (U+0000) at character 2");
+  expect(raw.error).toContain("spec holds a NUL (U+0000) at position 2");
 
   await withAlice(browser, async (page) => {
     await openSpec(page, key, "NUL");

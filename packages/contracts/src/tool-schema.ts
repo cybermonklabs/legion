@@ -40,15 +40,30 @@ interface ZodErrorParams {
 }
 
 type ZodNode = z.ZodType & {
-  min(value: number): ZodNode;
   /** zod v4 accepts an `error` callback; the OMP `pi.zod` facade ignores the second argument. */
+  min(value: number, params?: ZodErrorParams): ZodNode;
+  /** As `min`. */
   max(value: number, params?: ZodErrorParams): ZodNode;
   int(): ZodNode;
 };
 
-/** "is N characters over the M-character limit (L/M)"; the field name is prepended by the formatter. */
+/**
+ * "L of at most M", a string's length and its cap; the formatter writes the field name and ": "
+ * before it. It is the twin of the server's `capExceededError`
+ * (`packages/envoy/internal/dispatch/api/server.go`), so a call refused here and one refused by
+ * the server for the same cap read alike: "title: 1002 of at most 1000". Lengths are UTF-16
+ * units, zod's and the server's both, and the words name no unit.
+ */
 export function overCapMessage(length: number, max: number): string {
-  return `is ${length - max} characters over the ${max}-character limit (${length}/${max})`;
+  return `${length} of at most ${max}`;
+}
+
+/**
+ * "L of at least M", a string's length and its minimum, worded as `overCapMessage` is: zod's own
+ * words, "expected string to have >=2 characters", call the UTF-16 units it counts characters.
+ */
+export function underMinMessage(length: number, min: number): string {
+  return `${length} of at least ${min}`;
 }
 
 interface ZodObjectNode {
@@ -95,7 +110,13 @@ export function zodSchemaApi(zod: unknown): SchemaApi<z.ZodType> {
   return {
     string: (opts = {}) => {
       let schema = api.string();
-      if (opts.min !== undefined) schema = schema.min(opts.min);
+      if (opts.min !== undefined) {
+        const min = opts.min;
+        schema = schema.min(min, {
+          error: (issue) =>
+            underMinMessage(typeof issue.input === "string" ? issue.input.length : 0, min),
+        });
+      }
       if (opts.max !== undefined) {
         const max = opts.max;
         const hint = opts.maxHint === undefined ? "" : `; ${opts.maxHint}`;

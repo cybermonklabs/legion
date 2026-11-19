@@ -7,6 +7,7 @@ import { bearerCredential } from "@legion/envoy-client/bearer";
 import {
   readSessionAnswers,
   SESSION_ANSWERS_MARKER,
+  type SessionAnswersRead,
   sessionAnswersFailureLine,
   sessionAnswersWords,
 } from "@legion/envoy-client/session-answers";
@@ -544,7 +545,7 @@ test("a request an older copy already gave the list gets no second one and no re
 // own length pushed an item past the reader's character cap, so the list is re-rendered after the
 // last message: a prompt-cache miss, and never a person's words held back. Reading that text more
 // closely to spare the miss swallowed an item twice (see `showsNew`).
-const CAPPED = `${SESSION_ANSWERS_MARKER}\nAs read at 2026-10-27T11:00:00.000Z; this read failed: Dispatch did not answer within 800 ms.\n\n2026-10-27T11:00:00.000Z · bob sent you a message\nAlso check the docs.\n\n1 older item left out to stay under 8,000 characters: run \`dispatch answers\` to read every one in full.`;
+const CAPPED = `${SESSION_ANSWERS_MARKER}\nAs read at 2026-10-27T11:00:00.000Z; this read failed: Dispatch did not answer within 800 ms.\n\n2026-10-27T11:00:00.000Z · bob sent you a message\nAlso check the docs.\n\n1 older item left out to stay under 8,000 UTF-16 code units: run \`dispatch answers\` to read every one in full.`;
 const cappedList = { role: "user", content: [{ type: "text", text: CAPPED }], timestamp: 0 };
 
 // The list `LIST` as a copy renders it from its cache when a read fails, and the same list for a
@@ -771,22 +772,23 @@ test("a request another copy of the extension read no text for is not read again
   expect(calls()).toBe(2);
 });
 
-// The empty-list case with the shared read: two copies, a Dispatch that answers in 600 ms, one
-// HTTP read and a request that waits under one second. The delay is real on purpose: the read's
-// 800 ms deadline is a platform timer inside `readSessionAnswers`, and the case times the request
-// that two copies of the handler make together against it.
+// The empty-list case with the shared read: two copies, one HTTP read, and a request that waits on
+// that read alone. The first copy's read is the one Dispatch answered, not its 800 ms deadline (a
+// platform timer inside `readSessionAnswers`; with no list read before, a read that waited the
+// deadline out carries the failure line), and the second copy, handed the array the first passed
+// on, makes no read, so it has nothing to wait on. The case checks these two facts, not the
+// request's time: a bound on that time measured the box's load as well, and failed under it.
 const stateRoots: string[] = [];
 afterEach(() => {
   for (const root of stateRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-test("two copies of the extension and an empty list: one HTTP read, under one second", async () => {
+test("two copies of the extension and an empty list: one HTTP read, which the second copy does not wait on", async () => {
   const stateRoot = mkdtempSync(join(tmpdir(), "session-answers-context-"));
   stateRoots.push(stateRoot);
   let fetches = 0;
   const fetchImpl = (async (input: string | URL | Request) => {
     fetches += 1;
-    await Bun.sleep(600);
     const session = new URL(input.toString()).pathname.split("/")[4] ?? "";
     return Response.json({
       session_id: session,
@@ -795,31 +797,32 @@ test("two copies of the extension and an empty list: one HTTP read, under one se
       items: [],
     });
   }) as typeof fetch;
-  const read = async () =>
-    carry(
-      (
-        await readSessionAnswers({
-          session: "ses_two_copies_empty",
-          dispatch: {
-            enabled: true,
-            url: "http://dispatch.test",
-            credential: bearerCredential("token"),
-          },
-          env: { DISPATCH_STATE_DIR: stateRoot },
-          fetchImpl,
-        })
-      ).text
-    );
+  // Where each read a copy made got its answer, in order.
+  const sources: SessionAnswersRead["source"][] = [];
+  const read = async () => {
+    const answered = await readSessionAnswers({
+      session: "ses_two_copies_empty",
+      dispatch: {
+        enabled: true,
+        url: "http://dispatch.test",
+        credential: bearerCredential("token"),
+      },
+      env: { DISPATCH_STATE_DIR: stateRoot },
+      fetchImpl,
+    });
+    sources.push(answered.source);
+    return carry(answered.text);
+  };
   const messages = [skill, ask];
 
-  const started = performance.now();
   // Copy A's handler, then copy B's on the array A passed on.
   expect(await withSessionAnswers(messages, requestOf(read, noBranch))).toBeUndefined();
   expect(await withSessionAnswers(messages, requestOf(read, noBranch))).toBeUndefined();
-  const elapsed = performance.now() - started;
 
+  // One read, the first copy's, which Dispatch answered.
+  expect(sources).toEqual(["fresh"]);
+  // And that read sent one HTTP request.
   expect(fetches).toBe(1);
-  expect(elapsed).toBeLessThan(1_000);
 });
 
 test("a list quoted earlier in the conversation does not switch the list off", async () => {
