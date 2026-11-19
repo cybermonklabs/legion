@@ -302,10 +302,16 @@ load_label() {
   # unreviewed (packages/pi-envoy/README.md, "The time limit"): an askgate run would then score the
   # timeout, not the rule. The model route installers set the limit in the profile's settings
   # (scripts/e2e/lib/install-model-gateway.sh, install-key-file-model-route.sh); a profile built
-  # before they did is refused here.
-  local settings=$P/home/.omp/profiles/$profile/agent/config.yml
-  bun -e 'const v = Bun.YAML.parse(await Bun.file(process.argv[1]).text())?.extensionHandlers?.toolCallTimeoutMs; process.exit(typeof v === "number" && v >= 120000 ? 0 : 1)' "$settings" 2>/dev/null ||
-    fail "label $1's profile settings $settings do not set extensionHandlers.toolCallTimeoutMs to 120000 or more, so AskGate's review would often time out: remove $P and run \`rig.sh profile $1 <checkout>\` from a checkout whose model route installer sets it"
+  # before they did is refused here. The read is bun's, which exits 0 where the key is set and 3
+  # where it is not: any other exit is a bun that could not run or could not read the settings,
+  # refused with bun's own words and never as a missing key.
+  local settings=$P/home/.omp/profiles/$profile/agent/config.yml said read=0
+  said=$(bun -e 'const v = Bun.YAML.parse(await Bun.file(process.argv[1]).text())?.extensionHandlers?.toolCallTimeoutMs; process.exit(typeof v === "number" && v >= 120000 ? 0 : 3)' "$settings" 2>&1) || read=$?
+  case $read in
+    0) ;;
+    3) fail "label $1's profile settings $settings do not set extensionHandlers.toolCallTimeoutMs to 120000 or more, so AskGate's review would often time out: remove $P and run \`rig.sh profile $1 <checkout>\` from a checkout whose model route installer sets it" ;;
+    *) fail "label $1: bun could not read the profile settings $settings: $said" ;;
+  esac
 }
 
 # install_model_route CHECKOUT PROFILE DIR installs the model route of the profile whose HOME is
@@ -730,8 +736,15 @@ start_listener() {
   ENVOY_API_TOKEN="$(<"$S/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 \
     ENVOY_MACHINE_ID="$tag" NATS_URLS="nats://127.0.0.1:$nats_port" \
     start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$S/envoy-listener"
-  await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
-    curl -fsS -o /dev/null -H "Authorization: Bearer $(<"$S/envoy-token")" "http://127.0.0.1:$envoy_port/v1/sessions"
+  await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" listener_answers
+}
+
+# listener_answers reads the listener's /v1/sessions with the rig's bearer, which reaches curl on
+# standard input from printf, a shell builtin, so it is in no command line.
+# shellcheck disable=SC2329 # await_start in start_listener runs it
+listener_answers() {
+  printf 'Authorization: Bearer %s' "$(<"$S/envoy-token")" |
+    curl -fsS -o /dev/null -H @- "http://127.0.0.1:$envoy_port/v1/sessions"
 }
 
 # start_dispatch DATABASE_URL starts the e2e harness's Dispatch server on that database. The

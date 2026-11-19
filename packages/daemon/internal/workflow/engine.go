@@ -71,10 +71,13 @@ type Config struct {
 	ProductionCheckRole claim.Role
 	Clock               func() time.Time
 	// ReviewAppLogin is the review App's bot login (<slug>[bot]) from its boot token lease. A review
-	// it submits decides a round whatever GitHub gives its bot account (DecidesRound) and can be the
-	// reviewer's answer to a round it left undecided (reviewersAnswer); a push by it is recorded as
-	// the review App's (record.ClassifiedPush.ByReviewApp). Empty matches no one. A workflow boot
-	// never leaves it empty: it refuses a review App that names no login (daemon.appLoginsAtBoot).
+	// it submits is the reviewer's own only when its Legion footer also names the session the
+	// reviewer's claim records (byReviewer), and only then does it decide a round whatever GitHub
+	// gives its bot account (DecidesRound) or answer a round the reviewer left undecided
+	// (reviewersAnswer); while that claim records no session, it waits (RefusedWhileNoSession). A
+	// push by it is recorded as the review App's (record.ClassifiedPush.ByReviewApp). Empty matches
+	// no one. A workflow boot never leaves it empty: it refuses a review App that names no login
+	// (daemon.appLoginsAtBoot).
 	ReviewAppLogin string
 	// Repositories is the daemon's in-memory view of the project's repositories, which the workflow
 	// records an issue's repository and default branch from when it first records the issue.
@@ -92,6 +95,13 @@ type Config struct {
 	// into that repository's recovery whatever it resolves
 	// to by then. It keeps no state of the issue's own. Nil notes none.
 	NoteUnread func(key, resolved string)
+	// HearRepository is told, inside the transaction that writes a new issue record, of the
+	// repository GitHub spells that record's: the daemon has GitHub intake hear it and the
+	// runtime keep a repository cache of it from that moment, on the transaction's commit, so
+	// work in a repository no project maps gets the same event and cache service as work in a
+	// mapped one (daemon's hearRecorded). It is told every recording, including one on a
+	// repository already heard, which costs the daemon one comparison. Nil tells none.
+	HearRepository func(ctx context.Context, repo string)
 	// ReadMergeState is asked, on the commit of a fact that leaves a review round waiting on
 	// GitHub's merge state for the pull request's head (askMergeState), to read it: the one thing
 	// a reviewing round is owed from outside the record, and what moves an approved issue to
@@ -125,6 +135,12 @@ type Config struct {
 	// experiment.CryptoSource, the daemon's own, and a test hands in one of its own.
 	Experiments      []config.Experiment
 	ExperimentSource func(uint64) (uint64, error)
+	// StepAgent is the daemon's read of the agent of a step at the moment the engine writes the
+	// step's end (endStep): the session its claim records and the model that answered it last in
+	// that session (supervise.Machine.LastAnswer), read from the claim's machine without waiting
+	// on a decision in flight. Nil reads nothing, so a record names no session and no model,
+	// which is the API-only daemon and every test that reads no agent.
+	StepAgent func(claim.Token) StepAgent
 }
 
 // Engine interprets Table and writes only records and outbox rows through the supplied Store.
@@ -442,7 +458,7 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 
 // releaseHeldRoot takes a todo written on a held root whose tree does not linger: the one status
 // a person's move in the Dispatch dashboard, the controller's set_status and an operator's
-// `legion status` all reach the record as (R7). The hold is cleared, the issue returns to the
+// `legion issue status` all reach the record as (R7). The hold is cleared, the issue returns to the
 // phase the hold came from and that phase's role is started with its task, which is the effect
 // of the architect's retry_or_escalate with retry. Nothing else moves: no new generation, no
 // reset of the rounds, no new pod, and no change of place in the admission line.
@@ -621,8 +637,10 @@ func (e *Engine) recordChildUnderLiveTree(ctx context.Context, tx pgx.Tx, fact i
 }
 
 // recordChild records an unrecorded todo child under root's live tree on the repository its event
-// resolves to, or, when that is none or one Legion does not serve, records nothing and says why on
-// the child and to the architect that owns its parent (refuseChild).
+// resolves to, or, when that is none or one GitHub does not answer for as a repository a role App
+// reaches, records nothing and says why on the child and to the architect that owns its parent
+// (refuseChild). A child recorded on a repository nothing named before has that repository heard
+// and cached from here (Config.HearRepository).
 //
 // The daemon holds no record of this child, so this entry is the one moment the issue-unit
 // experiments the project declares are drawn for it (drawExperiments), in the transaction that
@@ -630,7 +648,7 @@ func (e *Engine) recordChildUnderLiveTree(ctx context.Context, tx pgx.Tx, fact i
 // rerun and an adoption, each of a record the daemon already holds, draw nothing, and an
 // experiment declared after a child was recorded never reaches it.
 func (e *Engine) recordChild(ctx context.Context, tx pgx.Tx, root record.Issue, fact intake.DispatchIssue) error {
-	resolution, err := e.ResolveRepository(fact.ResolvedRepo)
+	resolution, err := e.ResolveIssueRepository(fact)
 	if err != nil {
 		return err
 	}
@@ -640,7 +658,20 @@ func (e *Engine) recordChild(ctx context.Context, tx pgx.Tx, root record.Issue, 
 	if err := e.enterChild(ctx, tx, root, fact, root.Generation, resolution); err != nil {
 		return err
 	}
+	e.HearRepository(ctx, resolution.GitHubRepo)
 	return e.drawExperiments(ctx, tx, fact.Key)
+}
+
+// HearRepository QUEUES the repository an issue has just been recorded on, inside the transaction
+// that writes the record (Config.HearRepository). It makes no stream call under the lock and
+// cannot fail the transaction: hearRecorded publishes once the transaction has returned, and only
+// then does GitHub intake hear the repository and the runtime keep a repository cache of it.
+// Admission calls it for the roots and orphans it records; a deployment that configures none is
+// told nothing.
+func (e *Engine) HearRepository(ctx context.Context, repo string) {
+	if hear := e.cfg.HearRepository; hear != nil {
+		hear(ctx, repo)
+	}
 }
 
 // RecordedFact is the todo fact an issue's own record already says, for a run no live event
@@ -809,7 +840,10 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	}
 	// A role can still be mid-turn in a phase the issue has left: the review event moves reviewing
 	// on, so a reviewer's own request for changes starts the implementer before the reviewer's
-	// handoff lands. Its completion is recorded on its own row and moves nothing (leftItsPhase).
+	// handoff lands. Its completion is recorded on its own row and moves nothing (leftItsPhase),
+	// and the handoff it names is the report of the run of its step the move ended
+	// (reportEndedStep).
+	//
 	// reported is the phase this completion is of (phase.Of): the issue's own, or, for a role the
 	// issue has moved on without, the phase that role has left.
 	reported := phase.Of(fact.Role, issue.Phase)
@@ -875,7 +909,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		return intake.Result{}, err
 	}
 	if !current {
-		return intake.Result{}, nil
+		return intake.Result{}, e.reportEndedStep(ctx, tx, *issue, reported, fact.HandoffRecord)
 	}
 	switch issue.Phase {
 	case phase.Planning:
@@ -1556,6 +1590,13 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err := e.status(ctx, tx, issue, status, moveReason(trigger, issue.Phase, row.To, pr, reason)); err != nil {
 		return err
 	}
+	// The move names the end of the step the issue stood in, on the issue as it stood, before the
+	// phase write: the result and the return the record does not hold (nameMoveEnd). The start
+	// below ends that run before it begins its own (startStep), and a move that starts nothing
+	// leaves it to the fact's settle (SettleFact).
+	if err := e.nameMoveEnd(ctx, issue, trigger, row.To, handoff); err != nil {
+		return err
+	}
 	from := issue.Phase
 	issue.Phase, issue.Hold = row.To, nil
 	// This is the one write that moves an issue into a phase of its own, so it is where the issue's
@@ -1610,6 +1651,18 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if !mergedAlready {
 		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), movedBack); err != nil {
 			return err
+		}
+	}
+	// Two moves start a step no phase worker's start begins, so it starts here, under the agent it
+	// names (startNamedStep): a merge GitHub has already made, which no merger runs and whose close
+	// ends it, and accepting, whose role is the architect, for which start above starts no worker
+	// and only starts a child's failed architect again (reviveArchitect), as every phase start of a
+	// child does.
+	if mergedAlready || row.To == phase.Accepting {
+		if step, ok := standingStep(issue); ok {
+			if err := e.startNamedStep(ctx, tx, issue, step); err != nil {
+				return err
+			}
 		}
 	}
 	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, reason)); err != nil {

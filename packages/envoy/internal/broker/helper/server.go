@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -692,7 +693,7 @@ func (s *Server) registerReply(sess *Session, wait time.Duration) Response {
 	// asked for no wait sees exactly that — and the session becomes enrolled on its own when
 	// one lands.
 	if resp.State != "enrolled" && !credential {
-		resp.Code, resp.Error = CodeNoCredential, noCredentialMsg
+		resp.Code, resp.Error = CodeNoCredential, s.Broker.noCredentialText()
 	}
 	return resp
 }
@@ -705,7 +706,7 @@ func (s *Server) registerReply(sess *Session, wait time.Duration) Response {
 // so the failure named is the one that goes with that answer.
 func (s *Server) notEnrolled(st enrollmentState) Response {
 	if !s.Broker.HasCredential() {
-		return Response{Code: CodeNoCredential, Error: noCredentialMsg}
+		return Response{Code: CodeNoCredential, Error: s.Broker.noCredentialText()}
 	}
 	msg := "this session is not enrolled with the broker yet"
 	if st.LastError != "" {
@@ -789,7 +790,7 @@ func (s *Server) signRequest(peer *Peer, pid int, names []string, reason string,
 	for i, name := range names {
 		details[i] = record.AuthorizationDetail{Type: record.KindAgentSecret, Identifier: name, Actions: []string{"inject"}}
 	}
-	compact, err := record.Sign(sess.identity().Key, s.Broker.URL, details, reason, "", lifetimeSeconds, time.Now())
+	compact, err := record.Sign(sess.identity().Key, s.Broker.URL.Raw(), details, reason, "", lifetimeSeconds, time.Now())
 	if err != nil {
 		return Response{Code: CodeSign, Error: err.Error()}
 	}
@@ -816,10 +817,9 @@ func (s *Server) signLauncher(peer *Peer, pid int, method, url string) Response 
 		peer.Close()
 		return Response{Code: CodeBadRequest, Error: "sign-launcher needs method and url"}
 	}
-	if !operatorRoute(s.Broker.URL, method, url) {
+	if !operatorRoute(s.Broker.URL.Raw(), method, url) {
 		peer.Close()
-		b := redact.URL(s.Broker.URL)
-		return Response{Code: CodeBadRequest, Error: fmt.Sprintf("sign-launcher signs only GET %[1]s/v1/operator/machines, POST %[1]s/v1/operator/machines/{id}/revoke, GET %[1]s/v1/operator/grants and POST %[1]s/v1/operator/grants/{id}/revoke; not %[2]s %[3]s", b, method, redact.URL(url))}
+		return Response{Code: CodeBadRequest, Error: fmt.Sprintf("sign-launcher signs only GET %[1]s/v1/operator/machines, POST %[1]s/v1/operator/machines/{id}/revoke, GET %[1]s/v1/operator/grants and POST %[1]s/v1/operator/grants/{id}/revoke; not %[2]s %[3]s", s.Broker.URL, method, redact.URL(url))}
 	}
 	sess, unknown := s.Registry.RootOrUnknown(pid)
 	if sess != nil {
@@ -837,12 +837,13 @@ func (s *Server) signLauncher(peer *Peer, pid int, method, url string) Response 
 	peer.Close()
 	compact, cred, err := s.Broker.launcherProof(method, url)
 	if errors.Is(err, errNoCredential) {
-		return Response{Code: CodeNoCredential, Error: noCredentialMsg}
+		return Response{Code: CodeNoCredential, Error: s.Broker.noCredentialText()}
 	}
 	if err != nil {
 		return Response{Code: CodeSign, Error: err.Error()}
 	}
-	return Response{OK: true, Proof: compact, CredentialID: cred.id}
+	return Response{OK: true, Proof: compact, CredentialID: cred.id,
+		MachineIdentity: s.Broker.Identity != nil, IdentityStopped: s.Broker.identityStopped.Load()}
 }
 
 // operatorRoute reports whether method and url are one of the broker's four operator routes
@@ -958,16 +959,20 @@ func (s *Server) login(ctx context.Context) Response {
 // or it reached its expiry).
 func (s *Server) loginStatus() Response {
 	ls := s.Broker.LoginStatus()
-	resp := Response{OK: true, Code: ls.Code, LoginState: ls.State, CredentialHeld: ls.CredentialHeld, LoginRefused: ls.Refused, CredentialDropped: ls.Dropped}
+	resp := Response{OK: true, Code: ls.Code, LoginState: ls.State, CredentialHeld: ls.CredentialHeld, LoginRefused: ls.Refused, CredentialDropped: ls.Dropped,
+		MachineIdentity: s.Broker.Identity != nil, IdentityStopped: s.Broker.identityStopped.Load()}
 	if !ls.CredentialExpiresAt.IsZero() {
 		resp.CredentialExpiresAt = ls.CredentialExpiresAt.UTC().Format(time.RFC3339)
 	}
 	return resp
 }
 
-// cannotEnrollMsg is the ERROR an enrollment (a machine session's or a box's) logs while the
-// helper holds no launcher credential to attempt it with, beside why (noCredentialReason).
-const cannotEnrollMsg = "session cannot enroll: the helper holds no launcher credential; run: agent-secrets machine login, and have a human approve it"
+// cannotEnrollText is the ERROR an enrollment (a machine session's or a box's) logs while the
+// helper holds no launcher credential to attempt it with, beside why (noCredentialReason), with
+// the hint of holding none in this mode.
+func (s *Server) cannotEnrollText() string {
+	return "session cannot enroll: the helper holds no launcher credential; " + brokerclient.Hint(s.Broker.noCredentialFailure())
+}
 
 // lacksCredential reports whether err failed for want of a launcher credential the helper still
 // lacks: errNoCredential, unless a login has installed one since the attempt failed. That login
@@ -1047,7 +1052,7 @@ func (s *Server) enrollSessionKey(ctx context.Context, runtimeID, thumbprint str
 	id, lease, err := s.Broker.EnrollSessionKey(ctx, runtimeID, thumbprint, sessionID)
 	if err != nil {
 		if s.lacksCredential(err) {
-			s.Log.Error(cannotEnrollMsg, "runtime_id", runtimeID, "why", s.Broker.noCredentialReason())
+			s.Log.Error(s.cannotEnrollText(), "runtime_id", runtimeID, "why", s.Broker.noCredentialReason())
 		}
 		if outcomeUnknown(err) {
 			return enrollUnknown(mayHaveReachedCause(err))
@@ -1088,7 +1093,7 @@ func unenrollUnknown(cause string) Response {
 }
 
 func loginUnknown(cause string) Response {
-	return Response{Code: CodeLoginFailed, Error: "the outcome is unknown: " + cause + "; no confirmation code was shown, so nobody can approve this login; it is safe to run: agent-secrets machine login, again"}
+	return Response{Code: CodeLoginFailed, Error: "the outcome is unknown: " + cause + "; no confirmation code was shown, so nobody can approve this login; it is safe to log in again: " + brokerclient.Hint(brokerclient.FailureNoMachineLogin)}
 }
 
 // mayHaveReachedCause is the cause of an unknown outcome that requestReach.settle marked, with
@@ -1300,7 +1305,7 @@ func (s *Server) enrollLoop(ctx context.Context, sess *Session) {
 				return
 			}
 			if s.lacksCredential(err) {
-				s.Log.Error(cannotEnrollMsg, "runtime_id", sess.RuntimeID(), "why", s.Broker.noCredentialReason(), "in", delay)
+				s.Log.Error(s.cannotEnrollText(), "runtime_id", sess.RuntimeID(), "why", s.Broker.noCredentialReason(), "in", delay)
 				return
 			}
 			s.Log.Warn("enroll failed; retrying", "runtime_id", sess.RuntimeID(), "error", err, "in", delay)
@@ -1482,13 +1487,15 @@ func (s *Server) confirmInherited(ctx context.Context, sess *Session, pass ident
 // a skewed clock's PROOF_INVALID above all, which a corrected clock mends — says nothing about
 // the row, and reading one as the end of an enrollment costs a session every pending request
 // and grant that enrollment carries. renewLoop and confirmInherited draw the line in the same
-// place, so a renewal and a confirmation cannot disagree about what ended an enrollment.
+// place, so a renewal and a confirmation cannot disagree about what ended an enrollment. The
+// fallback reads the broker's words as they came (BrokerError.says), so it holds beside an address
+// whose refusals do not print them.
 func enrollmentNotLive(err error) (string, bool) {
 	var be *BrokerError
 	if !errors.As(err, &be) {
 		return "", false
 	}
-	if be.Code == "ENROLLMENT_NOT_LIVE" || (be.Code == "PROOF_INVALID" && strings.Contains(be.Message, "not live")) {
+	if be.Code == "ENROLLMENT_NOT_LIVE" || (be.Code == "PROOF_INVALID" && be.says("not live")) {
 		return be.Code, true
 	}
 	return be.Code, false
@@ -1568,7 +1575,7 @@ func (s *Server) renewLoop(ctx context.Context, sess *Session, lease time.Time, 
 func (s *Server) revokeLapsed(ctx context.Context, sess *Session, id string) bool {
 	revoked := retryUntilStop(ctx, sess.stop, s.Broker.CredentialInstalled, nil, 0, time.Second, time.Minute, func(attempt int, err error, delay time.Duration, retrying bool) {
 		if s.lacksCredential(err) {
-			s.Log.Error("session cannot enroll: revoking its lapsed enrollment first needs a launcher credential, and the helper holds none; run: agent-secrets machine login, and have a human approve it",
+			s.Log.Error("session cannot enroll: revoking its lapsed enrollment first needs a launcher credential, and the helper holds none; "+brokerclient.Hint(s.Broker.noCredentialFailure()),
 				"runtime_id", sess.RuntimeID(), "enrollment_id", id, "why", s.Broker.noCredentialReason(), "in", delay)
 			return
 		}

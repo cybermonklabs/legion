@@ -54,6 +54,52 @@ const (
 	RunCancelled RunConclusion = "cancelled"
 )
 
+// CommitStatus is one commit status a CI settlement named for the head it was of: GitHub's
+// context, the state the newest terminal status of that context came to, spelled as GitHub
+// spells it (CommitStatusSuccess, CommitStatusFailure, CommitStatusError), and GitHub's
+// created_at of that status. A status is an entry of its own kind, apart from the check runs, so
+// a context that shares its name with a check run is never that run. CreatedAt is what orders two
+// statuses of one context (classify.ClassifySettlement, ApplySettlement): a status has no id, and
+// the listener numbers the settlements of a record the bucket's TTL removed and wrote again
+// afresh, so its generation does not order them. It is a plain field, since every status a
+// settlement names carries one (intake's decodeChecks). Head is the head whose settlement named
+// the status: the pull request keeps the statuses of its checked head (PullRequest.Statuses),
+// and each text names only those stamped with the head it is about (workflow's settledChecks and
+// headChecks), since a daemon of an earlier release writes checked_head after a rollback and
+// leaves this list as it was. A settlement's own list (Settlement.Statuses) carries no stamp: the
+// settlement names its head, and the stamp is put on where the list is kept
+// (classify.ApplySettlement).
+type CommitStatus struct {
+	Context   string            `json:"context"`
+	State     CommitStatusState `json:"state"`
+	CreatedAt time.Time         `json:"created_at"`
+	Head      string            `json:"head,omitempty"`
+}
+
+// CommitStatusState is the state a settlement names a commit status in. GitHub's other states,
+// pending and expected, are never recorded, so no settlement names one.
+type CommitStatusState string
+
+const (
+	CommitStatusSuccess CommitStatusState = "success"
+	CommitStatusFailure CommitStatusState = "failure"
+	CommitStatusError   CommitStatusState = "error"
+)
+
+// Failed is whether the status is a failed one: in failure or in error.
+func (s CommitStatus) Failed() bool {
+	return s.State == CommitStatusFailure || s.State == CommitStatusError
+}
+
+// StampedWith is whether the status is one the pull request keeps for head: it carries head's
+// stamp (PullRequest.Statuses). A status with no stamp, as a settlement names it, is kept for no
+// head. It is the one place that test is written, and the classification of a settlement
+// (classify's statusNews), the merge of its statuses (mergedStatuses) and each text that names
+// them (workflow's keptStatuses) read it, so none of them can drift from another.
+func (s CommitStatus) StampedWith(head string) bool {
+	return s.Head != "" && s.Head == head
+}
+
 // ClassifiedPush is one branch push as the daemon records it: a fact about two commits, the head it
 // replaced (Before) and the head it left (SHA), true whenever it is learned, and whose push it was.
 type ClassifiedPush struct {
@@ -553,6 +599,28 @@ type PhaseRow struct {
 	// one (workflow's DecidesRound), kept until the round ends, since the reviewer's completion can
 	// come after the review it posted. Nil until a review decides.
 	Decision *ReviewDecision
+	// ReviewedHead is the commit the daemon last recorded as read by the reviewer's own deciding
+	// review of the entry that stood: the head named in the Legion footer of a review that
+	// approved or requested changes, submitted as the review App from the session the claims
+	// record holds for the claim the daemon starts the reviewer under (workflow's review,
+	// byReviewer and reviewersClaim), in the first round as in every later one. Only the
+	// reviewer's row holds it. A person's review does not move it, since the reviewer did not read
+	// that commit; neither does another review-App session's review or a review that decides
+	// nothing, and while the reviewer's claim records no session no review-App review decides the
+	// round or moves it (workflow's RefusedWhileNoSession). Unlike Decision it outlives its round:
+	// no entry into a phase clears it (workflow's clearHandoff, whose list of fields does not hold
+	// it), so the task of the reviewer's next round names it (workflow's namingTheReviewRound) and
+	// the reviewer reads the difference from it to the head. Only a review of the entry that stands
+	// moves it: the row holds the task of an entry (EntryTask), and the review's footer names that
+	// entry (Entry, intake.PullRequestReview.LegionEntry). No time is compared. A review that names
+	// no entry, or another one, decides its round and leaves the commit where it stands, so the
+	// next round reads more: from an older commit, or the whole change. A new generation clears it
+	// (ClearGeneration), and the clear empties the entry's task until the next start raises an
+	// entry, so the first review of a re-admitted root, of a child run again and of an adopted
+	// member reads the whole change, and a review of an entry before the clear moves nothing,
+	// however late it is applied; a carried hand-over keeps its rows, and the commit with them.
+	// Empty until such a review, and on every row the release before the column wrote.
+	ReviewedHead string
 	// CompletedAt is when the workflow applied the role's completion of its current phase, zero until
 	// then. The reviewer's orders the reviews its round receives against the completion (workflow's
 	// reviewersAnswer and answerSkew), and is read only for a completed round (Completed). It can
@@ -574,7 +642,11 @@ type PhaseRow struct {
 	// ClearGeneration leaves the entry and clears the task below. Zero on a row no entry has been
 	// raised on: a role the issue's phases have not reached, and every row of a daemon upgraded
 	// in place that the upgrade found with no work handed out, which the completion route reads
-	// as nothing to compare.
+	// as nothing to compare. The reviewer's row has a second reader: each task the reviewer is
+	// given in reviewing ends naming this number (reviewround.EntryLabel), its review's
+	// footer names it back, and only a review that names the number the row holds moves
+	// ReviewedHead. Because the number is never reset and each entry raises it, a review of an
+	// earlier entry can never name the entry that stands.
 	Entry int64
 	// EntryTask is the work of that entry, the task text the role is told, written beside the
 	// number in the same transaction. It is what makes the work a durable fact of the record
@@ -728,11 +800,11 @@ type PullRequest struct {
 	// reopened, synchronize or closed; one with no clock never lowers it): an older one is a late
 	// redelivery and changes nothing (classify.LateLifecycle).
 	HeadUpdatedAt time.Time
-	// CheckedHead is the head whose CI settlement Failing, Cancelled, CheckRuns, Generation and
-	// Snapshot record, empty while none is recorded: the current head, or an earlier head whose
-	// settlement no longer counts, since a settlement stands only for the head it names. A
-	// settlement moves no issue (dispatch://INFRA-714/spec R1): what it names is told to the roles
-	// that work the issue and judged by them (workflow's checks).
+	// CheckedHead is the head whose CI settlement Failing, Cancelled, CheckRuns, Generation,
+	// Snapshot and Statuses record, empty while none is recorded: the current head, or an earlier
+	// head whose settlement no longer counts, since a settlement stands only for the head it names.
+	// A settlement moves no issue (dispatch://INFRA-714/spec R1): what it names is told to the
+	// roles that work the issue and judged by them (workflow's checks).
 	CheckedHead string
 	// CheckRuns is the latest run observed of each check name, and Failing and Cancelled the
 	// checks that come to failed and to cancelled. All three stand for the checked head alone,
@@ -747,6 +819,23 @@ type PullRequest struct {
 	CheckRuns  []AttemptRun
 	Generation int64
 	Snapshot   string
+	// Statuses are the commit statuses the settlements applied for the checked head named, the
+	// newest of each context, in context order and each stamped with that head
+	// (CommitStatus.Head). A settlement's list is the whole list the head's CI record holds, which
+	// can be fewer than GitHub holds: pending statuses are not recorded, a token without Commit
+	// statuses names none, the record's size bound can drop them, and a listener of an earlier
+	// release names none. So each applied settlement of the checked head is merged into it per
+	// context, the entry with the later created_at kept (classify.ApplySettlement): a context the
+	// settlement leaves out stays as it is kept, and an older status never puts back a state a
+	// newer one replaced. A settlement that names a newer status and whose check runs are older
+	// than the kept ones, or the same at a generation no higher than the kept one, is applied to
+	// this list alone, the kept entry standing on an equal created_at, and leaves the check runs,
+	// Failing, Cancelled, Generation and Snapshot as they are (classify.SettlementStatusesOnly). A
+	// settlement the daemon does not apply leaves it as it is. A settlement of a new checked head,
+	// a reopen and a new generation clear it with the check runs (classify.SettlementFor, the
+	// reopen step of a head run, Store.ClearGeneration). A move of the head leaves it stamped with
+	// the head it was of, so no text names it for the new head (workflow's headChecks).
+	Statuses []CommitStatus
 	// Pushes are the branch's pushes the daemon still reads: every push whose own move, its two
 	// heads, the record has not made (Moves) - a push still on its way from the head, a link of a
 	// chain still to complete, or one that returns the branch to a commit it held before
@@ -882,16 +971,19 @@ type Named struct {
 // than the anchor's, so it stands and the anchor's is dropped (classify's withJudgement). A run
 // recorded before these fields carries no verdict, and gives none back.
 type Judgement struct {
-	HeadSHA      string       `json:"headSha"`
-	CheckedHead  string       `json:"checkedHead,omitempty"`
-	Failing      []string     `json:"failing"`
-	Cancelled    []string     `json:"cancelled"`
-	CheckRuns    []AttemptRun `json:"checkRuns"`
-	Generation   int64        `json:"generation,omitempty"`
-	Snapshot     string       `json:"snapshot,omitempty"`
-	Moves        []Move       `json:"moves,omitempty"`
-	Mergeability Mergeability `json:"mergeability,omitempty"`
-	MergeState   MergeState   `json:"mergeState,omitempty"`
+	HeadSHA     string       `json:"headSha"`
+	CheckedHead string       `json:"checkedHead,omitempty"`
+	Failing     []string     `json:"failing"`
+	Cancelled   []string     `json:"cancelled"`
+	CheckRuns   []AttemptRun `json:"checkRuns"`
+	Generation  int64        `json:"generation,omitempty"`
+	Snapshot    string       `json:"snapshot,omitempty"`
+	// omitempty, so a run anchored before the field reads as it did, and one anchored on a record
+	// that keeps no status writes the same bytes as before it.
+	Statuses     []CommitStatus `json:"statuses,omitempty"`
+	Moves        []Move         `json:"moves,omitempty"`
+	Mergeability Mergeability   `json:"mergeability,omitempty"`
+	MergeState   MergeState     `json:"mergeState,omitempty"`
 	// omitzero, as HeadRun.Since and Named.At are: omitempty leaves a zero time in the JSON. A run
 	// anchored before any read answered carries none, and so does one anchored before migration
 	// 20261112070503 (PullRequest.StateReadAt says what that means).
@@ -935,13 +1027,17 @@ type RunStep struct {
 }
 
 // Settlement is a CI settlement of Head as the listener reported it (classify.SettlementFor).
+// Statuses are the commit statuses it named, in context order and with no stamp of their own
+// (CommitStatus.Head); omitempty, so a step stored before the field reads as naming none,
+// and a step of a settlement that names none is the same bytes as before it.
 type Settlement struct {
-	Head       string       `json:"head"`
-	CheckRuns  []AttemptRun `json:"checkRuns"`
-	Generation int64        `json:"generation"`
-	Snapshot   string       `json:"snapshot"`
-	Failing    []string     `json:"failing"`
-	Cancelled  []string     `json:"cancelled"`
+	Head       string         `json:"head"`
+	CheckRuns  []AttemptRun   `json:"checkRuns"`
+	Generation int64          `json:"generation"`
+	Snapshot   string         `json:"snapshot"`
+	Failing    []string       `json:"failing"`
+	Cancelled  []string       `json:"cancelled"`
+	Statuses   []CommitStatus `json:"statuses,omitempty"`
 }
 
 // PullRequestState is whether a pull request is open, merged, or closed unmerged.
@@ -1715,9 +1811,11 @@ type Store interface {
 	// task reached no architect tells nothing and hands over instead (ReleaseKeptClaims).
 	ForgetKeptDecisions(ctx context.Context, tx pgx.Tx, tree string, kept KeptDecisions, row int64) error
 	// ClaimSession is the session claims records for token, "" and no error when the token holds
-	// no row. The workflow reads it for the reviewer's claim (PhaseRow.Claim) to tell the
-	// reviewer's own review from another review-App session's by the Legion footer each carries
-	// (PullRequestReview.LegionSession).
+	// no row. The workflow reads it for the claim the daemon starts the reviewer under (workflow's
+	// reviewerToken), in the reviewer's first round as in every later one, to tell the reviewer's
+	// own review from another review-App session's by the Legion footer each carries
+	// (PullRequestReview.LegionSession). The session is recorded there when the reviewer's agent
+	// registers; the claim the outbox makes holds none until then.
 	ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Token) (string, error)
 	// ClearGeneration drops the facts one generation of an issue owns: a merged or closed pull
 	// request, the last generation's reading of a still-open one (the next generation runs on the
@@ -1728,6 +1826,29 @@ type Store interface {
 	// Dispatch holds for that issue is the one those rows recorded.
 	ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error
 	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error
+	// RaiseStepStarts counts one more start of place on issue, marks its run open, and answers
+	// the write of that start's record, which run builds from the count with that start in it:
+	// the start of a step's record raises it in its own transaction (workflow's startStep), and
+	// the row keeps the agent, the moment and the identity that write carries. ClearGeneration
+	// and ClearTreeGeneration leave the count: the generation is part of the record's id already,
+	// and the count only rises.
+	RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (StepRecord, error)
+	// StepStarts is the count of starts of place on issue with the agent, the moment and the run
+	// of the latest, unchanged: the zero StepStart where the place has no row.
+	StepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, error)
+	// EndStepStart marks the open run of place on issue ended and answers its start and true, in
+	// the transaction that writes the run's end (workflow's endStep); false where that run has its
+	// end already, so one run gets one end.
+	EndStepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, bool, error)
+	// OpenUncountedStep marks open, at the daemon's boot, the row of a run at place that no start
+	// of this release counted — at the count 0 for a place with no row, the next count for one
+	// that reads RunUncounted — keeping the write run builds from that count as a start keeps its
+	// own, and answers true; it queues nothing (workflow's OpenUncountedRuns). False, and nothing
+	// written, where the place's row is open or ended.
+	OpenUncountedStep(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (bool, error)
+	// StepRuns is every row of starts of each of issues, by issue and place, in one read: what the
+	// end of a step's run reads of the issues one fact touched (workflow's settleRuns).
+	StepRuns(ctx context.Context, tx pgx.Tx, issues []string) ([]IssueStepRun, error)
 	// GatesOf is every design gate issue holds, by step: one entry for each step the issue's
 	// architect has registered. An issue with no gate at all gives an empty map, and a step with
 	// no row has no entry.

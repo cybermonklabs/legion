@@ -36,10 +36,10 @@
 //
 // The model stand answers one call at a time and what it answers is set while it runs, since
 // one check drives several cases against one stack: POST <records URL>/answers/model, whose
-// body is {"verdict": "approve"|"refer", "reason": "…"} for a structured reply, {"text": "…"}
+// body is {"verdict": "grant"|"deny", "reason": "…"} for a structured reply, {"text": "…"}
 // for a reply that is no such object, and {"delay": "30s"} for an answer held back past the
-// caller's own time bound. The report names that address (model_answer_url), and until a check
-// calls it the model approves.
+// caller's own time bound, beside either. The report names that address (model_answer_url), and
+// until a check calls it the model grants.
 //
 // The GitHub stand answers what each token request's body asked for - the repositories it names
 // and the permissions it names - and serves GET /repos/{owner}/{repo} to a token it minted whose
@@ -173,22 +173,36 @@ func writeGitHubAppKey(dir string) (string, error) {
 // drives both the issue a reader may act on and the issue it must not. Every other key is a
 // 404, which is the third case and needs no fixture.
 const (
-	standInOpenIssue = "INFRA-1353"
-	standInDoneIssue = "INFRA-1200"
+	standInOpenIssue = "ACME-1353"
+	standInDoneIssue = "ACME-1200"
 )
+
+// The one ask the dispatch stand holds: an answered ask on the open issue, which the judge reads
+// as data for the model when a reason cites it. Its answering login is --ask-answered-by, since
+// the login a local stack's approver signs in as is that stack's own.
+const (
+	standInAnsweredAsk = "4f3c2a10-5b6d-4e7f-8a9b-0c1d2e3f4a5b"
+	standInAskQuestion = "Let the judge spend the judged token on this issue's own runs?"
+	standInAskAnswer   = "Yes, for the runs this issue names, up to the seconds the rules give the judge."
+)
+
+// defaultAskAnsweredBy is who answered that ask when no flag names a login. A local stack passes
+// the login its own approver signs in as, and nothing here opens anything.
+const defaultAskAnsweredBy = "approver@example.test"
 
 // standInSpec is the open issue's spec document. It is written to the house outline, because a
 // reader of a spec takes its Summary and Requirements sections out of it and shows those alone.
 const standInSpec = `## Summary
 
 The secrets broker asks one model whether a pending human-tier credential request should be
-approved in the place of the person who decides it today.
+granted in the place of the person who decides it today.
 
 ## Requirements
 
-- The judge decides a request the airlock rules give it seconds for, and refers every other.
-- The judge never denies: a request it does not approve waits for its person exactly as it does
-  today.
+- The judge decides a request for a key the airlock rules give it seconds for, with the key's
+  guidance, and a person decides every other.
+- The judge grants or denies, and a denial is final; a request it cannot decide goes to its
+  person once.
 - Every verdict is recorded against the request, with what the model was asked and answered.
 `
 
@@ -200,6 +214,17 @@ func standInIssues() []airlocktest.DispatchIssue {
 		{Key: standInOpenIssue, Title: "The secrets broker's model judge", Status: "in_progress", Spec: standInSpec},
 		{Key: standInDoneIssue, Title: "The airlock's own local stack", Status: "done"},
 	}
+}
+
+// standInAsks is the ask fixture: one ask on the open issue, answered by the login the flag
+// names. Every other id is a 404, which is how a check drives an ask the reason cites and
+// Dispatch does not hold.
+func standInAsks(answeredBy string) []airlocktest.DispatchAsk {
+	return []airlocktest.DispatchAsk{{
+		ID: standInAnsweredAsk, IssueKey: standInOpenIssue, State: "answered",
+		Question: standInAskQuestion, Options: []string{"Let it", "Leave it to me"},
+		AnsweredBy: answeredBy, Selected: []string{"Let it"}, Text: standInAskAnswer,
+	}}
 }
 
 func main() {
@@ -220,6 +245,7 @@ type options struct {
 	awsSecretKey    string
 	awsSessionToken string
 	recordsAddress  string
+	askAnsweredBy   string
 }
 
 // run reads the subcommand, if there is one, and otherwise serves the stands. The subcommands
@@ -251,6 +277,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&o.recordsAddress, "records-address", "127.0.0.1:0", "serve the recording routes at `<host:port>`")
 	awsKey := fs.String("aws-key", "", "the AWS stand verifies each call against `<key id>=<secret key>`, and with none a pair of its own")
 	fs.StringVar(&o.awsSessionToken, "aws-session-token", "", "the AWS stand requires `<token>` as the X-Amz-Security-Token of each call; with none it refuses a call that carries any, which is the pair that has no session token")
+	fs.StringVar(&o.askAnsweredBy, "ask-answered-by", defaultAskAnsweredBy, "the dispatch stand's one answered ask reads `<login>` as the person who answered it")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -386,6 +413,12 @@ type report struct {
 	// all.
 	DispatchOpenIssue string `json:"dispatch_open_issue"`
 	DispatchDoneIssue string `json:"dispatch_done_issue"`
+	// DispatchAnsweredAsk is the one ask the dispatch stand holds: an answered ask on
+	// DispatchOpenIssue, which a reason may cite as dispatch://<open issue>/ask/<this id>, and
+	// which the judge then reads as data for the model. DispatchAskAnsweredBy is the login it
+	// reads as having answered it, which --ask-answered-by names. Any other ask id is 404.
+	DispatchAnsweredAsk   string `json:"dispatch_answered_ask"`
+	DispatchAskAnsweredBy string `json:"dispatch_ask_answered_by"`
 	// AWSKeyID and AWSSecretKey are the pair the AWS stand verifies a call against, which a
 	// script signs its calls with and the broker's fake secret store holds as the real key.
 	AWSKeyID     string `json:"aws_key_id"`
@@ -443,6 +476,7 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 		AWSKeyID: o.awsKeyID, AWSSecretKey: o.awsSecretKey,
 		GitHubAppID: standInGitHubAppID, GitHubAppKeyFile: appKeyFile,
 		DispatchOpenIssue: standInOpenIssue, DispatchDoneIssue: standInDoneIssue,
+		DispatchAnsweredAsk: standInAnsweredAsk, DispatchAskAnsweredBy: o.askAnsweredBy,
 		Stands: map[string]standReport{},
 	}
 	for _, name := range stands {
@@ -474,8 +508,11 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 	// one of them records what it was sent, which is what they are all for.
 	services[standS].AnswerWith(airlocktest.NewUpgradeStand(airlocktest.UpgradeOptions{Path: upgradePath}).Answer)
 	// The GitHub stand answers each token request what its body asked for until a check sets
-	// another answer, so a stack driven with no call to its answer route mints as GitHub does.
-	github := airlocktest.NewGitHubStand(airlocktest.GitHubOptions{Installations: o.installations})
+	// another answer, so a stack driven with no call to its answer route mints as GitHub does. It
+	// mints a token of its own for every request, as GitHub does (DistinctTokens): the broker
+	// revokes a token it minted and hands to nobody, and a stand that answered one string for a
+	// scope would have that revoke end the token the airlock's proxy holds for the same scope.
+	github := airlocktest.NewGitHubStand(airlocktest.GitHubOptions{Installations: o.installations, DistinctTokens: true})
 	services[standGitHub].AnswerWith(github.Answer)
 	services[standGoogle].AnswerWith(airlocktest.NewGoogleStand(airlocktest.GoogleOptions{Lifetime: o.googleLifetime}).Answer)
 	// The Microsoft stand plays both hosts of its one certificate: the authority a federated
@@ -487,16 +524,18 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 	services[standAWS].AnswerWith(airlocktest.NewAWSStand(airlocktest.AWSOptions{
 		KeyID: o.awsKeyID, SecretKey: o.awsSecretKey, SessionToken: o.awsSessionToken,
 	}).Answer)
-	// The model stand approves until a check sets another answer, so a stack driven with no
+	// The model stand grants until a check sets another answer, so a stack driven with no
 	// call to the answer route judges a request through to a grant.
-	firstAnswer, err := modelAnswerOf(modelAnswerRequest{Verdict: "approve"})
+	firstAnswer, err := modelAnswerOf(modelAnswerRequest{Verdict: "grant"})
 	if err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands: the model stand's first answer: %v\n", err)
 		return 1
 	}
 	model := airlocktest.NewModelStand(airlocktest.ModelOptions{Answer: firstAnswer})
 	services[standModel].AnswerWith(model.Answer)
-	services[standDispatch].AnswerWith(airlocktest.NewDispatchStand(airlocktest.DispatchOptions{Issues: standInIssues()}).Answer)
+	services[standDispatch].AnswerWith(airlocktest.NewDispatchStand(airlocktest.DispatchOptions{
+		Issues: standInIssues(), Asks: standInAsks(o.askAnsweredBy),
+	}).Answer)
 	services[standMetadata].AnswerWith(airlocktest.NewMetadataStand(airlocktest.MetadataOptions{}).Answer)
 
 	records := &http.Server{Handler: recordsHandler(services, model, github), ReadHeaderTimeout: 30 * time.Second}

@@ -9,12 +9,13 @@
 //
 // A pass reads GitHub in batches, over GraphQL: one query answers twenty open pull requests of
 // one repository with every check suite and every check run of each one's head commit
-// (headsQuery). Reading the same heads over REST takes two requests of each head and one of
-// each page of each repository's open pull requests, which for 833 heads of 16 repositories
-// measures 1,720 requests and 26 minutes 25 seconds -- five passes' worth of a 5-minute
-// interval, which no pass finishes within its bound and which leaves the loop looking dead for
-// the whole of it. The same read in queries is about 53 of them, about 318 points of the App's
-// GraphQL budget and about 178 seconds of GitHub's own processing time.
+// (headsQuery). Reading the same heads over REST takes two requests of each head, three where
+// the token holds Commit statuses (readStatuses), and one of each page of each repository's open
+// pull requests. Before the pass read statuses that measured, for 833 heads of 16 repositories,
+// 1,720 requests and 26 minutes 25 seconds -- five passes' worth of a 5-minute interval, which no
+// pass finishes within its bound and which leaves the loop looking dead for the whole of it. The
+// same read in queries is about 53 of them, about 318 points of the App's GraphQL budget and
+// about 178 seconds of GitHub's own processing time.
 //
 // What a query cannot answer whole is read over REST: paged, conditional on the ETags the pass
 // kept, and recorded through the same writes. That is a head with more check suites than one
@@ -31,6 +32,15 @@
 // query and the same run delivered by webhook are one observation. The pass writes with a
 // cistore writer, which binds the listener's bucket and creates none (cistore.OpenWriter), so
 // one record per head is shared by both processes.
+//
+// Where the token the pass holds for a repository holds Commit statuses, the pass reads the
+// commit statuses of each of its heads as well: in the same query (headsQueryWithStatuses), and
+// over REST, after the check runs and suites, for a head the query could not answer whole
+// (readStatuses). Each status in success, failure or error is mapped through
+// contracts.GithubStatusObservation and recorded, and a pending one is not. GitHub refusing a
+// head's statuses costs that head its statuses alone. Where the token does not hold Commit
+// statuses the pass asks GitHub for no status, and reads the repository as it did before it read
+// any.
 //
 // A query's answer carries no ETag of its own -- it is one answer for twenty heads, which
 // GitHub's conditional reads do not cover -- so what an ETag does for a REST read a fingerprint
@@ -58,7 +68,8 @@
 //
 // One pass is bound at the interval its loop runs it on (Reconciler.PassTimeout), so it always
 // ends before the pass after it is due and always logs its one line. The pass walks one stable
-// order -- the mapped repositories, and within each its open pull requests by number -- from the
+// order -- the repositories covered() answers, the ones repo_projects maps and the ones an issue
+// names as its own, and within each its open pull requests by number -- from the
 // first repository to the last page of the last one, and keeps a cursor in it. A pass cut off by
 // its bound or by a rate limit leaves the cursor at the first page or REST head it did not
 // finish and the pass after it takes up there; a pass that reaches the end of the order ends
@@ -93,9 +104,22 @@ const (
 	// Lease names the lease one pass runs under. It is not what makes the pass safe to run twice
 	// -- every write it makes is a compare-and-swap that applies an observation GitHub already
 	// holds, so two passes at once write one record -- it is the GitHub budget: each pass reads
-	// every open pull request of every mapped repository, and N processes passing is N times those
+	// every open pull request of every covered repository, and N processes passing is N times those
 	// reads for one result.
 	Lease = "ci-reconcile"
+
+	// AbsentAppRecheck is how long a pass holds GitHub's answer that the App is not installed
+	// on a repository before it asks again. A pass runs every Interval and the answer changes
+	// only when a person installs the App, so asking every pass is twelve requests an hour, for
+	// good, about each repository an issue names that the App will never be on.
+	//
+	// The hold has a cost. After an operator installs Dispatch's App on a repository, the repair
+	// of that repository can lag by up to an hour. That is accepted because the live webhook
+	// path carries the repository's new events to the listener from the moment the App is
+	// installed, so what waits out the hold is only the repair of a webhook GitHub never
+	// delivered. The hold is an hour because a shorter one saves little against a pass every
+	// five minutes, and a longer one makes that lag longer.
+	AbsentAppRecheck = time.Hour
 )
 
 // Reconciler reads GitHub for the CI observations the listener's records lack and writes them.
@@ -103,7 +127,8 @@ const (
 // own. One Reconciler runs one pass at a time: it remembers between passes the ETags GitHub
 // answered with and the pages they belong to, and nothing guards that memory.
 type Reconciler struct {
-	// Pool reads repo_projects, the repositories Dispatch is mapped to.
+	// Pool reads the repositories a pass covers: the ones repo_projects maps to a project, and
+	// the ones issues name as their own (covered).
 	Pool *store.Pool
 	// GitHub reads the repositories, their open pull requests and each head's check objects, as
 	// the App the listener's webhook is of (R5: no credential of its own).
@@ -146,11 +171,20 @@ type Reconciler struct {
 	// this one's, and a loop must not wait on that. A nil Instance, and one that answers "", is
 	// a pass that records no row at all.
 	Instance func() string
+	// now is the clock the answers held in absent are timed by, and time.Now when it is nil,
+	// which is every Reconciler but a test's: a test of how long an answer is held moves its
+	// own clock rather than waiting out AbsentAppRecheck.
+	now func() time.Time
 
 	// rows is what the last pass learned of each repository the pass read, keyed by the canonical
 	// name it read it under, which two mappings renamed onto one repository share as one entry:
 	// the ETag of GitHub's answer about it, and the name and id that answer gave.
 	rows map[string]rowState
+	// absent is the repositories GitHub said the App is not installed on, keyed as rows is,
+	// each with when a pass asks about it again (AbsentAppRecheck). githubapp remembers only an
+	// installation it found, so without this every pass would ask again about a repository an
+	// issue names and the App is not on, which is no fault and never mends (resolve).
+	absent map[string]absentApp
 	// pulls is each repository's open pull request pages as the last pass read them over REST,
 	// keyed by the id GitHub gave the repository, so two rows naming one repository share one
 	// listing. Only a repository a query was refused a page of is listed over REST at all
@@ -259,6 +293,14 @@ func remember[K comparable, V any](held *map[K]V, key K, value V) {
 // on the first key there is: remember for a set, whose value is the empty struct.
 func see[K comparable](held *map[K]struct{}, key K) {
 	remember(held, key, struct{}{})
+}
+
+// clock is the time the Reconciler's held answers are timed by (Reconciler.now).
+func (r *Reconciler) clock() time.Time {
+	if r.now != nil {
+		return r.now()
+	}
+	return time.Now()
 }
 
 // forget drops every entry of held the cycle that has just closed did not reach, so what the

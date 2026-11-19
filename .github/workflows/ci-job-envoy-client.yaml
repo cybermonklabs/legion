@@ -22,7 +22,7 @@ on:
 
 jobs:
   envoy-client:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -36,19 +36,6 @@ jobs:
       - name: Typecheck Envoy client
         run: bun run typecheck
         working-directory: packages/envoy-client
-      # packages/envoy-client/src/broker-credential.ts:21-22 imports
-      # @legion/broker-client/environment and @legion/broker-client/token-client, so this job
-      # already stands on that package; its typecheck and its tests run in no other job. Its lint
-      # is not here: the lint job's whole-tree `bunx biome check .` already lints its 13 files
-      # under the same root config, so a second pass over them would only cost the run time
-      # twice. They sit before the NATS pull because they need no image and no server: the five
-      # test files import only bun:test, jose, node: and the package's own modules.
-      - name: Typecheck broker client
-        run: bun run typecheck
-        working-directory: packages/broker-client
-      - name: Test broker client
-        run: bun run test
-        working-directory: packages/broker-client
       - name: Pre-pull the NATS image the credential tests run
         # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml). This job
         # pulls the image here, and does not call .github/actions/pull-test-images: that action

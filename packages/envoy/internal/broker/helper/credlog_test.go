@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/brokeraddr"
 )
 
 // proofShaped matches what a bearer in a log line would look like: a JWS or JWT (base64url JSON,
@@ -32,7 +34,7 @@ func TestTheHelperLogsEveryChangeOfTheLauncherCredential(t *testing.T) {
 	var out syncBuffer
 	f := newFakeBroker(t)
 	operator := operatorFile(t, "ada@example.com")
-	b := &Broker{URL: f.srv.URL, OperatorFile: operator, MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operator, MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
 		Log: slog.New(slog.NewJSONHandler(&out, nil))}
 	t.Cleanup(b.Close)
 	sess, _ := newSession(1, 1, "h:1:1", "", nil, nil)
@@ -76,7 +78,7 @@ func TestTheHelperLogsEveryChangeOfTheLauncherCredential(t *testing.T) {
 	}
 	want := []map[string]any{
 		{"level": "INFO", "msg": "machine login issued; the helper holds a launcher credential", "credential_id": credentialID, "operator": "ada@example.com", "expires_at": expiresAt},
-		{"level": "ERROR", "msg": dropRefused + "; cleared: no session can enroll until a human approves a new machine login (run: agent-secrets machine login)", "credential_id": credentialID, "code": "LAUNCHER_INVALID"},
+		{"level": "ERROR", "msg": dropRefused + "; cleared: no session can enroll under this machine's credential; run: agent-secrets machine login, and have a human approve it", "credential_id": credentialID, "code": "LAUNCHER_INVALID"},
 	}
 	if len(records) != len(want) {
 		t.Fatalf("log records %v; want exactly %v", records, want)

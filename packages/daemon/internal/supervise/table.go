@@ -77,6 +77,18 @@ type StreamToolStep struct {
 	ConnSequence uint64
 }
 
+// StreamAnswered is the agent's model answering, as the stream read the frame (stream.Answered):
+// Model is `<provider>/<model>`, or the model alone when the frame named no provider, or empty for
+// an answer whose model no store can keep (stream.Answered). It is what the claim's last answer is
+// built from (answered, LastAnswer), and it is no part of the claim the store holds: a record of a
+// step reads it from memory, and a restarted daemon knows no model until the agent answers again.
+// Generation is the launch whose connection read the frame (stream.Answered).
+type StreamAnswered struct {
+	Claim      claim.Token
+	Model      string
+	Generation uint64
+}
+
 // StreamPromptResult is Oh My Pi saying how one prompt's work ended (shimwire.PromptResult): the
 // one frame that names the prompt a turn belonged to, where agent_start and agent_end name none.
 // It arrives on the heels of the agent_end of the turn the prompt ran, so a turn that ends with
@@ -240,8 +252,9 @@ type StallBackstop struct {
 // so the action is idempotent: the first post of a round records the round, its reasons and its
 // clock, and each later post of the same round changes nothing. The round's terms are fixed when
 // it opens, so the ask a role reads and the record an operator reads name the same reasons. The
-// machine asks the role nothing: the sweep publishes the round's ask to the role's own Envoy
-// topic (record.UpdateAsk) and marks it on the claim (Machine.PodUpdateAsked).
+// machine asks the role nothing: the sweep enqueues the round's ask to the role's own Envoy topic
+// (record.UpdateAsk), and the outbox marks it on the claim once it reached a session
+// (Machine.PublishUpdateAsk).
 type PodUpdateOpen struct {
 	Claim   claim.Token
 	Round   string
@@ -528,6 +541,10 @@ type RequestDeliver struct {
 	// entry test above would decline it, so queue decides such a request by its outbox row
 	// alone.
 	ResendEntry bool
+	// RoundNamed marks a task that ends with the daemon's two sentences of a reviewer's review
+	// round, from the start row that queued it (record.SuperviseRequest.RoundNamed). An operator's
+	// task and the controller's carry none (Delivery.RoundNamed).
+	RoundNamed bool
 	// CheckLook is the look of a closed issue's production check this task is of, from the start
 	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). A phase task, an
 	// operator's own and a resume name none, and leave the look the claim is serving alone.
@@ -594,6 +611,7 @@ func (StreamTurnStart) isEvent()      {}
 func (StreamTurnEnd) isEvent()        {}
 func (IssueTurnEnded) isEvent()       {}
 func (StreamToolStep) isEvent()       {}
+func (StreamAnswered) isEvent()       {}
 func (StreamPromptResult) isEvent()   {}
 func (StreamClosed) isEvent()         {}
 func (StreamLateRefusal) isEvent()    {}
@@ -635,6 +653,7 @@ const (
 	onTurnEnd       eventKind = "stream_turn_end"
 	onIssueTurnEnd  eventKind = "issue_turn_ended"
 	onToolStep      eventKind = "stream_tool_step"
+	onAnswered      eventKind = "stream_answered"
 	onPromptResult  eventKind = "stream_prompt_result"
 	onClosed        eventKind = "stream_closed"
 	onLateRefusal   eventKind = "stream_late_refusal"
@@ -694,6 +713,8 @@ func kindOf(ev Event) eventKind {
 		return onIssueTurnEnd
 	case StreamToolStep:
 		return onToolStep
+	case StreamAnswered:
+		return onAnswered
 	case StreamPromptResult:
 		return onPromptResult
 	case StreamClosed:
@@ -929,6 +950,12 @@ func fillTable(t *builder) {
 	// the stream is up from the shim's hello.
 	t.row(onToolStep, "the agent stepped: record the call its stream reports", toolStepped, nil, live...)
 	t.ignore(onToolStep, noProcess, processless...)
+
+	// The model that answered, which the record of a step names. The row keeps it in memory and
+	// leaves the claim exactly where it found it (answered), so it is a row of every state a
+	// process of this claim can send a frame from, as the tool step's is.
+	t.row(onAnswered, "the agent's model answered: keep which model it was", answered, nil, live...)
+	t.ignore(onAnswered, noProcess, processless...)
 
 	t.row(onPromptResult, "the prompt's work ended: that names the turn it ran, and ends its delivery (busy, it records the claim working)", promptResulted,
 		[]ClaimState{StateLaunching, StateFailed, StateSuspended, StateWorking}, StateReady, StateIdle, StateWorking)
@@ -2677,11 +2704,13 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 // finished agent's claim never stays live, its secret still authenticating. A root's stop records
 // what it ended as a suspension by its exit (endSuspended), as every suspension does; a worker's
 // retirement records nothing (noEnd, retire), since the exit is the agent's own end of its work.
+// The root's suspension sends the clean stop of its Envoy session once the runtime's stop has
+// returned, and none for a stop the runtime refused (stopForSuspension).
 func exit(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Info("supervise: the agent reported its exit", "reason", ev.(RequestExit).Reason)
 	if m.claim.treeRoot() {
 		incarnation := m.claim.Locator.Incarnation
-		if err := m.endProcess(ctx, endSuspended(SuspendedByExit)); err != nil {
+		if err := m.stopForSuspension(ctx, SuspendedByExit, stopOwed); err != nil {
 			m.log.Error("supervise: could not suspend the exited root's process; suspending its claim anyway",
 				"incarnation", incarnation, "error", err)
 		}
@@ -2703,11 +2732,12 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // the ask the sweep publishes and the record an operator reads name the same reasons for one
 // round id, however the drift the sweep reads moves while the round runs.
 //
-// The machine asks the role nothing. The sweep publishes the round's ask to the role's own Envoy
-// topic once the claim records the round (internal/daemon's openPodUpdate, record.UpdateAsk) and
-// marks the publish on the claim (Machine.PodUpdateAsked). A claim whose process is suspended or
-// released is not revived for the ask: the round ends at its bound whether or not the role
-// answers.
+// The machine asks the role nothing. The sweep enqueues the round's ask to the role's own Envoy
+// topic once the claim records the round (internal/daemon's openPodUpdate, record.UpdateAsk), and
+// the outbox marks the claim asked once that publish reached a session (Machine.PublishUpdateAsk):
+// an ask that reached none marks nothing, so a later sweep asks again. A claim whose process is
+// suspended or released is not revived for the ask: if no ask has reached it, the sweep asks it
+// once its agent is ready again, and the round ends at its bound whether or not the role answers.
 //
 // A round replaces another the moment the daemon opens it, whatever the claim's worker is doing.
 // The answer the worker gives carries the round its own ask named (PodUpdateSignalled), so an

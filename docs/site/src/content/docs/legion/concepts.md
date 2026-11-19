@@ -24,8 +24,9 @@ section can use the words without stopping to explain them.
   questions an agent asks you, the approvals, the messages and the status everyone reads. Legion
   never reads or writes a GitHub issue.
 - **GitHub** holds the code: one branch, `legion/<KEY>`, and one pull request per issue, in the
-  issue's repository. A project spans every repository Dispatch maps to it (Settings →
-  Repositories → Projects); each issue targets one of them, the one Dispatch resolves for it (its
+  issue's repository. Dispatch maps repositories to a project (Settings → Repositories →
+  Projects), which gives the project its default repository and the repositories Legion prepares
+  before an issue names one; each issue targets one repository, the one Dispatch resolves for it (its
   own, else its nearest ancestor's, else the project's default), which Legion records, with that
   repository's default branch as GitHub names it, when it first records the issue, and keeps.
   Legion acts there through two GitHub Apps, so the account that reviews a change is never the one
@@ -42,19 +43,27 @@ One Legion deployment can work issues across several GitHub repositories, under 
 with exactly one repository per issue — never two.
 A change that spans repositories uses child issues, each in one repository.
 Several children may share a repository, each child's own `--repo` fixed when the daemon records it.
-Every pane and pod holds a write token, minted from the role's GitHub App, for its own issue's
-repository alone, and read-only tokens for every other repository the project maps. Its gh bundle
-holds one directory per owner, one more per owner a configured rename moved a repository away
-from while the project serves the name it moved to, and an `<owner>/<repo>` directory for each
-other repository served by the issue's recorded
-owner and by the owner whose installation serves the issue's repository. The write token stands in
-two of those directories, the recorded owner's and the serving owner's, which are one directory
-unless a rename moved the issue's repository, and every other directory is read-only, an
-`<owner>/<repo>` directory over the one repository its own name resolves to. `legion gh`, the `gh`
-wrapper every pane and pod runs, reads the repository's own
-directory where the bundle holds one and the owner's otherwise, and `git` reaches the same bundle
-through a credential helper that picks a directory the same way, so a push to any other repository
-is refused there, not merely discouraged.
+An issue may name any `owner/name`, whether or not Dispatch maps it to the project, and the
+account that installs a role's GitHub App decides what that role reaches.
+Every worker holds a gh bundle of its role's GitHub App, with one token for each owner that App
+is installed on.
+Each token is minted on that owner's installation with the role's own permissions: the implement
+App's write set for the implementer and the merger, the review App's review set for every other
+role.
+The bundle holds one directory per owner the App is installed on, one more per owner a
+configured rename moved a repository away from while the project serves the name it moved to, and
+one for the issue's recorded owner.
+An issue pod shows its roles the directories that both Apps' bundles hold.
+No directory holds a read-only token, so a role writes in every repository its App reaches,
+whichever owner holds it.
+The repository an issue names decides only which directory `GH_CONFIG_DIR` names: its owner's,
+or, for a repository a configured rename moved, the directory of the owner it moved to.
+The controller's bundle is the one bundle of read-only tokens.
+Each token reaches every repository its own installation holds.
+`legion gh`, the `gh` wrapper every pane and pod runs, reads the directory of the owner of the
+repository a command names, and `git` reaches the same bundle through a credential helper that
+picks a directory the same way, so a command naming an owner the App is not installed on is
+refused there, not merely discouraged.
 
 ## The controller
 
@@ -291,13 +300,13 @@ the work a next step, the controller sets the root back to `todo`, and the archi
 reading that decision. The controller's walk also sets such a root back to `todo`, with a comment
 that cites the mark, once the hold's cause is gone or the event it waits on has happened. Every
 other park, a root you parked yourself, one another agent's session parked, or one an operator
-parked with `legion status`, stays parked until a person sets the root to `todo`, approves its spec
-as above, or asks the controller to start it. The controller says so in a comment, and the architect
-then starts with the decision. When the approved version is no longer the spec's current one, the
-architect asks for approval of the current one. A question alone leaves the root parked: the
-controller answers it on its ask from the issue's record, or says that setting the root to `todo`
-brings the architect back to answer. A reply an agent session writes on such an ask is no decision:
-it stays on the ask for the person who asked, and nothing wakes.
+parked with `legion issue status`, stays parked until a person sets the root to `todo`, approves its
+spec as above, or asks the controller to start it. The controller says so in a comment, and the
+architect then starts with the decision. When the approved version is no longer the spec's current
+one, the architect asks for approval of the current one. A question alone leaves the root parked:
+the controller answers it on its ask from the issue's record, or says that setting the root to
+`todo` brings the architect back to answer. A reply an agent session writes on such an ask is no
+decision: it stays on the ask for the person who asked, and nothing wakes.
 
 A held root is not a parked one. Its work stopped because a worker's budget ran out
 ([Supervision](#supervision)), and it is still in the workflow. Setting it to `todo` releases the
@@ -379,13 +388,15 @@ Legion uses GitHub's own review mechanisms rather than labels:
 - **CI** on the pull request's head is information, not a verdict. When GitHub's checks settle, the
   daemon names every check GitHub reported, with the conclusion GitHub gave it, and judges none of
   them: it sends one message each to the architect that owns the issue, the worker of the issue's
-  current phase and the implementer whose code the checks ran on, and moves the issue nowhere. A
-  red is for those roles to decide on — re-run a check that failed on itself, fix code that is at
-  fault, or wait — and for GitHub to hold the merge over, under the base branch's own required
-  checks, which Legion neither reads nor re-implements. The reviewer reads the head's checks on
-  GitHub itself before it approves, and the architect before it accepts; those reads are the ones
-  that decide anything. Two settlements of the same head that name the same checks tell nobody
-  twice, and a lingering tree is told nothing at all.
+  current phase and the implementer whose code the checks ran on, and moves the issue nowhere. The
+  message names the head's commit statuses too, each with its state: Dispatch reads them from
+  GitHub for each open head where its GitHub App holds Commit statuses, since GitHub's status event
+  names no pull request. A red is for those roles to decide on — re-run a check that failed on
+  itself, fix code that is at fault, or wait — and for GitHub to hold the merge over, under the base
+  branch's own required checks, which Legion neither reads nor re-implements. The reviewer reads the
+  head's checks on GitHub itself before it approves, and the architect before it accepts; those
+  reads are the ones that decide anything. Two settlements of the same head that name the same
+  checks tell nobody twice, and a lingering tree is told nothing at all.
 - **A head that conflicts with its base** does move the issue. GitHub computes no merge ref for
   such a head and runs no check on it, so no CI result would ever arrive: the daemon takes the
   issue back to `implementing` from `testing`, `reviewing`, `accepting`, `retro` or `merging`,
@@ -587,8 +598,8 @@ knows what ran out. The held issue names the phase the hold took it out of.
 
 Four moves release a held issue. The architect's own retry puts it back in that phase. Setting a
 held root to `todo` releases the hold the same way, whether you move it in the Dispatch
-dashboard, the controller sets it, or an operator runs `legion status`: the issue returns to that
-phase and its worker starts again at the same generation, in the same pod and at the same place
+dashboard, the controller sets it, or an operator runs `legion issue status`: the issue returns to
+that phase and its worker starts again at the same generation, in the same pod and at the same place
 in the admission line. Where the pull request's head is red, the issue goes on to implementing
 instead, and a held review whose round is already decided goes where that decision sends it; the
 board then shows the phase the issue ends in. Starting the worker's claim in a fresh session

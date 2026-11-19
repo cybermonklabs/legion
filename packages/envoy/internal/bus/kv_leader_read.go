@@ -98,7 +98,11 @@ func (kv KeyValue) GetFromLeader(ctx context.Context, key string) (nats.KeyValue
 	if err != nil {
 		return nil, named(err)
 	}
-	message, err := js.GetLastMsg("KV_"+bucket, "$KV."+bucket+"."+key, nats.Context(ctx))
+	// A read the grant refuses draws no answer; the record names the refusal after the read's own
+	// wait (refusedAfter), which costs a read the leader answers nothing.
+	message, err := refusedAfter(kv.owner, func() []string { return []string{jsAPI("STREAM.MSG.GET", "KV_"+bucket)} }, func() (*nats.RawStreamMsg, error) {
+		return js.GetLastMsg("KV_"+bucket, "$KV."+bucket+"."+key, nats.Context(ctx))
+	})
 	if errors.Is(err, nats.ErrMsgNotFound) {
 		return nil, nats.ErrKeyNotFound
 	}

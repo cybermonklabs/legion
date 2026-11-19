@@ -1,9 +1,10 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { installResizeObserver } from "../../__tests__/scroll-box";
 import { ApiError, api } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
@@ -447,7 +448,9 @@ test("a failed project listing can be retried without navigating away", async ()
   const { client, listing } = table([issue("CORE-1")]);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   listing.mockRejectedValueOnce(new Error("unreachable"));
-  await client.invalidateQueries({ queryKey: ["issues"] });
+  await act(async () => {
+    await client.invalidateQueries({ queryKey: ["issues"] });
+  });
   await screen.findByRole("alert");
   await user.click(screen.getByRole("button", { name: "Retry loading issues" }));
   expect(await screen.findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
@@ -622,9 +625,11 @@ test("a live unseen ancestor keeps the same scroll box and marks unknown ancestr
   const box = screen.getByTestId("issues-table-scroll");
   box.scrollTop = 200;
   box.scrollLeft = 300;
-  client.setQueryData(projectIssuesQuery("CORE", [], true).queryKey, [
-    issue("CORE-1", { parent: "CORE-9" }),
-  ]);
+  act(() => {
+    client.setQueryData(projectIssuesQuery("CORE", [], true).queryKey, [
+      issue("CORE-1", { parent: "CORE-9" }),
+    ]);
+  });
   await waitFor(() => expect(get).toHaveBeenCalled());
   expect(screen.getByTestId("issues-table-scroll")).toBe(box);
   expect(box.scrollTop).toBe(200);
@@ -808,9 +813,11 @@ test("ancestor reads have one retry policy rather than multiplying inner and out
   const { client } = table([issue("CORE-1")]);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   client.setDefaultOptions({ queries: { retry: 2, retryDelay: 1 } });
-  client.setQueryData(projectIssuesQuery("CORE", [], true).queryKey, [
-    issue("CORE-1", { parent: "CORE-9" }),
-  ]);
+  act(() => {
+    client.setQueryData(projectIssuesQuery("CORE", [], true).queryKey, [
+      issue("CORE-1", { parent: "CORE-9" }),
+    ]);
+  });
   await screen.findByText(/Could not load 1 ancestor;/);
   expect(get.mock.calls.length).toBe(3);
 });
@@ -1035,8 +1042,10 @@ test("a scroll alone does no layout reads for the table's own box", async () => 
     return new DOMRect(0, 0, 1000, 600);
   });
   restores.push(() => rect.mockRestore());
-  box.dispatchEvent(new Event("scroll", { bubbles: false }));
-  window.dispatchEvent(new Event("scroll"));
+  act(() => {
+    box.dispatchEvent(new Event("scroll", { bubbles: false }));
+    window.dispatchEvent(new Event("scroll"));
+  });
   expect(measured.filter((name) => name === "issues-table-scroll" || name === "THEAD")).toEqual([]);
 });
 
@@ -1044,33 +1053,13 @@ test("a scroll alone does no layout reads for the table's own box", async () => 
 // and the block above it are observed instead. happy-dom has no `ResizeObserver`, so the stub
 // is the geometry — what the table observes, and what a notice appearing there fires.
 test("the box is measured through an observer over itself and the content above it", async () => {
-  const live: { elements: Element[]; fire: () => void }[] = [];
-  const original = globalThis.ResizeObserver;
-  globalThis.ResizeObserver = class {
-    readonly elements: Element[] = [];
-    constructor(callback: ResizeObserverCallback) {
-      live.push({
-        elements: this.elements,
-        fire: () => callback([], this as unknown as ResizeObserver),
-      });
-    }
-    observe(element: Element) {
-      this.elements.push(element);
-    }
-    unobserve() {}
-    disconnect() {}
-  } as unknown as typeof ResizeObserver;
-  restores.push(() => {
-    globalThis.ResizeObserver = original;
-  });
+  const sizes = installResizeObserver();
+  restores.push(() => sizes.restore());
   table([issue("CORE-1")]);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   const box = screen.getByTestId("issues-table-scroll");
   const above = screen.getByRole("region", { name: "Project issues" }).firstElementChild;
   if (!above) throw new Error("The table has no content above it");
-  const watching = [...live].reverse().find((entry) => entry.elements.includes(box));
-  if (!watching) throw new Error("Nothing observes the table's box");
-  expect(watching.elements).toContain(above);
   const measured: string[] = [];
   const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: Element
@@ -1081,7 +1070,11 @@ test("the box is measured through an observer over itself and the content above 
     return new DOMRect(0, 0, 1000, 600);
   });
   restores.push(() => rect.mockRestore());
-  watching.fire();
+  // A notice appearing above the box changes only that block's size.
+  sizes.resize(above);
+  expect(measured).toContain("issues-table-scroll");
+  measured.length = 0;
+  sizes.resize(box);
   expect(measured).toContain("issues-table-scroll");
 });
 
@@ -1603,7 +1596,9 @@ test("a resumed merge whose discarded reason never landed posts it before closin
     .rows()
     .find((write) => write.status === "refused");
   if (!refused) throw new Error("The merge reason was not refused");
-  writesOf(client).discard(refused.id);
+  act(() => {
+    writesOf(client).discard(refused.id);
+  });
   refuseReason = false;
   await waitFor(() =>
     expect(
@@ -1770,12 +1765,14 @@ test("one unreadable ancestor leaves every other row its epic", async () => {
   restores.push(() => get.mockRestore());
   const { client } = table([issue("CORE-1")]);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  client.setQueryData(
-    projectIssuesQuery("CORE", [], true).queryKey,
-    Array.from({ length: 12 }, (_, index) =>
-      issue(`CORE-${index + 1}`, { parent: index === 0 ? "CORE-99" : `CORE-${100 + index}` })
-    )
-  );
+  act(() => {
+    client.setQueryData(
+      projectIssuesQuery("CORE", [], true).queryKey,
+      Array.from({ length: 12 }, (_, index) =>
+        issue(`CORE-${index + 1}`, { parent: index === 0 ? "CORE-99" : `CORE-${100 + index}` })
+      )
+    );
+  });
   expect((await screen.findByRole("alert")).textContent).toContain("Could not load 1 ancestor");
   await waitFor(() => expect(screen.getAllByText("Unknown epic").length).toBe(1));
 });
@@ -1894,7 +1891,9 @@ test("Finish completes when a refused write was retried from Pending changes", a
     .find((write) => write.status === "refused");
   if (!refused) throw new Error("The rank write was not refused");
   // The reader retries it themselves, so Finish finds a write already on its way.
-  writesOf(client).retry(refused.id);
+  act(() => {
+    writesOf(client).retry(refused.id);
+  });
   const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
   await user.click(within(recovery).getByRole("button", { name: "Finish" }));
   await waitFor(() =>

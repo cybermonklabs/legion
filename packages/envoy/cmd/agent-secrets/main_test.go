@@ -7,6 +7,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/ecdsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -27,10 +28,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testtmp"
 )
@@ -141,27 +144,41 @@ func (c *brokerCounters) servedSettings() *Settings {
 // answers as a broker from before that page, which carries none, and PENDING_UNNAMED as one from
 // before the approver field, which names none. No real broker answers with the page and no
 // approver, since approve_url is the newer field, but the waiting line has a sentence for that
-// pair and PENDING_UNNAMED is what checks it.
+// pair and PENDING_UNNAMED is what checks it. PENDING_JUDGE is a request the model judge holds:
+// its answers say judge_deciding and carry no page. PENDING_HANDOVER is one the judge holds when
+// it is written and has handed to its person by the first status read, which then carries the
+// page.
 var fakePending = map[string]struct {
 	requestID, recordID, approver string
 	page                          bool
+	judging, handover             bool
 }{
-	"PENDING_ME":         {"req-pending", "rec-pending-1", "ada@example.com", true},
-	"PENDING_ANYONE":     {"req-pending-anyone", "rec-pending-anyone", record.AnyoneApprover, true},
-	"PENDING_UNNAMED":    {"req-pending-unnamed", "rec-pending-unnamed", "", true},
-	"PENDING_ME_NO_PAGE": {"req-pending-no-page", "rec-pending-no-page", "ada@example.com", false},
+	"PENDING_ME":         {"req-pending", "rec-pending-1", "ada@example.com", true, false, false},
+	"PENDING_ANYONE":     {"req-pending-anyone", "rec-pending-anyone", record.AnyoneApprover, true, false, false},
+	"PENDING_UNNAMED":    {"req-pending-unnamed", "rec-pending-unnamed", "", true, false, false},
+	"PENDING_ME_NO_PAGE": {"req-pending-no-page", "rec-pending-no-page", "ada@example.com", false, false, false},
+	"PENDING_JUDGE":      {"req-pending-judge", "rec-pending-judge", "ada@example.com", false, true, false},
+	"PENDING_HANDOVER":   {"req-pending-handover", "rec-pending-handover", "ada@example.com", false, true, true},
 }
 
 // pendingAnswer is fakeBroker's answer for a fakePending entry, request fields included or not;
-// base is the fake broker's own URL, which its approve_url names.
+// base is the fake broker's own URL, which its approve_url names. A status read (request false) of
+// a PENDING_HANDOVER entry answers as the judge's hand-over left it: no longer held, with its page.
 func pendingAnswer(name, base string, request bool) map[string]any {
 	p := fakePending[name]
+	page, judging := p.page, p.judging
+	if p.handover && !request {
+		page, judging = true, false
+	}
 	answer := map[string]any{"state": "pending", "grant_id": nil, "record_id": p.recordID}
 	if p.approver != "" {
 		answer["approver"] = p.approver
 	}
-	if p.page {
+	if page {
 		answer["approve_url"] = base + "/approve/" + p.recordID
+	}
+	if judging {
+		answer["judge_deciding"] = true
 	}
 	if request {
 		answer["request_id"] = p.requestID
@@ -180,7 +197,47 @@ const approvedStatusJSON = `{"state":"granted","grant_id":"grant-approved","reco
 // whose requesters tag does not name this session, and the rule that refused it. DENY_ME keeps
 // its own canned answer, which carries no detail at all, so what a denial the broker explained
 // prints is told apart from what one it did not still prints.
-const refusedDetail = "GCLOUD_SAMI: requester-not-listed"
+const refusedDetail = "GCLOUD_DEMO: requester-not-listed"
+
+// judgeRefusedText is the broker's own sentence for JUDGE_REFUSED: the model judge refused the
+// request, finally, in the words refusalOf writes.
+const judgeRefusedText = "the model judge refused this request: the guidance asks for an approved post. This request will not be granted. Tell whoever gave you this work."
+
+// TestAJudgedRefusalIsFinal: a request the model judge refused is denied, and both the request form
+// and the exec form exit 77, as any denial does, printing the judge's sentence and running no
+// child. Nothing either prints tells the agent to try again or names a person to ask.
+func TestAJudgedRefusalIsFinal(t *testing.T) {
+	binary := buildAgentSecrets(t)
+	keyDir := newKeyDir(t)
+	broker, _ := fakeBroker(t)
+	for _, args := range [][]string{
+		{"request", "JUDGE_REFUSED"},
+		{"JUDGE_REFUSED", "--wait", "200ms", "--", "sh", "-c", "echo the-child-ran"},
+	} {
+		stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil, args...)
+		out := stdout + stderr
+		if exit != exitDenied || !strings.Contains(out, judgeRefusedText) || strings.Contains(out, "the-child-ran") ||
+			strings.Contains(out, "again") || strings.Contains(out, "retry") || strings.Contains(out, "/approve/") {
+			t.Errorf("%v = exit %d stdout %q stderr %q; want exit %d with the judge's sentence, no child and nothing that says to try again", args, exit, stdout, stderr, exitDenied)
+		}
+	}
+}
+
+// TestTheExecFormSaysWhenTheJudgeHandsARequestOver: a request the judge held when it was written
+// and handed to its person while the exec form waits prints the judge's line first and then, at
+// the first status read that shows the hand-over, the line naming the person and the page.
+func TestTheExecFormSaysWhenTheJudgeHandsARequestOver(t *testing.T) {
+	binary := buildAgentSecrets(t)
+	keyDir := newKeyDir(t)
+	broker, _ := fakeBroker(t)
+	_, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil,
+		"PENDING_HANDOVER", "--wait", "3s", "--", "sh", "-c", "echo the-child-ran")
+	judging := "the model judge is deciding it; nobody is asked to approve it unless the judge cannot decide it"
+	handed := "the model judge could not decide it; waiting for ada@example.com to approve it on the secrets broker: " + broker.URL + "/approve/rec-pending-handover"
+	if exit != exitPending || !strings.Contains(stderr, judging) || !strings.Contains(stderr, handed) || strings.Index(stderr, judging) > strings.Index(stderr, handed) {
+		t.Errorf("exec form of PENDING_HANDOVER = exit %d stderr %q; want exit %d, the judge's line and then the hand-over line", exit, stderr, exitPending)
+	}
+}
 
 // deniedDetailStatusJSON is fakeBroker's GET /v1/requests/req-denied-listed, byte for byte: the
 // request DETAIL_DENIED made, read back, carrying the same detail its creation answered.
@@ -236,7 +293,7 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 				"secrets":  []map[string]string{{"name": name, "decision": "automatic"}},
 				"grant_id": "grant-granted", "record_id": nil, "approver": nil,
 			})
-		case "PENDING_ME", "PENDING_ANYONE", "PENDING_UNNAMED", "PENDING_ME_NO_PAGE":
+		case "PENDING_ME", "PENDING_ANYONE", "PENDING_UNNAMED", "PENDING_ME_NO_PAGE", "PENDING_JUDGE", "PENDING_HANDOVER":
 			writeJSON(w, pendingAnswer(name, srv.URL, true))
 		case "APPROVED_ME":
 			writeJSON(w, map[string]any{
@@ -255,6 +312,12 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 				"request_id": "req-denied-listed", "state": "denied",
 				"secrets":  []map[string]string{{"name": name, "decision": "deny"}},
 				"grant_id": nil, "record_id": nil, "approver": nil, "detail": refusedDetail,
+			})
+		case "JUDGE_REFUSED":
+			writeJSON(w, map[string]any{
+				"request_id": "req-judge-refused", "state": "denied",
+				"secrets":  []map[string]string{{"name": name, "decision": "approval"}},
+				"grant_id": nil, "record_id": "rec-judge-refused", "approver": "ada@example.com", "detail": judgeRefusedText,
 			})
 		case "UNRELEASED_ME":
 			writeJSON(w, map[string]any{
@@ -393,7 +456,7 @@ var fakeSettings = Settings{
 // what each of these lines must carry is the source, not one spelling of it; source_test.go pins
 // what the renderer puts in a source.
 func fakeSourceText(broker *httptest.Server) string {
-	return brokerSource(broker.URL).withSettings(fakeSettings).String()
+	return brokerSource(brokeraddr.New(broker.URL)).withSettings(fakeSettings).String()
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -430,6 +493,39 @@ func writeKeyDir(t *testing.T, key *ecdsa.PrivateKey, enrollmentID string) strin
 		t.Fatalf("write enrollment: %v", err)
 	}
 	return dir
+}
+
+// proofKey is a session key that signs as testEnrollmentID, with the key dir that holds both, for
+// a fake broker that checks each proof as the broker does.
+type proofKey struct {
+	thumbprint string
+	keyDir     string
+}
+
+func newProofKey(t *testing.T) *proofKey {
+	t.Helper()
+	key, err := proof.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	thumbprint, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &proofKey{thumbprint: thumbprint, keyDir: writeKeyDir(t, key, testEnrollmentID)}
+}
+
+// verify checks r's proof as the broker's proof.Verifier does, for this key's enrollment alone,
+// with the htu rebuilt from publicURL and r's path, never its query, as the broker rebuilds it
+// from BROKER_PUBLIC_URL. A client that signed anything else is refused.
+func (k *proofKey) verify(r *http.Request, publicURL string) error {
+	verifier := &proof.Verifier{Skew: time.Minute,
+		Lookup: func(_ context.Context, id string) (string, bool, error) {
+			return k.thumbprint, id == testEnrollmentID, nil
+		},
+		Replay: func(context.Context, string, time.Time) (bool, error) { return true, nil }}
+	_, err := verifier.Verify(r.Context(), r.Header.Get("Proof"), r.Method, publicURL+r.URL.Path, time.Now())
+	return err
 }
 
 // runAgentSecrets runs the built binary against broker and keyDir, returning its separate
@@ -579,12 +675,15 @@ func TestTheExecFormGivesTheChildTheReleasedBytesAndSaysNothingMore(t *testing.T
 // broker's URL. A request whose answer carries approve_url names that page on the broker; one
 // whose answer carries none names its approver and no page at all. Neither sentence depends on
 // AGENT_SECRETS_APPROVE_URL, which the two tests below set to Dispatch's origin and to nothing
-// around every row. The *_UNNAMED broker names no approver, so its sentence says so.
+// around every row. The *_UNNAMED broker names no approver, so its sentence says so. A request the
+// model judge holds says the judge is deciding it and that nobody is asked unless the judge
+// cannot decide it, and never that its approver must approve it.
 var pendingSentences = map[string]string{
 	"PENDING_ME":         "waiting for ada@example.com to approve it on the secrets broker: <broker>/approve/rec-pending-1",
 	"PENDING_ANYONE":     "waiting for anyone signed in to the secrets broker to approve it: <broker>/approve/rec-pending-anyone",
 	"PENDING_UNNAMED":    "waiting for approval on the secrets broker: <broker>/approve/rec-pending-unnamed; the broker does not say whose",
 	"PENDING_ME_NO_PAGE": "waiting for ada@example.com to approve it on the secrets broker",
+	"PENDING_JUDGE":      "the model judge is deciding it; nobody is asked to approve it unless the judge cannot decide it",
 }
 
 // TestAPendingRequestWithoutABrokerPageNamesItsApproverAlone pins all three sentences waitingOn
@@ -604,7 +703,7 @@ func TestAPendingRequestWithoutABrokerPageNamesItsApproverAlone(t *testing.T) {
 		{"a person", &person, "waiting for ada@example.com to approve it on the secrets broker"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			if got := waitingOn(row.approver, ""); got != row.want {
+			if got := waitingOn(row.approver, "", false); got != row.want {
 				t.Errorf("waitingOn = %q, want %q", got, row.want)
 			}
 		})
@@ -1346,7 +1445,7 @@ func TestRequestSignsARequestObject(t *testing.T) {
 	// behavior TestRequestAndExecFormSendSessionIDWithFallbackOrder pins), and a Claude Code or
 	// Envoy-registered session sets the other two the same way.
 	stdout, stderr, exit := runAgentSecrets(t, binary, srv.URL, keyDir,
-		[]string{"OMP_SESSION_ID=", "ENVOY_SESSION_ID=", "CLAUDE_CODE_SESSION_ID="},
+		[]string{"OMP_SESSION_ID=", "ENVOY_SESSION_ID=", "CLAUDE_CODE_SESSION_ID=", "CODEX_THREAD_ID="},
 		"request", "GRANT_ME", "--reason", "need it for the build")
 	if exit != 0 {
 		t.Fatalf("exit = %d, want 0: stdout=%q stderr=%q", exit, stdout, stderr)
@@ -1515,7 +1614,23 @@ func TestMachineLoginStatusExitsZeroOnlyWhileACredentialIsHeld(t *testing.T) {
 		{name: "pending", resp: helper.Response{LoginState: "pending"}, want: "pending\n", exit: 1},
 		{name: "denied", resp: helper.Response{LoginState: "denied"}, want: "denied\n", exit: 1, remedy: true},
 		{name: "expired", resp: helper.Response{LoginState: "expired"}, want: "expired\n", exit: 1, remedy: true},
-		{name: "none", resp: helper.Response{}, want: "none\n", exit: 1, remedy: true},
+		{name: "none", resp: helper.Response{}, want: "none\n", exit: 1, remedy: true,
+			stderr: prefix + "no machine login since the helper started, and none kept on this machine; run: agent-secrets machine login, and have a human approve it\n"},
+		{name: "none, in identity mode", resp: helper.Response{MachineIdentity: true}, want: "none\n", exit: 1,
+			stderr: prefix + "no machine login since the helper started, and none kept on this machine; the helper's trade loop is trading this machine's identity for a new credential\n"},
+		{name: "dropped at its expiry, in identity mode", resp: helper.Response{LoginState: "expired", LoginRefused: true, CredentialDropped: "the launcher credential reached its expiry", MachineIdentity: true},
+			want: "expired\n", exit: 1,
+			stderr: prefix + "the launcher credential reached its expiry; the helper's trade loop is trading this machine's identity for a new credential\n"},
+		{name: "a live credential, the trade loop stopped", resp: helper.Response{LoginState: "issued", CredentialHeld: true, CredentialExpiresAt: expiresAt, MachineIdentity: true, IdentityStopped: true},
+			want: "issued\n",
+			stderr: prefix + "nothing renews the launcher credential, which lapses at " + expiresAt + " (in 2d1h59m), and no session enrols under this machine's credential after that; " +
+				"the helper stopped trading this machine's identity, and its log gives the reason; restart agent-secrets-helper once that is fixed\n"},
+		{name: "a live credential, the trade loop running", resp: helper.Response{LoginState: "issued", CredentialHeld: true, CredentialExpiresAt: expiresAt, MachineIdentity: true},
+			want:   "issued\n",
+			stderr: prefix + "the helper's trade loop renews the launcher credential; without a trade it lapses at " + expiresAt + " (in 2d1h59m)\n"},
+		{name: "dropped, the trade loop stopped", resp: helper.Response{LoginState: "expired", LoginRefused: true, CredentialDropped: "the launcher credential reached its expiry", MachineIdentity: true, IdentityStopped: true},
+			want: "expired\n", exit: 1,
+			stderr: prefix + "the launcher credential reached its expiry; the helper stopped trading this machine's identity, and its log gives the reason; restart agent-secrets-helper once that is fixed\n"},
 		{name: "pending beside a refused credential", resp: helper.Response{LoginState: "pending", LoginRefused: true}, want: "pending\n", exit: 1},
 		{name: "pending beside a held credential", resp: helper.Response{LoginState: "pending", CredentialHeld: true}, want: "issued\n",
 			stderr: prefix + "a machine login is waiting for approval (code KQ7M-X4PZ); " + held + "\n" + unknown},
@@ -1544,20 +1659,29 @@ func TestMachineLoginStatusExitsZeroOnlyWhileACredentialIsHeld(t *testing.T) {
 }
 
 // TestCredentialExpiryLine: login-status's expiry line rounds to the minute with days, names a
-// credential already past its expiry (the helper has not dropped it yet) with the login remedy,
-// and says plainly when the helper's answer carries no expiry or one it cannot read.
+// credential already past its expiry (the helper has not dropped it yet) with the hint of the
+// helper's mode, and says plainly when the helper's answer carries no expiry or one it cannot read.
 func TestCredentialExpiryLine(t *testing.T) {
 	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
-	for _, tc := range []struct{ expiresAt, want string }{
-		{"2026-10-10T11:59:30Z", "the machine login renews itself; without a refresh it lapses at 2026-10-10T11:59:30Z (in 6d23h59m)"},
-		{"2026-10-03T15:05:00Z", "the machine login renews itself; without a refresh it lapses at 2026-10-03T15:05:00Z (in 3h5m)"},
-		{"2026-10-03T12:00:40Z", "the machine login renews itself; without a refresh it lapses at 2026-10-03T12:00:40Z (in 0m)"},
-		{"2026-10-03T12:00:00Z", "the launcher credential expired at 2026-10-03T12:00:00Z; run: agent-secrets machine login"},
-		{"", "the helper does not know when the launcher credential expires (it, or its broker, is older than this client)"},
-		{"next tuesday", `the helper reported an unreadable launcher credential expiry "next tuesday"`},
+	machineLogin, identity := brokerclient.FailureNoMachineLogin, brokerclient.FailureIdentityLapsed
+	for _, tc := range []struct {
+		expiresAt string
+		failure   brokerclient.Failure
+		want      string
+	}{
+		{"2026-10-10T11:59:30Z", machineLogin, "the machine login renews itself; without a refresh it lapses at 2026-10-10T11:59:30Z (in 6d23h59m)"},
+		{"2026-10-10T11:59:30Z", identity, "the helper's trade loop renews the launcher credential; without a trade it lapses at 2026-10-10T11:59:30Z (in 6d23h59m)"},
+		{"2026-10-10T11:59:30Z", brokerclient.FailureIdentityStopped, "nothing renews the launcher credential, which lapses at 2026-10-10T11:59:30Z (in 6d23h59m), and no session enrols under this machine's credential after that; the helper stopped trading this machine's identity, and its log gives the reason; restart agent-secrets-helper once that is fixed"},
+		{"2026-10-03T12:00:00Z", brokerclient.FailureIdentityStopped, "the launcher credential expired at 2026-10-03T12:00:00Z; the helper stopped trading this machine's identity, and its log gives the reason; restart agent-secrets-helper once that is fixed"},
+		{"2026-10-03T15:05:00Z", machineLogin, "the machine login renews itself; without a refresh it lapses at 2026-10-03T15:05:00Z (in 3h5m)"},
+		{"2026-10-03T12:00:40Z", machineLogin, "the machine login renews itself; without a refresh it lapses at 2026-10-03T12:00:40Z (in 0m)"},
+		{"2026-10-03T12:00:00Z", machineLogin, "the launcher credential expired at 2026-10-03T12:00:00Z; run: agent-secrets machine login, and have a human approve it"},
+		{"2026-10-03T12:00:00Z", identity, "the launcher credential expired at 2026-10-03T12:00:00Z; the helper's trade loop is trading this machine's identity for a new credential"},
+		{"", machineLogin, "the helper does not know when the launcher credential expires (it, or its broker, is older than this client)"},
+		{"next tuesday", machineLogin, `the helper reported an unreadable launcher credential expiry "next tuesday"`},
 	} {
-		if got := credentialExpiry(tc.expiresAt, now); got != tc.want {
-			t.Errorf("credentialExpiry(%q) = %q, want %q", tc.expiresAt, got, tc.want)
+		if got := credentialExpiry(tc.expiresAt, now, tc.failure); got != tc.want {
+			t.Errorf("credentialExpiry(%q, %v) = %q, want %q", tc.expiresAt, tc.failure, got, tc.want)
 		}
 	}
 }
@@ -1631,7 +1755,7 @@ func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
 	broker, counters := fakeBroker(t)
 	defer broker.Close()
 	keyDir := newKeyDir(t)
-	clearFallbacks := []string{"ENVOY_SESSION_ID=", "CLAUDE_CODE_SESSION_ID="}
+	clearFallbacks := []string{"ENVOY_SESSION_ID=", "CLAUDE_CODE_SESSION_ID=", "CODEX_THREAD_ID="}
 
 	stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir,
 		append([]string{"OMP_SESSION_ID=sess-request-123"}, clearFallbacks...), "request", "GRANT_ME")
@@ -1653,7 +1777,7 @@ func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
 
 	// OMP_SESSION_ID unset: the request form falls back to ENVOY_SESSION_ID.
 	stdout, stderr, exit = runAgentSecrets(t, binary, broker.URL, keyDir,
-		[]string{"OMP_SESSION_ID=", "ENVOY_SESSION_ID=sess-envoy-789", "CLAUDE_CODE_SESSION_ID="},
+		[]string{"OMP_SESSION_ID=", "ENVOY_SESSION_ID=sess-envoy-789", "CLAUDE_CODE_SESSION_ID=", "CODEX_THREAD_ID="},
 		"request", "GRANT_ME")
 	if exit != 0 {
 		t.Fatalf("exit = %d, want 0: stdout=%q stderr=%q", exit, stdout, stderr)
@@ -1668,6 +1792,39 @@ func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
 // set. This process's own environment may already carry one of the three (a Pi session sets its
 // own OMP_SESSION_ID), so every case sets all three explicitly rather than relying on any being
 // unset already.
+// TestRequestSessionIDCodex pins where CODEX_THREAD_ID stands: in Claude Code's place,
+// and, when both are set, the nearer of the two harness processes decides.
+func TestRequestSessionIDCodex(t *testing.T) {
+	cases := []struct {
+		name          string
+		claude, codex string
+		nearest       string
+		omp           string
+		want          string
+	}{
+		{"CODEX_THREAD_ID alone", "", "thread-codex", "", "", "thread-codex"},
+		{"Codex nearer than Claude Code", "sess-claude", "thread-codex", "codex", "", "thread-codex"},
+		{"Claude Code nearer than Codex", "sess-claude", "thread-codex", "claude", "", "sess-claude"},
+		{"neither found: Claude Code, as before", "sess-claude", "thread-codex", "", "", "sess-claude"},
+		{"OMP_SESSION_ID when Oh My Pi is nearer", "", "thread-codex", "omp", "sess-omp", "sess-omp"},
+		{"CODEX_THREAD_ID when Codex is nearer than Oh My Pi", "", "thread-codex", "codex", "sess-omp", "thread-codex"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("OMP_SESSION_ID", c.omp)
+			t.Setenv("ENVOY_SESSION_ID", "")
+			t.Setenv("CLAUDE_CODE_SESSION_ID", c.claude)
+			t.Setenv("CODEX_THREAD_ID", c.codex)
+			saved := nearestHarness
+			nearestHarness = func(...string) string { return c.nearest }
+			t.Cleanup(func() { nearestHarness = saved })
+			if got := requestSessionID(); got != c.want {
+				t.Fatalf("requestSessionID() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestRequestSessionIDFallbackOrder(t *testing.T) {
 	cases := []struct {
 		name               string
@@ -1685,6 +1842,7 @@ func TestRequestSessionIDFallbackOrder(t *testing.T) {
 			t.Setenv("OMP_SESSION_ID", c.omp)
 			t.Setenv("ENVOY_SESSION_ID", c.envoy)
 			t.Setenv("CLAUDE_CODE_SESSION_ID", c.claude)
+			t.Setenv("CODEX_THREAD_ID", "")
 			if got := requestSessionID(); got != c.want {
 				t.Fatalf("requestSessionID() = %q, want %q", got, c.want)
 			}

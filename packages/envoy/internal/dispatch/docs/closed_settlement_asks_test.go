@@ -275,9 +275,10 @@ func TestAClosedIssuesDocumentStillRefusesAPersonsWrite(t *testing.T) {
 	// and the first refuses a document any room of this service holds (ErrDocumentLive), so no room
 	// at all may hold it here, not only alice's. The settlement her keystroke armed runs on the
 	// closed issue as on an open one, and its warm-up can load the document into a room of its own
-	// once hers has closed, which would stay resident until it idles out (roomIdleTimeout). So the
-	// test waits for that settlement to end, as nothing here arms another, and evicts the room it
-	// may have left (Evict closes nothing where no room is).
+	// once hers has closed, which would stay resident until it idles out (roomIdleTimeout), unless
+	// her departure ran that settlement and her socket's end retired the room (retireSettlementRoom).
+	// So the test waits for that settlement to end, as nothing here arms another, and evicts the
+	// room it may have left (Evict closes nothing where no room is).
 	f.waitForNoSettlement(t)
 	if err := f.service.Evict(ctx, f.artifactID); err != nil {
 		t.Fatalf("evict a room the settlement of alice's keystroke may have loaded: %v", err)
@@ -295,14 +296,14 @@ func TestAClosedIssuesDocumentStillRefusesAPersonsWrite(t *testing.T) {
 	f.requireRefusedStoringNothing(t, "a rebuild carrying markdown", err, unloadable)
 }
 
-// An ask block a browser writes into a room whose process has not heard its issue close gets no
-// ask row, whatever that room reads (R2): the settlement goes by the issue row it locks
-// (settlement.issueClosed), not by the room's record (roomState.closed). Task B's room loads while
-// DOC-1 is open and runs no room sync, so nothing tells B of the close, which is written by SQL a
-// minute ahead: the issue row reads closed from then on, and the store's close margin admits B's
-// browser's block however long the run takes (observedBeforeClose). B's own timer settles the
-// document; its record reads the issue open when the settlement holds the document's owner row,
-// and the block is saved resolved with no row, its author recorded for the reopen.
+// An ask block a browser writes into a room whose process has not heard its issue close gets no ask
+// row, whatever that room reads (R2): the settlement goes by the issue row it reads under the
+// issue's owner lock (settlement.issueClosed), not by the room's record (roomState.closed). Task
+// B's room loads while DOC-1 is open and runs no room sync, so nothing tells B of the close, which
+// is written by SQL a minute ahead: the issue row reads closed from then on, and the store's close
+// margin admits B's browser's block however long the run takes (observedBeforeClose). B's own timer
+// settles the document; its record reads the issue open when the settlement holds the document's
+// owner lock, and the block is saved resolved with no row, its author recorded for the reopen.
 func TestAnAskBlockOnAServiceThatHasNotHeardTheCloseGetsNoRow(t *testing.T) {
 	pair := newProcessPair(t)
 	ctx := context.Background()

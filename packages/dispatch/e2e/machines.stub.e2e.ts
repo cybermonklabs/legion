@@ -44,7 +44,7 @@ import { stubbed } from "./stub/stub-test";
 const CLUSTER_HOST = "cluster-pool";
 const SHARED_NAME_HOST = "legion-infra";
 const UNDRAWN_HOST = "example-host-split";
-const REPEATED_HOST = "sami-twoservers";
+const REPEATED_HOST = "sand-twoservers";
 
 /** The four-pane window above with its lower right pane split in two: the layout the session in
  *  the new pane `%7` reports, which the window is not drawn from while a fresher registration
@@ -340,8 +340,10 @@ test.describe("@machines-readonly", () => {
       await openMachine(page, scene.drawHost);
       await expect(page.locator('[data-testid="window-layout"]').first()).toBeVisible();
 
-      // A person picks each window of each server.
+      // A person picks each window of each server: the person's two and the daemon's one.
       const picks = page.locator('[data-testid="window-pick"]');
+      await expect(picks).toHaveCount(3);
+      // The count above waited for all three picks, so the read takes every window there is.
       const windows = await picks.evaluateAll((nodes) =>
         nodes.map((node) => node.dataset.window ?? "")
       );
@@ -412,7 +414,10 @@ test.describe("@machines-width", () => {
     const pageWidth = await page
       .locator('[data-testid="machine-page"]')
       .evaluate((section) => section.clientWidth);
-    const whole = await page.locator('[data-testid="window-layout"]').boundingBox();
+    const layout = page.locator('[data-testid="window-layout"]');
+    await expect(layout).toBeVisible();
+    // The wait above drew the layout, and a drawn element has a box, so the box is there.
+    const whole = await layout.boundingBox();
     if (whole === null) throw new Error("the drawing has no box");
     expect(Math.abs(whole.width - pageWidth), "the drawing fills the page").toBeLessThan(1);
 

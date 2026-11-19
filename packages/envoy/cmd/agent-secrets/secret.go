@@ -30,11 +30,10 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
-	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/buildversion"
-	"github.com/sjawhar/envoy/internal/redact"
 )
 
 type secretForm struct {
@@ -138,20 +137,20 @@ func cmdSecret(args []string, stdout, stderr io.Writer) int {
 // keep today's behaviour, and a form's -h, which never opens a session, is unaffected. The
 // settings steer a write and choose whom the machine's identity token is good for, so a
 // plain-http broker a network attacker can answer is refused before the first call; an
-// unparseable URL is left to the client, which names it.
-func requireTrustedBrokerURL(raw string) error {
-	base := brokerclient.WithoutTrailingSlashes(raw)
-	if base == "" {
+// unparseable URL is left to the client, which names it. It reads the address (Raw) only to
+// parse its scheme and host, and names it as the Address prints.
+func requireTrustedBrokerURL(base brokeraddr.Address) error {
+	if base.Empty() {
 		return nil
 	}
-	u, err := url.Parse(base)
+	u, err := url.Parse(base.Raw())
 	if err != nil {
 		return nil
 	}
 	if u.Scheme == "https" || (u.Scheme == "http" && isLoopbackHost(u.Hostname())) {
 		return nil
 	}
-	return usageErr{fmt.Errorf("AGENT_SECRETS_URL %q must be https, or http only when the broker's host is loopback (127.0.0.1, [::1] or localhost): this client acts on the broker's settings (the store a secret form writes, the audience of the identity token this machine mints), so a plain-http broker on the network is refused", redact.URL(base))}
+	return usageErr{fmt.Errorf("AGENT_SECRETS_URL %q must be https, or http only when the broker's host is loopback (127.0.0.1, [::1] or localhost): this client acts on the broker's settings (the store a secret form writes, the audience of the identity token this machine mints), so a plain-http broker on the network is refused", base)}
 }
 
 // isLoopbackHost reports whether host is "localhost" (any case) or a loopback IP literal
@@ -718,6 +717,41 @@ type secretSession struct {
 	backend      secretBackend
 	src          source
 	readsTypeTag bool
+	// settings are the broker's GET /v1/settings, whose judge_keys `secret show` reads.
+	settings Settings
+}
+
+// whoDecides is secret show's decides and guidance lines: who decides a request for the key, and
+// the guidance the model judge decides it on, so an agent can meet the guidance on its first
+// request. It reads the key's own tags and the broker's judge_keys (GET /v1/settings), the rules'
+// answer, which holds while the rules and the tags are unchanged:
+//
+//   - an administrator's key is a person's, on the broker page, whatever the rules say, since a
+//     person approves every release of one;
+//   - a key the rules give a judge entry is the model judge's, up to its seconds, against its
+//     guidance, and its person's only if the judge cannot decide;
+//   - any other key is a person's, on the broker page.
+//
+// An agent-tier key is granted at once to a session its tags allow, so for one of those the line
+// says nobody decides, and names who decides any other session's request.
+func whoDecides(view secretView, judged map[string]JudgeKey) (decides, guidance string) {
+	guidance = "-"
+	entry, hasJudge := judged[view.Name]
+	switch {
+	case view.Admin == "true":
+		decides = "a person, on the broker page: an administrator's key, which the judge never decides"
+	case hasJudge:
+		decides = fmt.Sprintf("the model judge, up to %s, against its guidance; the key's person only if the judge cannot decide", time.Duration(entry.Seconds)*time.Second)
+		if entry.Guidance != "" {
+			guidance = entry.Guidance
+		}
+	default:
+		decides = "a person, on the broker page"
+	}
+	if view.Tier == policy.TierAgent {
+		decides = "nobody, for a session its tags allow; otherwise " + decides
+	}
+	return decides, guidance
 }
 
 // Close releases the session's backend connection.
@@ -806,7 +840,7 @@ func secretFailIn(stderr io.Writer, form string, s *secretSession, err error) in
 // stderr the one line that names the sign-in form's calls run under (backend.identity).
 func openSession(ctx context.Context, stderr io.Writer, form string) (*secretSession, error) {
 	base := brokerBaseURL()
-	if base == "" {
+	if base.Empty() {
 		return nil, usageErr{fmt.Errorf("%s is required: it names the secrets broker whose store these forms read and write", brokerURLVar)}
 	}
 	if err := requireTrustedBrokerURL(base); err != nil {
@@ -821,7 +855,7 @@ func openSession(ctx context.Context, stderr io.Writer, form string) (*secretSes
 	if err != nil {
 		return nil, err
 	}
-	s := &secretSession{ctx: ctx, broker: broker, backend: backend, src: brokerSource(base).withSettings(settings), readsTypeTag: settings.SecretTypeTag}
+	s := &secretSession{ctx: ctx, broker: broker, backend: backend, src: brokerSource(base).withSettings(settings), readsTypeTag: settings.SecretTypeTag, settings: settings}
 	if err := backend.requireAccount(ctx); err != nil {
 		s.Close()
 		return nil, err
@@ -1098,6 +1132,8 @@ func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "name: %s\nstore: %s\nsecret_name: %s\nowner: %s\ntier: %s\ntype: %s\ngithub_owners: %s\nrequesters: %s\nscopes: %s\nadmin: %s\nmax_grant: %s\ndefault_grant: %s\ncreated: %s\nlast_changed: %s\n",
 		view.Name, view.Store, view.SecretName, orDash(view.Owner), orDash(view.Tier), orDash(view.Type), orDash(view.GitHubOwners), orDash(view.Requesters), orDash(view.Scopes), orDash(view.Admin), orDash(view.MaxGrant), orDash(view.DefaultGrant), formatTime(view.Created), formatTime(view.LastChanged))
+	decides, guidance := whoDecides(view, s.settings.JudgeKeys)
+	fmt.Fprintf(stdout, "decides: %s\nguidance: %s\n", decides, guidance)
 	switch {
 	case view.EarliestPurge != nil:
 		fmt.Fprintf(stdout, "deleted: %s\nearliest_purge: %s (the deletion plus Secrets Manager's %d-day minimum recovery window: restorable at least until then; the window the delete chose may be longer)\n",

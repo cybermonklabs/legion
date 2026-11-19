@@ -245,9 +245,13 @@ attempt was refused: the message may or may not have arrived. The error names it
 is, a resend under that key inside the 72-hour duplicate window is dropped as a repeat if the
 first copy arrived (`DELIVERY_DUPLICATE_WINDOW_MS` names the rare cases a recipient that restarted
 still sees it twice). A send
-refused with a 4xx on every attempt stays an `EnvoyApiError`. Listener error responses preserve their
-`error` and optional `expected` fields. The listener's bearer is the `token` the client is given
-(`envoySettings`); without one it sends no `Authorization` header.
+refused with a 4xx on every attempt stays an `EnvoyApiError`. An `EnvoyApiError` keeps the
+listener's `error` as its message, with ` (reason: <reason>)` after it where the body names one,
+and keeps the body's `code`, `reason` and `expected`, and the `retry_after_seconds` of a refusal
+for the sender's rate as `retryAfterSeconds`. A 429 is not sent again: the client throws it at
+once, and the caller decides whether to wait `retryAfterSeconds` and send the message again. The
+listener's bearer is the `token` the client is given (`envoySettings`); without one it sends no
+`Authorization` header.
 
 Every call whose body names the session it acts for — `subscribe`, `unsubscribe`,
 `unregisterSession`, `setRole`, and a `send` or `publish` with a `sourceSessionID` —
@@ -289,19 +293,23 @@ record another process wrote is only while this one holds no role. Both read an 
 process named, exactly as an absent one. The mark is why a holder an older client's hand-back
 reached claims its role again at its next heartbeat and has it back, the grant writing a fresh
 record that carries no mark, rather than reading the lookup as confirmation until the role claim
-reaper frees the role a live window and up to one reap interval later.
+reaper frees the role a live window and up to one reap interval later. That holds for a claim
+that names the holder's process. A soft claim over a marked claim that names no process is
+weighed by that claim's renewal and refused until the renewal is older than the live window or
+the reaper frees the claim; the way back is an outright claim (`setRole` without `soft`), which
+lands at once and writes a fresh record with no mark.
 
 `setRole` and `unsubscribe` take a `clientInstanceID` of their own, sent as `client_instance_id`
 and omitted from the wire when the caller states none: the listener records the claim's as the
 process holding the role, and frees on a release only the role claims naming the release's own,
 so a second process that resumed this session id can neither take the role nor hand it back, and
-a release naming no process frees no claim that names one, while it frees a claim that names
-none outright. `unsubscribe` answers in `removed` the topics that left the record rather than the
-ones it named: a role lane topic whose claim the release did not free stays in the record,
-because one interest record serves every process running under one session id and that topic is
-the interest half of a claim that still stands. Such a release,
-where it names that role's own lane topic, is a hand-back, and the listener marks the claim it
-could not free. A release the holder's own renewal beat under
+a release naming no process frees no claim at all, and no release but the administrator's force
+frees a claim that names no process. `unsubscribe` answers in `removed` the topics that left the
+record rather than the ones it named: a role lane topic whose claim the release did not free
+stays in the record, because one interest record serves every process running under one session
+id and that topic is the interest half of a claim that still stands. Such a release, where it
+names that role's own lane topic, is a hand-back, and the listener marks the claim it could not
+free, whether that claim names a process or none. A release the holder's own renewal beat under
 each of its three conditional deletes fails rather than answering success, so `unsubscribe`
 rejects and the caller sends the hand-back again rather than treating the role as given up. A
 `setRole` soft claim (`soft`) naming a predecessor (`previousSessionID`) takes the role from it
@@ -321,7 +329,9 @@ has nothing to retry either way.
 
 `subscribe`'s answer carries the registration's `delivery` field; a registration the listener can
 give no consumer is refused by name, and its reason is on `EnvoyApiError`, under the one canonical
-list of them (`ErrorWireSchema.reason` in `src/transport.ts`).
+list of them (`ErrorWireSchema.reason` in `src/transport.ts`). The same list holds
+`sender_rate_limited`, the reason of the 429 a send or a publish gets when its agent session has
+sent faster than the listener lets one session send: the message was not stored.
 
 ## envoy.json
 
@@ -877,7 +887,7 @@ prints its URL, for proving what a command shows when a gateway, not Dispatch, a
 
 ## Command specs
 
-`@legion/contracts` `src/dispatch-tools.ts` is the single source for the thirty-five
+`@legion/contracts` `src/dispatch-tools.ts` is the single source for the thirty-six
 Dispatch specs behind the `dispatch` command: each one's name, description, field schemas
 and example. `dispatch-command.ts` derives the command and its flags from them, and no host
 adds aliases or descriptions of its own.

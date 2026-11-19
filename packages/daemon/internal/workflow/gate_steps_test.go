@@ -193,6 +193,7 @@ func admissionPass(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held func(string) bool) {
 	t.Helper()
 	scoped, committed := intake.WithCommitHooks(context.Background())
+	scoped = engine.OpenFact(scoped)
 	tx, err := pool.Begin(scoped)
 	if err != nil {
 		t.Fatalf("begin: %v", err)
@@ -271,6 +272,9 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 		if err := engine.StartFirstPhase(scoped, tx, entry.Issue, rows[entry.Issue.Key].Blockers); err != nil {
 			t.Fatalf("StartFirstPhase %s: %v", entry.Issue.Key, err)
 		}
+	}
+	if err := engine.SettleFact(scoped, tx); err != nil {
+		t.Fatalf("settle: %v", err)
 	}
 	if err := tx.Commit(scoped); err != nil {
 		t.Fatalf("commit: %v", err)

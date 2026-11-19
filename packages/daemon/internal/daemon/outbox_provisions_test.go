@@ -307,7 +307,7 @@ func TestALaunchProvisionsAWorkspaceWhoseCheckoutFailed(t *testing.T) {
 		t.Fatalf("the first provision = %v, want its checkout's failure", err)
 	}
 	s := specs{
-		stateDir: t.TempDir(), project: "s1", prompts: composer, repositories: noRepositoriesView,
+		stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
 		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
 			return repo, "main", nil
 		},

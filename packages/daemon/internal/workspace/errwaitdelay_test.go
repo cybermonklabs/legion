@@ -3,7 +3,9 @@ package workspace
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -74,8 +76,9 @@ func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastT
 }
 
 // A command its caller's context ended was not cut off by its own Timeout: TimedOut is the
-// Timeout's kill alone. A Run that read a timeout from the kill alone would call a clone its
-// caller stopped a timeout, which transientCloneFailure never retries.
+// Timeout's kill alone, and the run's error is the signal the stop sent (procgroup.Err), since the
+// command has no exit of its own. A Run that read a timeout from the kill alone would call a clone
+// its caller stopped a timeout, which transientCloneFailure never retries.
 func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 	dir := t.TempDir()
 	started := filepath.Join(dir, "started")
@@ -91,8 +94,8 @@ func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 
 	result, err := run.Run(ctx, Command{Dir: dir, Argv: []string{"git"}, Timeout: time.Minute})
 
-	if err != nil {
-		t.Fatalf("Run = %v, want the killed command's own exit", err)
+	if err == nil || err.Error() != "signal: terminated" {
+		t.Fatalf("Run = %v, want the signal that ended the killed command (signal: terminated): it has no exit of its own", err)
 	}
 	if result.TimedOut {
 		t.Errorf("Run = exit %d, TimedOut true; want not timed out: the caller's context ended the command inside its minute", result.ExitCode)
@@ -125,7 +128,7 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt(t *tes
 			script := `echo answered; echo refused >&2; sleep 30 & echo $! >"$1"; exit ` + strconv.Itoa(testCase.exit)
 
 			started := time.Now()
-			out, err := RunCommand(ctx, nil, testCase.budget, started, []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", pidFile})
+			out, err := RunCommand(ctx, procgroup.NoReaper, testCase.budget, started, []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", pidFile})
 			elapsed := time.Since(started)
 
 			if elapsed < procgroup.WaitDelay {
@@ -152,7 +155,7 @@ func TestRunCommandReportsABudgetSpentBeforeItStartedAsATimeout(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 
-	_, err := RunCommand(ctx, nil, time.Second, time.Now(), []string{"PATH=" + os.Getenv("PATH")}, t.TempDir(), nil, []string{"sh", "-c", "exit 0"})
+	_, err := RunCommand(ctx, procgroup.NoReaper, time.Second, time.Now(), []string{"PATH=" + os.Getenv("PATH")}, t.TempDir(), nil, []string{"sh", "-c", "exit 0"})
 
 	if err == nil || !strings.HasPrefix(err.Error(), "Command timed out after 1 s") {
 		t.Errorf("RunCommand under a spent budget = %v, want \"Command timed out after 1 s …\"", err)
@@ -161,8 +164,8 @@ func TestRunCommandReportsABudgetSpentBeforeItStartedAsATimeout(t *testing.T) {
 
 // A command RunCommand's caller stopped was not cut off by the budget: the restore runs under the
 // launcher's own context (internal/launcher), so a launcher stopped mid-restore must read the
-// command's own exit, never a timeout naming a budget that had not run out. The cancel lands once
-// the command runs, never on one not yet started.
+// signal its stop sent the command (procgroup.Err), never a timeout naming a budget that had not
+// run out. The cancel lands once the command runs, never on one not yet started.
 func TestRunCommandDoesNotReportACommandItsCallerStoppedAsATimeout(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "started")
@@ -170,11 +173,157 @@ func TestRunCommandDoesNotReportACommandItsCallerStoppedAsATimeout(t *testing.T)
 	defer cancel()
 	go cancelOnceExists(ctx, cancel, marker)
 
-	_, err := RunCommand(ctx, nil, time.Minute, time.Now(), []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", `: >"$1"; exec sleep 30`, "sh", marker})
+	_, err := RunCommand(ctx, procgroup.NoReaper, time.Minute, time.Now(), []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", `: >"$1"; exec sleep 30`, "sh", marker})
 
-	if err == nil || strings.Contains(err.Error(), "timed out") || !strings.Contains(err.Error(), "Command failed (exit -1)") {
-		t.Errorf("RunCommand = %v, want \"Command failed (exit -1)\": the caller's context ended the command inside its minute", err)
+	if err == nil || strings.Contains(err.Error(), "timed out") || !strings.HasSuffix(err.Error(), ": signal: terminated") {
+		t.Errorf("RunCommand = %v, want \"run …: signal: terminated\": the caller's context ended the command inside its minute", err)
 	}
+}
+
+// A git or jj a signal ended after it said why it was failing (the memory guard's kill, another
+// drain's SIGTERM) keeps that report: RunCommand's error names the signal and carries the stderr
+// and the stale-lock note, as a failed exit's does, and so does a checked run's (runFailure). The
+// runner's own error does not carry it: a transfer scrubs its token from the Result's stderr
+// before checkedResult reads it (TestFetchScrubsTheTokenFromATransferASignalEnded). Without the
+// report, the save's and the restore's notices would say only `signal: killed`.
+func TestACommandASignalEndedKeepsItsReport(t *testing.T) {
+	dir := t.TempDir()
+	lock := filepath.Join(dir, "index.lock")
+	if err := os.WriteFile(lock, []byte("held"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	said := "fatal: Unable to create '" + lock + "': File exists."
+	script := "echo \"fatal: Unable to create '$1': File exists.\" >&2; kill -KILL $$"
+	t.Run("RunCommand", func(t *testing.T) {
+		_, err := RunCommand(context.Background(), procgroup.NoReaper, time.Minute, time.Now(), []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", lock})
+		if err == nil || !strings.Contains(err.Error(), ": signal: killed\n"+said+"\ngit lock "+lock+" was last written ") {
+			t.Errorf("RunCommand = %v, want the signal, then what the command said, then the stale-lock note", err)
+		}
+	})
+	t.Run("RunChecked", func(t *testing.T) {
+		fakeGit := filepath.Join(t.TempDir(), "git")
+		if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\n"+strings.ReplaceAll(script, "$1", lock)+"\n"), 0o700); err != nil {
+			t.Fatalf("write the fake git: %v", err)
+		}
+		run := NewRunner(time.Minute, map[string]string{"git": fakeGit})
+		if _, err := run.Run(context.Background(), Command{Dir: dir, Argv: []string{"git"}, Timeout: time.Minute}); err == nil || err.Error() != "signal: killed" {
+			t.Errorf("Run = %v, want the signal alone: the runner's error carries no stderr a caller has not scrubbed", err)
+		}
+		if _, err := RunChecked(context.Background(), run, []string{"git"}, nil, dir); err == nil || err.Error() != "run git: signal: killed\n"+said {
+			t.Errorf("RunChecked = %v, want the signal and what the command said beneath it", err)
+		}
+	})
+}
+
+// timesOut answers a command argv starts with as one its budget ended (TimedOut, and the -1 exit a
+// kill leaves), a GitHub ls-remote with a HEAD naming refs/heads/main, and every other command
+// with an empty success.
+type timesOut struct{ argv []string }
+
+func (r timesOut) Timeout() time.Duration { return time.Minute }
+
+func (r timesOut) Run(_ context.Context, command Command) (Result, error) {
+	switch {
+	case commandWith(command.Argv, r.argv...):
+		return Result{ExitCode: -1, TimedOut: true}, nil
+	case slices.Contains(command.Argv, "ls-remote"):
+		return Result{Stdout: "ref: refs/heads/main\tHEAD\n"}, nil
+	}
+	return Result{}, nil
+}
+
+// A read its budget ended answered nothing, so its -1 exit is no answer: the shared clone's
+// rev-parse of the default branch was read as "the feed lacks the branch", which left the branch
+// untracked, the credential read as a stale key, which rewrote the clone's helpers, and the feed's
+// read of its HEAD as a HEAD that names nothing, which rewrote HEAD. Each is now refused as the
+// timeout it is.
+func TestAReadItsBudgetEndedIsRefusedNotReadAsAnAnswer(t *testing.T) {
+	t.Run("the feed clone's rev-parse of the default branch", func(t *testing.T) {
+		dir := t.TempDir()
+		steps := cloneSteps{clock: WallClock{}, deadline: time.Now().Add(time.Hour), dir: dir}
+		err := feedClone(context.Background(), timesOut{argv: []string{"git", "--git-dir=" + dir + "/clone/.git", "rev-parse"}}, steps, dir+"/clone", "https://github.com/acme/widgets", "main", remote{feed: dir + "/feed"})
+		if err == nil || !strings.HasPrefix(err.Error(), "command timed out: git --git-dir="+dir+"/clone/.git rev-parse --verify --quiet refs/remotes/origin/main") {
+			t.Errorf("feedClone with its rev-parse timed out = %v, want the timeout refused", err)
+		}
+	})
+	t.Run("the shared clone's credential read", func(t *testing.T) {
+		dir := t.TempDir()
+		rewrote, err := ConfigureRepositoryCredential(context.Background(), timesOut{argv: []string{"git", "--git-dir=" + dir + "/.git", "config", "--get-all"}}, dir)
+		if err == nil || rewrote || !strings.HasPrefix(err.Error(), "read the shared clone's credential.helper: command timed out: ") {
+			t.Errorf("ConfigureRepositoryCredential with its read timed out = %t, %v; want no rewrite and the timeout refused", rewrote, err)
+		}
+	})
+	t.Run("the feed's read of its HEAD", func(t *testing.T) {
+		gitDir := t.TempDir()
+		credential, err := newProvisioningCredential(t.TempDir(), testInstallationToken)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held := &fetchCredential{remote: credential, env: credential.env, read: staticToken(testInstallationToken), held: []string{testInstallationToken}}
+		run := timesOut{argv: []string{"git", "--git-dir=" + gitDir, "symbolic-ref", "--quiet"}}
+		err = followHead(context.Background(), run, fetchRequest(t), gitDir, map[string]string{"refs/heads/main": strings.Repeat("a", 40)}, held, time.Now().Add(time.Minute))
+		if err == nil || !strings.HasPrefix(err.Error(), "command timed out: git --git-dir="+gitDir+" symbolic-ref --quiet HEAD") {
+			t.Errorf("followHead with its symbolic-ref timed out = %v, want the timeout refused", err)
+		}
+	})
+}
+
+// killsOne answers a command argv starts with as one a signal ended after it printed said, a
+// GitHub ls-remote with a HEAD naming refs/heads/main, and every other command with an empty
+// success.
+type killsOne struct {
+	argv []string
+	said string
+	end  error
+}
+
+func (r killsOne) Timeout() time.Duration { return time.Minute }
+
+func (r killsOne) Run(_ context.Context, command Command) (Result, error) {
+	switch {
+	case commandWith(command.Argv, r.argv...):
+		return Result{ExitCode: -1, Stderr: r.said}, r.end
+	case slices.Contains(command.Argv, "ls-remote"):
+		return Result{Stdout: "ref: refs/heads/main\tHEAD\n"}, nil
+	}
+	return Result{}, nil
+}
+
+// A read a signal ended is refused naming its command, the signal and what it printed, as
+// checkedResult's runs are (runFailure), where these three wrapped the bare signal: the feed
+// clone's rev-parse of the default branch, the shared clone's credential read, and the feed's read
+// of its HEAD before it follows GitHub's (followHead), which was `signal: killed` alone.
+func TestAReadASignalEndedNamesItsCommandAndWhatItPrinted(t *testing.T) {
+	killed := exec.Command("sh", "-c", "kill -KILL $$").Run()
+	const said = "fatal: could not read .git/packed-refs: Input/output error"
+	t.Run("the feed clone's rev-parse of the default branch", func(t *testing.T) {
+		dir := t.TempDir()
+		steps := cloneSteps{clock: WallClock{}, deadline: time.Now().Add(time.Hour), dir: dir}
+		err := feedClone(context.Background(), killsOne{argv: []string{"git", "--git-dir=" + dir + "/clone/.git", "rev-parse"}, said: said, end: killed}, steps, dir+"/clone", "https://github.com/acme/widgets", "main", remote{feed: dir + "/feed"})
+		if want := "run git --git-dir=" + dir + "/clone/.git rev-parse --verify --quiet refs/remotes/origin/main: signal: killed\n" + said; err == nil || err.Error() != want {
+			t.Errorf("feedClone = %v, want %q", err, want)
+		}
+	})
+	t.Run("the shared clone's credential read", func(t *testing.T) {
+		dir := t.TempDir()
+		_, err := ConfigureRepositoryCredential(context.Background(), killsOne{argv: []string{"git", "--git-dir=" + dir + "/.git", "config", "--get-all"}, said: said, end: killed}, dir)
+		if want := "read the shared clone's credential.helper: run git --git-dir=" + dir + "/.git config --get-all credential.helper: signal: killed\n" + said; err == nil || err.Error() != want {
+			t.Errorf("ConfigureRepositoryCredential = %v, want %q", err, want)
+		}
+	})
+	t.Run("the feed's read of its HEAD", func(t *testing.T) {
+		gitDir := t.TempDir()
+		credential, err := newProvisioningCredential(t.TempDir(), testInstallationToken)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held := &fetchCredential{remote: credential, env: credential.env, read: staticToken(testInstallationToken), held: []string{testInstallationToken}}
+		run := killsOne{argv: []string{"git", "--git-dir=" + gitDir, "symbolic-ref"}, said: said, end: killed}
+		err = followHead(context.Background(), run, fetchRequest(t), gitDir, map[string]string{"refs/heads/main": strings.Repeat("a", 40)}, held, time.Now().Add(time.Minute))
+		if want := "run git --git-dir=" + gitDir + " symbolic-ref --quiet HEAD: signal: killed\n" + said; err == nil || err.Error() != want {
+			t.Errorf("followHead = %v, want %q", err, want)
+		}
+	})
 }
 
 // cancelOnceExists calls cancel once path exists, which the command under test creates once it

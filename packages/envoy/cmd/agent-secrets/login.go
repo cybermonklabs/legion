@@ -25,8 +25,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // signInTimeout bounds a whole sign-in, the person's walk to another device included. The device
@@ -57,7 +59,7 @@ func cmdLogin(args []string, stdout, stderr io.Writer) int {
 // login runs the whole ceremony and keeps what it leaves.
 func login(ctx context.Context, stdout, stderr io.Writer) error {
 	base := brokerBaseURL()
-	if base == "" {
+	if base.Empty() {
 		return fmt.Errorf("%s is required: it names the secrets broker this sign-in is recorded at", brokerURLVar)
 	}
 	flow, err := brokerclient.SignInFlow(clientGetenv)
@@ -124,7 +126,9 @@ func login(ctx context.Context, stdout, stderr io.Writer) error {
 	if err := brokerclient.SignIns(homeGetenv).Write(record); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "%s is signed in on this machine (enrollment %s)\n", record.Person, record.EnrollmentID)
+	// The enrollment is the broker's, so it prints on one line (redact.OneLine); the record
+	// keeps it as it came. The person is the one Google's identity token names.
+	fmt.Fprintf(stdout, "%s is signed in on this machine (enrollment %s)\n", record.Person, redact.OneLine(record.EnrollmentID))
 	return nil
 }
 
@@ -163,7 +167,7 @@ func (l *launcherKeySigner) Sign(method, url string) (string, error) {
 // For a person, the key enrolled is the box key itself: one key per person per machine, which
 // the broker already knows as the sign-in's, signs that session's proofs too. For a machine, it
 // is the key the process made to prove the trade.
-func enrollUnderCredential(ctx context.Context, base string, key *ecdsa.PrivateKey, thumbprint, credentialID, who string) (string, error) {
+func enrollUnderCredential(ctx context.Context, base brokeraddr.Address, key *ecdsa.PrivateKey, thumbprint, credentialID, who string) (string, error) {
 	hostname, err := os.Hostname()
 	if err != nil {
 		return "", err
@@ -196,7 +200,7 @@ func enrollUnderCredential(ctx context.Context, base string, key *ecdsa.PrivateK
 // nothing here could renew that person's identity token.
 func registerSignInSession(ctx context.Context, record brokerclient.SignInRecord, boxKey *ecdsa.PrivateKey) (brokerclient.SignInRecord, error) {
 	base := brokerBaseURL()
-	if base == "" {
+	if base.Empty() {
 		return record, fmt.Errorf("%s is required: it names the secrets broker %s's session registers at", brokerURLVar, record.Person)
 	}
 	flow, err := brokerclient.SignInFlow(clientGetenv)
@@ -205,11 +209,11 @@ func registerSignInSession(ctx context.Context, record brokerclient.SignInRecord
 	}
 	switch {
 	case flow == nil:
-		return record, fmt.Errorf("this machine is told of no sign-in client, so %s's sign-in cannot be renewed: set %s and %s, then run: %s",
-			record.Person, brokerclient.SignInClientIDVar, brokerclient.SignInClientSecretFileVar, brokerclient.SignInCommand)
+		return record, brokerclient.WithHint(fmt.Errorf("this machine is told of no sign-in client, so %s's sign-in cannot be renewed: set %s and %s, then sign in again",
+			record.Person, brokerclient.SignInClientIDVar, brokerclient.SignInClientSecretFileVar), brokerclient.FailureSignInRefused)
 	case record.ClientID != "" && record.ClientID != flow.ClientID:
-		return record, fmt.Errorf("%s signed in with another client than this machine now has (%s), so their sign-in cannot be renewed; run: %s",
-			record.Person, record.ClientID, brokerclient.SignInCommand)
+		return record, brokerclient.WithHint(fmt.Errorf("%s signed in with another client than this machine now has (%s), so their sign-in cannot be renewed",
+			record.Person, record.ClientID), brokerclient.FailureSignInRefused)
 	}
 	machine, skipped, err := machineSource(ctx, true)
 	if err != nil {
@@ -231,7 +235,9 @@ func registerSignInSession(ctx context.Context, record brokerclient.SignInRecord
 	}
 	token, err := client.Token(ctx)
 	if err != nil {
-		return record, fmt.Errorf("%w; run: %s", err, brokerclient.SignInCommand)
+		// The broker's own words name the cure where one exists, and an ended sign-in carries
+		// its own hint, so a failed trade adds none (brokerclient.Hint).
+		return record, err
 	}
 	if token.CredentialID == "" {
 		return record, fmt.Errorf("the broker took %s's sign-in but named no launcher credential, so no session can be registered under it", record.Person)

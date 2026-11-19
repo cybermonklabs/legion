@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -56,7 +58,7 @@ func newSignInRig(t *testing.T, answer func(n int, form url.Values) (int, map[st
 			Store:     store,
 			Machine:   &scriptedSource{token: "this-machine's-identity-token", tokenType: oauthwire.SubjectTokenTypeGoogle, describe: "this machine"},
 			Flow:      flow,
-			BrokerURL: broker.URL(),
+			BrokerURL: broker.Address(),
 		},
 	}
 }
@@ -184,11 +186,16 @@ func TestTheTokenInHandServesEveryEnrolmentUntilItLapses(t *testing.T) {
 // TestARevokedSignInFallsBackToTheMachine: the broker refuses the trade once the person has
 // revoked the sign-in, which is a definite answer — that sign-in is over — so the authority
 // answers nothing, the caller enrols under the machine, and nothing asks again until somebody
-// signs in afresh.
+// signs in afresh. It logs the refusal once, with the person and the code, and prints none of the
+// broker's words, which the log redaction does not read: here they plant a credential in a URL. It
+// adds no command of its own either: the broker's words say what ends a refusal where a login does.
 func TestARevokedSignInFallsBackToTheMachine(t *testing.T) {
+	const refusal = "sign in again at https://not-a-secret-user:not-a-secret-password@issuer.example/?access_token=not-a-secret-token"
 	rig := newSignInRig(t, func(int, url.Values) (int, map[string]any) {
-		return 400, map[string]any{"error": "invalid_grant", "error_description": "this sign-in was revoked"}
+		return 400, map[string]any{"error": "invalid_grant", "error_description": refusal}
 	})
+	logged := &logtest.Recorder{}
+	rig.authority.Log = slog.New(logged)
 	rig.signIn(t, "ada@example.com")
 	for i := range 3 {
 		authority, err := rig.authority.Current(context.Background())
@@ -198,6 +205,25 @@ func TestARevokedSignInFallsBackToTheMachine(t *testing.T) {
 	}
 	if n := len(rig.broker.Requests()); n != 1 {
 		t.Fatalf("a revoked sign-in was traded %d times; want once, the refusal remembered", n)
+	}
+	records := logged.Records()
+	if len(records) != 1 || records[0].Level != slog.LevelWarn ||
+		records[0].Message != "this machine's sign-in was refused; sessions enrol under this machine's own authority" {
+		t.Fatalf("the authority logged %v; want one WARN that the sign-in was refused", messagesOf(records))
+	}
+	attrs := attrsOf(t, records[0])
+	if attrs["person"] != "ada@example.com" || attrs["code"] != "invalid_grant" {
+		t.Errorf("the refused sign-in's line carries %v; want ada@example.com and invalid_grant", attrs)
+	}
+	for key, value := range attrs {
+		for _, secret := range []string{"not-a-secret-user", "not-a-secret-password", "not-a-secret-token"} {
+			if strings.Contains(value, secret) {
+				t.Errorf("the refused sign-in's line carries %s=%q: it prints %s from the broker's words", key, value, secret)
+			}
+		}
+		if strings.Contains(value, SignInCommand) || key == "command" {
+			t.Errorf("the refused sign-in's line carries %s=%q: it names a login the broker's words did not", key, value)
+		}
 	}
 }
 

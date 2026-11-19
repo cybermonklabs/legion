@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/roleholder"
 )
 
@@ -52,21 +53,6 @@ const (
 	ReasonHolderLapsed = roleholder.HolderLapsed
 	StateUnresponsive  = "unresponsive"
 )
-
-// RoleRefusal is the body the listener writes when it refuses a role publish or a role lookup
-// (writeRoleHolderError and the publish route's refusals, packages/envoy/cmd/listener). Each
-// reader takes the members its own decision needs and ignores the rest; a listener of an earlier
-// release leaves some of them out, which decodes as their zero values.
-type RoleRefusal struct {
-	Error       string `json:"error"`
-	Reason      string `json:"reason"`
-	Holder      string `json:"holder"`
-	HolderState string `json:"holder_state"`
-	// LastSeen is the holder's last registration in unix milliseconds, absent when the listener
-	// can no longer name one.
-	LastSeen *int64 `json:"last_seen"`
-	EventID  string `json:"event_id"`
-}
 
 // The reasons of a role publish the listener answers 504 (ErrNotDelivered). ReasonReceiptTimeout
 // says the last forward reached the NATS server and the holder's session sent no receipt for it,
@@ -175,9 +161,12 @@ func ControllerTopic(project string) string {
 	return "notifications.legion." + project + ".controller"
 }
 
-// Publisher delivers a notice to one listener topic.
+// Publisher delivers a notice to one listener topic. Publish asks the listener to keep nothing
+// for a role no live session holds, and PublishKept asks it to keep the message for the role's
+// next holder and says whether it did.
 type Publisher interface {
 	Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error
+	PublishKept(ctx context.Context, topic, message string, payload any, dedupeKey string) (kept bool, err error)
 }
 
 // HTTPPublisher calls the Envoy listener's publish route.
@@ -195,43 +184,61 @@ func New(baseURL, token string) *HTTPPublisher {
 
 // Publish posts the listener envelope that preserves the outbox row's idempotent delivery key.
 //
-// It sends keep: false, so the listener refuses a role nobody holds with its 404 (ErrNoHolder
-// below) instead of keeping the message for the role's next holder. The daemon keeps its own
-// queue of notices, which does more than a kept copy can: the outbox row is held and each
-// architect's notices keep their order behind it, architectEnded finishes a row whose architect
-// is gone, a receipt timeout reholds the notice, and a merge-queue row posts a Dispatch message
-// when the role is unheld. One message has one keeper, so this sender keeps its own
-// (packages/daemon/internal/daemon/outbox.go).
-//
-// THIS BINARY SHIPS BEFORE THE ENVOY LISTENER THAT CARRIES THE KEPT LANE. The Envoy listener and
-// this binary are separate releases (.github/workflows/release-envoy-listener.yaml and
-// release.yaml), and a binary of the release before this one sends no keep field at all. Against
-// the new listener that publish is answered 202 with the message kept, which the older code reads
-// as neither success nor ErrNoHolder: its outbox row is held and keeps retrying while Envoy also
-// hands the message to the role's next holder, so the role gets it twice. Deploying this binary
-// first leaves no window in which two keepers hold one message. Measured on a live listener by
-// INFRA-839's tester on 2026-10-31: the old publisher got `listener returned 202 Accepted` with
-// errors.Is(err, ErrNoHolder) false, and the kept lane then held that message.
+// It sends keep: false, so the listener keeps nothing for a role no live session holds, and its
+// 404 for a role nobody holds is ErrNoHolder. PublishKept is the other choice: it asks the
+// listener to keep the message for the role's next live holder.
 func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error {
-	// The listener carries a payload as a JSON document in a string (its messageBody,
-	// packages/envoy/cmd/listener/api.go:68-80); an object there is refused as invalid JSON.
+	_, err := p.publish(ctx, topic, message, payload, dedupeKey, false)
+	return err
+}
+
+// PublishKept posts the envelope as Publish does, but with keep: true: a role message that no
+// live session holds the role for is kept on the role's kept lane for one hour and handed to the
+// role's next live holder. The listener says a sender tells its answers apart by status alone
+// (roleSend.kept, packages/envoy/cmd/listener/confirmed.go), and this reads them so:
+//
+//   - 200 is a live holder that took the message: not kept, and no error.
+//   - 202 is a message the listener kept: kept, and no error, the listener being its keeper. The
+//     listener of cybermonklabs/legion#4079 keeps it whether nobody claims the role (kept_reason
+//     unclaimed) or its claim's holder is not live (holder_lapsed); a listener before #4079 keeps
+//     it only for a role nobody claims, the kept lane sjawhar/legion#2588 shipped.
+//   - 404 holder_lapsed is what a listener before #4079 answers a claim whose holder is not live
+//     — the claim a released role leaves standing until the listener's reaper frees it — keeping
+//     nothing, as it answers keep: false: ErrHolderUnresponsive for a holder_state of
+//     unresponsive, and ErrNoHolder for any other state, gone among them.
+//   - Every other answer is the error Publish makes of it.
+//
+// A repeat of the same dedupe key while its copy is still on the lane inside its hour is answered
+// with that copy and stores nothing new. Once the listener has handed the copy to the role's
+// holder, a repeat — a caller's retry after a 202 it never read — is forwarded again, so a kept
+// publish reaches its holder at least once, and can reach it twice.
+func (p *HTTPPublisher) PublishKept(ctx context.Context, topic, message string, payload any, dedupeKey string) (bool, error) {
+	return p.publish(ctx, topic, message, payload, dedupeKey, true)
+}
+
+// publish is the one body of Publish and PublishKept: it posts the envelope with keep as the
+// request's keep field, and answers whether the listener kept the message rather than
+// delivering it. Only a publish that asked to keep reads a 202 as kept; every other answer that
+// is not a 200 is the refusal it maps to (publishRefusal).
+func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payload any, dedupeKey string, keep bool) (bool, error) {
+	// The listener carries a payload as a JSON document in a string
+	// (listenerwire.MessageBody.Payload); an object there is refused as invalid JSON.
 	encoded, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("encode notice payload for %s: %w", topic, err)
+		return false, fmt.Errorf("encode notice payload for %s: %w", topic, err)
 	}
-	body, err := json.Marshal(struct {
-		Topic     string `json:"topic"`
-		Message   string `json:"message"`
-		Payload   string `json:"payload"`
-		DedupeKey string `json:"dedupe_key"`
-		Keep      bool   `json:"keep"`
-	}{Topic: topic, Message: message, Payload: string(encoded), DedupeKey: dedupeKey, Keep: false})
+	payloadText := string(encoded)
+	body, err := json.Marshal(listenerwire.PublishRequest{
+		MessageBody: listenerwire.MessageBody{Message: message, Payload: &payloadText, DedupeKey: dedupeKey},
+		Topic:       topic,
+		Keep:        &keep,
+	})
 	if err != nil {
-		return fmt.Errorf("encode notice for %s: %w", topic, err)
+		return false, fmt.Errorf("encode notice for %s: %w", topic, err)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages/publish", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("build notice publish request for %s: %w", topic, err)
+		return false, fmt.Errorf("build notice publish request for %s: %w", topic, err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	if p.token != "" {
@@ -239,36 +246,64 @@ func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payl
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		return fmt.Errorf("publish notice to %s: %w", topic, err)
+		return false, fmt.Errorf("publish notice to %s: %w", topic, err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
-		refusal := fmt.Errorf("publish notice to %s: listener returned %s: %s", topic, response.Status, strings.TrimSpace(string(body)))
-		var answer RoleRefusal
+	if response.StatusCode == http.StatusOK {
+		return false, nil
+	}
+	if keep && response.StatusCode == http.StatusAccepted {
+		return true, nil
+	}
+	answered, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
+	refusal := fmt.Errorf("publish notice to %s: listener returned %s: %s", topic, response.Status, strings.TrimSpace(string(answered)))
+	return false, publishRefusal(response.StatusCode, answered, refusal)
+}
+
+// publishRefusal is the error a refused publish reads as: refusal, wrapping the error its body
+// names where the body is the listener's own refusal for its status (listenerwire). A 404 is
+// listenerwire.RoleRefusal (writeRoleHolderError, packages/envoy/cmd/listener): ErrNoHolder, or
+// ErrHolderUnresponsive for a lapsed holder that is only unresponsive. A 504 is
+// listenerwire.RoleSendFailure: ErrNotDelivered for either of its reasons. A 403 is
+// listenerwire.CapabilityRefusal, ErrRefusedByHolder for reason capability, or else the
+// listenerwire.APIError of a forward the listener's own NATS grant denied, ErrPublishDenied. A
+// listener of an earlier release leaves some members out, which decodes as their zero values; a
+// body that is not that JSON, as a proxy in front of the listener could write, and every other
+// status, is the plain refusal.
+func publishRefusal(status int, body []byte, refusal error) error {
+	switch status {
+	case http.StatusNotFound:
+		var answer listenerwire.RoleRefusal
 		if json.Unmarshal(body, &answer) != nil {
 			return refusal
 		}
 		switch {
-		case response.StatusCode == http.StatusNotFound && answer.Reason == ReasonHolderLapsed && answer.HolderState == StateUnresponsive:
+		case answer.Reason == ReasonHolderLapsed && answer.HolderState == StateUnresponsive:
 			return fmt.Errorf("%w: %w", refusal, ErrHolderUnresponsive)
-		case response.StatusCode == http.StatusNotFound && roleholder.IsNoHolderReason(answer.Reason):
+		case roleholder.IsNoHolderReason(string(answer.Reason)):
 			return fmt.Errorf("%w: %w", refusal, ErrNoHolder)
-		case response.StatusCode == http.StatusGatewayTimeout && (answer.Reason == ReasonReceiptTimeout || answer.Reason == ReasonDeliveryFailed):
-			return fmt.Errorf("%w: %w", refusal, ErrNotDelivered{Reason: answer.Reason, Holder: answer.Holder, EventID: answer.EventID})
-		case response.StatusCode == http.StatusForbidden && answer.Reason == "capability":
-			return fmt.Errorf("%w: %w", refusal, ErrRefusedByHolder{Holder: answer.Holder})
-		case response.StatusCode == http.StatusForbidden && strings.HasPrefix(answer.Error, publishDeniedPrefix):
-			return fmt.Errorf("%w: %w", refusal, ErrPublishDenied{Message: answer.Error})
 		}
-		return refusal
+	case http.StatusGatewayTimeout:
+		var answer listenerwire.RoleSendFailure
+		if json.Unmarshal(body, &answer) == nil && (answer.Reason == ReasonReceiptTimeout || answer.Reason == ReasonDeliveryFailed) {
+			return fmt.Errorf("%w: %w", refusal, ErrNotDelivered{Reason: answer.Reason, Holder: answer.Holder, EventID: answer.EventID})
+		}
+	case http.StatusForbidden:
+		var capability listenerwire.CapabilityRefusal
+		if json.Unmarshal(body, &capability) == nil && capability.Reason == "capability" {
+			return fmt.Errorf("%w: %w", refusal, ErrRefusedByHolder{Holder: capability.Holder})
+		}
+		var denied listenerwire.APIError
+		if json.Unmarshal(body, &denied) == nil && strings.HasPrefix(denied.Error, publishDeniedPrefix) {
+			return fmt.Errorf("%w: %w", refusal, ErrPublishDenied{Message: denied.Error})
+		}
 	}
-	return nil
+	return refusal
 }
 
 // SessionDeleted is what the listener did with a conditional clean stop: Deleted is false only
 // for a registration the listener kept because the condition the stop carried refused it, and
-// Reason is the listener's own words for why (deleteSessionResponse,
+// Reason is the listener's own words for why (listenerwire.DeleteSessionResponse,
 // packages/envoy/cmd/listener/api.go). A listener of an earlier release, which judges no
 // condition and answers 200 with no body, deleted the registration and says nothing, which reads
 // as Deleted with an empty Reason.
@@ -278,14 +313,13 @@ type SessionDeleted struct {
 }
 
 // SessionRegistration is what the listener's registry holds for one session id at the moment it
-// was read (GET /v1/registry/<session_id>?view=registration, sessionRegistration in
-// packages/envoy/cmd/listener/api.go). Registered is false for the 404 that route answers: a
-// listener carrying that selector writes it only where the session bucket holds no record at
-// all, and one predating it writes it for a record past the gone horizon as well, since the
-// full answer it falls back to still judges the record's state. ClientInstanceID names the
-// client process whose registration it is, empty for an entry a client predating that field
-// wrote and for every answer a listener predating the field gives, and LastSeen is that
-// registration's own write in unix milliseconds.
+// was read (GET /v1/registry/<session_id>?view=registration, listenerwire.SessionRegistration).
+// Registered is false for the 404 that route answers: a listener carrying that selector writes it
+// only where the session bucket holds no record at all, and one predating it writes it for a
+// record past the gone horizon as well, since the full answer it falls back to still judges the
+// record's state. ClientInstanceID names the client process whose registration it is, empty for
+// an entry a client predating that field wrote and for every answer a listener predating the
+// field gives, and LastSeen is that registration's own write in unix milliseconds.
 type SessionRegistration struct {
 	Registered       bool
 	ClientInstanceID string
@@ -346,10 +380,7 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 		if err != nil {
 			return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, err)
 		}
-		var entry struct {
-			ClientInstanceID string `json:"client_instance_id"`
-			LastSeen         int64  `json:"last_seen"`
-		}
+		var entry listenerwire.SessionRegistration
 		if err := json.Unmarshal(body, &entry); err != nil {
 			return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, err)
 		}
@@ -362,32 +393,34 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 		session, response.Status, strings.TrimSpace(string(body)))
 }
 
-// DeleteConditions is what one clean stop of a dead role's session holds under, and where this
-// daemon's code argues the rule in full: its other comments point here.
+// DeleteConditions is what one clean stop of the session of a role whose process has ended — a
+// death a probe judged, or a suspension's stop — holds under, and where this daemon's code argues
+// the rule in full: its other comments point here.
 //
-// The delete must take the dead process's registration and never the registration a relaunch of
-// the same claim writes under the same session id, so it carries both conditions at once. The
+// The delete must take the ended process's registration and never the registration a relaunch of
+// the same claim writes under the same session id — the relaunch of a death in the same decision,
+// or a later wake's resume of a suspended claim — so it carries both conditions at once. The
 // listener keeps the entry when either refuses it (session.DeleteConditions.keeps,
 // packages/envoy/internal/session/delete.go), so neither widens what the other admits; each is
 // there to make the other's weakness bearable.
 //
-// NotRegisteredAfter is the moment the daemon's probe judged the process gone, and rides as
-// if_not_registered_after with nothing subtracted from it. The probe runs after the dead
-// process's last heartbeat, so on clocks that agree the listener stamped that heartbeat at or
-// before this moment and the registration goes; a listener clock ahead of this daemon's by more
-// than the time between that heartbeat and the probe keeps it. A moment dated earlier than the
-// probe's, to cover a clock, puts that heartbeat after it and refuses the stop that is owed,
-// because UpdatedAt is the listener's own stamp at every write
-// (packages/envoy/internal/session/registry.go) and tells a dead process's heartbeat from a
-// successor's registration not at all.
+// NotRegisteredAfter is the moment the machine told the daemon the process had ended — its probe
+// judged it gone, or the runtime's stop of a suspension returned — and rides as
+// if_not_registered_after with nothing subtracted from it. Either comes after the process's last
+// heartbeat, so on clocks that agree the listener stamped that heartbeat at or before this moment
+// and the registration goes; a listener clock ahead of this daemon's by more than the time between
+// that heartbeat and the moment keeps it. A moment dated earlier, to cover a clock, puts that
+// heartbeat after it and refuses the stop that is owed, because UpdatedAt is the listener's own
+// stamp at every write (packages/envoy/internal/session/registry.go) and tells an ended process's
+// heartbeat from a successor's registration not at all.
 //
 // ClientInstanceID is the id the entry itself carried when the stop read it
 // (ReadSessionRegistration), and names that one client process, which no comparison of moments
-// can. It is what makes carrying the probe's moment undated safe: where the read answered the
-// dead process's own entry, a relaunch's registration is refused by its own identity, whatever
-// the daemon's clock and the listener's say about the moment. Where the read was answered after
-// the relaunch had registered, the id handed back is the successor's and only the moment keeps
-// that registration — the listener judges both at the revision it deletes, under its own
+// can. It is what makes carrying the moment undated safe: where the read answered the ended
+// process's own entry, a relaunch's registration is refused by its own identity, whatever the
+// daemon's clock and the listener's say about the moment. Where the read was answered after the
+// relaunch had registered, the id handed back is the successor's and only the moment keeps that
+// registration — the listener judges both at the revision it deletes, under its own
 // compare-and-swap (session.SessionRegistry.DeleteIf), so what is stored when the delete lands
 // decides it, whatever this daemon knew when it sent it. Against a listener that answers no
 // client_instance_id at all the id is empty and the moment judges alone, which is the whole of
@@ -403,11 +436,13 @@ type DeleteConditions struct {
 
 // DeleteSession removes session's registration from the listener's registry (DELETE
 // /v1/sessions/<session>), the clean stop the daemon sends for a Legion role whose agent process
-// is gone. The listener then reads the session `gone` at once rather than at the end of its live
-// window, so the role claim it held is released and its issue claims are free without the wait a
-// stopped process would otherwise cost (dispatch://INFRA-392). A registry that holds no record
-// for the session answers 404: it is already gone, which is the outcome asked for, so that is no
-// failure.
+// has ended, found dead or stopped by a suspension. The listener then reads the session `gone` at
+// once rather than at the end of its live window, so its issue claims are free without the wait a
+// stopped process would otherwise cost (dispatch://INFRA-392), and a message to it raises the wake
+// rather than being stored for a session nothing reads. The role claim it held stays until the listener's role claim reaper
+// finds the claim unanswered for the live window (store.Registry.ClaimRenewedWithin). A
+// registry that holds no record for the session answers 404: it is already gone, which is the
+// outcome asked for, so that is no failure.
 //
 // The two conditions it carries, and why neither alone would do, are on DeleteConditions.
 func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, conditions DeleteConditions) (SessionDeleted, error) {
@@ -434,10 +469,7 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 		// all is the unconditional delete of a listener that judges no condition, which
 		// removed the registration, and so is any other body this route never writes.
 		body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
-		var kept struct {
-			Deleted *bool  `json:"deleted"`
-			Reason  string `json:"reason"`
-		}
+		var kept listenerwire.DeleteSessionResponse
 		if json.Unmarshal(body, &kept) == nil && kept.Deleted != nil {
 			return SessionDeleted{Deleted: *kept.Deleted, Reason: kept.Reason}, nil
 		}

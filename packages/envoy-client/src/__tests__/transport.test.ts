@@ -741,7 +741,7 @@ describe("EnvoyClient", () => {
   // A role publish names the holder the listener resolved and the state its record put that
   // holder in, under the two names every role answer uses; a publish to a plain topic names
   // neither, since the stream stores one copy each subscribed session's own consumer delivers
-  // (`cmd/listener/api.go`'s `publishResponse`).
+  // (`listenerwire.PublishResponse`).
   test("a role publish names its holder and that holder's state, and a topic publish names neither", async () => {
     const envelope = {
       event_id: "event-stored",
@@ -1666,6 +1666,55 @@ describe("EnvoyClient", () => {
     expect(error).toBeInstanceOf(EnvoyApiError);
     expect(error).not.toBeInstanceOf(EnvoySendUnconfirmedError);
     expect((error as Error).message).toBe("no live session ses_target");
+  });
+
+  // The listener's 429 for a sender past its limit (`senderRateLimitedAnswer`,
+  // packages/envoy/cmd/listener/sender_limit.go): its sentence is what the agent reads, and its
+  // wait is what a caller times a resend by.
+  const RATE_LIMITED_SENTENCE =
+    "Your sending is rate limited. This message was not sent. This listener lets one session " +
+    "send 4 messages a minute and 2 at once. You can send it again after 15 seconds.";
+  const RATE_LIMITED_BODY = {
+    error: RATE_LIMITED_SENTENCE,
+    reason: "sender_rate_limited",
+    retry_after_seconds: 15,
+    messages_per_minute: 4,
+    burst: 2,
+  };
+
+  test("a send whose sender is rate limited is that refusal, with its wait, after one request", async () => {
+    const recorded = recordFetch([Response.json(RATE_LIMITED_BODY, { status: 429 })]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const error = await client
+      .send({ sourceSessionID: "ses_sender", targetSessionID: "ses_target", message: "hello" })
+      .then(
+        () => undefined,
+        (thrown: unknown) => thrown
+      );
+
+    expect(recorded.requests).toHaveLength(1);
+    expect(error).toBeInstanceOf(EnvoyApiError);
+    expect(error).not.toBeInstanceOf(EnvoySendUnconfirmedError);
+    expect(error).toMatchObject({ reason: "sender_rate_limited", retryAfterSeconds: 15 });
+    expect((error as Error).message).toBe(`${RATE_LIMITED_SENTENCE} (reason: sender_rate_limited)`);
+  });
+
+  test("a publish whose sender is rate limited is that refusal, with its wait, after one request", async () => {
+    const recorded = recordFetch([Response.json(RATE_LIMITED_BODY, { status: 429 })]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const error = await client
+      .publish({ sourceSessionID: "ses_sender", topic: "notifications.team.x", message: "hello" })
+      .then(
+        () => undefined,
+        (thrown: unknown) => thrown
+      );
+
+    expect(recorded.requests).toHaveLength(1);
+    expect(error).toBeInstanceOf(EnvoyApiError);
+    expect(error).toMatchObject({ reason: "sender_rate_limited", retryAfterSeconds: 15 });
+    expect((error as Error).message).toBe(`${RATE_LIMITED_SENTENCE} (reason: sender_rate_limited)`);
   });
 
   test("a refusal whose body does not arrive is still the listener's refusal, sent once", async () => {

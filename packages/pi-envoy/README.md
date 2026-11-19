@@ -72,7 +72,7 @@ task's deadline, or once its session is no longer the open session.
 
 A session pod's launch names the role its session holds in `ENVOY_SESSION_ROLE`, and that
 session in `ENVOY_SESSION_ROLE_SESSION`: the id the pod starts the agent with (`omp
---session-id`). agent-infra's sessions workload sets both once t-e-32 lands (it sets
+--session-id`). The deployment repository's sessions workload sets both once t-e-32 lands (it sets
 `AGENT_SESSION_ROLE` today). While the named session's own records name no other role, every
 pass that registers it — its start, each session event and each heartbeat — claims that role for
 it outright, last-claim-wins, under the session's own credential, which the listener holds to
@@ -173,7 +173,7 @@ set -g set-clipboard on
 ## What every model request carries
 
 A session with Dispatch configured — a top-level session, a Legion pane or a `task` subagent —
-sends two extra user messages with every model request of its conversation. At the head, after
+sends extra user messages with every model request of its conversation. At the head, after
 any compaction summary, it sends the `dispatch-first` skill, whose text never changes. It also
 sends what people wrote to the session in the last 72
 hours that Dispatch delivered to it: answers to its asks, replies on them and in its comment
@@ -190,37 +190,75 @@ left-out line naming no command; the log says once per session that the Dispatch
 route; and that Dispatch is not asked again for 5 minutes. Any other answer, a proxy's 404 page or
 a 200 that is no answers list included, is a failed read.
 
-The list goes after the request's last message only on the request where it first shows an item,
-new words in one, or an item taken back. Items the 8,000-character limit leaves out count too: a
-new message longer than the limit, or a comment an edit made too long to fit, moves the list,
-whose last line then says how many items were left out. An answer a person retracted leaves the
-list while its time is still inside the 72 hours, and that moves the list too; an item that only
-aged out of the 72 hours does not. On every request after that the list stays right after the
-message it followed there, with the bytes it had then, so the request ends with its own last
-message and the model does not take a list with nothing new in it for a new turn. It keeps that
-place and those bytes when it only loses items to the 72 hours or names another read, so a kept
-list can name an older read than the request's own and still show an item that has since left
-the 72 hours. A list an older copy of the extension added keeps its place only when nothing but
-its read time and reason changed. A read with no list to give, the line saying the list could not
-be read, is never hidden behind a kept list: that line goes after the last message, and the list
-goes there again once a read gives it. A read that fails but still gives the last list read, with
-the same items, keeps the kept list's place and bytes, so that request does not say that its read
-failed, unless the kept bytes are that read's own text, which say it; otherwise the log says it
-instead, with the reason, on the first such request and not again until a read has answered, so a
-failure that lasts is one line. A read that finds nothing for the session takes a kept list out of
-the request when an item it shows was taken back inside the 72 hours, as when a person retracts
-the only answer, and leaves it where it is when its items only aged out; it takes a kept failure
-line out. A Dispatch with no answers route, when no list read before from it has an item from the
-last 72 hours (none was read, or every item of it has aged out), or no Dispatch at all, leaves a
-kept list where it is. Moving the list empties its old place.
-After a compaction summarizes the message it followed, or in a new process, the list goes after
-the last message once more. It is never at the head, so a change in it costs only the bytes from
-its place on, and a list that keeps its place is inside the cached prefix of the next request.
+What people wrote goes to the model in answers messages: user messages of their own, never at
+the head and never merged into a message of the conversation. A list is one message of two text
+blocks: the list, then the sentence "This list replaces every earlier list of people's answers
+in this conversation, and every earlier line saying the list could not be read: read only the
+newest one as current." The line saying the list could not be read is a message of one block,
+with no sentence. The session file records each answers message a request sends, with its exact
+text and the message it followed. Every later request of the session, in the same process or
+in one that resumed the session, carries each of them again right after that message, with the
+same bytes. So a request changes no byte that an earlier request sent, with two exceptions: a
+request made while a compaction runs (below), and a message the session file did not record,
+because the host moved to another session while the read waited or the write failed. The
+session's next request does not carry such a message again, and adds the list anew after its own
+last message when its read still shows it. A request whose read shows nothing new adds nothing
+and ends with its own last message, so the model does not take a list with nothing new in it
+for a new turn.
+
+A request adds an answers message after its last message when its read gives a list or the
+failure line and the request holds no answers message. Otherwise it adds one only when the read
+shows a change against the newest answers message it holds: a new item, new words in one, or an
+item withdrawn while its time is still inside the 72 hours. Items the 8,000-character limit
+leaves out count too: a new message longer than the limit, or a comment an edit made too long
+to fit, adds a list whose last line says how many items were left out. The answers messages sent
+before stay where they went. An item that only aged out of the 72 hours adds nothing, and so
+does a list that differs only in the read it names. The request then still carries the newest
+list sent, which can name an older read than the request's own and still show an item that has
+since left the 72 hours. When a read finds no item for the session but an item of the newest list
+sent was withdrawn inside the 72 hours, as when a person retracts the only answer, the request
+adds a list with no item: the list's first line, then "No item: every item an earlier list
+showed was withdrawn or is now older than 72 hours.", then the same sentence. An older copy of
+the extension adds its list after the last message of every request. This copy takes that list
+as its own read, under the same rules, and compares its text, except its read time and reason,
+with the newest answers message sent.
+
+A read with no list to give adds the line saying the list could not be read, and adds it once:
+later failed reads add nothing, and the line stays the newest answers message until a read
+gives a list, which goes after the last message. A read that Dispatch answers with no item
+adds nothing after that line, so the line stays the newest answers message, unless an item of
+the newest list sent was withdrawn inside the 72 hours: then the request adds the list with no
+item. A read that fails but still gives the last list read, with the same items, adds nothing,
+so that request does not tell the model that its read failed. The log says why a read failed
+once per failure episode, whether the request tells the model or not. A failure episode runs
+from a failed read to the next read that Dispatch answers, and a read that misses the 800 ms
+deadline is a failed read, so a failure that lasts is one line. A Dispatch with no answers
+route, when no list read before from it has an item from the last 72 hours (none was read, or
+every item of it has aged out), or no Dispatch at all, adds nothing and keeps every answers
+message sent.
+
+When a compaction summarizes the message an answers message followed, or the branch moves away
+from it, that answers message leaves the request and is no longer compared. When none is left,
+the next read with a list or the failure line adds its text after the last message. While Oh My
+Pi compacts the session, a request carries none of the answers messages sent: its read's list or
+failure line goes after its last message and is not recorded. So a request made while a
+speculative compaction runs in the background changes bytes from the first answers message sent
+on, which is a known limit. On Anthropic, Oh My Pi puts no cache anchor on a message the
+extension adds, so every byte before the answers message that a change adds, the answers
+messages sent before it included, is in the cached prefix of the request before it.
 
 Oh My Pi also builds requests that are not turns of the conversation from it; those carry the
-skill but no list, and wait on no read: a side turn (a Dispatch BTW, the stop-time self-check,
-`/btw`), whose last message stays its question; the handoff, whose last message stays the handoff
-prompt; and a remote compaction's request, which ends where the compaction cuts the conversation.
+skill but no answers message, and record none: a side turn (a Dispatch BTW, the stop-time
+self-check, `/btw`), whose last message stays its question and which waits on no read; the
+handoff, whose last message stays the handoff prompt and which waits on no read either; and a
+remote compaction's request, which ends where the compaction cuts the conversation. Two others
+that the extension cannot tell from a turn, Oh My Pi's LLM-request dump and Codex live steering,
+can add and record a list after their own last message, and so can a request the host never
+sends (a stop or an abort after the extension ran). The next request then carries that list
+after that message, and no byte already sent changes. The requests of one session decide in the
+order they started. So when a new request starts while a stopped one still waits on its read,
+the new request decides after the stopped one and reads the session file again first: it
+carries the stopped request's list where it went, and the two never both add the same change.
 
 ## Development install
 

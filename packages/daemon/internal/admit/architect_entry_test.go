@@ -17,17 +17,23 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// architectRow is root's architect phases row, and the zero row where the record holds none.
-func architectRow(t *testing.T, pool *pgxpool.Pool, root string) record.PhaseRow {
+// phaseRow is role's phases row of issue, and the zero row where the record holds none.
+func phaseRow(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role) record.PhaseRow {
 	t.Helper()
 	var rows []record.PhaseRow
 	inTx(t, pool, func(tx pgx.Tx) {
 		var err error
-		if rows, err = record.NewStore().Phases(context.Background(), tx, root); err != nil {
-			t.Fatalf("read the phase rows of %s: %v", root, err)
+		if rows, err = record.NewStore().Phases(context.Background(), tx, issue); err != nil {
+			t.Fatalf("read the phase rows of %s: %v", issue, err)
 		}
 	})
-	return record.PhaseRowOf(rows, claim.RoleArchitect)
+	return record.PhaseRowOf(rows, role)
+}
+
+// architectRow is root's architect phases row (phaseRow).
+func architectRow(t *testing.T, pool *pgxpool.Pool, root string) record.PhaseRow {
+	t.Helper()
+	return phaseRow(t, pool, root, claim.RoleArchitect)
 }
 
 // putArchitectRow records root's architect phases row as the transition that raised entry left

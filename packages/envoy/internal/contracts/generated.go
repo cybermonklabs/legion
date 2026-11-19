@@ -8,91 +8,14 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
-type Envelope struct {
-	EventID           string            `json:"event_id"`
-	Source            string            `json:"source"`
-	SourceEventID     string            `json:"source_event_id"`
-	SourceSession     string            `json:"source_session,omitempty"`
-	Topic             string            `json:"topic"`
-	DedupeKey         string            `json:"dedupe_key"`
-	IssuedAt          int64             `json:"issued_at"`
-	ExpiresAt         *int64            `json:"expires_at,omitempty"`
-	KeptAt            *int64            `json:"kept_at,omitempty"`
-	MentionDedupeKeys map[string]string `json:"mention_dedupe_keys,omitempty"`
-	PayloadSummary    string            `json:"payload_summary"`
-	PayloadRef        string            `json:"payload_ref,omitempty"`
-	Payload           string            `json:"payload,omitempty"`
-	TraceID           string            `json:"trace_id"`
-	Sender            *EnvelopeSender   `json:"sender,omitempty"`
-	InReplyTo         string            `json:"in_reply_to,omitempty"`
-	Supersedes        string            `json:"supersedes,omitempty"`
-	Urgency           string            `json:"urgency,omitempty"`
-	ExpectsReply      ExpectsReply      `json:"expects_reply,omitempty"`
-}
-
-type EnvelopeSender struct {
-	SessionID string   `json:"session_id"`
-	Machine   string   `json:"machine,omitempty"`
-	Cwd       string   `json:"cwd,omitempty"`
-	Title     string   `json:"title,omitempty"`
-	Roles     []string `json:"roles,omitempty"`
-}
-
-func (e Envelope) Validate() error {
-	if strings.TrimSpace(e.EventID) == "" {
-		return fmt.Errorf("event_id is required")
-	}
-	if strings.TrimSpace(e.Source) == "" {
-		return fmt.Errorf("source is required")
-	}
-	if strings.TrimSpace(e.SourceEventID) == "" {
-		return fmt.Errorf("source_event_id is required")
-	}
-	if strings.TrimSpace(e.Topic) == "" {
-		return fmt.Errorf("topic is required")
-	}
-	if strings.TrimSpace(e.DedupeKey) == "" {
-		return fmt.Errorf("dedupe_key is required")
-	}
-	if e.IssuedAt == 0 {
-		return fmt.Errorf("issued_at must be set")
-	}
-	if strings.TrimSpace(e.PayloadSummary) == "" {
-		return fmt.Errorf("payload_summary is required")
-	}
-	if strings.TrimSpace(e.TraceID) == "" {
-		return fmt.Errorf("trace_id is required")
-	}
-	if e.InReplyTo != "" && strings.TrimSpace(e.InReplyTo) == "" {
-		return fmt.Errorf("in_reply_to must not be empty")
-	}
-	if e.Supersedes != "" && strings.TrimSpace(e.Supersedes) == "" {
-		return fmt.Errorf("supersedes must not be empty")
-	}
-	switch e.Source {
-	case "agent", "human", "envoy", "github", "slack", "whatsapp", "ghostwispr", "dispatch":
-	default:
-		return fmt.Errorf("source must be one of: agent, human, envoy, github, slack, whatsapp, ghostwispr, dispatch")
-	}
-	if e.Urgency != "" {
-		switch e.Urgency {
-		case "low", "med", "high", "blocking":
-		default:
-			return fmt.Errorf("urgency must be one of: low, med, high, blocking")
-		}
-	}
-	if err := e.ExpectsReply.Validate(); err != nil {
-		return err
-	}
-	if e.Sender != nil {
-		if strings.TrimSpace(e.Sender.SessionID) == "" {
-			return fmt.Errorf("sender.session_id is required")
-		}
-	}
-	return nil
-}
+// The envelope and the types of its object properties are listenerwire's
+// (listenerwire/envelope_generated.go), named here as well.
+type Envelope = listenerwire.Envelope
+type EnvelopeSender = listenerwire.EnvelopeSender
 
 func ValidateWire(raw []byte) error {
 	var fields map[string]json.RawMessage
@@ -200,6 +123,11 @@ const ReceiptTimeoutCause = "The listener didn't answer within the send window; 
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
 // cannot drift apart.
 const MaxBroadcastRecipients = 100
+
+// ReferenceTargetsMax is the most references one GET /api/v1/reference-targets may name. Generated
+// from REFERENCE_TARGETS_MAX in packages/contracts so the server's refusal and the dashboard's
+// batches are one number.
+const ReferenceTargetsMax = 256
 
 // SearchQueryMax is the longest GET /api/v1/search query, in UTF-16 units. Generated from
 // SEARCH_QUERY_MAX in packages/contracts so the server's refusal and the `dispatch search`
@@ -366,6 +294,33 @@ const HandoffPhaseRule = "a lowercase letter, then up to 31 lowercase letters, d
 // same phases.
 const HandoffPhasePattern = "^[a-z][a-z0-9-]{0,31}$"
 
+// The kinds of a run a step record names: a step a plan names, at its place from 1, and the retro
+// and the merge, which no plan names, at the place 0. The results of a run that ended. The codes of
+// the step write's refusals that no retry changes. Generated from STEP_KINDS, STEP_RESULTS and the
+// STEP_*_CODE constants in packages/contracts: Dispatch's store and route use them, and the Legion
+// daemon reads them through github.com/sjawhar/envoy/steprecord, so no word is written twice.
+const (
+	StepKindStep       = "step"
+	StepKindRetro      = "retro"
+	StepKindMerge      = "merge"
+	StepResultPassed   = "passed"
+	StepResultFailed   = "failed"
+	StepResultStopped  = "stopped"
+	StepInputCode      = "STEP_INPUT"
+	StepWriterCode     = "STEP_WRITER"
+	StepOtherIssueCode = "STEP_OTHER_ISSUE"
+)
+
+// StepAgentTextPattern is the form of the agent, the session and the model a step record names:
+// printable ASCII with no space, from 1 to 128 characters. Generated from STEP_AGENT_TEXT_PATTERN in
+// packages/contracts: Dispatch's step write refuses text outside it, and the Legion daemon, through
+// github.com/sjawhar/envoy/steprecord, leaves such text out of the records it writes.
+const StepAgentTextPattern = "^[!-~]{1,128}$"
+
+// StepAgentTextRule says StepAgentTextPattern's rule in words, which Dispatch's refusal gives.
+// Generated from STEP_AGENT_TEXT_RULE_WORDS in packages/contracts.
+const StepAgentTextRule = "printable ASCII with no space, from 1 to 128 characters"
+
 // ProjectNameMax is the longest project name, in UTF-16 units, that POST /api/v1/projects
 // accepts. Generated from PROJECT_NAME_MAX in packages/contracts so the server's refusal, the
 // Settings name field and the dispatch command cannot drift apart.
@@ -388,19 +343,20 @@ const DocumentNewerContentCloseReason = "DOC_NEWER_CONTENT"
 
 // DocumentAdmissionRevokedCloseCode and DocumentAdmissionRevokedCloseReason close an open writable
 // document socket whose page the live server processes no longer admit, once the message in flight
-// on it is out. The Hocuspocus provider reconnects on the code, and the reconnect is admitted
-// again. Generated from DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE and
-// DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON in packages/contracts so the server's close and the
-// dashboard's reading of it cannot drift apart.
+// on it is out, and an open document socket whose upgrade's Identity-Aware Proxy assertion has
+// expired. The Hocuspocus provider reconnects on the code, and the reconnect is admitted again.
+// Generated from DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE and DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON
+// in packages/contracts so the server's close and the dashboard's reading of it cannot drift
+// apart.
 const DocumentAdmissionRevokedCloseCode = 4412
 const DocumentAdmissionRevokedCloseReason = "DOC_ADMISSION_REVOKED"
 
 // LiveSocketMaxAgeClose is the close code Dispatch ends a live socket with once the socket reaches
-// its age, a random point in [LiveSocketMinAge, LiveSocketMaxAge), and LiveSocketMaxSubscriptions
-// the most subscriptions one live socket holds. Generated from LIVE_SOCKET_MAX_AGE_CLOSE,
-// LIVE_SOCKET_MIN_AGE_MS, LIVE_SOCKET_MAX_AGE_MS and LIVE_SOCKET_MAX_SUBSCRIPTIONS in
-// packages/contracts so the server's close and limit and the dashboard's reading of them cannot
-// drift apart.
+// its age, a random point in [LiveSocketMinAge, LiveSocketMaxAge), or once its upgrade's
+// Identity-Aware Proxy assertion expires, and LiveSocketMaxSubscriptions the most subscriptions one
+// live socket holds. Generated from LIVE_SOCKET_MAX_AGE_CLOSE, LIVE_SOCKET_MIN_AGE_MS,
+// LIVE_SOCKET_MAX_AGE_MS and LIVE_SOCKET_MAX_SUBSCRIPTIONS in packages/contracts so the server's
+// close and limit and the dashboard's reading of them cannot drift apart.
 const LiveSocketMaxAgeClose = 4001
 const LiveSocketMinAge = 1800000 * time.Millisecond
 const LiveSocketMaxAge = 3600000 * time.Millisecond

@@ -197,7 +197,8 @@ type ImageProbe struct {
 	// fixed reservation (internal/daemon/kubernetes.go, probeReservation), its cpu and memory the
 	// request and the limit alike, so the probe pod is Guaranteed whatever the roles request. It
 	// runs Oh My Pi three times, one at a time (pi.agents, the plugin's load, the session-storage
-	// setting), and exits, so it is sized for that and not for a role's work.
+	// setting), holds its TLS clients to the compromised chains, and exits, so it is sized for that
+	// and not for a role's work.
 	Resources corev1.ResourceRequirements
 }
 
@@ -1147,8 +1148,9 @@ func tailBytes(r io.Reader, keep int) ([]byte, bool, error) {
 	}
 }
 
-// undefinedFlag is Go's flag package refusing a flag the probed CLI does not define.
-var undefinedFlag = regexp.MustCompile(`flag provided but not defined: (-\S+)`)
+// undefinedFlag is the probed CLI refusing a flag it does not define: pflag's words, which a
+// legion on cobra prints, and Go's flag package's, which an image built before that printed.
+var undefinedFlag = regexp.MustCompile(`(?:unknown flag|flag provided but not defined): (-\S+)`)
 
 // judge is the verdict on a finished probe pod and its log, logErr when the log could not be read
 // (judgeProbeLog), in this order, carrying on a pass what the OK line reported of the image, in

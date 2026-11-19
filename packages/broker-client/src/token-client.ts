@@ -76,7 +76,7 @@ export interface BrokerToken {
   readonly credentialExpiresAt: Date | null;
 }
 
-/** The broker's rate limit: the first of the four refusals a later trade may be answered
+/** The broker's rate limit: the first of the five refusals a later trade may be answered
  *  differently. */
 const TOO_MANY_REQUESTS = 429;
 
@@ -90,6 +90,8 @@ const USE_DPOP_NONCE = "use_dpop_nonce";
 /** The code of the broker's refusal of a pod session it holds no registration for yet, whose
  *  description begins {@link POD_SESSION_NOT_REGISTERED} and a colon. */
 const INVALID_GRANT = "invalid_grant";
+
+const MEMBERSHIP_HELD = "membership_held";
 
 /** The first wait before trading again on a missing registration, doubling to
  *  {@link UNREGISTERED_MAX_WAIT_MS}: the Go client's `defaultRetryWait` and `maxRetryWait`. */
@@ -125,8 +127,8 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  * A trade the broker refused: a plain error naming what was traded and what the broker said.
  * Almost every refusal is one no retry can cure — an identity no entry lists, a sign-in a person
  * revoked, a token of the wrong audience — and a renewal stops on it rather than asking again.
- * The four exceptions are the broker's 429, its two DPoP refusals, and a pod session it holds no
- * registration for yet (`permanent`).
+ * The five exceptions are the broker's 429, its two DPoP refusals, a pod session it holds no
+ * registration for yet, and a person Dispatch holds (`permanent`).
  */
 export class BrokerRefusedError extends Error {
   /** `refused` names the identity traded, as its source describes it: this machine's, or a
@@ -146,8 +148,8 @@ export class BrokerRefusedError extends Error {
   }
 
   /**
-   * Whether this refusal is one no retry can cure, which every refusal is but four. The Go
-   * client reads it the same way, out of the same four cases (`RefusedError.Permanent`,
+   * Whether this refusal is one no retry can cure, which every refusal is but five. The Go
+   * client reads it the same way, out of the same five cases (`RefusedError.Permanent`,
    * packages/envoy/internal/brokerclient/brokerclient.go), and
    * `packages/envoy/internal/brokerclient/testdata/wire.json` holds the two to that one reading.
    *
@@ -169,12 +171,19 @@ export class BrokerRefusedError extends Error {
    * pod's trade can reach the broker before its daemon's or its session watch's registration
    * does, and a registrar can be down for minutes, so the trade that follows the registration
    * succeeds.
+   *
+   * `membership_held`: Dispatch holds the person this identity names, because Google refused
+   * their Dispatch sign-in, or no refresh has confirmed them for 24 hours. A hold revokes nothing,
+   * and the person's next Dispatch sign-in, or the next refresh that confirms them, ends it, so
+   * the identity this client trades is served again then with no new credential. A client that
+   * dropped it would need a restart after every hold.
    */
   get permanent(): boolean {
     return (
       this.status !== TOO_MANY_REQUESTS &&
       this.code !== INVALID_DPOP_PROOF &&
       this.code !== USE_DPOP_NONCE &&
+      this.code !== MEMBERSHIP_HELD &&
       !this.podSessionUnregistered
     );
   }
@@ -405,7 +414,7 @@ export class BrokerTokenClient {
   /**
    * A live access token: the one in hand while it is good for longer than the renewal window, and
    * otherwise a fresh trade. A trade that failed in a way a later trade may not repeat — the
-   * broker did not answer, answered with one of its four refusals a later trade may be answered
+   * broker did not answer, answered with one of its five refusals a later trade may be answered
    * differently (`BrokerRefusedError.permanent`), or the identity's source could not be read this
    * once — answers the token in hand while it is still live, since a client that already holds
    * an identity need not stop for a broker or an issuer that is merely down, busy, refusing this
@@ -416,6 +425,11 @@ export class BrokerTokenClient {
    * on. A final refusal ({@link isFinalRefusal}), and any other failure with nothing live left,
    * drop the token in hand and throw, so no caller writes with no identity or with one the broker
    * or the issuer has ended.
+   *
+   * A person whom Dispatch holds is restored by their next Dispatch sign-in, or the next refresh
+   * that confirms them, with no new credential, so the token source is kept and traded again:
+   * like a 429 or a DPoP refusal, the refusal answers the token in hand while it is live, and
+   * with nothing live in hand it is thrown and the next call trades afresh.
    */
   async token(signal?: AbortSignal): Promise<BrokerToken> {
     const held = this.#held;

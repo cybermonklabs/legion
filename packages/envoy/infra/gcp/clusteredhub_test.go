@@ -142,7 +142,7 @@ func TestClusteredNatsHubRendersTheVMHubsAuthorization(t *testing.T) {
 	t.Run("the default machine id", func(t *testing.T) {
 		s, err := gcp.ResolveClusteredNatsHub(clusteredArgs())
 		require.NoError(t, err)
-		require.Equal(t, "envoy-hub", s.Tailnet.MachineID)
+		require.Equal(t, "envoy-hub", s.Listener.MachineID)
 		require.Equal(t, want, s.AuthConf)
 	})
 	t.Run("an explicit machine id", func(t *testing.T) {
@@ -292,8 +292,8 @@ func TestClusteredNatsHubDefaults(t *testing.T) {
 	require.Empty(t, s.MonitorNamespaces)
 	require.Equal(t, []string{"envoy", "dispatch"}, s.ClientNamespaces)
 	require.Equal(t, 2, s.Tailnet.Replicas)
-	require.Equal(t, "500m", s.Tailnet.ListenerCPU)
-	require.Equal(t, "1Gi", s.Tailnet.ListenerMemory)
+	require.Equal(t, "500m", s.Listener.CPU)
+	require.Equal(t, "1Gi", s.Listener.Memory)
 
 	args := clusteredArgs()
 	args.MetricsNamespaces = []string{"monitoring"}
@@ -305,8 +305,8 @@ func TestClusteredNatsHubDefaults(t *testing.T) {
 	require.Equal(t, []string{"monitoring"}, s.MetricsNamespaces)
 	require.Equal(t, []string{"ops"}, s.MonitorNamespaces)
 	require.Equal(t, 3, s.Tailnet.Replicas)
-	require.Equal(t, "250m", s.Tailnet.ListenerCPU)
-	require.Equal(t, "512Mi", s.Tailnet.ListenerMemory)
+	require.Equal(t, "250m", s.Listener.CPU)
+	require.Equal(t, "512Mi", s.Listener.Memory)
 }
 
 // The listener runs as its machine id on every address of its own pod at the listener's port,
@@ -341,7 +341,7 @@ func TestClusteredNatsHubResolvesTheListenerEnvironment(t *testing.T) {
 			args.NatsReplicas, args.StreamMaxBytes = row.natsReplicas, row.streamMaxBytes
 			s, err := gcp.ResolveClusteredNatsHub(args)
 			require.NoError(t, err)
-			env := s.Tailnet.ListenerEnv
+			env := s.Listener.Env
 			require.ElementsMatch(t, append(slices.Clone(base), row.want...), env)
 			for _, name := range []string{"ENVOY_NATS_REPLICAS=", "ENVOY_STREAM_MAX_BYTES=", "ENVOY_API_TOKEN="} {
 				present := slices.ContainsFunc(row.want, func(e string) bool { return strings.HasPrefix(e, name) })
@@ -378,7 +378,7 @@ func TestClusteredNatsHubTakesPodsAboveTheirOwnAutopilotFloor(t *testing.T) {
 	s, err := gcp.ResolveClusteredNatsHub(args)
 	require.NoError(t, err)
 	require.Equal(t, "300m", s.NatsCPU)
-	require.Equal(t, "250m", s.Tailnet.ListenerCPU)
+	require.Equal(t, "250m", s.Listener.CPU)
 }
 
 // 43 bytes is the longest name the hub takes: <name>-listener, the longest name it derives, then

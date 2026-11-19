@@ -5,12 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -55,9 +59,12 @@ const (
 	// OutboxKindRoleHoldersPublish publishes the live role sessions of one issue onto its Dispatch
 	// row (RoleHoldersPublish).
 	OutboxKindRoleHoldersPublish OutboxKind = "role_holders_publish"
+	// OutboxKindStepRecord writes one start or one end of a step of the issue onto Dispatch's
+	// record of that step (StepRecord).
+	OutboxKindStepRecord OutboxKind = "step_record"
 )
 
-// OutboxLane is which executor of an issue runs a kind. An issue's rows run on four lanes side by
+// OutboxLane is which executor of an issue runs a kind. An issue's rows run on five lanes side by
 // side. The lifecycle lane runs the rows that start, stop and tidy the issue's roles and their
 // resources, one at a time in the order they were queued: each assumes the state its predecessor
 // leaves (a start after the branch it waits for, a workspace removal after the suspend that
@@ -83,6 +90,10 @@ const (
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
 // is what a place on the board lane would cost it.
+// The record lane runs the writes of the issue's step records (step_record) on a lane of its own,
+// so a Dispatch that is slow to take a record, or one that backs a record off until it has the
+// route, delays no status write, notice or start of that issue: a record is history, and the work
+// it records never waits for it.
 type OutboxLane string
 
 const (
@@ -90,6 +101,7 @@ const (
 	LaneBoard       OutboxLane = "board"
 	LaneRoleMessage OutboxLane = "role_message"
 	LaneClaim       OutboxLane = "claim"
+	LaneRecord      OutboxLane = "record"
 )
 
 // laneKinds is each lane's kinds in the order LaneKinds lists them. Every OutboxKind is in exactly
@@ -99,6 +111,7 @@ var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval},
 	LaneClaim:       {OutboxKindClaimRelease},
+	LaneRecord:      {OutboxKindStepRecord},
 }
 
 // LaneOf is the lane that runs kind.
@@ -114,6 +127,13 @@ func LaneOf(kind OutboxKind) OutboxLane {
 // LaneKinds is the kinds lane runs, in a fixed order; nil for a lane that is not one.
 func LaneKinds(lane OutboxLane) []OutboxKind {
 	return slices.Clone(laneKinds[lane])
+}
+
+// OutboxLanes is every lane an issue's rows run on, in name order: the lanes laneKinds holds, so
+// a reader that needs every lane, or every kind, takes them from here rather than from a list of
+// its own, which a new lane would leave short.
+func OutboxLanes() []OutboxLane {
+	return slices.Sorted(maps.Keys(laneKinds))
 }
 
 // LaneKey names one lane of one issue.
@@ -852,6 +872,20 @@ type SuperviseRequest struct {
 	// re-admitted tree's promotion gives a mid-phase child: a claim that already holds a task for
 	// the same generation and phase is given it once it is ready, so the start delivers none.
 	ResumeTask bool `json:"resumeTask,omitempty"`
+	// RoundNamed is the typed fact that Task ends with the daemon's two sentences of the reviewer's
+	// review round (reviewround.Sentences). The queue sets it on each start of the reviewer that
+	// carries a task, once it has named that task (workflow's queuedRow, namingTheReviewRound), and
+	// three starts set it before the queue, since what they send is the task enter stored with the
+	// sentences already in it (workflow's startMarks.stored), so the queue adds none. The outbox's
+	// start carries it into the claim's delivery (supervise.RequestDeliver.RoundNamed), and the one
+	// place each prompt of a delivery is composed reads it there (supervise's Delivery.message): a
+	// reviewer's task with no such fact, which only a row the release before this one queued can
+	// be, is given the daemon's sentences naming no commit and no entry at its end, so no text a
+	// task of the release before ends with is taken for the daemon's. A row the release before
+	// wrote decodes with it false. The release before decodes strictly (DisallowUnknownFields), so
+	// the way back of 20261116234034_phase_reviewed_head deletes the key from each row before that
+	// release boots.
+	RoundNamed bool `json:"roundNamed,omitempty"`
 	// RuleResume marks the boot's resume-by-rule start, and the boot's one-time start of a merger
 	// the `awaiting_merge` cutover left released (workflow's cutoverMergerRepair). If its resumed
 	// claim spends its launch budget, the runner finishes this row rather than retrying it as
@@ -1008,13 +1042,22 @@ type WorkspaceRemove struct {
 func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemove }
 
 // RoleMessage is one message the daemon sends a role holder, published to that role's topic: Role
-// is the claim token, which the
-// runner addresses as a role topic, and Body is the whole of what the holder is told. It is how
-// the daemon reaches a worker with something to read rather than a task to do - a settled head's
-// check results, which move nothing (workflow's tellChecks, dispatch://INFRA-714/spec R1). A role
-// with no live holder is told nothing: the row finishes, since the message is of a moment that
-// has passed by the time anyone claims the role, and every recipient can read the pull request's
-// checks on GitHub for itself.
+// is the claim token, which the runner addresses as a role topic, and Body is the whole of what the
+// holder is told. It is how the daemon reaches a worker with something to read rather than a task
+// to do - a settled head's check results, which move nothing (workflow's tellChecks,
+// dispatch://INFRA-714/spec R1). A role with no live holder is told nothing: the row finishes,
+// since the message is of a moment that has passed by the time anyone claims the role, and every
+// recipient can read the pull request's checks on GitHub for itself.
+//
+// A role whose claim is released is told nothing either, and is not woken for the message: the
+// row finishes without a publish. The message's three senders in the workflow - tellChecks (a CI
+// settlement), tellGateMoved (a design gate's move) and tellStuckMergeState (an approved round
+// stuck on its merge state) - only inform; before a release stopped its session cleanly, such a
+// message to a released role was dropped all the same once that session expired; and a wake for
+// each would start a pod for every CI settlement and every gate move, once per released role.
+// Published, the message would meet a released role as one nobody holds: the listener answers
+// holder_lapsed, or unclaimed once the reaper has freed the claim, and raises the role's wake
+// beside either, so the pod would come back for a message the row had already dropped.
 type RoleMessage struct {
 	Role string `json:"role"`
 	Body string `json:"body"`
@@ -1073,6 +1116,40 @@ type RoleHoldersPublish struct {
 }
 
 func (RoleHoldersPublish) OutboxKind() OutboxKind { return OutboxKindRoleHoldersPublish }
+
+// StepRecord is one write of an issue's record of one step onto Dispatch (PUT
+// /api/v1/issues/{key}/steps/{id}): the start of the step, its end, or the report alone of a
+// completion that landed after that end (workflow's reportEndedStep). ID is the record's id, a
+// uuid every write of one run of the step computes, and the row's issue column is the issue. Each
+// other field is a field of the route's body under the same name.
+//
+// Dispatch writes each field once and keeps every field a write leaves out, so the writes of one
+// run merge in any order and a write that runs again changes nothing. Every write carries the
+// identity of the step (task, step, kind, role, type, agent and generation), the empty type of a
+// retro or a merge and the place 0 of either included, and each field a write may not know yet is
+// a pointer, nil for one the write leaves to another. The route takes a text field sent as "" as
+// left out, so for a text field the pointer only says what the write knows; for a time and for
+// ReturnedTo it is what tells "not known" apart from a value: a zero time would be a moment
+// Dispatch keeps for good, and ReturnedTo 0 is a return to the retro, whose place is 0.
+type StepRecord struct {
+	ID         string     `json:"id"`
+	Task       string     `json:"task"`
+	Step       int        `json:"step"`
+	Kind       string     `json:"kind"`
+	Role       string     `json:"role"`
+	Type       string     `json:"type"`
+	Agent      string     `json:"agent"`
+	Generation uint64     `json:"generation"`
+	Session    *string    `json:"session,omitempty"`
+	Model      *string    `json:"model,omitempty"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	EndedAt    *time.Time `json:"ended_at,omitempty"`
+	Result     *string    `json:"result,omitempty"`
+	ReturnedTo *int       `json:"returned_to,omitempty"`
+	Report     *string    `json:"report,omitempty"`
+}
+
+func (StepRecord) OutboxKind() OutboxKind { return OutboxKindStepRecord }
 
 // IssueBranch creates the row's issue's branch, legion/<KEY>, on GitHub at the repository's default
 // branch, where GitHub does not have it yet, before any role of the issue starts: GitHub can refuse
@@ -1183,9 +1260,13 @@ func (p PhaseEnded) Message(issue string) string {
 // that word. There is nothing for a hook to interpolate, because every fact it could ask for
 // stands above its words already.
 //
-// A role with no session holds no topic, and the row ends there undelivered with one log line, as
-// a phase-ended message nobody holds does: the words were written for the round the move back
-// opened, and a role that reads them later reads them of a round that is over.
+// The prompt is published with keep, as a phase-ended message is: for a role no live session
+// holds, the listener answers it kept and holds it for an hour for the role's next live holder,
+// and the row ends with one log line, the listener its keeper. A listener before #4079 keeps
+// nothing for a claim whose holder is not live. The daemon's publishKeptToRole says what each
+// answer does to the row, and why a later round's session can be handed the prompt and what
+// bounds that; the move back and the counts Message states tell that reader which round the
+// words were written for.
 type HookPrompt struct {
 	Hook        string         `json:"hook"`
 	Role        claim.Role     `json:"role"`
@@ -1250,7 +1331,9 @@ func (p HookPrompt) Message(issue string) string {
 //
 // The ask is best effort: the round ends at its bound whether or not the role reads it. So a
 // row whose role no live session holds finishes undelivered, and a row whose round the claim no
-// longer records finishes without a publish (the daemon's updateAsk).
+// longer records finishes without a publish (the daemon's updateAsk). The daemon marks a claim
+// asked only once its row's publish reached a session, so an ask that finished undelivered is
+// lost, not given, and the daemon's sweep writes the claim a new row of this kind at a later tick.
 type UpdateAsk struct {
 	Role  claim.Role `json:"role"`
 	Round string     `json:"round"`
@@ -1502,6 +1585,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		payload = value
 	case OutboxKindMergeQueueRemoval:
 		value := MergeQueueRemoval{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindStepRecord:
+		value := StepRecord{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
@@ -1775,6 +1864,27 @@ func validateOutboxPayload(payload OutboxPayload) error {
 	case MergeQueueRemoval:
 		if value.Number < 1 || value.Head == "" {
 			return fmt.Errorf("a merge-queue removal names the pull request that left the queue and the head it left at; it names #%d at %q", value.Number, value.Head)
+		}
+	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
+	// with a warning (the outbox's permanentRefusal). These two it would not end: an empty id
+	// addresses the route's parent path, which Dispatch's router answers NOT_FOUND "no route for
+	// …", the one answer the row waits on for ever, and a write without the step's identity is
+	// refused only when it is the record's first, so the same defect would make a record on one
+	// run and none on another.
+	case StepRecord:
+		if _, err := uuid.Parse(value.ID); err != nil {
+			return fmt.Errorf("a step record names no uuid as its id; it names %q", value.ID)
+		}
+		if value.Task == "" || value.Kind == "" || value.Role == "" {
+			return fmt.Errorf("a step record carries its task, kind and role on every write; it carries %q, %q and %q", value.Task, value.Kind, value.Role)
+		}
+		// The words and the place rule are Dispatch's own (steprecord, from contracts): one it
+		// refuses is a 400 STEP_INPUT that ends the row, and the run would have no record.
+		if !steprecord.PlaceHolds(value.Kind, value.Step) {
+			return fmt.Errorf("a step record's step %d is no place of a run of kind %q", value.Step, value.Kind)
+		}
+		if value.Result != nil && !slices.Contains([]string{steprecord.ResultPassed, steprecord.ResultFailed, steprecord.ResultStopped}, *value.Result) {
+			return fmt.Errorf("a step record's result %q is no result of a run", *value.Result)
 		}
 	default:
 		return fmt.Errorf("unknown outbox payload %T", payload)

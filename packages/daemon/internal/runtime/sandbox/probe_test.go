@@ -517,6 +517,9 @@ func TestProbeImageRefusesWhatTheProbePodAnswered(t *testing.T) {
 		{"a CLI that predates a flag the probe passes", func(g *probeRig) {
 			g.fails("flag provided but not defined: -role-references\nUsage of legion probe-image:")
 		}, []string{"Failed (container probe terminated", "its legion CLI has no -role-references, a flag this daemon's probe passes: build the image from this daemon's commit"}},
+		{"a cobra CLI that predates a flag the probe passes", func(g *probeRig) {
+			g.fails("legion probe-image: unknown flag: --role-references\nRun 'legion probe-image --help' for usage.")
+		}, []string{"Failed (container probe terminated", "its legion CLI has no --role-references, a flag this daemon's probe passes: build the image from this daemon's commit"}},
 		{"a capability the image lacks", func(g *probeRig) {
 			g.fails("probe-image: capability browser: missing (/nonexistent/chromium (PUPPETEER_EXECUTABLE_PATH) --version: fork/exec /nonexistent/chromium: no such file or directory)\n" +
 				"legion probe-image: capability browser is missing: /nonexistent/chromium (PUPPETEER_EXECUTABLE_PATH) --version: fork/exec /nonexistent/chromium: no such file or directory")

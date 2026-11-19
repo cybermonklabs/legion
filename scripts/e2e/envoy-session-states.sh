@@ -789,16 +789,17 @@ echo "ok services"
 
 # ---- Dispatch's own surface ---------------------------------------------------------------------------
 # Every write names its own session as `actor`, the identity `dispatch claim` fills from the host's
-# own runtime, and reaches Dispatch over the run's agent token.
+# own runtime, and reaches Dispatch over the run's agent token, which curl reads on standard input,
+# in no command line.
 dispatch_project=ESS$(od -An -N2 -tu2 /dev/urandom | tr -d ' \n')
 
 dispatch_api() { # dispatch_api METHOD PATH [BODY]
   local method=$1 path=$2 body=${3:-}
   answer=$evidence/answers/$check.dispatch.$RANDOM.json
-  local -a args=(-sS --max-time 20 -o "$answer" -w '%{http_code}' -X "$method"
-    -H "Authorization: Bearer $(cat "$work/dispatch-token")")
+  local -a args=(-sS --max-time 20 -o "$answer" -w '%{http_code}' -X "$method" -H @-)
   [ -z "$body" ] || args+=(-H 'content-type: application/json' --data "$body")
-  api_status=$(curl "${args[@]}" "$dispatch_url$path" 2>>"$evidence/logs/curl.log") || api_status=000
+  api_status=$(printf 'Authorization: Bearer %s' "$(cat "$work/dispatch-token")" |
+    curl "${args[@]}" "$dispatch_url$path" 2>>"$evidence/logs/curl.log") || api_status=000
   [ "$api_status" = 200 ] || [ "$api_status" = 201 ]
 }
 

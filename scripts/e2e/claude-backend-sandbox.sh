@@ -1294,7 +1294,7 @@ case "$pod_reachability" in
   aws-private-ip)
     imds=$(curl -sf -m 5 -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60') ||
       fail "instance metadata is unreachable; the run's services bind the devbox's private address, read from it, since every pod dials them there"
-    host=$(curl -sf -m 5 -H "X-aws-ec2-metadata-token: $imds" http://169.254.169.254/latest/meta-data/local-ipv4) ||
+    host=$(printf 'X-aws-ec2-metadata-token: %s' "$imds" | curl -sf -m 5 -H @- http://169.254.169.254/latest/meta-data/local-ipv4) ||
       fail "instance metadata has no local-ipv4"
     unset imds
     bind_host=$host
