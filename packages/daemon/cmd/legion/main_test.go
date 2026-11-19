@@ -2483,6 +2483,24 @@ func TestPlainStateNamesEachRepositoryWithoutTheWebhookApp(t *testing.T) {
 	}
 }
 
+// An operator whose `legion` is of this contract and whose daemon is of an earlier one, as during
+// a rollout, reads that daemon's state: its `repositories` block has no `live` key, so this CLI
+// reads no repository from it. It must not then say that no repository lacks the webhook App,
+// because that daemon may name one, as contract 152's `withoutWebhookApp` does here. Found by the
+// tester of dispatch://INFRA-4401 at a8076cb487b2, against a running daemon of contract 152, whose
+// own `legion state` printed `webhook App missing on sjawhar/legion-smoke: …` where this CLI
+// printed `webhook App missing: none`.
+func TestPlainStateDoesNotSayNoWebhookAppIsMissingFromADaemonWithNoLiveBlock(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+	block := `{"owners":["acme"],"mapped":[{"repo":"acme/widgets","default":true,"apps":{"implement":true,"review":true}}],` +
+		`"refused":[],"withoutWebhookApp":[{"repo":"acme/widgets","reason":"the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500"}],"caches":[]}`
+	out := plainStateOf(t, "{"+daemon+`,"repositories":`+block+"}")
+	if strings.Contains(out, "webhook App missing: none") {
+		t.Fatalf("legion state printed %q: it says no repository lacks the webhook App, while the daemon it read names acme/widgets as one", out)
+	}
+}
+
 // An operator reading plain `legion state` is told each repository a live record names that
 // GitHub's last read did not name or a role App is not installed on, one line each with why — the
 // entry's `readError`, the Apps GitHub answered are not installed on the name it is served under,
