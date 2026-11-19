@@ -2,12 +2,13 @@
  * What the draft matrix files (`draft-matrix.*.test.tsx`, INFRA-1503) share: the refusal their
  * writes get and the notes a composer shows about a send it holds, the draft a cell writes and the
  * states it holds it in, the lines a cell reads to tell whether a draft is kept and the reply
- * field it reads a draft back from, the comments the Conversation's hosts answer, the Conversation
- * page as each Conversation host draws it (and as `ConversationTab.test.tsx` draws it), the
- * margin's page over two threads and the documents it registers (and as `Margin.test.tsx`
- * registers them), the Inbox reading column the two Inbox files draw, the Planner session an
- * Agents row draws, and the reload a reload row makes. A stopped send is seeded with
- * `stop-late-write.ts`.
+ * field it reads a draft back from, what a composer draws of a reply kept for a comment or message
+ * that left the list and whether the tab keeps a text, the comments the Conversation's hosts
+ * answer, the Conversation page as each Conversation host draws it (and as
+ * `ConversationTab.test.tsx` draws it), the margin's page over two threads and the documents it
+ * registers (and as `Margin.test.tsx` registers them), the Inbox reading column the two Inbox
+ * files draw, the Planner session an Agents row draws, and the reload a reload row makes. A
+ * stopped send is seeded with `stop-late-write.ts`.
  */
 import { expect, spyOn } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -122,6 +123,37 @@ export function keptInSight(draft: string): boolean {
     screen.queryAllByRole("status").some((line) => /\bkept\b/.test(line.textContent ?? "")) ||
     screen.queryAllByRole<HTMLTextAreaElement>("textbox").some((box) => box.value === draft)
   );
+}
+
+/** What a composer says of a reply it keeps for alice's `parent` once that has left the list
+ *  (`GoneReply`), before the reply's own text, which the same status draws after it. */
+export function goneLead(parent: "comment" | "message"): string {
+  return `The ${parent} by alice that your reply answered is no longer listed. Your reply is kept here:`;
+}
+
+/** What `place` draws of a reply it keeps for a comment or message that has left the list: the
+ *  status that holds the reply's text, `BODY`, and the presses beside it. */
+export function goneIn(place: HTMLElement): {
+  discard: boolean;
+  line: string | undefined;
+  use: boolean;
+} {
+  const shown = within(place);
+  return {
+    discard: shown.queryByRole("button", { name: "Discard my draft" }) !== null,
+    line: shown
+      .queryAllByRole("status")
+      .map((status) => status.textContent ?? "")
+      .find((text) => text.includes(BODY)),
+    use: shown.queryByRole("button", { name: "Use it here" }) !== null,
+  };
+}
+
+/** Whether an entry of the tab's `sessionStorage` holds `text`, for a reload to bring back. */
+export function inTheTab(text: string): boolean {
+  return Array.from({ length: sessionStorage.length }, (_, index) =>
+    sessionStorage.key(index)
+  ).some((name) => name !== null && (sessionStorage.getItem(name) ?? "").includes(text));
 }
 
 export const alice: Actor = { id: "alice", kind: "user" };

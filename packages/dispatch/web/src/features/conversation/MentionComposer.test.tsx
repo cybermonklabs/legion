@@ -30,6 +30,8 @@ import {
 import type { ComposerOwner, DraftIntake, ReplyTarget } from "./composer-model";
 import { MentionComposer, reconcileMentions, stoppedRoleOptions } from "./MentionComposer";
 import { KEYED_SEND_LATE_TEXT } from "./send-request";
+import { unsentDraftsOf } from "./unsent-drafts";
+import { composerNameOf } from "./useKeptDrafts";
 
 /** What each attempt of a send is held to, beside the request it carries: its deadline and the
  *  key that names the press, sent as `Idempotency-Key`. */
@@ -367,6 +369,89 @@ test("reopening the same reply restores its canonical prefills after cancel", as
     await user.paste("Draft after cancellation");
     await user.click(screen.getByRole("button", { name: "Open reply" }));
     await waitFor(() => expect(field.value).toBe("@Planner"));
+  } finally {
+    view.unmount();
+  }
+});
+
+// A draft the composer keeps for another reply draws the line naming that reply's Reply while the
+// host lists the reply. Once the host lists it no longer, that Reply is gone, so the draft is
+// drawn itself, with Discard my draft and, on the issue's own address, Use it here, which never
+// writes over words of the reader's own in the field: it shows once the field is empty, as the
+// line says.
+test("a reply kept for a message its host no longer lists waits for an empty field before Use it here", async () => {
+  const user = userEvent.setup();
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const sendKey: MutationKey = ["conversation-composer", "CORE-1"];
+  const owner: ComposerOwner = { issueKey: "CORE-1", kind: "issue" };
+  const answered: ReplyTarget = {
+    actor: plannerAuthor,
+    excerpt: "Status?",
+    id: "message-1",
+    parentKind: "message",
+  };
+  const kept = "Reply to the status";
+  unsentDraftsOf(queryClient).keepAway(composerNameOf(sendKey), {
+    draft: { body: kept, mentions: [], replacement: "" },
+    owner,
+    replyTo: answered,
+  });
+  const composer = (listed: ReadonlySet<string>) => (
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={queryClient}>
+        <MentionComposer
+          listed={listed}
+          mutationKey={sendKey}
+          onClose={() => {}}
+          onSent={() => {}}
+          owner={owner}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const lines = () => screen.queryAllByRole("status").map((status) => status.textContent ?? "");
+  const offersUse = () => screen.queryByRole("button", { name: "Use it here" }) !== null;
+  const view = render(composer(new Set([answered.id])));
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    const whileListed = { lines: lines(), use: offersUse() };
+    await user.click(field);
+    await user.paste("Words of my own");
+    view.rerender(composer(new Set()));
+    const overOwnWords = { lines: lines(), text: field.value, use: offersUse() };
+    await user.clear(field);
+    const overEmptyField = { lines: lines(), use: offersUse() };
+    await user.click(screen.getByRole("button", { name: "Use it here" }));
+    expect({
+      overEmptyField,
+      overOwnWords,
+      taken: { lines: lines(), text: field.value, use: offersUse() },
+      whileListed,
+    }).toEqual({
+      overEmptyField: {
+        lines: [
+          `The message by Planner that your reply answered is no longer listed. Your reply is kept here:${kept}`,
+        ],
+        use: true,
+      },
+      overOwnWords: {
+        lines: [
+          `The message by Planner that your reply answered is no longer listed. Your reply is kept here, to use in this field once it is empty:${kept}`,
+        ],
+        text: "Words of my own",
+        use: false,
+      },
+      taken: { lines: [], text: kept, use: false },
+      whileListed: {
+        lines: [
+          "Your reply to the message by Planner is kept. Press Reply on that message to go on with it.",
+        ],
+        use: false,
+      },
+    });
   } finally {
     view.unmount();
   }

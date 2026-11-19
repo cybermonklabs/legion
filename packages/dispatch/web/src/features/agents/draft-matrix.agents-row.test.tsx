@@ -35,6 +35,8 @@
  * | The session leaves the list, or none is listed | no (6) | no (6)  | no (6)  |
  * | A list item drawn as a group's heading         | no (7) | no (7)  | no (7)  |
  * | The page reloaded, then back (off)             | cell   | cell    | cell    |
+ * | The message replied to leaves the list         | cell   | cell    | cell    |
+ * | ... then Cancel reply                          | cell   | no (9)  | no (9)  |
  *
  * (off) marks a host move that takes the composer off the screen: the folded row hides it, and
  * leaving the page (`app.tsx`'s `/agents` route) unmounts the page and the composer, so the way
@@ -44,6 +46,15 @@
  * reload does (`endAsAReload`), and loads it again over the same tab: a new query client and write
  * store over the tab's `sessionStorage`, and the app signing the same reader in again. It is the
  * composer's lifetime the census finds (`lifetime.ts`).
+ *
+ * The two rows about the message replied to are a host move of another kind: the composer stays
+ * where it is, and a refetch of the session's conversation answers it without the message a kept
+ * reply answers - the list the row draws, which a Clear, a fold or Show older only show less or
+ * more of - so the Reply the kept line names is gone. The composer draws a typed reply itself
+ * then, saying the message it answered is no longer listed, with Discard my draft, and on the
+ * row's own address, where Cancel reply takes it, with Use it here too. A refused or stopped reply
+ * stays in the field there, as in the elsewhere row, and Send says the message it answered is no
+ * longer listed in place of naming that message's Reply, with Discard draft beside its note.
  *
  * The moves this host cannot make:
  * 1. The Agents page has no thread view and no Back of its own; the row's composer stays on the
@@ -72,20 +83,29 @@
  *    the same at every width, so a phone makes the rows above as they are. The app shell's forms
  *    are the sign-in file's.
  *
+ * The moves this host cannot make, continued:
+ * 9. A refused or stopped reply is never kept away from the field, so Cancel reply takes nothing
+ *    of it to the row's own address for Use it here: the field holds it there as it does on
+ *    Message B in the row above, with Send saying its message is no longer listed (`elsewhere`),
+ *    and Discard draft beside its note.
+ *
  * `draft-matrix.agents-row.coverage.ts` holds each census item this file answers for to a test
  * above or to a numbered reason, and is the source this header is the prose of.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import {
   BODY,
   endAsAReload,
+  goneIn,
+  goneLead,
   HELD,
   type Held,
+  inTheTab,
   keptLineNaming,
   movedNote,
   noteIn,
@@ -116,6 +136,10 @@ const WRITTEN_AS_REPLY =
   "This message was written as a reply. Reply to that message again to send it, or discard it.";
 const WRITTEN_AS_MESSAGE =
   "This message was written as a direct message. Go back to it to send it, or discard it.";
+/** What Send says instead once the message that reply answered is no longer listed, where no
+ *  Reply goes back to it. */
+const WRITTEN_FOR_A_GONE_MESSAGE =
+  "This message was written as a reply to a message that is no longer listed. Discard it to write here.";
 
 type Note = Held | "moved reply" | "moved message" | "none";
 
@@ -187,6 +211,9 @@ function request(replyTo: ReplyTarget | null): SentRequest {
 
 interface Page {
   readonly createAgentMessage: Mock<typeof api.createAgentMessage>;
+  /** Reads the session's conversation again, as a refetch does, and answers it without Message
+   *  A: its turn, and its Reply with it, leave the row. */
+  readonly dropMessageA: () => Promise<void>;
   /** Draws the app again over the same client, as a reader coming back to the page. */
   readonly mount: () => void;
   readonly queryClient: QueryClient;
@@ -207,15 +234,16 @@ async function openAgents(): Promise<Page> {
   const user = userEvent.setup();
   const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
   let queryClient = newClient();
+  // Newest first, as Dispatch answers: the row folds every exchange but the newest.
+  const messages = spyOn(api, "listAgentMessages").mockResolvedValue([
+    { message: messageB, replies: [] },
+    { message: messageA, replies: [] },
+  ]);
   const reads = [
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
     spyOn(api, "getInbox").mockResolvedValue([]),
     spyOn(api, "listAgents").mockResolvedValue([planner]),
-    // Newest first, as Dispatch answers: the row folds every exchange but the newest.
-    spyOn(api, "listAgentMessages").mockResolvedValue([
-      { message: messageB, replies: [] },
-      { message: messageA, replies: [] },
-    ]),
+    messages,
     spyOn(api, "listIssues").mockResolvedValue([coreIssue]),
     spyOn(api, "listProjects").mockResolvedValue([]),
     spyOn(api, "getMyAgentState").mockResolvedValue({}),
@@ -238,6 +266,15 @@ async function openAgents(): Promise<Page> {
   await openRow(user);
   return {
     createAgentMessage,
+    dropMessageA: async () => {
+      messages.mockResolvedValue([{ message: messageB, replies: [] }]);
+      await act(() =>
+        queryClient.invalidateQueries({ queryKey: ["agents", "planner-session", "messages"] })
+      );
+      await waitFor(() =>
+        expect(row().querySelector('[data-turn="message:message-1"]')).toBe(null)
+      );
+    },
     mount,
     get queryClient() {
       return queryClient;
@@ -630,3 +667,103 @@ for (const held of HELD) {
     }
   });
 }
+
+// A refetch can answer the session's conversation without the message a kept reply answers, and
+// the kept line's way back, that message's Reply, goes with it. The composer, still answering
+// Message B, draws the reply kept for Message A itself then, saying A is no longer listed, with
+// Discard my draft, which forgets it in the page and in the tab. On a reply it offers no Use it
+// here.
+test(`${HOST} · the message replied to leaves the list · typed`, async () => {
+  const page = await openAgents();
+  try {
+    await holdAtReplyA(page, "typed");
+    await reply(page.user, messageB.id);
+    const prefill = field().value;
+    await page.dropMessageA();
+    expect({ ...goneIn(composer()), kept: inTheTab(BODY), quoted: quoted() }).toEqual({
+      discard: true,
+      kept: true,
+      line: `${goneLead("message")}${BODY}`,
+      quoted: "B",
+      use: false,
+    });
+    await page.user.click(within(composer()).getByRole("button", { name: "Discard my draft" }));
+    const after = { ...goneIn(composer()), kept: inTheTab(BODY), quoted: quoted() };
+    expect({ ...after, text: field().value }).toEqual({
+      discard: false,
+      kept: false,
+      line: undefined,
+      quoted: "B",
+      text: prefill,
+      use: false,
+    });
+  } finally {
+    page.restore();
+  }
+});
+
+// A refused or stopped reply to Message A stays in the field when Message B's Reply moves the
+// composer off it, and Send says where it was written and which Reply brings it back. A refetch
+// then answers the conversation without A, and that Reply goes with it: Send says the message the
+// reply answered is no longer listed and names no Reply, the draft stays in the field, and Discard
+// draft beside its note drops it, in the page and in the tab.
+for (const held of ["refused", "stopped"] as const) {
+  test(`${HOST} · the message replied to leaves the list · ${held}`, async () => {
+    const page = await openAgents();
+    try {
+      await holdAtReplyA(page, held);
+      await reply(page.user, messageB.id);
+      await page.dropMessageA();
+      const shown = within(composer());
+      expect({
+        discard: shown.queryByRole("button", { name: "Discard draft" }) !== null,
+        gone: shown.queryByText(WRITTEN_FOR_A_GONE_MESSAGE) !== null,
+        named: shown.queryByText(WRITTEN_AS_REPLY) !== null,
+        note: note(),
+        retry: retryOffered(),
+        text: field().value,
+      }).toEqual({ discard: true, gone: true, named: false, note: held, retry: false, text: BODY });
+      await page.user.click(shown.getByRole("button", { name: "Discard draft" }));
+      expect({ kept: inTheTab(BODY), note: note(), text: field().value }).toEqual({
+        kept: false,
+        note: "none",
+        text: "",
+      });
+    } finally {
+      page.restore();
+    }
+  });
+}
+
+// Cancel reply takes the composer to the row's own address, the session, where a reply whose
+// message left the row can go on as a direct message: Use it here puts it in the field, which
+// holds nothing of the reader's own, and it is kept for Message A no longer, in the page or in
+// the tab.
+test(`${HOST} · the message replied to leaves the list, then Cancel reply · typed`, async () => {
+  const page = await openAgents();
+  try {
+    await holdAtReplyA(page, "typed");
+    await reply(page.user, messageB.id);
+    await page.dropMessageA();
+    await page.user.click(within(composer()).getByRole("button", { name: "Cancel reply" }));
+    expect({ ...goneIn(composer()), quoted: quoted(), text: field().value }).toEqual({
+      discard: true,
+      line: `${goneLead("message")}${BODY}`,
+      quoted: "none",
+      text: "",
+      use: true,
+    });
+    await page.user.click(within(composer()).getByRole("button", { name: "Use it here" }));
+    const after = { ...goneIn(composer()), kept: inTheTab(BODY), quoted: quoted() };
+    expect({ ...after, text: field().value }).toEqual({
+      discard: false,
+      kept: false,
+      line: undefined,
+      quoted: "none",
+      text: BODY,
+      use: false,
+    });
+  } finally {
+    page.restore();
+  }
+});

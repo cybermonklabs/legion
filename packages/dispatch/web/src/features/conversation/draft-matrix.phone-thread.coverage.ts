@@ -53,7 +53,12 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · Reply on another comment, then back`),
     cells(`${HOST} · Cancel reply`),
     cells(`${HOST} · Escape in the field`),
+    cells(`${HOST} · the comment replied to leaves the list`, ["typed"]),
     { reason: REASONS[1] }
+  ),
+  ...answers(
+    "ConversationTab | ConversationTab <MentionComposer mutationKey={phone.composerKey}> | address prop | intake={phone.threadIntake}",
+    cells(`${HOST} · put away, then its comment leaves the list`)
   ),
   ...answers(
     "ConversationTab | ConversationTab <MentionComposer mutationKey={phone.composerKey}> | conditional | <div hidden={!phoneReplyTargetsThread}>",

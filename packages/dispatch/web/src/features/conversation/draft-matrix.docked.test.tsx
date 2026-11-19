@@ -33,11 +33,19 @@
  * | Another tab, then back (hidden)          | (6)    | (6)     | (6)     |
  * | The Conversation's reads fail or wait    | no (7) | no (7)  | no (7)  |
  * | The page reloaded, then back (off)       | cell   | cell    | cell    |
+ * | The message replied to leaves the list   | cell   | no (10) | no (10) |
+ * | ... then Cancel reply                    | cell   | no (10) | no (10) |
  *
  * (on) marks a host move that keeps the same composer on screen at another address. A refused or
  * stopped draft never leaves its field there (another message's Reply is redirected onto it, and
  * the elsewhere row keeps it in the field with Send saying where it was written), so only the
  * typed draft needs the line.
+ *
+ * The two rows about the message replied to are a host move of another kind: the composer stays
+ * where it is, and a refetch answers the messages without the one a kept reply answers, so the
+ * Reply the kept line names is gone. The composer draws the reply itself then, saying the message
+ * it answered is no longer listed, with Discard my draft, and on the issue's own address, where
+ * Cancel reply takes it, with Use it here too.
  *
  * (off) marks a host move that takes the composer off the screen. The reload row ends the whole
  * page, as any reload does (`endAsAReload`), and loads it again over the same tab: a new query
@@ -85,12 +93,17 @@
  *    thread view for Back, and the read mark's ref on the newest card (`register`), which moves to
  *    the view's copy of it, move no composer. The app shell's forms are the sign-in file's.
  *
+ * The moves this host cannot make, continued:
+ * 10. A refused or stopped reply holds the composer on its message (another message's Reply is
+ *     redirected onto it, `redirectedReplyTarget`), so no draft of one is kept away from the field
+ *     for its message to leave the list: the field holds it, with its note and its Cancel reply.
+ *
  * `draft-matrix.docked.coverage.ts` holds each census item this file answers for to a test above
  * or to a numbered reason, and is the source this header is the prose of.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import type { MutationKey } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 
 import {
@@ -98,8 +111,11 @@ import {
   BODY,
   commentA,
   endAsAReload,
+  goneIn,
+  goneLead,
   HELD,
   type Held,
+  inTheTab,
   keptLineNaming,
   listTurn,
   movedNote,
@@ -165,6 +181,9 @@ const replyToA: ReplyTarget = {
 interface Page {
   readonly createComment: Mock<typeof api.createComment>;
   readonly createMessage: Mock<typeof api.createMessage>;
+  /** Reads the issue's messages again, as a refetch does, and answers them without Message A:
+   *  its card, and its Reply with it, leave the list. */
+  readonly dropMessageA: () => Promise<void>;
   /** Draws the Conversation again over the same client, as a reader coming back to the issue. */
   readonly mount: () => void;
   /** Ends the page as a reload does and loads it again over the same tab, signed in as the same
@@ -213,6 +232,13 @@ async function openDocked(stopped?: SentRequest, phone = false, signedIn = false
   return {
     createComment,
     createMessage,
+    dropMessageA: async () => {
+      reads.lists.messages = [{ message: messageB, replies: [] }];
+      await act(() => queryClient.invalidateQueries({ queryKey: ["issue-messages", "CORE-1"] }));
+      await waitFor(() =>
+        expect(document.querySelector('[data-turn="message:message-1"]')).toBe(null)
+      );
+    },
     mount,
     reload: async () => {
       endAsAReload(unmount);
@@ -550,3 +576,68 @@ for (const held of HELD) {
     }
   });
 }
+
+// A refetch can answer the messages without the one a kept reply answers, and the kept line's
+// way back, that message's Reply, goes with it. The composer, still answering Message B, draws
+// the reply kept for Message A itself then, saying A is no longer listed, with Discard my draft,
+// which forgets it in the page and in the tab. On a reply it offers no Use it here.
+test(`${HOST} · the message replied to leaves the list · typed`, async () => {
+  const page = await openDocked(undefined, false, true);
+  try {
+    await holdAtReplyA(page, "typed");
+    await reply(page.user, messageB.id);
+    const prefill = field().value;
+    await page.dropMessageA();
+    expect({ ...goneIn(composer()), kept: inTheTab(BODY), quoted: quoted() }).toEqual({
+      discard: true,
+      kept: true,
+      line: `${goneLead("message")}${BODY}`,
+      quoted: "B",
+      use: false,
+    });
+    await page.user.click(within(composer()).getByRole("button", { name: "Discard my draft" }));
+    const after = { ...goneIn(composer()), kept: inTheTab(BODY), quoted: quoted() };
+    expect({ ...after, text: field().value }).toEqual({
+      discard: false,
+      kept: false,
+      line: undefined,
+      quoted: "B",
+      text: prefill,
+      use: false,
+    });
+  } finally {
+    page.restore();
+  }
+});
+
+// Cancel reply takes the composer to the issue's own address, where a reply whose message left
+// the list can go on as a comment: Use it here puts it in the field, which holds nothing of the
+// reader's own, and it is kept for Message A no longer, in the page or in the tab.
+test(`${HOST} · the message replied to leaves the list, then Cancel reply · typed`, async () => {
+  const page = await openDocked(undefined, false, true);
+  try {
+    await holdAtReplyA(page, "typed");
+    await reply(page.user, messageB.id);
+    await page.dropMessageA();
+    await page.user.click(within(composer()).getByRole("button", { name: "Cancel reply" }));
+    expect({ ...goneIn(composer()), quoted: quoted(), text: field().value }).toEqual({
+      discard: true,
+      line: `${goneLead("message")}${BODY}`,
+      quoted: "none",
+      text: "",
+      use: true,
+    });
+    await page.user.click(within(composer()).getByRole("button", { name: "Use it here" }));
+    const after = { ...goneIn(composer()), kept: inTheTab(BODY), quoted: quoted() };
+    expect({ ...after, text: field().value }).toEqual({
+      discard: false,
+      kept: false,
+      line: undefined,
+      quoted: "none",
+      text: BODY,
+      use: false,
+    });
+  } finally {
+    page.restore();
+  }
+});

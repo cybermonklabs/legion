@@ -18,6 +18,7 @@ const REASONS = {
   6: "6. A session that leaves the live list takes its row with it, and a page with no session lists none (`isPending`, `isError`, an empty list); the row drawn when the session is back is the one the page-left row's return draws, at the same session's send name.",
   7: "7. The windowed list draws a group's heading for an item of kind `group` and a row for one of kind `row` (`renderItem`), and each item's kind is fixed where `items` builds it under a key of its own (`group:<name>` or the session), so no row is ever drawn as a heading in its place.",
   8: "8. The layout changes one thing in a row: from `md` its directory shows the path's last segment and below it the whole path (`mdViewport`). The row, its details and its composer are drawn the same at every width, so a phone makes the rows above as they are. The app shell's forms are the sign-in file's.",
+  9: "9. A refused or stopped reply is never kept away from the field, so Cancel reply takes nothing of it to the row's own address for Use it here: the field holds it there as it does on Message B in the row above, with Send saying its message is no longer listed (`elsewhere`), and Discard draft beside its note.",
 } as const;
 
 export const coverage: readonly CoverageEntry[] = [
@@ -48,7 +49,10 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · Cancel reply`),
     cells(`${HOST} · Escape over a reply`),
     cells(`${HOST} · Escape over a message, then Discard`),
-    { reason: REASONS[2] }
+    cells(`${HOST} · the message replied to leaves the list`),
+    cells(`${HOST} · the message replied to leaves the list, then Cancel reply`, ["typed"]),
+    { reason: REASONS[2] },
+    { reason: REASONS[9] }
   ),
   ...answers(
     // biome-ignore lint/suspicious/noTemplateCurlyInString: the key holds the expression's own source text, whose template literal this is.

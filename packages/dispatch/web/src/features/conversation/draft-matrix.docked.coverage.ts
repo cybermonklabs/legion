@@ -19,6 +19,7 @@ const REASONS = {
   7: "7. The Conversation draws a loading line or an error in place of the list while its reads are out or failed (`loading`, `failed`), which unmounts the docked composer as leaving the issue does, and the composer drawn when they land again is the one the issue-left row draws on return.",
   8: "8. On a phone a comment link opens the comment's thread view as it lands (`ConversationTab`'s focus effect), which covers this composer as the phone row's Reply does, and a decision landing on the comment closes the view as Back does (`phone.hide`). A message's Reply moves this composer at every width, as the rows above do.",
   9: "9. Widening the page past the phone layout closes the thread view as Back does, unless a send from it is out, which keeps it open until Back (`usePhoneThread`'s `outlived`); this composer stays mounted at the issue throughout. The Jump to latest pill, which waits under a thread view for Back, and the read mark's ref on the newest card (`register`), which moves to the view's copy of it, move no composer. The app shell's forms are the sign-in file's.",
+  10: "10. A refused or stopped reply holds the composer on its message (another message's Reply is redirected onto it, `redirectedReplyTarget`), so no draft of one is kept away from the field for its message to leave the list: the field holds it, with its note and its Cancel reply.",
 } as const;
 
 export const coverage: readonly CoverageEntry[] = [
@@ -44,7 +45,10 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · Cancel reply`),
     cells(`${HOST} · Escape over a reply`),
     cells(`${HOST} · Escape over a comment, then Discard`),
-    { reason: REASONS[2] }
+    cells(`${HOST} · the message replied to leaves the list`, ["typed"]),
+    cells(`${HOST} · the message replied to leaves the list, then Cancel reply`, ["typed"]),
+    { reason: REASONS[2] },
+    { reason: REASONS[10] }
   ),
   ...answers(
     "ConversationTab | ConversationTab <MentionComposer mutationKey={sendKey}> | conditional | <div hidden={phoneThread !== undefined}>",

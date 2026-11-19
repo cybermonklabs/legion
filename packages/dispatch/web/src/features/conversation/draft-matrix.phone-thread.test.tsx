@@ -33,6 +33,8 @@
  * | Another comment's thread opened (hidden) | no (6) | no (6)  | no (6)  |
  * | The Conversation's reads fail or wait    | no (7) | no (7)  | no (7)  |
  * | The page reloaded, then back (off)       | cell   | cell    | cell    |
+ * | The comment replied to leaves the list   | cell   | no (1)  | no (1)  |
+ * | Put away, then its comment leaves        | cell   | cell    | cell    |
  *
  * (off) marks a host move that takes the composer off the screen: Back hides the thread view,
  * and the docked composer it uncovers answers the issue, not the comment. (on) marks one that
@@ -42,6 +44,14 @@
  * any reload does (`endAsAReload`), and loads it again over the same tab: a new query client and
  * write store over the tab's `sessionStorage`, with the reader signed in as before. It is the
  * composer's lifetime the census finds (`lifetime.ts`).
+ *
+ * The two rows about the comment replied to are a host move of another kind: a refetch answers
+ * the comments without the one a kept reply answers, so the Reply its line names is gone. A reply
+ * the thread composer keeps for that comment, as it answers another, is drawn there with its text,
+ * a line saying the comment is no longer listed, and Discard my draft. A reply put away by Cancel
+ * reply over the docked composer's own draft (`usePhoneThread`'s `parked`) is drawn so in the
+ * docked composer, in place of the line that names that comment's Reply; it offers no Use it
+ * here, since the docked composer's field holds a draft of its own.
  *
  * The moves this host cannot make:
  * 1. Every Reply the thread composer answers is redirected onto the comment its refusal answers
@@ -82,7 +92,7 @@
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import type { MutationKey } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 
 import {
@@ -91,8 +101,11 @@ import {
   commentA,
   commentB,
   endAsAReload,
+  goneIn,
+  goneLead,
   HELD,
   type Held,
+  inTheTab,
   keptLineNaming,
   listTurn,
   movedNote,
@@ -129,6 +142,9 @@ const replyToA: ReplyTarget = {
 
 interface Page {
   readonly createComment: Mock<typeof api.createComment>;
+  /** Reads the issue's comments again, as a refetch does, and answers them without Comment A:
+   *  its card, and its Reply with it, leave the list. */
+  readonly dropCommentA: () => Promise<void>;
   /** Ends the page as a reload does and loads it again over the same tab, signed in as the same
    *  reader, with a new query client (`endAsAReload`, `signedInAsReader`). */
   readonly reload: () => Promise<void>;
@@ -152,7 +168,7 @@ async function listed(): Promise<void> {
  */
 async function openPhone(stopped: boolean, signedIn = false): Promise<Page> {
   const user = userEvent.setup();
-  const queryClient = signedIn ? signedInAsReader(newQueryClient()) : newQueryClient();
+  let queryClient = signedIn ? signedInAsReader(newQueryClient()) : newQueryClient();
   const reads = stubLists({ comments: [commentA, commentB] });
   const createComment = spyOn(api, "createComment");
   if (stopped) {
@@ -164,9 +180,17 @@ async function openPhone(stopped: boolean, signedIn = false): Promise<Page> {
   await listed();
   return {
     createComment,
+    dropCommentA: async () => {
+      reads.lists.comments = [commentB];
+      await act(() => queryClient.invalidateQueries({ queryKey: ["comments", "CORE-1"] }));
+      await waitFor(() =>
+        expect(document.querySelector('[data-turn="comment:comment-a"]')).toBe(null)
+      );
+    },
     reload: async () => {
       endAsAReload(() => view.unmount());
-      view = render(tab(NOTHING_READ, true, signedInAsReader(newQueryClient())));
+      queryClient = signedInAsReader(newQueryClient());
+      view = render(tab(NOTHING_READ, true, queryClient));
       await listed();
     },
     restore: () => {
@@ -203,6 +227,11 @@ function note(place: HTMLElement): Held | "moved" | "none" {
   const held = noteIn(place);
   if (held !== "none") return held;
   return within(place).queryByText(MOVED_NOTE) === null ? "none" : "moved";
+}
+
+/** Whether a field on the page, shown or hidden, holds `text`. */
+function inAField(text: string): boolean {
+  return [...document.querySelectorAll("textarea")].some((box) => box.value.includes(text));
 }
 
 /** Opens Comment A's thread with its Reply and puts `BODY` in the thread composer, in the state
@@ -360,6 +389,91 @@ for (const held of HELD) {
       expect({ note: note(dialog), text: threadField(dialog).value }).toEqual({
         note: held === "typed" ? "none" : held,
         text: BODY,
+      });
+    } finally {
+      page.restore();
+    }
+  });
+}
+
+// A reply typed in Comment A's thread, then Back and Comment B's Reply, the host's move, which
+// keeps the reply for A (`awayName` in `useKeptDrafts`). A refetch then answers the comments
+// without A, and A's Reply, the kept line's way back, goes with it. The thread composer, on B,
+// draws the reply kept for A itself then, saying A is no longer listed, with Discard my draft,
+// which forgets it in the page and in the tab. On a reply it offers no Use it here.
+test(`${HOST} · the comment replied to leaves the list · typed`, async () => {
+  const page = await openPhone(false, true);
+  try {
+    await back(page.user, await holdInThreadA(page, "typed"));
+    const dialog = await reply(page.user, commentB.id);
+    await page.dropCommentA();
+    expect({ ...goneIn(dialog), kept: inTheTab(BODY), thread: threadOf(dialog) }).toEqual({
+      discard: true,
+      kept: true,
+      line: `${goneLead("comment")}${BODY}`,
+      thread: "comment:comment-b",
+      use: false,
+    });
+    await page.user.click(within(dialog).getByRole("button", { name: "Discard my draft" }));
+    expect({ ...goneIn(dialog), kept: inTheTab(BODY), typed: inAField(BODY) }).toEqual({
+      discard: false,
+      kept: false,
+      line: undefined,
+      typed: false,
+      use: false,
+    });
+  } finally {
+    page.restore();
+  }
+});
+
+/** What the reader types in the docked composer before a row puts a thread reply away over it. */
+const DOCKED_DRAFT = "Docked draft of the reader's own";
+
+// Cancel reply in the thread over a docked composer that holds a draft of its own puts the reply
+// away as it stands (`usePhoneThread`'s `parked`), and the docked composer says so and names the
+// comment's Reply as the way back. A refetch then answers the comments without Comment A, and
+// that Reply goes. The docked composer draws the reply put away itself then, saying A is no
+// longer listed, with Discard my draft, which drops it, a refused or stopped send with it, in the
+// page and in the tab, and leaves the docked draft as it was. It offers no Use it here: the docked
+// field holds a draft of its own.
+for (const held of HELD) {
+  test(`${HOST} · put away, then its comment leaves the list · ${held}`, async () => {
+    const page = await openPhone(held === "stopped", true);
+    try {
+      const form = screen.getByRole("form", { name: "Comment composer" });
+      const dockedField = within(form).getByRole<HTMLTextAreaElement>("textbox", {
+        name: "Comment",
+      });
+      await page.user.click(dockedField);
+      await page.user.paste(DOCKED_DRAFT);
+      const dialog = await holdInThreadA(page, held);
+      await page.user.click(within(dialog).getByRole("button", { name: "Cancel reply" }));
+      await back(page.user, dialog);
+      await page.dropCommentA();
+      expect({ ...goneIn(form), docked: dockedField.value }).toEqual({
+        discard: true,
+        docked: DOCKED_DRAFT,
+        line: `${goneLead("comment")}${BODY}`,
+        use: false,
+      });
+      await page.user.click(within(form).getByRole("button", { name: "Discard my draft" }));
+      expect({
+        ...goneIn(form),
+        docked: dockedField.value,
+        kept: inTheTab(BODY),
+        keptLine: within(form)
+          .queryAllByRole("status")
+          .some((status) => /\bkept\b/.test(status.textContent ?? "")),
+        typed: inAField(BODY),
+      }).toEqual({
+        discard: false,
+        docked: DOCKED_DRAFT,
+        kept: false,
+        keptLine: false,
+        line: undefined,
+        typed: false,
+        use: false,
       });
     } finally {
       page.restore();
