@@ -49,6 +49,12 @@ export function recordCommits<Host>(draw: () => string): Commits<Host> {
   };
 }
 
+/** What a badge picker draws - a `<select>` laid over its badge, as `PriorityEditor` and
+ *  `AssigneeControl` draw one: the value the select holds and the text of the badge before it. */
+export function drawnPick(select: HTMLSelectElement): string {
+  return `${select.value} ${select.previousElementSibling?.textContent}`;
+}
+
 /** TanStack Query's notifications to the observers of its caches, held back from now on. */
 export interface HeldNotifications {
   /** How many notifications wait. */

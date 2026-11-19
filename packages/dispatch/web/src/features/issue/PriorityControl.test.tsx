@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import {
   type Commits,
+  drawnPick,
   type HeldNotifications,
   holdNotifications,
   recordCommits,
@@ -178,10 +179,7 @@ function renderControl({ page = false }: { page?: boolean } = {}) {
   queryClient.setQueryData(listKey, [summary, otherSummary]);
   queryClient.setQueryData(inboxKey, [inboxRow]);
   const user = userEvent.setup();
-  // What the select holds and what its badge says.
-  const commits = recordCommits<IssuePriority | null>(
-    () => `${select().value} ${select().previousElementSibling?.textContent}`
-  );
+  const commits = recordCommits<IssuePriority | null>(() => drawnPick(select()));
   const view = render(
     <QueryClientProvider client={queryClient}>
       {page ? <PageControl commits={commits} /> : <CachedControl commits={commits} />}

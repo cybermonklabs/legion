@@ -9,6 +9,7 @@ import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-rou
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import {
   type Commits,
+  drawnPick,
   type HeldNotifications,
   holdNotifications,
   recordCommits,
@@ -1274,15 +1275,13 @@ test("the reader's own answer leaves the Inbox at once, even though their focus 
   }
 });
 
-/** What the picker named `Priority of <issueKey>` inside `scope`, a CSS selector, draws - its
- *  select's value and its badge - or `(none)` while none is drawn there. */
+/** What the picker named `Priority of <issueKey>` inside `scope`, a CSS selector, draws
+ *  (`drawnPick`), or `(none)` while none is drawn there. */
 function drawnPriority(scope: string, issueKey: string): string {
   const select = document.querySelector<HTMLSelectElement>(
     `${scope} select[aria-label="Priority of ${issueKey}"]`
   );
-  return select === null
-    ? "(none)"
-    : `${select.value} ${select.previousElementSibling?.textContent}`;
+  return select === null ? "(none)" : drawnPick(select);
 }
 
 // A pick of P2 on a P1 row under `?priority=P1` takes the row out of the filter, and the Inbox
@@ -1387,6 +1386,42 @@ test("a priority pick in the reading column that takes its question out of the p
     narrow();
     patchIssue.mockRestore();
     getIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// Under typed search only the reader's own typing drops a row at once. A server edit of the text
+// the search reads - here the question of the row whose answer box the reader is typing in -
+// takes that row out of the typed words' match, and the Inbox holds it where it was, as last
+// drawn, with the half-typed answer and the focus still in its box, through each read after.
+test("a server edit that takes the row under the reader's hand out of the typed search keeps the row, its half-typed answer and the focus", async () => {
+  const user = userEvent.setup();
+  const askA = inboxIssue("ask-a", "CORE-1", "Ship it?");
+  const askB = inboxIssue("ask-b", "CORE-2", "Ship the docs?");
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([askA, askB]);
+  const getAsk = mockAskReads([askA, askB]);
+  const { queryClient, unmount } = renderInbox("/?q=ship");
+  try {
+    const card = await screen.findByTestId("ask-ask-a");
+    const draft = within(card).getByLabelText("Your answer");
+    await user.clear(draft);
+    await user.click(draft);
+    await user.paste("Ship it on Friday");
+    expect(draft).toHaveFocus();
+
+    getInbox.mockResolvedValue([{ ...askA, question: "Rename it?" }, askB]);
+    for (const read of ["first", "second"]) {
+      await act(async () => {
+        await queryClient.refetchQueries({ queryKey: ["inbox"] });
+      });
+      expect(rowIds(), `after the ${read} read`).toContain("ask-a");
+    }
+    const kept = within(screen.getByTestId("ask-ask-a")).getByLabelText("Your answer");
+    expect(kept).toHaveValue("Ship it on Friday");
+    expect(kept).toHaveFocus();
+  } finally {
+    unmount();
     getAsk.mockRestore();
     getInbox.mockRestore();
   }

@@ -27,6 +27,8 @@ interface Neighbours {
 export interface PaneSelectionOptions {
   /** How many rows a bulk snooze is deferring; zero while none is out. */
   bulkSnoozing: number;
+  /** Every row the list could hold before its five fields narrow it (`Inbox`'s `candidates`). */
+  candidates: readonly InboxListRow[];
   /** The address this list is on. The selection is written into its `?item=`. */
   filter: InboxRoute;
   /** The list's root, where the selected row's own element is looked up. */
@@ -62,13 +64,9 @@ export interface PaneSelection {
    * Every row the list holds this commit, a folded band's included, and, from the rows the
    * reader can see, the row the column shows. Called once per commit, after `presented`
    * is written: where the selection would go next is read there, off the rows as they stand,
-   * rather than when it is wanted. `candidateOf` gives a row as the Inbox holds it now, before
-   * the list's filters narrow it, or undefined where the server no longer sends it.
+   * rather than when it is wanted.
    */
-  showing: (
-    listed: readonly PlacedRow[],
-    candidateOf: (id: string) => InboxListRow | undefined
-  ) => InboxListRow | undefined;
+  showing: (listed: readonly PlacedRow[]) => InboxListRow | undefined;
   /** Where the selection goes when the row it is on leaves the bands: the row below where that
    *  one stood, else the row above it, read off the list as it stood while it still held it. */
   nextAfterSelected: () => string | undefined;
@@ -83,6 +81,7 @@ export interface PaneSelection {
  */
 export function usePaneSelection({
   bulkSnoozing,
+  candidates,
   filter,
   listRef,
   openFoldedBand,
@@ -101,7 +100,7 @@ export function usePaneSelection({
 
   /** Every row this list holds, a folded band's included: what `?item=` is answered against. */
   const listedRows = useRef<readonly PlacedRow[]>([]);
-  /** The row the column is showing, as the list last held it, and whether it is being kept
+  /** The row the column is showing, as the Inbox last held it, and whether it is being kept
    *  there past its row. */
   const paneSubject = useRef<{ row: InboxListRow; kept: boolean } | undefined>(undefined);
   // The rows the selected one stood between when the list last held it, either of them
@@ -195,18 +194,13 @@ export function usePaneSelection({
    * a deferred row, for the one write whose own optimistic update takes the row out of the Inbox
    * read rather than merely out of this view.
    *
-   * A kept row is drawn as the Inbox now holds it (`candidateOf`) where one of the list's filters
-   * dropped it - a pick in the column that took it out of a priority filter shows there - and as
-   * the list last held it where the server no longer sends it.
+   * A kept row is drawn as its row among `candidates` where it is one, else as last seen.
    *
    * A row held by neither - an ask they have neither typed nor sent an answer to, and every
    * thread row, which a dismiss takes out of the list under its own optimistic update - leaves
    * the column as it leaves the list, the first row this list selected for them included.
    */
-  const paneRow = (
-    listed: InboxListRow | undefined,
-    candidateOf: (id: string) => InboxListRow | undefined
-  ): InboxListRow | undefined => {
+  const paneRow = (listed: InboxListRow | undefined): InboxListRow | undefined => {
     const subject = paneSubject.current;
     if (!paneShown || selectedId === undefined) {
       paneSubject.current = undefined;
@@ -221,15 +215,12 @@ export function usePaneSelection({
       return undefined;
     }
     const kept = subject.kept || answerOutstanding(selectedId) || answerDraft(selectedId) !== "";
-    const row = candidateOf(selectedId) ?? subject.row;
+    const row = candidates.find((candidate) => rowId(candidate) === selectedId) ?? subject.row;
     paneSubject.current = kept ? { kept: true, row } : undefined;
     return kept ? row : undefined;
   };
 
-  const showing = (
-    listed: readonly PlacedRow[],
-    candidateOf: (id: string) => InboxListRow | undefined
-  ): InboxListRow | undefined => {
+  const showing = (listed: readonly PlacedRow[]): InboxListRow | undefined => {
     listedRows.current = listed;
     const visible = presented.current;
     // Read here, where the rows stand as the reader sees them, and held while a snooze of the
@@ -249,7 +240,7 @@ export function usePaneSelection({
         };
       }
     }
-    return paneRow(visible.find(({ row }) => rowId(row) === selectedId)?.row, candidateOf);
+    return paneRow(visible.find(({ row }) => rowId(row) === selectedId)?.row);
   };
 
   // What the selection is, settled after each commit against the rows this list holds.

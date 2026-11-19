@@ -12,7 +12,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
-import { type Commits, recordCommits } from "../../__tests__/commits";
+import { type Commits, drawnPick, recordCommits } from "../../__tests__/commits";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
 import {
   bodies,
@@ -2823,7 +2823,7 @@ function renderBoard(
   };
   const commits = recordCommits<IssuePriority | null>(() => {
     const [select] = prioritySelects();
-    return `${select?.value} ${select?.previousElementSibling?.textContent}`;
+    return select === undefined ? "(none)" : drawnPick(select);
   });
   const view = renderIn(
     client,
@@ -3243,8 +3243,8 @@ test("a pick refused while a later drag of its card still waits behind another c
 // first, with no picker drawn again. The row asserts that and not "never P2": when the other
 // card's move lands first, the card itself draws P2 for one commit, while the drag has left its
 // board's queue and not yet joined the issue's line, so `fieldWritesOf` counts it as neither and
-// the pick is the newest write for those microtasks. That gap is the write engine's, which this
-// change does not touch; the picker draws P2 there because its card does.
+// the pick is the newest write for those microtasks. That gap is the write engine's; the picker
+// draws P2 there because its card does.
 for (const first of ["the pick", "the other card's move"] as const) {
   test(`a pick made on a card while a drag of it waits behind another card's move draws the card's priority in every commit, when ${first} lands first`, async () => {
     const other = Promise.withResolvers<Issue>();
