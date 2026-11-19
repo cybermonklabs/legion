@@ -99,13 +99,14 @@ type googleIdentities struct {
 	accounts []string
 }
 
-// admits reports whether raw is a Google identity token of a listed account, and answers that
-// account, in lower case, the principal the request is admitted as (withVerifiedPrincipal). It
-// logs the one line that says why when it is not: the class, the account when the token names
+// admits judges raw as a Google identity token of a listed account, and answers that account, in
+// lower case, the principal the request is admitted as (withVerifiedPrincipal), with a nil error.
+// It logs the one line that says why when it is not: the class, the account when the token names
 // one, and the path, never the token. The classes are oidc.Reason's for a token that does not
 // verify, no_email for one minted without format=full (it names no account), email_not_verified,
-// and not_listed.
-func (g *googleIdentities) admits(r *http.Request, raw string, logger *logging.Logger) (string, bool) {
+// and not_listed. Its error is the verifier's own, which matches oidc.ErrIssuerUnavailable when no
+// verdict was reached (refuseIdentityToken).
+func (g *googleIdentities) admits(r *http.Request, raw string, logger *logging.Logger) (string, error) {
 	claims, err := g.verifier.VerifyGoogleIdentity(r.Context(), raw)
 	account := fold.ASCII(claims.Email)
 	var reason string
@@ -119,37 +120,66 @@ func (g *googleIdentities) admits(r *http.Request, raw string, logger *logging.L
 	case !slices.Contains(g.accounts, account):
 		reason = "not_listed"
 	default:
-		return account, true
+		return account, nil
 	}
 	attrs := []slog.Attr{slog.String("reason", reason), slog.String("path", r.URL.Path)}
 	if account != "" {
 		attrs = append(attrs, slog.String("account", account))
 	}
 	logger.Warn("listener: Google identity token rejected", attrs...)
-	return "", false
+	return "", identityRefusal(err, reason)
 }
 
-// admitsServiceAccount reports whether raw is a projected service-account token the verifier
-// verifies, of a subject accounts lists when it lists any, and answers that subject,
+// admitsServiceAccount judges raw as a projected service-account token the verifier verifies, of a
+// subject accounts lists when it lists any, and answers that subject,
 // system:serviceaccount:<namespace>:<name>, the principal the request is admitted as
-// (withVerifiedPrincipal). It logs the one line that says why when it is not: oidc.Reason's
-// class, or not_listed naming the subject, and the path, never the token.
-func (a listenerAPIAuth) admitsServiceAccount(r *http.Request, raw string) (string, bool) {
+// (withVerifiedPrincipal), with a nil error. It logs the one line that says why when it is not:
+// oidc.Reason's class, or not_listed naming the subject, and the path, never the token. Its error
+// is the verifier's own, which matches oidc.ErrIssuerUnavailable when no verdict was reached
+// (refuseIdentityToken).
+func (a listenerAPIAuth) admitsServiceAccount(r *http.Request, raw string) (string, error) {
 	claims, err := a.verifier.Verify(r.Context(), raw)
 	if err != nil {
 		a.logger.Warn("listener: service-account token rejected",
 			slog.String("reason", oidc.Reason(err)),
 			slog.String("path", r.URL.Path))
-		return "", false
+		return "", err
 	}
 	if len(a.accounts) > 0 && !slices.Contains(a.accounts, claims.Subject) {
 		a.logger.Warn("listener: service-account token rejected",
 			slog.String("reason", "not_listed"),
 			slog.String("path", r.URL.Path),
 			slog.String("account", claims.Subject))
-		return "", false
+		return "", identityRefusal(nil, "not_listed")
 	}
-	return claims.Subject, true
+	return claims.Subject, nil
+}
+
+// identityRefusal is the error an identity token that was judged and not admitted reads as: the
+// verifier's own error when it gave one, else one naming the refusal's class.
+func identityRefusal(err error, reason string) error {
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("identity token refused: %s", reason)
+}
+
+// refuseIdentityToken answers an identity token this listener did not admit. A token the verifier
+// reached no verdict on, because the issuer's discovery or key set could not be read
+// (oidc.ErrIssuerUnavailable), is the 503 with Retry-After: 1 a broker token the broker could not
+// check gets (refuseBrokerToken): the listener could not run the check, which is its own failure
+// rather than the token's. A 401 would tell Dispatch's client its account token was refused, and
+// that client makes a refused call again on the shared token with no role mark (cmd/dispatch's
+// listener client), so an issuer outage would send Dispatch's role-route messages unmarked, where
+// no takeover copies them for the role's next holder. Every other outcome is the 401 every other
+// refused credential gets here.
+func refuseIdentityToken(w http.ResponseWriter, err error) {
+	if errors.Is(err, oidc.ErrIssuerUnavailable) {
+		w.Header().Set("Retry-After", "1")
+		writeJSONError(w, http.StatusServiceUnavailable, "this identity token could not be checked; try again in a minute")
+		return
+	}
+	writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 }
 
 // verifiedPrincipalKey is the context key the principal an identity token proved is carried
@@ -340,15 +370,21 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 		if raw, ok := strings.CutPrefix(authorization, bearerPrefix); ok && oidc.LooksLikeJWT(raw) {
 			switch {
 			case auth.google != nil && (auth.verifier == nil || auth.google.verifier.Issues(raw)):
-				if account, admitted := auth.google.admits(r, raw, auth.logger); admitted {
+				account, err := auth.google.admits(r, raw, auth.logger)
+				if err == nil {
 					admit(w, r.WithContext(withVerifiedPrincipal(r.Context(), account)), credentialGoogle)
 					return
 				}
+				refuseIdentityToken(w, err)
+				return
 			case auth.verifier != nil:
-				if subject, admitted := auth.admitsServiceAccount(r, raw); admitted {
+				subject, err := auth.admitsServiceAccount(r, raw)
+				if err == nil {
 					admit(w, r.WithContext(withVerifiedPrincipal(r.Context(), subject)), credentialOIDC)
 					return
 				}
+				refuseIdentityToken(w, err)
+				return
 			}
 		}
 

@@ -52,8 +52,11 @@ func (g *gatedProjectMark) ProjectMark(ctx context.Context, artifactID, markID s
 // whether the close was seen.
 func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 	// The seeded spec's settlement takes the owner lock this test holds; keep it out of the queue.
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "Closed while waiting", "A spec")
+	// Creating the issue starts the project's term-statistics refresh, which commits its rows
+	// whenever it finishes: waited out here, it cannot read as a write of the refused ask.
+	awaitBackgroundWrites(t, served)
 	before := databaseFingerprint(t, database)
 
 	closer, err := database.Pool.Begin(context.Background())

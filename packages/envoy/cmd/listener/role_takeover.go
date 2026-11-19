@@ -486,8 +486,10 @@ func takenRoleMessage(data []byte, role string) (contracts.Envelope, bool) {
 // takenFrameMsgID. The stream's duplicate answer is a copy already made, which is no error. A
 // clustered stream's refusal of an id still in process under another publish
 // (bus.ErrDuplicateInProcess) is published again roleKeepInProcessPause later, as the keep's own is
-// (storeKeptRoleCopy). A copy of a Dispatch message is an outbox copy to the walk (isOutboxCopy): it
-// raises no wake and gets no dead letter.
+// (storeKeptRoleCopy). A copy of a frame Dispatch's outbox forwarded, which carries no role mark,
+// is an outbox copy to the walk (isOutboxCopy): it raises no wake and gets no dead letter. A copy of
+// a send Dispatch's API marked with its role is the listener's own copy, which the sweep's wake
+// report counts.
 func keepTakenRoleFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope, seq uint64) error {
 	kept := item
 	kept.DedupeKey = strings.TrimPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix)
