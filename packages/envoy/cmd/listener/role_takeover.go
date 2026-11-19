@@ -161,100 +161,144 @@ func runTakenRoleDrain(cfg listenerDeliveryHandlerConfig, role string) {
 		return
 	}
 	defer release()
-	_, err := handOverTakenRole(ctx, cfg, role)
+	_, err := handOverTakenRole(ctx, cfg, role, nil)
 	reportKeptRoleDrain(cfg, role, err)
 }
 
 // handOverTakenRole runs the passes of every takeover record of role that is not finished
 // (runTakeoverPasses), so the role messages each previous holder did not read are on the role's
 // kept lane, and then hands the lane over (handOverKeptRole), for a caller holding role's guard.
-// The claim route's handover of the role it granted runs it, and so does the kept lane's sweep for
-// every role a record names. A pass that failed is logged and leaves its record to the next pass;
-// the lane is handed over whatever the passes did.
-func handOverTakenRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) (keptRoleHandover, error) {
-	runTakeoverPasses(ctx, cfg, role)
+// listed is the role's records as the caller already read them - the kept lane's sweep, which
+// lists every record once a pass - and nil for a caller that has not, which has them read here:
+// the claim route's handover of the role it granted. A pass that failed is logged and leaves its
+// record to the next pass; the lane is handed over whatever the passes did.
+func handOverTakenRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, listed []bus.StoredTakeoverRecord) (keptRoleHandover, error) {
+	if listed == nil {
+		records, err := cfg.client.TakeoverRecords(ctx, role)
+		if err != nil {
+			cfg.logger.Warn("listener takeover copy could not read the role's takeover records",
+				slog.String("role", role),
+				slog.String("error", err.Error()))
+		}
+		listed = records
+	}
+	runTakeoverPasses(ctx, cfg, listed)
 	return handOverKeptRole(ctx, cfg, role, cfg.now)
 }
 
-// runTakeoverPasses runs passes of each takeover record of role that is not finished, each record's
-// until one reads to the end of the previous holder's subject, fails, or ctx ends. A pass reads at
-// most roleKeepScanMax messages and writes the record with the sequence it reached, so the next
-// goes on from there, here or on any listener.
-func runTakeoverPasses(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) {
-	records, err := cfg.client.TakeoverRecords(ctx, role)
-	if err != nil {
-		cfg.logger.Warn("listener takeover copy could not read the role's takeover records",
-			slog.String("role", role),
-			slog.String("error", err.Error()))
-		return
-	}
+// runTakeoverPasses runs passes of each of records that is not finished, each record's until one
+// reads to the end of the previous holder's subject or copies nothing for the reason a pass gives
+// (runTakeoverPass), fails, or ctx ends. A pass reads at most roleKeepScanMax messages and writes
+// the record with the sequence it reached, so the next goes on from there, here or on any
+// listener.
+func runTakeoverPasses(ctx context.Context, cfg listenerDeliveryHandlerConfig, records []bus.StoredTakeoverRecord) {
 	for _, stored := range records {
-		record := stored.Record
-		for !record.Finished && ctx.Err() == nil {
-			next, reachedEnd, err := runTakeoverPass(ctx, cfg, stored.Subject, record)
+		for !stored.Record.Finished && ctx.Err() == nil {
+			next, done, err := runTakeoverPass(ctx, cfg, stored)
 			if err != nil {
 				cfg.logger.Warn("listener takeover copy pass failed; the next pass goes on from its record",
-					slog.String("role", record.Role),
-					slog.String("previous_session_id", record.Previous),
+					slog.String("role", stored.Record.Role),
+					slog.String("previous_session_id", stored.Record.Previous),
 					slog.String("record", stored.Subject),
 					slog.String("error", err.Error()))
 				break
 			}
-			record = next
-			if reachedEnd {
+			stored = next
+			if done {
 				break
 			}
 		}
 	}
 }
 
-// runTakeoverPass is one pass of the takeover record on subject, and returns the record as it
-// wrote it and whether it read to the end of the previous holder's subject.
+// takeoverRecordRefresh is how old a takeover record's last write may be before a pass that
+// copies nothing, because the record's previous holder holds the role (runTakeoverPass), writes it
+// again: well inside the stream's age limit less the record's life, so no record ages out of the
+// stream while a pass may still need it, and such a pass costs no write in most sweeps.
+const takeoverRecordRefresh = time.Hour
+
+// runTakeoverPass is one pass of the takeover record stored, and returns the record as it stands
+// after the pass, and whether this record's passes are done for now: the pass read to the end of
+// the previous holder's subject, or copies nothing until a later pass, which the kept lane's sweep
+// runs.
 //
-// On the record's first pass it finds where to start (takeoverStart): the floor of the previous
-// holder's session consumer, else the floor the listener recorded when it deleted that consumer,
-// else - on the pass after one that found neither, a relay's restart deleting a consumer and
-// creating it again within moments - the first message stored roleKeepWindow before the claim's
-// time. It then reads the previous holder's agent subject from there, at most roleKeepScanMax
-// messages, and copies each role message of the record's role stored roleKeepWindow before the
-// claim's time or later to the role's kept lane (keepTakenRoleFrame). It copies whether or not the
-// takeover's claim landed: a record is a conservative intent. Every pass writes the record again
-// with the sequence it reached, so the stream's age limit never removes a record a pass still
-// needs, and the next pass reads only what is new; the first pass that starts more than
-// takeoverRecordLife after the claim's time and reads to the end marks it finished.
+// It first reads the role's claim (readRoleClaimHolder). While the claim names the record's
+// previous holder - its claim did not land, or the role went back to it - the pass copies nothing
+// and leaves the record's sequence where it is: that holder receives its role messages from its own
+// session consumer (sessionRelays.takeOverFrame delivers a role message to the session the claim
+// names), and a copy would go back to the subject it was taken from, as a new frame the next pass
+// would copy again. Such a pass writes the record again only once its last write is
+// takeoverRecordRefresh old, and marks it finished once the record's life has passed. A claim read
+// that failed ends the pass with nothing written.
+//
+// Otherwise, on the record's first pass it finds where to start (takeoverStart): the floor of the
+// previous holder's session consumer, else the floor the listener recorded when it deleted that
+// consumer, else - on the sweep's pass after one that found neither, since a relay's restart
+// deletes a consumer and creates it again within moments - the first message stored roleKeepWindow
+// before the claim's time. It then reads the previous holder's agent subject from there, at most
+// roleKeepScanMax messages, and copies each role message of the record's role stored roleKeepWindow
+// before the claim's time or later to the role's kept lane (keepTakenRoleFrame). Every such pass
+// writes the record again with the sequence it reached, so the stream's age limit never removes a
+// record a pass still needs, and the next pass reads only what is new; the first pass that starts
+// more than takeoverRecordLife after the claim's time and reads to the end marks it finished.
 //
 // A read or a copy that failed ends the pass with the record written at the frame it stopped at;
 // a failed read of where to start ends it with nothing written, and the next pass reads again.
-func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, subject string, record bus.TakeoverRecord) (bus.TakeoverRecord, bool, error) {
+func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, stored bus.StoredTakeoverRecord) (bus.StoredTakeoverRecord, bool, error) {
+	record := stored.Record
 	started := cfg.now()
 	claimedAt := time.UnixMilli(record.ClaimedAt)
+	lifeOver := started.Sub(claimedAt) > takeoverRecordLife
+	written := func(record bus.TakeoverRecord, done bool, err error) (bus.StoredTakeoverRecord, bool, error) {
+		if err := errors.Join(err, writeTakeoverRecord(ctx, cfg, stored.Subject, record)); err != nil {
+			return stored, false, err
+		}
+		return bus.StoredTakeoverRecord{Subject: stored.Subject, Record: record, Written: started}, done, nil
+	}
+	holder, err := readRoleClaimHolder(ctx, cfg, record.Role)
+	if err != nil {
+		return stored, false, fmt.Errorf("read role %s's claim: %w", record.Role, err)
+	}
+	if holder == record.Previous {
+		if lifeOver {
+			record.Finished = true
+			return written(record, true, nil)
+		}
+		if started.Sub(stored.Written) >= takeoverRecordRefresh {
+			return written(record, true, nil)
+		}
+		return stored, true, nil
+	}
 	since := claimedAt.Add(-roleKeepWindow)
 	agent := contracts.LegacyAgentSubject(record.Previous)
 	next := record.Next
 	if next == 0 {
 		start, missed, err := takeoverStart(ctx, cfg, record, agent, since)
 		if err != nil {
-			return record, false, err
+			return stored, false, err
 		}
 		if missed {
+			// The next read of the consumer is the sweep's next pass, not this handover's next
+			// one: a relay's restart creates the consumer again within moments, and a read
+			// inside them would start from the hour before the claim needlessly.
 			record.FloorMissed = true
-			return record, false, writeTakeoverRecord(ctx, cfg, subject, record)
+			return written(record, true, nil)
 		}
 		if start == 0 {
 			// Nothing on the subject from the hour before the claim on: the end, with nothing
 			// to start from yet.
-			record.Finished = started.Sub(claimedAt) > takeoverRecordLife
-			return record, true, writeTakeoverRecord(ctx, cfg, subject, record)
+			record.Finished = lifeOver
+			return written(record, true, nil)
 		}
 		next = start
 	}
 	copied, reachedEnd := 0, false
-	stop := func(err error) (bus.TakeoverRecord, bool, error) {
+	stop := func(err error) (bus.StoredTakeoverRecord, bool, error) {
 		record.Next = next
-		return record, false, errors.Join(err, writeTakeoverRecord(ctx, cfg, subject, record))
+		return written(record, false, err)
 	}
 	for range roleKeepScanMax {
-		stored, err := cfg.client.NextStoredMessage(ctx, agent, next)
+		message, err := cfg.client.NextStoredMessage(ctx, agent, next)
 		if errors.Is(err, nats.ErrMsgNotFound) {
 			reachedEnd = true
 			break
@@ -262,23 +306,23 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sub
 		if err != nil {
 			return stop(fmt.Errorf("read %s after %d: %w", agent, next, err))
 		}
-		if !stored.Time.Before(since) {
-			if item, ok := takenRoleMessage(stored.Data, record.Role); ok {
+		if !message.Time.Before(since) {
+			if item, ok := takenRoleMessage(message.Data, record.Role); ok {
 				if hook := faults().beforeCopy; hook != nil {
-					if err := hook(record.Role, record.Previous, stored.Sequence); err != nil {
+					if err := hook(record.Role, record.Previous, message.Sequence); err != nil {
 						return stop(err)
 					}
 				}
-				if err := keepTakenRoleFrame(ctx, cfg, record.Role, item, stored.Sequence); err != nil {
+				if err := keepTakenRoleFrame(ctx, cfg, record.Role, item, message.Sequence); err != nil {
 					return stop(err)
 				}
 				copied++
 			}
 		}
-		next = stored.Sequence + 1
+		next = message.Sequence + 1
 	}
 	record.Next = next
-	record.Finished = reachedEnd && started.Sub(claimedAt) > takeoverRecordLife
+	record.Finished = reachedEnd && lifeOver
 	if copied > 0 || record.Finished {
 		cfg.logger.Info("listener takeover copy pass copied the previous holder's role messages to the role's kept lane",
 			slog.String("role", record.Role),
@@ -287,7 +331,7 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sub
 			slog.Uint64("next", next),
 			slog.Bool("finished", record.Finished))
 	}
-	return record, reachedEnd, writeTakeoverRecord(ctx, cfg, subject, record)
+	return written(record, reachedEnd, nil)
 }
 
 // takeoverStart is where a record's first pass reads the previous holder's subject from: the

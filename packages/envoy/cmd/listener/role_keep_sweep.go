@@ -122,7 +122,7 @@ func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 			<-slots
 			continue
 		}
-		_, takenRole := taken[role]
+		records, takenRole := taken[role]
 		if !takenRole {
 			headCtx, cancelHead := context.WithTimeout(ctx, roleKeepDrainWindow)
 			head, err := readKeptLaneHead(headCtx, cfg.client, role)
@@ -146,7 +146,7 @@ func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 				slog.Uint64("last", head.last))
 		}
 		go func() {
-			from := handOverSweptLane(ctx, cfg, role, takenRole)
+			from := handOverSweptLane(ctx, cfg, role, records)
 			release()
 			if from != 0 {
 				raiseKeptRoleWake(ctx, cfg, role, from)
@@ -158,26 +158,27 @@ func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 
 // handOverSweptLane is one handover the sweep started, for a caller holding role's guard: it hands
 // role's kept lane over within roleKeepHandoverWindow on the listener's clock (handOverKeptRole),
-// after the passes of the role's takeover records that are not finished where taken says it has
-// any (handOverTakenRole), logs it where every failed handover is logged (reportKeptRoleDrain),
-// and returns the sequence the role's wake read starts from (raiseKeptRoleWake), 0 for a handover
-// after which the role's wake report is not raised again. That sequence is the copy inside its
-// hour the handover's walk with no holder stopped at, when the handover's last pass resolved no
-// live holder - roles.Unclaimed or roles.Lapsed (roleKeepable). A resolution that did not answer
-// raises none, since it says nothing about whether the role has a live holder; the handovers the
-// claim route, a keep and a registration start raise none either, so the reports that follow the
-// one a keep raises are the sweep's alone, one for each interval. It makes no read for the wake
-// itself: its caller gives the role's guard back first, so no handover of the role waits on that
-// read, and keeps its sweep slot through the read and gives it back after it (sweepKeptRoleLanes).
-func handOverSweptLane(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, taken bool) uint64 {
+// after the passes of records, the role's takeover records that are not finished as the sweep
+// listed them, where it has any (handOverTakenRole), logs it where every failed handover is logged
+// (reportKeptRoleDrain), and returns the sequence the role's wake read starts from
+// (raiseKeptRoleWake), 0 for a handover after which the role's wake report is not raised again.
+// That sequence is the copy inside its hour the handover's walk with no holder stopped at, when
+// the handover's last pass resolved no live holder - roles.Unclaimed or roles.Lapsed
+// (roleKeepable). A resolution that did not answer raises none, since it says nothing about
+// whether the role has a live holder; the handovers the claim route, a keep and a registration
+// start raise none either, so the reports that follow the one a keep raises are the sweep's
+// alone, one for each interval. It makes no read for the wake itself: its caller gives the role's
+// guard back first, so no handover of the role waits on that read, and keeps its sweep slot
+// through the read and gives it back after it (sweepKeptRoleLanes).
+func handOverSweptLane(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, records []bus.StoredTakeoverRecord) uint64 {
 	handoverCtx, cancel := context.WithTimeout(ctx, roleKeepHandoverWindow)
 	defer cancel()
 	var (
 		handover keptRoleHandover
 		err      error
 	)
-	if taken {
-		handover, err = handOverTakenRole(handoverCtx, cfg, role)
+	if len(records) > 0 {
+		handover, err = handOverTakenRole(handoverCtx, cfg, role, records)
 	} else {
 		handover, err = handOverKeptRole(handoverCtx, cfg, role, cfg.now)
 	}
@@ -188,10 +189,10 @@ func handOverSweptLane(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 	return handover.waiting
 }
 
-// takenRoles is every role a takeover record that is not finished names (bus.TakeoverRecords),
-// for the sweep to run their passes. A read that failed is logged and names none, and the next
-// pass reads again.
-func takenRoles(ctx context.Context, cfg listenerDeliveryHandlerConfig) map[string]struct{} {
+// takenRoles is the takeover records that are not finished (bus.TakeoverRecords), by the role
+// each names, read once a sweep pass, for the sweep to run their passes. A read that failed is
+// logged and names none, and the next pass reads again.
+func takenRoles(ctx context.Context, cfg listenerDeliveryHandlerConfig) map[string][]bus.StoredTakeoverRecord {
 	records, err := cfg.client.TakeoverRecords(ctx, "")
 	if err != nil {
 		if ctx.Err() == nil {
@@ -200,10 +201,10 @@ func takenRoles(ctx context.Context, cfg listenerDeliveryHandlerConfig) map[stri
 		}
 		return nil
 	}
-	taken := map[string]struct{}{}
+	taken := map[string][]bus.StoredTakeoverRecord{}
 	for _, stored := range records {
 		if !stored.Record.Finished {
-			taken[stored.Record.Role] = struct{}{}
+			taken[stored.Record.Role] = append(taken[stored.Record.Role], stored)
 		}
 	}
 	return taken
