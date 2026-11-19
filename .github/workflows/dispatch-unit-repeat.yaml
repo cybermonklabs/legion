@@ -57,7 +57,9 @@ name: Dispatch unit suite repeated
 #            the most (280 files, 4,885 rows a run)
 #   harness: 1,070, 1,233, 1,334; 1,066, 1,195, 1,224; 1,384, 1,281, 1,294; 1,274, 1,084, 1,264 s;
 #            3,050 to 3,907 MiB at the most (41 files, 661 and then 662 rows a run, 1 skipped)
-# So 20 reruns a leg fit one standard runner with room in memory, and a run takes about 24 min.
+# So 20 reruns a leg fit one standard runner with room in memory. The 24 completed runs of this
+# workflow on its pull request, which the test step's comment below names, took 1,213 to 1,884 s
+# each, from the first leg's start to the last leg's end.
 #   web-cold: 84, 98, 101 s in run 44339340132 (2026-11-18), 2,302 to 2,382 MiB at the most
 #            (281 files, 4,932 rows, one run)
 #
@@ -126,10 +128,14 @@ jobs:
     runs-on: ubuntu-24.04
     # The budget, by the rule .github/workflows/dispatch-browser.yaml's head states: a job's
     # budget is the sum of its step budgets plus the measured maximum of the steps without one.
-    # The test step's budget is the matrix's step_minutes. The steps without one measured at most
-    # 52 s together in the four runs of the head comment (19 s of it the harness legs' zsh
-    # install), so 1 minute: 14 + 1 = 15 minutes for a web leg, 2 + 1 = 3 for a web-cold leg and
-    # 27 + 1 = 28 for a harness leg, the matrix's job_minutes.
+    # The test step's budget is the matrix's step_minutes. The steps without one, measured together
+    # over every completed leg of the runs the test step's comment names, took at most 37 s in a
+    # web leg (run 44097039165, round 2), 29 s in a web-cold leg (run 44449111716, round 2) and
+    # 151 s in a harness leg (run 44473658176, round 3, whose zsh install took 125 s), so 1, 1 and
+    # 3 minutes: 16 + 1 = 17 minutes for a web leg, 2 + 1 = 3 for a web-cold leg and 30 + 3 = 33
+    # for a harness leg, the matrix's job_minutes. The slowest whole jobs took 845 s for a web leg
+    # (run 44465013263, round 3), 125 s for a web-cold leg (run 44360597415, round 1) and 1,575 s
+    # for a harness leg (run 44389203951, round 1).
     timeout-minutes: ${{ matrix.job_minutes }}
     strategy:
       # One leg's failure leaves the other legs running, so each one reports its own rows.
@@ -144,16 +150,16 @@ jobs:
         include:
           - lane: web
             reruns: 20
-            step_minutes: 14
-            job_minutes: 15
+            step_minutes: 16
+            job_minutes: 17
           - lane: web-cold
             reruns: 1
             step_minutes: 2
             job_minutes: 3
           - lane: harness
             reruns: 20
-            step_minutes: 27
-            job_minutes: 28
+            step_minutes: 30
+            job_minutes: 33
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -206,11 +212,16 @@ jobs:
           echo "LEGION_TEST_PG_DSN=$LEGION_TEST_PG_DSN" >> "$GITHUB_ENV"
           psql "$LEGION_TEST_PG_DSN" -c 'select 1'
       # The budget, by dispatch-browser.yaml's rule: the measured maximum plus 15 per cent,
-      # rounded up to the next whole minute, with a floor of two minutes. The four runs of the
-      # head comment measured this step at 502 to 710 s for the web legs, so 710 x 1.15 = 817 s,
-      # 14 minutes; and at 1,066 to 1,384 s for the harness legs, so 1,384 x 1.15 = 1,592 s, 27
-      # minutes. The web-cold legs measured 84 to 101 s in run 44339340132, so 101 x 1.15 = 116 s,
-      # the two-minute floor.
+      # rounded up to the next whole minute, with a floor of two minutes. The measurement is every
+      # run of this workflow on its pull request, runs 44023917835 to 44473658176 (2026-11-17 to
+      # 2026-11-19): 24 completed runs, and three that a newer push cancelled (44089016718,
+      # 44356093835 and 44359116720), whose cancelled legs are left out. A pull request's run
+      # tests GitHub's merge of its head with main, so it grows with main's suite: a web run read
+      # 4,885 rows in run 44023917835 and 5,189 in run 44473658176. This step took 459 to 821 s in
+      # the 78 completed web legs, the most in run 44465013263, round 3, so 821 x 1.15 = 944 s, 16
+      # minutes; and 999 to 1,529 s in the 73 completed harness legs, the most in run 44389203951,
+      # round 1, so 1,529 x 1.15 = 1,758 s, 30 minutes. The 39 web-cold legs took at most 101 s,
+      # in run 44339340132, round 3, so 101 x 1.15 = 116 s, the two-minute floor.
       #
       # GitHub's runners set CI already. The step writes it too, so the environment the rows run
       # under does not rest on the runner's: Bun's test runner reads it, and under it writes no
