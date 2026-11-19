@@ -435,13 +435,13 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 }
 
 // printRefusal writes prefix, ": ", err's text through the URL rule (redact.URLCredentials) and a
-// newline to stderr. The daemon's own commands (start, probe-boot, config check) and the worker's
-// and the pod's processes write their refusals through here or through the same rule, so each
-// passes the rule the daemon's log handler applies to every record: an error can wrap a
-// *url.Error, which keeps the URL's query and its user name (Go's client masks only a password),
-// and pgx's ParseConfigError of a postgres_dsn it cannot parse quotes the DSN with its user name
-// and its query (pgx masks only the password). The operator's own commands (state, stop, status)
-// print theirs on the operator's terminal without it.
+// newline to stderr. The daemon's own commands (start, probe-boot, config check) and the commands
+// podLogs names write their refusals through here or through the same rule, so each passes the
+// rule the daemon's log handler applies to every record: an error can wrap a *url.Error, which
+// keeps the URL's query and its user name (Go's client masks only a password), and pgx's
+// ParseConfigError of a postgres_dsn it cannot parse quotes the DSN with its user name and its
+// query (pgx masks only the password). The operator's own commands (state, stop, status) print
+// theirs on the operator's terminal without it.
 func printRefusal(stderr io.Writer, prefix string, err error) {
 	fmt.Fprintf(stderr, "%s: %s\n", prefix, redact.URLCredentials(err.Error()))
 }

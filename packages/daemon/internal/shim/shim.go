@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -736,7 +737,8 @@ func summarize(frame shimwire.Frame) string {
 			args.Reset()
 			args.WriteString("{}")
 		}
-		return shimwire.TypeToolExecutionStart + " " + tool + " " + truncate(args.String(), 80)
+		// The rule before the cut: a userinfo cut before its "@" is one the log's rule cannot find.
+		return shimwire.TypeToolExecutionStart + " " + tool + " " + truncate(redact.URLCredentials(args.String()), 80)
 	case shimwire.Raw:
 		switch f.Type {
 		case "error":

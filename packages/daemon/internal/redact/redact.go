@@ -7,11 +7,10 @@
 // review body, an ask's note) keeps its links whole, query included (`?plain=1#L10`, `?pr=M`), so
 // the store's own rule (internal/store/storetext.Text) does not apply this one.
 //
-// The daemon's own log takes the rule in its handler (HandlerOptions). The log of the worker's own
-// processes, in a tmux pane or a pod (`legion worker-shim`, `legion claude-bridge`), and of a
-// pod's own (`legion launcher`, `legion workspace-init`) takes it whole, through Writer: such a
-// log mixes a far side's error with what an agent wrote (a tool call's summary), and a link of an
-// agent's that loses its query in that log keeps it everywhere else.
+// The daemon's own log takes the rule in its handler (HandlerOptions). The log of the worker's and
+// the pod's own processes (the commands cmd/legion's podLogs names) takes it whole, through
+// Writer: such a log mixes a far side's error with what an agent wrote (a tool call's summary),
+// and a link of an agent's that loses its query in that log keeps it everywhere else.
 package redact
 
 import (
@@ -43,7 +42,8 @@ import (
 // a credential is left, and URLCredentials(URLCredentials(s)) == URLCredentials(s).
 //
 // A text the rule does not change, a text with no "://" above all, is returned as it is, with no
-// allocation.
+// allocation. The rule takes time linear in the text's length, a run of "://" that nothing ends
+// included.
 func URLCredentials(text string) string {
 	if !strings.Contains(text, "://") {
 		return text
@@ -62,6 +62,21 @@ func URLCredentials(text string) string {
 	// A URL's query is removed once the search for the next "://" passes its start: a URL in the
 	// path before it has the same query, and a userinfo of that URL comes first in the text.
 	query, fragment := -1, -1
+	// The searches that read on to a URL's end are kept, so that a run of text holding many "://"
+	// is read once rather than once for each of them: end is the first endsURL rune at or after
+	// the position it was last looked for from, and slash, question and hash are the next "/",
+	// "?" and "#" (nextByte). Each is looked for again only when it is behind the position now
+	// asked about: one found from a position p is the answer for any later position it is not
+	// behind, since none lies between p and it. So a kept answer is right only while no position
+	// asked is before one asked earlier, and none is: in one URL at ≤ host; host is at or before
+	// the "/" of the next "://", so before the next URL's at; and a removed query moves at to
+	// fragment, after the query's "?", at or before which lie the at and the host of the URL whose
+	// query it is and of each URL after it, whose "://" comes before the "?". The runes decoded
+	// from at and from an earlier position agree from at on, since the ":" of the "://" before at
+	// starts a rune either way. The search for the next "://" reads a stretch twice at most: once,
+	// and again from fragment after a removed query.
+	end := -1
+	slash, question, hash := nextByte{c: '/', at: -1}, nextByte{c: '?', at: -1}, nextByte{c: '#', at: -1}
 	for at := 0; ; {
 		i := strings.Index(text[at:], "://")
 		if query >= 0 && (i < 0 || at+i >= query) {
@@ -74,17 +89,23 @@ func URLCredentials(text string) string {
 		}
 		sep := at + i
 		at = sep + len("://")
+		// schemeEndsAt reads back from sep over scheme characters alone, so no further than the
+		// ":" of the "://" before: its reads of the whole text add up to the text's length.
 		if !schemeEndsAt(text, sep) {
 			continue
 		}
-		end := at + orLen(strings.IndexFunc(text[at:], endsURL), len(text)-at)
-		host := at + orLen(strings.IndexAny(text[at:end], "/?#"), end-at)
+		if end < at {
+			end = at + orLen(strings.IndexFunc(text[at:], endsURL), len(text)-at)
+		}
+		host := min(slash.from(text, at), question.from(text, at), hash.from(text, at), end)
+		// [at, host) ends at or before the "/" of the next "://", so the userinfo's searches read
+		// spans apart from one another, the whole text once at most.
 		if u := strings.LastIndexByte(text[at:host], '@'); u >= 0 {
 			remove(at, at+u+1)
 		}
-		frag := host + orLen(strings.IndexByte(text[host:end], '#'), end-host)
-		if q := strings.IndexByte(text[host:frag], '?'); q >= 0 {
-			query, fragment = host+q, frag
+		frag := min(hash.from(text, host), end)
+		if q := question.from(text, host); q < frag {
+			query, fragment = q, frag
 		}
 	}
 	if kept == 0 {
@@ -92,6 +113,22 @@ func URLCredentials(text string) string {
 	}
 	out.WriteString(text[kept:])
 	return out.String()
+}
+
+// nextByte is the index of the next c in a text at or after the position it was last looked for
+// from, or the text's length when there is none.
+type nextByte struct {
+	c  byte
+	at int
+}
+
+// from is the index of the next c in text at or after i, looked for again only when the one kept
+// is behind i. It is right only when i is no smaller than every position asked before it.
+func (n *nextByte) from(text string, i int) int {
+	if n.at < i {
+		n.at = i + orLen(strings.IndexByte(text[i:], n.c), len(text)-i)
+	}
+	return n.at
 }
 
 // schemeEndsAt reports whether a scheme ends at sep, the index of a "://" in text: the run of

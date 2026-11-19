@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
+	"math/rand/v2"
 	"net/url"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // planted is the credential every case writes into a URL, so that one search of an output finds
@@ -32,111 +35,114 @@ func redirectError() error {
 	}
 }
 
+// urlCredentialsCases are the rule's cases: each a text, and what the rule leaves of it.
+var urlCredentialsCases = []struct {
+	name, text, want string
+}{
+	{
+		name: "a redirect's url.Error",
+		text: redirectError().Error(),
+		want: `Get "https://codeload.github.com/o/r/legacy.tar.gz/refs/tags/v1": dial tcp 127.0.0.1:9: connect: connection refused`,
+	},
+	{
+		name: "a userinfo with a password",
+		text: "clone https://user:" + planted + "@github.com/o/r.git failed",
+		want: "clone https://github.com/o/r.git failed",
+	},
+	{
+		name: "a token as the user name",
+		text: "fetch https://" + planted + "@github.com/o/r.git: exit status 128",
+		want: "fetch https://github.com/o/r.git: exit status 128",
+	},
+	{
+		name: "everything up to the authority's last @",
+		text: "https://a@" + planted + "@host.example:8443/p",
+		want: "https://host.example:8443/p",
+	},
+	{
+		name: "a URL inside %q quotes",
+		text: fmt.Sprintf("parse %q: invalid port", "postgres://"+plantedUserinfo+"@db.example:5432/legion?sslmode=disable&password="+planted),
+		want: `parse "postgres://db.example:5432/legion": invalid port`,
+	},
+	{
+		name: "a URL inside <…>",
+		text: "see <https://u:" + planted + "@host.example/x?sig=" + planted + "> now",
+		want: "see <https://host.example/x> now",
+	},
+	{
+		name: "a URL inside single quotes and one inside backticks",
+		text: "'https://host.example/?t=" + planted + "' and `https://host.example/?t=" + planted + "`",
+		want: "'https://host.example/' and `https://host.example/`",
+	},
+	{
+		name: "two URLs in one text",
+		text: "a https://h.example/?t=" + planted + " then HTTP://" + planted + "@g.example:8080/p?q=" + planted + "#f",
+		want: "a https://h.example/ then HTTP://g.example:8080/p#f",
+	},
+	{
+		name: "a query after a port with no path",
+		text: "dial http://h.example:8080?key=" + planted,
+		want: "dial http://h.example:8080",
+	},
+	{
+		name: "a query before a fragment",
+		text: "https://github.com/o/r/blob/main/f.go?token=" + planted + "#L10",
+		want: "https://github.com/o/r/blob/main/f.go#L10",
+	},
+	{
+		name: "a query that ends the text",
+		text: "go to https://h.example/p?" + planted,
+		want: "go to https://h.example/p",
+	},
+	{
+		name: "a URL that ends at a Unicode white space",
+		text: "https://h.example/?t=" + planted + "\u00a0more",
+		want: "https://h.example/\u00a0more",
+	},
+	{
+		name: "a URL in the path of another",
+		text: "https://archive.example/web/https://u:" + planted + "@h.example/x?t=" + planted,
+		want: "https://archive.example/web/https://h.example/x",
+	},
+	{
+		name: "a URL in the fragment of another",
+		text: "https://h.example/#next=https://" + planted + "@g.example/?t=" + planted + "#top",
+		want: "https://h.example/#next=https://g.example/#top",
+	},
+	{
+		name: "a URL in the query of another",
+		text: "https://h.example/login?next=https://" + planted + "@g.example/ done",
+		want: "https://h.example/login done",
+	},
+	{
+		name: "a fragment kept",
+		text: "dispatch://KEY/spec#b-r1",
+		want: "dispatch://KEY/spec#b-r1",
+	},
+	{
+		name: "a ? in the fragment kept",
+		text: "https://h.example/p#which?that",
+		want: "https://h.example/p#which?that",
+	},
+	{
+		name: "an @ in the path kept",
+		text: "https://h.example/@user/p",
+		want: "https://h.example/@user/p",
+	},
+	{
+		name: "a ? in prose with no URL",
+		text: "is it done? yes, at 10:30 // or later?",
+		want: "is it done? yes, at 10:30 // or later?",
+	},
+	{
+		name: "a :// after no scheme",
+		text: "9://u@h.example/?q and ://u@h.example/?q",
+		want: "9://u@h.example/?q and ://u@h.example/?q",
+	},
+}
+
 func TestURLCredentialsRemovesTheQueryAndTheUserinfoOfEveryURL(t *testing.T) {
-	for _, tc := range []struct {
-		name, text, want string
-	}{
-		{
-			name: "a redirect's url.Error",
-			text: redirectError().Error(),
-			want: `Get "https://codeload.github.com/o/r/legacy.tar.gz/refs/tags/v1": dial tcp 127.0.0.1:9: connect: connection refused`,
-		},
-		{
-			name: "a userinfo with a password",
-			text: "clone https://user:" + planted + "@github.com/o/r.git failed",
-			want: "clone https://github.com/o/r.git failed",
-		},
-		{
-			name: "a token as the user name",
-			text: "fetch https://" + planted + "@github.com/o/r.git: exit status 128",
-			want: "fetch https://github.com/o/r.git: exit status 128",
-		},
-		{
-			name: "everything up to the authority's last @",
-			text: "https://a@" + planted + "@host.example:8443/p",
-			want: "https://host.example:8443/p",
-		},
-		{
-			name: "a URL inside %q quotes",
-			text: fmt.Sprintf("parse %q: invalid port", "postgres://"+plantedUserinfo+"@db.example:5432/legion?sslmode=disable&password="+planted),
-			want: `parse "postgres://db.example:5432/legion": invalid port`,
-		},
-		{
-			name: "a URL inside <…>",
-			text: "see <https://u:" + planted + "@host.example/x?sig=" + planted + "> now",
-			want: "see <https://host.example/x> now",
-		},
-		{
-			name: "a URL inside single quotes and one inside backticks",
-			text: "'https://host.example/?t=" + planted + "' and `https://host.example/?t=" + planted + "`",
-			want: "'https://host.example/' and `https://host.example/`",
-		},
-		{
-			name: "two URLs in one text",
-			text: "a https://h.example/?t=" + planted + " then HTTP://" + planted + "@g.example:8080/p?q=" + planted + "#f",
-			want: "a https://h.example/ then HTTP://g.example:8080/p#f",
-		},
-		{
-			name: "a query after a port with no path",
-			text: "dial http://h.example:8080?key=" + planted,
-			want: "dial http://h.example:8080",
-		},
-		{
-			name: "a query before a fragment",
-			text: "https://github.com/o/r/blob/main/f.go?token=" + planted + "#L10",
-			want: "https://github.com/o/r/blob/main/f.go#L10",
-		},
-		{
-			name: "a query that ends the text",
-			text: "go to https://h.example/p?" + planted,
-			want: "go to https://h.example/p",
-		},
-		{
-			name: "a URL that ends at a Unicode white space",
-			text: "https://h.example/?t=" + planted + "\u00a0more",
-			want: "https://h.example/\u00a0more",
-		},
-		{
-			name: "a URL in the path of another",
-			text: "https://archive.example/web/https://u:" + planted + "@h.example/x?t=" + planted,
-			want: "https://archive.example/web/https://h.example/x",
-		},
-		{
-			name: "a URL in the fragment of another",
-			text: "https://h.example/#next=https://" + planted + "@g.example/?t=" + planted + "#top",
-			want: "https://h.example/#next=https://g.example/#top",
-		},
-		{
-			name: "a URL in the query of another",
-			text: "https://h.example/login?next=https://" + planted + "@g.example/ done",
-			want: "https://h.example/login done",
-		},
-		{
-			name: "a fragment kept",
-			text: "dispatch://KEY/spec#b-r1",
-			want: "dispatch://KEY/spec#b-r1",
-		},
-		{
-			name: "a ? in the fragment kept",
-			text: "https://h.example/p#which?that",
-			want: "https://h.example/p#which?that",
-		},
-		{
-			name: "an @ in the path kept",
-			text: "https://h.example/@user/p",
-			want: "https://h.example/@user/p",
-		},
-		{
-			name: "a ? in prose with no URL",
-			text: "is it done? yes, at 10:30 // or later?",
-			want: "is it done? yes, at 10:30 // or later?",
-		},
-		{
-			name: "a :// after no scheme",
-			text: "9://u@h.example/?q and ://u@h.example/?q",
-			want: "9://u@h.example/?q and ://u@h.example/?q",
-		},
-	} {
+	for _, tc := range urlCredentialsCases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := URLCredentials(tc.text)
 			if got != tc.want {
@@ -150,6 +156,140 @@ func TestURLCredentialsRemovesTheQueryAndTheUserinfoOfEveryURL(t *testing.T) {
 			}
 		})
 	}
+}
+
+// urlCredentialsQuadratic is URLCredentials as it was before it kept its searches: the same rule,
+// which for each "://" searches again to the URL's end, three times, so a run of "://" that
+// nothing ends (`a://a://…`) takes it time quadratic in the run's length. It is kept as the
+// reference URLCredentials's output is held to
+// (TestURLCredentialsGivesWhatTheRuleAsFirstWrittenGives): URLCredentials's kept searches are
+// right only under an order of the positions it asks from, and this one asks every search afresh.
+func urlCredentialsQuadratic(text string) string {
+	if !strings.Contains(text, "://") {
+		return text
+	}
+	var out strings.Builder
+	// text[:kept] is written to out or removed. Every removal starts after a "://", so kept is 0
+	// until the first one.
+	kept := 0
+	remove := func(from, to int) {
+		if kept == 0 {
+			out.Grow(len(text))
+		}
+		out.WriteString(text[kept:from])
+		kept = to
+	}
+	// A URL's query is removed once the search for the next "://" passes its start: a URL in the
+	// path before it has the same query, and a userinfo of that URL comes first in the text.
+	query, fragment := -1, -1
+	for at := 0; ; {
+		i := strings.Index(text[at:], "://")
+		if query >= 0 && (i < 0 || at+i >= query) {
+			remove(query, fragment)
+			at, query = fragment, -1
+			continue
+		}
+		if i < 0 {
+			break
+		}
+		sep := at + i
+		at = sep + len("://")
+		if !schemeEndsAt(text, sep) {
+			continue
+		}
+		end := at + orLen(strings.IndexFunc(text[at:], endsURL), len(text)-at)
+		host := at + orLen(strings.IndexAny(text[at:end], "/?#"), end-at)
+		if u := strings.LastIndexByte(text[at:host], '@'); u >= 0 {
+			remove(at, at+u+1)
+		}
+		frag := host + orLen(strings.IndexByte(text[host:end], '#'), end-host)
+		if q := strings.IndexByte(text[host:frag], '?'); q >= 0 {
+			query, fragment = host+q, frag
+		}
+	}
+	if kept == 0 {
+		return text
+	}
+	out.WriteString(text[kept:])
+	return out.String()
+}
+
+// URLCredentials leaves of every text what the rule as first written leaves of it
+// (urlCredentialsQuadratic): of each text of the cases, and of 5000 texts of up to 300 pieces
+// built under a fixed seed, each from "a", "://" and about half of the other pieces the rule
+// reads, so that URLs in the paths, the queries and the fragments of others, userinfos, invalid
+// UTF-8 and every character that ends a URL meet in many orders. What it leaves, it leaves as it
+// is.
+func TestURLCredentialsGivesWhatTheRuleAsFirstWrittenGives(t *testing.T) {
+	var texts []string
+	for _, tc := range urlCredentialsCases {
+		texts = append(texts, tc.text)
+	}
+	pieces := []string{"https", "9", "@", ":", "/", "?", "#", "=", " ", "\u00a0", `"`, "'", "`", "<", ">", "é", "\xff"}
+	random := rand.New(rand.NewPCG(4193, 4463))
+	for range 5000 {
+		some := []string{"a", "://"}
+		for _, piece := range pieces {
+			if random.IntN(2) == 0 {
+				some = append(some, piece)
+			}
+		}
+		var text strings.Builder
+		for range random.IntN(301) {
+			text.WriteString(some[random.IntN(len(some))])
+		}
+		texts = append(texts, text.String())
+	}
+	for _, text := range texts {
+		got, want := URLCredentials(text), urlCredentialsQuadratic(text)
+		if got != want {
+			t.Fatalf("URLCredentials(%q) = %q, want %q, what the rule as first written gives", text, got, want)
+		}
+		if again := URLCredentials(got); again != got {
+			t.Fatalf("URLCredentials(%q) = %q, want it kept as the rule left it", got, again)
+		}
+	}
+}
+
+// The rule's time grows as its text's length does. A line of "a://" repeated is the rule as first
+// written at its worst (urlCredentialsQuadratic searched to the line's end again for each "://"):
+// on a line 16 times as long, a rule linear in the length takes about 16 times as long, and that
+// one took about 256 times. The bound is 64. Measured with the rule as first written, through
+// timeLines at a quarter of these lengths (16 KiB and 256 KiB, the same ratio, since one run of it
+// on 1 MiB takes about 15 minutes): 252 ms and 56.5 s, 224.5 times. This rule took 16 to 35 times.
+func TestURLCredentialsTakesTimeLinearInTheTextsLength(t *testing.T) {
+	shortTook, longTook := timeLines(t, 64<<10, 1<<20, 64)
+	if longTook >= 64*shortTook {
+		t.Fatalf("64 KiB of a:// took %v, 1 MiB %v: %.1f times, want under 64", shortTook, longTook, float64(longTook)/float64(shortTook))
+	}
+	t.Logf("64 KiB took %v, 1 MiB %v: %.1f times", shortTook, longTook, float64(longTook)/float64(shortTook))
+}
+
+// timeLines is the time URLCredentials takes on a line of "a://" repeated to short bytes and on
+// one repeated to long bytes, each the least of five runs, so that a slow moment of the machine
+// decides nothing. The long line's runs stop at the first under bound times the short line's.
+func timeLines(t *testing.T, short, long, bound int) (shortTook, longTook time.Duration) {
+	t.Helper()
+	shortLine, longLine := strings.Repeat("a://", short/4), strings.Repeat("a://", long/4)
+	if got := URLCredentials(shortLine); got != shortLine {
+		t.Fatalf("URLCredentials changed a line of a:// repeated, which has no credential, to one of %d bytes", len(got))
+	}
+	const runs = 5
+	took := func(text string) time.Duration {
+		start := time.Now()
+		URLCredentials(text)
+		return time.Since(start)
+	}
+	shortTook, longTook = time.Duration(math.MaxInt64), time.Duration(math.MaxInt64)
+	for range runs {
+		shortTook = min(shortTook, took(shortLine))
+	}
+	for range runs {
+		if longTook = min(longTook, took(longLine)); longTook < time.Duration(bound)*shortTook {
+			break
+		}
+	}
+	return shortTook, longTook
 }
 
 // stringer is a fmt.Stringer that is no error, as a *url.URL is.
