@@ -213,6 +213,25 @@ and each command runs there.
   workflow runs it as the `web-cold` lane with `--reruns 1`: a rerun of a file keeps the modules
   its first run loaded, so only the first run is cold.
 
+- `bun run test:web:late-reads` is `test:web` with `web/src/__tests__/hold-read-answers.ts` added
+  last to its preloads. That file wraps the `queryFn` of every TanStack query, so each read's
+  answer reaches its cache one turn of the real event loop after its request has answered, while
+  what a page draws without a read comes at once. A row that waits for what the page draws at
+  once, then reads what a read brings without waiting for it, fails there under every seed, where
+  under `test:web` it fails only on a runner loaded enough to split the two commits:
+  `settings.test.tsx`'s mapping row read the sidebar's Settings link after the page's heading,
+  and the sidebar draws its links only once its inbox, pinned issues and projects have answered.
+  The wait is the real
+  `setImmediate`, which a fake clock does not hold, and a cache a row seeds, a mutation and a write
+  of the page's store run no `queryFn`, so none of them is held. A row that fails there and
+  passes under `test:web` reads before it waits. Waiting fixes none of three other kinds of
+  failure, which the head of `hold-read-answers.ts` names: a row that times a read's answer (the
+  query client's own rows, a write's 401 path through the sign-in check), a row that ends while a
+  read it never reads is out, whose late answer React reports outside `act`, and a page that
+  never reaches the state its row waits for, which is a finding about the page. No workflow runs
+  the lane: it is for a change to a test that reads what a read draws, and for a search of that
+  class.
+
 - A spy or a stub on a DOM method goes on the prototype that owns it, which `Object.hasOwn` tells:
   happy-dom's `Element.prototype`, not `HTMLElement.prototype`, owns `getBoundingClientRect`,
   `scrollTo` and `scrollIntoView`. A restore, Bun's `mockRestore` or an assignment, leaves an own
