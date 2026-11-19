@@ -148,9 +148,7 @@ func TestARefusedSessionIsNeverEnrolled(t *testing.T) {
 		if enrolled := broker.enrolled(); len(enrolled) != 1 {
 			t.Fatalf("enrollments %+v, want only the first process's", enrolled)
 		}
-		if c := h.claim(); c.State != StateFailed {
-			t.Fatalf("the claim is %s, want it failed at its launch budget rather than running under %s", c.State, session)
-		}
+		wantRefusedResume(t, h, err)
 	})
 
 	// A claim the boot could not suspend keeps its live process (review rounds 12 and 13 of #4220):
@@ -506,9 +504,7 @@ func TestAClaudeLaunchIsHeldToItsClaim(t *testing.T) {
 		if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
 			t.Fatalf("the runtime was asked to resume %s's Claude session: %+v", holder, calls)
 		}
-		if c := h.claim(); c.State != StateFailed {
-			t.Fatalf("the claim is %s, want it failed at its launch budget rather than running under %s", c.State, stolen)
-		}
+		wantRefusedResume(t, h, err)
 	})
 }
 
@@ -605,9 +601,7 @@ func TestATmuxResumeByNameIsHeldToItsClaim(t *testing.T) {
 		if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
 			t.Fatalf("the runtime was asked to resume the tester's session: %+v", calls)
 		}
-		if c := h.claim(); c.State != StateFailed {
-			t.Fatalf("the claim is %s, want it failed at its launch budget rather than running under the tester's session", c.State)
-		}
+		wantRefusedResume(t, h, err)
 	})
 
 	// What the hold leaves as it was (R9): a pod's session carried onto a tmux host sits in another
@@ -902,9 +896,7 @@ func TestARecordedNameNoHoldCoversIsTakenByNoClaim(t *testing.T) {
 			if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
 				t.Fatalf("the runtime was asked to resume a session no row holds: %+v", calls)
 			}
-			if c := h.claim(); c.State != StateFailed {
-				t.Fatalf("the claim is %s, want it failed at its launch budget rather than running under a name no row holds", c.State)
-			}
+			wantRefusedResume(t, h, err)
 		})
 	}
 }
@@ -1033,5 +1025,21 @@ func TestAReleaseReportsNoAbandonedSessionTheClaimRecordsAgain(t *testing.T) {
 	}
 	if a := h.m.View().Claim.Abandoned; !a.Released.IsZero() {
 		t.Fatalf("the claim marks its abandoned session released, %+v, though the release freed none of its names", a)
+	}
+}
+
+// wantRefusedResume is the outcome of an operator's resume of a claim recording a session it does
+// not hold (resumeRefusal): a RefusedError, which the operator's route answers 409, and the claim
+// still suspended with no launch charged, so no process ran under the session and the claim keeps
+// its whole launch budget for the resume after its forget-session. Before the resume asked the
+// hold itself, the relaunch was refused at start and charged to the budget until the claim failed.
+func wantRefusedResume(t *testing.T, h *harness, err error) {
+	t.Helper()
+	var refused *RefusedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("the resume answered %v, want a refusal the operator's route answers 409", err)
+	}
+	if c := h.claim(); c.State != StateSuspended || c.Budgets.LaunchFailures != 0 {
+		t.Fatalf("the claim is %s with %d launch failures charged, want it suspended with none rather than relaunched under a session it does not hold", c.State, c.Budgets.LaunchFailures)
 	}
 }
