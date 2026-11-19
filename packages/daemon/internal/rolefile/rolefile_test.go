@@ -306,6 +306,35 @@ func TestRemoveTreeRemovesAnEmptyDirectoryItCannotOpen(t *testing.T) {
 	}
 }
 
+// A file RemoveTree may neither unlink (its directory is 0555) nor read (mode 0000) is answered
+// with the unlink's refusal, as os.RemoveAll answers it, and is left as it is: the walk's failed
+// open of it is no directory it cannot open, so no removal of a directory is tried on it either.
+func TestRemoveTreeAnswersTheUnlinkForAFileItCanNeitherUnlinkNorRead(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("as root a 0555 directory does not stop the unlink, so the walk never opens the file")
+	}
+	tree := filepath.Join(t.TempDir(), "tree")
+	if err := os.Mkdir(tree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := write(t, filepath.Join(tree, "file"), []byte("kept\n"))
+	if err := os.Chmod(file, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(tree, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(tree, 0o755) })
+	err := RemoveTree(tree)
+	var refused *fs.PathError
+	if !errors.As(err, &refused) || refused.Op != "unlinkat" || refused.Path != file || !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("RemoveTree(%s) = %v, want the unlink of %s refused for permission", tree, err, file)
+	}
+	if _, err := os.Lstat(file); err != nil {
+		t.Errorf("%s is gone (%v), want it left as it was", file, err)
+	}
+}
+
 func write(t *testing.T, path string, body []byte) string {
 	t.Helper()
 	if err := os.WriteFile(path, body, 0o644); err != nil {

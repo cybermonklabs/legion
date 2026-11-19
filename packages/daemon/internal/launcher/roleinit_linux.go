@@ -88,8 +88,7 @@ func prepareRoleNamespace(cfg RoleInitConfig) error {
 	}
 	// A generation that failed midway left its stage's empty stand-ins behind; their mounts went
 	// with its namespace, so nothing under the stage is a mount here. Every removal role-init makes
-	// under the role's homes is the launcher's own rule for a tree a role can write: it follows no
-	// link (rolefile.RemoveTree).
+	// under the role's homes, which the role writes, follows no link (rolefile.RemoveTree).
 	if err := rolefile.RemoveTree(stage); err != nil {
 		return fmt.Errorf("clear the role's stage: %w", err)
 	}

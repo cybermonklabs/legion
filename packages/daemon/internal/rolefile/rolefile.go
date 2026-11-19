@@ -5,8 +5,8 @@
 // until the process is killed, a fifo, whose plain open waits for a writer for as long as none
 // comes, a device, a socket, or a regular file of any size. OpenRegular never follows a link and
 // never waits, and refuses anything but a regular file in words naming it; ReadBounded refuses a
-// file larger than its caller's bound rather than read on; RemoveTree never waits on the directory
-// it removes from.
+// file larger than its caller's bound rather than read on; RemoveTree follows no link and waits on
+// nothing anywhere it walks.
 package rolefile
 
 import (
@@ -174,20 +174,22 @@ func RemoveTree(path string) error {
 		return err
 	}
 	defer unix.Close(parent)
-	return removeAt(parent, name, clean)
+	return removeAt(parent, parentPath, name)
 }
 
-// removeAt removes name under the directory parent, path being it as the errors print it, as
+// removeAt removes name under the directory parent, dir being parent as the errors print it, as
 // os/removeall_at.go's removeAllFrom does, with OpenDirectory in place of its openDirAt: name is
 // unlinked outright when it can be, a link or anything else that is no directory among it, and is
 // opened and walked only when that fails and OpenDirectory says it is a directory. Each pass over
 // the directory reads at most a batch of names, removes them, and opens the directory again, since
-// removing entries can make a read already under way skip some.
-func removeAt(parent int, name, path string) error {
+// removing entries can make a read already under way skip some. An entry's path is joined only
+// once its unlink fails, the one case that prints it or walks under it.
+func removeAt(parent int, dir, name string) error {
 	unlinkErr := unlinkat(parent, name, 0)
 	if unlinkErr == nil || errors.Is(unlinkErr, unix.ENOENT) {
 		return nil
 	}
+	path := filepath.Join(dir, name)
 	// EISDIR: a directory, whose entries go first. EPERM or EACCES: no write to parent, but name
 	// may still be a directory whose entries can go. Anything else is the answer.
 	if !errors.Is(unlinkErr, unix.EISDIR) && !errors.Is(unlinkErr, unix.EPERM) && !errors.Is(unlinkErr, unix.EACCES) {
@@ -202,8 +204,9 @@ func removeAt(parent int, name, path string) error {
 		}
 		if err != nil {
 			var openErr *fs.PathError
-			if !errors.As(err, &openErr) || errors.Is(err, unix.ENOTDIR) {
-				// No directory, a link among them: never walked, and the unlink's own answer stands.
+			if !errors.As(err, &openErr) || errors.Is(err, unix.ENOTDIR) || !isDirectoryAt(parent, name) {
+				// No directory, a link among them, or a file it may not read (mode 0000): never
+				// walked, and the unlink's own answer stands.
 				return &fs.PathError{Op: "unlinkat", Path: path, Err: unlinkErr}
 			}
 			// A directory this process cannot open (no read permission on it, no descriptor
@@ -214,12 +217,12 @@ func removeAt(parent int, name, path string) error {
 			}
 			break
 		}
-		dir := os.NewFile(uintptr(fd), path)
+		listing := os.NewFile(uintptr(fd), path)
 		read := 0
 		for {
-			names, readErr := dir.Readdirnames(batch)
+			names, readErr := listing.Readdirnames(batch)
 			if readErr != nil && readErr != io.EOF {
-				_ = dir.Close()
+				_ = listing.Close()
 				if errors.Is(readErr, fs.ErrNotExist) {
 					return nil
 				}
@@ -228,7 +231,7 @@ func removeAt(parent int, name, path string) error {
 			read = len(names)
 			failed := 0
 			for _, entry := range names {
-				if err := removeAt(fd, entry, filepath.Join(path, entry)); err != nil {
+				if err := removeAt(fd, path, entry); err != nil {
 					failed++
 					if walkErr == nil {
 						walkErr = err
@@ -240,7 +243,7 @@ func removeAt(parent int, name, path string) error {
 				break
 			}
 		}
-		_ = dir.Close()
+		_ = listing.Close()
 		if read < batch {
 			break
 		}
@@ -263,6 +266,17 @@ func unlinkat(dirfd int, name string, flags int) error {
 			return err
 		}
 	}
+}
+
+// isDirectoryAt is whether name under the directory dirfd is a directory, read without following
+// a link at name. A name it cannot read is taken as no directory. removeAt asks it only once
+// OpenDirectory failed, to tell a directory it may not open from a file it may not read.
+func isDirectoryAt(dirfd int, name string) bool {
+	var stat unix.Stat_t
+	if err := unix.Fstatat(dirfd, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return false
+	}
+	return stat.Mode&unix.S_IFMT == unix.S_IFDIR
 }
 
 // Kind names a file's kind as OpenRegular's refusals print it.

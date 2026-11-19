@@ -481,10 +481,9 @@ func TestAPlantedPathCannotRedirectCredentials(t *testing.T) {
 // a directory it made 0555, which the launcher, holding no capability, cannot unlink the link
 // from, is never followed when the next start clears the private directory: what the link names,
 // and the file in it, are as they were, and the start is refused naming the entry it could not
-// clear. os.RemoveAll, which the launcher used, opens such an entry with O_DIRECTORY|O_NOFOLLOW,
-// which a gVisor release follows a link through (rolefile.OpenDirectory), so in such a pod it
-// deleted what the link named; Linux refuses that open, so only such a gVisor shows that control
-// fail.
+// clear. os.RemoveAll opens such an entry with O_DIRECTORY|O_NOFOLLOW, which a gVisor release
+// follows a link through (rolefile.OpenDirectory), so in such a pod it deletes what the link
+// names; Linux refuses that open, so only such a gVisor shows that control fail.
 func TestWriteFilesRemovesAPlantedLinkWithoutFollowingIt(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("as root a 0555 directory does not stop the unlink, so the removal never opens the link")

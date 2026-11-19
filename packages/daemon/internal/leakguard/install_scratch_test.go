@@ -15,8 +15,8 @@ import (
 // The install's parent is under the scratch every role writes, so a role can swap it for a fifo
 // while the install runs. The install removes its staging directory, and the old install it moved
 // aside, without a plain open of that parent (rolefile.RemoveTree), so it returns at once and
-// leaves the fifo as it was. os.RemoveAll, which it used, opens the parent plainly when it cannot
-// unlink the path outright, and that open waits for a writer for as long as none comes. Each case
+// leaves the fifo as it was. os.RemoveAll opens the parent plainly when it cannot unlink the path
+// outright, and that open waits for a writer for as long as none comes. Each case
 // makes the swap from inside the install, which is only how the test times it: a role makes it
 // from its own process.
 func TestInstallServedAnswersAParentSwappedForAFifo(t *testing.T) {
@@ -76,8 +76,9 @@ func TestInstallServedAnswersAParentSwappedForAFifo(t *testing.T) {
 // to a directory of another role's, under a directory the removal cannot unlink it from (mode
 // 0555). The aside's removal (rolefile.RemoveTree) leaves the link and what it names as they are:
 // it opens no link. os.RemoveAll opens such an entry with O_DIRECTORY|O_NOFOLLOW, which a gVisor
-// release can follow a link through (rolefile.OpenDirectory), so PID 1 deleted what the link
-// named; Linux, and newer gVisor, refuse that open, so only such a gVisor shows that control fail.
+// release can follow a link through (rolefile.OpenDirectory), so in such a pod it deletes what the
+// link names; Linux, and newer gVisor, refuse that open, so only such a gVisor shows that control
+// fail.
 func TestInstallServedRemovesNothingALinkInTheOldInstallNames(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("as root a 0555 directory does not stop the unlink, so the removal never opens the link")
@@ -146,7 +147,6 @@ func installReturns(t *testing.T, scratch string, install func() error) error {
 			}
 			<-done
 			t.Fatalf("the install was still running 10s after %s became a fifo", scratch)
-			return nil
 		}
 	}
 }
