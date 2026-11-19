@@ -31,9 +31,9 @@ import (
 // Three writers keep it, and each writes what GitHub itself answers about the pull request: the
 // `pull_request` envelope's handler (intake.go, every action), which takes from the envelope only
 // which pull request changed and reads that pull request from GitHub (recordPullRequestHead); the
-// read-through made for a commit that is no head Dispatch knows (ReadThroughCommitPulls) — by a
-// recorded result, and by the read of an issue's results for a `before_merge` result's commit, at
-// most once every CommitPullReadStaleAfter — and the reconcile's five-minute pass (reconcile.go),
+// read-through made for a result's commit (ReadThroughCommitPulls) — by a recorded result, and by
+// the read of an issue's results for each `before_merge` result's commit, at most once every
+// CommitPullReadStaleAfter — and the reconcile's five-minute pass (reconcile.go),
 // which reads the pull requests owed a read (pull_request_reads_owed.go), every failure before any
 // refusal, creating each one's row where none exists, then reads every open row read longer than
 // five minutes ago (ListStalePullRequestHeads), and then reads the facts of every pull request
@@ -536,13 +536,13 @@ func upsertHeadUnderCanonicalName(ctx context.Context, pool *store.Pool, head Pu
 // HeadAttributedTo reports whether sha is the head of a pull request attributed to issueKey that
 // is open or merged: the test a `before_merge` result's commit passes to stand at one of the
 // heads its check is compared with. A closed-unmerged pull request's head proves nothing. A
-// pull request attributed to another issue never answers for this one; the results read asks
-// this about the check's own issue, so a child's pull request never answers for a check above
-// it (api/results_comparison.go's comparisonReader). The issue is the statement's
-// (attributedTerms), and only a pull request with a results row has a head to answer. While a
-// read of GitHub is owed for the pull request (owedReadJoin), Dispatch does not know that the
-// stored head is the head, so it answers false for it: the record route then reads GitHub
-// through for that commit.
+// pull request attributed to another issue never answers for this one, so a child's pull request
+// never answers for a check above it. The issue is the statement's (attributedTerms), and only a
+// pull request with a results row has a head to answer. While a read of GitHub is owed for the
+// pull request (owedReadJoin), Dispatch does not know that the stored head is the head, so it
+// answers false for it. It is the question HeadsAttributedTo answers for one commit; no route asks
+// it, because each recorded result reads its commit through (api/results.go,
+// readThroughPullRequests), and this package's tests read a basis through it.
 func HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha string) (bool, error) {
 	statements, err := attribution()
 	if err != nil {
@@ -684,44 +684,6 @@ var newestPullRequestHeadSelect = `
 	where a.issue_key = $1 and h.state in ('open', 'merged')
 	order by h.state = 'open' desc, a.number desc
 	limit 1`
-
-// HeadStoredAt reports whether sha is the head of an open or merged pull request stored for
-// repoFull, whatever issue it is attributed to: whether Dispatch holds a pull request at that
-// commit. It is a weaker question than HeadAttributedTo's, and it is asked for another purpose:
-// the results read asks it before it reads GitHub for a commit (api/results_comparison.go,
-// comparisonReader.readThroughHead). A read from there repairs nothing for such a commit. The
-// statement gives the row's issue from its stored facts at each read, with the links, issues,
-// parents and mappings as they stand then, and the reconcile reads an open row again.
-//
-// A closed-unmerged row is counted for nothing, as HeadAttributedTo counts it for nothing: it
-// is no basis a result stands at, the reconcile reads no such row again (ListStalePullRequestHeads
-// takes the open rows, and the facts line the open and merged rows with no facts), and a pull
-// request closed at a
-// commit does not stop another being opened from the same head. Counting one would leave every
-// result at that commit standing at no basis for good.
-//
-// repoFull is the canonical name of the repository (refs.CanonicalRepo), compared without case,
-// as every other comparison of a repository here is (refs.CanonicalRepoSQL): a row written from
-// a `pull_request` envelope carries GitHub's own spelling of the repository (`Acme/Widgets`),
-// while the results read is passed the lowercased spelling the repository-to-project mapping
-// stores (api's canonicalRepo), so an exact comparison would answer "no row" for a repository
-// whose owner writes their name with capitals. The read is one index lookup on
-// pull_request_heads_repo_head (migration 20261105112616), which is built on
-// `(lower(repo), head_sha)` for that reason: pull_request_heads_issue_head is partial on
-// `issue_key is not null` and keyed on the issue, so it serves no lookup by repository and head
-// commit.
-func HeadStoredAt(ctx context.Context, pool *store.Pool, repoFull, sha string) (bool, error) {
-	var found bool
-	if err := pool.QueryRow(ctx, `
-		select exists (
-			select 1 from pull_request_heads
-			where lower(repo) = lower($1) and head_sha = $2 and state in ('open', 'merged')
-		)
-	`, repoFull, sha).Scan(&found); err != nil {
-		return false, fmt.Errorf("read the stored pull request heads of %s at %s: %w", repoFull, sha, err)
-	}
-	return found, nil
-}
 
 // BaseBranchMergedFor is the branch the merged pull request attributed to issueKey merged
 // into, and "" where Dispatch holds no merge of it: the branch an `after_merge` result of that
@@ -1148,15 +1110,24 @@ func repositoryUnreadable(err error) bool {
 // readThroughPullRequests, api/results_comparison.go's readThroughHead): the answer about that
 // result stands as its stored rows leave it.
 //
-// atHead is the difference between the two answers GitHub gives about a commit no pull request
-// of Dispatch's heads. GitHub naming nothing leaves the question wide open — the pull request
-// may open at that commit a moment later, which is the whole of what this read repairs — while
-// GitHub naming a pull request whose head is another commit has answered it for now: the commit
-// is behind that pull request, and only a pull request opened later can put a head back on it.
-// So the read-time caller holds the pair off for CommitPullSettledFor on that answer rather
-// than asking again every CommitPullReadStaleAfter (delivery.CommitPullReads.Settle). The rows
-// written say nothing of it on their own: the row of a pull request whose head has moved on is
-// written at the head it has now, not at the commit that was asked about.
+// It reads a commit that a pull request Dispatch holds already heads, and writes every pull
+// request of GitHub's answer there too: GitHub can name a second pull request at the same head,
+// whose own event never arrived (R6 of the results lookup). A closed pull request that was not
+// merged, and that Dispatch holds no row of, gets no row (pullRequestHeld): it is no head a result
+// stands at, and its row would cost a read of its commit messages. A closed pull request that
+// Dispatch holds a row of is written, so the row takes GitHub's state (R2).
+//
+// atHead parts the two answers GitHub gives about a commit that heads none of the pull requests
+// it names. GitHub naming nothing leaves the question wide open — the pull request may open at
+// that commit a moment later, which is the whole of what this read repairs — while GitHub naming
+// a pull request whose head is another commit has answered it for now: the commit is behind that
+// pull request, and only a pull request opened later can put a head back on it. So the read-time
+// caller holds the pair off for CommitPullSettledFor on that answer rather than asking again
+// every CommitPullReadStaleAfter (delivery.CommitPullReads.Settle), where the read wrote a row. A
+// closed pull request that gets no row is not counted in written, so an answer that names only
+// such pull requests holds the pair off for CommitPullReadStaleAfter alone. The rows written say
+// nothing of it on their own: the row of a pull request whose head has moved on is written at
+// the head it has now, not at the commit that was asked about.
 //
 // Each pull request of the list is stored as every reader of GitHub stores one
 // (storePullRequestFacts), from the list's own answer: the one list read is the only read of
@@ -1207,6 +1178,15 @@ func ReadThroughCommitPulls(
 		if pull.Head.SHA == sha {
 			atHead = true
 		}
+		if PullRequestHeadState(pull.State, pull.Merged || pull.MergedAt != nil) == "closed" {
+			held, err := pullRequestHeld(ctx, pool, canonical, pull.Number)
+			if err != nil {
+				return written, atHead, err
+			}
+			if !held {
+				continue
+			}
+		}
 		if _, err := storePullRequestFacts(ctx, pool, client, token, canonical, repoFull, pull, &now, began, false, false); err != nil {
 			return written, atHead, err
 		}
@@ -1219,6 +1199,24 @@ func ReadThroughCommitPulls(
 		}
 	}
 	return written, atHead, nil
+}
+
+// pullRequestHeld reports whether Dispatch holds a results row of pull request number of the
+// repository canonical, under any name the renaming rule reads as canonical and in any case
+// (ReadThroughCommitPulls). It reads the rows as the statement's heads term reads them
+// (attributedTerms): a row written from a `pull_request` envelope can carry GitHub's own spelling
+// of the repository (`Acme/Widgets`), or a name the repository was renamed away from.
+func pullRequestHeld(ctx context.Context, pool *store.Pool, canonical string, number int) (bool, error) {
+	var held bool
+	if err := pool.QueryRow(ctx, `
+		select exists (
+			select 1 from pull_request_heads h
+			where h.number = $2 and lower(`+refs.CanonicalRepoSQL("h.repo")+`) = lower($1)
+		)
+	`, canonical, number).Scan(&held); err != nil {
+		return false, fmt.Errorf("read whether %s#%d is stored: %w", canonical, number, err)
+	}
+	return held, nil
 }
 
 // recordPullRequestHead writes the head row of the pull request one `pull_request` envelope

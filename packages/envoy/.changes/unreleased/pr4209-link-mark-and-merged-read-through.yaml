@@ -13,13 +13,11 @@ body: |-
     no row, and a pass whose read of the commit messages fails stamps the marked row read with the
     issue it held.
 
-    The read of an issue's results reads GitHub for a result's commit that a merged pull request of
-    another issue, or of none, heads, at most once a commit every 5 minutes, so a tie made after the
-    merge (a link to a GitHub issue the pull request's body cites, a new parent, a changed repository
-    mapping, a link moved to the issue) is followed there, as it was while no head row was stored
-    for such a commit. A commit an open pull request heads is left to the reconcile, which reads the
-    open row and not a merged row at the same commit, so there such a tie is not followed while the
-    open pull request stands.
+    The read of an issue's results reads GitHub for each result's commit, a commit that a stored
+    pull request heads included, at most once a commit every 5 minutes, so a tie made after the
+    merge (a link to a GitHub issue the pull request's body cites, a new parent, a changed
+    repository mapping, a link moved to the issue) is followed there, as it was while no head row
+    was stored for such a commit.
 
     The intake's settle of a read owed before its read, its head write and its read's place in the
     order of reads (a value of the owed reads' revision sequence) wait on a lock at most 5 s, as the

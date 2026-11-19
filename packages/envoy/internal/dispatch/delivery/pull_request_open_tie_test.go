@@ -10,7 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// An open row is left to the reconcile, whatever issue it credits (HeadStoredAt), and its issue is
+// An open row is read again by the reconcile, whatever issue it credits, and its issue is
 // the statement's at each read, from the facts the row's last read stored, with Dispatch's links,
 // issues, parents and mappings as they stand then. So a tie to an issue made after the open row's
 // last event is followed at once, with no event and no results read, for each of the four ties no

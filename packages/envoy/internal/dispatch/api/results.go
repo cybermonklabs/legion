@@ -266,7 +266,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// result.recorded, and no later event refreshes it, so a tab that read the results before
 	// the pull request row landed would show this result standing at no basis until something
 	// else happened.
-	s.readThroughPullRequests(r.Context(), check.IssueKey, result.CommitSHA, checkRepo)
+	s.readThroughPullRequests(r.Context(), result.CommitSHA, checkRepo)
 	s.publish(r.Context(), event)
 	WriteJSON(w, http.StatusCreated, checkResultRecorded{
 		Line:   checkResultLine(check, result),
@@ -930,27 +930,20 @@ func (s *server) refuseUnknownCommit(ctx context.Context, repo *string, sha stri
 }
 
 // readThroughPullRequests teaches Dispatch the pull requests GitHub names for a result's
-// commit when that commit is the head of none it already knows for the check's issue, so a
-// result recorded at the head of a pull request no event has reached Dispatch for stands at
-// that head at once. It asks about the check's own issue and reads through repo, the one
-// repository that issue resolves to, which recordCheckResult resolved before the write: the
-// issue comparisonReader.headBases names the heads of. A nil repo — a deployment with no App
-// key, an issue resolving to no repository, or a resolve that failed — leaves nothing to read
-// through, and it is answered before the database is read, since no head this read found
-// could be used.
+// commit, so a result recorded at the head of a pull request no event has reached Dispatch for
+// stands at that head at once. It reads a commit that a pull request Dispatch holds already
+// heads too: GitHub can name a second pull request at the same head, whose own event never
+// arrived, and the read stores its row (R6 of the results lookup). It reads through repo, the
+// one repository the check's issue resolves to, which recordCheckResult resolved before the
+// write: the issue comparisonReader.headBases names the heads of. A nil repo — a deployment with
+// no App key, an issue resolving to no repository, or a resolve that failed — leaves nothing to
+// read through, and it is answered before anything is read, since no head this read found could
+// be used.
 //
 // It never fails the record: the row is written, and a head Dispatch could not learn leaves
 // the result read exactly as it would have been without the call.
-func (s *server) readThroughPullRequests(ctx context.Context, checkIssueKey, sha string, repo *string) {
+func (s *server) readThroughPullRequests(ctx context.Context, sha string, repo *string) {
 	if repo == nil || s.deps.Store == nil || s.deps.Store.Pool == nil {
-		return
-	}
-	known, err := delivery.HeadAttributedTo(ctx, s.deps.Store.Pool, checkIssueKey, sha)
-	if err != nil {
-		slog.Warn("dispatch: read the pull request heads of a recorded result", "issue", checkIssueKey, "error", err)
-		return
-	}
-	if known {
 		return
 	}
 	if _, _, err := delivery.ReadThroughCommitPulls(

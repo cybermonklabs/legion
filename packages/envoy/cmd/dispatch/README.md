@@ -1460,16 +1460,16 @@ So a marked row with k unread rows before it is read by the ⌈(k + 1) / 200⌉t
 Where the row is stored before the link is written, a head write in flight does not undo the mark: each write reads the row's count of marks (`link_mark`) before its attribution reads the links, and leaves the row unread where the count has moved since (`upsertHeadRow`, `TestALinkWrittenWhileAHeadWriteIsInFlightIsFollowedByTheNextPass`).
 A link written while the pull request's first head row is written, or while its row moves from a repository's old name to the canonical one, marks no row: that write inserts the row stamped read with the issue it judged from the links before, and the link is not followed.
 A link to a URL that is no stored pull request's marks nothing.
-The other ties a head row stores nothing of — a link to a GitHub issue the pull request's body cites, an issue its branch or title names made later, a new parent, a changed repository mapping — reach a row three ways: the reconcile reads an open row again and attributes it as Dispatch stands then, the pull request's next event reads it, and the results read reads GitHub for a result's commit that a merged row of another issue, or of none, heads (below).
+The other ties a head row stores nothing of — a link to a GitHub issue the pull request's body cites, an issue its branch or title names made later, a new parent, a changed repository mapping — reach a row three ways: the reconcile reads an open row again and attributes it as Dispatch stands then, the pull request's next event reads it, and the results read reads GitHub for each result's commit (below).
 An open row is due 5 minutes after its last read (`PullRequestHeadStaleAfter`), and the first pass that reaches it reads it: after the unread rows, a pass takes the due open rows, the one read longest ago first, so a due open row with k rows before it is read by the ⌈(k + 1) / 200⌉th pass from the first pass that finds it due.
 A pass starts 5 minutes and up to a tenth more after the last one ended (`delivery.ReconcileInterval`, `duty.Jittered`), so while at most 200 rows are due, each open row is read at every pass; where more are due, the rows read longest ago go first and the others wait for a later pass (with 207 open rows due, a pass leaves 7, which the next pass reads first).
 A tie reaches a row with current texts at the first read all the same (`TestATieMadeAfterAnOpenRowsLastEventIsFollowedByThePassThatReachesIt`).
 The read-through exists because no write of those ties can find the rows it changes, and a merged row has no next pass and often no next event.
-It is held off where an open or merged row of any issue heads the commit (`delivery.HeadStoredAt`): the statement gives a stored row's issue from its facts at each read, and the reconcile reads an open row again.
-A merged row of the check's own issue is a basis of the check, and the read reads through no result at a basis (`api.TestAMergedHeadOfTheChecksOwnIssueIsNotReadThrough`).
-An open row is left to that pass because a child's result on its parent's tab heads the child's own open row, and reading it here would cost one GitHub call every 5 minutes for each such commit for as long as the parent's tab is read.
-The read-through costs one GitHub call per repository and commit every 5 minutes (`delivery.CommitPullReadStaleAfter`, its claim) for each result whose commit heads no stored row; a child's merged head on its parent's tab costs that call once, since the row it stores holds off each later read (`api.TestAChildsMergedHeadOnTheParentsTabIsReadThroughOnceAWindow`).
-The limit: a tie made after a merged pull request's last read is not followed for a head no result is recorded at, or while an open row heads the same commit, until a result at that head is read through or the pull request's next event reads it.
+It also reads a commit that an open or merged row of any issue heads.
+GitHub can name a second pull request at that head, whose own event never arrived (`api.TestAResultsReadStoresEveryPullRequestGitHubNamesAtAResultsCommit`).
+So it reads a result at a basis of its check, and a child's result at the head of the child's own row (`api.TestAMergedHeadOfTheChecksOwnIssueIsReadThroughOnceAWindow`).
+It costs one GitHub call per repository and commit every 5 minutes for each result's commit, while the results are read (`delivery.CommitPullReadStaleAfter`, its claim; `api.TestAChildsMergedHeadOnTheParentsTabIsReadThroughOnceAWindow`).
+The limit: a tie made after a merged pull request's last read is not followed for a head no result is recorded at, until a result at that head is read through or the pull request's next event reads it.
 A link to the pull request's own URL is followed where the mark covers its order, and not in the three orders above that it misses: the row's first write in flight, its move from a repository's old name, and a pass whose read of the commit messages failed.
 The tasks of the attribution rule, which judge a pull request's issue from its stored facts at each read so that no row stores an issue, replace the mark and the read-through.
 
@@ -2472,12 +2472,12 @@ a recorded result is compared with those heads in every deployment, and behind t
 A failed head pass is logged, and named in `delivery_settings.last_error` beside the other steps' failures when the pass reached them.
 The head pass also takes every merged row that no read of GitHub has reached since it was written or marked (`checked_at` null: credited to nobody, written by a read that could not read every source, or marked by a write of a link to it, Links and ties above), and every merged row an older rule judged, once per rule version (`delivery.AttributionRuleVersion`, `20261105070440_pull_request_heads_attribution_rule` below):
 a pull request merged under an older rule keeps whatever that rule concluded, and nothing else ever looks at a merged row again, so without that arm a result at such a merged head would stand at no basis for good.
-The row is written outside the reconcile by the `pull_request` envelope's handler, which takes from the envelope only which pull request changed and writes GitHub's answer about it (`GET /repos/{owner}/{repo}/pulls/{number}`), and by the read-through made for a result's commit at no head of its check's issue (`delivery.ReadThroughCommitPulls`):
-a recorded result makes one, and so does the read of an issue's results where no open or merged pull request Dispatch holds heads the commit (`delivery.HeadStoredAt`), which spends at most one such read per repository and commit every `delivery.CommitPullReadStaleAfter` (`GET /api/v1/issues/{key}/results`, Routes below).
+The row is written outside the reconcile by the `pull_request` envelope's handler, which takes from the envelope only which pull request changed and writes GitHub's answer about it (`GET /repos/{owner}/{repo}/pulls/{number}`), and by the read-through made for a result's commit (`delivery.ReadThroughCommitPulls`):
+a recorded result makes one, and so does the read of an issue's results for each `before_merge` result's commit, which spends at most one such read per repository and commit every `delivery.CommitPullReadStaleAfter` (`GET /api/v1/issues/{key}/results`, Routes below).
 `pull_request_heads_issue_head` answers the heads one issue's checks are compared with, `pull_request_heads_open_stale` the reconcile's open batch, `pull_request_heads_merged_unread` and `pull_request_heads_merged_rule` its merged arm
 — the first partial on `state = 'merged' and checked_at is null` (`20261117172917`), the second on `state = 'merged'` and keyed by `attribution_rule` (`20261111060005_pull_request_heads_merged_rule`)
-— and `pull_request_heads_repo_head` (`20261105112616`, below) the question the results read asks before it reads GitHub:
-whether an open stored pull request has this commit of this repository as its head.
+— and `pull_request_heads_repo_head` (`20261105112616`, below) the question the release before this one asks before it reads GitHub:
+whether an open or merged stored pull request has this commit of this repository as its head.
 A new table, as above; its census answers `0`.
 
 Migration `20261102122400_default_branch_commits` creates `default_branch_commits`, what Dispatch's GitHub App answered about one commit of one repository: whether the repository's default branch carries it.
@@ -2569,20 +2569,22 @@ Adding a nullable column with no default writes the catalog alone, so it holds `
 the release before it neither reads nor writes the column and names its columns in every insert, so it keeps writing mappings while it still serves.
 Its census answers `0`.
 
-Migration `20261105112616_pull_request_heads_repo_head` creates `pull_request_heads_repo_head` on `pull_request_heads (lower(repo), head_sha)`, the index behind the question the results read asks before it reads GitHub about a commit:
-has any open or merged stored pull request this commit of this repository as its head, whatever issue it is attributed to (`delivery.HeadStoredAt`)?
-A `before_merge` result at no head of its check's own issue is read through GitHub, which is how a result recorded before its pull request opened comes to stand at that head, and that read can repair nothing for a commit Dispatch already holds an open or merged pull request for:
-the statement gives a stored row's issue from its facts at each read, and the reconcile reads an open row again, so asking GitHub again from a read teaches nothing.
-So the read asks this first, and a child's result on its parent's tab
+Migration `20261105112616_pull_request_heads_repo_head` creates `pull_request_heads_repo_head` on `pull_request_heads (lower(repo), head_sha)`, the index behind the question the results read asked before it read GitHub about a commit:
+had any open or merged stored pull request this commit of this repository as its head, whatever issue it was attributed to?
+A `before_merge` result at no head of its check's own issue was read through GitHub, which is how a result recorded before its pull request opened comes to stand at that head, and the read was held off for a commit Dispatch already held an open or merged pull request for:
+the statement gives a stored row's issue from its facts at each read, and the reconcile reads an open row again.
+So the read asked this first, and a child's result on its parent's tab
 — whose commit heads the child's own pull request, attributed to the child
-— costs no GitHub call at all (`api/results_comparison.go`, `comparisonReader.readThroughHead`).
-A closed-unmerged row counts for nothing there:
-it is a basis for no result, no pass of Dispatch's reads it again, and a pull request closed at a commit does not stop another being opened from the same head, so counting one would leave every result at that commit standing at no basis for good.
-The key is `lower(repo)` because that read compares the repository without case, as every other comparison of a repository does (`refs.CanonicalRepoSQL`):
-a row written from a `pull_request` envelope carries GitHub's own spelling (`Acme/Widgets`) while the read is passed the lowercased spelling the repository-to-project mapping stores.
+— cost no GitHub call at all.
+A closed-unmerged row counted for nothing there:
+it is a basis for no result, no pass of Dispatch's reads it again, and a pull request closed at a commit does not stop another being opened from the same head, so counting one would have left every result at that commit standing at no basis for good.
+The key is `lower(repo)` because that read compared the repository without case, as every other comparison of a repository does (`refs.CanonicalRepoSQL`):
+a row written from a `pull_request` envelope carries GitHub's own spelling (`Acme/Widgets`) while the read was passed the lowercased spelling the repository-to-project mapping stores.
 No index served that lookup: `pull_request_heads_issue_head` is keyed `(issue_key, head_sha)` and partial on `issue_key is not null`, which answers the heads of one issue and no lookup by repository and head commit, and the primary key is `(repo, number)`, so every results read of such a commit scanned the table.
 `create index` takes `SHARE` on `pull_request_heads` while it builds, holding that table's writes for one read of a table that holds a row per pull request Dispatch has seen an event for;
 the release before it neither reads nor writes the index, an index deciding a plan and never an answer, so it rolls beside this one.
+The results read now reads such a commit through too, since GitHub can name a second pull request at that head whose own event never arrived, and no query of this build reads the index.
+The release before this one still reads it while both serve on one database, so its drop belongs to the contracting migration of the next release.
 Its census answers `0`.
 
 Migrations `20261105145242_issues_search_spec` and `20261105145243_artifact_versions_issues_search_trigger` put an issue's primary document into the issue's own keyword vector ([Search](#search)), as `0140` put it into the issue's embedding.
@@ -4432,9 +4434,12 @@ Each item below names a path with its method and identity, then its purpose.
     It is left out everywhere else, where those clients print "unknown": a commit Dispatch cannot place, a retracted result at its basis under the check's words now, and every result of a read that names `?at=`.
     It is derived from those fields alone, with no read of its own, and it is removed once no client older than pi-envoy 17.1.0 is in use.
 
-  Where the App can read that repository, a `before_merge` result whose commit heads no such pull request is read through GitHub itself before the answer is given, which is what makes a result recorded before its own pull request opened stand at that head once the pull request opens at its commit:
+  Where the App can read that repository, each `before_merge` result's commit is read through GitHub itself before the answer is given, which is what makes a result recorded before its own pull request opened stand at that head once the pull request opens at its commit:
 
   - One `GET /repos/{owner}/{repo}/commits/{sha}/pulls`, and every head GitHub names is written (`delivery.ReadThroughCommitPulls`).
+
+  - The read also takes a commit that a pull request Dispatch holds already heads, and writes a row for each other open or merged pull request GitHub names there.
+    So a second pull request at the same head gets its row though its own event never arrived; a closed pull request that was not merged, and that Dispatch holds no row of, gets none.
 
   - Without that read it would stand at no basis for ever:
     the read-through the record itself makes runs once, while no pull request carries the commit, and the GitHub intake writes no head row for a pull request whose `pull_request` events never reached Dispatch, such as one of a repository the webhook App is not installed on (`delivery.Intake.Run`).
@@ -4442,9 +4447,7 @@ Each item below names a path with its method and identity, then its purpose.
   - One repository and commit costs at most one such read every `delivery.CommitPullReadStaleAfter` (five minutes), however often the Verification tab refetches.
 
   - Eligibility for that read is the repository and commit's, never one result's:
-    it is skipped only where GitHub's answer cannot change the result
-    — Dispatch already holds an open or merged pull request whose head is that commit, whatever issue it is attributed to (`delivery.HeadStoredAt`), since the statement gives that row's issue from its facts at each read;
-    or a read has already been told of a pull request whose head is another commit, which answers about this commit for now and holds the pair off for `delivery.CommitPullSettledFor` (one hour, `delivery.CommitPullReads`), after which it is read through again, since a pull request opened later can have its head at that commit.
+    it is skipped only where a read has already been told of a pull request whose head is another commit, which answers about this commit for now and holds the pair off for `delivery.CommitPullSettledFor` (one hour, `delivery.CommitPullReads`), after which it is read through again, since a pull request opened later can have its head at that commit.
 
   A check CI proves is one whose `ci_check` names a GitHub check run, with `when` `before_merge`, no `run`, a `negative_control`, and no result recorded against it (`validCICheck`, `docs.CICheckRuleIn`).
   No role records its result (POST below refuses one), and nothing is stored for it:

@@ -1605,6 +1605,10 @@ func TestRecordingAResultReadsThroughToAPullRequestDispatchHasNoEventFor(t *test
 // its branch, title and body name no issue. The record's read-through stores #93 with its texts.
 // Then the issue links #93's URL, and no event of #93 comes. The next read compares k1 with #93,
 // the pass stands, and the read asks GitHub nothing: the statement reads the link at the read.
+// Every read of the test is held off by a claim of the commit (server.commitPulls.Claim), so it
+// answers from the stored rows alone: the read-through would read #93 again, since a stored row
+// at a commit is no reason to skip it (R6 of the results lookup), and so only the pass can give
+// the control's row its facts.
 // Control, texts=false: the texts row of #93 is deleted, as a row of the release before has none.
 // The next read compares k1 with nothing and asks GitHub nothing, since the statement answers no
 // stored issue for a row with no facts. A pass that reads #93's facts then makes it compare.
@@ -1633,7 +1637,9 @@ func TestALinkAfterAMergedRowComparesInTheNextReadWithNoAsk(t *testing.T) {
 					t.Fatalf("delete the texts of #93: %v", err)
 				}
 			}
-			served.commitPulls = delivery.CommitPullReads{}
+			if !served.commitPulls.Claim("acme/widgets", newHeadCommit, time.Now()) {
+				t.Fatal("SETUP: a claim of the commit was refused; the record claims nothing")
+			}
 			if before := checkOf(t, readResults(t, handler, issue.Key), "k1"); len(before.ComparedWith) != 0 {
 				t.Fatalf("before the link k1 compares with %+v, want nothing: #93 names no issue", before.ComparedWith)
 			}
@@ -1652,7 +1658,6 @@ func TestALinkAfterAMergedRowComparesInTheNextReadWithNoAsk(t *testing.T) {
 				}
 				return numbers
 			}
-			served.commitPulls = delivery.CommitPullReads{}
 			spent := fake.asks("acme/widgets")
 			after := checkOf(t, readResults(t, handler, issue.Key), "k1")
 			if asked := fake.asks("acme/widgets") - spent; asked != 0 {
@@ -1675,7 +1680,6 @@ func TestALinkAfterAMergedRowComparesInTheNextReadWithNoAsk(t *testing.T) {
 				return pull(repo, newHeadCommit)
 			})
 			onePass(t, database, served)
-			served.commitPulls = delivery.CommitPullReads{}
 			if passed := checkOf(t, readResults(t, handler, issue.Key), "k1"); fmt.Sprint(numbersOf(passed)) != "[93]" {
 				t.Errorf("after a pass read #93's facts k1 compares with %v, want [93]", numbersOf(passed))
 			}
@@ -2342,11 +2346,12 @@ func TestTwoResultReadsSpendOneReadThroughOfACommit(t *testing.T) {
 	}
 }
 
-// What the read never spends a GitHub call on. A repository Dispatch cannot see is the
-// unknown answer whatever GitHub would say about the commit, so it is not read through at
-// all, and a commit that already heads a pull request attributed to the check's own issue is
-// answered from that row, so neither the record nor the read asks GitHub anything.
-func TestAResultsReadReadsThroughNeitherAnUnseenRepositoryNorAKnownHead(t *testing.T) {
+// What the read never spends a GitHub call on, and what it spends one on. A repository Dispatch
+// cannot see is the unknown answer whatever GitHub would say about the commit, so it is not read
+// through at all. A commit that already heads a pull request attributed to the check's own issue
+// is read through, by the record and by the read, since GitHub can name a second pull request at
+// that head (R6 of the results lookup). Two reads in a row ask once: the claim bounds them.
+func TestAResultsReadReadsThroughNoUnseenRepositoryAndAKnownHeadOnceAWindow(t *testing.T) {
 	handler, database, _, fake := readThroughGitHub(t, "acme/widgets")
 	hidden := issueInRepository(t, handler, "RESJ", "acme/hidden", "Unreadable")
 	seen := issueInRepository(t, handler, "RESK", "acme/widgets", "Readable")
@@ -2366,10 +2371,15 @@ func TestAResultsReadReadsThroughNeitherAnUnseenRepositoryNorAKnownHead(t *testi
 
 	writeHead(t, database, "acme/widgets", 71, newHeadCommit, "open", seen.Key)
 	known := decodeBody[recordedResult](t, recordResult(t, handler, seen.Key, resultBody("k1", "pass", newHeadCommit, nil)))
-	standsAt(t, readResults(t, handler, seen.Key), "k1", known.Result.ID,
-		"a result at a head Dispatch already holds", model.CommitAtBasis, false)
-	if asked := fake.asks("acme/widgets"); asked != 0 {
-		t.Fatalf("acme/widgets' pull requests were asked for %d times, want none: the stored head row answers", asked)
+	if asked := fake.asks("acme/widgets"); asked != 1 {
+		t.Fatalf("the record asked for acme/widgets' pull requests %d times, want 1: it reads a head Dispatch holds too", asked)
+	}
+	for _, read := range []string{"first", "second"} {
+		standsAt(t, readResults(t, handler, seen.Key), "k1", known.Result.ID,
+			"the "+read+" read of a result at a head Dispatch already holds", model.CommitAtBasis, false)
+	}
+	if asked := fake.asks("acme/widgets"); asked != 2 {
+		t.Fatalf("acme/widgets' pull requests were asked for %d times after the record and two reads, want 2: the two reads ask once", asked)
 	}
 }
 
@@ -2406,8 +2416,10 @@ func TestASupersededResultsCommitIsAskedOfGitHubOnceAndNotAgainWithinTheSpan(t *
 
 	// GitHub names that pull request for the superseded commit too, carrying the head it has now,
 	// which is what it answers for a commit a later push replaced. The cache, rewound to its zero
-	// value, holds no read off, so what keeps the second read from asking is the settling and not
-	// the span.
+	// value, holds no read of the superseded commit off, so what keeps the second read from asking
+	// about it is the settling and not the span. The newest result's commit, which #97 heads, is
+	// read through too (R6 of the results lookup); a claim of it holds both reads of it off, so
+	// the counts below are the superseded commit's alone.
 	fake.answers(func(repo, _ string) string {
 		return fmt.Sprintf(`[{"number":97,"title":%q,"body":"","html_url":"https://github.com/%s/pull/97",
 			"state":"open","merged":false,"updated_at":"2026-11-05T07:15:08Z",
@@ -2415,6 +2427,9 @@ func TestASupersededResultsCommitIsAskedOfGitHubOnceAndNotAgainWithinTheSpan(t *
 			issue.Key+" the work", repo, newHeadCommit, repo)
 	})
 	served.commitPulls = delivery.CommitPullReads{}
+	if !served.commitPulls.Claim("acme/widgets", newHeadCommit, time.Now()) {
+		t.Fatal("SETUP: a claim of the newest result's commit was refused in an empty cache")
+	}
 
 	for _, read := range []struct {
 		name  string
@@ -2748,12 +2763,13 @@ func TestAResultsReadComparesWithAPullRequestWhoseCommitsAnswer500(t *testing.T)
 	}
 }
 
-// What a child's result on its parent's tab costs: nothing. Its commit heads the child's own
-// pull request, attributed to the child, so Dispatch has been told that commit's pull request
-// and asking GitHub again teaches it nothing. The result stands at no basis of the parent's
-// check by the rule itself, whatever GitHub answers (R4, api/results_comparison.go,
+// What a child's result on its parent's tab costs: one GitHub call a span. Its commit heads the
+// child's own pull request, attributed to the child, and the read reads that commit through all
+// the same, since GitHub can name a second pull request at that head (R6 of the results lookup).
+// Two reads in a row ask once: the claim bounds them. The result stands at no basis of the
+// parent's check by the rule itself, whatever GitHub answers (R4, api/results_comparison.go,
 // readThroughHead).
-func TestAChildsResultOnTheParentsTabAsksGitHubNothing(t *testing.T) {
+func TestAChildsOpenHeadOnTheParentsTabIsReadThroughOnceAWindow(t *testing.T) {
 	handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
 	parent := issueInRepository(t, handler, "RESN", "acme/widgets", "Parent")
 	uploadDocument(t, handler, "/api/v1/issues/"+parent.Key, "verification.md", siblingChecks)
@@ -2763,16 +2779,18 @@ func TestAChildsResultOnTheParentsTabAsksGitHubNothing(t *testing.T) {
 	writeHead(t, database, "acme/widgets", 98, headCommit, "open", child.Key)
 
 	recorded := decodeBody[recordedResult](t, recordResult(t, handler, child.Key, resultBody("k1", "pass", headCommit, nil)))
-	// GitHub would name that pull request again, so a call that was spent would show as an ask;
-	// and the cache, rewound to its zero value, holds no read off.
+	// GitHub names that pull request again, so a call that was spent shows as an ask; and the
+	// cache, rewound to its zero value, holds no read off.
 	fake.answers(openPullAt(98, child.Key))
 	served.commitPulls = delivery.CommitPullReads{}
 	spent := fake.asks("acme/widgets")
 
-	standsAt(t, readResults(t, handler, parent.Key), "k1", recorded.Result.ID,
-		"the child's result at the child's own head", model.CommitOtherCommit, false)
-	if asked := fake.asks("acme/widgets") - spent; asked != 0 {
-		t.Fatalf("the read asked GitHub for the child's commit's pull requests %d times, want none", asked)
+	for _, read := range []string{"first", "second"} {
+		standsAt(t, readResults(t, handler, parent.Key), "k1", recorded.Result.ID,
+			"the "+read+" read of the child's result at the child's own head", model.CommitOtherCommit, false)
+	}
+	if asked := fake.asks("acme/widgets") - spent; asked != 1 {
+		t.Fatalf("two reads asked GitHub for the child's commit's pull requests %d times, want 1", asked)
 	}
 }
 
@@ -2812,10 +2830,9 @@ func TestEveryResultOfAnIssueAtAPullRequestsHeadStandsAtIt(t *testing.T) {
 
 // The same, where the later result is a child's. A child records against a check of its parent
 // at the head of the child's own pull request, which Dispatch holds. The parent's own results
-// sit at the parent's head, which it holds nothing for. The child's commit is eligible for no
-// read — Dispatch keeps that row and asking GitHub teaches nothing — and the parent's commit
-// is eligible for one, so the parent's results stand at the parent's head and the child's
-// commit costs no call.
+// sit at the parent's head, which it holds nothing for. Both commits are read through once: the
+// child's too, since GitHub can name a second pull request at a head Dispatch holds (R6 of the
+// results lookup). So the parent's results stand at the parent's head, and the read asks twice.
 func TestAParentsResultsStandAtItsHeadThoughAChildRecordedOnTheSameCheck(t *testing.T) {
 	handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
 	parent := issueInRepository(t, handler, "RESY", "acme/widgets", "Parent")
@@ -2846,8 +2863,8 @@ func TestAParentsResultsStandAtItsHeadThoughAChildRecordedOnTheSameCheck(t *test
 		"the sibling check's only result, at the parent's head", model.CommitAtBasis, false)
 	standsAt(t, read, "k1", atHead.Result.ID,
 		"the parent's result at the parent's head, beside the child's", model.CommitAtBasis, false)
-	if asked := fake.asks("acme/widgets") - spent; asked != 1 {
-		t.Errorf("the read asked GitHub %d times, want 1: the parent's head alone, since Dispatch keeps the child's row", asked)
+	if asked := fake.asks("acme/widgets") - spent; asked != 2 {
+		t.Errorf("the read asked GitHub %d times, want 2: the parent's head and the child's, once each", asked)
 	}
 }
 

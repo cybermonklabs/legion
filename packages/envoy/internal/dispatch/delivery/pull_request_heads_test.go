@@ -282,46 +282,6 @@ func TestReadThroughCommitPullsStoresEveryPullRequestNamedForACommit(t *testing.
 	}
 }
 
-// HeadStoredAt compares the repository without case, and the two spellings meet here: a row the
-// intake writes carries GitHub's own spelling of the repository, from the envelope's
-// `full_name` (`Acme/Widgets`), while the results read passes the lowercase spelling the
-// repository-to-project mapping stores (api/results_comparison.go, comparisonReader.repositoryOf).
-// An exact comparison would answer "no row" for every repository whose owner writes their name
-// with capitals, and the read would spend a GitHub call on each commit Dispatch already holds
-// the pull request for. Another repository's row is still another repository's: the case is all
-// that is forgiven. An open row and a merged row answer, whatever issue each credits.
-func TestHeadStoredAtFindsARowWrittenUnderGitHubsOwnSpelling(t *testing.T) {
-	pool, ctx := deliveryTestPool(t)
-	issue := seedHeadIssue(t, ctx, pool, 41)
-	const open, merged = "cccccccccccccccccccccccccccccccccccccccc", "dddddddddddddddddddddddddddddddddddddddd"
-	for _, row := range []struct {
-		number int
-		sha    string
-		state  string
-	}{{41, open, "open"}, {42, merged, "merged"}} {
-		if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
-			Repo: "Acme/Widgets", Number: row.number, HeadSHA: row.sha, HeadRef: "legion/x", BaseRef: "main",
-			State: row.state, Title: issue + " the work", URL: fmt.Sprintf("https://github.com/Acme/Widgets/pull/%d", row.number),
-		}); err != nil {
-			t.Fatalf("store a head row under GitHub's spelling of the repository: %v", err)
-		}
-		seedStoredIssue(t, ctx, pool, "Acme/Widgets", row.number, &issue, string(sourceTitleBody))
-	}
-	for _, ask := range []struct {
-		repo, sha string
-		want      bool
-	}{
-		{"acme/widgets", open, true},
-		{"acme/widgets", merged, true},
-		{"acme/gadgets", open, false},
-	} {
-		kept, err := HeadStoredAt(ctx, pool, ask.repo, ask.sha)
-		if err != nil || kept != ask.want {
-			t.Errorf("HeadStoredAt(%s, %.4s) = %v, %v; want %v", ask.repo, ask.sha, kept, err, ask.want)
-		}
-	}
-}
-
 // NewestPullRequestHead answers the head of an issue's open pull request of the highest number,
 // and only where none is open the head of its merged pull request of the highest number. An open
 // pull request of a lower number wins over a merged one of a higher, a closed-unmerged pull

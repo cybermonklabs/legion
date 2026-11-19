@@ -197,9 +197,9 @@ func fetchPullRequestPayload(ctx context.Context, client *githubapp.Client, toke
 // fetchCommitPullPayloads is every pull request GitHub associates with one commit
 // (`GET /repos/{owner}/{repo}/commits/{sha}/pulls`) under token, through readGitHubPage's
 // bounded retry, decoded as the same pullRequestPayload the single-pull-request read answers, so
-// both of the head row's GitHub readers build it from one type. Dispatch reads this when a
-// result names a commit that is the head of no pull request it has an event for, so a pull
-// request opened while Dispatch was not listening is known at once.
+// both of the head row's GitHub readers build it from one type. Dispatch reads this for a
+// result's commit (ReadThroughCommitPulls), so a pull request opened while Dispatch was not
+// listening is known at once, a second pull request at a head Dispatch holds included.
 //
 // A commit the repository does not have answers an empty list, as GitHub's own 422 for it
 // does. Every other answer is githubapp.CheckRepositoryResponse's, so a 403 or 404 is

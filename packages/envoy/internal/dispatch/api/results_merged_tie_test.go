@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -42,9 +43,10 @@ func githubIssueLink(url string) []map[string]string {
 // A tie to the check's issue made after its pull request merged, where the result was recorded
 // while its record stored no row for the commit: the merged row is stored by the writer of a read
 // of GitHub, with the texts of GitHub's answer. At the results read the statement gives the tie
-// from those stored facts, so the result stands at the merged head and the read asks GitHub
-// nothing. No pass reads a merged row again while its texts are current and its messages are
-// read, and the statement needs no read. Four ties no event carries:
+// from those stored facts, so the result stands at the merged head. The read is held off by a
+// claim of the commit (server.commitPulls.Claim), so it asks GitHub nothing and the stored facts
+// answer alone. No pass reads a merged row again while its texts are current and its messages
+// are read, and the statement needs no read. Four ties no event carries:
 //
 //   - a link of the check's issue to a GitHub issue the pull request's body cites;
 //   - a parent, with the pull request's repository, given to the issue the title names;
@@ -127,7 +129,9 @@ func TestATieMadeAfterAMergeIsFollowedAtTheResultsRead(t *testing.T) {
 			storeMergedRowWithTexts(t, database, 81, title, body, stored)
 			kase.tie(t, handler, check, stored)
 			fake.answers(mergedPullAt(81, title, body))
-			served.commitPulls = delivery.CommitPullReads{}
+			if !served.commitPulls.Claim("acme/widgets", headCommit, time.Now()) {
+				t.Fatal("SETUP: a claim of the commit was refused; the record claims nothing")
+			}
 			spent := fake.asks("acme/widgets")
 
 			read := readResults(t, handler, check)
@@ -171,7 +175,8 @@ func storeMergedRowWithTexts(t *testing.T, database *store.Store, number int, ti
 // stored through the writer of a read of GitHub, with the texts of GitHub's answer (body "Fixes
 // #81."). In the second subtest an open #91 of another pull request heads the same commit, stored
 // by SQL. The check's issue then links GitHub issue #81. The result stands at its basis at the
-// first read, and the read asks GitHub nothing, in both subtests.
+// first read, in both subtests. The read is held off by a claim of the commit, so it asks GitHub
+// nothing and the stored rows answer alone.
 func TestAMergedHeadBesideAnOpenRowOfTheSameCommitComparesAtTheFirstRead(t *testing.T) {
 	for _, withOpen := range []bool{false, true} {
 		name := map[bool]string{false: "the_merged_row_alone", true: "with_an_open_row_of_another_pull_request_at_the_commit"}[withOpen]
@@ -199,7 +204,9 @@ func TestAMergedHeadBesideAnOpenRowOfTheSameCommitComparesAtTheFirstRead(t *test
 				}
 				return "[" + pulls + "]"
 			})
-			served.commitPulls = delivery.CommitPullReads{}
+			if !served.commitPulls.Claim("acme/widgets", headCommit, time.Now()) {
+				t.Fatal("SETUP: a claim of the commit was refused; the record claims nothing")
+			}
 			spent := fake.asks("acme/widgets")
 			first := readResults(t, handler, check)
 			asked := fake.asks("acme/widgets") - spent
@@ -212,11 +219,11 @@ func TestAMergedHeadBesideAnOpenRowOfTheSameCommitComparesAtTheFirstRead(t *test
 	}
 }
 
-// What the read-through costs for a child's merged head on its parent's tab: one GitHub call for
-// a commit that heads no stored row. The child's merged pull request has no stored row, so the
-// first read of the parent's results reads the commit through, and stores the merged row that
-// GitHub names, credited to the child. From then on a merged row heads the commit, so no read
-// asks again (delivery.HeadStoredAt). Three reads in a row ask GitHub once.
+// What the read-through costs for a child's merged head on its parent's tab: one GitHub call a
+// span. The child's merged pull request has no stored row, so the first read of the parent's
+// results reads the commit through, and stores the merged row that GitHub names, credited to the
+// child. The claim holds each later read off within the span (delivery.CommitPullReadStaleAfter),
+// though the merged row heads the commit. Three reads in a row ask GitHub once.
 func TestAChildsMergedHeadOnTheParentsTabIsReadThroughOnceAWindow(t *testing.T) {
 	handler, _, served, fake := readThroughGitHub(t, "acme/widgets")
 	parent := issueInRepository(t, handler, "RMTE", "acme/widgets", "Parent")
@@ -237,24 +244,34 @@ func TestAChildsMergedHeadOnTheParentsTabIsReadThroughOnceAWindow(t *testing.T) 
 	}
 }
 
-// What the read never spends a GitHub call on: a result at a commit that heads a merged row
-// credited to the check's own issue. The row is a basis of the check, so the result stands at it,
-// and the read reads through no result at a basis (comparisonReader.learn). The control reads
-// every result through, at a basis or not: one ask.
-func TestAMergedHeadOfTheChecksOwnIssueIsNotReadThrough(t *testing.T) {
+// What the read spends on a result at a commit that heads a merged row credited to the check's
+// own issue: one GitHub call a span. The row is a basis of the check, so the result stands at it,
+// and the read reads the commit through all the same, since GitHub can name a second pull request
+// at that head (R6 of the results lookup). Two reads in a row ask once: the claim bounds them.
+func TestAMergedHeadOfTheChecksOwnIssueIsReadThroughOnceAWindow(t *testing.T) {
 	handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
 	issue := issueInRepository(t, handler, "RMTF", "acme/widgets", "Own")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 	writeHead(t, database, "acme/widgets", 83, headCommit, "merged", issue.Key)
+	// GitHub's answer below is older than this row. Over a row that no read of GitHub wrote, that
+	// answer owes a read (pull_request_heads_older_read), and a head owed a read is no basis. So
+	// the row holds the time of a read of GitHub, as a read of this build leaves it.
+	if _, err := database.Pool.Exec(context.Background(), `
+		update pull_request_heads set github_read_at = now() where repo = 'acme/widgets' and number = 83
+	`); err != nil {
+		t.Fatalf("mark #83 read by GitHub: %v", err)
+	}
 	recorded := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil)))
 	fake.answers(mergedPullAt(83, issue.Key+" the work", ""))
 	served.commitPulls = delivery.CommitPullReads{}
 	spent := fake.asks("acme/widgets")
 
-	standsAt(t, readResults(t, handler, issue.Key), "k1", recorded.Result.ID,
-		"a result at the merged head of the check's own pull request", model.CommitAtBasis, false)
-	if asked := fake.asks("acme/widgets") - spent; asked != 0 {
-		t.Fatalf("the read asked GitHub %d times for a commit a merged row of the check's own issue heads, want none", asked)
+	for _, read := range []string{"first", "second"} {
+		standsAt(t, readResults(t, handler, issue.Key), "k1", recorded.Result.ID,
+			"the "+read+" read of a result at the merged head of the check's own pull request", model.CommitAtBasis, false)
+	}
+	if asked := fake.asks("acme/widgets") - spent; asked != 1 {
+		t.Fatalf("two reads asked GitHub %d times for a commit a merged row of the check's own issue heads, want 1", asked)
 	}
 }
 

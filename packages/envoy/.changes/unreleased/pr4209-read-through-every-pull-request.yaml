@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+    The read-through of a result's commit, which a recorded result and the read of an issue's
+    results make, also reads a commit that a pull request Dispatch holds already heads. It writes a
+    row for each other open or merged pull request that GitHub names there, so a second pull
+    request at the same head gets its row though its own event never arrived. A closed pull request
+    that was not merged, and that Dispatch holds no row of, gets no row. The read of the results
+    still asks GitHub at most once for each repository and commit every 5 minutes, and a result at a
+    head that Dispatch holds now costs that call too.
+time: 2026-11-19T02:31:53.000000000Z
+custom:
+    Issue: pr4209

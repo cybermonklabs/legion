@@ -325,10 +325,12 @@ func TestAPullRequestWhoseHeadIsNotReadBesideOneThatIs(t *testing.T) {
 // stores NKWN-1, as the sync or an older release stores it. The pass is unknown with
 // issue_not_known, and its possible_head names #85 at headCommit. The check compares with
 // nothing for issue_not_known, lists #85 in issues_not_known and names no head not read.
-// pass_stands is unknown, and the read asks GitHub nothing. Controls in the same test: with the
-// message "Dispatch: NKWN-1" read, the pass stands at #85 and pass_stands is yes. Then the pass
-// is at newHeadCommit, and a known merged #84 of NKWN-1 is at a third commit. That pass is at
-// another commit, and pass_stands is no. A guard reads the answer of the statement.
+// pass_stands is unknown. The read is held off by a claim of headCommit
+// (server.commitPulls.Claim), so it asks GitHub nothing there and the stored rows answer alone.
+// Controls in the same test: with the message "Dispatch: NKWN-1" read, the pass stands at #85
+// and pass_stands is yes. Then the pass is at newHeadCommit, and a known merged #84 of NKWN-1 is
+// at a third commit. That pass is at another commit, and pass_stands is no. A guard reads the
+// answer of the statement.
 func TestAPassAtTheHeadOfAPullRequestWhoseAnswerIsNotKnownDoesNotSayNo(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -366,7 +368,9 @@ func TestAPassAtTheHeadOfAPullRequestWhoseAnswerIsNotKnownDoesNotSayNo(t *testin
 					"state":"closed","merged":true,"merged_at":"2026-11-18T01:00:00Z","updated_at":"2026-11-18T01:00:00Z",
 					"head":{"ref":"work/no-key","sha":%q,"repo":{"full_name":%q}},"base":{"ref":"main"}}]`, repo, headCommit, repo)
 			})
-			served.commitPulls = delivery.CommitPullReads{}
+			if !served.commitPulls.Claim("acme/widgets", headCommit, time.Now()) {
+				t.Fatal("SETUP: a claim of headCommit was refused; the record claims nothing")
+			}
 			spent := fake.asks("acme/widgets")
 			read := readResults(t, handler, issue)
 			asked := fake.asks("acme/widgets") - spent
@@ -393,7 +397,7 @@ func TestAPassAtTheHeadOfAPullRequestWhoseAnswerIsNotKnownDoesNotSayNo(t *testin
 				wantNotReadPassStands(t, k1, model.PassStandsNo)
 			}
 			if tc.commit == headCommit && asked != 0 {
-				t.Errorf("the read asked GitHub %d times, want none: Dispatch holds #85 at that commit", asked)
+				t.Errorf("the read asked GitHub %d times, want none: the claim holds the read of headCommit off", asked)
 			}
 		})
 	}
