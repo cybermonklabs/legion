@@ -133,8 +133,11 @@ its machine-login page takes a machine's code, and its Settings page lists the l
 can revoke. A person approves a secret request on the broker's own page, signed in to the broker
 itself, never through Dispatch. The broker writes nothing in Dispatch: Dispatch's server reads
 what waits on the signed-in person, and relays that person's machine-login decisions and revokes.
-The broker's one read of Dispatch is the judge's: it reads the issue a request's reason names,
-its title and status and the text of its spec document, and nothing that belongs to a person.
+The broker's reads of Dispatch are few: the judge reads the issue a request's reason names, its
+title and status, the text of its spec document and the ask the reason cites; for a Legion worker
+pod's request for a shared secret the broker reads the assignee of the issue the pod's claim
+names; and the token exchange reads a person's project access. None of them reads anything that
+belongs to a person.
 
 [Legion](/legion/legion/) runs agents. When its Kubernetes runtime is configured with the broker,
 the Legion daemon logs itself in with its own Kubernetes ServiceAccount token, which no person

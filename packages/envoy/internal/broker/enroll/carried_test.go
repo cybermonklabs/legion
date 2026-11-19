@@ -20,8 +20,20 @@ import (
 // answer that read the wrong one would name the wrong end.
 const carriedWindow = 12 * time.Hour
 
-// carriedDaemons is twoDaemons with carriedWindow as its carry window.
+// carriedDaemons is twoDaemons with carriedWindow as its carry window, and enrol, which enrols pod
+// podUID of carryPodAccount under session by the daemon whose login cred is (enrolPod).
 func carriedDaemons(t *testing.T) (*Service, func(cred Credential, session, podUID string) Enrollment, Credential, Credential) {
+	t.Helper()
+	svc, enrol, _, acme, globex := carriedDaemonsEnrollingAs(t)
+	return svc, enrol, acme, globex
+}
+
+// carriedDaemonsEnrollingAs is carriedDaemons with enrolAs beside enrol, for a row of a pod account
+// besides carryPodAccount: enrolAs enrols pod podUID of account under session by the daemon whose
+// login cred is (podRig.enrollSession). The test binds account to the daemons' service itself
+// (Service.ServicesByAccount), as twoDaemons binds carryPodAccount, before it enrols one.
+func carriedDaemonsEnrollingAs(t *testing.T) (*Service, func(cred Credential, session, podUID string) Enrollment,
+	func(cred Credential, account, session, podUID string) Enrollment, Credential, Credential) {
 	t.Helper()
 	svc, issuer, key, acme, globex := twoDaemons(t)
 	svc.Carry = carriedWindow
@@ -29,7 +41,16 @@ func carriedDaemons(t *testing.T) (*Service, func(cred Credential, session, podU
 		t.Helper()
 		return enrolPod(t, svc, issuer, key, cred, session, podUID)
 	}
-	return svc, enrol, acme, globex
+	pods := podRig{svc: svc, issuer: issuer, key: key}
+	enrolAs := func(cred Credential, account, session, podUID string) Enrollment {
+		t.Helper()
+		enr, err := pods.enrollSession(t, cred, account, podUID, session)
+		if err != nil {
+			t.Fatalf("enrol pod %s of %s under %s: %v", podUID, account, session, err)
+		}
+		return enr
+	}
+	return svc, enrol, enrolAs, acme, globex
 }
 
 // askCarried is Carried, failing t on an error.
@@ -345,28 +366,50 @@ func TestTheInvalidSessionIDsTextNamesItsBounds(t *testing.T) {
 
 // TestAnEmptyCarriedAnswerHandsTheNextEnrolmentNothing binds Carried's answer to adopt, whose
 // principal rule is written apart from Carried's (side review of #4355): for every shape of row
-// the tests above ask about, ACME asks about the row's session id and then enrols a pod of its own
-// under that id, and a grant or a pending request that moves off the row onto the new enrolment
-// (adopt) must come from a row the answer named. So an empty answer, which is what lets a Legion
-// daemon free the id, hands the next enrolment nothing. Withheld names are left out, as Carried
-// leaves them out: a withhold grants nothing. Each shape also says whether its row hands anything
-// on, so a run in which nothing ever moves cannot pass for one in which nothing should. A person's
-// session of the same id is no shape here: while it is live the broker refuses the pod's
-// enrolment under a name another principal holds, so there is no next enrolment to take from it,
-// and TestCarriedAnswersNoPersonsSessionOfTheSameID is its answer. The one shape whose asker is not
+// the tests above ask about, and for the rows of an account paired with the pod's own (below),
+// ACME asks about the row's session id and then enrols a pod of its own under that id, and a grant
+// or a pending request that moves off the row onto the new enrolment (adopt) must come from a row
+// the answer named. So an empty answer, which is what lets a Legion daemon free the id, hands the
+// next enrolment nothing. Withheld names are left out, as Carried leaves them out: a withhold
+// grants nothing. Each shape also says whether its row hands anything on, so a run in which
+// nothing ever moves cannot pass for one in which nothing should. A person's session of the same
+// id is no shape here: while it is live the broker refuses the pod's enrolment under a name
+// another principal holds, so there is no next enrolment to take from it, and
+// TestCarriedAnswersNoPersonsSessionOfTheSameID is its answer. The one shape whose asker is not
 // the credential that enrolled the row, a replaced daemon pod's, is
 // TestAReplacedDaemonPodsNextEnrolmentTakesOnlyWhatCarriedAnswered.
 //
+// The pair's widening of adopt is bound the same way (BROKER_SESSION_ACCOUNT_PAIRS): adopt's
+// session rule also takes the rows of each account paired with the pod's own, in the pair's
+// spelling and in the legacy one, where a login of the same account enrolled them, and Carried
+// answers a row of any pod account a login of the caller's account enrolled. So a row of
+// pairedWorkerPodAccount, paired with carryPodAccount before the next enrolment (unpaired, that
+// enrolment is refused the name the row's account holds, ErrSessionHeld), is a shape in each
+// spelling under each daemon: ACME's rows hand their grant on and GLOBEX's do not.
+//
 // The control (the pull request records the run): adopt's legacy clause taking a row whatever
-// login's credential enrolled it (`c.subject=$6::text` widened to any subject) moves GLOBEX's
-// legacy row's grant to ACME's enrolment, which Carried did not answer, and the test fails naming
-// it.
+// login's credential enrolled it (`c.subject=$6::text` widened to any subject) moves the grant of
+// each of GLOBEX's legacy rows, its row of carryPodAccount and its row of the paired account, to
+// ACME's enrolment, which Carried did not answer, and the test fails naming each.
 func TestAnEmptyCarriedAnswerHandsTheNextEnrolmentNothing(t *testing.T) {
 	const session = "ses_next"
 	type rig struct {
 		svc          *Service
 		enrol        func(cred Credential, session, podUID string) Enrollment
+		enrolAs      func(cred Credential, account, session, podUID string) Enrollment
 		acme, globex Credential
+	}
+	// pairedRow is a row of pairedWorkerPodAccount, which the deployment binds to the daemons'
+	// service, that the daemon whose login cred is enrols under session and the session is granted
+	// a secret for, with that account paired with carryPodAccount (pairAccounts) for the next
+	// enrolment, of carryPodAccount, to take the name the row's account holds.
+	pairedRow := func(t *testing.T, r rig, cred Credential, podUID string) Enrollment {
+		t.Helper()
+		r.svc.ServicesByAccount[pairedWorkerPodAccount] = "legion-daemon"
+		row := r.enrolAs(cred, pairedWorkerPodAccount, session, podUID)
+		insertLiveGrant(t, r.svc, row.ID)
+		pairAccounts(t, r.svc, carryPodAccount, pairedWorkerPodAccount)
+		return row
 	}
 	for _, c := range []struct {
 		name  string
@@ -438,10 +481,28 @@ func TestAnEmptyCarriedAnswerHandsTheNextEnrolmentNothing(t *testing.T) {
 			spellAccountAlone(t, r.svc, row.ID)
 			return row.ID
 		}, false},
+		{"ACME's dormant row of the paired account holding a live grant", func(t *testing.T, r rig) uuid.UUID {
+			row := pairedRow(t, r, r.acme, "acme-pod-1")
+			endLeavingDormant(t, r.svc, r.acme, row)
+			return row.ID
+		}, true},
+		{"ACME's legacy row of the paired account holding a grant", func(t *testing.T, r rig) uuid.UUID {
+			row := pairedRow(t, r, r.acme, "acme-pod-1")
+			spellAccountAlone(t, r.svc, row.ID)
+			return row.ID
+		}, true},
+		{"GLOBEX's live row of the paired account holding a grant", func(t *testing.T, r rig) uuid.UUID {
+			return pairedRow(t, r, r.globex, "globex-pod-1").ID
+		}, false},
+		{"GLOBEX's legacy row of the paired account holding a grant", func(t *testing.T, r rig) uuid.UUID {
+			row := pairedRow(t, r, r.globex, "globex-pod-1")
+			spellAccountAlone(t, r.svc, row.ID)
+			return row.ID
+		}, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			svc, enrol, acme, globex := carriedDaemons(t)
-			id := c.row(t, rig{svc: svc, enrol: enrol, acme: acme, globex: globex})
+			svc, enrol, enrolAs, acme, globex := carriedDaemonsEnrollingAs(t)
+			id := c.row(t, rig{svc: svc, enrol: enrol, enrolAs: enrolAs, acme: acme, globex: globex})
 			wantNextEnrolmentBound(t, svc, acme, session, id, func() Enrollment { return enrol(acme, session, "acme-pod-next") }, c.moves)
 		})
 	}

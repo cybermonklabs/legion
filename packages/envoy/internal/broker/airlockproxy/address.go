@@ -194,13 +194,15 @@ func (s *Server) logUnreachable(ctx context.Context, host, port string, addrs []
 }
 
 // failedClass is the class of a lookup or a dial that failed with err: dialCancelled when the
-// request it was made for had ended - its command closed its connection, which ends the request's
-// context - and every error err joins is that context's own, so the whole of the failure was the
-// lookup or dial given up for it; and class otherwise. A dial of several addresses joins one
-// error for each, and an address that refused or timed out before the command went away is a
-// failure of the service, which keeps its class. A dial a transport makes runs under a context
-// its request's end does not cancel, so only a CONNECT's dial and the check of a CONNECT or a
-// plain-HTTP request can be given up this way.
+// request it was made for had ended - its command closed its connection, which net/http answers by
+// cancelling the request's context - and every error err joins is that cancel, so the whole of the
+// failure was the lookup or dial given up for it; and class otherwise. A dial of several addresses
+// joins one error for each, and an address that refused or timed out before the command went away
+// is a failure of the service, which keeps its class. Only context.Canceled is that cancel: the
+// dialer's own Timeout answers an error that is context.DeadlineExceeded, and nothing sets a
+// deadline on a request's context, so a deadline is always a timeout of the service's. A dial a
+// transport makes runs under a context its request's end does not cancel, so only a CONNECT's dial
+// and the check of a CONNECT or a plain-HTTP request can be given up this way.
 func failedClass(ctx context.Context, err error, class string) string {
 	if ctx.Err() == nil {
 		return class
@@ -210,7 +212,7 @@ func failedClass(ctx context.Context, err error, class string) string {
 		errs = joined.Unwrap()
 	}
 	for _, each := range errs {
-		if !errors.Is(each, context.Canceled) && !errors.Is(each, context.DeadlineExceeded) {
+		if !errors.Is(each, context.Canceled) {
 			return class
 		}
 	}
@@ -275,7 +277,8 @@ func callerOfContext(ctx context.Context) requests.AirlockConnection {
 // the number it names (portNumber), and the address is the resolver's answer with that port.
 // Lowercasing and the cut every field passes (answer.ClipFields, which keeps the line one Cloud
 // Logging entry) are no redaction: what keeps a placeholder the command wrote into its host off
-// the line is maskedHandler, which every line of this package is written through.
+// the line is the broker's placeholder mask, which every line it writes passes (logmask.Writer,
+// under cmd/broker's handler).
 func dialFields(grant requests.AirlockConnection, host, port, address string) []any {
 	return []any{
 		"enrollment", grant.EnrollmentID,

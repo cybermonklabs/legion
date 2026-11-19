@@ -34,7 +34,8 @@ var (
 // passes, and one that lost the link or links another rollback's section, one written twice and a
 // page with no entry are refused for it. An entry, a link or a second entry that only an HTML
 // comment holds, and a comment that splits the link, make the two readings disagree, and are
-// refused for the comment. A "<!--" inside a fenced block hides nothing. Each case is a list as the
+// refused for the comment. A "<!--" inside a fenced block hides nothing, and nor does one inside a
+// line that its paragraph never closes, which the page shows as text. Each case is a list as the
 // guide writes one, the entry among others.
 func TestTheEntryCheckReadsTheLinkOfTheEntryAReaderSees(t *testing.T) {
 	const (
@@ -67,6 +68,7 @@ func TestTheEntryCheckReadsTheLinkOfTheEntryAReaderSees(t *testing.T) {
 			"[Rolling back the release that records each step](#rolling-back-the-release-<!-- each -->that-records-each-step).\n",
 			errCommented},
 		{"a comment opened inside a fenced block before the list", "```html\n<!--\n```\n" + other + linked, nil},
+		{"a \"<!--\" never closed inside a line before the list", "The entries follow. <!-- a note\n\n" + other + linked, nil},
 	} {
 		err := entryLinkIn(list.text, migration, heading)
 		if !errors.Is(err, list.err) {
@@ -148,9 +150,10 @@ func sectionHeadingIn(text, heading string) error {
 	return bothReadings(headingOf(text, heading), headingOf(visibleMarkdown(text), heading))
 }
 
-// headingOf holds one reading of a page: it has one line of `#` marks, a space and heading outside a
-// fenced block, from a line opening "```" to the next, where a `#` line is a shell comment and no
-// heading. A reading with none or with more than one is refused (errNotOneSection).
+// headingOf holds one reading of a page: it has one heading line (markdownHeading) whose words are
+// heading, outside a fenced block, from a line opening "```" to the next, where a `#` line is a
+// shell comment and no heading. A reading with none or with more than one is refused
+// (errNotOneSection).
 func headingOf(text, heading string) error {
 	fenced := false
 	headings := 0
@@ -159,7 +162,7 @@ func headingOf(text, heading string) error {
 			fenced = !fenced
 			continue
 		}
-		if !fenced && strings.HasPrefix(line, "#") && strings.TrimLeft(line, "#") == " "+heading {
+		if match := markdownHeading.FindStringSubmatch(line); !fenced && match != nil && match[2] == heading {
 			headings++
 		}
 	}

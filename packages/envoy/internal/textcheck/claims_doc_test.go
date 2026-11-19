@@ -213,12 +213,13 @@ func TestClaimListNamesReadsTightAndBlankSeparatedLists(t *testing.T) {
 }
 
 // A claim list a reader of the rendered page cannot see is none: the page shows nothing of a claim,
-// the list or its heading inside an HTML comment, or of what follows a comment never closed, and a
-// comment that splits a claim's name shows it whole on the page alone. So the list is read in both
-// readings of the guide, and each of those is refused for the comment. A comment inside a claim's
-// prose, a "<!--" inside a fenced block above the list, and a comment after the list, where both
-// readings have ended it, change nothing it reads; a guide with no list fails in both readings
-// alike, with the written reading's refusal.
+// the list or its heading inside an HTML comment, or of what follows a comment opened on a line of
+// its own and never closed, and a comment that splits a claim's name shows it whole on the page
+// alone. So the list is read in both readings of the guide, and each of those is refused for the
+// comment. A comment inside a claim's prose, a "<!--" inside a fenced block above the list, a
+// "<!--" inside a line that its paragraph never closes, which the page shows as text, and a comment
+// after the list, where both readings have ended it, change nothing it reads; a guide with no list
+// fails in both readings alike, with the written reading's refusal.
 func TestTheClaimListIsReadWhereAReaderSeesIt(t *testing.T) {
 	const (
 		prose = "An issued token carries these claims and no others:\n\n"
@@ -240,7 +241,9 @@ func TestTheClaimListIsReadWhereAReaderSeesIt(t *testing.T) {
 			intro + "<!--\n- `session` — the session.\n-->\n- `person` — the person.\n" + after, nil, "comment"},
 		{"the heading inside a comment", "<!--\n" + claimsDocHeading + "\n-->\n\n" + prose + list + after, nil, "comment"},
 		{"a comment never closed before the list",
-			claimsDocHeading + "\n\nAn issued token carries these claims <!-- a note\n\n" + list + after, nil, "comment"},
+			claimsDocHeading + "\n\nAn issued token carries these claims:\n<!-- a note\n\n" + list + after, nil, "comment"},
+		{"a \"<!--\" never closed inside a line before the list",
+			claimsDocHeading + "\n\nAn issued token carries these claims <!-- a note\n\n" + list + after, both, ""},
 		{"a comment splitting a claim's name",
 			intro + "- `ses<!-- whole -->sion` — the session.\n\n- `person` — the person.\n" + after, nil, "comment"},
 		{"a comment inside a claim's prose",

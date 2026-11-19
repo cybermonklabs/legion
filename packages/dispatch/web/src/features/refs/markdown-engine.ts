@@ -304,12 +304,14 @@ const parseQueue = new WorkerQueue<SentBody, ParsedBody, ParsedAnswer>({
 /**
  * Replaces the page's own `new Worker(…)` with `factory`, for the rows that drive a faked worker
  * (`parse-worker-fixture.ts`); `undefined` puts the page's own back. Installing one leaves the
- * engine holding no worker: the one it held is terminated and every body it held is parsed on
- * the page, so nothing a page asked the worker before reaches the next one.
+ * engine holding no worker and no answer: the one it held is terminated, every body it held is
+ * parsed on the page, and the answer cache is emptied after that, as `resetMermaidDiagrams`
+ * empties the diagram renderer's, so nothing a page asked the worker before reaches the next one.
  */
 export function setParseWorkerFactory(factory: ParseWorkerFactory | undefined): void {
   parseQueue.recover();
   parseQueue.clear(parseOnThePage);
+  answers.clear();
   createParseWorker = factory;
 }
 

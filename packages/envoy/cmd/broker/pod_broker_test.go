@@ -72,9 +72,14 @@ func (b podBroker) logIn(service, account string) launcher {
 	return launcher{key: key, credentialID: login.CredentialID}
 }
 
-// enroll has by's credential enroll the pod runtimeID, proving with its projected token that it
-// runs as account.
-func (b podBroker) enroll(by launcher, runtimeID, account string) pod {
+// enrolPod has by's credential enrol the pod runtimeID, proving with its projected token that it
+// runs as account, under the session name sessionID, "" for none: the request's session_id is a
+// pointer, so an empty name and no name differ, and "" sends no name at all. A name the pod states
+// is held under its account's principal (exchange.AccountPrincipal), as the Legion daemon enrols a
+// role's pod, and it is the name a grant follows. It answers the pod, holding the enrollment the
+// broker named on a 201, beside the broker's status and body, so a caller drives the refusal as
+// well as the enrollment.
+func (b podBroker) enrolPod(by launcher, runtimeID, account, sessionID string) (pod, int, []byte) {
 	b.t.Helper()
 	key := proofKey(b.t)
 	thumbprint, err := proof.Thumbprint(&key.PublicKey)
@@ -87,17 +92,31 @@ func (b podBroker) enroll(by launcher, runtimeID, account string) pod {
 	if err != nil {
 		b.t.Fatal(err)
 	}
-	status, answer := b.post("/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
+	body := map[string]any{
 		"kind": "pod", "runtime_id": runtimeID, "thumbprint": thumbprint, "pod_token": b.issuer.Mint(b.t, b.key, claims),
-	})
+	}
+	if sessionID != "" {
+		body["session_id"] = sessionID
+	}
+	status, answer := b.post("/v1/enrollments", map[string]string{"Proof": signed}, body)
 	var enrolled struct {
 		EnrollmentID string `json:"enrollment_id"`
 	}
-	b.decode(answer, &enrolled)
-	if status != http.StatusCreated || enrolled.EnrollmentID == "" {
-		b.t.Fatalf("enroll %s as %s = %d %s, want 201 with an enrollment_id", runtimeID, account, status, answer)
+	if status == http.StatusCreated {
+		b.decode(answer, &enrolled)
 	}
-	return pod{runtimeID: runtimeID, key: key, enrollmentID: enrolled.EnrollmentID}
+	return pod{runtimeID: runtimeID, key: key, enrollmentID: enrolled.EnrollmentID}, status, answer
+}
+
+// enroll is enrolPod held to the answer a pod must get: 201 and an enrollment its own key signs
+// for, which is what every later secrets call presents.
+func (b podBroker) enroll(by launcher, runtimeID, account, sessionID string) pod {
+	b.t.Helper()
+	enrolled, status, answer := b.enrolPod(by, runtimeID, account, sessionID)
+	if status != http.StatusCreated || enrolled.enrollmentID == "" {
+		b.t.Fatalf("enroll %s as %s under session %q = %d %s, want 201 with an enrollment_id", runtimeID, account, sessionID, status, bytes.TrimSpace(answer))
+	}
+	return enrolled
 }
 
 // askRaw has p request the agent secret secretName and answers the broker's status and body,

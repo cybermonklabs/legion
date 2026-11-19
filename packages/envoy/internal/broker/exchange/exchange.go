@@ -31,11 +31,12 @@
 // The principal is the caller's standing identity, never the instance asking: the listed account
 // for a pod, the listed workflow for a run, the listed Google account for a machine, the person
 // for a sign-in and for a dev box. A session name belongs to one principal, so a pod's
-// replacement and a workflow's
-// next run keep writing under the name
-// their predecessor held, and a caller of any other principal is refused it. Instance is the
-// second rule beside it, and the only thing that separates two callers of one principal: the pod
-// uid a registration has to name for a pod of a free-session entry to write under a session name.
+// replacement and a workflow's next run keep writing under the name their predecessor held, and
+// a caller of any other principal is refused it, but for a pod of an account the broker pairs
+// with the holder's (BROKER_SESSION_ACCOUNT_PAIRS, oauthstore.Store.BindSession), whose claim
+// takes the name. Instance is the second rule beside it, and the only thing that separates two
+// callers of one principal: the pod uid a registration has to name for a pod of a free-session
+// entry to write under a session name.
 package exchange
 
 import (
@@ -365,12 +366,13 @@ type Claims struct {
 	Projects []string
 	// Principal is who the session name belongs to, and is not a claim of the minted token: it is
 	// what the broker records as the name's holder, so a caller that may exchange cannot mint a
-	// token naming a session another principal writes under. It is the listed account for a pod,
-	// the listed workflow (its repository, path and ref) for a run, the listed Google account for
-	// a machine, and the person for a dev box session, each spelled with its kind first
-	// (account:, workflow:, google:, person:) so principals of two kinds never compare equal.
-	// Every pod of one account, every run of one workflow, every machine of one Google account
-	// and every machine of one person is therefore one holder.
+	// token naming a session another principal writes under, unless the broker pairs the caller's
+	// account with that principal's (oauthstore.Store.SetSessionPairs), when the claim takes the
+	// name. It is the listed account for a pod, the listed workflow (its repository, path and ref)
+	// for a run, the listed Google account for a machine, and the person for a dev box session,
+	// each spelled with its kind first (account:, workflow:, google:, person:) so principals of
+	// two kinds never compare equal. Every pod of one account, every run of one workflow, every
+	// machine of one Google account and every machine of one person is therefore one holder.
 	Principal string
 	// Instance is which caller of that principal is asking, and is not a claim of the minted
 	// token either: it is the pod uid a registration has to name for this exchange to be made
@@ -593,7 +595,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 		if strings.TrimSpace(entry.Service) == "" {
 			return nil, fmt.Errorf("exchange: %s: the service is required, since a read entry's token names its service and no person", where)
 		}
-		if !validSession(entry.Session) {
+		if !ValidSession(entry.Session) {
 			return nil, fmt.Errorf("exchange: %s: the session is required, since a read entry fixes the session its token names, and %s", where, sessionRule)
 		}
 		if _, listed := set.reads[entry.Account]; listed {
@@ -658,7 +660,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 			if err := checkGrant(where, entry.Project, entry.Person, entry.Session, false); err != nil {
 				return nil, err
 			}
-		} else if entry.Session != "" && !validSession(entry.Session) {
+		} else if entry.Session != "" && !ValidSession(entry.Session) {
 			return nil, fmt.Errorf("exchange: %s: %s", where, sessionRule)
 		}
 		if _, listed := set.google[entry.Account]; listed {
@@ -752,7 +754,7 @@ func checkGrant(where, project, person, session string, noProject bool) error {
 	if strings.TrimSpace(person) == "" {
 		return fmt.Errorf("exchange: %s: the person is required, since every token acts for someone", where)
 	}
-	if session != "" && !validSession(session) {
+	if session != "" && !ValidSession(session) {
 		return fmt.Errorf("exchange: %s: %s", where, sessionRule)
 	}
 	return nil
@@ -871,7 +873,7 @@ func (s *Set) Registration(account, podUID, session string) error {
 	if fixed := listing.fixed(); fixed != "" {
 		return fmt.Errorf("%w: %s's tokens all name the session %s, which every pod of it may use, so its pods are registered for no name", ErrSessionFixed, account, fixed)
 	}
-	if !validSession(session) {
+	if !ValidSession(session) {
 		return fmt.Errorf("%w: the registration of %s names a session of %d bytes; %s", ErrSessionInvalid, account, len(session), sessionRule)
 	}
 	return nil
@@ -1154,10 +1156,13 @@ func (s *Set) Machine(credential, approver, session string, projects []string) (
 // Three of them are exported because a broker grant follows a session name under one principal
 // too: enroll.Service.Create writes one of these into enrollments.carry_principal, and the next
 // enrollment of that name under that principal takes what the last one held. The name a session
-// writes its Dispatch tokens under and the name its grant follows are one name, so one holder
-// has to spell the same either way, which it does only while there is one definition of each
+// writes its Dispatch tokens under and the name its grant follows are one name, so one holder has
+// to spell the same either way, which it does only while there is one definition of each
 // spelling. A pod's enrollment is the one exception, whose grant follows a pair rather than its
-// account alone (PodLaunchPrincipal), while its name is held under the account.
+// account alone (PodLaunchPrincipal), while its name is held under the account. A pod of an
+// account the broker pairs with that account (enroll.SessionBinder.PairedWith) takes what the
+// other account's pods of the name hold only under the same login account, the pair LaunchedBy
+// spells from the paired account's principal.
 
 // AccountPrincipal is a Kubernetes ServiceAccount's spelling: the account a pod's own projected
 // token proves.
@@ -1185,12 +1190,21 @@ func PersonPrincipal(person string) string { return "person:" + person }
 // a space, so no two pairs spell one string. The broker's migration 0037_pod_carry_launcher
 // writes the same spelling in SQL.
 func PodLaunchPrincipal(account, launcher string) string {
-	return AccountPrincipal(account) + " launched-by " + launcher
+	return LaunchedBy(AccountPrincipal(account), launcher)
+}
+
+// LaunchedBy is PodLaunchPrincipal spelled from an account's principal rather than the account:
+// the pair a pod of the account accountPrincipal names carries its grants under when the login
+// launcher names enrolled it. It is how enroll's adopt spells a paired account's pair, which the
+// broker holds as a principal (enroll.SessionBinder.PairedWith), so the pair is spelled in one
+// place.
+func LaunchedBy(accountPrincipal, launcher string) string {
+	return accountPrincipal + " launched-by " + launcher
 }
 
 // sessionRule is the one sentence that says what a session name may be, so an entry refused at
 // build time and a request refused at exchange time are refused in the same words, and the cap it
-// quotes is the cap validSession applies.
+// quotes is the cap ValidSession applies.
 var sessionRule = fmt.Sprintf("a session name is printable, carries no whitespace, and is at most %d bytes", MaxSessionBytes)
 
 // resolveSession answers the session claim for an entry whose fixed session is fixed and a request
@@ -1211,15 +1225,18 @@ func resolveSession(fixed, named, identity string) (string, error) {
 	if named == "" {
 		return "", fmt.Errorf("%w: %s is listed with no session of its own, so the request names one", ErrSessionRequired, identity)
 	}
-	if !validSession(named) {
+	if !ValidSession(named) {
 		return "", fmt.Errorf("%w: %s named a session of %d bytes; %s", ErrSessionInvalid, identity, len(named), sessionRule)
 	}
 	return named, nil
 }
 
-// validSession reports whether name is usable as a session claim: UTF-8, printable, with no
-// whitespace and at most MaxSessionBytes.
-func validSession(name string) bool {
+// ValidSession reports whether name is usable as a session claim: UTF-8, printable, with no
+// whitespace and at most MaxSessionBytes. A pod-session registration of a name it refuses is
+// refused before it is written (Registration), so no registration names one, and a release of
+// registrations (oauthstore.Store.ReleasePodSessions) drops such a name as one that matches
+// nothing rather than refusing it.
+func ValidSession(name string) bool {
 	if name == "" || len(name) > MaxSessionBytes || !utf8.ValidString(name) {
 		return false
 	}
