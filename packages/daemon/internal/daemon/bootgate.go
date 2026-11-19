@@ -971,7 +971,8 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 // ImageProbe is `legion probe-image`, run inside the worker image: by its build's final step, and
 // by the daemon's probe Sandbox (internal/runtime/sandbox/probe.go).
 type ImageProbe struct {
-	// Omp is the OMP invocation as the shell runs it: the image's LEGION_OMP_PATH, or --omp.
+	// Omp is the OMP invocation as the shell runs it: the image's LEGION_OMP_PATH, or --omp, a path
+	// quoted as one shell word (shellprefix.Word).
 	Omp string
 	// Contract is the daemon API contract the image's plugin must declare.
 	Contract int

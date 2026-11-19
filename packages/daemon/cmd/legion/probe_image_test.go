@@ -337,6 +337,54 @@ func TestProbeImageProbesTheOmpItIsGiven(t *testing.T) {
 	}
 }
 
+// --omp and LEGION_OMP_PATH name the OMP executable, a path, as LEGION_OMP_PATH does for the
+// daemon: one whose directory's name holds a space, a quote or a glob character is probed as the
+// one file it names, every probe running it as one shell word, and the OK line names it as given.
+// Each glob name has a sibling its pattern also matches, holding an omp that fails, so a probe
+// that let the shell expand the path would run the other file or hand it the first as an argument.
+func TestProbeImageProbesAnOmpWhosePathHoldsAShellCharacter(t *testing.T) {
+	for _, testCase := range []struct{ name, sibling string }{
+		{"x y", ""}, {"sq'x", ""}, {"q?x", "qax"}, {"glob[x]", "globx"},
+	} {
+		for _, how := range []string{"LEGION_OMP_PATH", "--omp"} {
+			t.Run(testCase.name+" by "+how, func(t *testing.T) {
+				dir := t.TempDir()
+				omp := filepath.Join(dir, testCase.name, "omp")
+				if err := os.MkdirAll(filepath.Dir(omp), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(imageOmp(t), omp); err != nil {
+					t.Fatal(err)
+				}
+				if testCase.sibling != "" {
+					other := filepath.Join(dir, testCase.sibling, "omp")
+					if err := os.MkdirAll(filepath.Dir(other), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(other, []byte("#!/bin/sh\necho 'the omp a glob matched ran' >&2\nexit 97\n"), 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var args []string
+				if how == "--omp" {
+					args = inImage(t, thisBinarysContract, "/nonexistent/omp").flags("--omp", omp)
+				} else {
+					args = inImage(t, thisBinarysContract, omp).flags()
+				}
+
+				code, stdout, stderr := probeImage(args...)
+
+				if code != 0 || !strings.HasSuffix(stdout, "\nprobe-image: OK ("+omp+") session-storage=probed extensions=discovered agent-models=resolved"+capabilityMarks+thisBinarysContract+"\n") {
+					t.Fatalf("probe-image with the omp at %s named by %s = %d %q %q, want the OK line naming it", omp, how, code, stdout, stderr)
+				}
+				if strings.Contains(stderr, "the omp a glob matched ran") {
+					t.Errorf("probe-image ran the omp the glob %s also matches: %q", testCase.name, stderr)
+				}
+			})
+		}
+	}
+}
+
 // The image build's probe, which has none of the operator's model configuration, skips the agents'
 // models, and its OK line says so, which the daemon's probe Sandbox refuses at boot.
 func TestProbeImageWithSkipAgentModelsSaysSoOnTheOKLine(t *testing.T) {
