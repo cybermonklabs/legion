@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
@@ -83,7 +84,8 @@ const (
 type GoogleAccount struct {
 	// Audience is the 'aud' the token is minted for: the broker's own audience, as the broker's
 	// verifier of its callers' Google tokens requires it (BROKER_GOOGLE_OIDC_AUDIENCE), or the
-	// model gateway's, for the broker's judge (BROKER_JUDGE_MODEL_AUDIENCE).
+	// model gateway's, for the broker's judge (BROKER_JUDGE_MODEL_AUDIENCE). A mint's error names
+	// it through redact.URL: the setting can hold a URL with a user part, which no error prints.
 	Audience string
 	// ServiceAccount is the email of the service account whose identity token Read mints at
 	// generateIdToken, and empty for this machine's own, read from the metadata server's identity
@@ -203,7 +205,7 @@ func (g *GoogleAccount) fresh() (string, bool) {
 func (g *GoogleAccount) mint() (string, error) {
 	token, err := g.generateIDToken()
 	if err != nil {
-		return "", fmt.Errorf("brokertoken: mint the Google identity token of %s for %s at IAM Service Account Credentials: %w", g.ServiceAccount, g.Audience, err)
+		return "", fmt.Errorf("brokertoken: mint the Google identity token of %s for %s at IAM Service Account Credentials: %w", g.ServiceAccount, redact.URL(g.Audience), err)
 	}
 	return token, nil
 }

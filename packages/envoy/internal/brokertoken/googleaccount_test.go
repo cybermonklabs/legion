@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // metadataAudience is the broker audience these reads ask the metadata server to mint for.
@@ -329,5 +330,41 @@ func TestGoogleAccountMintIsBounded(t *testing.T) {
 	}
 	if took > 2*time.Second {
 		t.Errorf("Read took %s against a mint held 5s; want it ended near its 300ms bound", took)
+	}
+}
+
+// TestGoogleAccountMintErrorNamesNoUserPartOfTheAudience: BROKER_JUDGE_MODEL_AUDIENCE can hold a
+// URL with a user part, and a failed mint's error, which the judge writes into the audit row a
+// person reads, names the audience through redact.URL: such an audience is named by its fixed
+// phrase and no part of its user part is printed. The control is the same refusal for an audience
+// with no user part, which the error names whole, so the error line is reached. The user part's
+// values are made for this test.
+func TestGoogleAccountMintErrorNamesNoUserPartOfTheAudience(t *testing.T) {
+	const (
+		user     = "made-up-audience-user"
+		password = "not-a-secret-audience-5e2b"
+	)
+	brokertokentest.NewMetadataStand(t)
+	for _, audience := range []string{"https://" + user + ":" + password + "@gateway.example", gatewayAudience} {
+		iam := brokertokentest.NewIAMStand(t)
+		iam.AnswersStatus(http.StatusForbidden, `{"error":{"code":403,"status":"PERMISSION_DENIED"}}`)
+		account := brokertoken.NewGoogleAccount(audience)
+		account.ServiceAccount = judgeAccount
+		account.IAMCredentialsURL = iam.Server.URL
+		token, err := account.Read()
+		if token != "" || err == nil {
+			t.Fatalf("Read for %q = %q, %v; want no token and an error", redact.URL(audience), token, err)
+		}
+		text := err.Error()
+		want := "brokertoken: mint the Google identity token of " + judgeAccount + " for " + redact.URL(audience) + " at IAM Service Account Credentials: "
+		if !strings.HasPrefix(text, want) {
+			t.Errorf("the error %q does not open with %q", text, want)
+		}
+		if strings.Contains(text, user) || strings.Contains(text, password) {
+			t.Errorf("the error %q names part of the audience's user part", text)
+		}
+		if audience == gatewayAudience && !strings.Contains(text, gatewayAudience) {
+			t.Errorf("control: the error %q does not name the audience %s, which has no user part", text, gatewayAudience)
+		}
 	}
 }
