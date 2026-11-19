@@ -1480,8 +1480,10 @@ func (r *Runtime) ProvisionBound() time.Duration {
 // LaunchBound satisfies runtime.Runtime: the longest one launch try may run once it holds its
 // pod's launch turn (relaunch), the sum of a replacing try's waits and of its bounded calls at
 // their full budgets (launchBound): the boot timeout three times — ensureSandbox's wait for a
-// Sandbox being deleted, awaitPodGone, awaitNewPod — then awaitRoleLauncher's backstop, twice the
-// boot timeout plus ProvisionBound and two recheck intervals (launcherBackstop), then the
+// Sandbox being deleted, awaitPodGone, awaitNewPod — then awaitRoleLauncher's backstop, the
+// longest start bound a pod of the runtime gets (startBound: the kept-volume bound where the
+// microvm block keeps an issue pod's volume and that bound is longer, the boot timeout otherwise)
+// plus the boot timeout, ProvisionBound and two recheck intervals (launcherBackstop), then the
 // termination grace the start frame has past the launcher deadline, then relaunchCalls times
 // apiTimeout for every client call, mint, store read and launcher frame between those waits. The
 // wait for the launch turn itself (lockPod) is outside it: that is another launch's time, bounded

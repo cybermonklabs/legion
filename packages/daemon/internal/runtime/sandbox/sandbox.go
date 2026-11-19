@@ -123,6 +123,9 @@ type Runtime struct {
 	launcherAuth            launcherCredentials
 	now                     func() time.Time
 	log                     *slog.Logger
+	// keptVolumeBound is how long a launch gives a pod with a kept volume to start where the boot
+	// timeout is shorter (startBound): keptVolumeAttachWait, which a test sets short.
+	keptVolumeBound time.Duration
 	// memoryGuard is Options.MemoryGuard: the memory guard settings an issue pod's launcher is
 	// handed on the answer to each hello (LauncherResolver), nil for a deployment that turned the
 	// guard off.
@@ -283,6 +286,14 @@ func configureProber(opts Options) (*Runtime, error) {
 	// which its stream from the repository cache runs outside of, the shared clone's own, and the
 	// issue's own checkout's.
 	provisionBound := workspace.FetchBudget + workspace.CloneTimeout + workspace.CheckoutTimeout
+	// The longest a launch try gives a pod to start (startBound), which the try's bound counts in
+	// awaitRoleLauncher's backstop (launchBound): the kept-volume bound where the microvm block
+	// keeps an issue pod's volume and that bound is longer than the boot timeout, and the boot
+	// timeout otherwise.
+	longestStart := opts.BootTimeout
+	if microVM := opts.Sandbox.MicroVM; microVM != nil && microVM.KeepVolume {
+		longestStart = max(longestStart, keptVolumeAttachWait)
+	}
 	refuse := func(format string, args ...any) (*Runtime, error) {
 		return nil, fmt.Errorf("sandbox runtime: "+format, args...)
 	}
@@ -404,9 +415,9 @@ func configureProber(opts Options) (*Runtime, error) {
 		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,
 		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels),
-		bootTimeout: opts.BootTimeout, registrationIntervals: opts.RegistrationIntervals,
+		bootTimeout: opts.BootTimeout, keptVolumeBound: keptVolumeAttachWait, registrationIntervals: opts.RegistrationIntervals,
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
-		launchBound:   launchBound(opts.BootTimeout, provisionBound, opts.TerminationGrace),
+		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
 		testPostgres: opts.TestPostgres, memoryGuard: opts.MemoryGuard, volumeTrim: opts.VolumeTrim,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,

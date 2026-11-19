@@ -15,7 +15,7 @@ import (
 // neverStarted lives here too, though it reads a pod's conditions rather than its init containers,
 // and judges every pod the runtime launches, the project controller's as well as an issue's: a pod
 // scheduled onto a node that never made it ready to start, which a relaunch replaces rather than
-// waits on.
+// waits on once the pod is older than its start bound (startBound).
 
 // fetchRestartGrace is how many times the kubelet may restart a pod's workspace-fetch before a
 // non-zero end of it is the pod's death rather than one more start: three, so the fourth restart
@@ -86,6 +86,16 @@ func provisioning(pod *corev1.Pod) bool {
 // takes from the pod's scheduling to reporting it ready to start its containers.
 const startingGrace = time.Minute
 
+// keptVolumeAttachWait is how long a launch gives a pod with a kept volume (keptVolume) to start,
+// where the boot timeout is shorter (startBound, Runtime.keptVolumeBound). A ReadWriteOnce volume
+// attaches to one node. When the node that held it stops answering, the volume stays attached
+// there. Once the old pod is gone from the API, the upstream attach-detach controller
+// force-detaches the volume after 6 minutes (ReconcilerMaxWaitForUnmountDuration). The attach to
+// the new pod's node takes up to one minute more. Until then the new pod is Pending and its node
+// has not made it ready to start its containers, which neverStarted reads as a pod that never
+// started once it is older than its bound.
+const keptVolumeAttachWait = 7 * time.Minute
+
 // neverStarted is how long ago pod was created and how long ago it was scheduled onto a node that
 // has not made it ready to start its containers, and whether it has never started at now: created
 // longer than bound ago, and scheduled longer than its margin ago, half of bound or startingGrace,
@@ -94,17 +104,19 @@ const startingGrace = time.Minute
 // container or the launcher its roles run in: a node that cannot surface the new persistent disk an
 // issue pod owns (FailedMount) holds the pod there for as long as the pod lives, and a launch that
 // keeps such a pod waits for its launcher in vain at every try (relaunch). Such a pod is Pending,
-// PodScheduled True and PodReadyToStartContainers False.
+// PodScheduled True and PodReadyToStartContainers False. A pod with a kept volume is in that
+// state too while its volume moves from the node that held it (keptVolumeAttachWait), so the
+// relaunch judges each pod against its start bound (startBound).
 //
 // Two clocks judge it, since neither alone tells such a pod from one about to start. Its creation
 // is what the launch's wait for its launcher runs against: that wait starts once the store holds
-// the pod, so it gives up about a boot timeout after the pod's creation, and the next try follows
-// it by a backoff of at least a second, or at once for a sibling role's try queued on the pod's
-// launch turn (lockPod). Both conditions come later than the creation: PodScheduled's time is
-// stamped when the pod is bound, and the kubelet keeps it whenever it rewrites the status, while
+// the pod, so it gives up about the pod's start bound after the pod's creation, and the next try
+// follows it by a backoff of at least a second, or at once for a sibling role's try queued on the
+// pod's launch turn (lockPod). Both conditions come later than the creation: PodScheduled's time
+// is stamped when the pod is bound, and the kubelet keeps it whenever it rewrites the status, while
 // PodReadyToStartContainers' is the kubelet's own, written once it first syncs the pod. Counted
-// from either, that next try could find the pod younger than the boot timeout, keep it, and wait on
-// it once more. Its scheduling, PodScheduled's time, is what tells it from a pod that waited
+// from either, that next try could find the pod younger than the bound, keep it, and wait on it
+// once more. Its scheduling, PodScheduled's time, is what tells it from a pod that waited
 // unscheduled for room in the pool for longer than the bound: such a pod, once a node gets it,
 // reads the same in the seconds until that node has mounted its volumes and made its sandbox,
 // created longer than the bound ago, and a try in that window would delete a pod about to start and
@@ -112,8 +124,8 @@ const startingGrace = time.Minute
 // not the kubelet's, since it says how long the named node has had the pod. A pod scheduled less
 // than the margin ago is so left to start. A stuck pod scheduled late, within the margin of the try
 // that follows its timed-out wait, as one that waited for the autoscaler can be, is kept by that
-// try once more, which waits out the boot timeout and is charged; the try after it replaces the
-// pod, so a pod scheduled late costs at most one try.
+// try once more, which waits out the pod's start bound and is charged; the try after it replaces
+// the pod, so a pod scheduled late costs at most one try.
 //
 // Nothing else is judged: a pod whose kubelet has not reported the condition, whose wait for its
 // image pull is the launcher wait's own (awaitRoleLauncher); a pod that is not scheduled, whose

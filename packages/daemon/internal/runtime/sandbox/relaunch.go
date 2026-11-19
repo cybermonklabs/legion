@@ -108,8 +108,8 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // ended by the daemon's replacement (Displaced), which the supervisor resumes uncharged
 // (LEGION-729). A pod already ended, or never the Sandbox's, is named nothing displaced: its roles
 // ended with it. Nor is a pod that never started, where no role ran: the launch that waited the
-// boot timeout on such a pod was charged, and the next one replaces it rather than waiting on it
-// again. Where the Sandbox still runs and its own pod ended with a reason
+// pod's start bound on it (startBound) was charged, and the next one replaces it rather than
+// waiting on it again. Where the Sandbox still runs and its own pod ended with a reason
 // (runtime.PodEnd), the Suspended patch that replaces that pod records the end on the Sandbox
 // instead, keyed by the pod's uid (suspendRecordingEnd): an eviction ends every role of the pod,
 // and a role whose next check comes after this launch has replaced the pod reads the eviction
@@ -182,14 +182,17 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	_, initExit := failedInit(pod)
 	live := s.mode() != modeSuspended && ownedBy(pod, s.UID) && !terminal(pod) && initExit == nil
 	// A pod its node never started (neverStarted) is not live either: no launcher connects from it,
-	// so a launch that kept it would wait out the boot timeout on it, be charged a launch failure,
+	// so a launch that kept it would wait out its start bound on it, be charged a launch failure,
 	// and leave it for the next try to find again. It is replaced as a pod whose init failed is,
-	// and names nothing displaced, since no role ever ran in it. The warning gives the pod's age
-	// and how long its node has had it, which is what says whether that node is the one to look at.
-	if unstarted, scheduledFor, stuck := neverStarted(pod, r.now(), r.bootTimeout); live && stuck {
-		r.log.Warn("sandbox runtime: replacing a pod older than the boot timeout that its node has not made ready to start its containers",
+	// and names nothing displaced, since no role ever ran in it. The warning gives the pod's age,
+	// how long its node has had it and the bound it was judged by, which is what says whether that
+	// node is the one to look at. A pod with a kept volume gets the longer bound a move of its
+	// volume needs (startBound).
+	bound := r.startBound(s)
+	if unstarted, scheduledFor, stuck := neverStarted(pod, r.now(), bound); live && stuck {
+		r.log.Warn("sandbox runtime: replacing a pod older than its start bound that its node has not made ready to start its containers",
 			"pod", pod.Name, "uid", pod.UID, "node", pod.Spec.NodeName, "notStartedFor", unstarted.Round(time.Second),
-			"scheduledFor", scheduledFor.Round(time.Second), "bootTimeout", r.bootTimeout, "claim", spec.Claim)
+			"scheduledFor", scheduledFor.Round(time.Second), "startBound", bound, "claim", spec.Claim)
 		live = false
 	}
 	_, accountDrifted := accountDrift(pod, r.pod.ServiceAccount)
@@ -297,7 +300,9 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		}
 	}
 	loc := r.locatorFor(spec.Claim, spec.Role, pod.UID, spec.Generation)
-	ended, deadline, err := r.awaitRoleLauncher(bounded, loc)
+	// The start bound is read from the Sandbox the launch ends on: after a replacement of another
+	// disk shape (replaceSupersededSandbox), the new Sandbox whose volume the pod mounts.
+	ended, deadline, err := r.awaitRoleLauncher(bounded, loc, r.startBound(s))
 	if err != nil {
 		return fail("wait for its role launcher", err)
 	}
@@ -435,13 +440,14 @@ const (
 )
 
 // launchBound is the longest one launch try may run once it holds its pod's launch turn, from the
-// runtime's boot timeout, ProvisionBound and termination grace (LaunchBound): the sum of a
-// replacing try's waits — ensureSandbox's wait for a Sandbox being deleted, awaitPodGone and
-// awaitNewPod, the boot timeout each; provision's waits on its repository's cache (cacheWaits);
-// awaitRoleLauncher's backstop; the termination grace the start frame has past the launcher
-// deadline — and of its relaunchCalls calls at apiTimeout each.
-func launchBound(bootTimeout, provisionBound, terminationGrace time.Duration) time.Duration {
-	waits := 3*bootTimeout + cacheWaits(bootTimeout) + launcherBackstop(bootTimeout, provisionBound) + terminationGrace
+// runtime's boot timeout, the longest start bound any of its pods gets (startBound),
+// ProvisionBound and termination grace (LaunchBound): the sum of a replacing try's waits —
+// ensureSandbox's wait for a Sandbox being deleted, awaitPodGone and awaitNewPod, the boot timeout
+// each; provision's waits on its repository's cache (cacheWaits); awaitRoleLauncher's backstop;
+// the termination grace the start frame has past the launcher deadline — and of its relaunchCalls
+// calls at apiTimeout each.
+func launchBound(bootTimeout, startBound, provisionBound, terminationGrace time.Duration) time.Duration {
+	waits := 3*bootTimeout + cacheWaits(bootTimeout) + launcherBackstop(startBound, bootTimeout, provisionBound) + terminationGrace
 	return waits + time.Duration(relaunchCalls)*apiTimeout
 }
 
@@ -456,11 +462,26 @@ func cacheWaits(bootTimeout time.Duration) time.Duration {
 }
 
 // launcherBackstop is await's own budget for a role launcher's wait (awaitRoleLauncher), given the
-// boot timeout and ProvisionBound: no launcher deadline lies past twice the boot timeout plus
-// ProvisionBound from the wait's start (launcherDeadline), and two recheck intervals more let the
-// wait's own check end it first.
-func launcherBackstop(boot, bound time.Duration) time.Duration {
-	return 2*boot + bound + 2*recheckInterval
+// pod's start bound, the boot timeout and ProvisionBound: the wait first sees the pod provisioning
+// within the start bound of its start or never, no launcher deadline lies past the boot timeout
+// plus ProvisionBound from that first sight (launcherDeadline), and two recheck intervals more let
+// the wait's own check end it first.
+func launcherBackstop(start, boot, bound time.Duration) time.Duration {
+	return start + boot + bound + 2*recheckInterval
+}
+
+// startBound is how long a launch gives s's pod to start, where it counts the boot timeout for
+// every other pod: neverStarted counts it from the pod's creation, and awaitRoleLauncher from the
+// start of its wait until it first sees the pod provisioning. A Sandbox that owns a kept volume
+// (ownsKeptVolume) gets the kept-volume bound (keptVolumeBound, keptVolumeAttachWait), or the boot
+// timeout where that is longer: its pod may wait on its node until the volume detaches from the
+// node that held it and attaches to the pod's. Every other Sandbox, the controller's included,
+// gets the boot timeout.
+func (r *Runtime) startBound(s *sandbox) time.Duration {
+	if ownsKeptVolume(s) {
+		return max(r.bootTimeout, r.keptVolumeBound)
+	}
+	return r.bootTimeout
 }
 
 // awaitRoleLauncher waits until loc's role launcher has connected, reporting false, or loc's pod
@@ -473,21 +494,23 @@ func launcherBackstop(boot, bound time.Duration) time.Duration {
 // feed and the issue's own checkout of it — may take up to ProvisionBound from the fetch's own
 // start, a sum that counts no term for the commands which keep CommandTimeout (ProvisionBound,
 // manifest.go). So until the wait first sees the pod provisioning (an init container running, or a
-// fetch between those restarts: provisioning) it gives the pod the boot timeout, the image pull's;
-// from then on, the boot timeout from the last moment it saw the pod provisioning, never past the
-// boot timeout plus ProvisionBound from the first (launcherDeadline). A pod that never provisions
-// past the boot timeout waits it alone.
-func (r *Runtime) awaitRoleLauncher(ctx context.Context, loc runtime.Locator) (bool, time.Time, error) {
+// fetch between those restarts: provisioning) it gives the pod start, the pod's start bound
+// (startBound), which covers the image pull and, for a kept volume, the volume's move; from then
+// on, the boot timeout from the last moment it saw the pod provisioning, never past the boot
+// timeout plus ProvisionBound from the first (launcherDeadline). A pod that never provisions waits
+// its start bound alone, and the failure names that bound.
+func (r *Runtime) awaitRoleLauncher(ctx context.Context, loc runtime.Locator, start time.Duration) (bool, time.Time, error) {
 	what := "role launcher " + string(loc.Claim)
-	start := time.Now()
-	deadline := start.Add(r.bootTimeout)
+	began := time.Now()
+	deadline := began.Add(start)
 	var first time.Time
 	ended := false
 	// await's own budget is only a backstop (launcherBackstop). The check below runs at every
 	// informer event and at least every recheckInterval, and it ends the wait before it extends the
-	// deadline, so the pod is first seen provisioning within the boot timeout of the start or never,
-	// and no deadline lies past twice the boot timeout plus ProvisionBound from the start.
-	backstop := launcherBackstop(r.bootTimeout, r.ProvisionBound())
+	// deadline, so the pod is first seen provisioning within the start bound of the wait's start or
+	// never, and no deadline lies past the start bound, the boot timeout and ProvisionBound from
+	// the wait's start.
+	backstop := launcherBackstop(start, r.bootTimeout, r.ProvisionBound())
 	err := r.await(ctx, backstop, what, func(context.Context) (bool, error) {
 		view, err := r.view(loc.Sandbox.Name)
 		if serverBusy(err) && time.Now().Before(deadline) {
@@ -509,7 +532,7 @@ func (r *Runtime) awaitRoleLauncher(ctx context.Context, loc runtime.Locator) (b
 		}
 		now := time.Now()
 		if !now.Before(deadline) {
-			return false, fmt.Errorf("timed out after %s waiting for %s%s", deadline.Sub(start), what, r.stillFetching(view.pod))
+			return false, fmt.Errorf("timed out after %s waiting for %s%s", deadline.Sub(began), what, r.stillFetching(view.pod))
 		}
 		if provisioning(view.pod) {
 			if first.IsZero() {
