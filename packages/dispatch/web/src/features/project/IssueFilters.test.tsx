@@ -255,8 +255,12 @@ test("the search filter writes at most SEARCH_QUERY_MAX characters into the page
   try {
     await screen.findByText("Guidance");
     await openFilters();
-    await user.click(screen.getByRole("searchbox", { name: "Search issues" }));
+    const box = screen.getByRole("searchbox", { name: "Search issues" });
+    // The box's title counts what is written against the bound as it is written.
+    expect(box).toHaveAttribute("title", `0 of at most ${SEARCH_QUERY_MAX}`);
+    await user.click(box);
     await user.paste("x".repeat(SEARCH_QUERY_MAX + 500));
+    expect(box).toHaveAttribute("title", `${SEARCH_QUERY_MAX} of at most ${SEARCH_QUERY_MAX}`);
     const written = new URLSearchParams(screen.getByTestId("location-search").textContent ?? "");
     expect(written.get("q")).toBe("x".repeat(SEARCH_QUERY_MAX));
   } finally {

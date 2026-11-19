@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, a blur naming no target, and the Enter presses whose survival only fireEvent reports.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -3077,6 +3078,24 @@ test("l reads the column, and Escape returns the focus to the row l was pressed 
     getAsk.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();
+  }
+});
+
+test("the search box's title counts what is written against the bound as it is written", async () => {
+  const user = userEvent.setup();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const { unmount } = renderInbox();
+
+  try {
+    const box = await screen.findByRole("searchbox", { name: "Search asks" });
+    expect(box).toHaveAttribute("title", `0 of at most ${SEARCH_QUERY_MAX}`);
+    await user.click(box);
+    // An emoji is two UTF-16 code units, the unit SEARCH_QUERY_MAX counts.
+    await user.paste("abc🙂");
+    await waitFor(() => expect(box).toHaveAttribute("title", `5 of at most ${SEARCH_QUERY_MAX}`));
+  } finally {
+    unmount();
+    getInbox.mockRestore();
   }
 });
 
