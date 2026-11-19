@@ -60,6 +60,13 @@ export interface ModelFallbackDeps {
     model: HostModel
   ) => Promise<HostModel | undefined>;
   readonly log: FallbackChainLog;
+  /** The host's own timer for the pane (`SessionContext.setTimeout`): runs `callback` once,
+   * `delayMs` from now. The host's timer cannot be cancelled, so a callback that is no longer
+   * the current arming's finds that out itself. */
+  readonly armTimer: (callback: () => Promise<void>, delayMs: number) => void;
+  /** The context of the session a timer's return goes into, read when the timer fires: the
+   * session the pane is on, or undefined when it is on none, or on one that is no Legion role's. */
+  readonly paneContext: () => Promise<ModelFallbackContext | undefined>;
 }
 
 export interface ModelFallback {
@@ -74,11 +81,12 @@ export interface ModelFallback {
   /** The host's `agent_end`: a turn that has settled, which the provider ended cleanly, with a
    * content filter, or with some other failure. */
   readonly turnSettled: (event: AgentEndEvent, ctx: ModelFallbackContext) => Promise<void>;
-  /** The host's `before_agent_start`, which runs before a run's first provider request, and its
-   * `context`, which runs before every request but after the host has read that request's model:
-   * the arming's model goes back on as soon as its wait is over, at the first request of a run
-   * that starts past it, and at the request after the one whose hook found it over inside a long
-   * tool loop. */
+  /** The host's `before_agent_start`, which runs before a run's first provider request a prompt
+   * starts, and its `context`, which runs before every request but after the host has read that
+   * request's model: the arming's model goes back on at the first request of a prompt's run that
+   * starts past the wait, and at the request after the one whose hook found it over inside a long
+   * tool loop. A refusal's wait is also ended by a timer at its due time (`armTimer`), so a run
+   * that no prompt starts — an Envoy card, a background job's result — starts on that model too. */
   readonly maybeRestore: (ctx: ModelFallbackContext) => Promise<void>;
 }
 
@@ -186,6 +194,47 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
     if (next === state) return;
     state = next;
     deps.saveState(next);
+    armReturn();
+  };
+
+  /** The due time the host's timer is set for, so a save that leaves the arming's due time
+   * where it was sets no second timer. */
+  let timerFor: number | undefined;
+
+  /**
+   * Sets the host's timer for the due time of a refusal's arming, whose return then happens when
+   * the wait ends rather than when a run's hook first sees it over. The host reads a request's
+   * model before it runs the `context` hook, and runs `before_agent_start` only for a run a
+   * prompt starts: a run an Envoy card or a background job's result starts while the pane is idle
+   * would otherwise send its first request to the model the arming is waiting to leave. An
+   * arming of any other cause waits for the host to stop suppressing its model, which no time
+   * says, so the `context` hook alone ends it.
+   */
+  const armReturn = (): void => {
+    const arming = state.arming;
+    if (arming === undefined || arming.cause !== "refusal" || arming.dueAt === timerFor) return;
+    timerFor = arming.dueAt;
+    deps.armTimer(
+      async () => {
+        // A newer arming set a timer of its own; this one belongs to none.
+        if (timerFor !== arming.dueAt) return;
+        timerFor = undefined;
+        try {
+          const ctx = await deps.paneContext();
+          if (ctx !== undefined) await restoreIfDue(ctx);
+        } catch (error) {
+          contained(
+            "put the session back on the model it fell back from when its wait ended",
+            error
+          );
+        }
+        // A timer the host ran before the due time by this runner's clock leaves the arming
+        // waiting: it is set again for what is left. One that ran after it and could not set the
+        // model is left to the next request's hook, rather than tried again at once.
+        if (state.arming?.dueAt === arming.dueAt && deps.now() < arming.dueAt) armReturn();
+      },
+      Math.max(0, arming.dueAt - deps.now())
+    );
   };
 
   /** One step of the cooldown machine against the state this runner holds. */
@@ -435,7 +484,12 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         // A fallback applied in a turn of the session this pane has just left is no fallback of
         // this one.
         appliedThisTurn = undefined;
-        if (state.arming !== undefined) return;
+        if (state.arming !== undefined) {
+          // A relaunched worker's arming: its return is due when the record says, whatever the
+          // relaunch's boot cost, and the timer is set for that moment, or now when it is past.
+          armReturn();
+          return;
+        }
         // No record of an arming, and the session is sitting on a fallback: one written before
         // this build ran, or a host walk `ownFallback` did not claim. Nothing else will ever arm
         // it, so it is armed here from the entry's own time (dispatch://INFRA-956 R1, answer 5)

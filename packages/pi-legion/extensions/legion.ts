@@ -280,7 +280,9 @@ export default function legionExtension(pi: PiApi): void {
   // The model fallback (src/model-fallback.ts) on the cooldown machine
   // (@legion/pi-shared/fallback-cooldown): the two waits come from this worker's own environment
   // with the specification's defaults, as the stall limits do, and the state is kept in the
-  // transcript so a relaunched worker comes back with its due time and its doubling levels.
+  // transcript so a relaunched worker comes back with its due time and its doubling levels. A
+  // refusal's return is made when its wait ends, on the pane's own host timer, as the phase
+  // reminder's is, into the session the pane is on when it fires.
   const modelFallback = createModelFallback({
     setModel: async (model) => (await pi.setModel?.(model)) === true,
     saveState: (state) => pi.appendEntry(LEGION_FALLBACK_ENTRY, recordedFallbackCooldown(state)),
@@ -288,6 +290,11 @@ export default function legionExtension(pi: PiApi): void {
     limits: fallbackCooldownLimits(process.env, logger),
     nextModel: nextFallbackModel,
     log: logger,
+    armTimer: (callback, delayMs) => paneContext?.setTimeout(callback, delayMs),
+    paneContext: async () =>
+      paneContext !== undefined && (await modelFallbackSession(paneContext))
+        ? paneContext
+        : undefined,
   });
 
   // The fallback state of whatever session the pane is on: the record this plugin saved
@@ -732,9 +739,9 @@ export default function legionExtension(pi: PiApi): void {
   //
   // It is also where a model fallback whose wait is over goes back on before the run's first
   // request (src/model-fallback.ts): the host reads a request's model before it runs the
-  // `context` hook below, so that hook's switch is the model of the request after its own, and a
-  // run that starts past the due time — a relaunched worker, or a task sent to a pane that sat
-  // idle through its cooldown — would otherwise send its first request to the weaker model.
+  // `context` hook below, so that hook's switch is the model of the request after its own. The
+  // runner's timer makes the return when the wait ends, which covers every run that starts later,
+  // whatever starts it; this hook covers a prompt that comes before that timer has run.
   let resentNoticeId: string | undefined;
   pi.on("before_agent_start", async (_event, context) => {
     if (await modelFallbackSession(context)) await modelFallback.maybeRestore(context);
@@ -764,10 +771,10 @@ export default function legionExtension(pi: PiApi): void {
     stallWatch?.sessionChanged();
   });
   // Every provider request of this session passes here, so this is where the session goes back
-  // on the model it fell back from inside a run: the host checks its own restore only when a new
-  // prompt arrives, which a long unattended tool loop never reaches, and it reads each request's
-  // model before this hook runs, so a switch here is the model of the next request
-  // (src/model-fallback.ts; before_agent_start above covers a run's first).
+  // on the model it fell back from when the runner's timer has not: an arming that waits on the
+  // host's suppression rather than a time, and a timer the host has not run yet. The host reads
+  // each request's model before this hook runs, so a switch here is the model of the next request
+  // (src/model-fallback.ts).
   //
   // The rest of the handler is the recreated-workspace notice: the recovery kept the saved copy
   // in the process's live context, so once it is sent again every later request of this process

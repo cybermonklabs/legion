@@ -1,10 +1,13 @@
 kind: Fixed
 body: |-
-  A Legion role's session whose model fallback wait is already over when a run starts - a worker the
-  daemon relaunched after its cooldown, or a task sent to a pane that sat idle through it - now sends
-  that run's first request to the role's own model. The plugin made the return only in Oh My Pi's
-  `context` hook, which the host runs after it has read the request's model, so such a run sent its
-  first request to the fallback model and only the second to the role's own. The return is now also
-  made in `before_agent_start`, ahead of the run's first request.
+  A Legion role's session now goes back to its own model when its refusal cooldown ends, on a timer,
+  rather than at the first provider request that finds the wait over. Every run that starts after
+  that moment sends its first request to the role's own model, whatever starts it: the daemon's task,
+  a worker the daemon relaunched after its cooldown, an Envoy card, a background job's result. Before,
+  the plugin made the return only in Oh My Pi's `context` hook, which the host runs after it has read
+  the request's model, so such a run sent its first request to the fallback model; a run already
+  going comes back one request earlier too. A prompt that comes before the timer has run is put back
+  in `before_agent_start`, and the `context` hook still makes the return for a fallback that waits on
+  the host's own suppression rather than a time.
 custom:
   Issue: pr4506
