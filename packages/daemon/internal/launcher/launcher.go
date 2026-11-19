@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/memoryguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -1040,8 +1041,9 @@ func (m *manager) wait(cmd *exec.Cmd, active *child) {
 		m.child = nil
 		m.lastExit = &exit
 	}
-	// The generation's credentials end with it.
-	_ = os.RemoveAll(active.dir)
+	// The generation's credentials end with it. Its agent wrote under the directory, so nothing
+	// there is followed (rolefile.RemoveTree).
+	_ = rolefile.RemoveTree(active.dir)
 	close(active.done)
 	m.mu.Unlock()
 	_ = m.state()
@@ -1110,16 +1112,19 @@ func generationDir(private string, generation uint64) string {
 // runs when it is called, so everything already in the private directory — an earlier
 // generation's credentials a crashed launcher never removed, or a directory, file or symlink the
 // previous generation's agent planted toward the shared workspace — is removed without being
-// followed; the directory is made owner-only and each file is written as writeCredential writes
-// one, so no credential is written anywhere but that directory. An error names the file, never its
-// bytes.
+// followed (rolefile.RemoveTree): a link anywhere under the directory is unlinked, never opened,
+// so what it names is never touched. An entry the launcher cannot unlink, such as a link the agent
+// left under a directory it made 0555, which the launcher, holding no capability, cannot pass, is
+// left as it is, and the start is refused naming the entry. The directory is made owner-only and
+// each file is written as writeCredential writes one, so no credential is written anywhere but
+// that directory. An error names the file, never its bytes.
 func (m *manager) writeFiles(command shimwire.LauncherStart) (string, error) {
 	entries, err := os.ReadDir(m.private)
 	if err != nil {
 		return "", fmt.Errorf("read the private directory: %v", err)
 	}
 	for _, entry := range entries {
-		if err := os.RemoveAll(filepath.Join(m.private, entry.Name())); err != nil {
+		if err := rolefile.RemoveTree(filepath.Join(m.private, entry.Name())); err != nil {
 			return "", fmt.Errorf("clear %s from the private directory: %v", entry.Name(), err)
 		}
 	}
@@ -1129,7 +1134,7 @@ func (m *manager) writeFiles(command shimwire.LauncherStart) (string, error) {
 	}
 	for name, content := range command.Files {
 		if err := writeCredential(filepath.Join(dir, name), content); err != nil {
-			_ = os.RemoveAll(dir)
+			_ = rolefile.RemoveTree(dir)
 			return "", fmt.Errorf("write credential %s for generation %d: %v", name, command.Generation, err)
 		}
 	}
@@ -1312,7 +1317,7 @@ func endSession(proxy *sessionproxy.Proxy, dir string) {
 	if proxy != nil {
 		_ = proxy.Close()
 	}
-	_ = os.RemoveAll(dir)
+	_ = rolefile.RemoveTree(dir)
 }
 
 // resumable refuses a resume of a session nothing holds, so the launcher never starts a fresh

@@ -7,34 +7,64 @@ import (
 	"testing"
 )
 
-// The way back a migration's header carries is the run of "-- " lines that closes with the line
-// deleting that migration's own version row. The prose above it, which a blank "--" line ends,
-// and the statements below it are none of it, so the block is the statements an operator runs
-// and nothing else.
-func TestAWayBackIsTheCommentRunThatDeletesItsOwnVersion(t *testing.T) {
+// The way back a migration's header carries is the last paragraph of the header: the "-- " lines
+// after its last blank "--" line, up to the migration's first statement. The prose paragraphs above
+// it are none of it, so the block is the statements an operator runs and nothing else.
+func TestAWayBackIsTheLastParagraphOfItsHeader(t *testing.T) {
 	const version = 20990101000001
-	set := []Migration{{Version: version, Name: "20990101000001_example.up.sql", SQL: strings.Join([]string{
-		"-- 20990101000001_example.up.sql — what the migration does.",
-		"--",
-		"-- The way back below re-arms it: run it with the daemon stopped.",
-		"--",
-		"-- insert into kept (issue) select key from issues;",
-		"-- delete from schema_version where version = 20990101000001;",
-		"insert into applied (issue) values ('LEGION-1');",
-	}, "\n")}}
-	got, err := wayBack(set, version)
-	want := "insert into kept (issue) select key from issues;\ndelete from schema_version where version = 20990101000001;"
-	if err != nil || got != want {
-		t.Fatalf("the way back of %d = %q, %v; want the two statements of its block alone:\n%s", version, got, err, want)
+	for _, header := range []struct {
+		shape string
+		sql   []string
+		want  string
+	}{
+		{"a block that deletes its own version row", []string{
+			"-- 20990101000001_example.up.sql — what the migration does.",
+			"--",
+			"-- The way back below re-arms it: run it with the daemon stopped.",
+			"--",
+			"-- insert into kept (issue) select key from issues;",
+			"-- delete from schema_version where version = 20990101000001;",
+			"insert into applied (issue) values ('LEGION-1');",
+		}, "insert into kept (issue) select key from issues;\ndelete from schema_version where version = 20990101000001;"},
+		{"a block of SQL with no row delete, below a paragraph of prose", []string{
+			"-- 20990101000001_example.up.sql — what the migration does.",
+			"--",
+			"-- A rollback deletes the rows of the kind first: the way back is the block below.",
+			"--",
+			"-- -- The rows of the kind.",
+			"-- delete from outbox where kind = 'example';",
+			"alter table outbox add column example text;",
+		}, "-- The rows of the kind.\ndelete from outbox where kind = 'example';"},
+		{"a block of one statement that deletes no row", []string{
+			"-- 20990101000001_example.up.sql — what the migration does.",
+			"--",
+			"-- insert into kept (issue) select key from issues;",
+			"select 1;",
+		}, "insert into kept (issue) select key from issues;"},
+		{"a comment after the first statement", []string{
+			"-- 20990101000001_example.up.sql — what the migration does.",
+			"--",
+			"-- select 1;",
+			"insert into applied (issue) values ('LEGION-1');",
+			"-- delete from schema_version where version = 20990101000001;",
+		}, "select 1;"},
+	} {
+		set := []Migration{{Version: version, Name: "20990101000001_example.up.sql", SQL: strings.Join(header.sql, "\n")}}
+		if got, err := wayBack(set, version); err != nil || got != header.want {
+			t.Errorf("%s: the way back of %d = %q, %v; want its header's last paragraph alone:\n%s", header.shape, version, got, err,
+				header.want)
+		}
 	}
 }
 
-// A header with no block closing with its own version's delete, and a version the set does not
-// hold, answer an error, so no caller runs an empty block against a store as though it were the
-// way back.
+// A header whose last paragraph is prose carries no way back, even where a paragraph above it is a
+// block, and a version the set does not hold has none: each answers an error, so no caller runs an
+// empty block, or a block the header does not offer as its way back, against a store.
 func TestAWayBackThatIsNotThereIsAnError(t *testing.T) {
 	set := []Migration{{Version: 20990101000002, Name: "20990101000002_no_way_back.up.sql",
-		SQL: "-- 20990101000002_no_way_back.up.sql — nothing to undo.\n--\n-- delete from schema_version where version = 20990101000001;\nselect 1;\n"}}
+		SQL: "-- 20990101000002_no_way_back.up.sql — nothing to undo.\n--\n" +
+			"-- delete from schema_version where version = 20990101000002;\n--\n" +
+			"-- Nothing above is a way back: a rollback leaves this migration's change in place.\nselect 1;\n"}}
 	for _, tc := range []struct {
 		version int
 		names   string
@@ -50,8 +80,10 @@ func TestAWayBackThatIsNotThereIsAnError(t *testing.T) {
 
 // The roll forward of a rollback of the release that records each step carries its way back in
 // its header: two statements on five lines, the insert that keeps each issue's witness and the
-// delete of the roll forward's own version row. StepRecordsRollForward, the version every test of
-// that block names, is the version of the roll forward's own file.
+// delete of the roll forward's own version row. That last line is what makes the roll forward run
+// again, as the newer image's Migrate applies each migration whose row is missing, and WayBack
+// reads no statement of a block, so this test is what holds it. StepRecordsRollForward, the
+// version every test of that block names, is the version of the roll forward's own file.
 func TestTheStepRecordsRollForwardCarriesItsWayBack(t *testing.T) {
 	all, err := All()
 	if err != nil {

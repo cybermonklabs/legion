@@ -741,7 +741,7 @@ const migrationKeyQueueBound = 2 * migrationLockMaxPause
 // so both runners finish.
 //
 // The two runners call applyMigration rather than migrate because migrate's first wait for the
-// key is createVersionTable's: with a third session holding the key both boots would queue
+// key is prepareVersionTable's: with a third session holding the key both boots would queue
 // there instead, and the winner would then hold the key from that wait right through its build,
 // so the loser could never be waiting at the site this test is about.
 func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testing.T) {
@@ -793,7 +793,7 @@ func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testin
 	t.Cleanup(second.Pool.Close)
 	applied := make(chan error, 2)
 	for _, booting := range []*Store{first, second} {
-		go func(booting *Store) { applied <- booting.applyMigration(ctx, pending) }(booting)
+		go func(booting *Store) { applied <- booting.applyMigration(ctx, migrations, pending) }(booting)
 	}
 	waiting := waitForWaitingRunners(t, records, 2, migrationKeyQueueBound)
 	if _, err := holder.Exec(ctx, "select pg_advisory_unlock($1)", migrationLockKey); err != nil {

@@ -47,7 +47,7 @@ import (
 // dispatch://INFRA-3274's kind list with the merge-queue read and removal (20261114031356), which
 // stand above all of them and are applied after them, in version order: the kind list with the
 // update ask, the record of what a relaunch ended, the drop, then the merge-queue kind list. The
-// last of them was the last word of outbox_kind_check until the two kind lists below stood above
+// last of them was the last word of outbox_kind_check until the three kind lists below stood above
 // it: the upgrade applies it after 20261029120800 has deleted main's merge-lane rows, and it
 // names every other kind main's daemon writes (mainsOutboxKinds), with update_ask and the two
 // merge-queue kinds besides, which main's daemon
@@ -78,13 +78,13 @@ import (
 // outbox_kind_check.
 // The kind list with the role-holders publication (20261116165926) stands above all of these but
 // the reviewer's reviewed commit: it names every kind the merge-queue list names and its own.
-// The kind list with the step record (20261117000528) is named here too: it stands above every
-// other version of the list, the role-holders publication's included, and above the reviewer's
-// reviewed commit, so an upgrade applies it last, and it restates 20261116165926's kinds with
-// step_record, so it is the last word of outbox_kind_check. The count of starts of each step
-// (20261117004117) creates tables and a function of its own, and its roll forward
-// (20261117064152) changes nothing on a database no rollback touched; neither touches
-// outbox_kind_check.
+// The two kind lists above it are named here too: the step record's (20261117000528) restates
+// 20261116165926's kinds with step_record, and the plan record's (20261117023932) restates those
+// with plan_record. It stands above every other version of the list that rewrites
+// outbox_kind_check, so an upgrade applies it after all of them and it is the last word of that
+// check. The count of starts of each step (20261117004117) creates tables and a function of its
+// own, and its roll forward (20261117064152) changes nothing on a database no rollback touched;
+// neither touches outbox_kind_check.
 // dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued.
@@ -96,7 +96,7 @@ var thisBranchsMigrations = []int{
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261116144907, 20261116165926, 20261116234034, 20261117000528, 20261117004117,
-	20261117064152, 20261117112334, 20261117200337,
+	20261117023932, 20261117064152, 20261117112334, 20261117200337,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -109,10 +109,10 @@ var thisBranchsMigrations = []int{
 // 20261113181500, 20261113182000, 20261114020537 and 20261114061900, t-e-54's 20261116144907, the
 // role-holders publication's 20261116165926, the reviewer's reviewed commit, 20261116234034, the
 // step records' three: the kind list with the step record (20261117000528), the count of starts of
-// each step (20261117004117) and its roll forward (20261117064152), dispatch://INFRA-1997's
-// 20261117112334 and dispatch://INFRA-4109's 20261117200337. That is why the loop below holds the
-// list rather than counting it, so that a version added above any of them is named here rather
-// than read as main's.
+// each step (20261117004117) and its roll forward (20261117064152), the kind list with the plan
+// record (20261117023932), dispatch://INFRA-1997's 20261117112334 and dispatch://INFRA-4109's
+// 20261117200337. That is why the loop below holds the list rather than counting it, so that a
+// version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

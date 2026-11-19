@@ -18,11 +18,14 @@ import (
 )
 
 // testJudgeModel is the model id every broker here is told the judge asks, as the endpoint at
-// its model URL names it, and testJudgeAudience the audience of the Google identity token the
-// judge would present to that endpoint. Nothing mints one here: a boot asks the model nothing.
+// its model URL names it, testJudgeAudience the audience of the Google identity token the
+// judge would present to that endpoint, and testJudgeAccount the service account a judge with
+// BROKER_JUDGE_MODEL_ACCOUNT would mint that token as. Nothing mints one here: a boot asks the
+// model nothing.
 const (
 	testJudgeModel    = "claude-opus-4-6"
 	testJudgeAudience = "https://model.example"
+	testJudgeAccount  = "judge-model@example-project.iam.gserviceaccount.com"
 )
 
 // countingServer is an httptest server that records how many requests reached it, so a test can
@@ -57,33 +60,64 @@ func judgeTokenFile(t *testing.T) string {
 	return path
 }
 
-// TestTheBinaryLogsWhichJudgeItBooted drives the real binary both ways round, off one build: with
-// the five judge settings pointed at two stand-in servers, and with none of them. Each boot says
-// in one line which of the two brokers it is, and the configured one asks neither stand-in
-// anything while booting — the model endpoint is reached on a judged request and nowhere else.
+// judgeBootEnv is what a broker with a judge is started with here: a database and an address of
+// its own, no secrets, and the five judge settings, its model endpoint and its Dispatch pointed
+// at model and dispatch.
+func judgeBootEnv(t *testing.T, model, dispatch *countingServer) []string {
+	t.Helper()
+	return []string{
+		"BROKER_DATABASE_URL=" + storetest.URL(t),
+		"BROKER_LISTEN_ADDR=127.0.0.1:0",
+		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
+		"BROKER_FAKE_SECRETS_FILE=" + emptySecretsFile(t),
+		"BROKER_JUDGE_MODEL_URL=" + model.URL,
+		"BROKER_JUDGE_MODEL=" + testJudgeModel,
+		"BROKER_JUDGE_MODEL_AUDIENCE=" + testJudgeAudience,
+		"BROKER_JUDGE_DISPATCH_URL=" + dispatch.URL,
+		"BROKER_JUDGE_DISPATCH_TOKEN_FILE=" + judgeTokenFile(t),
+	}
+}
+
+// TestTheBinaryLogsWhichJudgeItBooted drives the real binary three ways round, off one build:
+// with the five judge settings pointed at two stand-in servers, with those five and an account
+// whose identity token the judge mints, and with none of them. Each boot says in one line which
+// of the two brokers it is, and a configured one says which identity its judge presents and asks
+// no stand-in anything while booting — the model endpoint is reached on a judged request and
+// nowhere else.
 func TestTheBinaryLogsWhichJudgeItBooted(t *testing.T) {
 	binary := buildBroker(t)
 
 	t.Run("configured", func(t *testing.T) {
 		model := newCountingServer(t, `{}`)
 		dispatch := newCountingServer(t, `{"key":"INFRA-1353","title":"","status":"doing"}`)
-		broker := startBroker(t, brokerOptions{Binary: binary, Env: []string{
-			"BROKER_DATABASE_URL=" + storetest.URL(t),
-			"BROKER_LISTEN_ADDR=127.0.0.1:0",
-			"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-			"BROKER_FAKE_SECRETS_FILE=" + emptySecretsFile(t),
-			"BROKER_JUDGE_MODEL_URL=" + model.URL,
-			"BROKER_JUDGE_MODEL=" + testJudgeModel,
-			"BROKER_JUDGE_MODEL_AUDIENCE=" + testJudgeAudience,
-			"BROKER_JUDGE_DISPATCH_URL=" + dispatch.URL,
-			"BROKER_JUDGE_DISPATCH_TOKEN_FILE=" + judgeTokenFile(t),
-		}})
+		broker := startBroker(t, brokerOptions{Binary: binary, Env: judgeBootEnv(t, model, dispatch)})
 		record := broker.AwaitRecord(t, "model judge", nil)
-		if want := (map[string]any{"state": "on", "model": testJudgeModel, "protocol": "anthropic-messages", "dispatch": dispatch.URL}); !carries(record, want) {
+		if want := (map[string]any{"state": "on", "model": testJudgeModel, "protocol": "anthropic-messages", "dispatch": dispatch.URL, "identity": "metadata"}); !carries(record, want) {
 			t.Fatalf("the boot line %v does not carry %v", record, want)
 		}
 		if calls := model.calls.Load() + dispatch.calls.Load(); calls != 0 {
 			t.Fatalf("booting the judge made %d calls to the model and Dispatch; want none until a request is judged", calls)
+		}
+	})
+
+	// The judge of a pod with no identity token of its own, which mints its account's at
+	// generateIdToken. Its line names that account, and its boot reads no access token from
+	// the metadata server: a mint, and the read that comes before it, wait for a judged
+	// request, so a metadata server that saw nothing proves IAM saw nothing either.
+	t.Run("configured with an account", func(t *testing.T) {
+		model := newCountingServer(t, `{}`)
+		dispatch := newCountingServer(t, `{"key":"INFRA-1353","title":"","status":"doing"}`)
+		metadata := newCountingServer(t, `{}`)
+		broker := startBroker(t, brokerOptions{Binary: binary, Env: append(judgeBootEnv(t, model, dispatch),
+			"BROKER_JUDGE_MODEL_ACCOUNT="+testJudgeAccount,
+			"GCE_METADATA_HOST="+strings.TrimPrefix(metadata.URL, "http://"),
+		)})
+		record := broker.AwaitRecord(t, "model judge", nil)
+		if want := (map[string]any{"state": "on", "model": testJudgeModel, "dispatch": dispatch.URL, "identity": testJudgeAccount}); !carries(record, want) {
+			t.Fatalf("the boot line %v does not carry %v", record, want)
+		}
+		if calls := model.calls.Load() + dispatch.calls.Load() + metadata.calls.Load(); calls != 0 {
+			t.Fatalf("booting the judge made %d calls to the model, Dispatch and the metadata server; want none until a request is judged", calls)
 		}
 	})
 
@@ -108,4 +142,20 @@ func TestTheBinaryLogsWhichJudgeItBooted(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestTheBinaryRefusesAJudgeAccountWithNoJudge drives the real binary with
+// BROKER_JUDGE_MODEL_ACCOUNT and none of the five: an account whose identity token no configured
+// judge would present names a judge that was never configured, so the broker refuses to start
+// naming the setting, as config.Load refuses it, before it opens the database it is given, which
+// nothing can reach.
+func TestTheBinaryRefusesAJudgeAccountWithNoJudge(t *testing.T) {
+	out := runRefusedBroker(t, buildBroker(t),
+		"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
+		"BROKER_PUBLIC_URL=https://secrets.internal.example",
+		"BROKER_JUDGE_MODEL_ACCOUNT="+testJudgeAccount,
+	)
+	if !strings.Contains(out, "BROKER_JUDGE_MODEL_ACCOUNT") || !strings.Contains(out, testJudgeAccount) {
+		t.Fatalf("the broker refused, but its output does not name BROKER_JUDGE_MODEL_ACCOUNT and its value:\n%s", out)
+	}
 }
