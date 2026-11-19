@@ -2398,7 +2398,7 @@ func renderedSandbox(t *testing.T, template podTemplate) SandboxType {
 		t.Fatalf("the pod carries %q of a microVM pod's marks and lacks %q", carried, lacked)
 	}
 	if pod.RuntimeClassName == nil || *pod.RuntimeClassName != gvisor {
-		t.Fatalf("a pod with no microVM mark runs under the RuntimeClass %v, want %s", pod.RuntimeClassName, gvisor)
+		t.Fatalf("a pod with no microVM mark runs under the RuntimeClass %s, want %s", runtimeClassText(pod.RuntimeClassName), gvisor)
 	}
 	if value, ok := template.Metadata.Labels[labelSandbox]; ok {
 		t.Fatalf("a gVisor pod carries the label %s=%q", labelSandbox, value)
@@ -2485,7 +2485,7 @@ func TestAMicroVMProjectRendersItsIssuePodsOnTheMicroVMClass(t *testing.T) {
 			template := r.podTemplate(launchOf(t, r, spec))
 			pod := template.Spec
 			if pod.RuntimeClassName == nil || *pod.RuntimeClassName != "microvm" {
-				t.Errorf("the pod runs under the RuntimeClass %v, want microvm", pod.RuntimeClassName)
+				t.Errorf("the pod runs under the RuntimeClass %s, want microvm", runtimeClassText(pod.RuntimeClassName))
 			}
 			selector := map[string]string{poolKey: poolValue, "kubernetes.io/arch": "amd64", computeClassKey: testComputeClass}
 			if !maps.Equal(pod.NodeSelector, selector) {
@@ -2834,7 +2834,7 @@ func TestTheControllerPodRunsInTheProjectsSandbox(t *testing.T) {
 			if tc.controller == SandboxMicroVM {
 				pod := controller.Spec
 				if pod.RuntimeClassName == nil || *pod.RuntimeClassName != microVMRuntimeClass {
-					t.Errorf("the controller's pod runs under the RuntimeClass %v, want %s", pod.RuntimeClassName, microVMRuntimeClass)
+					t.Errorf("the controller's pod runs under the RuntimeClass %s, want %s", runtimeClassText(pod.RuntimeClassName), microVMRuntimeClass)
 				}
 				selector := map[string]string{poolKey: poolValue, "kubernetes.io/arch": "amd64", computeClassKey: testComputeClass}
 				if !maps.Equal(pod.NodeSelector, selector) {
@@ -2897,7 +2897,7 @@ func TestTheControllerPodRunsInTheProjectsSandbox(t *testing.T) {
 				}
 				spec := pod.template.Spec
 				if spec.RuntimeClassName == nil || *spec.RuntimeClassName != gvisor {
-					t.Errorf("the %s pod runs under the RuntimeClass %v, want %s", pod.kind, spec.RuntimeClassName, gvisor)
+					t.Errorf("the %s pod runs under the RuntimeClass %s, want %s", pod.kind, runtimeClassText(spec.RuntimeClassName), gvisor)
 				}
 				if want := map[string]string{poolKey: poolValue, computeClassKey: "Scale-Out", "kubernetes.io/arch": "amd64"}; !maps.Equal(spec.NodeSelector, want) {
 					t.Errorf("the %s pod selects %v, want exactly the pool's and the operator's %v", pod.kind, spec.NodeSelector, want)
@@ -2917,6 +2917,15 @@ func TestTheControllerPodRunsInTheProjectsSandbox(t *testing.T) {
 			}
 		})
 	}
+}
+
+// runtimeClassText is a pod's runtimeClassName as a failure message names it: the class, or
+// `none` where the pod names none, rather than the pointer's address.
+func runtimeClassText(name *string) string {
+	if name == nil {
+		return "none"
+	}
+	return *name
 }
 
 // sortedPairs is m as `key=value` entries in key order, comma-joined.

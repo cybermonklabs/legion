@@ -184,7 +184,7 @@ func TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted(t *testing.T) {
 					runtimeClass = microVMRuntimeClass
 				}
 				if got := pod.Spec.RuntimeClassName; got == nil || *got != runtimeClass {
-					t.Errorf("the controller's new pod runs under the RuntimeClass %v, want %s", got, runtimeClass)
+					t.Errorf("the controller's new pod runs under the RuntimeClass %s, want %s", runtimeClassText(got), runtimeClass)
 				}
 			}
 			if tc.plugins != nil {
