@@ -508,6 +508,15 @@ const refusedPage = "GitHub did not answer the query for the head's page"
 func (w *walk) visitHead(ctx context.Context, head queryHead) *ending {
 	r, c := w.r, w.c
 	pull := w.repository.head(head.number, head.sha)
+	if len(head.statusesRefused) > 0 {
+		// GitHub has just refused this head's statuses, which costs the head its statuses alone:
+		// they are named at WARN, as a refused REST read of them is (readStatuses), since what
+		// GitHub refused is the only way an operator tells a Commit statuses grant taken away
+		// while a token lives, and a head read over REST for its checks asks for none of them
+		// again.
+		r.statusesUnread(pull, errors.New(errorText(head.statusesRefused)))
+		pull.statuses = false
+	}
 	if head.overflow != "" {
 		return w.visitHeadOverREST(ctx, pull, head.overflow)
 	}
@@ -530,7 +539,7 @@ func (w *walk) visitHead(ctx context.Context, head queryHead) *ending {
 	// The fingerprint is kept only where every write landed, exactly as the ETags of a head
 	// read over REST are (recordHead): a write that did not land must not be hidden behind it,
 	// and the next pass writes this head again.
-	r.recordHead(ctx, w.writer, pull, pagesOf(head.runs), pagesOf(head.suites), kept, headState{fingerprint: head.fingerprint}, c)
+	r.recordHead(ctx, w.writer, pull, pagesOf(head.runs), pagesOf(head.suites), pagesOf(head.statuses), kept, headState{fingerprint: head.fingerprint}, c)
 	c.mark(pull)
 	return nil
 }
@@ -556,9 +565,9 @@ func (w *walk) visitHeadOverREST(ctx context.Context, pull pullHead, why string)
 	if r.cutShort(ctx, c) {
 		// The bound fell while this head was being read, so it was not read whole and the next
 		// pass takes the cycle up at it. A head that was read whole just as the bound fell is
-		// read again by that pass, which costs it the head's two conditional requests and
-		// nothing more: the honest place to take a cycle up is the last head the pass finishing
-		// it is sure of.
+		// read again by that pass, which costs it the head's conditional requests and nothing
+		// more: the honest place to take a cycle up is the last head the pass finishing it is
+		// sure of.
 		return w.cut()
 	}
 	c.restHeads++

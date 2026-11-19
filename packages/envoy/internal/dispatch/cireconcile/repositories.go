@@ -36,10 +36,11 @@ type absentApp struct {
 }
 
 // reconciled is one covered repository as a pass resolved it: the token its reads are made with
-// and the scopes they are budgeted under, and the owner, name and id GitHub itself gives it.
-// reconcile is false for a repository the pass reads no head of -- one the App is not installed
-// on, one it holds no token for, one GitHub did not answer about, one another row naming the
-// same repository was read under -- which the pass passes over, resolve having said why once.
+// and the scopes they are budgeted under, whether that token holds Commit statuses, and the
+// owner, name and id GitHub itself gives it. reconcile is false for a repository the pass reads
+// no head of -- one the App is not installed on, one it holds no token for, one GitHub did not
+// answer about, one another row naming the same repository was read under -- which the pass
+// passes over, resolve having said why once.
 type reconciled struct {
 	owner      string
 	repo       string
@@ -52,32 +53,40 @@ type reconciled struct {
 	// as under the token's own scopes. It is built once with the repository, so the pages of a
 	// repository share the one slice however many queries the pass asks.
 	queryScopes []string
-	reconcile   bool
+	// statuses says the token holds Commit statuses at read or write, so the pass reads the
+	// commit statuses of this repository's heads: in the query (headsQueryWithStatuses), and over
+	// REST for a head the query could not answer whole (readStatuses). Where it is false the pass
+	// asks GitHub for no status at all, and reads the repository as it did before it read any.
+	statuses  bool
+	reconcile bool
 }
 
 // head is one of this repository's open pull request heads as the pass reads it: the token its
 // reads are made with and the scope they are budgeted under, the owner and name GitHub itself
-// gives the repository, and the pull request's own number and head commit.
+// gives the repository, the pull request's own number and head commit, and whether its commit
+// statuses are read.
 func (repository reconciled) head(number int64, sha string) pullHead {
 	return pullHead{
-		token:  repository.token,
-		scope:  repository.scope,
-		owner:  repository.owner,
-		repo:   repository.repo,
-		number: strconv.FormatInt(number, 10),
-		sha:    sha,
+		token:    repository.token,
+		scope:    repository.scope,
+		owner:    repository.owner,
+		repo:     repository.repo,
+		number:   strconv.FormatInt(number, 10),
+		sha:      sha,
+		statuses: repository.statuses,
 	}
 }
 
 // resolve reads one covered name, a mapping's or an issue's own (covered): the installation
-// token it is read with, and the name and id GitHub gives it. It answers the stop a rate limit
-// ended the pass at, and counts and names at WARN each repository it skips, every one of which
-// is a repository nothing within this pass can mend. A repository the App is not installed on
-// is counted and named by its own rule, which mapped decides (appAbsent). A repository skipped
-// on GitHub's answer -- no token, no answer about it, a name that is not owner/name, and a mapped
-// repository the App is not installed on -- is a GitHub read the pass gave up, which it notes on
-// its attempt (githubreads); a name that is not owner/name is the database's, and asks GitHub
-// nothing, and a repository only an issue names that the App is not on is no fault.
+// token it is read with, whether that token holds Commit statuses, and the name and id GitHub
+// gives it. It answers the stop a rate limit ended the pass at, and counts and names at WARN
+// each repository it skips, every one of which is a repository nothing within this pass can
+// mend. A repository the App is not installed on is counted and named by its own rule, which
+// mapped decides (appAbsent). A repository skipped on GitHub's answer -- no token, no answer
+// about it, a name that is not owner/name, and a mapped repository the App is not installed on
+// -- is a GitHub read the pass gave up, which it notes on its attempt (githubreads); a name that
+// is not owner/name is the database's, and asks GitHub nothing, and a repository only an issue
+// names that the App is not on is no fault.
 //
 // read is the repositories this pass has read the heads of already, by the id GitHub gives
 // them, which is this pass's own: two rows naming one repository are read once within a pass,
@@ -97,7 +106,14 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 		r.appAbsent(ctx, row, mapped, held.err, false, c)
 		return reconciled{}, nil
 	}
-	token, err := r.GitHub.RepositoryToken(ctx, owner, name)
+	// Whether the pass reads this repository's commit statuses is decided by the permissions of
+	// the token it reads with, which GitHub's own answer to the token's mint names, rather than by
+	// the installation's: a token is kept for about an hour, so after a person accepts Commit
+	// statuses the installation says the App holds it for up to an hour before the token in hand
+	// does, and a status read with that token would be refused for every head at every pass
+	// (githubapp.Client.RepositoryTokenWithStatuses). A grant taken away while a token lives is
+	// still refused, and that costs a head its statuses alone (refusedPulls, readStatuses).
+	token, statuses, err := r.GitHub.RepositoryTokenWithStatuses(ctx, owner, name)
 	if at := stopAt(err, githubapp.AppScope); at != nil {
 		return reconciled{}, at
 	}
@@ -172,6 +188,7 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 		scope:       scope,
 		headScopes:  headScopes,
 		queryScopes: withGraphQL(headScopes),
+		statuses:    statuses,
 		reconcile:   true,
 	}, nil
 }
@@ -268,8 +285,8 @@ func (r *Reconciler) appAbsent(ctx context.Context, row string, mapped bool, err
 //
 // The canonical name is read rather than the name stored because a pass must never ask GitHub
 // about a name a repository was renamed away from: GitHub answers 404 for that name's
-// installation, so RepositoryToken fails for it and the repository is skipped with `ci
-// reconcile skipped a repository it holds no token for`, a WARN every pass would log for ever
+// installation, so RepositoryTokenWithStatuses fails for it and the repository is skipped with
+// `ci reconcile skipped a repository it holds no token for`, a WARN every pass would log for ever
 // about a name no one can read by design. The rule is the server's one renaming rule spliced in
 // rather than written again here (refs.CanonicalRepoSQL), so this read and every other reader
 // of the rule cannot come to different answers. It applies to both halves, since a rename is a

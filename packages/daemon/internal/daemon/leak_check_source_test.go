@@ -29,13 +29,15 @@ const leakCheckTag = "leak-check-v15"
 // its tarball route requires.
 const leakCheckLease = "ghs_leak_check_lease"
 
-// leakCheckReadSet is what a read token asks for of an installation granted leakCheckGrant:
-// appauth's readPermissions less the issues read that grant does not hold, so contents, pull
-// requests, Actions and metadata, each at read.
-var leakCheckReadSet = map[string]string{"contents": "read", "pull_requests": "read", "actions": "read", "metadata": "read"}
+// leakCheckReadSet is what a read token asks for of an installation granted leakCheckGrant: the
+// read lease's set cut to that grant, which holds no issues and no attestations, so contents,
+// pull requests, Actions, metadata, checks and commit statuses, each at read.
+var leakCheckReadSet = map[string]string{"contents": "read", "pull_requests": "read", "actions": "read",
+	"metadata": "read", "checks": "read", "statuses": "read"}
 
 // leakCheckGrant is what the stand-in's installations have granted the implement App: its write
-// set, of which a read mint asks for the reading half.
+// set less issues, security events and attestations, of which a read mint asks for the reading
+// half.
 var leakCheckGrant = map[string]string{"actions": "write", "checks": "read", "contents": "write",
 	"metadata": "read", "pull_requests": "write", "statuses": "write", "workflows": "write"}
 

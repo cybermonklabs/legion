@@ -68,18 +68,19 @@ func (r *Reconciler) gap(rows int) time.Duration {
 }
 
 // restWork is the REST requests the last pass learned this one will make: every head a query
-// could not answer whole is read again over REST, one request for each page of each of its two
-// listings.
+// could not answer whole is read again over REST, one request for each page of each of its
+// listings -- its check runs, its check suites, and its commit statuses where its token holds
+// Commit statuses.
 //
 // A head a query answered whole is no REST work at all, and the Reconciler holds it with no
-// page of either listing and a fingerprint instead (headState), so it adds nothing here. The
+// page of any listing and a fingerprint instead (headState), so it adds nothing here. The
 // pass that then cannot read such a head in a query reads it over REST with no ETag to send,
-// which is two requests this did not expect: the gap is what the last pass learned, and a head
+// which is requests this did not expect: the gap is what the last pass learned, and a head
 // that has just overflowed is news.
 func (r *Reconciler) restWork() int {
 	requests := 0
 	for _, state := range r.heads {
-		requests += len(state.runs) + len(state.suites)
+		requests += len(state.runs) + len(state.suites) + len(state.statuses)
 	}
 	return requests
 }

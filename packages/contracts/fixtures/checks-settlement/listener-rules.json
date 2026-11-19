@@ -1,5 +1,5 @@
 {
-  "about": "GitHub's check runs on one head, and the settlement Envoy's listener publishes for them once every run has completed: each check's highest-id run, its name cut as the listener keys it, failed and cancelled grouped by conclusion, and a tester or architect run counted only from the reviewer App. Envoy's listener (packages/envoy/internal/cistore, its webhook handler, CI store and summary loop) is tested against it; the daemon keeps each check's highest-id run the same way (packages/daemon/internal/classify, mergeAttemptSets). A name is a string, or {repeat, times, then}: repeat written times over, then then.",
+  "about": "GitHub's check runs and commit statuses on one head, and the settlement Envoy's listener publishes for them once every run has completed: each check's highest-id run, its name cut as the listener keys it, failed and cancelled grouped by conclusion, a tester or architect run counted only from the reviewer App, and each status in success, failure or error named with its state and GitHub's created_at in statuses, in context order. A status is an entry of its own kind: check_runs, failed and cancelled hold check runs alone, so the status test failing beside the passed check run test leaves test out of failed, and the pending status is not recorded. The check runs arrive through the listener's webhook handler; the statuses arrive through the CI reconcile's writer (cistore.Writer.RecordStatus), which records what Dispatch reads from GitHub, and never through a webhook, since the listener drops each status event. Envoy's listener (packages/envoy/internal/cistore, its webhook handler, CI store and summary loop) is tested against it; the daemon keeps each check's highest-id run the same way (packages/daemon/internal/classify, mergeAttemptSets), and reads each status with its created_at (packages/daemon/internal/intake, decodeChecks). A name is a string, or {repeat, times, then}: repeat written times over, then then. A status is in the shape GitHub's REST answer for a commit's combined status lists it in.",
   "reviewerAppId": "271000",
   "checkRuns": [
     {
@@ -147,6 +147,36 @@
       "app": { "id": 15368 }
     }
   ],
+  "statuses": [
+    {
+      "context": "ci/preview",
+      "state": "success",
+      "created_at": "2026-10-28T09:00:00Z",
+      "target_url": "https://ci.example.com/example-org/example-repo/preview",
+      "description": "The preview is up"
+    },
+    {
+      "context": "test",
+      "state": "failure",
+      "created_at": "2026-10-28T09:01:00Z",
+      "target_url": "https://ci.example.com/example-org/example-repo/test",
+      "description": "The external test suite failed"
+    },
+    {
+      "context": "ci/license",
+      "state": "error",
+      "created_at": "2026-10-28T09:02:00Z",
+      "target_url": null,
+      "description": "The license scan could not run"
+    },
+    {
+      "context": "ci/coverage",
+      "state": "pending",
+      "created_at": "2026-10-28T09:03:00Z",
+      "target_url": "https://ci.example.com/example-org/example-repo/coverage",
+      "description": "Coverage is being measured"
+    }
+  ],
   "settlement": {
     "check_runs": [
       { "name": "advice", "id": 118 },
@@ -174,6 +204,11 @@
       "retry",
       "timeout"
     ],
-    "cancelled": ["image"]
+    "cancelled": ["image"],
+    "statuses": [
+      { "context": "ci/license", "state": "error", "created_at": "2026-10-28T09:02:00Z" },
+      { "context": "ci/preview", "state": "success", "created_at": "2026-10-28T09:00:00Z" },
+      { "context": "test", "state": "failure", "created_at": "2026-10-28T09:01:00Z" }
+    ]
   }
 }

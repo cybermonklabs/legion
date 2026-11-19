@@ -989,6 +989,7 @@ jobs:
               # Each is a RULES row of .github/scripts/ci_job_reads.py, citing the test line.
               - 'packages/contracts/fixtures/capability-redaction.json'
               - 'packages/contracts/fixtures/capability-redaction-plugin-report.json'
+              - 'packages/contracts/fixtures/checks-settlement/*'
               - 'packages/contracts/fixtures/classification/**'
               - 'packages/contracts/fixtures/daemon-api/*'
               - 'packages/contracts/fixtures/dispatch-public-url.json'

@@ -9,12 +9,13 @@
 //
 // A pass reads GitHub in batches, over GraphQL: one query answers twenty open pull requests of
 // one repository with every check suite and every check run of each one's head commit
-// (headsQuery). Reading the same heads over REST takes two requests of each head and one of
-// each page of each repository's open pull requests, which for 833 heads of 16 repositories
-// measures 1,720 requests and 26 minutes 25 seconds -- five passes' worth of a 5-minute
-// interval, which no pass finishes within its bound and which leaves the loop looking dead for
-// the whole of it. The same read in queries is about 53 of them, about 318 points of the App's
-// GraphQL budget and about 178 seconds of GitHub's own processing time.
+// (headsQuery). Reading the same heads over REST takes two requests of each head, three where
+// the token holds Commit statuses (readStatuses), and one of each page of each repository's open
+// pull requests. Before the pass read statuses that measured, for 833 heads of 16 repositories,
+// 1,720 requests and 26 minutes 25 seconds -- five passes' worth of a 5-minute interval, which no
+// pass finishes within its bound and which leaves the loop looking dead for the whole of it. The
+// same read in queries is about 53 of them, about 318 points of the App's GraphQL budget and
+// about 178 seconds of GitHub's own processing time.
 //
 // What a query cannot answer whole is read over REST: paged, conditional on the ETags the pass
 // kept, and recorded through the same writes. That is a head with more check suites than one
@@ -31,6 +32,15 @@
 // query and the same run delivered by webhook are one observation. The pass writes with a
 // cistore writer, which binds the listener's bucket and creates none (cistore.OpenWriter), so
 // one record per head is shared by both processes.
+//
+// Where the token the pass holds for a repository holds Commit statuses, the pass reads the
+// commit statuses of each of its heads as well: in the same query (headsQueryWithStatuses), and
+// over REST, after the check runs and suites, for a head the query could not answer whole
+// (readStatuses). Each status in success, failure or error is mapped through
+// contracts.GithubStatusObservation and recorded, and a pending one is not. GitHub refusing a
+// head's statuses costs that head its statuses alone. Where the token does not hold Commit
+// statuses the pass asks GitHub for no status, and reads the repository as it did before it read
+// any.
 //
 // A query's answer carries no ETag of its own -- it is one answer for twenty heads, which
 // GitHub's conditional reads do not cover -- so what an ETag does for a REST read a fingerprint
