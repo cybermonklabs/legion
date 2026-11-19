@@ -258,6 +258,9 @@ export function IssueMarginPanel({
   // links on GitHub - only while the drawer is open, so a load that leaves it shut costs no
   // request for it.
   const reading = useMarginDrawer()?.open === true;
+  // A closed section keeps its rows, hidden (`PropertySection`), so the links, which read GitHub
+  // as they are drawn, are drawn only while Development is open too.
+  const readingLinks = reading && sections.isOpen("development");
   const blockers = issue.blocked_by ?? [];
   const blockerTitles = useQuery({
     ...referenceTargetsQuery(blockers.map((key) => buildDispatchReference({ key, kind: "issue" }))),
@@ -535,14 +538,18 @@ export function IssueMarginPanel({
           />
         </Row>
         {/* Each link reads GitHub as it is drawn (`GitHubLink`), so the links are drawn only
-            while Details is open, as the panel's other reads are made. */}
+            while the reader can see them: Details open, and Development with it. */}
         <Row glyph={RIGHT_OVER_LEFT_ARROWS} label={PROPERTY_LABELS.pull_request}>
           {pullRequests.length === 0 ? none : null}
-          {reading ? pullRequests.map((link) => <GitHubLink key={link.url} link={link} />) : null}
+          {readingLinks
+            ? pullRequests.map((link) => <GitHubLink key={link.url} link={link} />)
+            : null}
         </Row>
         {otherLinks.length === 0 ? null : (
           <Row glyph="↗" label={PROPERTY_LABELS.external_links}>
-            {reading ? otherLinks.map((link) => <GitHubLink key={link.url} link={link} />) : null}
+            {readingLinks
+              ? otherLinks.map((link) => <GitHubLink key={link.url} link={link} />)
+              : null}
           </Row>
         )}
         <Row glyph={FLAG} label={PROPERTY_LABELS.claim}>

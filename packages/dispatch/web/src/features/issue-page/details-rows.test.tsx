@@ -21,9 +21,9 @@ function Opener({ press = false, row }: { press?: boolean; row: DetailsRow }): R
   );
 }
 
-// A row inside a closed section of Details is not drawn until its section opens, so the opener
-// asks Details for the row - an event on the drawer's aside, with the row as its detail - before
-// it looks for the row two frames on.
+// A row inside a closed section of Details is hidden, and takes no focus, until its section
+// opens, so the opener asks Details for the row - an event on the drawer's aside, with the row as
+// its detail - before it looks for the row two frames on.
 test("the opener asks Details for its row before it looks for the row", () => {
   const requested: { row: unknown; rowDrawn: boolean }[] = [];
   const setOpen = mock((_open: boolean) => {});

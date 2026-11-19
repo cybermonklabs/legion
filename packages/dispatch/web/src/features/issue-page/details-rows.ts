@@ -13,7 +13,7 @@ export type DetailsRow = "collaborators" | "labels" | "parent" | "route";
 
 /** The event the opener sends on Details' `aside` before it looks for the row, with the row as
  *  its `detail`: the section of Details that holds the row opens on it, so a row inside a
- *  closed section is there to be found. */
+ *  closed section, which is hidden, is shown and can take the focus. */
 export const DETAILS_ROW_REQUEST_EVENT = "details-row-request";
 
 /**
