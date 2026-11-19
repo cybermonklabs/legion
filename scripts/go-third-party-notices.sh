@@ -33,7 +33,7 @@ go_cmd="$goroot/bin/go"
 # The toolchain's version and its host, from one `go env`: the script runs once per release archive
 # (18 times in lint's notices step), and each go process it starts is time on every one of them.
 # The assignment, not the read, runs go, so `set -e` stops the script when it fails; a `go env` that
-# printed fewer than the three values is refused by name.
+# printed fewer than three lines is refused with a message naming the three values it reads.
 go_env="$("$go_cmd" env GOVERSION GOHOSTOS GOHOSTARCH)"
 { read -r go_version; read -r go_hostos; read -r go_hostarch; } <<EOF || {
 $go_env
