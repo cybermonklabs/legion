@@ -243,8 +243,16 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   answer and reply drafts are kept in): the composer drawn when the column, or the thread, comes
   back to it shows it again, no other thread's composer shows it, and Send drops it, since from
   then on the held send keeps the draft.
-  A draft is kept for the life of its tab, through every move inside the page and every reload of
-  it; closing the tab ends it. Every draft store keeps each draft in the tab's `sessionStorage`
+  A draft is kept for the life of its tab, through every move inside the page, every reload of it
+  and a lapse of the session; the person's sign-out, another person's sign-in in the tab, or
+  closing the tab ends it. A browser that restores or duplicates a tab restores or copies its
+  drafts with it. A duplicated tab also copies the held sends, and each tab takes them up again:
+  each is safe to repeat, since a `PUT` or `DELETE` makes the same change again and Dispatch
+  answers a `POST` under its kept key with what the first one did; a draft sent from one of the two
+  tabs stays in the other, where sending it is a second message. A sign-out that lands, in this
+  tab or another or under a lapse (`Writes.onSignedOut`), has every draft store forget that
+  person's drafts in the page and in the tab, and take none until the next sign-in
+  (`DraftStore.signedOut`). Every draft store keeps each draft in the tab's `sessionStorage`
   beside the held sends (`features/inbox/draft-store.ts`: one `dispatch.draft:<store>:<key>` entry
   per draft, stamped with the login that typed it), and a composer keeps its draft for its address
   as the page goes (`pagehide` in `useKeptDrafts`), since a reload unmounts nothing. The page a
