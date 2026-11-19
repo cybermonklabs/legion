@@ -30,18 +30,18 @@ const (
 	attributionRule = "20261105070440_pull_request_heads_attribution_rule.up.sql"
 )
 
-// editedFile is one migration nextRelease edits: its name, N's text and N+1's, and N's file as N's
-// runner loads it (pgmigrate.Load).
+// editedFile is one migration nextRelease edits: N's file as N's runner loads it (pgmigrate.Load),
+// and N+1's text of it.
 type editedFile struct {
-	name             string
-	original, edited []byte
-	release          pgmigrate.Migration
+	release pgmigrate.Migration
+	edited  []byte
 }
 
 // nextRelease is release N+1: this tree, N, with each of names edited in place as a pull request
 // edits a shipped migration, declaring N's identity of the file in the replaces line the pre-merge
 // check requires (pgmigrate.CheckEdits). It is built with go build -overlay, so the tree is not
-// changed. It answers the binary and each file's two texts, in the order of names.
+// changed. It answers the binary and, in the order of names, each file as N loads it with N+1's
+// text of it.
 func nextRelease(t *testing.T, names ...string) (string, []editedFile) {
 	t.Helper()
 	dir := t.TempDir()
@@ -56,21 +56,18 @@ func nextRelease(t *testing.T, names ...string) (string, []editedFile) {
 		if index < 0 {
 			t.Fatalf("this tree has no migration %s", name)
 		}
+		release := set[index]
 		source, err := filepath.Abs(filepath.Join("..", "..", "internal", "dispatch", "store", "migrations", name))
 		if err != nil {
 			t.Fatal(err)
 		}
-		original, err := os.ReadFile(source)
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		edited := append(append([]byte{}, original...), []byte("\n-- an edit of release N+1\n-- replaces: "+name+" sha256:"+pgmigrate.Checksum(original)+"\n")...)
+		edited := []byte(release.SQL + "\n-- an edit of release N+1\n-- replaces: " + release.Identity().String() + "\n")
 		replacement := filepath.Join(dir, name)
 		if err := os.WriteFile(replacement, edited, 0o644); err != nil {
 			t.Fatal(err)
 		}
 		replace[source] = replacement
-		files = append(files, editedFile{name: name, original: original, edited: edited, release: set[index]})
+		files = append(files, editedFile{release: release, edited: edited})
 	}
 	overlay, err := json.Marshal(map[string]map[string]string{"Replace": replace})
 	if err != nil {
