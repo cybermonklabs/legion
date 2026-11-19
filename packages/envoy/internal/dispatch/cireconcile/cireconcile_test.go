@@ -779,13 +779,13 @@ func TestEachPassRecordsItsAttemptAtReadingGitHub(t *testing.T) {
 }
 
 // A pass records failed when it gives up part of its read of GitHub on an answer the client takes
-// as data and notes nothing of -- a 404, a 422, a name the pass cannot key a record by, or a limit
-// recorded before any request -- so in each failed row only the pass's own note can make the
-// record say so, and its cause names the repository it gave up (the limit in force at the start
-// names the limit instead, the pass having reached no repository). A query GitHub answered 502
-// whose repository the REST listing then read is a read the pass made the other way, and it
-// records succeeded; a pass its caller cancelled, which is this process shutting down, records
-// nothing.
+// as data and notes nothing of -- a 404, a 422, a name the pass cannot key a record by, a head's
+// status field a query answers refused, or a limit recorded before any request -- so in each
+// failed row only the pass's own note can make the record say so, and its cause names the
+// repository it gave up (the limit in force at the start names the limit instead, the pass having
+// reached no repository). A query GitHub answered 502 whose repository the REST listing then read
+// is a read the pass made the other way, and it records succeeded; a pass its caller cancelled,
+// which is this process shutting down, records nothing.
 func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 	for _, row := range []struct {
 		name string
@@ -861,6 +861,15 @@ func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 			h.github.answerStatus(checkRunsPath, http.StatusUnprocessableEntity)
 		},
 		causeHas: []string{checkRunsPath, "422"},
+	}, {
+		name: "a head whose commit statuses GitHub refuses",
+		arrange: func(h *harness) {
+			// The token holds Commit statuses, so the query asks for the head's status field, and
+			// GitHub answers it with an errors entry: the head is answered whole without them.
+			h.headWithStatuses(tokenWithStatuses, commitStatus(101, "ci/build", "failure", "2026-11-17T05:01:00Z"))
+			h.github.refuseStatuses(gitHubRepository, headSHA)
+		},
+		causeHas: []string{"commit status", gitHubRepository},
 	}, {
 		name: "a limit in force when the pass starts",
 		arrange: func(h *harness) {

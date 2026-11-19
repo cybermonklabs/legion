@@ -242,7 +242,7 @@ func (r *Reconciler) readStatuses(ctx context.Context, writer Writer, head pullH
 			// next pass reads the head again, on the ETags the pass holds.
 			return false, true, nil
 		}
-		r.statusesUnread(head, err)
+		r.statusesUnread(ctx, head, err)
 		r.holdStatuses(head, nil, 0)
 		return false, false, nil
 	}
@@ -277,10 +277,13 @@ func (r *Reconciler) holdStatuses(head pullHead, pages []pageOf[object], wanted 
 // entries a query answered against the head commit's status field as one error of their text
 // (errorText, walk.visitHead). Both refusals are this one line, which
 // packages/envoy/cmd/dispatch/README.md ("CI reconcile") gives operators with these four fields;
-// slog writes cause as its Error() text.
-func (r *Reconciler) statusesUnread(head pullHead, cause error) {
+// slog writes cause as its Error() text. It notes the refusal on the pass's attempt (githubreads),
+// as headFailed does: the statuses of a head whose token holds Commit statuses are part of the
+// read the deployment configured, and the pass gave them up.
+func (r *Reconciler) statusesUnread(ctx context.Context, head pullHead, cause error) {
 	r.Logger.Warn("ci reconcile read no commit status of a head",
 		"repository", head.repository(), "pr", head.number, "sha", head.sha, "error", cause)
+	githubreads.NoteFailuref(ctx, "ci reconcile read no commit status of %s#%s at %s: %w", head.repository(), head.number, head.sha, cause)
 }
 
 // kept is what the pass remembers of one head -- the ETags of a head read over REST, the

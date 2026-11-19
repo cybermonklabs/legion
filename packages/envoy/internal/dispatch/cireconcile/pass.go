@@ -140,9 +140,9 @@ func (w *walk) stopped(at *stop) *ending {
 // Each pass is one attempt at reading GitHub (githubreads), recorded through GitHubReads when it
 // ends: the GitHub client notes on it each request and each failure no caller takes as data, and
 // the pass notes each part of its read it gives up on an answer the client takes as data -- a
-// repository it skips, a head it does not read, and a rate limit that ends the pass. A read the
-// pass's own ending killed is none of those (cutShort), and a pass its caller cancelled, which is
-// this process shutting down, records nothing.
+// repository it skips, a head it does not read, a head's commit statuses it does not read, and a
+// rate limit that ends the pass. A read the pass's own ending killed is none of those (cutShort),
+// and a pass its caller cancelled, which is this process shutting down, records nothing.
 func (r *Reconciler) Pass(ctx context.Context) {
 	started := time.Now()
 	var c counts
@@ -514,7 +514,7 @@ func (w *walk) visitHead(ctx context.Context, head queryHead) *ending {
 		// GitHub refused is the only way an operator tells a Commit statuses grant taken away
 		// while a token lives, and a head read over REST for its checks asks for none of them
 		// again.
-		r.statusesUnread(pull, errors.New(errorText(head.statusesRefused)))
+		r.statusesUnread(ctx, pull, errors.New(errorText(head.statusesRefused)))
 		pull.statuses = false
 	}
 	if head.overflow != "" {
