@@ -71,7 +71,8 @@ jobs:
           scripts/check-packed-skills.sh "$GITHUB_WORKSPACE"/out/pr-artifacts/sjawhar-codex-envoy-*.tgz
         working-directory: packages/claude-envoy
       # `overwrite` lets a re-run of this job replace its first attempt's copy, which the
-      # private-names job below reads.
+      # private-names job below reads (the Claude Code plugin's tarball; the action says why the
+      # Codex one beside it is passed over).
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: claude-envoy-pr

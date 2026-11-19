@@ -5,9 +5,9 @@
 # a path, a named target and another command's message masked so the log never prints a term or a
 # fragment of one, overlapping terms and a traced run included; several files a mask prints alike
 # counted one by one; the allowed hosts of the committed rules never excusing a term; an unset
-# list warning on a pull request's events and failing on the merge queue's, a push's and a
-# dispatched run's; and a pull request's text through check-pr-text.sh, a stranger's login never
-# printed.
+# list warning on a pull request's event and failing on the merge queue's, a push's, a dispatched
+# run's and a review's; and a pull request's text through check-pr-text.sh, a stranger's login
+# never printed.
 #
 # The terms are placeholders this file and check-private-names-test-lib.sh set, never a real
 # term, and every case is named by a neutral label, since this script's own output is the CI log;
@@ -344,14 +344,12 @@ rm "$notes"
 run_check_as push "$planted_terms" "$root" "$notes"
 check "a missing file exits 2, so an artifact without the entries never passes as clean" "$(is "$status" 2)"
 
-echo "case: an unset or empty list on a pull request's events warns, and keeps the other rules' exit"
+echo "case: an unset or empty list on a pull request's event warns, and keeps the other rules' exit"
 root=$(fixture terms-unset-pr)
 unset_warning='^::warning::check-private-names: PRIVATE_NAME_TERMS is unset or empty, so only the'
-for event in pull_request pull_request_review; do
-  run_check_as "$event" - "$root"
-  check "$event, unset: exits 0" "$(is "$status" 0)"
-  check "$event, unset: warns that only the rules the script spells ran" "$(contains "$out" "$unset_warning")"
-done
+run_check_as pull_request - "$root"
+check "pull_request, unset: exits 0" "$(is "$status" 0)"
+check "pull_request, unset: warns that only the rules the script spells ran" "$(contains "$out" "$unset_warning")"
 run_check_as pull_request "" "$root"
 check "an empty list exits 0 and warns the same way" \
   "$(is "$status:$(contains "$out" "$unset_warning")" 0:true)"
@@ -365,9 +363,11 @@ check "a hit of the rules the script spells still fails" "$(is "$status" 1)"
 check "and still warns" "$(contains "$out" "$unset_warning")"
 check "names the hit" "$(contains "$out" 'docs/notes.md:1: names the private deployment repository')"
 
-echo "case: an unset list on the merge queue, a push or a dispatched run fails before it scans"
+echo "case: an unset list on the merge queue, a push, a dispatched run or a review fails before it scans"
 root=$(fixture terms-unset-queue)
-for event in merge_group push workflow_dispatch; do
+# A review starts no run of any workflow, so a pull_request_review run is no fork's pull request
+# to warn for: it fails like the other events.
+for event in merge_group push workflow_dispatch pull_request_review; do
   run_check_as "$event" - "$root"
   check "$event, unset: exits 2" "$(is "$status" 2)"
   check "$event, unset: says the list is missing" \

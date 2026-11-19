@@ -1,19 +1,23 @@
 name: Check the packed Claude Code plugin for private names
 description: >-
   The private-name check of a packed Claude Code plugin, over the tarball another job packed:
-  downloads the artifact that holds it, refuses an artifact that holds no single tarball, lays the
-  tarball's dist/ and legion/ out at their repository path, packages/claude-envoy (the vendored
-  NATS client's exception is a path, packages/claude-envoy/dist/envoy-channel.js), and runs
-  .github/scripts/check-private-names.sh over the two from the checkout's root with the
-  deployment's term list. It runs that shell script, tar and mkdir and nothing else, so the job
-  that calls it runs no dependency code (.github/scripts/check-release-credentials.sh reads these
-  steps). ci-job-claude-envoy.yaml's private-names job and release.yaml's claude_envoy_names call
-  it; each keeps its own needs, conditions, permissions, checkout of the .github cone and ci-ok
-  report.
+  downloads the artifact that holds it, refuses an artifact that holds no single
+  sjawhar-claude-envoy tarball, lays that tarball's dist/ and legion/ out at their repository
+  path, packages/claude-envoy (the vendored NATS client's exception is a path,
+  packages/claude-envoy/dist/envoy-channel.js), and runs .github/scripts/check-private-names.sh
+  over the two from the checkout's root with the deployment's term list. It runs that shell
+  script, tar and mkdir and nothing else, so the job that calls it runs no dependency code
+  (.github/scripts/check-release-credentials.sh reads these steps). ci-job-claude-envoy.yaml's
+  private-names job and release.yaml's claude_envoy_names call it; each keeps its own needs,
+  conditions, permissions, checkout of the .github cone and ci-ok report. Pull-request CI packs
+  the Codex plugin's tarball into the same artifact, and this action passes over it: its dist/ is
+  the checked dist/ this tarball carries, copied byte for byte (scripts/build.ts --codex-out
+  --dist), and the rest of it is written from this tree's codex/, skills/ and scripts/build.ts,
+  which the repository scan reads.
 
 inputs:
   artifact:
-    description: The name of the artifact that holds the one packed tarball.
+    description: The name of the artifact that holds the packed sjawhar-claude-envoy tarball.
     required: true
   private-name-terms:
     description: >-
@@ -35,9 +39,9 @@ runs:
       env:
         ARTIFACT: ${{ inputs.artifact }}
       run: |
-        tarballs=("$RUNNER_TEMP"/private-names-packed-plugin/*.tgz)
+        tarballs=("$RUNNER_TEMP"/private-names-packed-plugin/sjawhar-claude-envoy-*.tgz)
         if [ ${#tarballs[@]} -ne 1 ] || [ ! -f "${tarballs[0]}" ]; then
-          echo "::error::the $ARTIFACT artifact holds no single tarball"
+          echo "::error::the $ARTIFACT artifact holds no single sjawhar-claude-envoy tarball"
           exit 1
         fi
         mkdir -p "$GITHUB_WORKSPACE/packages/claude-envoy"

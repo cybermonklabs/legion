@@ -227,13 +227,6 @@ by() {
     "$4" > "$4.next"
   mv "$4.next" "$4"
 }
-# as_review_event: rewrites the fixture's pull_request payload as a pull_request_review one,
-# which carries the pull request whole beside the review.
-as_review_event() {
-  jq '. + {action: "submitted", review: {id: 201, body: "Approved."}}' "$work/event.json" \
-    > "$work/event.next"
-  mv "$work/event.next" "$work/event.json"
-}
 
 # clean_pr: a pull request whose title, body, branch and commit name nothing.
 clean_pr() { write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"; }
