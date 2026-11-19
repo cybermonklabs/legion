@@ -40,7 +40,8 @@ Read, against the goal, every check and every requirement:
 ## The last round
 
 Sign off a parent only on an approved head that carries the merges of every child its checks
-need. Each check needs a pass at that head; one in another repository, a pass standing since the
+need. Each check needs a pass at that head, or one recorded below it where every push since
+changes no code that runs; one in another repository, a pass standing since the
 close of each child it needs, at a commit on the branch that issue's pull request merged into or
 on its default branch; a `default_branch` check, on the default branch. A criterion proven on a
 deployed system is proven after that child's deploy, as the repository's deploy skill says. A
