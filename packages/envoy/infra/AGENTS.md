@@ -71,11 +71,18 @@ versions. Never add the module to the root `go.work`.
 - **Component-built Kubernetes providers.** `gcp:Dispatch` requires the consumer's `gcp` and
   `random` providers before registering anything, and a `tailscale` provider too wherever it
   builds the front door, which is where it declares its own Tailscale Service, then builds a
-  Kubernetes provider from its cluster's exec-plugin kubeconfig; with `clusterOnly` it requires
+  Kubernetes provider from the cluster's exec-plugin kubeconfig; with `clusterOnly` it requires
   the `gcp` provider alone and builds no Kubernetes provider, since it registers no
   `RandomPassword`, no tailnet resource and no Kubernetes object.
-  Every Kubernetes child uses that explicit provider and depends on the cluster; none falls back
-  to a default Kubernetes provider. `gcp:ClusteredNatsHub` takes
+  The kubeconfig is the component's own cluster's, or the one rendered from the cluster
+  `existingCluster` names, which `gcp.lookupDispatchCluster` looks up with a plain `getCluster`
+  invoke through the `gcp` provider before anything registers. Only the looked-up cluster's
+  provider carries `clusterIdentifier`, the cluster's issuer, so pulumi-kubernetes replaces it only
+  when the identifier changes. The own cluster's provider carries none, so its inputs stay as they
+  always were. Every Kubernetes child uses that explicit provider, and none falls back to a default
+  Kubernetes provider. Each child depends on the component's own cluster when the component makes
+  one, and on no cluster with `existingCluster` (`dispatchCluster.waitFor`).
+  `gcp:ClusteredNatsHub` takes
   the cluster's `kubeconfig` as a secret input and builds its own provider, `<name>-kubernetes`,
   with `enableServerSideApply` and `enableConfigMapMutable` on, and calls no `providers.Require`,
   since it creates every resource through that provider (the chart through `pulumi.Providers`).
@@ -146,12 +153,13 @@ versions. Never add the module to the root `go.work`.
   `gcp:Dispatch` follows the same shape: `NewDispatch` refuses a seed in its own name first
   (`TestDispatchRefusesASeedInTheComponentName`); its resolver refuses a seed in every plain
   string input the component carries (`gcp.dispatchSeededInput`, one row each in
-  `TestDispatchRefusesAnNKeySeedInAPlainInput`, `azureFederationAudience` among them);
-  `tailnetAuthKey`, `signInClientSecret`, `natsSeedSecret`, `databaseWaitsFor`, the Azure
-  embedder's Pulumi inputs `azureEmbedEndpoint`, `azureEmbedDeployment`, `azureEmbedKeySecret`,
-  `azureTenantId` and `azureClientId`, and the answerer's `azureChatEndpoint`,
-  `azureChatDeployment`, `chatEndpoint` and `chatTokenSecret` are checked for a seed once they
-  resolve, before any child
+  `TestDispatchRefusesAnNKeySeedInAPlainInput`, `azureFederationAudience`, `existingCluster.name`
+  and `existingCluster.location` among them);
+  `tailnetAuthKey`, `signInClientSecret`, `natsSeedSecret`, `databaseWaitsFor`,
+  `existingDatabaseInstance`, the Azure embedder's Pulumi inputs `azureEmbedEndpoint`,
+  `azureEmbedDeployment`, `azureEmbedKeySecret`, `azureTenantId` and `azureClientId`, and the
+  answerer's `azureChatEndpoint`, `azureChatDeployment`, `chatEndpoint` and `chatTokenSecret` are
+  checked for a seed once they resolve, before any child
   takes them (`gcp.refuseDispatchSeedInSecret`, `gcp.refuseDispatchSeed`,
   `TestConstructRefusesASeedInADispatchInput`, `TestConstructRefusesASeedInAnAzureInput`,
   `TestConstructRefusesASeedInAnAnswererInput`,
@@ -191,6 +199,9 @@ versions. Never add the module to the root `go.work`.
   (`bus.LocalNATSURL`) before core's `Env` is reached, naming `natsUrl` there too, since the pods
   dial the URL themselves and a loopback URL would have them dial themselves
   (`gcp.dispatchListenerEnv`, `TestDispatchRefusesABadNatsURLOnceItResolves`).
+  `existingDatabaseInstance` is checked for its shape, `<project>:<region>:<instance>`, after its
+  seed check (its row in `TestConstructRefusesASeedInADispatchInput`): the refusal is a
+  `core.InputError` naming it that never quotes the value (`gcp.dispatchDatabaseConnectionName`).
 - **Plain or Input.** A field of a plain Go type (`string`, `*int`, a pointer to a struct) takes
   only a value the consumer's program knows when it runs: Construct refuses another resource's
   output there, naming the input (Pulumi SDK v3.265.0 `go/pulumi/provider.go`,
