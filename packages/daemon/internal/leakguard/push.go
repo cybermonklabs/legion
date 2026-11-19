@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 // gitPins is the configuration every git this package starts reads last: no hook and no
@@ -396,7 +398,7 @@ func (g *Guard) git(ctx context.Context, dir string, args ...string) (string, er
 	var stderr bytes.Buffer
 	status, out, err := g.run(ctx, child{argv: argv, dir: dir, stderr: &stderr})
 	if err != nil {
-		return "", err
+		return "", procgroup.Said(err, gitSaid(stderr.String()))
 	}
 	if status != 0 {
 		return "", fmt.Errorf("git %s exited %d: %s", args[0], status, gitSaid(stderr.String()))

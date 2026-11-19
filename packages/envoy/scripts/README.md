@@ -624,15 +624,15 @@ packages/envoy/scripts/daemon-release-gate.sh --listeners <commit>
 ```
 
 Without `--listeners` it reads the image each Legion daemon runs: each entry of
-theorem-labs/agent-infra `legion/Pulumi.prod.yaml`'s projects, its `daemonImage` when set, else its
+example-org/deployment `legion/Pulumi.prod.yaml`'s projects, its `daemonImage` when set, else its
 `image`; an entry at `replicas: 0` or `daemon: false` prints `SKIPPED` by name. An entry at
 `runtime: tmux` runs its daemon on the project's host VM from `host.legionWorker`'s legion, not from
-its `image` (agent-infra `legion/host.go`), and the gate reads no image for it: it prints `UNKNOWN`
+its `image` (deployment `legion/host.go`), and the gate reads no image for it: it prints `UNKNOWN`
 by name, as does an entry on any runtime but `kubernetes`, the default. With `--listeners`
 it reads the three listener pins: envoy's `listenerImage`, envoy-cluster's `envoyImage`, and
 dispatch's `listenerImage`, which that stack sets on its listener in place of `envoyImage`, the
 Dispatch server's; a dispatch stack that sets none reads `UNKNOWN`, since its deployment requires
-that key (agent-infra `dispatch/main.go`) and the listener runs no other image. Each pin's
+that key (deployment `dispatch/main.go`) and the listener runs no other image. Each pin's
 `org.opencontainers.image.source` and `.revision`
 labels are read with `docker buildx imagetools inspect`, an OCI image index one platform at a time
 (its `.Image.Config.Labels` is `null`), its `unknown/unknown` attestation entries left out, every

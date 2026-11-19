@@ -384,7 +384,7 @@ type Config struct {
 	// BROKER_SERVICE_ACCOUNT_SECRETS: the one Google service account each google-service-account
 	// agent secret mints a token for, whitespace-separated <SECRET NAME>=<account email>
 	// entries, such as GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com. The name is
-	// the uppercase agent-secret name a session asks for (DEV_ADITYA, GCP_ADMIN), not that
+	// the uppercase agent-secret name a session asks for (DEV_PERSON, GCP_ADMIN), not that
 	// secret's store id or its slug, and each secret is named at most once; the account is a
 	// user-managed Google service account, <account id>@<project id>.iam.gserviceaccount.com in
 	// lowercase, held to secrets.ValidServiceAccountEmail, the minter's own rule, so no binding

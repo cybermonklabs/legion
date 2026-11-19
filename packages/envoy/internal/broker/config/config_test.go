@@ -152,7 +152,7 @@ func TestLoadLimitsAzureLoginToOneNamedSecret(t *testing.T) {
 // whole entry, so an operator reads which one to fix.
 func TestServiceAccountBindingSettingIsRead(t *testing.T) {
 	const (
-		dev   = "dev-aditya@theorem-agent-identities.iam.gserviceaccount.com"
+		dev   = "dev-aditya@example-identities.iam.gserviceaccount.com"
 		admin = "gcp-admin@example-project.iam.gserviceaccount.com"
 	)
 	cfg, err := Load(env(validEnv()))
@@ -164,36 +164,36 @@ func TestServiceAccountBindingSettingIsRead(t *testing.T) {
 	}
 
 	e := validEnv()
-	e["BROKER_SERVICE_ACCOUNT_SECRETS"] = " DEV_ADITYA=" + dev + "\tGCP_ADMIN=" + admin + "\n"
+	e["BROKER_SERVICE_ACCOUNT_SECRETS"] = " DEV_PERSON=" + dev + "\tGCP_ADMIN=" + admin + "\n"
 	cfg, err = Load(env(e))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := map[string]string{"DEV_ADITYA": dev, "GCP_ADMIN": admin}; !maps.Equal(cfg.ServiceAccountSecrets, want) {
+	if want := map[string]string{"DEV_PERSON": dev, "GCP_ADMIN": admin}; !maps.Equal(cfg.ServiceAccountSecrets, want) {
 		t.Fatalf("ServiceAccountSecrets = %v, want %v", cfg.ServiceAccountSecrets, want)
 	}
 
 	// Two secrets of one account: a person's own account may back both their dev secret and a
 	// second one, and the mint is refused by the secret's name, not the account's.
 	e = validEnv()
-	e["BROKER_SERVICE_ACCOUNT_SECRETS"] = "DEV_ADITYA=" + dev + " DEV_ADITYA_2=" + dev
+	e["BROKER_SERVICE_ACCOUNT_SECRETS"] = "DEV_PERSON=" + dev + " DEV_PERSON_2=" + dev
 	cfg, err = Load(env(e))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := map[string]string{"DEV_ADITYA": dev, "DEV_ADITYA_2": dev}; !maps.Equal(cfg.ServiceAccountSecrets, want) {
+	if want := map[string]string{"DEV_PERSON": dev, "DEV_PERSON_2": dev}; !maps.Equal(cfg.ServiceAccountSecrets, want) {
 		t.Fatalf("ServiceAccountSecrets with one account on two secrets = %v, want %v", cfg.ServiceAccountSecrets, want)
 	}
 
 	for _, row := range []struct{ entry, want string }{
-		{"DEV_ADITYA", "must be <SECRET NAME>=<account email> entries"},
+		{"DEV_PERSON", "must be <SECRET NAME>=<account email> entries"},
 		{"dev-aditya=" + dev, "not an agent secret name"},
-		{"DEV_ADITYA=aditya@theorem.dev", "user-managed Google service account"},
-		{"DEV_ADITYA=service-123456789012@gcp-sa-example.iam.gserviceaccount.com", "Google-managed service agent"},
-		{"DEV_ADITYA=" + admin, "names the secret DEV_ADITYA twice"},
+		{"DEV_PERSON=aditya@example.com", "user-managed Google service account"},
+		{"DEV_PERSON=service-123456789012@gcp-sa-example.iam.gserviceaccount.com", "Google-managed service agent"},
+		{"DEV_PERSON=" + admin, "names the secret DEV_PERSON twice"},
 	} {
 		e := validEnv()
-		e["BROKER_SERVICE_ACCOUNT_SECRETS"] = "DEV_ADITYA=" + dev + " " + row.entry
+		e["BROKER_SERVICE_ACCOUNT_SECRETS"] = "DEV_PERSON=" + dev + " " + row.entry
 		_, err := Load(env(e))
 		if err == nil || !strings.HasPrefix(err.Error(), "BROKER_SERVICE_ACCOUNT_SECRETS ") ||
 			!strings.Contains(err.Error(), row.want) || !strings.Contains(err.Error(), strconv.Quote(row.entry)) {

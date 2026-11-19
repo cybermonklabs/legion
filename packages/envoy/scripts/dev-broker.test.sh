@@ -712,7 +712,7 @@ printf 'PASS: a dispatch-pg on another image than the pinned one is refused thro
 # Manager as its store under that prefix and key, with no AWS key and an empty fake secrets file,
 # and the banner says so; either one alone is refused before anything is created. ---
 gcp_prefix="projects/100000000001/secrets/agent-secrets-"
-gcp_key="projects/acme-agent-infra/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
+gcp_key="projects/acme-deployment/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
 DEV_BROKER_GCP_PREFIX="$gcp_prefix" DEV_BROKER_GCP_KMS_KEY_NAME="$gcp_key" \
   run_instance 1 "$log1" "$docker_calls1" "$curl_calls1"
 if ! wait_for_ready "$log1"; then
