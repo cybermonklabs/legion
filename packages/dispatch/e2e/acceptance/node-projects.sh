@@ -331,6 +331,14 @@ census_complete "$section" "after the backfill"
 # moved by a tick of this server after it - a cursor an earlier server left on a reused database
 # stands behind it - and with the debt clear there and the message's node written, that tick's
 # pass has finished.
+#
+# The tick reads an event only once the event horizon has passed it (events.Horizon), and the
+# horizon trails the oldest transaction holding a transaction id anywhere on the Postgres instance,
+# in any database: a shared test instance's other runs, an operator's open psql. While one such
+# transaction older than a few seconds stays open, the server cannot read this event, so that time
+# is the instance's and not the server's: the wait counts only the seconds no such transaction
+# holds the instance, up to 180 of them, within an overall bound of 30 minutes, and a failure names
+# the last transaction that held it.
 section=pass
 query "$section" "an earlier build sends a direct message with its event and no node" "
   with message as (
@@ -345,12 +353,28 @@ query "$section" "an earlier build sends a direct message with its event and no 
   )
   select message.id::text || ' ' || event.id from message, event"
 read -r before written <<<"$answer"
-for attempt in $(seq 1 180); do
+unheld=0 holder=""
+for attempt in $(seq 1 1800); do
   query "$section" "read whether the server's object pass has run after event $written" "
     select exists (select 1 from block_index_event_cursors where event_id >= $written and object_nodes_owed_at is null)
        and exists (select 1 from graph_nodes where kind = 'message' and id = '$before')"
   [[ "$answer" == t ]] && break
-  [[ "$attempt" == 180 ]] && fail "$section" "the server's object pass runs" "no cursor past event $written without a debt, and no node of message $before, within 180 s"
+  query "$section" "read the oldest transaction holding the instance's event horizon" "
+    select coalesce((select format('backend %s in database %s, open since %s: %s', pid, datname, xact_start, left(query, 80))
+      from pg_stat_activity
+      where backend_xid is not null and pid <> pg_backend_pid() and xact_start < now() - interval '5 seconds'
+      order by xact_start limit 1),
+    (select format('prepared transaction %s in database %s, since %s', gid, database, prepared)
+      from pg_prepared_xacts where prepared < now() - interval '5 seconds' order by prepared limit 1), '')"
+  if [[ -n "$answer" ]]; then
+    holder="$answer"
+  else
+    unheld=$((unheld + 1))
+  fi
+  if [[ "$unheld" -ge 180 || "$attempt" -ge 1800 ]]; then
+    fail "$section" "the server's object pass runs" \
+      "no cursor past event $written without a debt, and no node of message $before, after ${attempt} s, ${unheld} s of them with no other transaction holding the instance's event horizon; the last one that held it: ${holder:-none}"
+  fi
   sleep 1
 done
 pass "$section" "the server's object pass wrote the node of message $before after event $written and owes nothing"
