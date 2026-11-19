@@ -72,6 +72,11 @@ type Options struct {
 	// a credential prompt fail closed (promptsNothing) and RunByRealGhVar blanked, and each child's
 	// own names on top of those.
 	Env []string
+	// Curl is the curl the guard's reads through curl run (Guard.CurlGet). Empty is the ordinary
+	// case, curlProgram: the system's own curl at a fixed path, never the first curl on the
+	// caller's PATH, since the curl that runs is handed a token on its standard input. A test fills
+	// it with a stand-in of its own; no caller reads it from its environment or its arguments.
+	Curl string
 }
 
 // Guard runs the two checks. It holds no answer of an earlier call: every call site builds a
@@ -83,8 +88,8 @@ type Guard struct {
 	// noAnswer is the askpass program the children are pointed at, resolved once from the base
 	// environment's PATH.
 	noAnswer string
-	// curl is the curl the visibility read after a failure of gh's connection runs: curlProgram,
-	// which this package's tests alone point at a stand-in (Guard.curlVisibility).
+	// curl is the curl the guard's reads through curl run (Guard.CurlGet): Options.Curl, or
+	// curlProgram where that is empty. This package's own tests set it directly.
 	curl string
 }
 
@@ -93,6 +98,9 @@ type Guard struct {
 // every call resolves it again.
 func New(opts Options) *Guard {
 	g := &Guard{opts: opts, curl: curlProgram}
+	if opts.Curl != "" {
+		g.curl = opts.Curl
+	}
 	g.noAnswer = noAnswer(g.base())
 	return g
 }

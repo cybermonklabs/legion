@@ -17,7 +17,7 @@ const gitCredentialUsage = "usage: legion git-credential get|store|erase  (git's
 
 // gitCredentialOperationUsage is each operation's own usage, which its --help prints.
 var gitCredentialOperationUsage = map[string]string{
-	"get":   "usage: legion git-credential get  (reads git's request on stdin; answers the token of the owner its path names, or nothing, exit 1)",
+	"get":   "usage: legion git-credential get  (reads git's request on stdin; answers the token of the owner its path names, or, for a fork whose owner has no gh directory, the token of its parent's owner or else its source's owner; else nothing, exit 1)",
 	"store": "usage: legion git-credential store  (reads git's request on stdin and writes nothing: the daemon is the one writer of the gh files)",
 	"erase": "usage: legion git-credential erase  (reads git's request on stdin and erases nothing: the daemon is the one writer of the gh files)",
 }
@@ -36,15 +36,23 @@ var gitCredentialStdin io.Reader = os.Stdin
 // reaches every repository that installation holds, so the owner's own directory answers for
 // every repository of that owner but one a configured rename moved to another owner: that one is
 // answered from the directory of the owner it moved to, which the bundle's pairs file names, and
-// the path's second segment is what tells the two apart. Any other host or
-// protocol, a request with no path, a path whose owner is no GitHub login or one the bundle
-// holds no directory for — an owner the role's App is not installed on — a pair whose `to`
-// owner has no directory, an unset
-// LEGION_GH_OWNERS_DIR, and a hosts.yml with no token answer nothing, exit 1, naming why on
-// stderr, and git, which every shared clone tells credential.interactive=false, then fails
-// rather than prompts. `store` and `erase` change nothing: the daemon is the one writer of the
-// gh files.
-func runGitCredential(_ context.Context, args []string, stdout, stderr io.Writer) int {
+// the path's second segment is what tells the two apart.
+//
+// A path whose owner the bundle holds no directory for, an owner the role's App is not installed
+// on, may still name a fork of a repository the bundle serves: an outside author's fork that holds
+// the head of a pull request to it. For such a path `get` reads the repository from GitHub once,
+// with GH_CONFIG_DIR's token and within forkReadBound and ctx (forkUpstreamDir), and answers the
+// token it would answer for the fork's parent where the bundle serves the parent's owner, else
+// for the fork's source where it serves that owner. GitHub then decides what that token may push
+// to the fork. A repository of such an owner that is no fork of a served repository, or that the
+// read cannot tell is one, answers nothing.
+//
+// Any other host or protocol, a request with no path, a path whose owner is no GitHub login, a
+// pair whose `to` owner has no directory, an unset LEGION_GH_OWNERS_DIR, and a hosts.yml with no
+// token answer nothing too, exit 1, naming why on stderr, and git, which every shared clone tells
+// credential.interactive=false, then fails rather than prompts. `store` and `erase` change
+// nothing: the daemon is the one writer of the gh files.
+func runGitCredential(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 1 && helpRequested(args[0]) {
 		fmt.Fprintln(stderr, gitCredentialUsage)
 		return 0
@@ -98,17 +106,17 @@ func runGitCredential(_ context.Context, args []string, stdout, stderr io.Writer
 	name, _, _ := strings.Cut(rest, "/")
 	dir, err := ghConfigDirFor(ownersDir, owner, ghconfig.RepositoryName(name))
 	if err != nil {
-		fmt.Fprintf(stderr, "legion git-credential: %v; answering nothing\n", err)
-		return 1
+		if repo, ok := forkRepository(ownersDir, owner, name); ok {
+			dir, err = forkUpstreamDir(ctx, ownersDir, repo, err)
+		}
 	}
-	hosts, err := ghconfig.ReadRegular(filepath.Join(dir, ghconfig.HostsFile))
 	if err != nil {
 		fmt.Fprintf(stderr, "legion git-credential: %v; answering nothing\n", err)
 		return 1
 	}
-	token, err := ghconfig.TokenFromHosts(hosts)
+	token, err := ghDirToken(dir)
 	if err != nil {
-		fmt.Fprintf(stderr, "legion git-credential: %s: %v; answering nothing\n", dir, err)
+		fmt.Fprintf(stderr, "legion git-credential: %v; answering nothing\n", err)
 		return 1
 	}
 	fmt.Fprintf(stdout, "username=%s\npassword=%s\n", ghconfig.GitUser, token)
@@ -132,17 +140,34 @@ func readCredentialRequest(r io.Reader) map[string]string {
 	return request
 }
 
+// ghDirToken is the github.com token of the gh directory dir: its hosts.yml read as a regular file
+// and never through a link (ghconfig.ReadRegular), and the token read out of it
+// (ghconfig.TokenFromHosts). A hosts.yml that names no token is an error that names dir.
+func ghDirToken(dir string) (string, error) {
+	hosts, err := ghconfig.ReadRegular(filepath.Join(dir, ghconfig.HostsFile))
+	if err != nil {
+		return "", err
+	}
+	token, err := ghconfig.TokenFromHosts(hosts)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", dir, err)
+	}
+	return token, nil
+}
+
 // ownerGHConfigDir is the gh directory of the bundle under ownersDir that answers for owner:
 // `<owner>`, the one directory the bundle holds for that account, whose lease reaches every
 // repository its installation holds (appauth.GitHubCredential). It is the answer for every
 // repository of that owner but one a configured rename moved away from it, which its one caller
 // routes by the repository instead (ghConfigDirFor).
 //
-// An owner the bundle holds no directory for is refused, which is this caller's own answer: the
-// role's App has no installation on owner, so no token of this bundle reaches anything of it,
-// and an answer of nothing would have git prompt. The refusal is leakguard.OwnerNotServedError,
-// which the leak guard reads, exactly, in `legion gh`'s refusal of its REST visibility read: it
-// then reads that repository's visibility with no credential instead.
+// An owner the bundle holds no directory for is refused: the role's App has no installation on
+// owner, so no lease of this bundle is that owner's own. The credential helper then reads whether
+// the repository is a fork of one the bundle serves (forkRepository, forkUpstreamDir) and answers
+// the token of the fork's parent's owner, else of its source's owner; every other repository of
+// such an owner gets nothing. The refusal is leakguard.OwnerNotServedError, which the leak guard
+// reads, exactly, in `legion gh`'s refusal of its REST visibility read: it then reads that
+// repository's visibility with no credential instead.
 func ownerGHConfigDir(ownersDir, owner string) (string, error) {
 	dir := ghconfig.Dir(ownersDir, owner)
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
