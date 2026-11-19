@@ -1586,6 +1586,24 @@ for other in build.sh.bak build.sh-old build.shx xbuild.sh; do
   check "exits 0" "$(is "$status" 0)"
 done
 
+# A script of the same name in another directory is another script: tools/build.sh does not start
+# build.sh, whose path a `/` after anything but a variable, a `}` or a `)` does not begin. Were it
+# read as a start, a write before it would count where it reaches nothing of build.sh's, and a job
+# that names build.sh nowhere would be read only up to it, so a write after it would be missed.
+other_dir_step=$'      - name: Build the tools\n        run: sh tools/build.sh\n'
+echo "case: a step that runs a same-named script of another directory does not start the script"
+root=$(fixture script-other-directory)
+script_job "$root"
+replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$path_write$other_dir_step$report_step"
+run_check "$root"
+check "after the script's own start and a write, exits 0" "$(is "$status" 0)"
+root=$(fixture script-other-directory-only)
+script_job "$root"
+replace "$root/.github/workflows/ci.yaml" "$report_step" "$other_dir_step$path_write$report_step"
+run_check "$root"
+check "in a job that names the script nowhere, a write after it still widens the script's commands" \
+  "$(contains "$out" "$widened")"
+
 echo "case: a job of the called workflow that names the script nowhere is read whole beside one that names it"
 root=$(fixture called-script-other-job)
 called_input_gate "$root"

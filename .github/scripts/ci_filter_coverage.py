@@ -1253,18 +1253,27 @@ def job_up_to(job: dict, step: dict, including: bool = True) -> dict:
     return job if at is None else {**job, "steps": steps[:at + 1] if including else steps[:at]}
 
 
+# What may come before a script's path where a step starts it: the start of a line, a space, a
+# quote, an `=`, a `(` or a backtick; `./` after one of those; or a `/` after a variable
+# (`$NAME`), a `}` or a `)`, which end `${NAME}`, `${{ ... }}` and `$(...)`. A `/` after anything
+# else ends a directory of another path, so `tools/scripts/e2e-local.sh` is not
+# `packages/envoy/scripts/e2e-local.sh` run from `packages/envoy`.
+SCRIPT_START = r"(?:^|[\s'\"=(`]|(?:^|[\s'\"=(`])\./|(?:\$[A-Za-z_][A-Za-z0-9_]*|[})])/)"
+
+
 def names_script(holder: dict, job: dict, step: dict, source: str) -> bool:
     """Whether a run: step names the repository script `source`: by its path from the repository
-    root, or from the directory the step runs in, as a whole word of its run: text. The path may
-    open the line or follow a space, a quote, an `=`, a `(` or a backtick - `$(<script> ...)` and
-    a backticked call start it in a substitution - or a `/`, which a directory before it ends:
-    "$GITHUB_WORKSPACE/<script>", `${{ github.workspace }}/<script>`,
-    `$(git rev-parse --show-toplevel)/<script>` and `./<script>`. Nothing that goes on the path
-    after it (`.bak`, `-old`, a longer name) counts."""
+    root, or from the directory the step runs in, as a whole word of its run: text after one of
+    SCRIPT_START's starts - `"$GITHUB_WORKSPACE/<script>"`, `${{ github.workspace }}/<script>`,
+    `$(<script> ...)`, a backticked call, `$(git rev-parse --show-toplevel)/<script>` and
+    `./<script>` among them. The script's own parent directories before its path from the step's
+    directory make its path from the root, which is read as that; any other directory before it
+    names another script. Nothing that goes on the path after it (`.bak`, `-old`, a longer name)
+    counts."""
     run = str(step.get("run", ""))
     workdir = step_workdir(holder, job, step)
     paths = {source, os.path.relpath(source, workdir)} if workdir != "." else {source}
-    return any(re.search(rf"(?:^|[\s'\"=(`/]){re.escape(p)}(?![\w.-])", run) for p in paths)
+    return any(re.search(rf"{SCRIPT_START}{re.escape(p)}(?![\w.-])", run) for p in paths)
 
 
 def around_reason(document: dict, job: dict, steps: list) -> str:

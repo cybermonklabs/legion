@@ -300,9 +300,12 @@ fails the pull request that adds it.
   job runs, pinned to the script's whole line and read under the env, shell and environment writes
   of each job's steps up to the last one whose `run:` names the script, and of all of a job's steps
   where it names the script nowhere. A step names it by its path from the root or from the step's
-  directory, after a space, a quote, a `(`, a backtick or a `/`: `"$GITHUB_WORKSPACE/<script>"`,
-  `$(<script> ...)` and `./<script>` all name it. The check fails when a job's `run:` step starts
-  a go command (`go test`, `vet`, `build`, `run`, `list`, `install`, `generate`) nothing claims.
+  directory, at the start of a line or after a space, a quote, an `=`, a `(` or a backtick, as
+  `./<script>`, or after a `/` that ends a variable (`$NAME/`), a `}` or a `)`:
+  `"$GITHUB_WORKSPACE/<script>"`, `${{ github.workspace }}/<script>`, `$(<script> ...)` and
+  `$(git rev-parse --show-toplevel)/<script>` all name it, and `tools/<script>` names another
+  script. The check fails when a job's `run:` step starts a go command (`go test`, `vet`,
+  `build`, `run`, `list`, `install`, `generate`) nothing claims.
   It reduces a claimed command only in its simple form: one line of `go test|vet|build`,
   relative package paths and only `-v`, `-race`, `-count=N`, `-timeout D`, `-buildvcs=false` and
   one `-tags T`, that is its step's whole `run:` script (split at `\n` alone, stripped of spaces
@@ -353,6 +356,9 @@ fails the pull request that adds it.
   entry's run can say it, or, for a name with which go compiles the same files and runs the same
   tests (`GOMAXPROCS`), add it to `ENV_ALLOWED`. envoy-go's unit-test step, envoy-go-checks' pack
   step and envoy-smoke's plugin-schema step are exact entries.
+  docs/solutions/github/a-step-pinned-whole-is-refused-when-it-drifts-and-is-read-only-under-the-steps-before-it-pr4442.md
+  says why a pinned step is refused rather than read wide, why only the steps before it count,
+  and what starts a script.
 
   It fails too when a pinned text or an exact entry's step is gone, and when a job or step is
   gated on a filter neither `GATES` nor `EXCLUDED` lists. A job with no go commands still gets a
