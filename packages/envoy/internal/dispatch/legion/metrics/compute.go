@@ -597,9 +597,11 @@ func reviewRounds(issue *Issue, timeline phaseTimeline) int {
 }
 
 // sentBackPhases are the phases a send-back moves out of: "a move from `testing`, `reviewing`,
-// `accepting` `retro`, `merging` or `awaiting_merge` to `implementing`". A head that starts
-// conflicting with its base sends the issue back out of any of them (the daemon workflow's
-// TriggerConflict).
+// `accepting` `retro`, `merging` or `awaiting_merge` to `implementing`". A tester's fail and a
+// review that requests changes move out of testing and reviewing, and a backward move
+// (`request_backward_move`, the daemon workflow's TriggerBackward rows) out of any of them. Before
+// cybermonklabs/legion#4464 a head that started conflicting with its base sent the issue back out
+// of any of them too, and the history this reads holds those moves.
 var sentBackPhases = []string{
 	legion.PhaseTesting, legion.PhaseReviewing, legion.PhaseAccepting,
 	legion.PhaseRetro, legion.PhaseMerging, legion.PhaseAwaitingMerge,

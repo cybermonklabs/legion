@@ -1,5 +1,5 @@
 {
-  "commands": 36,
+  "commands": 37,
   "refusals": 29,
   "runs": [
     {
@@ -1158,6 +1158,29 @@
       "outcome": "result",
       "text": [
         "The plan review approved plan.md (document id 01234567-0000-4000-8000-00000000000b) at version 2; no human is asked to approve a plan. A later plan version makes this approval stale: run the review again and record it the same way."
+      ]
+    },
+    {
+      "tool": "dispatch_plans",
+      "call": "valid",
+      "args": {
+        "project": "INFRA"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/projects/INFRA/plans",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "INFRA: 1 finished issues",
+        "INFRA-1 closed 2026-01-02T03:04:05Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 \"The plan fit the work.\" time 1h30m failed steps 1"
       ]
     },
     {

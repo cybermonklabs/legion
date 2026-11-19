@@ -108,6 +108,7 @@ on:
       - 'packages/daemon/internal/registry/*'
       - 'packages/daemon/internal/repocache/*'
       - 'packages/daemon/internal/reviewround/*'
+      - 'packages/daemon/internal/rolefile/*'
       - 'packages/daemon/internal/runtime/*'
       - 'packages/daemon/internal/runtime/sandbox/*'
       - 'packages/daemon/internal/runtime/shellprefix/*'
@@ -179,6 +180,7 @@ on:
       - 'packages/envoy/internal/dispatch/legion/*'
       - 'packages/envoy/internal/dispatch/model/*'
       - 'packages/envoy/internal/dispatch/outbox/*'
+      - 'packages/envoy/internal/dispatch/outbox/copyrule/*'
       - 'packages/envoy/internal/dispatch/pmdoc/**'
       - 'packages/envoy/internal/dispatch/prioritystore/*'
       - 'packages/envoy/internal/dispatch/processes/*'
@@ -319,6 +321,8 @@ jobs:
     with:
       upload-pages-artifact: true
       save-cache: true
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 
   # No concurrency of its own: the workflow's group already holds the next run until this one's
   # deploy ends. The if: holds the deployment to main: a workflow_dispatch of a branch builds the

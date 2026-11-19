@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -19,13 +20,20 @@ import (
 )
 
 // The forms of a step's names. A task id is a plan's slug, `default` for an issue whose owner gave
-// no plan; a role and a type are a word of lowercase letters, digits and hyphens. The agent, the
-// session and the model are printable ASCII with no space, at most 128 characters
+// no plan (taskRule); a role and a type are a word of lowercase letters, digits and hyphens
+// (roleRule), and so is the role a plan's step names before its key. The agent, the session and
+// the model are printable ASCII with no space, at most 128 characters
 // (contracts.StepAgentTextPattern), since `dispatch steps` joins a record's fields with spaces.
 var (
 	taskForm      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 	roleForm      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 	agentTextForm = regexp.MustCompile(contracts.StepAgentTextPattern)
+)
+
+// taskRule and roleRule are taskForm and roleForm as a refusal states them.
+const (
+	taskRule = "lowercase letters, digits and hyphens, starting with a letter or a digit, at most 64"
+	roleRule = "a lowercase letter, then lowercase letters, digits and hyphens, at most 32"
 )
 
 var (
@@ -46,112 +54,201 @@ var (
 // relation to the issue; it must name the step's whole identity (task, kind, step, role and
 // generation), or it is refused ErrStepInput and writes nothing. A write that names a type for a
 // node of kind retro or merge is refused ErrStepInput too, since neither has one. The write that
-// sets the report states the `reports` relation to that handoff.
-//
-// Two writes of one id at one time take turns: the insert that makes the node comes before the
-// read of what it holds, and that read locks the row (for update), so the second write waits for
-// the first to commit and then reads everything the first wrote.
+// sets the report states the `reports` relation to that handoff. A type and a rating are judged
+// against the kind the write names and against the kind the node holds (typeOfKind,
+// ratingOfKind), so a run made as a step never takes a rating, whatever kind a later write calls
+// it.
 func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor, at time.Time) (Step, error) {
 	id, stated, err := write.attributes()
 	if err != nil {
 		return Step{}, err
 	}
-	writer, err := json.Marshal(actor)
-	if err != nil {
-		return Step{}, fmt.Errorf("encode the writer of step %s: %w", id, err)
+	missing := write.missingIdentity()
+	written, err := putNode(ctx, tx, nodeWrite{
+		kind: KindStep, id: id, issue: write.Issue, stated: stated, makes: len(missing) == 0,
+		actor: actor, at: at,
+		check: func(held map[string]json.RawMessage) error {
+			if write.Type == nil && write.Rating == nil {
+				return nil
+			}
+			kind, err := heldString(held, AttributeKind)
+			if err != nil {
+				return fmt.Errorf("decode the kind of step %s: %w", id, err)
+			}
+			if write.Type != nil {
+				if err := typeOfKind(kind, *write.Type); err != nil {
+					return err
+				}
+			}
+			if write.Rating != nil {
+				if err := ratingOfKind(id, kind); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		// A run's result and the step it returned to are one fact, so the write takes returned_to
+		// only where the node holds no result. attributes() admits returned_to only beside a
+		// failed or stopped result, so the write that states it states a result too.
+		sets: func(held map[string]json.RawMessage, name string) bool {
+			if name != AttributeReturnedTo {
+				return true
+			}
+			_, ended := held[AttributeResult]
+			return !ended
+		},
+		relations: func(setting map[string]string) []tuple {
+			if report, sets := setting[AttributeReport]; sets {
+				return []tuple{{kind: RelationReports, toKind: KindHandoff, toID: report}}
+			}
+			return nil
+		},
+	})
+	var other *nodeOfAnotherIssue
+	switch {
+	case errors.Is(err, errNoNode):
+		return Step{}, refusal(ErrStepInput, "step %s holds no node yet, and this write, which would make it, does not name its %s: the first write of a step names its task, kind, step, role and generation",
+			id, strings.Join(missing, ", "))
+	case errors.As(err, &other):
+		return Step{}, fmt.Errorf("%w: step %s is part of %s, and this write names %s", ErrStepOtherIssue, id, other.issue, write.Issue)
+	case err != nil:
+		return Step{}, err
 	}
+	return stepFrom(id, written)
+}
 
+// nodeWrite is one write of one node of the store: its kind, its id and the issue it is part of,
+// the attributes it states, whether it names the node's whole identity and so may make it, and who
+// writes it when.
+type nodeWrite struct {
+	kind, id, issue string
+	stated          []attribute
+	makes           bool
+	actor           model.Actor
+	at              time.Time
+	// check judges the write against the attributes the node holds before it ({} for the node
+	// this write makes); a refusal is answered as it is. Nil takes every write.
+	check func(held map[string]json.RawMessage) error
+	// sets says whether the write sets the attribute called name, which the node does not hold
+	// yet, given the attributes the node holds before it. Nil sets each.
+	sets func(held map[string]json.RawMessage, name string) bool
+	// relations are the relation tuples the write states beside its attributes and its
+	// `part_of`, from the attributes it sets: each one's text, as its value tuple holds it, by its
+	// name. Nil states none.
+	relations func(setting map[string]string) []tuple
+}
+
+// errNoNode is a write that finds no node and does not name the identity that would make one; the
+// caller refuses it in its own words.
+var errNoNode = errors.New("no node, and the write does not name its identity")
+
+// nodeOfAnotherIssue is a write of an id whose node is part of issue, not of the write's issue;
+// the caller refuses it in its own words.
+type nodeOfAnotherIssue struct{ issue string }
+
+func (other *nodeOfAnotherIssue) Error() string { return "the node is part of " + other.issue }
+
+// putNode is the one write of a node, a run's or a plan's, inside the caller's transaction, and
+// answers the node's attributes as they stand after it. It sets each attribute the write states
+// that the node does not hold yet and the write sets (sets), appending one value tuple for each,
+// and leaves each the node holds, appending nothing for it; the write that makes the node states
+// its `part_of` relation to the issue. A refusal comes before anything is moved, but the node a
+// refused write made is the caller's to roll back with its transaction.
+//
+// Two writes of one id at one time take turns: the insert that makes the node comes before the
+// read of what it holds, and that read locks the row (for update), so the second write waits for
+// the first to commit and then reads everything the first wrote.
+func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, error) {
+	writer, err := json.Marshal(write.actor)
+	if err != nil {
+		return nil, fmt.Errorf("encode the writer of %s %s: %w", write.kind, write.id, err)
+	}
 	made := false
-	if len(write.missingIdentity()) == 0 {
+	if write.makes {
 		var inserted string
 		err := tx.QueryRow(ctx, `
 			insert into workflow_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
-			values ('`+KindStep+`', $1, '`+KindStep+`', '`+VisibilityProject+`', '`+StateLive+`', '{}', $2, $3, $4)
+			values ($1, $2, $1, '`+VisibilityProject+`', '`+StateLive+`', '{}', $3, $4, $5)
 			on conflict (kind, id) do nothing
 			returning id
-		`, id, at, writer, NoEvent).Scan(&inserted)
+		`, write.kind, write.id, write.at, writer, NoEvent).Scan(&inserted)
 		switch {
 		case err == nil:
 			made = true
 		case !errors.Is(err, pgx.ErrNoRows):
-			return Step{}, fmt.Errorf("write step %s: %w", id, err)
+			return nil, fmt.Errorf("write %s %s: %w", write.kind, write.id, err)
 		}
 	}
 
 	var heldText []byte
 	err = tx.QueryRow(ctx, `
-		select attributes from workflow_nodes where kind = '`+KindStep+`' and id = $1 for update
-	`, id).Scan(&heldText)
+		select attributes from workflow_nodes where kind = $1 and id = $2 for update
+	`, write.kind, write.id).Scan(&heldText)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Step{}, inputError(
-			"step %s holds no node yet, and this write, which would make it, does not name its %s: the first write of a step names its task, kind, step, role and generation",
-			id, strings.Join(write.missingIdentity(), ", "))
+		return nil, errNoNode
 	}
 	if err != nil {
-		return Step{}, fmt.Errorf("read step %s: %w", id, err)
+		return nil, fmt.Errorf("read %s %s: %w", write.kind, write.id, err)
 	}
 	var held map[string]json.RawMessage
 	if err := json.Unmarshal(heldText, &held); err != nil {
-		return Step{}, fmt.Errorf("decode the attributes of step %s: %w", id, err)
-	}
-	current, err := stepFrom(id, heldText)
-	if err != nil {
-		return Step{}, err
+		return nil, fmt.Errorf("decode the attributes of %s %s: %w", write.kind, write.id, err)
 	}
 	if !made {
-		if current.Issue != write.Issue {
-			return Step{}, fmt.Errorf("%w: step %s is part of %s, and this write names %s", ErrStepOtherIssue, id, current.Issue, write.Issue)
+		issue, err := heldString(held, AttributeIssue)
+		if err != nil {
+			return nil, fmt.Errorf("decode the issue of %s %s: %w", write.kind, write.id, err)
 		}
-		if write.Type != nil {
-			if err := typeOfKind(current.Kind, *write.Type); err != nil {
-				return Step{}, err
-			}
+		if issue != write.issue {
+			return nil, &nodeOfAnotherIssue{issue: issue}
+		}
+	}
+	if write.check != nil {
+		if err := write.check(held); err != nil {
+			return nil, err
 		}
 	}
 
 	setting := map[string]any{}
+	texts := map[string]string{}
 	var tuples []tuple
-	var report string
-	_, ended := held[AttributeResult]
-	for _, attribute := range stated {
+	for _, attribute := range write.stated {
 		if _, holds := held[attribute.name]; holds {
 			continue
 		}
-		if attribute.name == AttributeReturnedTo && ended {
+		if write.sets != nil && !write.sets(held, attribute.name) {
 			continue
 		}
 		setting[attribute.name] = attribute.value
-		tuples = append(tuples, tuple{fromID: id, kind: attribute.name, toKind: KindValue, toID: attribute.text})
-		if attribute.name == AttributeReport {
-			report = attribute.text
-		}
+		texts[attribute.name] = attribute.text
+		tuples = append(tuples, tuple{kind: attribute.name, toKind: KindValue, toID: attribute.text})
 	}
 	if made {
-		tuples = append(tuples, tuple{fromID: id, kind: RelationPartOf, toKind: KindIssue, toID: write.Issue})
+		tuples = append(tuples, tuple{kind: RelationPartOf, toKind: KindIssue, toID: write.issue})
 	}
-	if report != "" {
-		tuples = append(tuples, tuple{fromID: id, kind: RelationReports, toKind: KindHandoff, toID: report})
+	if write.relations != nil {
+		tuples = append(tuples, write.relations(texts)...)
 	}
 	if len(setting) == 0 {
-		return current, nil
+		return heldText, nil
 	}
 
 	moved, err := json.Marshal(setting)
 	if err != nil {
-		return Step{}, fmt.Errorf("encode the attributes of step %s: %w", id, err)
+		return nil, fmt.Errorf("encode the attributes of %s %s: %w", write.kind, write.id, err)
 	}
 	var written []byte
 	if err := tx.QueryRow(ctx, `
-		update workflow_nodes set attributes = attributes || $2::jsonb
-		where kind = '`+KindStep+`' and id = $1
+		update workflow_nodes set attributes = attributes || $3::jsonb
+		where kind = $1 and id = $2
 		returning attributes
-	`, id, moved).Scan(&written); err != nil {
-		return Step{}, fmt.Errorf("write step %s: %w", id, err)
+	`, write.kind, write.id, moved).Scan(&written); err != nil {
+		return nil, fmt.Errorf("write %s %s: %w", write.kind, write.id, err)
 	}
-	if err := appendTuples(ctx, tx, tuples, writer, at); err != nil {
-		return Step{}, fmt.Errorf("write step %s: %w", id, err)
+	if err := appendTuples(ctx, tx, write.kind, write.id, tuples, writer, write.at); err != nil {
+		return nil, fmt.Errorf("write %s %s: %w", write.kind, write.id, err)
 	}
-	return stepFrom(id, written)
+	return written, nil
 }
 
 // attribute is one field a write states: its name, the value the node row holds, and the text its
@@ -164,15 +261,16 @@ type attribute struct {
 
 // attributes checks every field the write states against its form and answers the write's id in
 // its canonical spelling with the fields it states, in one order whatever order they were given
-// in. A text field that is empty states nothing; a ReturnedTo of 0 is place 0 and states it.
+// in. A text field that is empty states nothing; a ReturnedTo of 0 is place 0 and states it; a
+// rating and its reason are stated together, of a retro, or neither is.
 func (write StepWrite) attributes() (string, []attribute, error) {
 	parsed, err := uuid.Parse(write.ID)
 	if err != nil {
-		return "", nil, inputError("id %q is not a uuid: a step record's id is the uuid the daemon derives for the run", write.ID)
+		return "", nil, refusal(ErrStepInput, "id %q is not a uuid: a step record's id is the uuid the daemon derives for the run", write.ID)
 	}
 	id := parsed.String()
 	if strings.TrimSpace(write.Issue) == "" {
-		return "", nil, inputError("issue is required: the key of the issue step %s is part of", id)
+		return "", nil, refusal(ErrStepInput, "issue is required: the key of the issue step %s is part of", id)
 	}
 	stated := []attribute{{AttributeIssue, write.Issue, write.Issue}}
 	text := func(name string, value *string) string {
@@ -191,7 +289,7 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 		}
 		utc := value.UTC()
 		if year := utc.Year(); year < 0 || year > 9999 {
-			return inputError("%s cannot be represented in UTC: its year must be between 0 and 9999", name)
+			return refusal(ErrStepInput, "%s cannot be represented in UTC: its year must be between 0 and 9999", name)
 		}
 		formatted := utc.Format(time.RFC3339Nano)
 		stated = append(stated, attribute{name, formatted, formatted})
@@ -201,36 +299,36 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 	text(AttributeProject, write.Project)
 	if write.Generation != nil {
 		if *write.Generation < 1 {
-			return "", nil, inputError("generation %d is no run of an issue: an issue's generation counts from 1", *write.Generation)
+			return "", nil, refusal(ErrStepInput, "generation %d is no run of an issue: an issue's generation counts from 1", *write.Generation)
 		}
 		number(AttributeGeneration, *write.Generation)
 	}
 	if task := text(AttributeTask, write.Task); task != "" && !taskForm.MatchString(task) {
-		return "", nil, inputError("task %q is not a task id: lowercase letters, digits and hyphens, starting with a letter or a digit, at most 64", task)
+		return "", nil, refusal(ErrStepInput, "task %q is not a task id: %s", task, taskRule)
 	}
 	kind := text(AttributeKind, write.Kind)
 	if kind != "" && !slices.Contains(stepKinds, kind) {
-		return "", nil, inputError("kind %q is not a kind of step: one of %s", kind, strings.Join(stepKinds, ", "))
+		return "", nil, refusal(ErrStepInput, "kind %q is not a kind of step: one of %s", kind, strings.Join(stepKinds, ", "))
 	}
 	if write.Place != nil {
 		place := *write.Place
 		switch {
 		case place < 0:
-			return "", nil, inputError("step %d is no place: a step's place is 0 or more", place)
+			return "", nil, refusal(ErrStepInput, "step %d is no place: a step's place is 0 or more", place)
 		case kind != "" && !contracts.StepPlaceHolds(kind, place):
 			if kind == StepKindStep {
-				return "", nil, inputError("step %d is no place of a step of kind step: a plan's steps count from 1", place)
+				return "", nil, refusal(ErrStepInput, "step %d is no place of a step of kind step: a plan's steps count from 1", place)
 			}
-			return "", nil, inputError("step %d is no place of a %s: no plan names it, so its step is 0", place, kind)
+			return "", nil, refusal(ErrStepInput, "step %d is no place of a %s: no plan names it, so its step is 0", place, kind)
 		}
 		number(AttributeStep, int64(place))
 	}
 	if role := text(AttributeRole, write.Role); role != "" && !roleForm.MatchString(role) {
-		return "", nil, inputError("role %q is not a role: a lowercase letter, then lowercase letters, digits and hyphens, at most 32", role)
+		return "", nil, refusal(ErrStepInput, "role %q is not a role: %s", role, roleRule)
 	}
 	typ := text(AttributeType, write.Type)
 	if typ != "" && !roleForm.MatchString(typ) {
-		return "", nil, inputError("type %q is not a type of work: a lowercase letter, then lowercase letters, digits and hyphens, at most 32, or empty", typ)
+		return "", nil, refusal(ErrStepInput, "type %q is not a type of work: %s, or empty", typ, roleRule)
 	}
 	if err := typeOfKind(kind, typ); err != nil {
 		return "", nil, err
@@ -240,7 +338,7 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 		value *string
 	}{{AttributeAgent, write.Agent}, {AttributeSession, write.Session}, {AttributeModel, write.Model}} {
 		if value := text(field.name, field.value); value != "" && !agentTextForm.MatchString(value) {
-			return "", nil, inputError("%s %q is not an agent's text: %s", field.name, value, contracts.StepAgentTextRule)
+			return "", nil, refusal(ErrStepInput, "%s %q is not an agent's text: %s", field.name, value, contracts.StepAgentTextRule)
 		}
 	}
 	if err := moment(AttributeStartedAt, write.StartedAt); err != nil {
@@ -249,13 +347,13 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 
 	result := text(AttributeResult, write.Result)
 	if result != "" && !slices.Contains(stepResults, result) {
-		return "", nil, inputError("result %q is not a result: one of %s", result, strings.Join(stepResults, ", "))
+		return "", nil, refusal(ErrStepInput, "result %q is not a result: one of %s", result, strings.Join(stepResults, ", "))
 	}
 	if (result != "") != (write.EndedAt != nil) {
 		if result == "" {
-			return "", nil, inputError("ended_at is written with the result of the run it ends, and this write names none")
+			return "", nil, refusal(ErrStepInput, "ended_at is written with the result of the run it ends, and this write names none")
 		}
-		return "", nil, inputError("result %s is written with ended_at, the moment the run ended, and this write names none", result)
+		return "", nil, refusal(ErrStepInput, "result %s is written with ended_at, the moment the run ended, and this write names none", result)
 	}
 	if err := moment(AttributeEndedAt, write.EndedAt); err != nil {
 		return "", nil, err
@@ -263,22 +361,54 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 	if write.ReturnedTo != nil {
 		returned := *write.ReturnedTo
 		if returned < 0 {
-			return "", nil, inputError("returned_to %d is no place of a step", returned)
+			return "", nil, refusal(ErrStepInput, "returned_to %d is no place of a step", returned)
 		}
 		if result != ResultFailed && result != ResultStopped {
-			return "", nil, inputError("returned_to names the step a run returned its task to, which only a run that ended %s or %s does, and this write's result is %q", ResultFailed, ResultStopped, result)
+			return "", nil, refusal(ErrStepInput, "returned_to names the step a run returned its task to, which only a run that ended %s or %s does, and this write's result is %q", ResultFailed, ResultStopped, result)
 		}
 		number(AttributeReturnedTo, int64(returned))
 	}
 	if write.Report != nil && *write.Report != "" {
 		report, err := uuid.Parse(*write.Report)
 		if err != nil {
-			return "", nil, inputError("report %q is not a uuid: it is the id of the handoff the ending role's completion named", *write.Report)
+			return "", nil, refusal(ErrStepInput, "report %q is not a uuid: it is the id of the handoff the ending role's completion named", *write.Report)
 		}
 		canonical := report.String()
 		stated = append(stated, attribute{AttributeReport, canonical, canonical})
 	}
-	return id, stated, nil
+	rated, err := write.rating(id, kind)
+	if err != nil {
+		return "", nil, err
+	}
+	return id, append(stated, rated...), nil
+}
+
+// rating checks the rating a write states with its reason, the rating the agent that did a retro
+// gave the plan, and answers their two attributes, or none where the write states no rating. The
+// rating and its reason are held to the one rule of a rating (contracts.CheckPlanRating), which
+// the daemon's completion route holds a retro's completion to as well, through steprecord, so
+// every rating the daemon takes is one Dispatch takes, and kind, where the write names one, is a
+// retro (ratingOfKind).
+func (write StepWrite) rating(id, kind string) ([]attribute, error) {
+	if write.Rating == nil {
+		return nil, nil
+	}
+	rating, reason := write.Rating.Rating, write.Rating.Reason
+	switch contracts.CheckPlanRating(rating, reason) {
+	case contracts.PlanRatingOffScale:
+		return nil, refusal(ErrStepInput, "rating %d is no rating: a plan is rated from %d (the plan cost the work) to %d (the plan fit the work)", rating, contracts.PlanRatingLeast, contracts.PlanRatingMost)
+	case contracts.PlanReasonBlank:
+		return nil, refusal(ErrStepInput, "rating_reason is left out or blank: a rating carries one sentence of why")
+	case contracts.PlanReasonLong:
+		return nil, refusal(ErrStepInput, "rating_reason holds %d characters, more than the %d a reason holds", utf8.RuneCountInString(reason), contracts.PlanReasonMax)
+	}
+	if err := ratingOfKind(id, kind); err != nil {
+		return nil, err
+	}
+	return []attribute{
+		{AttributeRating, int64(rating), strconv.Itoa(rating)},
+		{AttributeRatingReason, reason, reason},
+	}, nil
 }
 
 // missingIdentity names each field of a step's identity the write does not state, in the order the
@@ -307,73 +437,100 @@ func (write StepWrite) missingIdentity() []string {
 // has a type, as neither has a place but 0.
 func typeOfKind(kind, typ string) error {
 	if typ != "" && kind != "" && kind != StepKindStep {
-		return inputError("type %q is no type of a %s: no plan names it, so it has none", typ, kind)
+		return refusal(ErrStepInput, "type %q is no type of a %s: no plan names it, so it has none", typ, kind)
 	}
 	return nil
 }
 
-func inputError(format string, args ...any) error {
-	return fmt.Errorf("%w: %s", ErrStepInput, fmt.Sprintf(format, args...))
+// ratingOfKind refuses a rating for run id of kind step or merge: a rating is the rating a retro
+// gives its plan.
+func ratingOfKind(id, kind string) error {
+	if kind != "" && kind != StepKindRetro {
+		return refusal(ErrStepInput, "rating is the rating a retro gives its plan, and step %s is a run of kind %s", id, kind)
+	}
+	return nil
 }
 
-// tuple is one fact a write states about one step: an attribute, whose toKind is KindValue and
+// refusal is a write refused as sentinel, its text the rule format and args state.
+func refusal(sentinel error, format string, args ...any) error {
+	return fmt.Errorf("%w: %s", sentinel, fmt.Sprintf(format, args...))
+}
+
+// heldString is the text attribute name of a node's held attributes, "" where the node holds none.
+func heldString(held map[string]json.RawMessage, name string) (string, error) {
+	var text string
+	if raw, holds := held[name]; holds {
+		if err := json.Unmarshal(raw, &text); err != nil {
+			return "", err
+		}
+	}
+	return text, nil
+}
+
+// tuple is one fact a write states about its node: an attribute, whose toKind is KindValue and
 // whose toID is the value, or a relation to the node toKind and toID address.
 type tuple struct {
-	fromID, kind, toKind, toID string
+	kind, toKind, toID string
 }
 
-// appendTuples appends every tuple of one write in one statement, in the order the write states
-// them, which is the order their seq is drawn in. Every tuple of the write has one writer, one
-// moment and no event, and asserts its fact.
-func appendTuples(ctx context.Context, tx pgx.Tx, tuples []tuple, writer []byte, at time.Time) error {
-	fromIDs := make([]string, len(tuples))
+// appendTuples appends every tuple of one write of the node fromKind fromID in one statement, in
+// the order the write states them, which is the order their seq is drawn in. Every tuple of the
+// write has one writer, one moment and no event, and asserts its fact.
+func appendTuples(ctx context.Context, tx pgx.Tx, fromKind, fromID string, tuples []tuple, writer []byte, at time.Time) error {
 	kinds := make([]string, len(tuples))
 	toKinds := make([]string, len(tuples))
 	toIDs := make([]string, len(tuples))
 	for index, stated := range tuples {
-		fromIDs[index], kinds[index], toKinds[index], toIDs[index] = stated.fromID, stated.kind, stated.toKind, stated.toID
+		kinds[index], toKinds[index], toIDs[index] = stated.kind, stated.toKind, stated.toID
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into workflow_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
-		select '`+KindStep+`', stated.from_id, stated.kind, stated.to_kind, stated.to_id, $5, $6::jsonb, $7, true
-		from unnest($1::text[], $2::text[], $3::text[], $4::text[]) with ordinality as stated(from_id, kind, to_kind, to_id, place)
+		select $7, $8, stated.kind, stated.to_kind, stated.to_id, $4, $5::jsonb, $6, true
+		from unnest($1::text[], $2::text[], $3::text[]) with ordinality as stated(kind, to_kind, to_id, place)
 		order by stated.place
-	`, fromIDs, kinds, toKinds, toIDs, at, writer, NoEvent); err != nil {
-		return fmt.Errorf("append step tuples: %w", err)
+	`, kinds, toKinds, toIDs, at, writer, NoEvent, fromKind, fromID); err != nil {
+		return fmt.Errorf("append %s tuples: %w", fromKind, err)
 	}
 	return nil
 }
 
 // stepAttributes is the node row's attributes as a step reads them.
 type stepAttributes struct {
-	Issue      string     `json:"issue"`
-	Project    string     `json:"project"`
-	Generation int64      `json:"generation"`
-	Task       string     `json:"task"`
-	Step       int        `json:"step"`
-	Kind       string     `json:"kind"`
-	Role       string     `json:"role"`
-	Type       string     `json:"type"`
-	Agent      string     `json:"agent"`
-	Session    string     `json:"session"`
-	Model      string     `json:"model"`
-	StartedAt  *time.Time `json:"started_at"`
-	EndedAt    *time.Time `json:"ended_at"`
-	Result     string     `json:"result"`
-	ReturnedTo *int       `json:"returned_to"`
-	Report     string     `json:"report"`
+	Issue        string     `json:"issue"`
+	Project      string     `json:"project"`
+	Generation   int64      `json:"generation"`
+	Task         string     `json:"task"`
+	Step         int        `json:"step"`
+	Kind         string     `json:"kind"`
+	Role         string     `json:"role"`
+	Type         string     `json:"type"`
+	Agent        string     `json:"agent"`
+	Session      string     `json:"session"`
+	Model        string     `json:"model"`
+	StartedAt    *time.Time `json:"started_at"`
+	EndedAt      *time.Time `json:"ended_at"`
+	Result       string     `json:"result"`
+	ReturnedTo   *int       `json:"returned_to"`
+	Report       string     `json:"report"`
+	Rating       int        `json:"rating"`
+	RatingReason string     `json:"rating_reason"`
 }
 
-// stepFrom reads one node row's attributes as the step they hold.
+// stepFrom reads one node row's attributes as the step they hold. A rating of 0 is a run that
+// holds none, since a write sets a rating and its reason together or neither.
 func stepFrom(id string, attributes []byte) (Step, error) {
 	var held stepAttributes
 	if err := json.Unmarshal(attributes, &held); err != nil {
 		return Step{}, fmt.Errorf("decode the attributes of step %s: %w", id, err)
 	}
-	return Step{
+	step := Step{
 		ID: id, Issue: held.Issue, Project: held.Project, Task: held.Task, Kind: held.Kind,
 		Role: held.Role, Type: held.Type, Agent: held.Agent, Session: held.Session, Model: held.Model,
 		Result: held.Result, Report: held.Report, Generation: held.Generation, Place: held.Step,
 		ReturnedTo: held.ReturnedTo, StartedAt: held.StartedAt, EndedAt: held.EndedAt,
-	}, nil
+	}
+	if held.Rating != 0 {
+		step.Rating = &StepRating{Rating: held.Rating, Reason: held.RatingReason}
+	}
+	return step, nil
 }

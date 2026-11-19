@@ -68,6 +68,10 @@ const (
 	// device-flow client's own ID tokens carry.
 	signInDomain   = "example.com"
 	deviceAudience = "https://broker.example/signin"
+	// registrar is the login account of the deployment's daemon that writes every pod-session
+	// registration these tests make. One daemon registers them all, so a name two of its pods are
+	// registered for, of one account or two, is held by that one registrar.
+	registrar = "system:serviceaccount:legion-system:legion-daemon"
 )
 
 // newPolicy builds the exchange's listed identities with no read entry, failing the test on an
@@ -167,11 +171,11 @@ func (f *exchangeFixture) podTokenOf(t *testing.T, of, uid string) string {
 }
 
 // registers records that the pod uid of the account of may exchange under session, as the
-// deployment's daemon does through POST /v1/oauth/exchange/pod-sessions before it starts that
-// pod. A pod of an entry that fixes no session writes under nothing else.
+// deployment's daemon (registrar) does through POST /v1/oauth/exchange/pod-sessions before it
+// starts that pod. A pod of an entry that fixes no session writes under nothing else.
 func (f *exchangeFixture) registers(t *testing.T, of, uid, session string) {
 	t.Helper()
-	if _, err := f.provider.RegisterPodSession(context.Background(), of, uid, session, "", 0); err != nil {
+	if _, err := f.provider.RegisterPodSession(context.Background(), registrar, of, uid, session, "", 0); err != nil {
 		t.Fatalf("register %s's pod %s for %s: %v", of, uid, session, err)
 	}
 }

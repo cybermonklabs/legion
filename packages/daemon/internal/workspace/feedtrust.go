@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
 // ownFeedRepository makes the feed repository gitDir one Fetch may take as its own, before it runs
@@ -45,7 +46,7 @@ func ownFeedRepository(gitDir string, repo ghrepo.Repository, now time.Time, log
 	if why == "" {
 		return true, nil
 	}
-	if err := os.RemoveAll(gitDir); err != nil {
+	if err := rolefile.RemoveTree(gitDir); err != nil {
 		return false, fmt.Errorf("remove the feed's %s, which %s: %w", gitDir, why, err)
 	}
 	log(fmt.Sprintf("the feed's %s is not one this fetch wrote (%s): removed; the feed is filled afresh", repo, why))
@@ -67,7 +68,7 @@ func foreignFeed(gitDir string) (string, error) {
 		return "", err
 	}
 	if !info.IsDir() {
-		return fmt.Sprintf("it is a %s, not a directory", fileKind(info.Mode())), nil
+		return fmt.Sprintf("it is a %s, not a directory", rolefile.Kind(info.Mode())), nil
 	}
 	why := ""
 	err = filepath.WalkDir(gitDir, func(path string, entry fs.DirEntry, err error) error {
@@ -82,7 +83,7 @@ func foreignFeed(gitDir string) (string, error) {
 			return err
 		}
 		if !entry.Type().IsRegular() && !entry.IsDir() {
-			why = fmt.Sprintf("it holds %s, a %s", relative, fileKind(entry.Type()))
+			why = fmt.Sprintf("it holds %s, a %s", relative, rolefile.Kind(entry.Type()))
 			return filepath.SkipAll
 		}
 		if refusal := feedEntryRefusal(filepath.ToSlash(relative), entry.IsDir()); refusal != "" {
@@ -199,23 +200,4 @@ func feedConfigRefusal(config string) string {
 		}
 	}
 	return ""
-}
-
-// fileKind names a file's kind as foreignFeed and readGitdir report it.
-func fileKind(mode fs.FileMode) string {
-	switch {
-	case mode&fs.ModeSymlink != 0:
-		return "symlink"
-	case mode.IsDir():
-		return "directory"
-	case mode.IsRegular():
-		return "file"
-	case mode&fs.ModeNamedPipe != 0:
-		return "fifo"
-	case mode&fs.ModeSocket != 0:
-		return "socket"
-	case mode&fs.ModeDevice != 0:
-		return "device"
-	}
-	return "special file"
 }

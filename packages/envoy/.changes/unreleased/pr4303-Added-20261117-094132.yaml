@@ -1,0 +1,5 @@
+kind: Added
+body: The broker reads `BROKER_SESSION_ACCOUNT_PAIRS`, whitespace-separated `<account>=<account>` entries of Kubernetes service accounts. An account paired with the holder of a session name takes the name, by an enrollment or by a token exchange, and an enrollment under that name takes the grants, the pending requests and the withheld secrets of the other account's enrollments of it that a login of the same account enrolled, with the audit rows `adopt` writes, so a pair moves nothing between two daemons. A pair works both ways and does not chain, a name the configuration fixes is never taken, and a take gives the new holder the expiry of its own claim. The broker logs each take and, at start, the pairs it read, and refuses a bad entry at start. Set it before a deployment moves its pods to another account, and remove the pair once no live pod runs as the old account.
+time: 2026-11-17T09:41:32.516113146Z
+custom:
+    Issue: pr4303
