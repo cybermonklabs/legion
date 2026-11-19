@@ -55,7 +55,7 @@ the run is a listing.
 `-race` needs cgo, so a -race listing runs with `CGO_ENABLED=1`, which this script sets itself, and
 needs a C compiler on PATH; a race step otherwise fails to build and this script stops on that step.
 Every go command it runs, and every line of a step's script it runs, runs under check-ci-filters.sh's
-environment for one (`ci_filter_coverage.go_environment`): none of the caller's Go variables but the
+environment for one (`go_build_tags.go_environment`): none of the caller's Go variables but the
 ones naming where Go keeps or fetches files, and no `go env -w` file, so a caller's GOFLAGS, GOOS,
 GOTOOLCHAIN or GOEXPERIMENT, or the GOROOT a version manager's python3 shim hands this interpreter,
 changes no listing. The go it starts is the first one on the PATH this interpreter has, which such a
@@ -150,10 +150,10 @@ from pathlib import Path
 import yaml
 from ci_filter_coverage import (
     called_workflows,
-    go_environment,
     script_lines,
     step_workdir,
 )
+from go_build_tags import go_environment
 
 ROOT = Path(__file__).resolve().parents[2]
 # Repository-relative, as the documents below are keyed and as every message names them.

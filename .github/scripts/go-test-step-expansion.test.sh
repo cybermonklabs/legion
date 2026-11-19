@@ -133,7 +133,7 @@ else:
   check "$form is kept, so the tests it skips can be subtracted" "$(is "$retained" "yes")"
 done
 
-# go() and shell() run their command under ci_filter_coverage.go_environment(): none of the
+# go() and shell() run their command under go_build_tags.go_environment(): none of the
 # caller's Go variables but those naming where Go keeps or fetches files, and GOENV=off, so a
 # caller's GOFLAGS or GOOS, or the GOROOT a version manager's python3 shim hands the interpreter,
 # lists nothing a CI step would not. A stand-in go that prints its own environment shows what

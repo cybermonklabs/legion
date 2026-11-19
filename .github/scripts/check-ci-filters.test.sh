@@ -2669,20 +2669,34 @@ printf '//go:build !probe\n\npackage lib\n\nfunc NoProbe() {}\n' > "$root/mod/li
 sets=$(cd "$root" && python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1)
 check "prints every tag, then the set without probe, each as a whole -tags= flag" \
   "$(is "$sets" $'-tags=hidden,legacy,probe,probe_\xce\xb2\n-tags=hidden,legacy,probe_\xce\xb2')"
+# Its go commands run under go_environment(), as the engine's do, so a caller's Go setting changes
+# no set: before, a GOFLAGS go list refuses stopped the script.
+check "prints the same sets under a caller's GOFLAGS" \
+  "$(is "$(cd "$root" && GOFLAGS=-no-such-flag python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1)" "$sets")"
+# A go that fails fails the script, naming the go command: a go first on PATH that refuses. The
+# interpreter runs by its own path, since a version manager's python3 shim puts its own go first.
+mkdir -p "$work/refusing-go"
+printf '#!/bin/sh\necho "this go refuses" >&2\nexit 1\n' > "$work/refusing-go/go"
+chmod +x "$work/refusing-go/go"
+interpreter=$(python3 -I -c 'import sys; print(sys.executable)')
 status=0
-sets=$(cd "$root" && GOFLAGS=-no-such-flag python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1) || status=$?
+sets=$(cd "$root" && PATH="$work/refusing-go:$PATH" "$interpreter" .github/scripts/go_build_tags.py mod darwin arm64 2>&1) || status=$?
 check "and fails when go list fails" "$(is "$status" 1)"
-check "naming the go command" "$(contains "$sets" 'go_build_tags.py: in mod, go tool dist list ... failed')"
+check "naming the go command and its error" \
+  "$(contains "$sets" 'go_build_tags.py: in mod, go tool dist list ... failed: this go refuses')"
 
 # The typecheck step's own run text, taken from its workflow, over a module with one tag and a
 # file under its negation that does not compile: the script's last set is the one with no tag,
 # and a shell's command substitution drops a trailing empty line, so a transport of bare sets
 # would vet only -tags=feature and pass. The module sits two directories deep, as
-# packages/daemon does, so the step's ../../.github/scripts path reaches the fixture's script.
+# packages/daemon does, so the step's ../../.github/scripts path reaches the fixture's script, and
+# the fixture's go.work lists it, as the repository's lists packages/daemon: the script's go list
+# runs under go_environment(), which drops a caller's GOWORK, so `GOWORK=off` would not reach it.
 echo "case: the typecheck step's own loop vets the file under a negated tag"
 root=$(fixture vet-tags-loop)
 mkdir -p "$root/deep/module"
 printf 'module example.com/deep\n\ngo 1.21\n' > "$root/deep/module/go.mod"
+printf 'go 1.21\n\nuse ./mod\nuse ./deep/module\n' > "$root/go.work"
 printf '//go:build feature\n\npackage module\n\nvar On = 1\n' > "$root/deep/module/on.go"
 printf '//go:build !feature\n\npackage module\n\nvar _ = notDefined\n' > "$root/deep/module/off.go"
 PYTHONDONTWRITEBYTECODE=1 python3 - "$script_dir/../workflows/ci-job-typecheck.yaml" "$root/step.sh" <<'PY'
@@ -2692,7 +2706,7 @@ step = next(s for j in jobs for s in j["steps"] if s.get("name", "").startswith(
 open(sys.argv[2], "w").write(step["run"])
 PY
 status=0
-loop=$(cd "$root/deep/module" && GOWORK=off bash -e "$root/step.sh" 2>&1) || status=$?
+loop=$(cd "$root/deep/module" && bash -e "$root/step.sh" 2>&1) || status=$?
 check "fails" "$(is "$status" 1)"
 check "vets under both sets" \
   "$(is "$(grep -c '^Vetting for darwin with -tags=' <<<"$loop")" 2)"

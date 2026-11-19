@@ -42,7 +42,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from go_build_tags import constraint_names, decode_stream, go_files, go_skips_dir, is_tag, platforms
+from go_build_tags import (constraint_names, decode_stream, go_environment, go_files, go_skips_dir, is_tag,
+                           platforms)
 from workflow_paths import PathsFilter, events, glob_regex, unread_filter_patterns
 
 WORKFLOW = ".github/workflows/ci.yaml"
@@ -310,15 +311,8 @@ FIELDS = ("Dir,ImportPath,ForTest,Standard,GoFiles,CgoFiles,TestGoFiles,XTestGoF
 # hands on, since a version manager's python3 shim can start this interpreter under a PATH of its
 # own whose first go is another one (mise's puts the Go it would pick first).
 GO = os.environ.get("CI_FILTERS_GO") or "go"
-# The variables the go command reads (`go help environment`): its own (GO_EXTLINK_ENABLED and
-# GCCGOTOOLDIR among them), GIT_ALLOW_PROTOCOL, and the C tools that configure cgo.
-GO_VARIABLE = re.compile(
-    r"GO[A-Z0-9_]*|CGO_\w+|AR|CC|CXX|FC|GCCGO|GCCGOTOOLDIR|GIT_ALLOW_PROTOCOL|PKG_CONFIG")
-# Those of them that say only where the go command keeps files or fetches modules from, which
-# changes no answer here.
-GO_LOCATIONS = frozenset({"GIT_ALLOW_PROTOCOL", "GOAUTH", "GOCACHE", "GOINSECURE", "GOMODCACHE",
-                          "GONOPROXY", "GONOSUMDB", "GOPATH", "GOPRIVATE", "GOPROXY", "GOSUMDB",
-                          "GOTMPDIR", "GOVCS"})
+# The go commands' environment is go_build_tags.go_environment(), which this module imports, so the
+# build-tag reader's go list and the closures here run under one rule.
 # The platform every go command here is listed for unless the command sets its own: that of the
 # ubuntu-24.04 runner each job of ci.yaml with a go command runs on, as setup-go's `go env` there
 # prints it (GOOS='linux', GOARCH='amd64', CGO_ENABLED='1' with CC='gcc'; the ci-filters job of
@@ -326,22 +320,6 @@ GO_LOCATIONS = frozenset({"GIT_ALLOW_PROTOCOL", "GOAUTH", "GOCACHE", "GOINSECURE
 # darwin machine's go lists the _darwin.go files, and a worker pod's go.env turns cgo off.
 # check-ci-filters.sh's header says why linux/amd64 is exact for the jobs on other runners too.
 CI_PLATFORM = {"GOOS": "linux", "GOARCH": "amd64", "CGO_ENABLED": "1"}
-
-
-def go_environment() -> dict:
-    """This process's environment for a go command, less everything in it the go command reads to
-    choose its toolchain or to decide what a package holds: every variable GO_VARIABLE names but
-    GO_LOCATIONS, and the user's `go env -w` file (GOENV=off), which an empty variable does not
-    override, since the go command reads an empty GOFLAGS or GOWORK from that file. The go command
-    then takes its root from its own binary and its defaults from that root's go.env. Each such
-    setting is the caller's or a python3 shim's, never the job's (check-ci-filters.sh's header says
-    what mise's shim did). CI's one, setup-go's GOTOOLCHAIN=local, picks the same toolchain once
-    dropped: the version packages/daemon/go.mod names, which setup-go installs and go.work names
-    too."""
-    env = {name: value for name, value in os.environ.items()
-           if name in GO_LOCATIONS or not GO_VARIABLE.fullmatch(name)}
-    env["GOENV"] = "off"
-    return env
 
 
 @dataclass

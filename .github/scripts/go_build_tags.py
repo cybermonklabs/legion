@@ -51,12 +51,41 @@ NAME = re.compile(r"[^\s()!&|,]+")
 # A file whose constraint names more tags than this is refused rather than searched.
 MAX_FILE_TAGS = 6
 LISTED = ("GoFiles", "CgoFiles", "TestGoFiles", "XTestGoFiles")
+# The variables the go command reads (`go help environment`): its own (GO_EXTLINK_ENABLED and
+# GCCGOTOOLDIR among them), GIT_ALLOW_PROTOCOL, and the C tools that configure cgo.
+GO_VARIABLE = re.compile(
+    r"GO[A-Z0-9_]*|CGO_\w+|AR|CC|CXX|FC|GCCGO|GCCGOTOOLDIR|GIT_ALLOW_PROTOCOL|PKG_CONFIG")
+# Those of them that say only where the go command keeps files or fetches modules from, which
+# changes no answer here.
+GO_LOCATIONS = frozenset({"GIT_ALLOW_PROTOCOL", "GOAUTH", "GOCACHE", "GOINSECURE", "GOMODCACHE",
+                          "GONOPROXY", "GONOSUMDB", "GOPATH", "GOPRIVATE", "GOPROXY", "GOSUMDB",
+                          "GOTMPDIR", "GOVCS"})
+
+
+def go_environment() -> dict:
+    """This process's environment for a go command, less everything in it the go command reads to
+    choose its toolchain or to decide what a package holds: every variable GO_VARIABLE names but
+    GO_LOCATIONS, and the user's `go env -w` file (GOENV=off), which an empty variable does not
+    override, since the go command reads an empty GOFLAGS or GOWORK from that file. The go command
+    then takes its root from its own binary and its defaults from that root's go.env. Each such
+    setting is the caller's or a python3 shim's, never the job's (check-ci-filters.sh's header says
+    what mise's shim did). CI's one, setup-go's GOTOOLCHAIN=local, picks the same toolchain once
+    dropped: the version packages/daemon/go.mod names, which setup-go installs and go.work names
+    too. This script's go commands run under it, and check-ci-filters.sh's engine
+    (ci_filter_coverage.py) and go-test-step-expansion.py import it from here."""
+    env = {name: value for name, value in os.environ.items()
+           if name in GO_LOCATIONS or not GO_VARIABLE.fullmatch(name)}
+    env["GOENV"] = "off"
+    return env
 
 
 def go(module: Path, args: list, **env) -> str:
-    """The output of a go command run in the module, so with its own toolchain, with `env` added
-    to the environment (GOOS and GOARCH, for a listing of another platform)."""
-    result = subprocess.run(["go", *args], cwd=module, env={**os.environ, **env}, capture_output=True, text=True)
+    """The output of a go command run in the module, so with its own toolchain, under
+    go_environment() with `env` added (GOOS and GOARCH, for a listing of another platform): a
+    caller's GOTOOLCHAIN=local with an older go first on PATH, or a caller's GOFLAGS, then changes
+    no set."""
+    result = subprocess.run(["go", *args], cwd=module, env={**go_environment(), **env},
+                            capture_output=True, text=True)
     if result.returncode != 0:
         raise SystemExit(f"go_build_tags.py: in {module}, go {' '.join(args[:3])} ... failed: "
                          f"{' '.join(result.stderr.split())[:500]}")

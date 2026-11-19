@@ -440,9 +440,10 @@
 #                    .github/scripts/check-ci-filters.sh write
 # CI runs it in ci.yaml's ci-filters job, and its tests in ci.yaml's test job.
 #
-# No Go setting of the caller's changes the engine's answer. Before it runs Go the engine drops
-# every variable the go command reads but those that say where it keeps or fetches files, and the
-# user's `go env -w` file with them (GOENV=off: ci_filter_coverage.go_environment), and it starts
+# No Go setting of the caller's changes the answer. Before it runs Go the engine, and
+# go_build_tags.py, which reads each module's build tags before the engine runs, drop every
+# variable the go command reads but those that say where it keeps or fetches files, and the
+# user's `go env -w` file with them (GOENV=off: go_build_tags.go_environment), and the engine starts
 # from the go this script's own PATH resolves, which this script hands it (CI_FILTERS_GO), since
 # the python3 below may be a version manager's shim that gives the engine a GOROOT and a PATH of
 # its own. mise's gives it the GOROOT of the Go it picks, go1.27.0 where go.work names go1.27.3,
@@ -465,19 +466,8 @@
 # build constraint that names an architecture names amd64 and arm64 together (`(amd64 ||
 # arm64)`), no first-party file name carries an architecture, and none is constrained by cgo or
 # imports "C" (a search of every tracked .go file for those names and constraints when this was
-# written). So run it bare, from any shell on any machine, but the one below, and read its output
-# by grepping for the problem rather than by its last line.
-#
-# The one exception is a caller's GOTOOLCHAIN=local with a go older than go.work's first on PATH
-# (mise's go1.27.0 on a dev box). go_build_tags.py reads each module's build tags before the
-# engine runs, and its go list runs in the caller's environment, so it stops the check there:
-# `go.work requires go >= 1.27.3 (running go 1.27.0; GOTOOLCHAIN=local)`. A caller's GOROOT alone
-# changes nothing. Run it on the binary of the toolchain go.work pins instead, and it answers as
-# CI does. A Legion worker pod's go is such an older go, a bootstrap that switches to a toolchain
-# in the module cache, so run it the same way there:
-#   v=$(sed -n 's/^go //p' go.work)
-#   tc=$(env -u GOROOT go env GOMODCACHE)/golang.org/toolchain@v0.0.1-go$v.$(go env GOHOSTOS)-$(go env GOHOSTARCH)/bin
-#   test -x "$tc/go" && env -u GOROOT PATH="$tc:$PATH" GOTOOLCHAIN=local .github/scripts/check-ci-filters.sh
+# written). So run it bare, from any shell on any machine, and read its output by grepping for
+# the problem rather than by its last line.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
