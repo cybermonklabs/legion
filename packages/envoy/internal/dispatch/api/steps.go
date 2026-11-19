@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
@@ -94,13 +95,20 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// The issue is read under the key-share lock and with no open check, as the design gates'
-	// publish reads it, and refused with a code of its own rather than loadIssue's NOT_FOUND: the
-	// daemon must tell a Dispatch that holds no such issue from one that does not serve this
-	// route, whose router answers NOT_FOUND.
+	// The issue's owner lock, shared, then its read in a statement of its own: a step write waits for
+	// the issue's writer that holds the owner and holds off the next one, and two step writes do not
+	// wait on each other. workflowstore.PutStep then locks the run's own row, which only it writes,
+	// so the two are always taken in this order. The read has no open check, so the merge that closes
+	// an issue still records its step. A missing issue is refused with a code of its own rather than
+	// loadIssue's NOT_FOUND: the daemon must tell a Dispatch that holds no such issue from one that
+	// does not serve this route, whose router answers NOT_FOUND.
+	if err := store.LockOwnersShared(r.Context(), tx, store.IssueOwner(key)); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	var issue, issueProject string
 	if err := tx.QueryRow(r.Context(), `
-		select key, project_key from issues where key = $1 for key share
+		select key, project_key from issues where key = $1
 	`, key).Scan(&issue, &issueProject); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", key))
