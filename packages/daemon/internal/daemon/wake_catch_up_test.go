@@ -333,7 +333,7 @@ func TestTheRowFencedBehindAPacedCatchUpRunsOnceAtItsMoment(t *testing.T) {
 	}
 	if !fenced.nextAt.Equal(due) {
 		t.Fatalf("the fenced row is due at %s, want the catch-up's own moment %s rather than its backoff at %s",
-			fenced.nextAt, due, now.Add(retryBackoff(0)))
+			fenced.nextAt, due, now.Add(record.RetryBackoff(0)))
 	}
 
 	// Nothing more runs until that moment: the row waited once, not on a climbing backoff.
@@ -646,8 +646,8 @@ func TestAReadyReleasesAPacedCatchUpWhoseMomentHasPassed(t *testing.T) {
 	reserved := now.Add(3 * testWakeInterval)
 	id := pacedCatchUp(t, pool, records, "LEGION-1", 1, now, reserved)
 	// Two attempts fail, so the row waits three seconds past its moment on a backoff of its own
-	// (retryBackoff of one attempt, then of two) rather than one second, and a ready between the
-	// two moments is a ready the row is waiting through.
+	// (record.RetryBackoff of no attempt, then of one) rather than one second, and a ready
+	// between the two moments is a ready the row is waiting through.
 	for _, at := range []time.Time{reserved, reserved.Add(time.Second)} {
 		now = at
 		if err := runner.RunOnce(ctx); err != nil {

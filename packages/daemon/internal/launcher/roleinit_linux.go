@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"golang.org/x/sys/unix"
 )
@@ -89,8 +90,9 @@ func prepareRoleNamespace(cfg RoleInitConfig) error {
 	}
 	// A generation that failed midway left its stage's empty stand-ins behind, whose mounts went
 	// with its namespace, so nothing under the stage is a mount here; every other generation left
-	// the stage itself, empty (carryOver).
-	if err := os.RemoveAll(stage); err != nil {
+	// the stage itself, empty (carryOver). Every removal role-init makes under the role's homes,
+	// which the role writes, follows no link (rolefile.RemoveTree).
+	if err := rolefile.RemoveTree(stage); err != nil {
 		return fmt.Errorf("clear the role's stage: %w", err)
 	}
 	// The role's own directory of every path the list binds from role-init's own directory under
@@ -121,7 +123,7 @@ func prepareRoleNamespace(cfg RoleInitConfig) error {
 		if entry.Name() == filepath.Base(work) {
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(works, entry.Name())); err != nil {
+		if err := rolefile.RemoveTree(filepath.Join(works, entry.Name())); err != nil {
 			roleLogf(cfg, "role-init: clear an earlier generation's overlay work directory: %v", err)
 		}
 	}
@@ -353,11 +355,11 @@ func ownConfigHome(shared, own string, mounts []string) (string, error) {
 	case complete:
 		return own, nil
 	}
-	if err := os.RemoveAll(own); err != nil {
+	if err := rolefile.RemoveTree(own); err != nil {
 		return "", err
 	}
 	partial := own + ".partial"
-	if err := os.RemoveAll(partial); err != nil {
+	if err := rolefile.RemoveTree(partial); err != nil {
 		return "", err
 	}
 	err := filepath.WalkDir(shared, func(path string, entry fs.DirEntry, err error) error {
@@ -497,7 +499,7 @@ func carryOver(cfg RoleInitConfig, dir, stage string, place func() error) error 
 			return fmt.Errorf("let go of %s's stand-in: %w", mount, err)
 		}
 	}
-	if err := os.RemoveAll(held); err != nil {
+	if err := rolefile.RemoveTree(held); err != nil {
 		return fmt.Errorf("clear the stand-ins of %s: %w", dir, err)
 	}
 	return nil

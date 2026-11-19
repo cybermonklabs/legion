@@ -116,6 +116,47 @@ func TestVerifyRequestObjectRefusals(t *testing.T) {
 	}
 }
 
+// TestVerifyRequestObjectTellsAnotherAudienceFromEveryOtherRefusal pins the one refusal a caller
+// reads apart from the rest: an object signed for another audience, which is a request signed for
+// another broker address, is ErrRequestInvalid and ErrAudienceMismatch, and its text is still the
+// one the approver's left-out line reports. A bad signature and an iat outside the skew are
+// ErrRequestInvalid and never ErrAudienceMismatch, so requests.Machine.Create, which ends a
+// pending request on that error alone, ends no request for either of them. The bad signature is
+// signed for another audience too: the signature is checked first, so an object nobody signed is
+// never read as one signed for another broker.
+func TestVerifyRequestObjectTellsAnotherAudienceFromEveryOtherRefusal(t *testing.T) {
+	key, _ := proof.NewKey()
+	now := time.Now()
+	sign := func(audience, reason string, at time.Time) string {
+		t.Helper()
+		compact, err := Sign(key, audience, secretDetail(), reason, "", nil, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return compact
+	}
+
+	_, err := VerifyRequestObject(sign("https://another-broker.internal.example", "moved", now), "https://secrets.test", time.Minute, now)
+	if !errors.Is(err, ErrRequestInvalid) || !errors.Is(err, ErrAudienceMismatch) || err.Error() != "request object invalid: aud does not match" {
+		t.Fatalf("an object signed for another audience = %v; want ErrRequestInvalid and ErrAudienceMismatch, reading %q", err, "request object invalid: aud does not match")
+	}
+
+	// Another object's signature over this one's header and payload: one key signed both, so the
+	// header is the same and only the signature fails.
+	signed := strings.Split(sign("https://another-broker.internal.example", "first", now), ".")
+	other := strings.Split(sign("https://another-broker.internal.example", "second", now), ".")
+	forged := signed[0] + "." + signed[1] + "." + other[2]
+	for _, c := range []struct{ name, compact, reason string }{
+		{"a bad signature", forged, "request object invalid: signature"},
+		{"an iat outside the skew", sign("https://secrets.test", "late", now.Add(-time.Hour)), "request object invalid: iat outside 1m0s"},
+	} {
+		_, err := VerifyRequestObject(c.compact, "https://secrets.test", time.Minute, now)
+		if !errors.Is(err, ErrRequestInvalid) || errors.Is(err, ErrAudienceMismatch) || err.Error() != c.reason {
+			t.Errorf("%s = %v; want ErrRequestInvalid reading %q and not ErrAudienceMismatch", c.name, err, c.reason)
+		}
+	}
+}
+
 func TestParseBodyRefusesAnyEditedLine(t *testing.T) {
 	valid := "agent-secrets-record/v1\n" +
 		"request: eyJ.fake.jws\n" +

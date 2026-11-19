@@ -153,8 +153,9 @@ func matchedNames(code string, pattern *regexp.Regexp) []matchedName {
 	return names
 }
 
-// Querier is what CensusTables reads the catalog through: the census's transaction (pgx.Tx), or
-// the connection the lock audit applies a set on (*pgx.Conn).
+// Querier is what the package reads the catalog and a version table through: the census's
+// transaction (pgx.Tx), the connection the lock audit applies a set on (*pgx.Conn), a runner's
+// transaction or connection (ReadRecorded, VersionTableColumns), and a pool.
 type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row

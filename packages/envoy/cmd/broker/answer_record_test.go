@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -68,6 +69,32 @@ func TestTheBinaryRecordsARefusalAndCountsEveryAnswer(t *testing.T) {
 	}
 	if got := scrapeMetric(t, metricsAddr, "broker_answers_total")[served]; got != before+1 {
 		t.Errorf("broker_answers_total{%s} went from %v to %v over the absent reread; want one more", served, before, got)
+	}
+}
+
+// TestTheBinaryKeepsARefusalsNameThatHoldsAByteItEscapes drives the REAL compiled binary with an
+// unauthenticated reread of "%1Agent-secrets-placeholder-": a name that is the control byte 0x1A
+// and "gent-secrets-placeholder-", which is no placeholder. The broker's handler writes the name
+// as "\u001agent-secrets-placeholder-", and a mask that read that escaped text, not the name it
+// spells, would see a placeholder from the escape's last digit on and break the escape, and
+// slog, or a reader of the line, would then lose the whole value. The refusal's record names the
+// one secret its request named, as it named it, and every line of the broker's log is one JSON
+// object.
+func TestTheBinaryKeepsARefusalsNameThatHoldsAByteItEscapes(t *testing.T) {
+	broker := startBroker(t, brokerOptions{Env: refusedSecretEnv(t)})
+	status, header, body := post(t, "http://"+broker.Addr+"/v1/secrets/%1Agent-secrets-placeholder-/reread")
+	id := header.Get(answer.Header)
+	if status != http.StatusBadRequest || body["code"] != "SECRET_NAME_INVALID" || len(id) != 32 {
+		t.Fatalf("POST /v1/secrets/%%1Agent-secrets-placeholder-/reread = %d %v with answer id %q; want 400 SECRET_NAME_INVALID and an id", status, body, id)
+	}
+	record := broker.AwaitRecord(t, answer.RefusalMessage, map[string]any{"answer_id": id})
+	if want := []any{"\x1agent-secrets-placeholder-"}; !reflect.DeepEqual(record["secrets"], want) {
+		t.Errorf("the refusal's record names the secrets %#v; want %#v, the name its request named: %v", record["secrets"], want, record)
+	}
+	for line := range strings.Lines(broker.Log()) {
+		if !json.Valid([]byte(strings.TrimSuffix(line, "\n"))) {
+			t.Errorf("a line of the broker's log is no JSON object: %q", line)
+		}
 	}
 }
 

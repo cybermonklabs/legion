@@ -1,6 +1,6 @@
 import type { RelayHeaders } from "@legion/envoy-client/consumer-delivery"
 import { DedupeIdentitySchema } from "@legion/envoy-client/delivery"
-import { messageFor } from "@legion/envoy-client/errors"
+import { natsFailureReason } from "@legion/envoy-client/errors"
 import { expandSubscriptionTopics } from "@legion/envoy-client/transport"
 import { z } from "zod"
 
@@ -92,8 +92,9 @@ export function deliveryIdentity(raw: string): z.infer<typeof DeliveryIdentity> 
   return identity.success ? identity.data : undefined
 }
 
+/** A failed drain or close of the NATS connection, as a log may print it (`natsFailureReason`). */
 function report(what: string, error: unknown): void {
-  process.stderr.write(`envoy-channel: ${what} — ${messageFor(error)}\n`)
+  process.stderr.write(`envoy-channel: ${what} — ${natsFailureReason(error)}\n`)
 }
 
 /**

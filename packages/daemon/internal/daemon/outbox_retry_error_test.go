@@ -59,9 +59,9 @@ func TestARetryOutboxErrorThatIsInvalidIsStoredBoundedAndLoggedWhole(t *testing.
 	if err := pool.QueryRow(ctx, "select id, attempts, next_at, last_error from outbox").Scan(&id, &attempts, &nextAt, &lastError); err != nil {
 		t.Fatalf("read the row after its failed attempt: %v", err)
 	}
-	if attempts != 1 || !nextAt.Equal(now.Add(retryBackoff(0))) {
+	if attempts != 1 || !nextAt.Equal(now.Add(record.RetryBackoff(0))) {
 		t.Errorf("the row is on attempt %d, next due at %s, want attempt 1 due at %s, after its first backoff",
-			attempts, nextAt, now.Add(retryBackoff(0)))
+			attempts, nextAt, now.Add(record.RetryBackoff(0)))
 	}
 	if !utf8.ValidString(lastError) || strings.ContainsRune(lastError, 0) {
 		t.Fatalf("the row's last error starts %q, want valid UTF-8 with no NUL", lastError[:min(len(lastError), 96)])

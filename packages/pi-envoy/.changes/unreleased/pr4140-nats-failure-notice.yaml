@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A session whose NATS connection fails now says why in the notice that its registration was
+  refused (`… because its NATS connection failed: <reason>`), as Claude Code's channel server does.
+  The reason, there and in the inbound-unavailable notice, is nats.js's code, nats-server's fixed
+  refusal or the plugin's own message (`natsFailureReason`), never nats.js's, the runtime's or a
+  peer's text, which can quote what the servers were set to or what the client sent: a resolver's
+  error names the host it looked up, a pasted nkey seed or token parses as one, a password's digits
+  can be read as the port, and a peer that is no nats-server can echo the CONNECT. A seed pointer
+  that cannot be read is named by its variable, never its path.
+time: 2026-11-16T22:46:51Z
+custom:
+    Issue: pr4140

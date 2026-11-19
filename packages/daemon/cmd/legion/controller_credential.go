@@ -166,20 +166,8 @@ func controllerStartGitHubCredential(ctx context.Context, daemonURL, secret, sta
 		if !errors.As(err, &failure) || (failure.code != "GITHUB_TOKEN_SOURCE_UNAVAILABLE" && failure.code != "GITHUB_OWNER_UNCONFIGURED") {
 			return noop, "", nil, err
 		}
-		if err := os.MkdirAll(ghDir, 0o700); err != nil {
-			return noop, "", nil, fmt.Errorf("create %s: %w", ghDir, err)
-		}
-		if err := os.Chmod(ghDir, 0o700); err != nil {
-			return noop, "", nil, fmt.Errorf("chmod %s: %w", ghDir, err)
-		}
-		entries, err := os.ReadDir(ghDir)
-		if err != nil {
-			return noop, "", nil, fmt.Errorf("read %s: %w", ghDir, err)
-		}
-		for _, entry := range entries {
-			if err := os.RemoveAll(filepath.Join(ghDir, entry.Name())); err != nil {
-				return noop, "", nil, fmt.Errorf("remove %s: %w", filepath.Join(ghDir, entry.Name()), err)
-			}
+		if err := ghconfig.EmptyBundle(ghDir); err != nil {
+			return noop, "", nil, fmt.Errorf("empty %s: %w", ghDir, err)
 		}
 		fmt.Fprintln(stderr, "[legion] the daemon has no GitHub App to act as; the controller's gh acts as nobody")
 		return noop, "", nil, nil

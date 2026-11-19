@@ -35,7 +35,7 @@ import { fileURLToPath } from "node:url";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
-import { sqlAt } from "../psql";
+import { dropDatabase, sqlAt } from "../psql";
 import { masked, rowLimit, runBounded } from "./bounded-subprocess";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
@@ -103,8 +103,9 @@ function withPassword(password: string, rest: string, authority = localAuthority
   return `postgres://${authority.user}:${password}@${authority.host}/${rest}`;
 }
 
-/** A database on the shared server for one row alone, made by `create database` and dropped with
- *  FORCE, and the URL that reaches it: LEGION_TEST_PG_DSN with only its database changed. */
+/** A database on the shared server for one row alone, and the URL that reaches it:
+ *  LEGION_TEST_PG_DSN with only its database changed. It is made by `create database` and dropped
+ *  by `dropDatabase`. */
 async function withScratchDatabase(
   use: (scratch: { name: string; url: string }) => Promise<void>
 ): Promise<void> {
@@ -115,7 +116,7 @@ async function withScratchDatabase(
   try {
     await use({ name, url: url.href });
   } finally {
-    await sqlAt(server, [`drop database if exists ${name} with (force)`]);
+    await dropDatabase(server, name);
   }
 }
 
