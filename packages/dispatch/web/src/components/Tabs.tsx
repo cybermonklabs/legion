@@ -74,12 +74,6 @@ export function Tabs<Id extends string>({
   const tabRefs = useRef<Partial<Record<Id, HTMLButtonElement | null>>>({});
   const pointerCapturedScroll = useRef(false);
   const tablistFade = useScrollFadeTrailing();
-  // Whether the reader has touched the strip since it last settled: a wheel, a touch, a pointer
-  // pressed on it (a drag, or its scrollbar) or a key, the gestures the margin takes as a reader's
-  // too (`features/margin/useCardHold.ts`). A scroll that follows such input is the reader's, and
-  // stays; each settle clears it. A scroll with none since the last settle is the browser clamping
-  // the strip to a layout, which the effect below settles again.
-  const readerInput = useRef(false);
 
   const selectTab = (tab: Id) => {
     if (!pointerCapturedScroll.current) {
@@ -111,9 +105,11 @@ export function Tabs<Id extends string>({
     selectTab(next.id);
     const node = tabRefs.current[next.id];
     node?.focus();
-    // In the reader's own keystroke, so a caller that does not change `activeTab` on select still
-    // shows the focused tab; one that does settles the same tab again in the effect below.
-    readerInput.current = false;
+    // Settled in the reader's own keystroke, for the one key the effect below does not answer:
+    // Home or End onto the tab already selected, after the reader scrolled the strip away. The
+    // selection does not change, so the effect does not run, and without this the focused tab
+    // would stay out of view. Any other key changes the selection, and the effect settles the
+    // same tab again.
     settleTab(node);
   };
 
@@ -122,44 +118,17 @@ export function Tabs<Id extends string>({
   // is added or taken away (the project's Architecture tab arriving before Issues). A preceding
   // tab can move the selection under the fade without changing the list's or selected tab's
   // width. Each of these puts back a sideways scroll the reader made: the strip goes to where its
-  // layout puts the selected tab. A scroll the reader makes is none of them, so it stays until one
-  // comes.
-  //
-  // A scroll the reader did not make is settled too. A layout that widens the strip, is read, and
-  // narrows again inside one task clamps the scroll to the wide layout and leaves every size as it
-  // was, so neither observer reports it: only the scroll event the clamp fires does.
+  // layout puts the selected tab. Any scroll alone - a wheel, a touch, a key, find-in-page or an
+  // assistive-technology focus move - is none of them, so it stays until one comes.
   useEffect(() => {
     const selected = tabRefs.current[activeTab];
-    const settle = () => {
-      readerInput.current = false;
-      settleTab(selected);
-    };
+    const settle = () => settleTab(selected);
     settle();
     const list = selected?.parentElement;
     if (list === null || list === undefined) {
       return;
     }
-    const stop = observeStrip(list, settle, { childList: true });
-    const onReaderInput = () => {
-      readerInput.current = true;
-    };
-    const onScroll = () => {
-      if (!readerInput.current) {
-        settleTab(selected);
-      }
-    };
-    const inputs = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
-    for (const input of inputs) {
-      list.addEventListener(input, onReaderInput, { passive: true });
-    }
-    list.addEventListener("scroll", onScroll, { passive: true });
-    return () => {
-      for (const input of inputs) {
-        list.removeEventListener(input, onReaderInput);
-      }
-      list.removeEventListener("scroll", onScroll);
-      stop();
-    };
+    return observeStrip(list, settle, { childList: true });
   }, [activeTab]);
 
   const tabMinHeight = compact ? "min-h-11 md:min-h-9" : "min-h-11";

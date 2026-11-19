@@ -170,16 +170,12 @@ test("a tablist with tabs past its trailing edge wears the trailing fade, and on
     fireEvent.scroll(tablist);
     expect(tablist).toHaveClass(scrollFadeTrailing);
 
-    // The reader scrolls to the end: their wheel, then the strip's own scroll event, which
-    // user-event has no form for. At the end of the scroll the last tab is all there is to see; a
-    // fade there would hide it.
-    fireEvent.wheel(tablist);
+    // At the end of the scroll the last tab is all there is to see; a fade there would hide it.
     tablist.scrollLeft = 60;
     fireEvent.scroll(tablist);
     expect(tablist).not.toHaveClass(scrollFadeTrailing);
 
-    // The reader scrolls back to the start, by a wheel again.
-    fireEvent.wheel(tablist);
+    // The reader scrolls back to the start: a scroll event, which user-event has no form for.
     tablist.scrollLeft = 0;
     fireEvent.scroll(tablist);
     expect(tablist).toHaveClass(scrollFadeTrailing);
@@ -290,12 +286,16 @@ function issueTablist(sizes: ResizeControl) {
   const tablist = screen.getByRole("tablist", { name: "Issue detail" });
   const artifacts = screen.getByRole("tab", { name: "Artifacts 5" });
   const activity = screen.getByRole("tab", { name: "Activity" });
+  const collaborators = screen.getByRole("tab", { name: "Collaborators" });
   const box = { client: 528, scroll: 749 };
   layOutScrollBox(tablist, box);
   tablist.getBoundingClientRect = () => rect(0, box.client);
   artifacts.getBoundingClientRect = () => rect(410 - tablist.scrollLeft, 505 - tablist.scrollLeft);
-  // Activity is the tab after Artifacts, 509 to 580 from the start of the scroll.
+  // Activity is the tab after Artifacts, 509 to 580 from the start of the scroll, and
+  // Collaborators, the last tab, ends the scroll at 649 to 749.
   activity.getBoundingClientRect = () => rect(509 - tablist.scrollLeft, 580 - tablist.scrollLeft);
+  collaborators.getBoundingClientRect = () =>
+    rect(649 - tablist.scrollLeft, 749 - tablist.scrollLeft);
   /** Lays the tablist out `client` px wide and tells its observers. A browser clamps the scroll to
    *  the new width as it lays the tablist out, before any observer runs, so this does too. */
   const layOut = (client: number) => {
@@ -303,25 +303,12 @@ function issueTablist(sizes: ResizeControl) {
     tablist.scrollLeft = Math.min(tablist.scrollLeft, Math.max(box.scroll - client, 0));
     sizes.resize();
   };
-  /** The reader's own sideways scroll: their wheel, then the strip's scroll event, which user-event
-   *  has no form for. */
+  /** The reader's own sideways scroll: the strip's scroll event, which user-event has no form for. */
   const scrollTo = (scrollLeft: number) => {
-    fireEvent.wheel(tablist);
     tablist.scrollLeft = scrollLeft;
     fireEvent.scroll(tablist);
   };
-  /** The browser clamping the strip to a layout no observer reports: the strip is laid out
-   *  `wide` px wide and read, which clamps its scroll to that width, and laid out at its old width
-   *  again inside the same task, so no size changed when the observers next look. Only the clamp's
-   *  own scroll event is left. */
-  const clampThrough = (wide: number) => {
-    const client = box.client;
-    box.client = wide;
-    tablist.scrollLeft = Math.min(tablist.scrollLeft, Math.max(box.scroll - wide, 0));
-    box.client = client;
-    fireEvent.scroll(tablist);
-  };
-  return { activity, artifacts, clampThrough, layOut, scrollTo, tablist };
+  return { activity, artifacts, collaborators, layOut, scrollTo, tablist };
 }
 
 test("the strip stops where its last layout puts it, not where a narrower layout before it left it", () => {
@@ -384,38 +371,6 @@ test("a sideways scroll the reader makes stays until the strip's layout changes"
     // 505 - (400 - 32) = 137.
     layOut(400);
     expect(tablist.scrollLeft).toBe(137);
-  } finally {
-    view.unmount();
-    sizes.restore();
-  }
-});
-
-// A layout that widens the strip, is read, and narrows again inside one browser task clamps the
-// scroll to the wide layout and changes no size the observers see: only the clamp's own scroll
-// event is left, and no reader input came before it. The strip must settle on it, back where its
-// layout puts the selected tab. A reader's scroll, which comes after their input, stays (the row
-// above).
-test("a scroll the browser makes clamping the strip to a layout no observer reports settles the strip again", () => {
-  const sizes = installResizeObserver();
-  const view = render(
-    <Tabs
-      activeTab="artifacts"
-      ariaLabel="Issue detail"
-      idPrefix="issue"
-      onSelect={() => {}}
-      tabs={issueTabs}
-    />
-  );
-
-  try {
-    const { clampThrough, layOut, tablist } = issueTablist(sizes);
-    // A 449 px tablist puts Artifacts at 505 - (449 - 32) = 88.
-    layOut(449);
-    expect(tablist.scrollLeft).toBe(88);
-
-    // Laid out 749 px wide for a moment, every tab fits and the scroll clamps to 0.
-    clampThrough(749);
-    expect(tablist.scrollLeft).toBe(88);
   } finally {
     view.unmount();
     sizes.restore();
@@ -486,6 +441,40 @@ test("a tab a keystroke selects settles the strip where its layout puts that tab
     expect(artifacts).toHaveFocus();
     expect(artifacts).toHaveAttribute("aria-selected", "true");
     expect(tablist.scrollLeft).toBe(237);
+  } finally {
+    view.unmount();
+    sizes.restore();
+  }
+});
+
+// Home or End onto the tab that is already selected changes no selection, so no effect runs:
+// the keystroke itself must bring that tab back into view after the reader scrolled away from it.
+test("End onto the already-selected last tab brings it back into view after the reader scrolled away", async () => {
+  const user = userEvent.setup();
+  const sizes = installResizeObserver();
+  const view = render(
+    <SelectingTabs
+      ariaLabel="Issue detail"
+      idPrefix="issue"
+      initial="collaborators"
+      tabs={issueTabs}
+    />
+  );
+
+  try {
+    const { collaborators, layOut, scrollTo, tablist } = issueTablist(sizes);
+    // The last tab rests at the end of the scroll, 749 - 528 = 221.
+    layOut(528);
+    expect(tablist.scrollLeft).toBe(221);
+    // The reader scrolls the strip back to its start, which leaves Collaborators out of view.
+    scrollTo(0);
+    collaborators.focus();
+    await user.keyboard("{End}");
+    await nextFrame();
+
+    expect(collaborators).toHaveFocus();
+    expect(collaborators).toHaveAttribute("aria-selected", "true");
+    expect(tablist.scrollLeft).toBe(221);
   } finally {
     view.unmount();
     sizes.restore();

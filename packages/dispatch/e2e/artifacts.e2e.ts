@@ -481,32 +481,6 @@ test("the issue's tab strip rests where its last layout puts the selected tab, w
   // Polled: the strip answers a layout change on the browser's next resize observation.
   await expect.poll(async () => (await place()).offBy).toBeLessThanOrEqual(1);
   expect(Math.abs((await place()).scrollLeft - rested)).toBeLessThanOrEqual(1);
-
-  // A layout no observer reports: inside one task the tablist is laid out wide enough for every
-  // tab, read, which clamps its scroll to 0, and laid out at its own width again. No size changed
-  // when the observers next look; only the clamp's scroll event is left, and the strip settles on
-  // it. `min-width`, not `width`: the tablist is a flex item that may shrink (`min-w-0`), so a
-  // width alone leaves it at its container's width and clamps nothing.
-  const clamped = await tablist.evaluate((list) => {
-    list.style.minWidth = `${list.scrollWidth + 100}px`;
-    const read = list.scrollLeft;
-    list.style.minWidth = "";
-    return read;
-  });
-  // The read itself clamped the scroll, or this step proves nothing.
-  expect(clamped).toBe(0);
-  await expect.poll(async () => (await place()).scrollLeft).toBeGreaterThan(rested - 1);
-  expect(Math.abs((await place()).scrollLeft - rested)).toBeLessThanOrEqual(1);
-
-  // The reader's own sideways scroll, by a real wheel over the strip, stays: it comes after their
-  // input, so it is not a clamp, and no layout change follows it.
-  await tablist.hover();
-  await page.mouse.wheel(overflow, 0);
-  await expect.poll(async () => (await place()).scrollLeft).toBeGreaterThan(rested + 1);
-  const scrolled = (await place()).scrollLeft;
-  // Held past the time a settle answers a scroll in, so a settle would have shown.
-  await page.waitForTimeout(500);
-  expect((await place()).scrollLeft).toBe(scrolled);
 });
 
 test("the Artifacts badge counts the rows the tab lists, and a row's details are not truncated @phone", async ({
