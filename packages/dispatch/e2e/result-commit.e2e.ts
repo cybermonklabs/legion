@@ -63,7 +63,6 @@ test("a result's line names the whole commit, so a result at a mistyped commit i
     },
   });
   await createIssueArtifact(issue.key, {
-    // characters: ASCII alone, the commit the negative control cuts is written in hex.
     content: `How ${issue.key} is proved.
 
 :::check{#c-whole serves="dispatch://${issue.key}/spec#b-r1" surface="browser" run="bun run e2e -- e2e/result-commit.e2e.ts" negative_control="Cut the commit to twelve characters and the row fails."}

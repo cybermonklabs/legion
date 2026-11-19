@@ -998,7 +998,6 @@ func boundedReadBack(entries []string) string {
 // ReadBackCutLine says what a read-back held back at the bound. It is exported so a caller's
 // test reads the line this package writes rather than a copy of its wording.
 func ReadBackCutLine(characters, blocks int) string {
-	// characters: code points, boundedReadBack counts them with utf8.RuneCountInString.
 	return fmt.Sprintf("cut %d characters in %d blocks", characters, blocks)
 }
 

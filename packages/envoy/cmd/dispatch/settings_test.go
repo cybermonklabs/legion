@@ -590,7 +590,6 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot.SignInDomain != "example.com" || boot.SignInGroup != "" {
 				t.Errorf("SignInDomain = %q, SignInGroup = %q", boot.SignInDomain, boot.SignInGroup)
 			}
-			// characters: code points, signin.go counts the value with utf8.RuneCountInString.
 			refusedWith(t, domain("Example.com"), "DISPATCH_SIGNIN_DOMAIN must be a lowercase domain name such as example.com; got a value of 11 characters")
 			refusedWith(t, map[string]string{"DISPATCH_SIGNIN_DOMAIN": "example.com"}, "DISPATCH_SIGNIN_GROUP and DISPATCH_SIGNIN_DOMAIN are both set")
 			// The domain the code flow main discovers names to Google and the router's sign-in

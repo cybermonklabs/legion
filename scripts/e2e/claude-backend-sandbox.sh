@@ -955,7 +955,6 @@ prove_daemon_container() {
     rm -f "$work/auth-plugin.env" "$work/auth-plugin.stderr"
     [ "$plugin_status" = 0 ] && [[ "$token_said" == "token "* ]] ||
       fail "the auth plugin $plugin_word, run in the daemon's container as client-go runs it (KUBERNETES_EXEC_INFO for $plugin_api), gave no ExecCredential with a token: exit $plugin_status, ${token_said:-nothing it printed was an ExecCredential}; its stderr: ${plugin_err:-empty}. Use a runtime kubeconfig whose user runs gke-gcloud-auth-plugin --use_application_default_credentials, with GOOGLE_APPLICATION_CREDENTIALS naming an application-default credentials file, which the container mounts (scripts/e2e/README.md, Pod reachability)"
-    # characters: code points, jq's length in exec_credential_said counts the token's code points
     plugin_said="the auth plugin $plugin_word is $got_plugin, and run as client-go runs it, it answers an ExecCredential ($plugin_api) whose token is ${token_said#token } characters (Unicode code points) long"
   fi
   note "the daemon's container ($daemon_image, docker run --network host --add-host $host:127.0.0.1 --init): its probe ran as uid $got_uid gid $got_gid, the devbox user's; its /etc/hosts: $got_hosts"

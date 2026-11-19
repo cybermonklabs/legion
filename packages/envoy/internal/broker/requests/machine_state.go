@@ -102,7 +102,6 @@ var (
 	// unsigned claim any enrolled process may send, never verified against a signature) is too
 	// long or carries a whitespace or control character, refused before it is ever stored or
 	// forwarded to Envoy's wake (LEGION-587).
-	// characters: code points, validSessionID counts with utf8.RuneCountInString.
 	ErrSessionIDInvalid = errors.New("session id must be at most 128 characters with no whitespace or control character")
 )
 

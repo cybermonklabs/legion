@@ -444,7 +444,6 @@ def embed_matches(package: Path, pattern: str) -> list:
 
 
 def go_match_regex(element: str) -> re.Pattern | None:
-    # characters: code points, the regex below and Go's path.Match each read one rune of a str name
     """One element of a //go:embed pattern as path.Match reads it, a regex over one name: `*` is
     any run of characters and `?` any one, `[...]` one character of the class and `[^...]` one
     outside it, each member a character or a `lo-hi` range (one whose ends are reversed holds

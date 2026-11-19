@@ -309,7 +309,6 @@ func TestProjectExperimentsHoldTheirArmsToTheTelemetryBound(t *testing.T) {
 	if _, err := Load(writeConfigFile(t, file(21)), noEnv); err != nil {
 		t.Fatalf("Load of experiments whose longest arms make 255 ASCII characters: %v", err)
 	}
-	// characters: ASCII alone, experimentNamePattern admits a-z, 0-9 and '-' in every name, and SpendArmsValue joins them with ':' and ','.
 	want := "projects.DEMO declares experiments whose arms one launch could name in legion.arms in 256 characters, over the 255 the agent's telemetry takes: shorten the experiments' or their variants' names, or declare fewer experiments"
 	if _, err := Load(writeConfigFile(t, file(22)), noEnv); err == nil || err.Error() != want {
 		t.Fatalf("Load error = %v, want %q", err, want)

@@ -581,7 +581,6 @@ func checkSpendArms(declared []Experiment, key string) error {
 		}
 		longest = append(longest, arm)
 	}
-	// characters: ASCII alone, experimentNamePattern admits a-z, 0-9 and '-' in every name.
 	if n := len(runtime.SpendArmsValue(longest)); n > runtime.SpendAttributeLimit {
 		return fmt.Errorf("%s declares experiments whose arms one launch could name in %s in %d characters, over the 255 the agent's telemetry takes: shorten the experiments' or their variants' names, or declare fewer experiments", key, runtime.SpendArmsAttribute, n)
 	}

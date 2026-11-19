@@ -1451,7 +1451,6 @@ no_second_source:
 YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
-# characters: code points, check-ci-tools.sh counts the why with len() of a Python str.
 check "quotes the placeholder and says how much the gate wants" \
   "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: this entry's why is TODO, which says nothing a reader could act on. Write at least 40 characters naming which second source was looked for, why there is none today, and what building one would take.")"
 
@@ -1482,7 +1481,6 @@ no_second_source:
 YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
-# characters: code points, check-ci-tools.sh counts the why with len() of a Python str.
 check "refuses the padded placeholder, which is long enough for the length bound" \
   "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: this entry's why is unknown . . . . . . . . . . . . . . . . ., which says nothing a reader could act on. Write at least 40 characters naming which second source was looked for, why there is none today, and what building one would take.")"
 

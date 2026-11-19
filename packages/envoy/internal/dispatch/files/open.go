@@ -63,7 +63,6 @@ func validGCSBucket(bucket string) error {
 		return refuse("it must start and end with a letter or digit")
 	}
 	for part := range strings.SplitSeq(bucket, ".") {
-		// characters: ASCII alone, the loop above refuses every character but a-z, 0-9, '-', '_' and '.'.
 		if part == "" || len(part) > 63 {
 			return refuse("each part between dots must be 1 to 63 characters long")
 		}

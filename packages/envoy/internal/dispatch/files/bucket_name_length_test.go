@@ -12,10 +12,8 @@ func TestABucketNameIsMeasuredInCharacters(t *testing.T) {
 	for _, row := range []struct {
 		name, bucket, want string
 	}{
-		// characters: code points, validGCSBucket counts the name with utf8.RuneCountInString.
 		{name: "control: 64 Latin letters", bucket: strings.Repeat("a", 64), want: "it must be 3 to 63 characters long"},
 		{name: "40 accented letters", bucket: strings.Repeat("é", 40), want: "it holds 'é'"},
-		// characters: code points, validGCSBucket counts the name with utf8.RuneCountInString.
 		{name: "2 accented letters", bucket: strings.Repeat("é", 2), want: "it must be 3 to 63 characters long"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
