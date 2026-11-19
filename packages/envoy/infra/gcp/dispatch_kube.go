@@ -306,21 +306,28 @@ func envVars(env []string) corev1.EnvVarArray {
 	return values
 }
 
+// newDispatchKubernetes registers the component's Kubernetes provider, built from the cluster
+// half's kubeconfig, whichever cluster that is, and every Kubernetes object on it, each a child of
+// the component that depends on the cluster half's waitFor: the component's own Cluster, or nothing
+// for a cluster existingCluster names.
 func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, args *DispatchArgs, s dispatchSettings, cloud *dispatchCluster, database *dispatchDatabase) error {
 	dispatch := dispatchType + " " + name
 	// The provider is the component's own, so it can promise mutable ConfigMaps: pulumi-kubernetes
 	// replaces a ConfigMap whose data changes otherwise, deleting it first, and a front-door pod
 	// scheduled in that window fails to mount its serve config, ConfigMap <hostname>-serve. The
-	// update in place rolls no pod, and needs none (newDispatchFrontDoor says why).
+	// update in place rolls no pod, and needs none (newDispatchFrontDoor says why). Its
+	// clusterIdentifier is the cluster half's: dispatchCluster.clusterIdentifier says when it is set
+	// and why.
 	provider, err := kubernetes.NewProvider(ctx, s.hostname+"-kubernetes", &kubernetes.ProviderArgs{
 		Kubeconfig:             cloud.kubeconfig,
+		ClusterIdentifier:      cloud.clusterIdentifier,
 		EnableServerSideApply:  pulumi.Bool(true),
 		EnableConfigMapMutable: pulumi.Bool(true),
 	}, pulumi.Parent(comp))
 	if err != nil {
 		return err
 	}
-	child := []pulumi.ResourceOption{pulumi.Parent(comp), pulumi.Provider(provider), pulumi.DependsOn([]pulumi.Resource{cloud.cluster})}
+	child := []pulumi.ResourceOption{pulumi.Parent(comp), pulumi.Provider(provider), pulumi.DependsOn(cloud.waitFor)}
 	metadata := func(name string) *metav1.ObjectMetaArgs {
 		return objectMeta(name, s.namespace)
 	}
@@ -453,13 +460,15 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// waits on the read: Kubernetes refuses every pod naming a class that does not exist, and at
 	// one replica Recreate would already have stopped the old pod, so a missing class fails the
 	// preview or update instead of leaving a workload down.
-	var priorityClass pulumi.Resource
+	var priorityClassName pulumi.StringPtrInput
+	var priorityClassWait []pulumi.ResourceOption
 	if s.disruption.priorityClass != "" {
 		class, err := schedulingv1.GetPriorityClass(ctx, s.hostname+"-priority-class", pulumi.ID(s.disruption.priorityClass), nil, child...)
 		if err != nil {
 			return err
 		}
-		priorityClass = class
+		priorityClassName = pulumi.String(s.disruption.priorityClass)
+		priorityClassWait = []pulumi.ResourceOption{pulumi.DependsOn([]pulumi.Resource{class})}
 	}
 
 	// deployment registers one of the component's three workloads, and its PodDisruptionBudget
@@ -478,10 +487,8 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		if pdbMinAvailable == 0 {
 			annotations[safeToEvictAnnotation] = pulumi.String("false")
 		}
-		if priorityClass != nil {
-			pod.PriorityClassName = pulumi.String(s.disruption.priorityClass)
-			opts = append(opts, pulumi.DependsOn([]pulumi.Resource{priorityClass}))
-		}
+		pod.PriorityClassName = priorityClassName
+		opts = append(opts, priorityClassWait...)
 		workload, err := appsv1.NewDeployment(ctx, name, &appsv1.DeploymentArgs{
 			Metadata: metadata(name),
 			Spec: appsv1.DeploymentSpecArgs{
@@ -563,11 +570,11 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		if err != nil {
 			return err
 		}
-		tailscaleService, err := newDispatchTailscaleService(ctx, comp, s, database.instance)
+		tailscaleService, err := newDispatchTailscaleService(ctx, comp, s, database.waitFor)
 		if err != nil {
 			return err
 		}
-		frontDoorPod, frontDoorOpts, err := newDispatchFrontDoor(ctx, s, tailscaleService, database.instance, authKeyName, metadata, child)
+		frontDoorPod, frontDoorOpts, err := newDispatchFrontDoor(ctx, s, tailscaleService, database.waitFor, authKeyName, metadata, child)
 		if err != nil {
 			return err
 		}
@@ -603,8 +610,10 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// waited only so that it started connected, and that is now outweighed: during the cutover
 	// the front door is deliberately away while the database's availability type changes, and the
 	// server must come back inside that stop rather than behind the front door. Its database
-	// ordering is untouched by this — database.instance.ConnectionName is a cloud-sql-proxy
-	// argument on the app's own pod, so the pod still waits for the instance. With natsInCluster
+	// ordering is untouched by this — database.connectionName, the component's own instance's
+	// ConnectionName, is a cloud-sql-proxy argument on the app's own pod, so the pod still waits
+	// for that instance; an instance existingDatabaseInstance names exists before the component
+	// runs, and the pod waits only for what the consumer's value comes from. With natsInCluster
 	// the listener does not wait either: the proxy was the only reason it did, the port-1055
 	// Service is not registered at all, and waiting would let a front-door outage hold up a
 	// listener rollout that no longer depends on it. Without a front door there is nothing to
@@ -855,7 +864,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		InitContainers: corev1.ContainerArray{
 			corev1.ContainerArgs{
 				Name: pulumi.String("cloud-sql-proxy"), Image: pulumi.String(s.images.proxy), RestartPolicy: pulumi.String("Always"),
-				Args:      pulumi.StringArray{pulumi.String("--private-ip"), pulumi.String("--structured-logs"), pulumi.String("--address=127.0.0.1"), pulumi.String("--port=5432"), pulumi.String("--health-check"), pulumi.String("--http-address=0.0.0.0"), pulumi.String("--http-port=9801"), database.instance.ConnectionName},
+				Args:      pulumi.StringArray{pulumi.String("--private-ip"), pulumi.String("--structured-logs"), pulumi.String("--address=127.0.0.1"), pulumi.String("--port=5432"), pulumi.String("--health-check"), pulumi.String("--http-address=0.0.0.0"), pulumi.String("--http-port=9801"), database.connectionName},
 				Resources: sizedResources(s.appResources.proxyCPU, s.appResources.proxyMemory, s.appResources.proxyEphemeralStorage), SecurityContext: &corev1.SecurityContextArgs{RunAsNonRoot: pulumi.Bool(true)},
 				StartupProbe: proxyStartup, LivenessProbe: proxyLiveness,
 			},

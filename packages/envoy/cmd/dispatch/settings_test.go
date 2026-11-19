@@ -971,11 +971,20 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 		},
 		"DISPATCH_NATS_DISABLED": func(t *testing.T) {
-			if boot := resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "1"}); !boot.NATSDisabled {
+			boot := resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "1"})
+			if !boot.NATSDisabled {
 				t.Error("DISPATCH_NATS_DISABLED=1: NATS on")
 			}
-			if boot := resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "true"}); boot.NATSDisabled {
+			// No outbox runs without NATS, so no mention's send waits on events nothing will send.
+			if options := appContextOptions(boot, routes.AppContextOptions{}); options.OutboxPublishes {
+				t.Error("DISPATCH_NATS_DISABLED=1: the router is handed OutboxPublishes = true, want false")
+			}
+			boot = resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "true"})
+			if boot.NATSDisabled {
 				t.Error("DISPATCH_NATS_DISABLED=true: NATS off, want only 1 to turn it off")
+			}
+			if options := appContextOptions(boot, routes.AppContextOptions{}); !options.OutboxPublishes {
+				t.Error("NATS on: the router is handed OutboxPublishes = false, want true: the outbox publishes, and a mention's send keeps its order behind the events it still owes")
 			}
 		},
 		"ENVOY_URL": func(t *testing.T) {
