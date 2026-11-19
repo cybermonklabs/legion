@@ -7,11 +7,8 @@
 // `/clear` is the handoff file the server polls, which names this test's process, the server's
 // parent.
 import { expect, test } from "bun:test"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
-import { join } from "node:path"
 import { agentStreamControlSubject, legacyAgentSubject } from "@legion/contracts"
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
-import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { nkeys } from "nats"
 import { modSocketPath } from "../hooks/mod-protocol"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
@@ -22,6 +19,7 @@ import {
   PROCESS_WAIT_MS,
   type ReopenServer,
   ROW_TIMEOUT_MS,
+  sessionBroker,
   startReopenServer,
 } from "./reopen-server"
 
@@ -310,51 +308,17 @@ test(
   ROW_TIMEOUT_MS,
 )
 
-/** A secrets broker whose token exchange mints a token that lives fifteen minutes, each kept in
- *  `minted`: `channel-nats.test.ts`'s stand-in, with a life no keeper renews inside a row. */
-function tokenBroker() {
-  const minted: string[] = []
-  const server = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: () => {
-      const token = fixtureSecret("channel")
-      minted.push(token)
-      return Response.json({
-        access_token: token,
-        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
-        token_type: "DPoP",
-        expires_in: 900,
-      })
-    },
-  })
-  return { url: `http://127.0.0.1:${server.port}`, minted, stop: () => server.stop(true) }
-}
-
 test(
   "under the session's broker token a connection closed for good is reopened presenting a token, and a /clear after it moves the new connection to the new id",
   async () => {
-    const tokens = tokenBroker()
-    const machine = await mkdtemp("/tmp/ce-reopen-machine-")
-    const tokenFile = join(machine, "token")
-    await writeFile(tokenFile, `${fixtureSecret("machine")}\n`)
+    const tokens = await sessionBroker()
     const next = "ses_reopen_next"
-    const cleanUp = async (): Promise<void> => {
-      tokens.stop()
-      await rm(machine, { recursive: true, force: true })
-    }
-    const started = await startServer({
-      nonce: "fake-nonce",
-      env: {
-        NATS_AUTH: "broker",
-        AGENT_SECRETS_URL: tokens.url,
-        AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
-        AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
+    const started = await startServer({ nonce: "fake-nonce", env: tokens.env }).catch(
+      async (error: unknown) => {
+        await tokens.stop()
+        throw error
       },
-    }).catch(async (error: unknown) => {
-      await cleanUp()
-      throw error
-    })
+    )
     const { broker, stderr, state } = started
     try {
       const tokenOf = (connect: Record<string, unknown> | undefined): string =>
@@ -421,7 +385,7 @@ test(
       )
     } finally {
       await started.stop()
-      await cleanUp()
+      await tokens.stop()
     }
   },
   ROW_TIMEOUT_MS,

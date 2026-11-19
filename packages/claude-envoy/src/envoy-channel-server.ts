@@ -385,6 +385,13 @@ export interface ChannelSessionOptions {
    */
   readonly followSession?: () => Promise<void>
   /**
+   * Told each `/clear` this session adopts from the handoff file, as it moves from `previous` to
+   * `next` (`adoptHandoff`), before the new id registers: what else the server keeps under the
+   * session's id moves with it. The live view does (`AgentStreamRunner.sessionAdopted`), since the
+   * mod's own report of a `/clear` can come before the view listens for one.
+   */
+  readonly adopted?: (previous: string, next: string) => void
+  /**
    * Opens a new NATS connection once the one the session holds closed for good while it runs:
    * nats.js gives up on a repeated authorization refusal under an nkey seed or no credential, and
    * a `close()` ends one too. The server dials as its start did (`dialChannelNats`) until a dial
@@ -1931,6 +1938,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       throw error
     }
     identity.set(next)
+    options.adopted?.(previous, next)
     // The last call for the old id has been made (its deregistration above; the role moves to
     // the new id under the new id's own credential, `restoreRole`), so the key pair and
     // renewing token it traded under go with it rather than renewing for the life of this
@@ -3045,6 +3053,8 @@ export async function runEnvoyChannelServer(): Promise<void> {
         // The QA override names a fixed identity; only a Claude-minted id follows `/clear`.
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),
         ...(followSession === undefined ? {} : { followSession }),
+        // The live view follows a `/clear` the mod reported before it began listening.
+        adopted: (previous, next) => agentStream?.sessionAdopted(previous, next),
         reopen,
         startSignal: booting.signal,
       }).catch((error: unknown) => {

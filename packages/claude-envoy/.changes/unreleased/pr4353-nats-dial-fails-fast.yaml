@@ -18,7 +18,9 @@ body: |-
   good is replaced in the same way. In both, a relay subscription the server ends with an error is
   told as an outage naming why and taken again at the next heartbeat, at a new epoch; a `/clear` or
   `/new` made during an outage completes on the new connection; and the live view takes a new id's
-  control subject only once the connection is admitted as that id.
+  control subject only once the connection is admitted as that id. The Agents page's live view of a
+  Claude Code session follows a `/clear` the session's mod reported before the view started,
+  including under the session's broker token.
 time: 2026-11-17T21:43:12Z
 custom:
     Issue: pr4353

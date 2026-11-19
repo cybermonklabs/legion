@@ -3,11 +3,12 @@
 // Codex host): its NATS servers are a gate in front of a fake hub, and its listener a stand-in that
 // gives every registration the session's consumer. Real nats.js and real time: the server's own
 // dial waits are what those rows watch.
-import { mkdtemp, rm } from "node:fs/promises"
-import { resolve } from "node:path"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { join, resolve } from "node:path"
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import type { DeliveryRequest } from "@legion/envoy-client/transport"
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { SERVER_START_MS, waitFor } from "./channel-session-harness"
 import { FakeNatsServer } from "./fake-nats-server"
 import { type NatsGate, natsGate } from "./nats-gate"
@@ -40,6 +41,54 @@ async function socketOwner(port: number): Promise<string> {
   return owner === null ? `unknown (${text.trim() || "no socket"})` : `${owner[1]} pid=${owner[2]}`
 }
 
+/** A secrets broker stand-in for a session that presents its broker token (`sessionBroker`). */
+export interface SessionBroker {
+  /** Every token the broker minted, in order. */
+  readonly minted: readonly string[]
+  /** The variables that make a server present the session's broker token, traded here. */
+  readonly env: Readonly<Record<string, string>>
+  stop(): Promise<void>
+}
+
+/**
+ * A secrets broker whose token exchange mints a token that lives fifteen minutes, each kept in
+ * `minted`: `channel-nats.test.ts`'s stand-in, with a life no keeper renews inside a row, and the
+ * machine token file a pod's server trades with.
+ */
+export async function sessionBroker(): Promise<SessionBroker> {
+  const minted: string[] = []
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () => {
+      const token = fixtureSecret("channel")
+      minted.push(token)
+      return Response.json({
+        access_token: token,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 900,
+      })
+    },
+  })
+  const machine = await mkdtemp("/tmp/ce-reopen-machine-")
+  const tokenFile = join(machine, "token")
+  await writeFile(tokenFile, `${fixtureSecret("machine")}\n`)
+  return {
+    minted,
+    env: {
+      NATS_AUTH: "broker",
+      AGENT_SECRETS_URL: `http://127.0.0.1:${server.port}`,
+      AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+      AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
+    },
+    async stop() {
+      server.stop(true)
+      await rm(machine, { recursive: true, force: true })
+    },
+  }
+}
+
 export interface ReopenServerOptions {
   /** The session the server registers, whose relay subject the rows watch. */
   readonly sessionId: string
@@ -52,8 +101,13 @@ export interface ReopenServerOptions {
   /** Writes what the server reads before it registers into its state directory (a Codex
    *  session's record), before it starts. */
   readonly prepare?: (stateDirectory: string) => Promise<void>
-  /** Told each listener call as it arrives, before it is answered, with the hub. */
-  readonly onRequest?: (method: string, path: string, broker: FakeNatsServer) => void
+  /** Told each listener call as it arrives, with the hub; the call is answered once what it
+   *  returns settles, so a row can hold one. */
+  readonly onRequest?: (
+    method: string,
+    path: string,
+    broker: FakeNatsServer,
+  ) => void | Promise<void>
   /** Whether the start resolves only once the session has registered and subscribed its relay
    *  (the default), or once the server has written its first stderr line: a row that stops the
    *  server while it starts never sees the registration. */
@@ -111,7 +165,7 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
     fetch: async (request) => {
       const url = new URL(request.url)
       requests.push(`${request.method} ${url.pathname}`)
-      options.onRequest?.(request.method, url.pathname, broker)
+      await options.onRequest?.(request.method, url.pathname, broker)
       if (request.method === "POST" && url.pathname === "/v1/interests/subscribe") {
         const body = (await request.json()) as {
           session_id: string

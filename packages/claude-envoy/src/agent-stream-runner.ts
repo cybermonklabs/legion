@@ -51,10 +51,12 @@ export interface AgentStreamOptions {
   /** The session id the Agents page knows this session by, which both subjects name. */
   readonly sessionId: string
   /**
-   * Whether the stream follows the session id the mod reports. Claude Code mints a new one on
-   * `/clear` and the channel rebinds to it (`adoptHandoff`), so the two are the same id; under
-   * the `ENVOY_SESSION_ID` override the session registers a fixed id of its own and the Claude
-   * id names nothing Dispatch knows, so the stream stays where it started.
+   * Whether the stream follows the session's id through a `/clear`. Claude Code mints a new one on
+   * `/clear` and the channel rebinds to it (`adoptHandoff`), so the two are the same id; the
+   * stream moves at the mod's report of it, in the order of the conversation's own events, and at
+   * the server's adoption of it (`sessionAdopted`), which covers a report the link made before the
+   * stream listened. Under the `ENVOY_SESSION_ID` override the session registers a fixed id of
+   * its own and the Claude id names nothing Dispatch knows, so the stream stays where it started.
    */
   readonly followsSessionId: boolean
   /**
@@ -115,6 +117,15 @@ export interface AgentStreamRunner {
   /** The session's NATS connection closed for good and the server opened `connection` in its
    *  place: frames go out on it from now on, and the control subject is taken on it again. */
   readonly useConnection: (connection: ChannelConnection) => void
+  /**
+   * The server adopted a `/clear`, moving the session from `previous` to `next`
+   * (`ChannelSessionOptions.adopted`): a stream still on `previous` moves to `next`. The link tells
+   * its listeners of the mod's report of the new id once, and the stream starts only once the
+   * session has, so a `/clear` early in the session can be reported before the stream listens; the
+   * adoption is what then moves it. A stream the mod's report already moved on is left where it
+   * is: the adoption of an earlier `/clear` must not move it back.
+   */
+  readonly sessionAdopted: (previous: string, next: string) => void
 }
 
 /**
@@ -315,9 +326,9 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
     })
   }
 
-  // A `/clear` ends the conversation and the process goes on under a new id: the ring holds the
-  // previous one, and a viewer opening the new id must not be served it.
-  link.onSessionId((next: string) => {
+  /** A `/clear` ends the conversation and the process goes on under `next`: the ring holds the
+   *  previous one, and a viewer opening the new id must not be served it. */
+  const moveTo = (next: string): void => {
     if (stopped || !options.followsSessionId || next === session) return
     session = next
     publisher.reset()
@@ -333,7 +344,11 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
     subscription?.unsubscribe()
     subscription = undefined
     subscribeWhenAdmitted(next)
-  })
+  }
+  // The mod's report moves the stream between the conversation's own events. The id the link
+  // reported before this listener joined is not read: it can be older than `options.sessionId`,
+  // the id the server had adopted when the stream started.
+  link.onSessionId(moveTo)
 
   const reading = (async (): Promise<void> => {
     for await (const event of link.events) {
@@ -385,6 +400,9 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
       subscription?.unsubscribe()
       subscription = undefined
       subscribeWhenAdmitted(session)
+    },
+    sessionAdopted(previous: string, next: string): void {
+      if (session === previous) moveTo(next)
     },
   }
 }

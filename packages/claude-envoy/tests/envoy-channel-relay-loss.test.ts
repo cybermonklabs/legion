@@ -86,7 +86,7 @@ test("a relay subscription the server ends with an error is told as an outage na
     )
     // Taken again, once, on the same connection, and registered at a new epoch.
     expect(relaySubscribes()).toBe(2)
-    expect(nats.subscriptions.has(RELAY)).toBe(true)
+    expect(nats.liveSubscriptions(RELAY)).toBe(1)
     const after = registrations.slice(failedAt)
     expect(after.length).toBeGreaterThan(0)
     // No registration asked the listener to relay to the subscription that had ended.
@@ -196,6 +196,10 @@ for (const lost of [
         () => JSON.stringify(counts()),
       )
       expect(counts()).toEqual({ restored: 0, sentWhileRefused: 0, unavailable: 1 })
+      // Every subscription an unconfirmed flush left was given up: none is live while the server
+      // refuses the subject. nats.js keeps a subscription the session does not unsubscribe, and
+      // the relay's next one would be one more beside it.
+      expect(nats.liveSubscriptions(RELAY)).toBe(0)
 
       // The server takes the subject again: the next heartbeat's flush confirms it, a new epoch
       // is registered, and the end of the outage is told once.
@@ -205,7 +209,7 @@ for (const lost of [
         "the end of the outage told",
         () => JSON.stringify(counts()),
       )
-      expect(nats.subscriptions.has(RELAY)).toBe(true)
+      expect(nats.liveSubscriptions(RELAY)).toBe(1)
       expect(registrations.at(-1)?.delivery?.epoch).not.toBe(firstEpoch)
       expect(notices(notifier, "Envoy inbound unavailable")).toHaveLength(1)
     } finally {

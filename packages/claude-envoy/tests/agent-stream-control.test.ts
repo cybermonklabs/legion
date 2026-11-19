@@ -132,7 +132,7 @@ interface Running {
   readonly frames: (session: string) => AgentStreamFrame[]
 }
 
-function running(admitted?: (session: string) => Promise<void>): Running {
+function running(admitted?: (session: string) => Promise<void>, sessionId = SESSION): Running {
   const nats = new FakeNats()
   const mod = fakeLink()
   const warnings: string[] = []
@@ -142,7 +142,7 @@ function running(admitted?: (session: string) => Promise<void>): Running {
     followsSessionId: true,
     link: mod.link,
     observe: (event) => void observed.push(event),
-    sessionId: SESSION,
+    sessionId,
     warn: (text) => void warnings.push(text),
     ...(admitted === undefined ? {} : { admitted }),
   })
@@ -293,6 +293,60 @@ test("a clear moves the control subject, and the new id replays nothing from bef
   expect(conversation.map((message) => message.parts)).toEqual([
     [{ text: "after the clear", type: "text" }],
   ])
+  live.runner.stop()
+})
+
+// The link reports a `/clear` once, to the listeners it has then, and the live view starts only
+// once the session has: a `/clear` the mod reported before then reaches the view from the server's
+// own adoption of it (`ChannelSessionOptions.adopted`), and from no replay of the link's id, which
+// can be older than the id the view started on.
+test("an adoption of a /clear moves a live view still on the id it left, and the new id replays nothing from before it", async () => {
+  const live = running()
+  await live.control(SESSION, watchRequest)
+  live.mod.push(prompt("row-1", "before the clear"))
+  await settle()
+
+  live.runner.sessionAdopted(SESSION, CLEARED)
+  await settle()
+  expect(live.nats.unsubscribed).toContain(agentStreamControlSubject(SESSION))
+  expect([...live.nats.subscriptions.keys()]).toEqual([agentStreamControlSubject(CLEARED)])
+
+  await live.control(CLEARED, watchRequest)
+  await live.control(CLEARED, replayRequest, "_INBOX.adopted")
+  const replay = live.answered("_INBOX.adopted")
+  expect(replay?.session_id).toBe(CLEARED)
+  expect(
+    (replay?.frames ?? []).filter(
+      (frame) => frame.kind === "message" || frame.kind === "tool-result",
+    ),
+  ).toEqual([])
+  live.runner.stop()
+})
+
+test("an adoption moves no live view the mod already moved on, and adopting the id it is on changes nothing", async () => {
+  const live = running()
+  // The mod reports two `/clear`s; the server adopts the first only afterwards.
+  live.mod.moveSession(CLEARED)
+  live.mod.moveSession("ses_cleared_again")
+  await settle()
+  live.runner.sessionAdopted(SESSION, CLEARED)
+  await settle()
+  expect([...live.nats.subscriptions.keys()]).toEqual([
+    agentStreamControlSubject("ses_cleared_again"),
+  ])
+  const subscribes = live.nats.subscribes
+  live.runner.sessionAdopted(CLEARED, "ses_cleared_again")
+  await settle()
+  expect(live.nats.subscribes).toBe(subscribes)
+  live.runner.stop()
+})
+
+test("a live view started on the id the server adopted stays on it, whatever id the link last reported", async () => {
+  // The link last reported `SESSION`; the server had adopted `CLEARED` when the view started.
+  const live = running(undefined, CLEARED)
+  await settle()
+  expect(live.mod.link.sessionId()).toBe(SESSION)
+  expect([...live.nats.subscriptions.keys()]).toEqual([agentStreamControlSubject(CLEARED)])
   live.runner.stop()
 })
 

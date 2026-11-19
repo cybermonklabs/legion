@@ -37,6 +37,9 @@ function matches(pattern: string, subject: string): boolean {
 export class FakeNatsServer {
   /** SUB subjects in arrival order, across every client connection. */
   readonly subscribed: string[] = []
+  /** How many CONNECTs the hub had read when each SUB in `subscribed` arrived, by index: which
+   *  credential the connection that sent it presented is `connects[subscribedAfter[i] - 1]`. */
+  readonly subscribedAfter: number[] = []
   /** Subjects whose SUB was later UNSUBed, in arrival order. */
   readonly unsubscribed: string[] = []
   /** PUB frames from clients, in arrival order. */
@@ -256,6 +259,7 @@ export class FakeNatsServer {
     if (sub?.[1] !== undefined && sub[2] !== undefined) {
       socket.data.subscriptions.set(sub[2], sub[1])
       this.subscribed.push(sub[1])
+      this.subscribedAfter.push(this.connects.length)
       this.notify()
       return
     }

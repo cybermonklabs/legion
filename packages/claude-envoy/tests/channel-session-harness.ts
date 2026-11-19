@@ -53,7 +53,12 @@ export class FakeNats implements ChannelConnection {
   readonly published: Array<{ readonly subject: string; readonly data: Uint8Array }> = []
   readonly order: string[] = []
   readonly unsubscribed: string[] = []
+  /** The newest subscription of each subject; `liveSubscriptions` counts every one still live. */
   readonly subscriptions = new Map<string, Queue>()
+  /** Every subscription neither unsubscribed nor ended, whichever subscribe of a subject made it:
+   *  a second subscribe to a subject keys over the first in `subscriptions`, as nats.js keeps
+   *  both, so a subscription the session left behind still counts here. */
+  private readonly live = new Set<Queue>()
   /** Set once the connection is closed for good; `closed()` settles then. */
   closedForGood = false
   private readonly statuses: ChannelConnectionStatus[] = []
@@ -79,11 +84,13 @@ export class FakeNats implements ChannelConnection {
       refusal: this.refused.get(subject),
     }
     this.subscriptions.set(subject, queue)
+    this.live.add(queue)
     return {
       unsubscribe: () => {
         this.calls.push(`nats.unsubscribe ${subject}`)
         this.unsubscribed.push(subject)
         this.subscriptions.delete(subject)
+        this.live.delete(queue)
         queue.closed = true
         queue.waiter?.resolve(null)
       },
@@ -125,6 +132,7 @@ export class FakeNats implements ChannelConnection {
 
   private end(queue: Queue, error: Error): void {
     if (this.subscriptions.get(queue.subject) === queue) this.subscriptions.delete(queue.subject)
+    this.live.delete(queue)
     queue.refusal = undefined
     queue.failed = error
     queue.waiter?.resolve(null)
@@ -150,6 +158,11 @@ export class FakeNats implements ChannelConnection {
     for (const queue of [...this.subscriptions.values()]) {
       if (queue.refusal !== undefined) this.end(queue, queue.refusal)
     }
+  }
+
+  /** How many subscriptions to `subject` are live: neither unsubscribed nor ended. */
+  liveSubscriptions(subject: string): number {
+    return [...this.live].filter((queue) => queue.subject === subject).length
   }
 
   /** When set, a flush never settles, as on a stalled connection. */
@@ -191,11 +204,12 @@ export class FakeNats implements ChannelConnection {
   closeForGood(error?: Error): Promise<void> {
     if (this.closedForGood) return Promise.resolve()
     this.closedForGood = true
-    for (const queue of this.subscriptions.values()) {
+    for (const queue of this.live) {
       queue.closed = true
       queue.waiter?.resolve(null)
     }
     this.subscriptions.clear()
+    this.live.clear()
     this.ended.resolve(error)
     this.statusWaiter?.resolve()
     return Promise.resolve()

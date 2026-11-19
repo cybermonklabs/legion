@@ -641,6 +641,9 @@ export async function runCodexEnvoyServer(): Promise<void> {
           ? {}
           : { admitted: (next: string) => admission.admitted(next) }),
       })
+      // A stop that landed while the session started ran before this view existed, and stopped
+      // nothing of it.
+      if (isStopping) stream.stop()
     }
     runtime = { client, clientInstanceID, identity: id, session }
     follow(bound.transcript_path)
