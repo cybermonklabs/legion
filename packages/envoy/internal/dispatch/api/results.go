@@ -991,9 +991,10 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 }
 
 // blockWords is a block's text as a reader sees it: every text node under it, joined by single
-// blanks, with the text of a link and every word holding a link (holdsLink) dropped, so the
-// pull-request body line the result implies carries no link and no Dispatch host. blockContent
-// is the same block with both kept.
+// blanks, with the text of a link and every word holding `://` (holdsLink) dropped. It is a
+// check's `text`, whose words the line of a check CI proves keeps by lineWords (ciVerdictLine); a
+// public host written as `www.` and a domain, which GitHub renders as a link, is kept there.
+// blockContent is the same block with both kept.
 func blockWords(node *pmdoc.Node) string {
 	var words []string
 	pmdoc.Walk(node, func(child *pmdoc.Node) bool {
@@ -1016,8 +1017,9 @@ func blockWords(node *pmdoc.Node) string {
 	return strings.Join(words, " ")
 }
 
-// holdsLink reports whether a word holds a link: `://`, which a dispatch:// reference and every
-// URL that names a host carry. blockWords and lineWords drop such a word by this one rule.
+// holdsLink reports whether a word holds `://`, which a dispatch:// reference and every URL written
+// with a scheme and a host carry; a link written another way, such as GitHub's `www.` autolink,
+// holds none. blockWords and lineWords drop such a word by this one rule.
 func holdsLink(word string) bool {
 	return strings.Contains(word, "://")
 }
@@ -1025,7 +1027,7 @@ func holdsLink(word string) bool {
 // lineWords is the rule a pull-request body line keeps the words of a text by: the reading a
 // recorded result's line carries (checkResultLine) and the check's words a CI result's line
 // carries (ciVerdictLine). The line is written into a pull request unchanged, and a pull request
-// can be public, so it keeps only a plain word (plainWord), and drops every word that holds a link
+// can be public, so it keeps only a plain word (plainWord), and drops every word that holds `://`
 // (holdsLink), a private host (privateHost, tailnetHost), this Dispatch's own host, or an issue key
 // of a project this Dispatch holds. No line is stored: each is written when the record, its dry run
 // or the results read answers it, by the projects Dispatch holds then.
@@ -1090,7 +1092,7 @@ func plainWord(word, punctuation string) bool {
 // whole repository, where names such as metadata.google.internal and host.docker.internal are
 // well known and not private, while the line is pasted into public text with no reader in
 // between, so it is stricter on purpose. The line drops every word holding one, written without a
-// scheme too, and the script's reserved example hosts with them, since no line needs a host.
+// scheme too, and the script's reserved example hosts with them, since no line needs such a host.
 var (
 	privateHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]internal([^[:alnum:]]|$)`)
 	tailnetHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]ts[.]net([^[:alnum:]]|$)`)
@@ -1143,7 +1145,7 @@ func (w lineWords) drops(word string) bool {
 	return !plainWord(word, w.punctuation) || w.holds(word) || w.holds(norm.NFKC.String(word))
 }
 
-// holds reports whether word holds a link, a private host, this Dispatch's own host or an issue
+// holds reports whether word holds `://`, a private host, this Dispatch's own host or an issue
 // key of a project this Dispatch holds.
 func (w lineWords) holds(word string) bool {
 	return holdsLink(word) || privateHost.MatchString(word) || tailnetHost.MatchString(word) ||

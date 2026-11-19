@@ -23,7 +23,7 @@ var lineIssueKeys = []string{"resk-", "acme-", "rescq-"}
 var linePrivateHosts = []string{".ts.net", ".internal.", "dispatch.example"}
 
 // requireNoPrivateReference fails when line carries an issue key of lineIssueKeys, a host of
-// linePrivateHosts or a link.
+// linePrivateHosts or `://`.
 func requireNoPrivateReference(t *testing.T, line string) {
 	t.Helper()
 	lowered := strings.ToLower(line)
@@ -37,10 +37,11 @@ func requireNoPrivateReference(t *testing.T, line string) {
 	}
 }
 
-// The pull-request body line goes into a pull request, which can be public, so it drops every
-// word of the reading that holds an issue key of a project this Dispatch holds, in any case, or a
-// link, and cuts what is left to the budget. A hyphenated word that is no such key stays: one
-// whose first part names no project, and a project's name followed by a version.
+// The pull-request body line goes into a pull request, which can be public, so it keeps only plain
+// words of the reading and drops every one that holds `://`, a private or Dispatch host, or an
+// issue key of a project this Dispatch holds, in any case, and cuts what is left to the budget. A
+// plain hyphenated word that is no such key stays: one whose first part names no project, and a
+// project's name followed by a version.
 func TestThePullRequestLineDropsIssueKeysAndLinksFromTheReading(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESK", "Line", "A spec\n")
@@ -285,7 +286,7 @@ type resultDryRun struct {
 
 // A result's dry run answers the line the record would answer for the same body, after the
 // refusals the record makes before it writes, and records nothing: no row, no event. The line
-// it answers drops issue keys and links as the record's does.
+// it answers drops what the record's line drops.
 func TestAResultsDryRunAnswersTheLineAndRecordsNothing(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESK", "Line", "A spec\n")
