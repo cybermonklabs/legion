@@ -120,8 +120,8 @@ Dispatch message (step 5) is for a finished retro only.
    them (`PLAN_RATING_REQUIRED`) and records nothing, so complete again with both.
    The daemon also refuses a rating outside 1 to 5, one of the two without the other, or a reason
    that is blank or longer than 2,000 characters (`PLAN_RATING_INPUT`), again recording nothing.
-   Only this completion carries the two: the daemon refuses any other completion that names
-   either (`PLAN_RATING_UNEXPECTED`).
+   Only this completion carries the two: the daemon refuses both on any other completion
+   (`PLAN_RATING_UNEXPECTED`), and one of them alone on any completion (`PLAN_RATING_INPUT`).
    A `legion` tool whose `handoff_complete` takes neither `plan_rating` nor `plan_reason` is a
    plugin of the release before the rating: send neither, complete the retro with the summary
    alone, and the daemon takes that retro with no rating.
