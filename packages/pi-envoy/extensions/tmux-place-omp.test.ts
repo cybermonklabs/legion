@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import * as path from "node:path";
 import {
   type Cleanup,
+  cleanupEndsGroup,
   cleanupHook,
   deliveryFor,
   ompNatsGuard,
@@ -278,9 +279,15 @@ test.skipIf(skip)(
       // The window the case holds the place to, and its three panes: the binary in the middle one,
       // so neither the window's nor the pane's index is the first tmux would report for anything.
       await run(["new-window", "-d", "-t", window, "-n", WINDOW_NAME, "sleep 600"]);
-      await run([
+      // `-P` prints the new pane's pid. Its command `exec`s the binary, which tmux started as the
+      // leader of a process group of its own, so the hook ends that group as it ends a spawned
+      // omp's: `kill-server` below closes the pane, and a process of the group can outlive that.
+      const panePid = await run([
         "split-window",
         "-d",
+        "-P",
+        "-F",
+        "#{pane_pid}",
         "-t",
         `${window}.0`,
         paneCommand({
@@ -294,6 +301,7 @@ test.skipIf(skip)(
           log,
         }),
       ]);
+      cleanupEndsGroup(Number(panePid), cleanup);
       await run(["split-window", "-d", "-t", `${window}.${PANE_INDEX}`, "sleep 600"]);
 
       const first = await until(

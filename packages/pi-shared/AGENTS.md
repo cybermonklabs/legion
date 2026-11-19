@@ -126,7 +126,8 @@ installs its teardown with `cleanupHook(afterEach, [cleanup])`, or `afterAll` ov
 session its cases share: the hook's bound is `OMP_TEARDOWN_MS` for each omp one list ends (its
 third argument, 1 by default) and 5 s for the steps that end no process, so an omp group that does
 not end fails naming each of its processes, never on bun's unnamed hook timeout, and a list that
-ends more omps than the hook is bounded for fails naming the number to pass.
+ends more omps than the hook is bounded for fails naming the number to pass. An omp the case did
+not spawn itself, a tmux pane's, is ended the same way by `cleanupEndsGroup(<its pid>, cleanup)`.
 
 ## Where to look
 
