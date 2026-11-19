@@ -217,6 +217,66 @@ codex_manifest_gap() {
   printf '; the installed codex-envoy manifest names no NATS_AUTH among its env_vars, so Codex hands the plugin'"'"'s server none and it dials with no credential'
 }
 
+# codex_cwd LABEL: that session's working directory.
+codex_cwd() {
+  if [ "$hosts" = plugins ]; then printf '%s' "$work/$1/cwd"; else printf '%s' "$codex_root/$1/cwd"; fi
+}
+
+# codex_server_pid LABEL: the process of that session's plugin MCP server: the one the stand-in
+# names in its ready line, or, for a real Codex, the installed plugin's envoy-channel.js running in
+# that session's Codex home.
+codex_server_pid() {
+  local pid
+  if [ "$hosts" = plugins ]; then
+    jq -r 'select(.ready == true) | .serverPid' "${client_out[$1]}" 2>/dev/null | head -n 1
+    return 0
+  fi
+  for pid in $(pgrep -f 'dist/envoy-channel\.js --host codex'); do
+    case $(readlink "/proc/$pid/cwd" 2>/dev/null)/ in
+      "$codex_root/$1/"*)
+        echo "$pid"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+# codex_probe LABEL SESSION NATSPROBE-ARGS...: natsprobe in the environment that session's plugin
+# server got, as the manifest's env_vars filtered it, presenting the credential the plugin's own
+# settings resolve there (role-takeover/codex-probe.ts): so a session whose server is told no
+# credential, as under seedless or manifest-drops-nats-auth, probes with none.
+codex_probe() {
+  local label=$1 session=$2 pid
+  shift 2
+  pid=$(codex_server_pid "$label") && [ -n "$pid" ] || {
+    echo "no plugin server process of the $label Codex session was found"
+    return 2
+  }
+  bun "$drivers/codex-probe.ts" --server-pid "$pid" --session "$session" --cwd "$(codex_cwd "$label")" -- \
+    "$(command -v natsprobe)" "$@"
+}
+
+# codex_transcripts_in_evidence: with --real-hosts, each Codex session's own transcript, the file
+# its receive checks read, copied into the evidence before the teardown, and one check per session
+# that the evidence holds it: a file whose first line names the session's id. (The stand-in's
+# transcripts reach the evidence at the teardown, in codex_clean.)
+codex_transcripts_in_evidence() {
+  local label file kept
+  [ "$hosts" = real ] || return 0
+  mkdir -p "$evidence/sessions"
+  for label in "${codex_labels[@]}"; do
+    file=${codex_transcript[$label]:-}
+    kept=$evidence/sessions/${file##*/}
+    [ -n "$file" ] && [ -f "$file" ] && cp "$file" "$kept"
+    if [ -n "$file" ] && [ -s "$kept" ] && head -n 1 "$kept" | grep -qF -- "${codex_session[$label]}"; then
+      pass "transcript-in-evidence ($label): $kept, the transcript of Codex session ${codex_session[$label]}"
+    else
+      failed "transcript-in-evidence ($label)" "the evidence holds no transcript of Codex session ${codex_session[$label]} (its record named '$file')"
+    fi
+  done
+}
+
 # codex_stop: at the teardown, each real Codex's terminal kept whole for the evidence (Codex keeps
 # no log of its own unless asked), then two ^Cs, which quit Codex and close its plugin's MCP
 # server's stdin, so the server deregisters its session; a Codex still up 15 s later goes with its

@@ -61,31 +61,39 @@
 #                                      connection to the new id's token; again
 #   probe-refused-other-session        natsprobe in the Oh My Pi session's environment is served its
 #                                      own channel and refused the Claude Code session's, by name;
-#                                      and, a row per Codex session, natsprobe in the Codex
-#                                      session's environment is served its own channel and refused
-#                                      the Oh My Pi session's, and in the Oh My Pi session's it is
-#                                      refused the Codex session's
+#                                      and, a row per Codex session, natsprobe in the environment
+#                                      that session's plugin server got (its /proc environ, as the
+#                                      manifest's env_vars filtered it), presenting the credential
+#                                      the plugin's own settings resolve there
+#                                      (role-takeover/codex-probe.ts), is served its own channel and
+#                                      refused the Oh My Pi session's, and in the Oh My Pi session's
+#                                      it is refused the Codex session's
+#   transcript-in-evidence             (--real-hosts) a row per Codex session: the evidence holds
+#                                      that session's own transcript, the file its receives read
 #
 # Negative controls, NATS_CALLOUT_SESSIONS_CONTROL:
 #   seedless      every session starts with no credential named (neither NATS_AUTH nor natsAuth),
 #                 so the hub's auth service admits no connection and every receive FAILs
-#                 `not admitted`; the run then exits 1.
+#                 `not admitted`, and each Codex probe row FAILs, its plugin's settings presenting
+#                 no credential; the Oh My Pi probe row, which trades with the broker variables
+#                 alone, passes. The run then exits 1.
 #   withhold-ack  (default mode) the Claude Code stand-in takes each delivery into its inbox and
 #                 never answers it, so the channel server never sends `done` and the listener never
 #                 acks: the first Claude Code receive FAILs `not acked` (the host shows it, its
-#                 consumer acked nothing), the later ones FAIL held behind it, and the Oh My Pi and
-#                 Codex ones pass - the ack check failing for the one reason a transcript check is
-#                 blind to.
+#                 consumer acked nothing), the later ones FAIL `not acked` or held behind it, and
+#                 the Oh My Pi and Codex ones and every probe row pass - the ack check failing for
+#                 the one reason a transcript check is blind to.
 #   withhold-ack-codex  (default mode) each Codex stand-in takes each message its plugin's
-#                 `codex queue` hands it and never answers, so that command never returns, the
-#                 plugin never sends `done` and the listener never acks: the first receive of each
-#                 Codex session FAILs `not acked`, the later ones FAIL held behind it, and the Oh
-#                 My Pi and Claude Code ones pass.
+#                 `codex queue` hands it and never answers, so that command does not return while
+#                 the session runs, the plugin never sends `done` and the listener never acks: the
+#                 first receive of each Codex session FAILs `not acked`, the later ones FAIL `not
+#                 acked` or held behind it, and the Oh My Pi and Claude Code ones and every probe
+#                 row pass.
 #   manifest-drops-nats-auth  the Codex plugin is installed with NATS_AUTH taken out of its
 #                 manifest's env_vars, so Codex hands codex-env's server no NATS_AUTH: it dials
 #                 with no credential, and codex-env's receives FAIL `not admitted`, naming the
-#                 manifest, while codex-file's, which names the credential in its envoy.json, and
-#                 the Oh My Pi and Claude Code ones pass.
+#                 manifest, and its probe row FAILs, presenting none; codex-file's rows, which name
+#                 the credential in its envoy.json, and the Oh My Pi and Claude Code ones pass.
 #
 # Two kinds of session:
 #   default       what e2e.yaml runs on a hosted runner: each plugin's own code under a stand-in
@@ -328,7 +336,6 @@ cleanup() {
   for out in "$work"/*.out; do
     [ -f "$out" ] && cp "$out" "$evidence/client-logs/"
   done
-  codex_clean
   if [ -n "${claude_home:-}" ] && declare -F claude_transcript >/dev/null; then
     file=$(claude_transcript) && transcripts+=("$file")
   fi
@@ -341,6 +348,8 @@ cleanup() {
       [ -f "$transcript" ] && cp "$transcript" "$evidence/sessions/"
     done
   fi
+  # After the copy above: codex_clean removes the real Codex homes, which hold those transcripts.
+  codex_clean
   [ -z "${DEV_STACK_DIR:-}" ] || cp -R "$DEV_STACK_DIR/logs" "$evidence/stack-logs" 2>/dev/null
   case $scratch in
     "${TMPDIR:-/tmp}"/nats-callout-sessions.*) rm -rf -- "$scratch" ;;
@@ -863,13 +872,21 @@ if [ "$hosts" = plugins ]; then
   message_each receives-after-switch
 fi
 
-# probe AS ARGS...: natsprobe in session AS's own environment: its trade names that session.
+# probe AS ARGS...: natsprobe in session AS's own environment: its trade names that session. With
+# probe_in naming a Codex session's label, the environment is the one that session's plugin server
+# got, and the credential the one the plugin's settings resolve there (codex_probe); else it is the
+# broker variables every session trades with.
+probe_in=""
 probe() {
   local as=$1
   shift
   probe_rc=0
-  probe_out=$(env -i PATH="$PATH" HOME="$work/probe-home" "${broker_env[@]}" AGENT_SECRETS_SESSION="$as" \
-    natsprobe --servers "$NATS_URLS" "$@" 2>&1) || probe_rc=$?
+  if [ -n "$probe_in" ]; then
+    probe_out=$(codex_probe "$probe_in" "$as" --servers "$NATS_URLS" "$@" 2>&1) || probe_rc=$?
+  else
+    probe_out=$(env -i PATH="$PATH" HOME="$work/probe-home" "${broker_env[@]}" AGENT_SECRETS_SESSION="$as" \
+      natsprobe --servers "$NATS_URLS" "$@" 2>&1) || probe_rc=$?
+  fi
   printf '%s\n' "$probe_out" >>"$evidence/answers/probe.txt"
 }
 # probe_served AS: why the probe as AS was not served AS's own channel; nothing where it was.
@@ -898,19 +915,23 @@ if [ -z "$why" ]; then
 else
   failed probe-refused-other-session "$why"
 fi
-# As each Codex session: served its own channel and refused the Oh My Pi session's; and as the Oh
-# My Pi session, refused the Codex session's.
+# As each Codex session, in the environment its plugin's server got: served its own channel and
+# refused the Oh My Pi session's; and as the Oh My Pi session, refused the Codex session's.
 for label in "${codex_labels[@]}"; do
   codex=${codex_session[$label]}
+  probe_in=$label
   why=$(probe_served "$codex")
   [ -n "$why" ] || why=$(probe_refused "$codex" "$omp_session")
+  probe_in=""
   [ -n "$why" ] || why=$(probe_refused "$omp_session" "$codex")
   if [ -z "$why" ]; then
-    pass "probe-refused-other-session ($label): served notifications.envoy.deliver.$codex, refused the Oh My Pi session's; the Oh My Pi session refused notifications.envoy.deliver.$codex"
+    pass "probe-refused-other-session ($label): in its plugin server's environment, served notifications.envoy.deliver.$codex and refused the Oh My Pi session's; the Oh My Pi session refused notifications.envoy.deliver.$codex"
   else
     failed "probe-refused-other-session ($label)" "$why"
   fi
 done
+
+codex_transcripts_in_evidence
 
 echo "nats-callout-sessions: $passed of $ran checks passed (hosts: $hosts${control:+, control: $control})"
 [ "$ran" -gt 0 ] && [ "$passed" -eq "$ran" ]

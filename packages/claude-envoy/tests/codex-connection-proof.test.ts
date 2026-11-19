@@ -38,17 +38,19 @@ function thumbprint(jwk: Record<string, unknown>): string {
 }
 
 /** A broker whose token exchange mints a random DPoP-bound token, keeping the key each trade's
- *  DPoP proof named, as the broker binds the token it mints to that key. */
+ *  DPoP proof named, as the broker binds the token it mints to that key, and the session the trade
+ *  named (its `session` form parameter), which the token it mints is for. */
 function broker() {
-  const minted: { token: string; jkt: string }[] = []
+  const minted: { token: string; jkt: string; session: string | null }[] = []
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch: (request) => {
+    fetch: async (request) => {
       const proof = request.headers.get("dpop") ?? ""
       const jwk = part(proof, 0)["jwk"] as Record<string, unknown> | undefined
+      const session = new URLSearchParams(await request.text()).get("session")
       const token = fixtureSecret("access")
-      minted.push({ token, jkt: jwk === undefined ? "" : thumbprint(jwk) })
+      minted.push({ token, jkt: jwk === undefined ? "" : thumbprint(jwk), session })
       return Response.json({
         access_token: token,
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
@@ -138,6 +140,8 @@ describe("the Codex server's NATS CONNECT", () => {
       // The token the broker minted for this session's trade, and no other.
       const minted = trades.minted.find((entry) => entry.token === token)
       expect(minted).toBeDefined()
+      // Traded for the session the Codex session's record names, and no other.
+      expect(minted?.session).toBe(session)
       expect(typeof connect["sig"]).toBe("string")
       const proof = Buffer.from(String(connect["sig"]), "base64url").toString("utf8")
       const [header, claims, signature] = proof.split(".")

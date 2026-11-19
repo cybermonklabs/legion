@@ -146,7 +146,9 @@ which the script compiles into a binary named `codex`: the `codex` process of on
 which starts the installed Codex plugin's MCP server with only its manifest's `env_vars` and the
 variables Codex hands every MCP server, runs the plugin's hooks (`{"op":"start"}` and
 `{"op":"new"}` run `SessionStart`), keeps the transcript the plugin reads, and answers the
-plugin's `codex queue`, whose messages `{"op":"deliveries"}` then answers.
+plugin's `codex queue`, whose messages `{"op":"deliveries"}` then answers. `role-takeover/codex-probe.ts`
+runs `natsprobe` for the script's Codex probe rows in the environment a Codex plugin server got
+(its `/proc/<pid>/environ`), presenting the credential the plugin's own settings resolve there.
 
 The listener runs with windows of its own, because every row turns on whether a claim's holder is
 still answering for it: `ENVOY_SESSION_LIVE_WINDOW=10s`, which is how long a claim stands renewed
