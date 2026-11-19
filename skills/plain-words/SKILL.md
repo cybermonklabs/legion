@@ -1,36 +1,21 @@
 ---
 name: plain-words
-description: "Use before you send or publish any text a person reads: an ask, a spec, a Dispatch comment, a message to a colleague, a pull-request body, a commit message, a report, a status update. Also use before you answer a question a person asked, and before a draft goes to a reviewer. It removes empty verb phrases and replaces each with the literal thing."
+description: "Use when you are about to send or publish text a person reads (an ask, spec, comment, message, pull-request body, commit message, report or status update), answer a person's question, or hand a draft to a reviewer."
 ---
 
 # Say the literal thing
 
-Delete the empty verb phrases agents keep using, and say the literal thing instead.
-
-Run this over your text before you send it. It takes a minute and it is not optional.
+Delete the empty verb phrases agents keep using, and write what literally happens instead. Run this over every text before you send it.
 
 ## Answering a question
 
-1. Answer the exact question, only it, in the order it was asked, because anything else reads as
-   evasion and the question comes again.
-2. Start from what happens, not from a setting, a flag or a name: the reader can reach the setting
-   from the behaviour, not the reverse.
-3. Define each term where you first use it, in literal words. No analogy: the reader cannot tell
-   which part of one is true.
-
-## Before you send
-
-A fresh session that has only what the reader has removes what the reader does not need, and lists
-every term it cannot define. Fix each listed term. A reviewer that reads only to approve has not
-done this step, so the two lists are what show it ran. The check runs on the text going to the reader, never on the instructions you give that
-session or on what it sends back, which would never end.
+1. Answer the exact question, only it, in the order it was asked: anything else reads as evasion.
+2. Start from what happens, not from a setting, a flag or a name.
+3. Define each term where you first use it, in literal words. No analogy: the reader cannot tell which part of one is true.
 
 ## The test
 
-Take the verb phrase out and ask: **what literally happens?** Write that. If you cannot say what
-happens, you did not know, and the phrase hid it from you as well as from the reader.
-
-## The phrases
+Take the verb phrase out and ask: what literally happens? Write that. If you cannot say, you did not know.
 
 | Never | What to write |
 |---|---|
@@ -41,45 +26,29 @@ happens, you did not know, and the phrase hid it from you as well as from the re
 | carry it to X, carry the finding | tell X; send it to X; put it on the issue |
 | this shows the gap, the number shows | the gap is 12 of 30; the number is 1.17 |
 
-You reach for "land"
-when you cannot say whether the thing merged, released or deployed. If you can say which, say it.
-If you cannot, that is the sentence — "it is approved and not merged" — and it is more useful than
-any verb.
+If you cannot say whether a thing merged, released or deployed, say that: "it is approved and not merged". On the "name the X" row, delete "name"; if the sentence then says nothing, decide the action and write it.
 
-On the "name the X" row, use the test: delete "name". If the
-sentence then says what happens, keep it that way; if it says nothing, you had not decided the
-action, so decide it and write it.
+Plain verbs that name a real action stay (merge, delete, send, read, measure), and so does a term of art that is the literal name of the thing (a merge queue merges).
 
-## Do not shout
+## Cut what marks text as an agent's
 
-No ALL-CAPS headings. No ALL-CAPS phrases for emphasis. Bold only where a number, a name or a
-choice needs to be found again.
+1. A sentence that says what you are about to say, or what you just said.
+2. Praise of the work or the reader: "great question", "a robust solution".
+3. Symmetry such as "not only X but also Y": write the half that is true.
+4. A hedge that costs a second read ("it may be worth considering whether"): recommend it or leave it out. Keep every hedge that carries a real doubt.
+5. A closing offer to do more. Where something remains, name it as the next step with its owner.
+6. A word that rates the thing ("comprehensive", "seamless"): give the measurement instead.
+7. A paragraph whose first and last sentences say the same thing: delete one.
 
-The reason it appears: an agent writes a long passage, cannot find its point, and puts a handle on
-it so a reader can. **The handle is a symptom. Cut the passage instead.** A paragraph that needs a
-shouted header to be skimmable is a paragraph nobody should have to skim.
+No ALL-CAPS headings or phrases. Bold only a number, a name or a choice the reader must find again. A passage that needs a shouted handle needs cutting instead, in a brief to another agent too.
 
-The same goes for a message to another agent. A capitalised line in a brief reads as an instruction
-shouted twice, and a reader who sees three of them stops seeing any.
+## Before you send
 
-## What stays
+Give a fresh session only what the reader has. It removes what the reader does not need and lists every term it cannot define; fix each listed term. Run this on the text going to the reader, never on your instructions to that session or on its reply.
 
-Plain verbs that describe a real action stay: merge, delete, send, read, measure, kill a process by
-pid, repoint a link. The rule is against phrases that sound like an action and name none.
+## Other passes
 
-A term of art stays when it is the literal name of the thing: a merge queue merges, a garbage
-collector collects, a sweep sweeps.
-
-## Where this fits
-
-`skill://asd-ste100` constrains grammar and vocabulary for a reader whose first language may not be
-English. This skill removes verb phrases that carry no fact. Neither removes AI writing tells, so
-where your session has a pass for those it is a third one. Run them all on an outside message
-(`skill://outside-message`); run this one on everything.
-
-The two passes themselves — the structural one and the one that removes the writing that marks
-text as an agent's — are `skill://plain-words/references/mechanics.md`.
-
-One kind of text may also have a form skill of its own — a comment to another project's
-maintainers, a document a buyer reads — where the operator ships one; your stream's brief names
-it. This skill holds for all text either way.
+- For sentence structure (one instruction per sentence, active voice, simple tenses, short noun stacks), use `skill://asd-ste100`.
+- On an outside message, also follow `skill://outside-message`.
+- A form skill your stream's brief names for a kind of text (a comment to another project's maintainers, a document a buyer reads) applies as well.
+- Where your session installs a fuller pass of its own over AI writing tells, run it after this skill's "Cut what marks text as an agent's".

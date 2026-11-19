@@ -37,6 +37,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
 // HostsFile is the name of gh's per-host credential file under GH_CONFIG_DIR.
@@ -228,7 +230,10 @@ func readRegular(path string, follow int) ([]byte, error) {
 // keeps a bundle's writer from touching the files a lease's turn did not change (WriteBundle,
 // Write). What is at path is read only through ReadRegular: anything that is no regular file is
 // removed first, since a rename replaces a link or a pipe but not a directory, and one too large
-// to read is simply replaced.
+// to read is simply replaced. The pane's own user can write every path handed here, so what is
+// removed may be a directory it filled, and it is removed as every tree a pane writes is: without
+// following a link in it (rolefile.RemoveTree), under path's directory resolved once, since that
+// directory may be reached through a link and RemoveTree refuses a parent that is one.
 func replaceFile(path, content string) (changed bool, err error) {
 	current, err := ReadRegular(path)
 	switch {
@@ -238,7 +243,11 @@ func replaceFile(path, content string) (changed bool, err error) {
 		}
 	case errors.Is(err, fs.ErrNotExist), errors.Is(err, ErrTooLarge):
 	case errors.Is(err, ErrNotRegular):
-		if err := os.RemoveAll(path); err != nil {
+		parent, err := filepath.EvalSymlinks(filepath.Dir(path))
+		if err != nil {
+			return false, err
+		}
+		if err := rolefile.RemoveTree(filepath.Join(parent, filepath.Base(path))); err != nil {
 			return false, err
 		}
 	default:

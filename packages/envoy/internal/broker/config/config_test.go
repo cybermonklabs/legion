@@ -1404,6 +1404,229 @@ func TestLoadTakesOneAccountInBothServiceLists(t *testing.T) {
 	}
 }
 
+// TestRegistrarSettings pins BROKER_POD_REGISTRARS and BROKER_POD_REGISTRATION_AUDIENCE. Unset,
+// the broker loads with no entry and no audience, a registration route that admits nothing. Each
+// malformed entry of the list — one without exactly one "=", an account that is no ServiceAccount
+// subject (a google: one included), a namespace's default account on either side — and a pair
+// given twice are refused naming the setting and the entry, and the list is refused with no
+// cluster issuer. The audience is refused naming it and the other setting when it equals the
+// broker's own audience, the token exchange's or the NATS auth service's, each set beside it, and
+// refused with no cluster issuer. A registrar with two pod accounts, a pod account with two
+// registrars and an account paired with itself load as exactly those pairs beside an audience of
+// its own, with no BROKER_SERVICE_LOGINS at all: a registrar the logins do not list is not
+// refused, since it can register nothing and the boot names it instead.
+func TestRegistrarSettings(t *testing.T) {
+	const (
+		daemonA = "system:serviceaccount:legion-system:legion-daemon-a"
+		daemonB = "system:serviceaccount:legion-system:legion-daemon-b"
+		worker  = "system:serviceaccount:legion:worker"
+		other   = "system:serviceaccount:legion:other"
+	)
+	user, account, curve, _ := natsSeeds(t)
+	// withAudiences is the cluster issuer with every other audience its tokens are accepted at
+	// set beside the broker's own: the token exchange's and the NATS auth service's, whose service
+	// needs its hub and its three seeds. So an audience row is refused for the one equality it
+	// names and nothing else.
+	withAudiences := func(set map[string]string) map[string]string {
+		e := withK8sIssuer()
+		e["BROKER_EXCHANGE_K8S_AUDIENCE"] = "dispatch-exchange"
+		e["BROKER_NATS_URLS"] = "nats://hub-a:4222"
+		e["BROKER_NATS_SEED_FILE"], e["BROKER_NATS_ISSUER_SEED_FILE"], e["BROKER_NATS_XKEY_SEED_FILE"] = user, account, curve
+		e["BROKER_NATS_K8S_AUDIENCE"] = "envoy-nats"
+		maps.Copy(e, set)
+		return e
+	}
+	// withoutIssuer is validEnv, which names no cluster issuer, with set.
+	withoutIssuer := func(set map[string]string) map[string]string {
+		e := validEnv()
+		maps.Copy(e, set)
+		return e
+	}
+	list := func(entries string) map[string]string { return map[string]string{"BROKER_POD_REGISTRARS": entries} }
+	audience := func(value string) map[string]string {
+		return map[string]string{"BROKER_POD_REGISTRATION_AUDIENCE": value}
+	}
+	for _, row := range []struct {
+		name string
+		env  map[string]string
+		// refused is every text the refusal must name; none for an environment that loads.
+		refused []string
+		// registrars and audience are what an environment that loads reads.
+		registrars api.PodRegistrars
+		audience   string
+	}{
+		{name: "both unset", env: validEnv()},
+		{
+			name: "an entry with no =", env: withAudiences(list(daemonA)),
+			refused: []string{"BROKER_POD_REGISTRARS", strconv.Quote(daemonA)},
+		},
+		{
+			name: "an entry with two =", env: withAudiences(list(daemonA + "=" + worker + "=" + other)),
+			refused: []string{"BROKER_POD_REGISTRARS", strconv.Quote(daemonA + "=" + worker + "=" + other)},
+		},
+		{
+			name: "an entry naming no registrar", env: withAudiences(list("=" + worker)),
+			refused: []string{"BROKER_POD_REGISTRARS", strconv.Quote("=" + worker)},
+		},
+		{
+			name: "a registrar that is a service's name", env: withAudiences(list("legion-daemon=" + worker)),
+			refused: []string{"BROKER_POD_REGISTRARS", strconv.Quote("legion-daemon=" + worker)},
+		},
+		{
+			name: "a registrar that is a Google account", env: withAudiences(list(googleAPIAccountTag + exampleListenerAccount + "=" + worker)),
+			refused: []string{"BROKER_POD_REGISTRARS", strconv.Quote(googleAPIAccountTag + exampleListenerAccount + "=" + worker)},
+		},
+		{
+			name: "a pod account that is no subject", env: withAudiences(list(daemonA + "=example-worker")),
+			refused: []string{"BROKER_POD_REGISTRARS", strconv.Quote(daemonA + "=example-worker")},
+		},
+		{
+			name: "a namespace's default account as the registrar", env: withAudiences(list("system:serviceaccount:legion-system:default=" + worker)),
+			refused: []string{"BROKER_POD_REGISTRARS", strconv.Quote("system:serviceaccount:legion-system:default=" + worker), "default service account"},
+		},
+		{
+			name: "a namespace's default account as the pod account", env: withAudiences(list(daemonA + "=system:serviceaccount:legion:default")),
+			refused: []string{"BROKER_POD_REGISTRARS", strconv.Quote(daemonA + "=system:serviceaccount:legion:default"), "default service account"},
+		},
+		{
+			name: "one pair given twice", env: withAudiences(list(daemonA + "=" + worker + " " + daemonA + "=" + worker)),
+			refused: []string{"BROKER_POD_REGISTRARS", strconv.Quote(daemonA + "=" + worker), "twice"},
+		},
+		{
+			name: "the list with no cluster issuer", env: withoutIssuer(list(daemonA + "=" + worker)),
+			refused: []string{"BROKER_POD_REGISTRARS", "BROKER_K8S_OIDC_ISSUER"},
+		},
+		{
+			name: "the audience equal to the broker's own", env: withAudiences(audience(" agent-secrets\n")),
+			refused: []string{"BROKER_POD_REGISTRATION_AUDIENCE", "BROKER_K8S_OIDC_AUDIENCE"},
+		},
+		{
+			name: "the audience equal to the token exchange's", env: withAudiences(audience("dispatch-exchange")),
+			refused: []string{"BROKER_POD_REGISTRATION_AUDIENCE", "BROKER_EXCHANGE_K8S_AUDIENCE"},
+		},
+		{
+			name: "the audience equal to the NATS auth service's", env: withAudiences(audience("envoy-nats")),
+			refused: []string{"BROKER_POD_REGISTRATION_AUDIENCE", "BROKER_NATS_K8S_AUDIENCE"},
+		},
+		{
+			name: "the audience with no cluster issuer", env: withoutIssuer(audience("legion-broker-registration")),
+			refused: []string{"BROKER_POD_REGISTRATION_AUDIENCE", "BROKER_K8S_OIDC_ISSUER"},
+		},
+		{
+			name: "a registrar with two pod accounts, a pod account with two registrars and a self-pair",
+			env: withAudiences(map[string]string{
+				"BROKER_POD_REGISTRARS":            " " + daemonA + "=" + worker + "\n" + daemonA + "=" + other + "\t" + daemonB + "=" + worker + " " + daemonB + "=" + daemonB + " ",
+				"BROKER_POD_REGISTRATION_AUDIENCE": " legion-broker-registration ",
+			}),
+			registrars: api.PodRegistrars{{Registrar: daemonA, Pod: worker}: {}, {Registrar: daemonA, Pod: other}: {}, {Registrar: daemonB, Pod: worker}: {}, {Registrar: daemonB, Pod: daemonB}: {}},
+			audience:   "legion-broker-registration",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			cfg, err := Load(env(row.env))
+			for _, name := range row.refused {
+				if err == nil || !strings.Contains(err.Error(), name) {
+					t.Fatalf("Load = %v, want a refusal naming %s", err, strings.Join(row.refused, " and "))
+				}
+			}
+			if len(row.refused) > 0 {
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load = %v, want no refusal", err)
+			}
+			if !maps.Equal(cfg.PodRegistrars, row.registrars) || cfg.PodRegistrationAudience != row.audience {
+				t.Fatalf("Load read the pairs %v and the audience %q, want exactly %v and %q", cfg.PodRegistrars, cfg.PodRegistrationAudience, row.registrars, row.audience)
+			}
+		})
+	}
+}
+
+// The accounts the session account pair tests pair: the shared account a deployment's pods ran
+// as, the project's own account it moves them to, and a third. Each pair below is written with
+// its later account first in sorted order, so a reader that sorted a pair would be caught.
+const (
+	sharedWorkerAccount  = "system:serviceaccount:example-ns:shared-worker"
+	projectWorkerAccount = "system:serviceaccount:example-ns:project-worker"
+	otherWorkerAccount   = "system:serviceaccount:example-ns:other-worker"
+)
+
+// TestSessionAccountPairsAreRead pins BROKER_SESSION_ACCOUNT_PAIRS: whitespace-separated
+// <account>=<account> entries, each read as its two accounts in the order written and the pairs
+// in the order given, since cmd/broker logs the pairs as the operator wrote them; an account in
+// two pairs, which is a deployment moving one shared account's pods to two accounts, or moving
+// them on again; and no pair at all when the setting is unset, empty or white space only, which
+// is the broker that takes no name from anyone.
+func TestSessionAccountPairsAreRead(t *testing.T) {
+	for _, value := range []string{"", " \t\n "} {
+		e := validEnv()
+		e["BROKER_SESSION_ACCOUNT_PAIRS"] = value
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatalf("Load(BROKER_SESSION_ACCOUNT_PAIRS=%q) = %v, want no refusal", value, err)
+		}
+		if cfg.SessionAccountPairs != nil {
+			t.Errorf("SessionAccountPairs with BROKER_SESSION_ACCOUNT_PAIRS=%q = %v, want nil", value, cfg.SessionAccountPairs)
+		}
+	}
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SessionAccountPairs != nil {
+		t.Errorf("SessionAccountPairs = %v, want nil when BROKER_SESSION_ACCOUNT_PAIRS is unset", cfg.SessionAccountPairs)
+	}
+
+	e := validEnv()
+	e["BROKER_SESSION_ACCOUNT_PAIRS"] = sharedWorkerAccount + "=" + projectWorkerAccount
+	if cfg, err = Load(env(e)); err != nil {
+		t.Fatal(err)
+	}
+	if want := [][2]string{{sharedWorkerAccount, projectWorkerAccount}}; !slices.Equal(cfg.SessionAccountPairs, want) {
+		t.Errorf("SessionAccountPairs with one pair = %v, want %v, its two accounts in the order written", cfg.SessionAccountPairs, want)
+	}
+
+	e = validEnv()
+	e["BROKER_SESSION_ACCOUNT_PAIRS"] = " " + sharedWorkerAccount + "=" + projectWorkerAccount + "\n\t" + projectWorkerAccount + "=" + otherWorkerAccount + " "
+	if cfg, err = Load(env(e)); err != nil {
+		t.Fatalf("Load(two pairs sharing an account) = %v, want no refusal: an account may be in several pairs", err)
+	}
+	want := [][2]string{{sharedWorkerAccount, projectWorkerAccount}, {projectWorkerAccount, otherWorkerAccount}}
+	if !slices.Equal(cfg.SessionAccountPairs, want) {
+		t.Errorf("SessionAccountPairs with two pairs sharing an account = %v, want %v, in the order given", cfg.SessionAccountPairs, want)
+	}
+}
+
+// TestSessionAccountPairsRefuseABadEntry pins BROKER_SESSION_ACCOUNT_PAIRS' refusals, one row per
+// kind: an entry that is not two accounts joined by one "=", an account that is not a
+// ServiceAccount subject or is a namespace's default account, an account paired with itself, and
+// a pair given twice, as written or reversed. Each bad entry follows a good pair, so the reader
+// refuses whichever entry is bad and not only the first, and each refusal stops the start naming
+// the setting and the bad entry as written, so the operator reads which one to fix, and says
+// which kind of mistake it is.
+func TestSessionAccountPairsRefuseABadEntry(t *testing.T) {
+	const good = sharedWorkerAccount + "=" + projectWorkerAccount
+	for _, row := range []struct{ name, entry, reason string }{
+		{"no =", otherWorkerAccount, "<account>=<account>"},
+		{"two =", projectWorkerAccount + "=" + otherWorkerAccount + "=" + sharedWorkerAccount, "<account>=<account>"},
+		{"an empty first side", "=" + otherWorkerAccount, "<account>=<account>"},
+		{"an empty second side", otherWorkerAccount + "=", "<account>=<account>"},
+		{"a side that is not an account subject", projectWorkerAccount + "=other-worker", "must name system:serviceaccount:<namespace>:<name>"},
+		{"a namespace's default account", projectWorkerAccount + "=system:serviceaccount:example-ns:default", "default service account"},
+		{"an account paired with itself", otherWorkerAccount + "=" + otherWorkerAccount, "with itself"},
+		{"the same pair repeated", good, "again"},
+		{"the reversed pair repeated", projectWorkerAccount + "=" + sharedWorkerAccount, "again"},
+	} {
+		e := validEnv()
+		e["BROKER_SESSION_ACCOUNT_PAIRS"] = good + " " + row.entry
+		_, err := Load(env(e))
+		if err == nil || !strings.Contains(err.Error(), "BROKER_SESSION_ACCOUNT_PAIRS") || !strings.Contains(err.Error(), strconv.Quote(row.entry)) ||
+			!strings.Contains(err.Error(), row.reason) {
+			t.Errorf("BROKER_SESSION_ACCOUNT_PAIRS with %s, %q: err = %v, want a refusal naming the setting, the entry and %q", row.name, row.entry, err, row.reason)
+		}
+	}
+}
+
 // TestLoadRefusesTheRulesFileVariables pins that a deployment still configured for the rules file
 // refuses to start naming the variable, rather than running with its rules silently ignored. The
 // reason names both halves of what replaced it: the tags each secret's owner and tier come from,

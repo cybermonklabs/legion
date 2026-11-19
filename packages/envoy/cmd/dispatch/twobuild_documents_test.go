@@ -290,7 +290,8 @@ func (b *twoBuilds) fleet(t *testing.T) fleetNumbers {
 //
 // A reader that predates the admission - its manifest names no nodes - knows no fleet: it
 // compares the page's token, which is the page's schema version alone, with its own version, and
-// answers read-only when they differ (packages/dispatch/AGENTS.md, the document socket's token).
+// answers read-only when they differ (the socket's token in
+// packages/dispatch/web/src/features/doc/connection.ts).
 // So a release that raises the manifest version makes every page of the newer build read-only on
 // a process of the older one until the older build is gone, whatever the elements are creatable
 // from.

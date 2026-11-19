@@ -10,8 +10,7 @@ import (
 )
 
 // loweredStartLine is the INFO line of a caller's start that create lowered to the session's resume
-// record. packages/envoy/AGENTS.md ("The log lines of a start") states it whole, so the tests name
-// it whole.
+// record. Its count is how often the record rule lowers a start, so the tests name it whole.
 const loweredStartLine = "session consumer created at its resume record's floor, below the start the caller asked"
 
 // A start a restart left pending reads no resume record (create): it is the floor of the consumer
