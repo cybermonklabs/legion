@@ -315,7 +315,7 @@ func TestASecondRenamePassOnAWrittenDatabaseRunsNoLine(t *testing.T) {
 // where of each step, and where it finds no row the pass runs no line. So a step without them is
 // a field the pass never comes back to: a row that a build before this one writes there during a
 // roll keeps the old name. Every step of every line names its table and the condition of the rows
-// it has left, and a step that writes a field writes a field of its own table.
+// it has left.
 func TestEveryStepOfTheRenamePassNamesTheRowsItHasLeft(t *testing.T) {
 	from, to := "sjawhar/legion", "cybermonklabs/legion"
 	r := repoRename{RepoRename: RepoRename{From: from, To: to}, url: NewRepoURLRule(from, to)}
@@ -324,9 +324,6 @@ func TestEveryStepOfTheRenamePassNamesTheRowsItHasLeft(t *testing.T) {
 			if step.table == "" || step.where == "" {
 				t.Errorf("a step of %s has table %q and where %q, want both, so the count of the rows left reads it: %s",
 					line.fields, step.table, step.where, step.sql)
-			}
-			if step.write != "" && !strings.HasPrefix(step.write, step.table+".") {
-				t.Errorf("a step of %s writes %s, want a field of its own table %s", line.fields, step.write, step.table)
 			}
 		}
 	}
