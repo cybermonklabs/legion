@@ -59,6 +59,84 @@ func TestTheRulesPassWhatTheyAreWrittenToPass(t *testing.T) {
 	}
 }
 
+// The host rule reads a host, not a module path (dispatch://INFRA-3332). A Lean namespace and an
+// OCaml value path put an Internal segment after a capitalised name, as Lake's sources and Rocq's
+// kernel do, and they pass. A host keeps its labels in lowercase, with that label in any case, or
+// writes itself wholly in capitals, and every such form is refused: at the start of a record, on
+// a later line, in italics, and right after a reserved example host. The texts are assembled
+// from pieces, as every refusable literal of these tests is, so that no line of this file names
+// one whole, and so that a guard still reading a namespace as a host passes the file too.
+func TestThePrivateHostRuleReadsAHostNotANamespace(t *testing.T) {
+	engine, err := compiled()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		label   = "internal"
+		capital = "Internal"
+		upper   = "INTERNAL"
+		class   = "names a private internal host"
+	)
+	scan := func(t *testing.T, record Record) []string {
+		t.Helper()
+		lines, err := engine.scan(context.Background(), []Record{record})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return lines
+	}
+	t.Run("a namespace passes", func(t *testing.T) {
+		for _, text := range []string{
+			"import Std." + capital + ".UV.System",
+			"open Std." + capital + ".UV in",
+			"  if Environ." + capital + ".is_above_prop env q then",
+			"  let invert = Inductiveops." + capital + ".should_invert_case env sigma ci in",
+			"  (Environ." + capital + ".View.view answer_env).Environ." + capital + ".View.env_modtypes",
+			"      Classes." + capital + ".add_instance ~locality inst",
+			"import Std.Async",
+		} {
+			if lines := scan(t, Record{Label: "the body", Text: text}); len(lines) != 0 {
+				t.Errorf("%q: the report is %q, want nothing", text, lines)
+			}
+		}
+	})
+	t.Run("a reserved example host and the vendored property pass", func(t *testing.T) {
+		for _, record := range []Record{
+			{Label: "the body", Text: "https://listener." + label + ".example"},
+			{Label: "the body", Text: "listener." + label + ".example"},
+			{Label: "the body", Text: "line one\nlistener." + label + ".example"},
+			{Label: "the body", Text: "nats://nats." + label + ".example.com:4222"},
+			{Label: "the body", Text: "Point it at api." + label + ".example."},
+			{Label: "the body", Text: "now https://ENVOY." + upper + ".EXAMPLE"},
+			{Label: "packages/claude-envoy/dist/envoy-channel.js", Text: "        this." + label + ".push(sv);"},
+		} {
+			if lines := scan(t, record); len(lines) != 0 {
+				t.Errorf("%q: the report is %q, want nothing", record.Text, lines)
+			}
+		}
+	})
+	t.Run("a host is refused", func(t *testing.T) {
+		for _, text := range []string{
+			"https://beacon." + label + ".quietforge",
+			"https://beacon." + upper + ".quietforge",
+			"https://beacon." + capital + ".quietforge",
+			"https://BEACON." + upper + ".QUIETFORGE",
+			"https://beacon." + label + ".Quietforge.Net",
+			"beacon." + label + ".quietforge",
+			"line one\nbeacon." + label + ".quietforge",
+			"see _beacon." + label + ".quietforge_ in italics",
+			"NATS_URLS=a." + label + ".example,b." + label + ".quietforge",
+			"ip-10-0-0-7." + label + ".quietforge.net:443",
+			"https://dispatch." + label + ".quietforge.com/",
+			"this." + label + ".push(value)",
+		} {
+			if lines, want := scan(t, Record{Label: "the body", Text: text}), []string{"the body: " + class}; !slices.Equal(lines, want) {
+				t.Errorf("%q: the report is %q, want %q", text, lines, want)
+			}
+		}
+	})
+}
+
 // Each record is scanned on its own: a record that names something private is reported against
 // itself and against no record after it. Detect of one fragment answers that fragment's
 // findings, where DetectSource would hand the detector's whole run back and report the first

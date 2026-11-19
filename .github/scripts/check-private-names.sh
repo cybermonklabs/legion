@@ -17,7 +17,11 @@
 #      before a "_", which is the company's proper noun or a constant named after it wherever it
 #      stands, at the start of a sentence or a heading too. The lowercase English word names nothing
 #      and passes;
-#   3. a private host below `.internal.`, in any case. A reserved example host (`<name>` then
+#   3. a private host below `.internal.`, written as a host is: the label in front of it in
+#      lowercase letters, digits and hyphens with `internal` itself in any case, or both in
+#      capitals, that label starting the text or following a character that is no letter or digit.
+#      A namespace that puts an `Internal` segment after a capitalised name, as a Lean module or an
+#      OCaml value path does, names no host and passes. A reserved example host (`<name>` then
 #      `.internal.example`, optionally `.com`, `.net` or `.org`) passes, and so does the NATS
 #      client's own `this` property of that name in the one bundle that vendors it
 #      (packages/claude-envoy/dist/envoy-channel.js, which reaches this check on main and through
@@ -91,12 +95,17 @@ separator="[-_]|$spaces|$encoded_byte|$dashes"
 repository_rule="(^|[^[:alnum:]]|$encoded_byte)agent($separator)?c([^[:alnum:]]|\$)"
 company_rule="t""rajectory($separator|[.])?labs"
 proper_noun_rule="(^|[^[:alnum:]])(T""rajectory|T""RAJECTORY)([^[:alnum:]]|\$)"
-private_host_rule='[[:alnum:]-]+[.]internal[.][[:alnum:].-]+'
-# Whole matches of the host rule that name no private host: a reserved example host (a trailing
-# full stop is the sentence's), and the NATS client's property in the bundle that vendors it.
-allowed_host='[[:alnum:]-]+[.]internal[.]example([.](com|net|org))?[.]*'
+# The host rule carries its own case, so it is searched without -i: the label in front of
+# `.internal.` is lowercase (that label in any case) or both are in capitals. The character in
+# front of the host, when there is one, is no letter or digit, and is part of the match.
+any_case_internal='[iI][nN][tT][eE][rR][nN][aA][lL]'
+private_host_rule="(^|[^[:alnum:]])([[:lower:][:digit:]-]+[.]$any_case_internal|[[:upper:][:digit:]-]+[.]INTERNAL)[.][[:alnum:].-]+"
+# Whole matches of the host rule that name no private host, after the one character in front that
+# the rule may have captured: a reserved example host (a trailing full stop is the sentence's),
+# and the NATS client's property in the bundle that vendors it.
+allowed_host='[^[:alnum:]]?[[:alnum:]-]+[.]internal[.]example([.](com|net|org))?[.]*'
 vendored_nats='packages/claude-envoy/dist/envoy-channel[.]js'
-vendored_property='this[.]internal[.][[:alnum:]_]+'
+vendored_property='[^[:alnum:]]?this[.]internal[.][[:alnum:]_]+'
 # A Tailscale MagicDNS host: one DNS label immediately before the literal, with no letter or digit
 # right after it (a GNU "\b" word boundary would miss a host that sits next to a "_").
 tailnet_host_rule='[[:alnum:]-]+[.]ts[.]net([^[:alnum:]]|$)'
@@ -206,7 +215,7 @@ search_paths() {
 search "$repository_label" "$repository_rule" -i
 search "$company_label" "$company_rule" -i
 search "$company_label" "$proper_noun_rule"
-search "$private_host_label" "$private_host_rule" -i
+search "$private_host_label" "$private_host_rule"
 search "$tailnet_host_label" "$tailnet_host_rule" -i
 search_paths "$repository_label" "$repository_rule" -i
 search_paths "$company_label" "$company_rule" -i

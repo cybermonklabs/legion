@@ -343,8 +343,7 @@ mentions=(
 )
 compare_each company mentions
 
-echo "rule case 4: a private internal host, whatever its case"
-# shellcheck disable=SC2034 # read by name through compare_each's nameref
+echo "rule case 4: a private internal host, written in lowercase or in capitals"
 hosts=(
   "https://$host_label.$internal.$host_suffix"
   "https://$host_label.${internal^^}.$host_suffix"
@@ -353,13 +352,33 @@ hosts=(
   "https://$host_label.$internal.$example_host_suffix.$host_suffix"
   "https://a.$internal.$example_host_suffix and https://b.${internal^^}.$host_suffix"
   "this.$internal.push(value)"
+  "https://${host_label^^}.${internal^^}.${host_suffix^^}"
+  "https://$host_label.$internal.${host_suffix^}.net"
+  "$host_label.$internal.$host_suffix"
+  "see _$host_label.$internal.${host_suffix}_ in italics"
+  "NATS_URLS=a.$internal.$example_host_suffix,b.$internal.$host_suffix"
 )
-compare_each host hosts
+for index in "${!hosts[@]}"; do
+  compare "host-$index" "${hosts[index]}"
+  check "host-$index: both engines refuse it" "$(is "$frozen_status:$door_status" 1:3)"
+done
 
-echo "rule case 5: a reserved example host passes"
-compare example-host "$(printf 'https://%s.%s.%s\nnats://nats.%s.%s.com:4222\nPoint it at api.%s.%s.' \
+echo "rule case 5: a reserved example host passes, and so does a namespace with an ${internal^} segment"
+compare example-host "$(printf 'https://%s.%s.%s\nnats://nats.%s.%s.com:4222\nPoint it at api.%s.%s.\n%s.%s.%s at the start of a line\nnow https://ENVOY.%s.%s' \
   "$host_label" "$internal" "$example_host_suffix" \
-  "$internal" "$example_host_suffix" "$internal" "$example_host_suffix")"
+  "$internal" "$example_host_suffix" "$internal" "$example_host_suffix" \
+  "$host_label" "$internal" "$example_host_suffix" "${internal^^}" "${example_host_suffix^^}")"
+check "example-host: both engines pass it" "$(is "$frozen_status:$door_status" 0:0)"
+namespaces=(
+  "import Std.${internal^}.UV.System"
+  "  if Environ.${internal^}.is_above_prop env q then"
+  "  (Environ.${internal^}.View.view answer_env).Environ.${internal^}.View.env_modtypes"
+  "      Classes.${internal^}.add_instance ~locality inst"
+)
+for index in "${!namespaces[@]}"; do
+  compare "namespace-$index" "${namespaces[index]}"
+  check "namespace-$index: both engines pass it" "$(is "$frozen_status:$door_status" 0:0)"
+done
 # The other half of that case — the vendored NATS client's own property, which the frozen script
 # allows in the one bundle that vendors it — is the conditional allow-list, driven below where
 # both of its halves can be driven.
