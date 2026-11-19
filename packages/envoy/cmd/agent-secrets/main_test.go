@@ -197,7 +197,7 @@ const approvedStatusJSON = `{"state":"granted","grant_id":"grant-approved","reco
 // whose requesters tag does not name this session, and the rule that refused it. DENY_ME keeps
 // its own canned answer, which carries no detail at all, so what a denial the broker explained
 // prints is told apart from what one it did not still prints.
-const refusedDetail = "GCLOUD_SAMI: requester-not-listed"
+const refusedDetail = "GCLOUD_DEMO: requester-not-listed"
 
 // judgeRefusedText is the broker's own sentence for JUDGE_REFUSED: the model judge refused the
 // request, finally, in the words refusalOf writes.

@@ -1170,7 +1170,7 @@ test("a claim carries the leak check's cause beside its failure", () => {
     throw new Error("state fixture lacks LEGION-210's implementer");
   }
   const sentence =
-    "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found";
+    "the shared public leak check could not be installed: GitHub answered the read of example-org/deployment at leak-check-v3 with HTTP 404: Not Found";
   expect(refused.leakCheckCause).toBe(sentence);
   expect(
     LegionStateResponse.parse(state).issues["LEGION-210"]?.workers.implementer?.claim.leakCheckCause

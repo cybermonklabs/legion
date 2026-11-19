@@ -304,6 +304,16 @@ type Machine struct {
 	// credential's service is that one (requester). It is read on every call, so an account
 	// dropped from the setting stops its machines' service secrets at their next one.
 	VMServicesByAccount map[string]string
+	// VMPersonsByAccount is each fleet's person, keyed by its Google service account's email
+	// (BROKER_VM_EXCHANGE_ACCOUNTS' person, an entry that names none left out): whose Dispatch
+	// Inbox lists a request one of its machines' own sessions makes for a shared human-tier
+	// secret (responsiblePerson). It grants nothing: a machine's session acts for no person.
+	VMPersonsByAccount map[string]string
+	// Assignees names a Dispatch issue's assignee, whose Inbox lists a request a Legion pod makes
+	// for a shared human-tier secret when its claim names that issue (claimAssignee); nil reads
+	// nothing, and such a request is listed for everyone. cmd/broker wires the judge's read of
+	// Dispatch where BROKER_JUDGE_DISPATCH_URL is set.
+	Assignees Assignees
 	// Minters maps each policy type (policy.Types) to its Minter. A release never returns the
 	// stored value of a type secret.
 	Minters map[string]Minter
@@ -421,6 +431,10 @@ type enrollmentRow struct {
 	// the grant-log line a committed transaction writes names the session it decided for
 	// without a second query (grantLogEvent).
 	SessionID string
+	// Claim is what a pod's launcher stated the pod runs for (enrollments.claim), "" for none:
+	// for the Legion daemon, the role claim token whose issue's assignee is asked for a shared
+	// secret's request (claimAssignee). The live-enrollment read (enrollment) fills it.
+	Claim string
 }
 
 // requester is enrollment e as the policy sees it, read through q: the person it acts for (none
@@ -483,7 +497,11 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 // the session and the write. It then evaluates the policy for the session and writes a granted or
 // denied request, with a granted one's grant, or a pending request and its credential-request
 // record. A second pending request that overlaps one of its names is refused, so an untrusted
-// session cannot flood an approver's Inbox by varying --ttl.
+// session cannot flood an approver's Inbox by varying --ttl. A pending request whose approver is
+// record.AnyoneApprover records the person responsible for the agent that made it
+// (responsiblePerson), whose Inbox alone lists it, or nobody, and then everyone's does; for a
+// Legion pod that person is its claim's issue's assignee, read from Dispatch before the
+// transaction opens (claimAssignee).
 //
 // A request it writes pending is handed to Machine.Judge once the transaction has committed, and
 // one it coalesced onto a pending request is not, so the model judge sees each record once.
@@ -587,6 +605,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 			return Request{}, err
 		}
 	}
+	assignee := m.claimAssignee(ctx, enr, set, names, obj.Reason)
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
 		return Request{}, err
@@ -635,6 +654,9 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 		id: uuid.NewString(), enrollmentID: enrollmentID, reason: obj.Reason, state: e.state,
 		approver: e.approver, rulesVersion: set.Version, sessionID: sessionID, lifetime: lifetime, decisions: e.decisions,
 		requester: requester, denials: e.denials, unexplained: e.unexplained,
+	}
+	if e.state == "pending" && e.approver == record.AnyoneApprover {
+		r.notify = m.responsiblePerson(enr, requester, assignee)
 	}
 	// Both branches end the same way — commit, then the one grant-log line for the request.created
 	// audit row insertRequest wrote — so only how req is produced differs between them.
@@ -886,6 +908,11 @@ type newRequest struct {
 	// pendingExpiresAt is set only when state == "pending"; it is also the credential-request
 	// record's own ExpiresAt, computed once so the two never drift a few microseconds apart.
 	pendingExpiresAt time.Time
+	// notify is the person whose Inbox alone lists a pending request that waits on
+	// record.AnyoneApprover (responsiblePerson), "" for everyone's; createPending writes it as
+	// credential_requests.notify, which PendingForApprover reads. It is no part of the signed
+	// record: it chooses who is asked, never who may decide.
+	notify string
 	// judgeHolds is whether the model judge holds the pending request: insertRequest then writes
 	// requests.judge_until JudgeHold after the database's own now(), the clock every read of the
 	// hold compares it with, and leaves it null for one a person decides.
@@ -993,7 +1020,7 @@ func (m *Machine) insertRequest(ctx context.Context, tx pgx.Tx, r newRequest) er
 }
 
 // createPending writes, in Create's transaction, a pending request and its credential-request
-// record.
+// record, with the person the record is listed for (r.notify, NULL for everyone).
 func (m *Machine) createPending(ctx context.Context, tx pgx.Tx, enr enrollmentRow, r newRequest, obj record.RequestObject) (Request, error) {
 	body := record.Body{
 		Request:         obj.Compact,
@@ -1004,8 +1031,8 @@ func (m *Machine) createPending(ctx context.Context, tx pgx.Tx, enr enrollmentRo
 		ExpiresAt:       r.pendingExpiresAt,
 	}
 	recordID := body.ID()
-	if _, err := tx.Exec(ctx, `insert into credential_requests (id, body, kind, approver, enrollment_id, expires_at) values ($1,$2,'agent_secret',$3,$4,$5)`,
-		recordID, body.Canonical(), body.Approver, r.enrollmentID, body.ExpiresAt); err != nil {
+	if _, err := tx.Exec(ctx, `insert into credential_requests (id, body, kind, approver, enrollment_id, expires_at, notify) values ($1,$2,'agent_secret',$3,$4,$5,$6)`,
+		recordID, body.Canonical(), body.Approver, r.enrollmentID, body.ExpiresAt, nullable(r.notify)); err != nil {
 		return Request{}, err
 	}
 	r.recordID = recordID
@@ -2299,10 +2326,10 @@ func mayRevoke(login string, approver, operator *string) (allowed, asOperator bo
 // enrollment reads a live enrollment (not revoked, lease not lapsed); pgx.ErrNoRows otherwise.
 func (m *Machine) enrollment(ctx context.Context, id string) (enrollmentRow, error) {
 	var e enrollmentRow
-	err := m.Store.Pool.QueryRow(ctx, `select e.id, e.kind, e.operator, c.service, c.host, e.subject, e.thumbprint, e.runtime_id, e.slot, coalesce(e.session_id,'') from enrollments e
+	err := m.Store.Pool.QueryRow(ctx, `select e.id, e.kind, e.operator, c.service, c.host, e.subject, e.thumbprint, e.runtime_id, e.slot, coalesce(e.session_id,''), coalesce(e.claim,'') from enrollments e
 		left join launcher_credentials c on c.id = e.launcher_credential_id
 		where e.id=$1 and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at)`, id).
-		Scan(&e.ID, &e.Kind, &e.Operator, &e.Service, &e.Host, &e.Subject, &e.Thumbprint, &e.RuntimeID, &e.Slot, &e.SessionID)
+		Scan(&e.ID, &e.Kind, &e.Operator, &e.Service, &e.Host, &e.Subject, &e.Thumbprint, &e.RuntimeID, &e.Slot, &e.SessionID, &e.Claim)
 	return e, err
 }
 

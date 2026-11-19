@@ -127,9 +127,7 @@ func TestAReconcileOnTheClusterKeepsTheCopiesTheByteLimitTheIDAndTheLimitsItDoes
 			t.Run(drift.name+"/"+start.name, func(t *testing.T) {
 				cluster, js := startClusterJetStream(t)
 				deployed := deployedClusterStream(drift.change)
-				if _, err := js.AddStream(&deployed); err != nil {
-					t.Fatalf("deploy the stream: %v", err)
-				}
+				cluster.CreateStream(t, deployed)
 				before := testnats.AwaitSettledStream(t, js, Stream).Config
 
 				startOnCluster(t, cluster, start.options...)

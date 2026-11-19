@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
 const gitCredentialUsage = "usage: legion git-credential get|store|erase  (git's credential helper for a shared clone; git runs it, never a person)"
@@ -139,13 +140,15 @@ func readCredentialRequest(r io.Reader) map[string]string {
 //
 // An owner the bundle holds no directory for is refused, which is this caller's own answer: the
 // role's App has no installation on owner, so no token of this bundle reaches anything of it,
-// and an answer of nothing would have git prompt.
+// and an answer of nothing would have git prompt. The refusal is leakguard.OwnerNotServedError,
+// which the leak guard reads, exactly, in `legion gh`'s refusal of its REST visibility read: it
+// then reads that repository's visibility with no credential instead.
 func ownerGHConfigDir(ownersDir, owner string) (string, error) {
 	dir := ghconfig.Dir(ownersDir, owner)
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
 		return dir, nil
 	}
-	return "", fmt.Errorf("the role's GitHub App is not installed on %q: %s holds no gh directory for it", owner, ownersDir)
+	return "", &leakguard.OwnerNotServedError{Owner: owner, OwnersDir: ownersDir}
 }
 
 // ghConfigDirFor is the gh directory of the bundle under ownersDir that answers for the
@@ -173,6 +176,8 @@ func ownerGHConfigDir(ownersDir, owner string) (string, error) {
 // not installed on the owner holding it, or GitHub refused that lease — and the `from` owner's
 // token, which is what an owner-only answer would hand out, cannot write it. Failing closed
 // leaves git and gh saying so, where the other answer is a push that is refused at the remote.
+// That refusal holds OwnerNotServedError's words inside a longer line, so the leak guard reads
+// it as the setup failure it is and not as an owner the project does not serve.
 func ghConfigDirFor(ownersDir, owner, name string) (string, error) {
 	if name == "" {
 		return ownerGHConfigDir(ownersDir, owner)
