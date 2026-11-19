@@ -138,8 +138,10 @@ async function terminate(): Promise<void> {
   // as e2e/harness-up.ts's, has none, and `clearRunDir` removes its directory either way). No
   // container's log is printed for them: a SIGTERM is how e2e/visual-run.sh ends harness-up after
   // every run, passed or failed, and printing there would put a whole Postgres log in every visual
-  // job's output. A SIGTERM that lands while stacks are still starting ends that start, which
-  // stops what it started as any failed start does, its container's log printed.
+  // job's output. A SIGTERM that lands while stacks are still starting ends that start: the log of
+  // each stack's container that had come up is printed as the start stops it, and a container
+  // still waiting to answer is removed unread; a start that has not settled within
+  // `terminateGraceMs` is left, and the stacks that are up are stopped here, printing nothing.
   await stopStacks(true, false);
   process.kill(process.pid, "SIGTERM");
 }
