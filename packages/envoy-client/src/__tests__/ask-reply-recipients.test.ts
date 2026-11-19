@@ -11,9 +11,9 @@ import { sessionAnswerRelationPhrase } from "../session-answer-relations";
  * topic. packages/envoy's TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers drives the
  * case through the real API and outbox and writes each copy it was handed, with what the reader's
  * answers read calls the reply, into this fixture; that test's doc gives the fixture's shape. The
- * card is rendered here from those same bytes, so it and the answers read agree for each session
- * the comment named as the ask's owner. The fixture's `stand_in` holds the same case for a reply
- * too large for the bus, as the stand-ins the outbox sent in its place.
+ * card is rendered here from those same bytes, and no session here starts or stops owning the ask
+ * between a reply and those reads, so the card and the answers read agree. The fixture's
+ * `stand_in` holds the same case for a reply too large for the bus, as the outbox's stand-ins.
  */
 interface AskReplyFixture {
   readonly issue_key: string;
