@@ -3,8 +3,11 @@ package storetest
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"regexp"
+	"runtime"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -43,6 +46,21 @@ import (
 // INFRA-636 plan: every statement-free gap is at most XidMaxGap, and the gaps together take no
 // longer than the statements do.
 //
+// A gap is judged by the time the code made in it (XidGap.Made), not by the time it took on the
+// clock. On a loaded machine the clock reads the machine: a thread kept waiting for a CPU, or a
+// stop of the world the collector could not finish until the process's slowest thread stopped,
+// opens a gap of milliseconds behind code that ran for microseconds (TestXidWindowsOnTheLargeSpec
+// read 13 ms after one batch at a load of 660 on a 288-CPU machine). So the rig holds what it can
+// still. The goroutine that begins a marked transaction is locked to its OS thread until the
+// transaction ends (XidTracer.lockTransaction), so that thread sends every statement of the
+// window and runs nothing else; and the operation runs with the collector held off
+// (runWithoutCollector), so none of the runtime's pauses lands in a window. And each gap is read
+// off that thread's own scheduler clocks (readXidThreadClock) as well as the process's clock: the
+// time the kernel kept the thread runnable on a run queue is the machine's load, and the rest -
+// the time it ran, and the time it was off a CPU because the code waited on something - is the
+// code's. A sleep, a lock, a channel or a document call in the window is in that rest, and a
+// machine that is merely busy is not.
+//
 // Which transactions are judged is decided by context, not guessed from timing: the caller marks
 // the context its operation runs under (MarkXid) and the tracer marks every statement whose
 // context carries it. A transaction is the operation's when any statement of it is marked, and
@@ -51,24 +69,27 @@ import (
 // (settlement timers, the outbox, listeners) runs under contexts of its own, so it shares the pool
 // but never the verdict.
 
-// XidMaxGap is the longest statement-free gap D6 allows inside an xid window, in a build that
-// judges a window's time at all (XidJudgesGaps).
+// XidMaxGap is the longest statement-free gap D6 allows the code to make inside an xid window
+// (XidGap.Made), in a build that judges a window's time at all (XidJudgesGaps).
 const XidMaxGap = 5 * time.Millisecond
 
 // XidFaultGap is the statement-free gap the rig's deliberate-fault self-tests inject behind the
-// short statements of a rig transaction: four times XidMaxGap, so the fault is never read off
-// the scheduler's own stalls, and well under what a real document call inside a window costs,
-// which leaves the docs package's control (TestXidWindowCatchesADocumentCallInsideTheWindow) as
-// the test that goes red first if the bound is ever widened too far.
+// short statements of a rig transaction: four times XidMaxGap, and well under what a real
+// document call inside a window costs, which leaves the docs package's control
+// (TestXidWindowCatchesADocumentCallInsideTheWindow) as the test that goes red first if the bound
+// is ever widened too far.
 const XidFaultGap = 20 * time.Millisecond
 
 // XidJudgesGaps reports whether this build judges how long a window's statement-free gaps are.
-// A plain build does, and holds every window to D6's XidMaxGap. A build with the race detector
-// does not, and the build tag is the only thing that says so (raceDetector).
+// A plain build judges them only when its thread-clock probe can read the calling thread's clocks.
+// That probe is read once at run time (xidThreadClocksAvailable): Linux kernels do not all expose
+// schedstat. A build with the race detector does not, and the build tag is the only thing that
+// says so (raceDetector); where either makes gap judgment unavailable, the rig holds window shape
+// alone, as the race build does.
 //
-// The reason is that under the race detector no wall-clock bound can tell what it is meant to
-// tell. The detector's instrumentation and the scheduling it forces leave a goroutine off the
-// processor between two statements of a window nothing is wrong with, for as long as a slow Go
+// The reason for the race build is that under the race detector no bound can tell what it is
+// meant to tell. The detector's instrumentation and the scheduling it forces leave a goroutine off
+// the processor between two statements of a window nothing is wrong with, for as long as a slow Go
 // call would: measured on this plan's two-core box, a scheduler stall of 92.683 ms behind
 // 20.130 ms of statements (the issue patch window, now a step of the api package's
 // TestXidWindowsOnTheLargeSpec, once in twenty race iterations), and on a GitHub runner 9.331 ms
@@ -94,7 +115,7 @@ const XidFaultGap = 20 * time.Millisecond
 // only when its filter (envoy_go, envoy_go_race_docs) selects the change. So the gap bound is
 // judged in the merge queue before every merge, not on every pull-request push. Under the race
 // detector the docs tests that inject a sleep skip their timing arm by name.
-func XidJudgesGaps() bool { return !raceDetector }
+func XidJudgesGaps() bool { return !raceDetector && xidThreadClocksAvailable() }
 
 // xidPollInterval is how often the poller reads pg_stat_activity: the plan's 0.5 ms. A poll's own
 // round trip is of the same order, so in practice a backend is looked at about every millisecond.
@@ -130,6 +151,21 @@ type XidStatement struct {
 	// Wrote is true when the statement's own result says it took a transaction id (xidAssigned):
 	// for a batch, when any query of it did.
 	Wrote bool
+	// started and ended are the scheduler clocks of the OS thread that sent the statement, read
+	// just before Start and just after End (readXidThreadClock); a clock the rig could not read
+	// names no thread. locked is the OS thread the goroutine that began the statement's
+	// transaction was locked to at its BEGIN (XidTracer.lockTransaction), zero when none was.
+	started, ended xidThreadClock
+	locked         int
+}
+
+// xidThreadClock is one reading of an OS thread's scheduler clocks: which thread, the CPU time it
+// has run, and the time it has waited runnable on a run queue for a CPU. A zero thread is a
+// reading the rig could not take.
+type xidThreadClock struct {
+	thread int
+	ran    time.Duration
+	waited time.Duration
 }
 
 // XidTracer is a pgx QueryTracer, BatchTracer and CopyFromTracer that records the statements each
@@ -141,6 +177,9 @@ type XidTracer struct {
 	// blind is how long Measure's poller waits before its first read of pg_stat_activity; zero
 	// polls from the start (BlindPoller).
 	blind time.Duration
+	// locked is, for each backend whose marked transaction began while the tracer recorded and
+	// has not ended, the OS thread the goroutine that began it is locked to (lockTransaction).
+	locked map[uint32]int
 }
 
 // NewXidTracer returns a tracer that records nothing until Measure starts it.
@@ -159,18 +198,35 @@ func (x *XidTracer) BlindPoller(d time.Duration) {
 type xidSpan struct {
 	statement XidStatement
 	sql       []string
+	// ends is true for a COMMIT or a ROLLBACK, whose end lets its transaction's goroutine go
+	// (unlockTransaction).
+	ends bool
 }
 
 func (x *XidTracer) begin(ctx context.Context, conn *pgx.Conn, sql string) context.Context {
+	pid := conn.PgConn().PID()
+	verb := xidVerb(sql)
+	ends := verb == "commit" || verb == "rollback"
 	x.mu.Lock()
 	recording := x.recording
 	x.mu.Unlock()
 	if !recording {
+		if ends {
+			x.unlockTransaction(pid)
+		}
 		return ctx
 	}
-	span := &xidSpan{statement: XidStatement{
-		PID: conn.PgConn().PID(), Start: time.Now(), SQL: sql, Marked: markedXid(ctx),
+	marked := markedXid(ctx)
+	if verb == "begin" && marked {
+		x.lockTransaction(pid)
+	}
+	x.mu.Lock()
+	locked := x.locked[pid]
+	x.mu.Unlock()
+	span := &xidSpan{ends: ends, statement: XidStatement{
+		PID: pid, SQL: sql, Marked: marked, started: readXidThreadClock(), locked: locked,
 	}}
+	span.statement.Start = time.Now()
 	return context.WithValue(ctx, xidSpanKey{}, span)
 }
 
@@ -182,14 +238,52 @@ func (x *XidTracer) end(ctx context.Context, tag pgconn.CommandTag) {
 		return
 	}
 	span.statement.End = time.Now()
+	span.statement.ended = readXidThreadClock()
 	if len(span.sql) > 0 {
 		span.statement.SQL = strings.Join(span.sql, "; ")
 	}
 	span.statement.Wrote = span.statement.Wrote || xidAssigned(span.statement.SQL, tag)
 	x.mu.Lock()
-	defer x.mu.Unlock()
 	if x.recording {
 		x.statements = append(x.statements, span.statement)
+	}
+	x.mu.Unlock()
+	if span.ends {
+		x.unlockTransaction(span.statement.PID)
+	}
+}
+
+// lockTransaction locks the calling goroutine, which is sending the BEGIN of a marked
+// transaction on backend pid, to its OS thread until that transaction's COMMIT or ROLLBACK
+// (unlockTransaction). A thread locked to a goroutine runs that goroutine and no other, so every
+// gap between two statements the goroutine sends from it is read off clocks of its own: the time
+// the thread ran, and waited for a CPU, is the goroutine's. It is the BEGIN that locks, not the
+// measured operation, because an operation sends a transaction from any goroutine it starts - a
+// broadcast delivers to each session on a goroutine of its own.
+func (x *XidTracer) lockTransaction(pid uint32) {
+	runtime.LockOSThread()
+	thread := xidThread()
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.locked == nil {
+		x.locked = map[uint32]int{}
+	}
+	x.locked[pid] = thread
+}
+
+// unlockTransaction lets go of the thread lockTransaction locked for backend pid's transaction,
+// when the calling goroutine is the one it locked: a transaction that ended on another goroutine
+// leaves the goroutine that began it locked, which the runtime then ends its thread with.
+func (x *XidTracer) unlockTransaction(pid uint32) {
+	x.mu.Lock()
+	thread, held := x.locked[pid]
+	mine := held && thread == xidThread()
+	if mine {
+		delete(x.locked, pid)
+	}
+	x.mu.Unlock()
+	if mine {
+		runtime.UnlockOSThread()
 	}
 }
 
@@ -249,9 +343,11 @@ type xidPoll struct {
 // Measure runs operation while it records every statement and polls which backends hold an xid,
 // and answers the xid windows of the transactions operation's marked context ran (MarkXid). pool
 // is the pool under test; the poller dials a connection of its own from its configuration,
-// untraced, so it never waits for one of the pool's.
+// untraced, so it never waits for one of the pool's. operation runs on its caller's goroutine with
+// the collector held off (runWithoutCollector).
 func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *XidReport {
 	t.Helper()
+
 	ctx := context.Background()
 	config := pool.Config().ConnConfig.Copy()
 	config.Tracer = nil
@@ -317,7 +413,7 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 	}()
 
 	started := time.Now()
-	operation()
+	runWithoutCollector(operation)
 	finished := time.Now()
 	close(stop)
 	<-polled
@@ -331,6 +427,20 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 		t.Fatalf("xid rig: poll pg_stat_activity: %v", pollErr)
 	}
 	return analyzeXidWindows(statements, polls, finished.Sub(started))
+}
+
+// runWithoutCollector runs operation with the collector held off - no memory limit, and a GOGC
+// of off, which waits for a cycle already marking to end - and puts both back after it. So no
+// stop-the-world pause, stack scan or mark assist of the runtime's lands inside a window of the
+// operation's: a pause takes as long as the slowest thread of the process takes to stop, which on
+// a loaded machine is the load's doing, and beside these tests at a load of 400 on a 288-CPU
+// machine (2026-11-19) one took 33 ms.
+func runWithoutCollector(operation func()) {
+	limit := debug.SetMemoryLimit(math.MaxInt64)
+	defer debug.SetMemoryLimit(limit)
+	percent := debug.SetGCPercent(-1)
+	defer debug.SetGCPercent(percent)
+	operation()
 }
 
 // XidTransaction is one transaction of the measured operation: every statement its backend ran
@@ -356,18 +466,59 @@ type XidWindow struct {
 	Statements    []XidStatement
 	Start, End    time.Time
 	StatementTime time.Duration
-	GapTime       time.Duration
-	MaxGap        time.Duration
+	// Gaps are the gaps between Statements, Gaps[i] following Statements[i]. GapTime and MaxGap
+	// are of the time the code made in them (XidGap.Made).
+	Gaps    []XidGap
+	GapTime time.Duration
+	MaxGap  time.Duration
 	// MaxGapAfter indexes Statements: the biggest gap follows Statements[MaxGapAfter].
 	MaxGapAfter int
+}
+
+// XidGap is the time between two statements of a window: from the end of one to the start of the
+// next on this process's clock (Clock), read as well off the scheduler clocks of the thread that
+// sent both (XidTracer.lockTransaction) - the CPU time it ran meanwhile (Ran) and the time it
+// waited runnable on a run queue for a CPU (Runnable). Read is false when the rig could not read
+// those clocks at both ends on the thread its transaction's goroutine was locked to.
+type XidGap struct {
+	Clock    time.Duration
+	Ran      time.Duration
+	Runnable time.Duration
+	Read     bool
+}
+
+// Made is the time the code made in the gap: the gap on the clock less the time its thread waited
+// for a CPU, which is the machine's load and not the code's. What is left is the time the thread
+// ran and the time it was off a CPU of its own accord - asleep, or waiting on a lock, a channel or
+// the network - which is what the code under test does between two statements. A gap whose
+// clocks were not read (Read) is its time on the clock.
+func (g XidGap) Made() time.Duration {
+	if !g.Read {
+		return g.Clock
+	}
+	return max(g.Clock-g.Runnable, 0)
+}
+
+// xidGapBetween is the gap from before's end to after's start, read off the clocks of the thread
+// their transaction's goroutine was locked to, where both were read on it.
+func xidGapBetween(before, after XidStatement) XidGap {
+	gap := XidGap{Clock: max(after.Start.Sub(before.End), 0)}
+	thread := before.locked
+	if thread != 0 && after.locked == thread && before.ended.thread == thread && after.started.thread == thread {
+		gap.Read = true
+		gap.Ran = after.started.ran - before.ended.ran
+		gap.Runnable = after.started.waited - before.ended.waited
+	}
+	return gap
 }
 
 // Length is the window's span, its first statement's start to its COMMIT's end.
 func (w XidWindow) Length() time.Duration { return w.End.Sub(w.Start) }
 
 // Violations are the D6 rules the window breaks, empty when it keeps them. Both of them are
-// readings of time, so a build that judges none (XidJudgesGaps) breaks none here, and what holds
-// there is the shape each window test asserts of its own window.
+// readings of the time the code made in the window's gaps (XidGap.Made), so a build that judges
+// none (XidJudgesGaps) breaks none here, and what holds there is the shape each window test
+// asserts of its own window.
 func (w XidWindow) Violations() []string {
 	if !XidJudgesGaps() {
 		return nil
@@ -386,9 +537,13 @@ func (w XidWindow) Violations() []string {
 
 // Summary is the window in one line: what a passing run logs and a red run quotes.
 func (w XidWindow) Summary() string {
-	return fmt.Sprintf("backend %d: xid window %s, %d statements taking %s, gaps %s, largest gap %s after statement %d (%s)",
+	var largest XidGap
+	if len(w.Gaps) > 0 {
+		largest = w.Gaps[w.MaxGapAfter]
+	}
+	return fmt.Sprintf("backend %d: xid window %s, %d statements taking %s, gaps %s, largest gap %s after statement %d (%s on the clock, %s of it waiting for a CPU) (%s)",
 		w.Transaction.PID, XidMillis(w.Length()), len(w.Statements), XidMillis(w.StatementTime), XidMillis(w.GapTime),
-		XidMillis(w.MaxGap), w.MaxGapAfter, xidSQL(w.Statements[w.MaxGapAfter].SQL))
+		XidMillis(w.MaxGap), w.MaxGapAfter, XidMillis(largest.Clock), XidMillis(largest.Runnable), xidSQL(w.Statements[w.MaxGapAfter].SQL))
 }
 
 // Detail lists every statement of the window and every gap between them, times relative to the
@@ -408,12 +563,17 @@ func (w XidWindow) Detail() string {
 		unseen, sighted, XidMillis(w.Start.Sub(begin)), XidMillis(w.End.Sub(begin)))
 	for i, statement := range w.Statements {
 		if i > 0 {
-			gap := statement.Start.Sub(w.Statements[i-1].End)
+			gap := w.Gaps[i-1]
 			flag := ""
-			if XidJudgesGaps() && gap > XidMaxGap {
+			if XidJudgesGaps() && gap.Made() > XidMaxGap {
 				flag = "  <-- over " + XidMillis(XidMaxGap)
 			}
-			fmt.Fprintf(&b, "      gap %10s%s\n", XidMillis(gap), flag)
+			read := "its thread's clocks unread"
+			if gap.Read {
+				read = fmt.Sprintf("ran %s, off a CPU %s, waiting for one %s", XidMillis(gap.Ran),
+					XidMillis(max(gap.Clock-gap.Runnable-gap.Ran, 0)), XidMillis(gap.Runnable))
+			}
+			fmt.Fprintf(&b, "      gap %10s  (%s on the clock: %s)%s\n", XidMillis(gap.Made()), XidMillis(gap.Clock), read, flag)
 		}
 		fmt.Fprintf(&b, "  %3d %10s +%9s  %s\n", i, XidMillis(statement.Start.Sub(w.Start)),
 			XidMillis(statement.End.Sub(statement.Start)), xidSQL(statement.SQL))
@@ -493,6 +653,9 @@ func xidAssigned(sql string, tag pgconn.CommandTag) bool {
 	return false
 }
 
+// analyzeXidWindows splits statements into the operation's transactions and judges their windows.
+// A window gap not read off its transaction's locked thread (XidGap.Read) is a rig problem where
+// the build judges gaps.
 func analyzeXidWindows(statements []XidStatement, polls []xidPoll, duration time.Duration) *XidReport {
 	report := &XidReport{Duration: duration, Polls: len(polls)}
 	for i := 1; i < len(polls); i++ {
@@ -563,7 +726,17 @@ func analyzeXidWindows(statements []XidStatement, polls []xidPoll, duration time
 			report.Unsighted = append(report.Unsighted, transaction)
 			continue
 		}
-		report.Windows = append(report.Windows, xidWindowOf(transaction))
+		window := xidWindowOf(transaction)
+		if XidJudgesGaps() {
+			for i, gap := range window.Gaps {
+				if !gap.Read {
+					report.Problems = append(report.Problems, fmt.Sprintf(
+						"the gap after statement %d of backend %d's window (%s) was not read off one thread's clocks on both sides: the transaction's goroutine was not locked to its thread from its BEGIN (a BEGIN the operation's marked context did not send), or another goroutine sent its statements",
+						i, transaction.PID, xidSQL(window.Statements[i].SQL)))
+				}
+			}
+		}
+		report.Windows = append(report.Windows, window)
 	}
 	return report
 }
@@ -614,7 +787,9 @@ func xidWindowOf(transaction XidTransaction) XidWindow {
 		if i == 0 {
 			continue
 		}
-		gap := max(statement.Start.Sub(window.Statements[i-1].End), 0)
+		measured := xidGapBetween(window.Statements[i-1], statement)
+		window.Gaps = append(window.Gaps, measured)
+		gap := measured.Made()
 		window.GapTime += gap
 		if gap > window.MaxGap {
 			window.MaxGap = gap
