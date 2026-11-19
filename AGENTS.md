@@ -442,7 +442,11 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 - `legion git-credential get|store|erase`
 
   every shared clone's git credential helper (`!legion git-credential`, with credential.useHttpPath on), and, as `legion gh auth git-credential`, the helper of the git gh runs itself;
-  git runs it, never a person: `get` answers https://github.com with the token of the owner the requested path names, from that owner's directory of LEGION_GH_OWNERS_DIR and from nothing else, answering nothing (exit 1, naming why) for any other host, a request with no path, or an owner the bundle holds no directory for; `store` and `erase` write nothing
+  git runs it, never a person: `get` answers https://github.com with the token of the owner the requested path names, from that owner's directory of LEGION_GH_OWNERS_DIR, and answers nothing (exit 1, naming why) for any other host and for a request with no path;
+  for a repository of an owner the bundle holds no directory for, it reads that repository from GitHub once (`GET /repos/<owner>/<name>` through `/usr/bin/curl`, within 10 s), with the token of the directory `GH_CONFIG_DIR` names where that is a directory of the bundle;
+  where GitHub answers that the repository is a fork, it answers the token it would answer for the fork's `parent`, or else for its `source`, where the bundle holds that owner's directory, which is how a pod pushes to the branch of an outside contributor's pull request from a fork in a personal account;
+  every other answer is nothing, exit 1, with one line on stderr naming the repository and why: no fork, a fork whose parent and source the bundle serves neither of, or what GitHub answered;
+  `store` and `erase` write nothing
 
 - `legion sessions import --dsn-file <url file> --claims <claims.json|-> [--tree <KEY>] [--tree-volume <dir>]`
 

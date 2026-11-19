@@ -48,7 +48,7 @@ func newRoot(stdout, stderr io.Writer) *cobra.Command {
 		newModelTokenCommand(stdout, stderr),
 		newProbeImageCommand(stdout, stderr),
 		newWorkspaceInitCommand(stdout, stderr),
-		passThrough("git-credential", "git's credential helper in every shared clone: answers git with the token of the owner the repository's path names (git runs it, never a person)", runGitCredential, stdout, stderr),
+		passThrough("git-credential", "git's credential helper in every shared clone: answers git with the token of the owner the repository's path names, or of a fork's parent's or source's owner where the path's owner has no gh directory (git runs it, never a person)", runGitCredential, stdout, stderr),
 		passThrough("git", "the commit half of a pod's git and the git first on a tmux pane's PATH: adds a git commit's Omp-Session and Legion-Role trailers and runs the real git (a git wrapper runs it, never a person)", runGit, stdout, stderr),
 		passThrough("gh", "the gh first on a pane's or pod's PATH: runs the real gh with the gh directory of the owner the command names (a pane runs it, never a person)", runGh, stdout, stderr),
 		newLeakCheckCommand(stderr),
