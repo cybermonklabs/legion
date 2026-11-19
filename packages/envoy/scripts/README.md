@@ -783,13 +783,18 @@ in silence:
   `.claude-plugin/marketplace.json`, and the plugin from its npm `registry` when the entry names
   one, which must be an `https` URL (`--registry=<url>`); a `path` with an empty, `.` or `..`
   segment, and any other key of the marketplace source or the npm source, print `UNKNOWN`, since
-  either may move what is installed. The version is the one npm itself takes on this box: the gate
-  runs `npm pack @sjawhar/claude-envoy@<range> --dry-run --json` in a directory with no
-  `package.json` or `.npmrc` of a project, so npm applies every rule of its own pick under the
-  box's npm configuration (the dist-tag its `tag` setting names, `before` and, on npm 11,
-  `min-release-age`, deprecation, and the engines of the node and npm it runs on), and the gate
-  judges the one version npm answers. The dry run fetches the package into npm's cache and writes
-  nothing else. An answer that is not one package named `@sjawhar/claude-envoy` prints `UNKNOWN`.
+  either may move what is installed. The marketplace's `version` is the spec npm installs from, and
+  only a registry spec names a release: npm's own parser (the npm-package-arg npm ships) must call
+  it a range, an exact version or a dist-tag. Any other spec (a directory, a git repository, a
+  tarball URL, an alias) prints `UNKNOWN` before npm fetches it, since npm builds it from its
+  source and runs its `prepare` script even under `--ignore-scripts`. The version is the one npm
+  itself takes on this box: the gate runs `npm pack @sjawhar/claude-envoy@<range> --dry-run
+  --ignore-scripts --json` in a directory with no `package.json` or `.npmrc` of a project, so npm
+  applies every rule of its own pick under the box's npm configuration (the dist-tag its `tag`
+  setting names, `before` and, on npm 11, `min-release-age`, deprecation, and the engines of the
+  node and npm it runs on), and the gate judges the one version npm answers. The dry run fetches
+  the package into npm's cache and writes nothing else. An answer that is not one package named
+  `@sjawhar/claude-envoy` prints `UNKNOWN`.
   Each version must be an exact release version and is judged by the commit of its release tag,
   `pi-envoy-v<version>` or `claude-envoy-v<version>`. A settings file that enables no
   `claude-envoy@legion-plugins` prints `SKIPPED`. A pi-envoy in `~/.omp/plugins` or a profile's

@@ -97,14 +97,18 @@
 #     version the marketplace legion-plugins serves to .claude/settings.json, read as Claude Code
 #     reads it: its repo at its ref, the file at its path (one inside the repository, with no `.`
 #     or `..` segment), and the package from its registry, which must be an https URL; a key of
-#     either source this gate does not read is UNKNOWN. The version is the one npm's own pick takes
-#     on this box, `npm pack <package>@<range> --dry-run --json` in a directory with no project
-#     configuration, so npm applies every rule of its pick under the box's npm configuration (its
-#     `tag`, `before`, `min-release-age`, deprecation and engines) and the gate judges that one
-#     version. Each version is judged by the commit of its release tag (`pi-envoy-v<version>`,
-#     `claude-envoy-v<version>`). A client installed where the dotfiles' pins say nothing about it
-#     (~/.omp/plugins or a profile's plugin tree, ~/.claude, another CLAUDE_CONFIG_DIR), a link that
-#     does not resolve, and a marketplace entry it cannot read are UNKNOWN.
+#     either source this gate does not read is UNKNOWN. The marketplace's version must be a
+#     registry spec, a range, an exact version or a dist-tag by npm's own parser (npm-package-arg):
+#     any other (a directory, a git repository, a URL, an alias) is UNKNOWN before npm fetches it,
+#     since npm builds it from its source and runs its scripts. The version is the one npm's own
+#     pick takes on this box, `npm pack <package>@<range> --dry-run --ignore-scripts --json` in a
+#     directory with no project configuration, so npm applies every rule of its pick under the
+#     box's npm configuration (its `tag`, `before`, `min-release-age`, deprecation and engines)
+#     and the gate judges that one version. Each version is judged by the commit of its release
+#     tag (`pi-envoy-v<version>`, `claude-envoy-v<version>`). A client installed where the
+#     dotfiles' pins say nothing about it (~/.omp/plugins or a profile's plugin tree, ~/.claude,
+#     another CLAUDE_CONFIG_DIR), a link that does not resolve, and a marketplace entry it cannot
+#     read are UNKNOWN.
 #
 # Each pin's org.opencontainers.image.source and .revision labels are read with `docker buildx
 # imagetools inspect`. A single image is read whole; an OCI image index, which carries no image

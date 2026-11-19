@@ -25,11 +25,14 @@ check "reads the claude-envoy version the marketplace serves, the one npm takes"
   "$(has_line "PASS: dotfiles .claude/settings.json runs ${claude_served}")"
 check "reads the marketplace the settings name" \
   "$(grep -qF "repos/example-org/plugins/contents/.claude-plugin/marketplace.json" "$calls" && echo true || echo false)"
-check "lets npm pick the version for the range the marketplace names, writing nothing" \
-  "$(grep -qxF "npm pack @sjawhar/claude-envoy@>=1.0.0 --dry-run --json" "$calls" && echo true || echo false)"
-check "runs npm outside the gate's working directory and any project's configuration" \
-  "$(npm_cwd=$(sed -n 's/^npm-cwd //p' "$calls"); [ -n "$npm_cwd" ] && [ "$npm_cwd" != "$PWD" ] &&
-    [ ! -e "$npm_cwd/package.json" ] && [ ! -e "$npm_cwd/.npmrc" ] && echo true || echo false)"
+check "parses the marketplace's spec with npm's own parser" \
+  "$(grep -qxF "npm exec --offline --yes=false -c \"\$npm_node_execpath\" -e \"\$GATE_SPEC_TYPE\"" "$calls" && echo true || echo false)"
+check "lets npm pick the version for the range the marketplace names, writing nothing and running no script" \
+  "$(grep -qxF "npm pack @sjawhar/claude-envoy@>=1.0.0 --dry-run --ignore-scripts --json" "$calls" && echo true || echo false)"
+check "runs npm, each time, outside the gate's working directory and any project's configuration" \
+  "$(npm_cwds=$(sed -n 's/^npm-cwd //p' "$calls"); [ "$(grep -c . <<<"$npm_cwds")" -eq 2 ] &&
+    while read -r npm_cwd; do [ "$npm_cwd" != "$PWD" ] && [ ! -e "$npm_cwd/package.json" ] && [ ! -e "$npm_cwd/.npmrc" ] || exit 1; done <<<"$npm_cwds" &&
+    echo true || echo false)"
 check "resolves each version through its release tag" \
   "$(grep -qF "repos/cybermonklabs/legion/commits/refs/tags/pi-envoy-v17.40.0" "$calls" && grep -qF "repos/cybermonklabs/legion/commits/refs/tags/claude-envoy-v4.0.0" "$calls" && echo true || echo false)"
 check "judges the one version npm takes, once" \

@@ -252,22 +252,29 @@ case "$6" in
   *) echo "fake docker: unexpected format: $6" >&2; exit 2 ;;
 esac
 EOF
-# The fake npm. `npm pack <spec> --dry-run --json` answers as npm 10.9.7's does: a list of the one
-# package it packed, with the fields npm prints (id, name, version, size, unpackedSize, shasum,
-# integrity, filename, files, entryCount, bundled), for the version FAKE_ROOT/npm/<spec with / @ < >
-# = as _> names, which is the version npm's own pick takes for the spec under the npm configuration
-# the case sets; that file with `.raw` added is answered as it is, as an npm that answers garbage
-# would. With `--registry=<url>`, each is read from FAKE_ROOT/npm-registries/<url with / and : as _>/
-# instead. It fails as npm does (E404) when no file names a version, and as an unreachable registry
-# when FAKE_NPM_DOWN=1. It records each call, the directory it runs in as an `npm-cwd <dir>` line,
-# and each npm_config_ variable it runs with as an `npm-config <name>=<value>` line, so a case sees
-# where the gate runs npm and the configuration it leaves npm; it refuses any other command, and a
-# pack without --dry-run, which would write the tarball.
+# The fake npm. `npm pack <spec> --dry-run [--ignore-scripts] --json` answers as npm 10.9.7's does:
+# a list of the one package it packed, with the fields npm prints (id, name, version, size,
+# unpackedSize, shasum, integrity, filename, files, entryCount, bundled), for the version
+# FAKE_ROOT/npm/<spec with / @ < > = as _> names, which is the version npm's own pick takes for the
+# spec under the npm configuration the case sets; that file with `.raw` added is answered as it is,
+# as an npm that answers garbage would. With `--registry=<url>`, each is read from
+# FAKE_ROOT/npm-registries/<url with / and : as _>/ instead. It fails as npm does (E404) when no
+# file names a version, and as an unreachable registry when FAKE_NPM_DOWN=1. `npm exec` (the gate's
+# parse of the marketplace's spec with the npm-package-arg npm ships), and `npm pack` when
+# FAKE_NPM_REAL_PACK=1, run the real npm the harness found when it started, so a case sees what
+# the real npm does with a spec. It records each call, the directory it runs in as an `npm-cwd
+# <dir>` line, and each npm_config_ variable it runs with as an `npm-config <name>=<value>` line,
+# so a case sees where the gate runs npm and the configuration it leaves npm; it refuses any other
+# command, and a pack without --dry-run, which would write the tarball.
 cat >"${temporary_dir}/bin/npm" <<'EOF'
 #!/usr/bin/env bash
 printf 'npm %s\n' "$*" >>"${FAKE_CALLS:?}"
 printf 'npm-cwd %s\n' "$PWD" >>"$FAKE_CALLS"
 env | grep '^npm_config_' | sort | sed 's/^/npm-config /' >>"$FAKE_CALLS"
+if [ "$1" = exec ] || { [ "$1" = pack ] && [ "${FAKE_NPM_REAL_PACK:-0}" = 1 ]; }; then
+  mapfile -t real_npm <"$(dirname "$0")/../real-npm"
+  exec "${real_npm[0]}" "${real_npm[1]}" "$@"
+fi
 registry=""
 words=()
 for word in "$@"; do
@@ -277,7 +284,10 @@ for word in "$@"; do
   esac
 done
 set -- "${words[@]}"
-[ "$1" = pack ] && [ "$#" -eq 4 ] && [ "$3 $4" = "--dry-run --json" ] || { echo "fake npm: unexpected command: $*" >&2; exit 2; }
+case "$1 $#:${*:3}" in
+  "pack 4:--dry-run --json" | "pack 5:--dry-run --ignore-scripts --json") ;;
+  *) echo "fake npm: unexpected command: $*" >&2; exit 2 ;;
+esac
 [ "${FAKE_NPM_DOWN:-0}" != 1 ] || { echo "npm error code ENOTFOUND" >&2; exit 1; }
 dir="${FAKE_ROOT:?}/npm"
 [ -z "$registry" ] || dir="${FAKE_ROOT}/npm-registries/$(printf '%s' "$registry" | tr '/:' '__')"
@@ -292,6 +302,15 @@ jq -n --arg name "$name" --arg version "$(tr -d '\n' <"$file")" '[{
 }]'
 EOF
 chmod +x "${temporary_dir}/bin/gh" "${temporary_dir}/bin/docker" "${temporary_dir}/bin/npm"
+# The real npm the fake npm runs for `npm exec` and for a case's real `npm pack`: the node npm runs
+# on and npm's own npm-cli.js, as npm exec gives a command them (npm_node_execpath, npm_execpath),
+# found once with the caller's own HOME and written beside the fakes. The suite needs npm and node.
+# shellcheck disable=SC2016 # npm exec's shell expands them, with the values npm gives it
+if ! (cd "$temporary_dir" && npm exec --offline --yes=false -c 'printf "%s\n%s\n" "$npm_node_execpath" "$npm_execpath"') \
+  >"${temporary_dir}/real-npm" 2>"${temporary_dir}/real-npm.err" || [ "$(grep -c . "${temporary_dir}/real-npm")" -ne 2 ]; then
+  echo "daemon-release-gate.test.sh needs npm and node on PATH: $(head -n 1 "${temporary_dir}/real-npm.err")" >&2
+  exit 1
+fi
 
 failures=0
 case_root=""

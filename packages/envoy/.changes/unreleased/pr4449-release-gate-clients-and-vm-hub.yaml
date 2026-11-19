@@ -9,14 +9,16 @@ body: |-
   (default `~/.dotfiles`), the pi-envoy pin and its installed copy, each claude-envoy install the
   dotfiles record, and the claude-envoy version the `legion-plugins` marketplace serves, read at
   the marketplace's `path` and from its plugin's https npm `registry`, as the version npm itself
-  takes on the box (`npm pack --dry-run --json`, under the box's npm configuration), each by its
-  release tag. A client installed outside the dotfiles, and a marketplace or npm key the gate does
-  not read, are `UNKNOWN`. An image not pinned by digest is `UNKNOWN` and never run. `--listeners`
-  now decides from the deployment's own Go program, its archive held to the commit's tree, whether
-  the VM hub is declared by a call of `NewNatsHub` or a registration of its type token: with no hub
-  it prints `NO VM HUB` and reads no VM pin, so it no longer prints `UNKNOWN` once the hub is
-  removed; a Git LFS pointer is `UNKNOWN`. A project file whose name or key the deployment's
-  program refuses, a submodule among the project files, a file GitHub serves with no content, a
-  listed key that is no project key, and a project field of the wrong type are `UNKNOWN` by name,
-  and every text the gate reads from outside it is printed with its control characters written
-  out.
+  takes on the box (`npm pack --dry-run --ignore-scripts --json`, under the box's npm
+  configuration), each by its release tag. A client installed outside the dotfiles, a marketplace
+  or npm key the gate does not read, and a marketplace version that npm's own parser does not call
+  a registry range, version or dist-tag (a directory, git, URL or alias spec, which npm would build
+  from its source) are `UNKNOWN`. An image not pinned by digest is `UNKNOWN` and never run.
+  `--listeners` now decides from the deployment's own Go program, its archive held to the commit's
+  tree, whether the VM hub is declared by a call of `NewNatsHub` or a registration of its type
+  token: with no hub it prints `NO VM HUB` and reads no VM pin, so it no longer prints `UNKNOWN`
+  once the hub is removed; a Git LFS pointer is `UNKNOWN`. A project file whose name or key the
+  deployment's program refuses, a submodule among the project files, a file GitHub serves with no
+  content, a listed key that is no project key, and a project field of the wrong type are
+  `UNKNOWN` by name, and every text the gate reads from outside it is printed with its control
+  characters written out.

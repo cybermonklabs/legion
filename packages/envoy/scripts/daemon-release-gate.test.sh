@@ -6,7 +6,8 @@
 # this test writes; a fake `docker` answers `buildx imagetools inspect` the way the real one answers
 # a single image and an OCI image index (an index's `.Image.Config.Labels` is `null`, and its
 # platforms are read one at a time) and `run` from an image's files; and a fake `npm` answers `npm
-# pack --dry-run --json`. Each records every call, so a case asserts what the gate printed and what
+# pack --dry-run --json`, running the real npm for `npm exec` and where a case asks, so the suite
+# needs npm and node. Each records every call, so a case asserts what the gate printed and what
 # it asked. The deployment repository is the one `--deployment` names, and each stack's config keys
 # carry the project name its own Pulumi.yaml declares; the fake gh answers that repository alone,
 # so a gate that read any other would fail every row. Each run's HOME is the case's own, so no row

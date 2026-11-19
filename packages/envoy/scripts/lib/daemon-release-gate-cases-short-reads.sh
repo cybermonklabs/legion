@@ -253,7 +253,7 @@ printf '3.3.0\n' >"${case_root}/npm-registries/https___npm.internal.example/_sja
 run_gate -- --clients "$commit"
 check "exits 1" "$(is "$status" 1)"
 check "lets npm pick from that registry" \
-  "$(grep -qxF "npm pack @sjawhar/claude-envoy@>=1.0.0 --dry-run --json --registry=https://npm.internal.example" "$calls" && echo true || echo false)"
+  "$(grep -qxF "npm pack @sjawhar/claude-envoy@>=1.0.0 --dry-run --ignore-scripts --json --registry=https://npm.internal.example" "$calls" && echo true || echo false)"
 check "judges the version it serves" \
   "$(has_line "GATE SHUT: dotfiles .claude/settings.json runs claude-envoy 3.3.0 from claude-envoy-v3.3.0 at ${behind_rev} (behind ${commit} by 12)${claude_note}")"
 
@@ -332,9 +332,65 @@ for reason in deprecated engines; do
   echo "case: --clients, npm passes over latest, which is ${reason}"
   npm_pick "clients-npm-${reason}"
   check "exits 1" "$(is "$status" 1)"
-  check "lets npm pick" "$(grep -qxF "npm pack @sjawhar/claude-envoy@>=1.0.0 --dry-run --json" "$calls" && echo true || echo false)"
+  check "lets npm pick" "$(grep -qxF "npm pack @sjawhar/claude-envoy@>=1.0.0 --dry-run --ignore-scripts --json" "$calls" && echo true || echo false)"
   check "judges the version npm takes" "$(has_line "$npm_pick_shut")"
   check "never judges latest" "$(lacks "claude-envoy 4.0.0" "$out")"
+done
+
+# The marketplace's version is the spec npm installs from, and only a registry spec (a range, an
+# exact version, a dist-tag) names a release. npm builds a spec that names a source (a directory,
+# a git repository) from it, running the package's prepack and prepare scripts, prepare even under
+# --ignore-scripts (pacote 19.0.2, lib/dir.js:30-45, in npm 10.9.7), so the gate refuses such a spec
+# by npm-package-arg's own type before npm fetches it. These cases run the real npm for `npm pack`
+# (FAKE_NPM_REAL_PACK=1): a gate that let npm pack the spec would leave the scripts' markers.
+# source_package <dir>: a git repository at <dir> holding the package @sjawhar/claude-envoy 9.9.9,
+# whose prepack and prepare scripts each write a marker in the case's root.
+source_package() {
+  mkdir -p "$1"
+  printf '{"name": "@sjawhar/claude-envoy", "version": "9.9.9", "scripts": {"prepack": "touch %s/marker-prepack", "prepare": "touch %s/marker-prepare"}}\n' \
+    "$case_root" "$case_root" >"$1/package.json"
+  printf 'module.exports = {};\n' >"$1/index.js"
+  git -C "$1" init -q && git -C "$1" add -A && git -C "$1" -c user.email=gate@example.com -c user.name=gate commit -qm package
+}
+for kind in directory git; do
+  echo "case: --clients, a marketplace version that is a ${kind} spec of a package with scripts"
+  box_case "clients-npm-${kind}-spec"
+  source_package "${case_root}/source"
+  spec="file:${case_root}/source"
+  [ "$kind" = directory ] || spec="git+file://${case_root}/source"
+  plugin_source "{\"source\": \"npm\", \"package\": \"@sjawhar/claude-envoy\", \"version\": \"${spec}\"}"
+  run_gate FAKE_NPM_REAL_PACK=1 -- --clients "$commit"
+  check "exits 3" "$(is "$status" 3)"
+  check "refuses UNKNOWN naming the spec and npm-package-arg's type of it" \
+    "$(has_line "UNKNOWN: dotfiles .claude/settings.json: legion-plugins serves claude-envoy as @sjawhar/claude-envoy@${spec}, a ${kind} spec, which npm builds from its source and no release names")"
+  check "never lets npm pack it" "$(lacks "npm pack" "$calls")"
+  check "leaves no marker: no script of the package ran" \
+    "$([ -z "$(find "$case_root" -maxdepth 1 -name 'marker-*')" ] && echo true || echo false)"
+done
+
+for spec in remote:https://example.com/claude-envoy-4.0.0.tgz alias:npm:other-envoy@4.0.0; do
+  echo "case: --clients, a marketplace version that is a ${spec%%:*} spec"
+  box_case "clients-npm-${spec%%:*}-spec"
+  plugin_source "{\"source\": \"npm\", \"package\": \"@sjawhar/claude-envoy\", \"version\": \"${spec#*:}\"}"
+  run_gate -- --clients "$commit"
+  check "exits 3" "$(is "$status" 3)"
+  check "refuses UNKNOWN naming the spec and npm-package-arg's type of it" \
+    "$(has_line "UNKNOWN: dotfiles .claude/settings.json: legion-plugins serves claude-envoy as @sjawhar/claude-envoy@${spec#*:}, a ${spec%%:*} spec, which npm builds from its source and no release names")"
+  check "never lets npm pack it" "$(lacks "npm pack" "$calls")"
+done
+
+# A registry spec keeps working: an exact version and a dist-tag, as the range in every other case.
+for spec in 4.0.0 latest; do
+  echo "case: --clients, a marketplace version that is the registry spec ${spec}"
+  box_case "clients-npm-registry-spec-${spec}"
+  plugin_source "{\"source\": \"npm\", \"package\": \"@sjawhar/claude-envoy\", \"version\": \"${spec}\"}"
+  printf '4.0.0\n' >"${case_root}/npm/_sjawhar_claude-envoy_${spec}"
+  run_gate -- --clients "$commit"
+  check "exits 0" "$(is "$status" 0)"
+  check "lets npm pick for it" \
+    "$(grep -qxF "npm pack @sjawhar/claude-envoy@${spec} --dry-run --ignore-scripts --json" "$calls" && echo true || echo false)"
+  check "judges the version npm takes" \
+    "$(has_line "PASS: dotfiles .claude/settings.json runs ${claude_served/>=1.0.0/${spec}}")"
 done
 
 # Claude Code takes a registry other than the box's default only over https, and npm answers from

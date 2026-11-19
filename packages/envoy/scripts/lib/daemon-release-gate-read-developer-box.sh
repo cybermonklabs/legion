@@ -29,6 +29,20 @@ release_commit() {
 # number, no empty identifier in a pre-release. It is the one grammar of a version here.
 readonly release_version='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$'
 
+# The node program that prints npm-package-arg's type of the spec GATE_SPEC names (range, version,
+# tag, directory, file, git, remote or alias), with the npm-package-arg npm ships, which resolves
+# from npm's own npm-cli.js (npm_execpath); a spec it refuses prints its message and exits 1.
+# shellcheck disable=SC2016 # JavaScript, kept as text
+readonly spec_type_js='
+const path = require("path");
+const npa = require(require.resolve("npm-package-arg", { paths: [path.dirname(process.env.npm_execpath)] }));
+try {
+  process.stdout.write(npa(process.env.GATE_SPEC).type + "\n");
+} catch (error) {
+  process.stderr.write(String(error.message).split("\n")[0] + "\n");
+  process.exit(1);
+}'
+
 # judge_release <label> <package> <version> [<note>]: compares the commit <package>'s release
 # <version> was tagged at, and prints <label>'s line. A version that is not one exact release
 # version (a pre-release one counts; a range or a build suffix does not), or one no release tag
@@ -239,7 +253,7 @@ dotfiles_clients() {
 # ~/.claude or the CLAUDE_CONFIG_DIR this run is given, is UNKNOWN.
 dotfiles_claude_envoy() {
   local root=$1 label="dotfiles .claude/settings.json" record state own_record=absent name version enabled others marketplace repo ref query plugin range packed served
-  local extra file shown_file shown_range shown_plugin registry
+  local extra file shown_file shown_range shown_plugin registry kind
   local -a registry_args=()
   for record in "$HOME/.claude/plugins/installed_plugins.json" ${CLAUDE_CONFIG_DIR:+"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"} "$root/.claude/plugins/installed_plugins.json"; do
     state=$(entry_state "$record")
@@ -365,14 +379,39 @@ dotfiles_claude_envoy() {
     return
   fi
   [ -z "$registry" ] || registry_args=("--registry=$registry")
+  # The marketplace's version is the spec npm installs from, and only a registry spec (a range, an
+  # exact version or a dist-tag) names a release. npm builds any other spec (a directory, a git
+  # repository, a tarball URL, an alias) from its source, running its `prepare` script even under
+  # --ignore-scripts (pacote 19.0.2, lib/dir.js:30-45, in npm 10.9.7), and its version comes from
+  # that source, not from a release; so such a spec is UNKNOWN before npm fetches it. npm's own
+  # parser classifies it: the npm-package-arg npm ships, found beside npm's npm-cli.js, which npm
+  # exec gives a command as npm_execpath, run by the node npm runs on, npm_node_execpath
+  # (@npmcli/config lib/set-envs.js:104-105).
+  # shellcheck disable=SC2016 # npm exec's shell expands them, with the values npm gives it
+  if ! kind=$(cd "$work" && env GATE_SPEC="@sjawhar/claude-envoy@$range" GATE_SPEC_TYPE="$spec_type_js" \
+    npm exec --offline --yes=false -c '"$npm_node_execpath" -e "$GATE_SPEC_TYPE"' 2>"$work/err"); then
+    printf 'UNKNOWN: %s: npm cannot parse @sjawhar/claude-envoy@%s: %s\n' "$label" "$shown_range" "$(first_line "$work/err")"
+    unknown=$((unknown + 1))
+    return
+  fi
+  case "$kind" in
+    range | version | tag) ;;
+    *)
+      printf 'UNKNOWN: %s: legion-plugins serves claude-envoy as @sjawhar/claude-envoy@%s, a %s spec, which npm builds from its source and no release names\n' \
+        "$label" "$shown_range" "$(printable "$kind")"
+      unknown=$((unknown + 1))
+      return
+      ;;
+  esac
   # npm picks the version, as an install on this box does: `npm pack <spec> --dry-run --json` runs
   # npm's own pick (npm-pick-manifest) under this box's npm configuration — the dist-tag its `tag`
   # setting names, `before` (and on npm 11 `min-release-age`), deprecation, and the engines of the
   # node and npm it runs on — and answers the one version an install takes, so the gate keeps no
   # pick of its own to fall behind npm's rules. It runs in $work, a directory with no package.json
   # or .npmrc, so no project's npm configuration applies: a plugin is installed outside any
-  # project. The dry run fetches the tarball into npm's cache and writes nothing else.
-  if ! packed=$(cd "$work" && npm pack "@sjawhar/claude-envoy@$range" --dry-run --json "${registry_args[@]}" 2>"$work/err"); then
+  # project. The dry run fetches the tarball into npm's cache and writes nothing else, and
+  # --ignore-scripts keeps npm from running any script of the package.
+  if ! packed=$(cd "$work" && npm pack "@sjawhar/claude-envoy@$range" --dry-run --ignore-scripts --json "${registry_args[@]}" 2>"$work/err"); then
     printf 'UNKNOWN: %s: npm cannot resolve @sjawhar/claude-envoy@%s: %s\n' "$label" "$shown_range" "$(first_line "$work/err")"
     unknown=$((unknown + 1))
     return
