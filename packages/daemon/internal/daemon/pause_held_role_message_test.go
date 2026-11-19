@@ -318,15 +318,23 @@ func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesASecondPauseWhoseStopI
 
 // The held role message's debt at its one statement, heldMessageOwed (R4 of
 // dispatch://INFRA-3759), over claim views of a role a pause stopped, the store answering which
-// pause stopped it. The row is owed under the pause whose stop of the role ended `stopped`,
-// whichever pause held the row: while the claim is not gone, launch_uncertain among those states,
-// or is released with an issue that can be woken, and where a later stop of the claim ended
-// `cancelled`. It is not owed for a claim the operator or the daemon suspended, one that failed or
-// retired, a released one whose issue has left the workflow, a row no pause held, or a claim whose
-// newest `stopped` stop is older than a release of its issue's pod.
+// pause stopped it. The row is owed under the pause of the claim's newest stop that ended
+// `stopped`, whichever pause held the row, while the claim is not gone or is released with an
+// issue that can be woken. The rows of the claim's states are every state supervise declares
+// (supervise.States), each owed unless it is gone (supervise.IsGone), launch_uncertain among the
+// owed; the rows of its suspensions are every source of a suspension supervise declares, owed
+// for a release alone, a root's own exit among the rest. A later stop of the claim that ended
+// `cancelled`, `taken_over` or `failed`, or is still open, is passed over, and the row stays owed
+// under the first pause's stop; a later stop that ended `stopped` after a release of the issue's
+// pod carries the debt under its own pause. It is not owed for a released claim whose issue has
+// left the workflow, a row no pause held, or a claim whose newest `stopped` stop is older than a
+// release of its issue's pod.
 //
-// The negative control is heldMessageOwed's hand list of the states a role comes back from, put
-// back without launch_uncertain: the launch_uncertain case answers 0.
+// The negative controls are heldMessageOwed's hand list of the states a role comes back from, put
+// back without launch_uncertain, where the launch_uncertain case answers 0; and
+// store.StoppedByAPause reading the claim's stops oldest first or in no order, where the claim
+// stopped again after its pod's release answers 0, since its first stop is older than that
+// release.
 func TestAHeldRoleMessageIsOwedUntilAnEndEventOfItsDebt(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -343,6 +351,11 @@ func TestAHeldRoleMessageIsOwedUntilAnEndEventOfItsDebt(t *testing.T) {
 		return id
 	}
 	first, second := pauseOf(base, base.Add(10*time.Minute)), pauseOf(base.Add(20*time.Minute), base.Add(30*time.Minute))
+	var standing int64
+	if err := pool.QueryRow(ctx, `insert into project_pauses (project, began_at, by_kind, reason)
+		values ('LEGION', $1, 'operator', 'a pause of the test that stands') returning id`, base.Add(40*time.Minute)).Scan(&standing); err != nil {
+		t.Fatalf("record the pause that stands: %v", err)
+	}
 	type role struct {
 		token claim.Token
 		issue string
@@ -353,10 +366,13 @@ func TestAHeldRoleMessageIsOwedUntilAnEndEventOfItsDebt(t *testing.T) {
 			Project: "LEGION", Tree: key, Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: status, Rank: "U", LastDispatchSeq: 5})
 		return role{token: mustClaimToken(t, key, claim.RoleImplementer), issue: key}
 	}
+	// stop records pause's stop of the role, asked at at and ended then as end, or still open where
+	// end is empty.
 	stop := func(pause int64, of role, end store.PauseStopEnd, at time.Time) {
 		t.Helper()
 		if _, err := pool.Exec(ctx, `insert into project_pause_stops (pause_id, project, claim, issue, role, asked_at, ended_at, ended_as)
-			values ($1, 'LEGION', $2, $3, 'implementer', $4, $4, $5)`, pause, string(of.token), of.issue, at, string(end)); err != nil {
+			values ($1, 'LEGION', $2, $3, 'implementer', $4, case when $5::text = '' then null else $4::timestamptz end, nullif($5::text, ''))`,
+			pause, string(of.token), of.issue, at, string(end)); err != nil {
 			t.Fatalf("record pause %d's stop of %s: %v", pause, of.token, err)
 		}
 	}
@@ -369,44 +385,68 @@ func TestAHeldRoleMessageIsOwedUntilAnEndEventOfItsDebt(t *testing.T) {
 	}
 	// The first pause stops each role. stopped's pod was released before that stop; cancelled's
 	// stop by the second pause was cancelled by its resume; left's issue has left the workflow
-	// since; releasedSince's pod was released after the stop.
+	// since; releasedSince's pod was released after the stop. Each role of a later stop has one
+	// after the first pause's: takenOver's by the second pause ended `taken_over`, open's by the
+	// pause that stands is still open, failedSince's by the second pause ended `failed`, and
+	// stoppedAgain's by the second pause ended `stopped` after a release of its pod that came after
+	// the first pause's stop.
 	stopped, cancelled := implementer("LEGION-1", "in_progress"), implementer("LEGION-2", "in_progress")
 	left, releasedSince := implementer("LEGION-3", "backlog"), implementer("LEGION-4", "in_progress")
-	for _, of := range []role{stopped, cancelled, left, releasedSince} {
+	takenOver, open := implementer("LEGION-5", "in_progress"), implementer("LEGION-6", "in_progress")
+	failedSince, stoppedAgain := implementer("LEGION-7", "in_progress"), implementer("LEGION-8", "in_progress")
+	for _, of := range []role{stopped, cancelled, left, releasedSince, takenOver, open, failedSince, stoppedAgain} {
 		stop(first, of, store.PauseStopStopped, base.Add(5*time.Minute))
 	}
 	release(stopped, base.Add(-time.Hour))
 	stop(second, cancelled, store.PauseStopCancelled, base.Add(30*time.Minute))
 	release(releasedSince, base.Add(15*time.Minute))
+	stop(second, takenOver, store.PauseStopTakenOver, base.Add(25*time.Minute))
+	stop(standing, open, "", base.Add(45*time.Minute))
+	stop(second, failedSince, store.PauseStopFailed, base.Add(25*time.Minute))
+	release(stoppedAgain, base.Add(15*time.Minute))
+	stop(second, stoppedAgain, store.PauseStopStopped, base.Add(25*time.Minute))
 
 	view := func(of role, state supervise.ClaimState, by supervise.SuspendSource) supervise.ClaimView {
 		return supervise.ClaimView{Claim: supervise.Claim{Token: of.token, Project: "legion", Tree: of.issue, Issue: of.issue,
 			Role: claim.RoleImplementer, State: state, SuspendedBy: by}}
 	}
-	for _, c := range []struct {
+	type owedCase struct {
 		name string
 		held int64
 		view supervise.ClaimView
 		want int64
-	}{
-		{"queued", second, view(stopped, supervise.StateQueued, ""), first},
-		{"launch_uncertain", second, view(stopped, supervise.StateLaunchUncertain, ""), first},
-		{"launching", second, view(stopped, supervise.StateLaunching, ""), first},
-		{"shim_connected", second, view(stopped, supervise.StateShimConnected, ""), first},
-		{"registered", second, view(stopped, supervise.StateRegistered, ""), first},
-		{"ready", second, view(stopped, supervise.StateReady, ""), first},
-		{"idle", second, view(stopped, supervise.StateIdle, ""), first},
-		{"working", second, view(stopped, supervise.StateWorking, ""), first},
-		{"released, its issue wakeable", second, view(stopped, supervise.StateSuspended, supervise.SuspendedByReleased), first},
-		{"launching, a later stop of it cancelled", second, view(cancelled, supervise.StateLaunching, ""), first},
-		{"suspended by the operator", second, view(stopped, supervise.StateSuspended, supervise.SuspendedByOperator), 0},
-		{"suspended by the daemon", second, view(stopped, supervise.StateSuspended, supervise.SuspendedByDaemon), 0},
-		{"failed", second, view(stopped, supervise.StateFailed, ""), 0},
-		{"retired", second, view(stopped, supervise.StateRetired, ""), 0},
-		{"released, its issue out of the workflow", second, view(left, supervise.StateSuspended, supervise.SuspendedByReleased), 0},
-		{"released, its row held by no pause", 0, view(stopped, supervise.StateSuspended, supervise.SuspendedByReleased), 0},
-		{"released, its pod released after the stop", second, view(releasedSince, supervise.StateSuspended, supervise.SuspendedByReleased), 0},
-	} {
+	}
+	var cases []owedCase
+	// Every state a claim can be in, owed under the first pause unless the claim is gone. The
+	// suspended claim of this walk names no source, so it is no release.
+	for _, state := range supervise.States() {
+		want := first
+		if supervise.IsGone(state) {
+			want = 0
+		}
+		cases = append(cases, owedCase{string(state), second, view(stopped, state, ""), want})
+	}
+	// Every source of a suspension supervise declares, which exports no list of them: owed for a
+	// release alone, whose issue here can be woken.
+	for _, by := range []supervise.SuspendSource{supervise.SuspendedByUnknown, supervise.SuspendedByOperator,
+		supervise.SuspendedByDaemon, supervise.SuspendedByExit, supervise.SuspendedByReleased} {
+		want := int64(0)
+		if by == supervise.SuspendedByReleased {
+			want = first
+		}
+		cases = append(cases, owedCase{"suspended by " + string(by), second, view(stopped, supervise.StateSuspended, by), want})
+	}
+	cases = append(cases,
+		owedCase{"launching, a later stop of it cancelled", second, view(cancelled, supervise.StateLaunching, ""), first},
+		owedCase{"launching, a later stop of it taken over", second, view(takenOver, supervise.StateLaunching, ""), first},
+		owedCase{"launching, a later stop of it still open", second, view(open, supervise.StateLaunching, ""), first},
+		owedCase{"idle again, a later stop of it failed", second, view(failedSince, supervise.StateIdle, ""), first},
+		owedCase{"launching, stopped again after a release of its pod", second, view(stoppedAgain, supervise.StateLaunching, ""), second},
+		owedCase{"released, its issue out of the workflow", second, view(left, supervise.StateSuspended, supervise.SuspendedByReleased), 0},
+		owedCase{"released, its row held by no pause", 0, view(stopped, supervise.StateSuspended, supervise.SuspendedByReleased), 0},
+		owedCase{"released, its pod released after the stop", second, view(releasedSince, supervise.StateSuspended, supervise.SuspendedByReleased), 0},
+	)
+	for _, c := range cases {
 		if got, err := runner.heldMessageOwed(ctx, record.OutboxRow{Issue: c.view.Issue, HeldByPause: c.held}, c.view); err != nil || got != c.want {
 			t.Errorf("%s: heldMessageOwed = %d, %v; want %d", c.name, got, err, c.want)
 		}

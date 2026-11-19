@@ -51,6 +51,7 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"DispatchConsumerPosition": DispatchConsumerPosition{},
 		"ControllerTick":           ControllerTick{},
 		"EntrySweep":               EntrySweep{},
+		"ProjectResumed":           ProjectResumed{},
 		"PullRequestOpened":        PullRequestOpened{Branch: "legion/" + issue},
 		"PullRequestSynchronized":  PullRequestSynchronized{Branch: "legion/" + issue},
 		"PullRequestReview":        PullRequestReview{},
