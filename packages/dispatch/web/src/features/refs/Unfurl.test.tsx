@@ -498,7 +498,7 @@ test("Unfurl shows no card, and asks nothing, for a body with prose beside its r
 // references in exponentially many ways, and a pattern that tried them ran for minutes in V8 on
 // one of these bodies, hanging every reader's tab; JavaScriptCore, which runs these tests, gives
 // up after a second or so per body.
-test(`Unfurl reads ${DISPATCH_BLOCK_UNITS}-character bodies of repeated schemes in one pass`, () => {
+test(`Unfurl reads bodies of repeated schemes up to ${DISPATCH_BLOCK_UNITS} UTF-16 code units in one pass`, () => {
   const start = performance.now();
   const views = [];
   for (const scheme of ["http://", "https://", "dispatch://"]) {

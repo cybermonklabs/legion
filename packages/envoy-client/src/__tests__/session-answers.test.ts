@@ -157,7 +157,7 @@ describe("renderSessionAnswers", () => {
     );
   });
 
-  test("a list of 7,998 or 7,999 characters is whole; at 8,000 its one item is left out", () => {
+  test("a list of 7,998 or 7,999 UTF-16 code units is whole; at 8,000 its one item is left out", () => {
     for (const target of [7_998, 7_999]) {
       const item = sizedItem("fits", target);
       const rendered = renderSessionAnswers([item], { now: NOW });
@@ -181,7 +181,7 @@ describe("renderSessionAnswers", () => {
     );
   });
 
-  test("a 9,000-character newest item is left out whole, and every older item with it", () => {
+  test("a newest item whose body is 9,000 ASCII characters is left out whole, and every older item with it", () => {
     const rendered = renderSessionAnswers(
       [
         message("big", hoursAgo(1), "b".repeat(9_000)),

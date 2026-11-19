@@ -39,7 +39,7 @@ test.each([
   ["a space", "operator account"],
   ["a leading -", "-operator-account"],
   ["a trailing .", "operator-account."],
-  ["254 characters", `${"a".repeat(253)}b`],
+  ["a name of 254 lowercase letters", `${"a".repeat(253)}b`],
 ])("%s is refused, naming the variable and not the value", (_what, account) => {
   const { code, stdout, stderr } = run(account);
   expect(code).toBe(1);
@@ -53,7 +53,7 @@ test.each([
 test.each([
   ["a name", "operator-account"],
   ["a name with a dot", "operator.account"],
-  ["253 characters", "a".repeat(253)],
+  ["a name of 253 lowercase letters", "a".repeat(253)],
 ])("%s is printed unchanged", (_what, account) => {
   const { code, stdout, stderr } = run(account);
   expect(stderr).toBe("");

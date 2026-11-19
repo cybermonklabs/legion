@@ -1092,7 +1092,7 @@ test.skipIf(skip)(
 // A command that prints without end must not fill the bus, the person's page or the model's
 // context: all three copies are cut at the same bound and say so.
 test.skipIf(skip)(
-  "a Send whose command prints 20000 characters is cut at 8000 in the frame and the model's copy",
+  "a Send whose command prints 20000 ASCII characters is cut at 8000 in the frame and the model's copy",
   async () => {
     const session = await shellSession();
     const command = "!printf 'a%.0s' $(seq 1 20000)";

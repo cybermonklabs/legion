@@ -1500,24 +1500,24 @@ for ((a8_i = 2; a8_i <= 16; a8_i++)); do
   a8_body+=$'\n\n'"$a8_paragraph"
 done
 [[ "${#a8_body}" == 48000 ]] ||
-  fail A8 "the long body is 48,000 characters in sixteen paragraphs" "it is ${#a8_body}"
-pass A8 "the long body is 48,000 characters in sixteen paragraphs"
+  fail A8 "the long body is 48,000 ASCII characters in sixteen paragraphs" "it is ${#a8_body}"
+pass A8 "the long body is 48,000 ASCII characters in sixteen paragraphs"
 printf '%s' "$a8_body" >"$work/a8-body.md"
 
-run A8 "a comment of 48,000 characters" comment --issue "$key" --body-file "$work/a8-body.md"
-posted A8 "a comment of 48,000 characters" comment
+run A8 "a comment of 48,000 ASCII characters" comment --issue "$key" --body-file "$work/a8-body.md"
+posted A8 "a comment of 48,000 ASCII characters" comment
 a8_comment="$posted"
 get "/api/v1/comments/$a8_comment"
-want_status 200 A8 "read the 48,000-character comment back"
-expect A8 "the comment reads back whole, every one of its 48,000 characters" '[48000,true]' \
+want_status 200 A8 "read the comment of 48,000 ASCII characters back"
+expect A8 "the comment reads back whole, every one of its 48,000 ASCII characters" '[48000,true]' \
   --rawfile want "$work/a8-body.md" '[(.comment.body | length), (.comment.body == $want)]'
 
-run A8 "a message of 48,000 characters" message --issue "$key" --body-file "$work/a8-body.md"
-posted A8 "a message of 48,000 characters" message
+run A8 "a message of 48,000 ASCII characters" message --issue "$key" --body-file "$work/a8-body.md"
+posted A8 "a message of 48,000 ASCII characters" message
 a8_message="$posted"
 get "/api/v1/messages/$a8_message"
-want_status 200 A8 "read the 48,000-character message back"
-expect A8 "the message reads back whole, every one of its 48,000 characters" '[48000,true]' \
+want_status 200 A8 "read the message of 48,000 ASCII characters back"
+expect A8 "the message reads back whole, every one of its 48,000 ASCII characters" '[48000,true]' \
   --rawfile want "$work/a8-body.md" '[(.message.body | length), (.message.body == $want)]'
 
 # The command sends the over-long paragraph: nothing on this side refuses it, and the words the
@@ -1527,14 +1527,14 @@ while ((${#a8_over} < 32001)); do a8_over+="$a8_paragraph"; done
 a8_over="${a8_over:0:32001}"
 printf '%s' "$a8_over" >"$work/a8-over.md"
 if cli comment --issue "$key" --body-file "$work/a8-over.md" >"$work/out" 2>&1; then
-  fail A8 "a comment holding a 32,001-character paragraph" \
+  fail A8 "a comment holding a paragraph of 32,001 ASCII characters" \
     "dispatch comment took it: $(<"$work/out")"
 fi
 grep -qF 'body block 1' "$work/out" ||
   fail A8 "the refusal names the block that passed the bound" "$(<"$work/out")"
 grep -qF ': 32001 of at most 32000' "$work/out" ||
   fail A8 "the refusal names the block's length and the bound" "$(<"$work/out")"
-pass A8 "a 32,001-character paragraph is refused, naming the block and the bound"
+pass A8 "a paragraph of 32,001 ASCII characters is refused, naming the block and the bound"
 
 run A8 "dispatch limits" limits
 grep -qE '^One block of a body[^:]*: [0-9,]+ characters' "$work/out" ||
@@ -1591,7 +1591,7 @@ pelicans hum beneath a frosted chapel."
   want_status 200 A9 "read the long document's blocks"
   a9_block_id="$(jq -er 'max_by(.to - .from) | .id' "$work/body")" ||
     fail A9 "the long document holds one block longer than the rest" "$(body)"
-  expect A9 "the document's longest block is longer than 32,000 characters" true \
+  expect A9 "the document's longest block is longer than 32,000 ASCII characters" true \
     --arg b "$a9_block_id" '[.[] | select(.id == $b) | .to - .from][0] > 32000'
 
   a9_block_embedded() {
@@ -1650,20 +1650,20 @@ a14_filler="filler words stand here. "
 while ((${#a14_filler} < 2001)); do a14_filler+="$a14_filler"; done
 a14_question="$a14_head${a14_filler:0:$((2001 - ${#a14_head} - ${#a14_tail}))}$a14_tail"
 [[ "${#a14_question}" == 2001 ]] ||
-  fail A14 "the question is 2,001 characters" "it is ${#a14_question}"
-pass A14 "the question is 2,001 characters"
+  fail A14 "the question is 2,001 ASCII characters" "it is ${#a14_question}"
+pass A14 "the question is 2,001 ASCII characters"
 
-run A14 "an ask whose question is 2,001 characters" ask --issue "$child" \
+run A14 "an ask whose question is 2,001 ASCII characters" ask --issue "$child" \
   --question "$a14_question"
 [[ "$(<"$work/out")" =~ Asked\ ([0-9a-f-]{36}) ]] ||
-  fail A14 "an ask whose question is 2,001 characters" "no ask id in: $(<"$work/out")"
+  fail A14 "an ask whose question is 2,001 ASCII characters" "no ask id in: $(<"$work/out")"
 a14_ask="${BASH_REMATCH[1]}"
 get "/api/v1/asks/$a14_ask"
-want_status 200 A14 "read the 2,001-character question back"
+want_status 200 A14 "read the question of 2,001 ASCII characters back"
 expect A14 "the ask holds the question whole" '[2001,true]' \
   --arg want "$a14_question" '[(.ask.question | length), (.ask.question == $want)]'
 
-doc_edit A14 "a decision block whose question is 2,001 characters" changes.md \
+doc_edit A14 "a decision block whose question is 2,001 ASCII characters" changes.md \
   "$(jq -cn --arg q "$a14_question" \
     '[{op: "insert", after: "end", markdown: (":::ask{#a14-decision urgency=\"med\"}\n" + $q +
       "\n\n- Option one: what it costs.\n- Option two: what it costs.\n:::\n")}]')"
@@ -1675,11 +1675,11 @@ a14_block_ask_written() {
     'first((.asks? // .)[] | select(.question == $q) | .id) // ""' "$work/body")"
   [[ -n "$a14_block_ask" ]]
 }
-wait_until A14 "the decision block becomes an ask holding the 2,001-character question" \
+wait_until A14 "the decision block becomes an ask holding the question of 2,001 ASCII characters" \
   60 a14_block_ask_written
 run A14 "resolve the decision block's ask" resolve-ask --ask "$a14_block_ask" --kind resolved \
   --reason "block-graph.sh read this question's length; nothing waits on a person."
-run A14 "resolve the 2,001-character ask" resolve-ask --ask "$a14_ask" --kind resolved \
+run A14 "resolve the ask of 2,001 ASCII characters" resolve-ask --ask "$a14_ask" --kind resolved \
   --reason "block-graph.sh read this question's length; nothing waits on a person."
 
 run A6 "resolve the ask whose parts the check read" resolve-ask --ask "$parts_ask" --kind resolved \

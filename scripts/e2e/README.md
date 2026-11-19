@@ -2851,7 +2851,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 - `daily-report`
 
   the controller's daily report, which the proof's instructions exempt from their wait for a targeted message and fit to the run:
-  an issue titled `Legion daily report (<run directory>)` appears in LEGSMOKE, parked in icebox and without the `legion` label, holding the controller session's message, which names tree 1 and the free slots within 2,000 characters;
+  an issue titled `Legion daily report (<run directory>)` appears in LEGSMOKE, parked in icebox and without the `legion` label, holding the controller session's message, which names tree 1 and the free slots within 2,000 characters (Unicode code points);
   in the controller's session, the call that posted it comes on a turn a `tick on LEGSMOKE` delivery started once the start turn had ended, never in its start turn.
   That call is the controller's first `dispatch message --issue <report>` run through bash, made any way Oh My Pi offers:
   the `bash` tool, a write to its `xd://bash` device, or `eval` code calling `tool.bash(...)` ([`lib/omp-tool-calls.jq`](lib/omp-tool-calls.jq), which `stage3-4b13b-acceptance.sh`'s merger check reads too; `lib/report-after-tick.test.ts`).
@@ -6497,10 +6497,10 @@ That is the relay doing its work on a run it cannot tell from a key's, not a val
 The key command's channel is the only one read that way, and `agent-secrets`' messages are not: there a path, an identifier and an approval link are left as the broker wrote them.
 
 What the key relay does not mask is a run shorter than those bounds, and a key can end in one.
-A PEM's last body line is `4*ceil((DER length mod 48)/3)` characters, so a key whose DER length leaves 12 bytes or fewer in its last group ends in a line of 16 characters or fewer, which this relay passes.
-Measured, the RSA-2048 keys GitHub issues end in 24 characters (PKCS#8) to 56 (PKCS#1), RSA-3072 the same, RSA-4096 32 and 60, an EC P-256 key 36 (SEC1) or 56 (PKCS#8), and RSA-1024 PKCS#8 keys ended in 12 and in 16;
+A PEM's last body line is `4*ceil((DER length mod 48)/3)` characters, so a key whose DER length leaves 12 bytes or fewer in its last group ends in a line of 16 base64 characters or fewer, which this relay passes.
+Measured, the RSA-2048 keys GitHub issues end in 24 base64 characters (PKCS#8) to 56 (PKCS#1), RSA-3072 the same, RSA-4096 32 and 60, an EC P-256 key 36 (SEC1) or 56 (PKCS#8), and RSA-1024 PKCS#8 keys ended in 12 and in 16;
 a key of its own carries a DER length of its own, which moves each of these a few characters.
-A key re-wrapped below 20 columns, or broken up every 16 characters, passes line by line for the same reason.
+A key re-wrapped below 20 columns, or broken up every 16 base64 characters, passes line by line for the same reason.
 A fragment that short rebuilds no key, and the bound stays at 20 rather than dropping lower, where the mask would take the ordinary words of a message instead.
 So what a paste the guard misses costs the run is a masked line apiece for the lines a key is wrapped at — a PEM body line is 64 base64 characters and a `base64` line 76 — and, where that key ends in a line of 16 characters or fewer, that last line in the run's kept transcript.
 
@@ -6651,7 +6651,7 @@ The file sets `stall_reminder_needle`, the opening of `REMINDER` in `packages/pi
 | `stop_hook_reminded OFFSET` | one user entry past OFFSET holds both `Stop hook feedback` and `stall_reminder_needle` |
 | `reminded_turn_continued OFFSET` | an `assistant` entry follows that reminded entry |
 | `reminded_or_completed OFFSET` | `stop_hook_reminded OFFSET`, or `handoff_recorded` |
-| `report_stall_entries` | a `timeout_hook`: notes the first 200 characters of each entry since `stall_offset` |
+| `report_stall_entries` | a `timeout_hook`: notes the first 200 bytes of each entry since `stall_offset` |
 | `legion_handoff_in` | the whole transcript holds a `tool_use` of a tool named `…__legion` whose input names `handoff_complete`, and a `tool_result` for it that is not an error |
 | `resumed_reply_names OFFSET MARKER` | an assistant text block past OFFSET holds MARKER, as a fixed string |
 | `handoff_recorded` | the daemon recorded a handoff of `issue`'s implementer's `implementing` phase (`role_handoff`) |

@@ -640,7 +640,7 @@ test.skipIf(skipped)(
 );
 
 test.skipIf(skipped)(
-  "(e) twelve items past 8,000 characters: the newest prefix and the left-out line with its count",
+  "(e) twelve items past 8,000 UTF-16 code units: the newest prefix and the left-out line with its count",
   async () => {
     const items = Array.from({ length: 12 }, (_, index) =>
       answer(
