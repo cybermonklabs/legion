@@ -1,12 +1,13 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { actorActText, type SessionAnswer, type SessionAnswerRelation } from "@legion/contracts";
+import { actorActText, type SessionAnswer } from "@legion/contracts";
 import { dispatchWordsText, QUESTION_HEAD, textHead } from "./ask-answer";
 import type { DispatchConfigResolution } from "./dispatch-config";
 import { DispatchClient, DispatchNoRouteError, isNoRoute } from "./dispatch-http";
 import { ownerTitle } from "./dispatch-owner";
 import { sessionDirectory, writeAtomically } from "./dispatch-session-directory";
 import { messageFor, withoutUserinfo } from "./errors";
+import { sessionAnswerRelationPhrase } from "./session-answer-relations";
 
 /**
  * People's answers on every model request: what people wrote in the last 72
@@ -44,24 +45,6 @@ const FAILURE_MARKER = "[Dispatch: people's answers from the last 72 hours could
 /** The reason a read gives when Dispatch has no answers route (a build older than the route). */
 export const NO_ANSWERS_ROUTE_REASON = "this Dispatch build has no answers route";
 
-const RELATION_PHRASES: Readonly<Record<SessionAnswerRelation, string>> = {
-  answered_your_ask: "answered your ask",
-  declined_your_ask: "declined to answer your ask",
-  replied_on_your_ask: "replied on your ask",
-  replied_in_a_comment_thread: "replied in a comment thread",
-  commented_on_a_document: "commented on a document",
-  commented_on_an_issue: "commented on an issue",
-  mentioned_you: "mentioned you",
-  sent_you_a_message: "sent you a message",
-  replied_to_your_message: "replied to your message",
-};
-
-/** Whether a `relation` the server sent is one this build words; the wire type is an open
- *  string, so a relation a newer Dispatch adds is printed as it came. */
-function isSessionAnswerRelation(value: string): value is SessionAnswerRelation {
-  return Object.hasOwn(RELATION_PHRASES, value);
-}
-
 /** Whether `text` is a message `renderSessionAnswers` or the failure line wrote: what a host checks
  *  so a second copy of its extension adds no second list. */
 export function isSessionAnswersText(text: string): boolean {
@@ -96,9 +79,7 @@ export function isNoAnswersRoute(error: unknown): boolean {
  * newer Dispatch adds keeps them.
  */
 export function renderSessionAnswerItem(item: SessionAnswer): string {
-  const phrase = isSessionAnswerRelation(item.relation)
-    ? RELATION_PHRASES[item.relation]
-    : item.relation;
+  const phrase = sessionAnswerRelationPhrase(item.relation);
   const relation = `${phrase}${item.replaced === true ? " (replaces an earlier answer)" : ""}`;
   const head = [item.at, actorActText(`user ${item.author.id}`, item.author.act), relation];
   if (item.edited_at !== undefined) head.push(`edited ${item.edited_at}`);
@@ -111,8 +92,9 @@ export function renderSessionAnswerItem(item: SessionAnswer): string {
         : `${item.ref} · ${owner}`;
   const lines = [head.join(" · "), where];
   if (item.ask !== undefined) {
-    // The question is the session's own words, not the person's, so cutting it to the length
-    // every surface quotes a question at (QUESTION_HEAD) loses nothing a person wrote.
+    // The question is the ask's, whoever asked it - the session, another session or a person -
+    // and not what the person wrote in this item, which prints whole below; it is cut to the
+    // length every surface quotes a question at (QUESTION_HEAD).
     lines.push(`Question: ${textHead(item.ask.question, QUESTION_HEAD)}`);
   }
   if (item.kind === "answer") {
@@ -144,22 +126,26 @@ function windowOf(
 }
 
 /**
- * What the people wrote in each of `items`, one string per item: its kind, id, author and times,
- * the options chosen and the words. `readSessionAnswers` gives it for every item Dispatch sent
- * inside the read's 72-hour window, the ones its list shows and the ones the character cap left
- * out, so a host comparing two reads (`sessionAnswersChanged`) tells a new item, or an answer or
- * comment a person changed, from a list that only lost items to the window or changed what the
- * session or Dispatch says around them (an issue's title, an ask's question, a cached list's
- * header). An item the cap leaves out counts too: a newest item longer than the cap, or a comment
- * an edit made too long to fit, is shown to nobody, and a host that compared only the items shown
- * would go on showing the person's old words as current. Dispatch cuts the list itself
- * (`max_chars`) after the first item that takes its count past the cap, so it sends such an item;
- * the items after its cut, which no list shows, reach the host only as `total`.
+ * What the people wrote in each of `items`, and what each is to the session, one string per item:
+ * its kind, id, author and times, the options chosen, the words and its relation.
+ * `readSessionAnswers` gives it for every item Dispatch sent inside the read's 72-hour window,
+ * the ones its list shows and the ones the character cap left out, so a host comparing two reads
+ * (`sessionAnswersChanged`) tells a new item, an answer or comment a person changed, or an item
+ * that became or stopped being the session's own, from a list that only lost items to the window
+ * or changed what the session or Dispatch says around them (an issue's title, an ask's question,
+ * a cached list's header). An item the cap leaves out counts too: a newest item longer than the
+ * cap, or a comment an edit made too long to fit, is shown to nobody, and a host that compared
+ * only the items shown would go on showing the person's old words as current. Dispatch cuts the
+ * list itself (`max_chars`) after the first item that takes its count past the cap, so it sends
+ * such an item; the items after its cut, which no list shows, reach the host only as `total`.
  *
  * The author is the rendered act (`actorActText`), not the person's id alone, so the same words
  * from the person themselves and from an agent acting for them are two different items: a host
- * that compared ids would carry the second as if the person had written it. The fourth field is
- * the item's time, which `sessionAnswersChanged` reads back.
+ * that compared ids would carry the second as if the person had written it. Dispatch gives the
+ * relation at each read, from who asked the item's ask and who follows it at that moment: once
+ * the session follows an ask, a reply on it that reached the session earlier reads as a reply on
+ * its own ask, and a host that kept the old list would go on telling the session the ask is
+ * another's. The fourth field is the item's time, which `sessionAnswersChanged` reads back.
  */
 export function sessionAnswersWords(items: readonly SessionAnswer[]): string[] {
   return items.map((item) =>
@@ -171,6 +157,7 @@ export function sessionAnswersWords(items: readonly SessionAnswer[]): string[] {
       item.edited_at ?? null,
       item.selected ?? null,
       item.text,
+      item.relation,
     ])
   );
 }
@@ -190,13 +177,13 @@ function wordTime(word: string): number {
 
 /**
  * Whether a read whose `words` are `next` shows something that a list with the `words` `shown`
- * did not: an item new to it, or an answer or comment a person changed (a string `shown` lacks);
- * or an item `shown` held that is gone from the read while its time is still inside the read's
- * window, at or after `since` (`SessionAnswersRead.since`), which a person retracted (an answer
- * set back to none) or Dispatch removed. An item gone because its time left the window is no
- * change: the window moved, and nothing a person wrote did. A string whose time cannot be read,
- * or a read with no `since`, counts as gone inside the window, so a host never goes on showing
- * what may have been retracted.
+ * did not: an item new to it, an answer or comment a person changed, or an item whose relation to
+ * the session changed (a string `shown` lacks); or an item `shown` held that is gone from the read
+ * while its time is still inside the read's window, at or after `since`
+ * (`SessionAnswersRead.since`), which a person retracted (an answer set back to none) or Dispatch
+ * removed. An item gone because its time left the window is no change: the window moved, and
+ * nothing a person wrote did. A string whose time cannot be read, or a read with no `since`,
+ * counts as gone inside the window, so a host never goes on showing what may have been retracted.
  */
 export function sessionAnswersChanged(
   shown: readonly string[],
@@ -446,8 +433,9 @@ export interface SessionAnswersRead {
   readonly readAt?: string;
   /** `sessionAnswersWords` of every item Dispatch sent inside the 72-hour window the list was
    *  rendered for (`fresh` and `cache`), the ones the character cap left out included: what the
-   *  people wrote. A `fresh` read whose window holds no item gives `[]` and no `text`, so a host
-   *  still learns that the items of a list it shows left the read (`sessionAnswersChanged`). */
+   *  people wrote, and what each item is to the session. A `fresh` read whose window holds no item
+   *  gives `[]` and no `text`, so a host still learns that the items of a list it shows left the
+   *  read (`sessionAnswersChanged`). */
   readonly words?: readonly string[];
   /** The start of that window (ISO 8601 UTC), 72 hours before the render (`fresh` and `cache`):
    *  an item `words` no longer holds whose time is at or after it left the read inside the window

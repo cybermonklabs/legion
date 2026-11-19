@@ -3,7 +3,7 @@ body: |-
     The controller's skill reads the `memory-guard-kill on <PROJECT>` wake: the memory guard of the
     controller's own pod ended one of its programs, and the controller does not run that program
     again unchanged but bounds its output or sends heavy work where its deployment says. The
-    plugin declares daemon API contract 155.
+    plugin declares daemon API contract 168.
 time: 2026-11-17T05:04:11Z
 custom:
     Issue: pr4273

@@ -114,10 +114,15 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // still running in it, wherever its turn stood, so the Suspended patch that replaces it names it on
 // the Sandbox in the same write (suspendDisplacing): evaluate then reports each of those roles
 // ended by the daemon's replacement (Displaced), which the supervisor resumes uncharged
-// (LEGION-729). A pod already ended, or never the Sandbox's, is named nothing, and nor is a pod
-// that never started, where no role ran: the launch that waited the boot timeout on such a pod was
-// charged, and the next one replaces it rather than waiting on it again. Before each start the
-// Sandbox records the addresses the generation is handed (recordAddresses). A new pod is
+// (LEGION-729). A pod already ended, or never the Sandbox's, is named nothing displaced: its roles
+// ended with it. Nor is a pod that never started, where no role ran: the launch that waited the
+// boot timeout on such a pod was charged, and the next one replaces it rather than waiting on it
+// again. Where the Sandbox still runs and its own pod ended with a reason
+// (runtime.PodEnd), the Suspended patch that replaces that pod records the end on the Sandbox
+// instead, keyed by the pod's uid (suspendRecordingEnd): an eviction ends every role of the pod,
+// and a role whose next check comes after this launch has replaced the pod reads the eviction
+// from there (evaluate's endedPod), since the pod's own reason goes with the pod. Before each
+// start the Sandbox records the addresses the generation is handed (recordAddresses). A new pod is
 // provisioned by its kind (podKind.provision), under nothing but the pod's own launch turn: an
 // issue pod has its workspace's provisioning token minted, the controller's pod needs nothing. A
 // workflow claim passed its tree's lifecycle check before the call (supervise's checkLaunch), so
@@ -245,7 +250,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			// (replaceSupersededSandbox).
 			s = suspended
 		case s.mode() != modeSuspended:
-			if err := r.setMode(bounded, s, modeSuspended); err != nil {
+			if err := r.suspendRecordingEnd(bounded, s, pod); err != nil {
 				return fail("suspend its sandbox", err)
 			}
 		}
@@ -1161,6 +1166,21 @@ const (
 	roundDisplacedAnnotation = "legion.dev/round-displaced-pod"
 )
 
+// endedPodAnnotation names, on a Sandbox, the uid of the last pod of it a launch replaced after
+// that pod had ended with a reason of its own (relaunch's suspendRecordingEnd), and
+// endedPodEndAnnotation holds that end as runtime.PodEnd builds it: the pod's reason and the
+// kubelet's message, bounded. The two are written in one patch and read together (endedPod). An
+// eviction ends every role of the pod, and the roles' checks run one after another, so a sibling's
+// launch can replace the evicted pod before a role's check has read it; the pod's own reason goes
+// with the pod, and this is where every role recorded in it reads that end afterwards. Keyed by
+// uid, a record of an earlier pod says nothing of a role recorded in a later one. It lives with the
+// Sandbox, so a restarted daemon reads it as well, as it reads displacedAnnotation. A Sandbox a
+// migrating launch deletes and creates again (replaceSupersededSandbox) does not carry it over.
+const (
+	endedPodAnnotation    = "legion.dev/ended-pod"
+	endedPodEndAnnotation = "legion.dev/ended-pod-end"
+)
+
 // replacementKind is which of the two acts that replace a live pod a suspension is made for: a
 // launch that cannot use the pod it found, or the update round of that pod, once it is over.
 type replacementKind bool
@@ -1185,6 +1205,32 @@ func (r *Runtime) suspendDisplacing(ctx context.Context, s *sandbox, uid types.U
 	if kind == roundReplacement {
 		annotations[roundDisplacedAnnotation] = string(uid)
 	}
+	return r.suspendAnnotating(ctx, s, annotations)
+}
+
+// suspendRecordingEnd sets the Sandbox read as s Suspended to replace pod, which is not live: it
+// ended, it is not the Sandbox's, or there is none. A pod of the Sandbox's own whose end carries a
+// reason (runtime.PodEnd) has that end recorded in the same JSON merge patch (endedPodAnnotation,
+// endedPodEndAnnotation), so the API server applies the suspension and the record together or
+// neither; any other pod is suspended over as setMode does, recording nothing.
+func (r *Runtime) suspendRecordingEnd(ctx context.Context, s *sandbox, pod *corev1.Pod) error {
+	end := ""
+	if ownedBy(pod, s.UID) {
+		end = runtime.PodEnd(pod.Status.Reason, pod.Status.Message)
+	}
+	if end == "" {
+		return r.setMode(ctx, s, modeSuspended)
+	}
+	_, err := r.suspendAnnotating(ctx, s, map[string]string{endedPodAnnotation: string(pod.UID), endedPodEndAnnotation: end})
+	return err
+}
+
+// suspendAnnotating sets the Sandbox read as s Suspended and sets each of annotations on it, in
+// one JSON merge patch: the API server applies both or neither, and a merge patch sets those keys
+// whatever other annotations the Sandbox carries, or none. It carries s's uid, which the API
+// server refuses to change on a live object, so a Sandbox deleted and recreated in between is
+// never written: the fence recordAddresses keeps. It returns the Sandbox as the patch left it.
+func (r *Runtime) suspendAnnotating(ctx context.Context, s *sandbox, annotations map[string]string) (*sandbox, error) {
 	body, err := json.Marshal(map[string]any{
 		"metadata": map[string]any{"uid": string(s.UID), "annotations": annotations},
 		"spec":     map[string]any{"operatingMode": modeSuspended},

@@ -142,8 +142,9 @@ func statParentAndGroup(root string, pid int) (ppid, pgid int, ok bool) {
 // drain). A pid is recorded as its process starts, under the lock every reap holds for its whole
 // pass, so no pass can read /proc between a child's start and its record. Every child the
 // launcher's process starts and waits for itself, but a generation, starts here: the test
-// database's script (runTestPG), the put-back's jj and git (bundleRestore) and the leak-check
-// install's run of the check (checkInstall).
+// database's script (runTestPG), the put-back's jj and git (bundleRestore), the leak-check
+// install's run of the check (checkInstall) and each cache trimmer sweep's deleter
+// (startContainedRemover).
 // TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt reads every start that process
 // reaches.
 type pidGuard struct {
@@ -290,12 +291,12 @@ func reapListed(pids, skip []int, uncounted map[int]bool) (bool, error) {
 
 // reapOrphans is PID 1's reaper: on every SIGCHLD it reaps each exited process of the container's
 // PID namespace but the generations its managers run, whose exits their own waits read, and the
-// launcher's own children (the test database's script, the put-back's jj and git and the
-// leak-check install's run of the check, pidGuard), whose exits their own waits read too. Every
-// manager's lock and then the guard's are held across the pass (pidGuard.reapOrphans), and a
-// manager records its generation's pid under its lock as it starts it, as the guard records its
-// child's, so the reaper never waits on a process it has not seen yet. In the controller's pod a
-// pass that fails leaves the role's namespace unobservable, so the launcher fails its container
+// launcher's own children (the test database's script, the put-back's jj and git, the leak-check
+// install's run of the check and each sweep's deleter, pidGuard), whose exits their own waits read
+// too. Every manager's lock and then the guard's are held across the pass (pidGuard.reapOrphans),
+// and a manager records its generation's pid under its lock as it starts it, as the guard records
+// its child's, so the reaper never waits on a process it has not seen yet. In the controller's pod
+// a pass that fails leaves the role's namespace unobservable, so the launcher fails its container
 // loudly. In an issue pod's container the container's /proc still lists every role's processes,
 // since a role's PID namespace is nested in it, but none is the launcher's child except each
 // role's role-init and the launcher's own held children, which the pass skips: the rest are their

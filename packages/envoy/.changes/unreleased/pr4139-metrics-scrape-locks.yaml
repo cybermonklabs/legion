@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  A metrics scrape whose client stops reading no longer holds up the process it scrapes. The
+  `/metrics` handler Dispatch, the listener and the broker serve held each metric's lock while it
+  wrote that metric's lines to the client: on Dispatch, which sets no write timeout, for as long as
+  the client did not read, and on the listener and the broker for up to their 10 s and 60 s write
+  timeouts. Every count or observation of that metric waited on it meanwhile, which held the
+  request recording it. The handler now renders the whole text under the locks and writes it
+  holding none.
+time: 2026-11-17T03:58:14Z
+custom:
+    Issue: pr4139

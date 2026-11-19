@@ -208,6 +208,21 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
+            (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
+            (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials and the NATS auth service"),
+        }),
+        package="github.com/sjawhar/envoy/internal/broker/natscallout",
+        functions=("TestACalloutStormAfterAServerRestartAdmitsEveryConnection",),
+        requirement=(
+            "c-callout-available (the NATS auth service's verification): five hundred "
+            "connections reconnect at once after a server restart and every one is admitted. The "
+            "restart storm opens two hundred under the race detector (raceEnabled), whose cost per "
+            "in-process connect fails the setup at five hundred on a loaded runner, so envoy-go's "
+            "plain step is its full-size run and envoy-go-race the detector's run of the smaller one."
+        ),
+    ),
+    Exception_(
+        steps=frozenset({
             (".github/workflows/ci-job-envoy-go-race-docs.yaml", "Race-test the document service"),
             (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "Test the document service under the cleanup detector"),
         }),
@@ -271,7 +286,7 @@ EXCEPTIONS = (
             "so on such a change envoy-go does not run and the seed corpus would run nowhere. Its "
             "own two steps are the corpus comparison and the 120-second fuzz, which seeds from "
             "that same corpus, so both name the function. envoy-go's step \"Count the database "
-            "broker suites' skips\" runs ./internal/broker/... whole through "
+            "broker suites' skips\" runs every broker package but the race lane's through "
             "packages/envoy/scripts/database-skips.sh, so a listing counts the function run there "
             "too, but it skips there for want of AIRLOCK_MODEL, as that script's EXPECTED_SKIPS "
             "records, so the corpus runs only in airlock-lean."
@@ -288,11 +303,11 @@ EXCEPTIONS = (
             "The same reason as FuzzAirlock above: airlock-lean's corpus comparison runs the host "
             "shapes a rules file may hold through both the Go validation and the Lean model's, "
             "with AIRLOCK_MODEL set, and runs on changes that do not start envoy-go. envoy-go's "
-            "step \"Count the database broker suites' skips\" runs ./internal/broker/... whole "
-            "through packages/envoy/scripts/database-skips.sh, so a listing counts the function "
-            "run there too, but it skips there for want of AIRLOCK_MODEL, as that script's "
-            "EXPECTED_SKIPS records, so the comparison runs only in airlock-lean. The fuzz step "
-            "runs FuzzAirlock alone and does not name it."
+            "step \"Count the database broker suites' skips\" runs every broker package but the "
+            "race lane's through packages/envoy/scripts/database-skips.sh, so a listing counts "
+            "the function run there too, but it skips there for want of AIRLOCK_MODEL, as that "
+            "script's EXPECTED_SKIPS records, so the comparison runs only in airlock-lean. The fuzz "
+            "step runs FuzzAirlock alone and does not name it."
         ),
     ),
     Exception_(
@@ -338,13 +353,17 @@ class AuditedScript:
 # one `go test` it runs.
 AUDITED_SCRIPTS = {
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and, called with no argument, runs
-    # `go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-15m}" ./internal/broker/...` once, with
-    # no -tags, -race, -run or -skip, then counts the skips in its report. With `--report FILE` it
-    # reads a report and runs no test; a step that passes an argument is not read through here.
+    # one `go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-15m}"` over the packages `go list
+    # ./internal/broker/... | grep -Ev '/internal/broker/natscallout$'` prints, with no -tags,
+    # -race, -run or -skip: the broker's packages less the race lane's under them
+    # (ci_job_reads.DATABASE_SKIPS_PATTERN), then counts the skips in its report. The command below
+    # is that same run in the listing form this script reads. With `--report FILE` it reads a
+    # report and runs no test; a step that passes an argument is not read through here.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
-        command="go test -json -count=1 -timeout 15m ./internal/broker/...",
-        sha256="1979d457cfa63a7d6c307d7b8cb28410caa7214e4f52abdb9519ce13d8c080d8",
+        command="go list ./internal/broker/... | grep -Ev '/internal/broker/natscallout$' | "
+                "xargs go test -json -count=1 -timeout 15m",
+        sha256="f07ce8bfc421f5427dc36001bba9d678276152980a7365a9353b64cb087fe90d",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.

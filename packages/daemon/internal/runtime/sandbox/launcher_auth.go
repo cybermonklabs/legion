@@ -106,17 +106,21 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 // guard's settings of its own kind and never the other's: an issue pod's launcher those of
 // runtime.kubernetes.memory_guard.issue_pods (Options.MemoryGuard), the controller pod's launcher
 // those of runtime.kubernetes.memory_guard.controller_pod (Options.ControllerMemoryGuard). A kind
-// whose block turned the guard off is handed none, and an absent member is what its launcher
-// reads as "run no guard". Every issue pod's launcher is also told that this daemon knows the
-// pod's kernel's kill (KernelKills), whatever the guard's settings, since a microVM pod's launcher
-// sends those reports only where it is told so and its roles are owed the note however the guard
-// is set. The controller's launcher is not: its pod is never a microVM's, so it runs the guard and
-// sends its reports where guard settings came, and no guest watch's.
+// whose block turned the guard off is handed none. An issue pod's launcher is also handed what
+// its cache trimmer runs by (Options.VolumeTrim), none when the deployment configured none; the
+// controller's pod is handed none of it, since its launcher runs no trimmer in its single-role
+// form, the volume it works on being its Sandbox's own and no issue's cache. An absent member is
+// what a launcher reads as "run none". Every issue pod's launcher is also told that this daemon
+// knows the pod's kernel's kill (KernelKills), whatever the guard's settings, since a microVM
+// pod's launcher sends those reports only where it is told so and its roles are owed the note
+// however the guard is set. The controller's launcher is not: its pod is never a microVM's, so it
+// runs the guard and sends its reports where guard settings came, and no guest watch's.
 func (r *Runtime) launcherHelloAck(kind podKind) shimwire.LauncherHelloAck {
 	var ack shimwire.LauncherHelloAck
 	switch kind.(type) {
 	case issuePod:
 		ack.MemoryGuard = r.memoryGuard
+		ack.VolumeTrim = r.volumeTrim
 		ack.KernelKills = true
 	case controllerPod:
 		ack.MemoryGuard = r.controllerMemoryGuard
