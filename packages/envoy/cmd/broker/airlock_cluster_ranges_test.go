@@ -119,7 +119,7 @@ func TestMainInAClusterStartsWithItsRangesAndItsProxyRefusesThem(t *testing.T) {
 
 	api := podBroker{t: t, base: "http://" + broker.Addr, issuer: issuer, key: podKey, audience: podAudience}
 	launcher := api.logIn(service, loginAccount)
-	p := api.enroll(launcher, "airlock-pod", podAccount)
+	p := api.enroll(launcher, "airlock-pod", podAccount, "")
 	granted := api.ask(p, secretName)
 	if granted.GrantID == nil {
 		t.Fatalf("the pod's request for %s = %+v, want a grant at once", secretName, granted)
