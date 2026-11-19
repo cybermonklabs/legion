@@ -128,6 +128,29 @@ func TestTheURLRuleRewritesTheOwnerAndNameAlone(t *testing.T) {
 	}
 }
 
+// A URL that names the old name of a pair, in any case, is the URL under the new name, with only
+// the owner and the name changed. A URL under the new name, a URL of another repository and any
+// URL with no pairs are the URL as it is given.
+func TestCanonicalURLAnswersAURLUnderTheNewName(t *testing.T) {
+	renamed := NewRenames(legionRenamed)
+	for url, want := range map[string]string{
+		"https://github.com/SJawhar/Legion/pull/7":           "https://github.com/cybermonklabs/legion/pull/7",
+		"https://github.com/sjawhar/legion/issues/5":         "https://github.com/cybermonklabs/legion/issues/5",
+		"http://WWW.github.com/sjawhar/legion.git?x=1#y":     "http://WWW.github.com/cybermonklabs/legion.git?x=1#y",
+		"https://github.com/CybermonkLabs/Legion/pull/7":     "https://github.com/CybermonkLabs/Legion/pull/7",
+		"https://github.com/sjawhar/legion-smoke/issues/599": "https://github.com/sjawhar/legion-smoke/issues/599",
+		"https://github.com/sjawhar/dotfiles/pull/7":         "https://github.com/sjawhar/dotfiles/pull/7",
+		"https://gitlab.com/sjawhar/legion/pull/7":           "https://gitlab.com/sjawhar/legion/pull/7",
+	} {
+		if got := renamed.CanonicalURL(url); got != want {
+			t.Errorf("CanonicalURL(%q) = %q, want %q", url, got, want)
+		}
+		if got := (Renames{}).CanonicalURL(url); got != url {
+			t.Errorf("CanonicalURL(%q) with no pairs = %q, want the URL as given", url, got)
+		}
+	}
+}
+
 // Postgres reads the URL rule as Go does: the SQL spellings of every URL above are the Go
 // spellings in lower case, the URL itself first. A rewrite of a URL that names neither name of a
 // pair is the URL again. With no pairs the one spelling is the URL in lower case.

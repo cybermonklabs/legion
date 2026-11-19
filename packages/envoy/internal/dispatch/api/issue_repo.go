@@ -72,6 +72,17 @@ func parseIssueRepo(raw json.RawMessage, code string) (repo *string, provided bo
 	return &canonical, true, nil
 }
 
+// renamedIssueRepo is an issue's own repository as parseIssueRepo answered it, under its new name
+// where a rename pair renames it away (refs.Renames.Canonical), so a create or a patch never
+// stores an old name. nil, no repository, stays nil.
+func (s *server) renamedIssueRepo(repo *string) *string {
+	if repo == nil {
+		return nil
+	}
+	canonical := s.deps.Renames.Canonical(*repo)
+	return &canonical
+}
+
 // repoScan receives refs.IssueRepoColumns for one issue, the repository-resolution rule the
 // server keeps in one place: refs.IssueRepository reads the same terms for a single key, for
 // the results read and the pull-request head attribution, so an issue read and those two

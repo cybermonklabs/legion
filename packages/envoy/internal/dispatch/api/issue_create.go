@@ -206,6 +206,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	repo = s.renamedIssueRepo(repo)
 	// The near-copy gate, run once for every create it covers whatever `force` says: a forced
 	// create's record of what it went past must be the refusal an unforced create would have met,
 	// and two reads would drift. The gate bounds and logs its own read (duplicateGate), and a read
@@ -377,9 +378,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if input.External != "" {
+		// The link is stored under the repository's new name where a rename pair renames it
+		// away, as every write of a stored URL is (refs.Renames.CanonicalURL).
 		if _, err := tx.Exec(r.Context(), `
 			insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'github_issue')
-		`, key, externalURL(externalRepo, externalNumber)); err != nil {
+		`, key, s.deps.Renames.CanonicalURL(externalURL(externalRepo, externalNumber))); err != nil {
 			if !isUniqueViolation(err) {
 				s.writeHandlerError(w, err)
 				return

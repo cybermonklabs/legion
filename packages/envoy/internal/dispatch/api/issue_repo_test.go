@@ -356,3 +356,67 @@ func TestIssueRepoIsRefusedOnAClosedIssue(t *testing.T) {
 		t.Fatalf("set repo on a closed issue: status=%d body=%s, want 409 ISSUE_CLOSED", response.Code, response.Body.String())
 	}
 }
+
+// A create and a patch that name a repository by the old name of a rename pair, in any case,
+// store its new name, and so does each link they store: the URL of an imported GitHub issue and
+// the external links of a patch. A name and a URL that only begin like the old name are stored as
+// given. A link resent under the old name to a closed issue is the link it has, so the closed
+// issue takes it.
+func TestAnIssueWriteStoresARenamedRepositoryUnderItsNewName(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{
+		renames: refs.NewRenames([]store.RepoRename{{From: "sjawhar/legion", To: "cybermonklabs/legion"}}),
+	})
+	createProjects(t, handler, "INFRA")
+	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "INFRA", "title": "On the old name", "repo": "SJawhar/Legion"}, "alice")
+	if issue := decodeBody[model.Issue](t, created); created.Code != http.StatusCreated || issue.Repo == nil || *issue.Repo != "cybermonklabs/legion" {
+		t.Fatalf("create with repo SJawhar/Legion: status=%d body=%s, want cybermonklabs/legion", created.Code, created.Body.String())
+	}
+	smoke := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "INFRA", "title": "On the smoke repository", "repo": "sjawhar/legion-smoke", "force": true}, "alice"))
+	if smoke.Repo == nil || *smoke.Repo != "sjawhar/legion-smoke" {
+		t.Fatalf("create with repo sjawhar/legion-smoke stored %v, want it as given", smoke.Repo)
+	}
+	imported := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "INFRA", "external": "sjawhar/legion#1955"}, "alice")
+	if imported.Code != http.StatusCreated {
+		t.Fatalf("import sjawhar/legion#1955: status=%d body=%s, want 201", imported.Code, imported.Body.String())
+	}
+	importedKey := decodeBody[model.Issue](t, imported).Key
+
+	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+smoke.Key, map[string]any{
+		"repo": "sjawhar/legion.git",
+		"external_links": []map[string]string{
+			{"url": "https://github.com/SJawhar/Legion/pull/7", "kind": "url"},
+			{"url": "https://github.com/sjawhar/legion-smoke/issues/599", "kind": "url"},
+		},
+	}, "alice")
+	if issue := decodeBody[model.Issue](t, patched); patched.Code != http.StatusOK || issue.Repo == nil || *issue.Repo != "cybermonklabs/legion" {
+		t.Fatalf("patch with repo sjawhar/legion.git: status=%d body=%s, want cybermonklabs/legion", patched.Code, patched.Body.String())
+	}
+	links := func() string {
+		t.Helper()
+		var stored string
+		if err := database.Pool.QueryRow(context.Background(), `
+			select string_agg(issue_key || ' ' || url, ' | ' order by url) from issue_external_links
+		`).Scan(&stored); err != nil {
+			t.Fatalf("read the stored links: %v", err)
+		}
+		return strings.ReplaceAll(strings.ReplaceAll(stored, importedKey, "IMPORTED"), smoke.Key, "SMOKE")
+	}
+	const want = "IMPORTED https://github.com/cybermonklabs/legion/issues/1955 | " +
+		"SMOKE https://github.com/cybermonklabs/legion/pull/7 | SMOKE https://github.com/sjawhar/legion-smoke/issues/599"
+	if got := links(); got != want {
+		t.Fatalf("the stored links = %s, want %s", got, want)
+	}
+
+	if closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+smoke.Key, map[string]any{"status": "done"}, "alice"); closed.Code != http.StatusOK {
+		t.Fatalf("close: status=%d body=%s", closed.Code, closed.Body.String())
+	}
+	resent := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+smoke.Key, map[string]any{
+		"external_links": []map[string]string{{"url": "https://github.com/sjawhar/legion/pull/7", "kind": "url"}},
+	}, "alice")
+	if resent.Code != http.StatusOK {
+		t.Fatalf("resend a link under the old name to the closed issue: status=%d body=%s, want 200", resent.Code, resent.Body.String())
+	}
+	if got, want := links(), "IMPORTED https://github.com/cybermonklabs/legion/issues/1955 | SMOKE https://github.com/cybermonklabs/legion/pull/7"; got != want {
+		t.Fatalf("the stored links after the resend = %s, want %s", got, want)
+	}
+}

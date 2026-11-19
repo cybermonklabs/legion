@@ -72,6 +72,14 @@ func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The deploy repository and each excluded one are stored under their new name where a rename
+	// pair renames them away (refs.Renames.Canonical), so no write stores an old name. The access
+	// check below reads the deploy repository by that name, the one GitHub answers for.
+	repoOwner, repoName = s.renamedOwnerName(repoOwner, repoName)
+	excludedRepos := make([]string, len(input.ExcludedRepos))
+	for i, excluded := range input.ExcludedRepos {
+		excludedRepos[i] = s.deps.Renames.Canonical(excluded)
+	}
 	for name, value := range map[string]string{
 		"deploy_workflow_path":    input.DeployWorkflowPath,
 		"pr_checks_workflow_path": input.PRChecksWorkflowPath,
@@ -109,7 +117,7 @@ func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 		ProductionApplyStepName: optionalJobName(input.ProductionApplyStepName),
 		PRChecksWorkflowPath:    input.PRChecksWorkflowPath,
 		PopulationAuthors:       input.PopulationAuthors,
-		ExcludedRepos:           input.ExcludedRepos,
+		ExcludedRepos:           excludedRepos,
 		StagingE2EJobName:       optionalJobName(input.StagingE2EJobName),
 		StagingApplyJobName:     optionalJobName(input.StagingApplyJobName),
 		PRChecksRollupJobName:   optionalJobName(input.PRChecksRollupJobName),

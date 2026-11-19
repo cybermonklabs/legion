@@ -805,7 +805,7 @@ func (a *Attributor) headAttribution(ctx context.Context, pool *store.Pool, fact
 		ownHead:  headInOwnRepository(facts.Repo, headRepo),
 		complete: headRepo != "",
 	}
-	candidates, err := a.resolveAttributionCandidates(ctx, pool, facts.Repo, facts.URL, attributionInputsFrom(facts))
+	candidates, err := a.resolveAttributionCandidates(ctx, pool, facts.Repo, facts.URL, attributionInputsFrom(a.renames, facts))
 	if err != nil || len(candidates) == 0 {
 		return attributed, err
 	}

@@ -154,6 +154,16 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	repo = s.renamedIssueRepo(repo)
+	// Each link URL is stored under its repository's new name where a rename pair renames it
+	// away (refs.Renames.CanonicalURL), as every write of a stored URL is. It is rewritten here,
+	// before the closed-issue gate compares the links with the stored ones, so a link resent
+	// under the old name is the link the issue already has.
+	if input.ExternalLinks != nil {
+		for i := range *input.ExternalLinks {
+			(*input.ExternalLinks)[i].URL = s.deps.Renames.CanonicalURL((*input.ExternalLinks)[i].URL)
+		}
+	}
 
 	key := r.PathValue("key")
 	// Whether the write closes the issue (closing) waits for the issue's row; whether it asks to is

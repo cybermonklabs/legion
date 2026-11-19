@@ -45,7 +45,7 @@ func seedAttributionIssues(t *testing.T, ctx context.Context, pool *store.Pool, 
 
 func resolvedKey(t *testing.T, ctx context.Context, pool *store.Pool, facts attributionFacts) (string, attributionSource) {
 	t.Helper()
-	key, source, err := unrenamed().resolveStoredIssueKey(ctx, pool, facts.Repo, facts.URL, attributionInputsFrom(facts))
+	key, source, err := unrenamed().resolveStoredIssueKey(ctx, pool, facts.Repo, facts.URL, attributionInputsFrom(refs.Renames{}, facts))
 	if err != nil {
 		t.Fatalf("resolveStoredIssueKey(%+v): %v", facts, err)
 	}
@@ -234,10 +234,28 @@ func TestCitedIssuesCreditsTheURLsOwnPath(t *testing.T) {
 		{"a host-byte run longer than a host name", strings.Repeat("a", 300) + ".github.com/acme/widgets/issues/7", nil},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			if got := citedIssues("acme/widgets", row.body); !slices.Equal(got, row.want) {
+			if got := citedIssues(refs.Renames{}, "acme/widgets", row.body); !slices.Equal(got, row.want) {
 				t.Errorf("citedIssues(%q) = %v, want %v", row.body, got, row.want)
 			}
 		})
+	}
+}
+
+// A body that cites an issue under the old name of a rename pair, in any case, cites it under
+// the new name, and a citation of one issue under both names is one URL, at the first place it is
+// cited. A bare #N in a pull request stored under the old name names an issue under the new name.
+// A citation of a repository that only begins like the old name keeps its name.
+func TestCitedIssuesNameARenamedRepositoryByItsNewName(t *testing.T) {
+	renames := refs.NewRenames([]store.RepoRename{{From: "sjawhar/legion", To: "cybermonklabs/legion"}})
+	body := "Fixes https://github.com/SJawhar/Legion/issues/5 and github.com/cybermonklabs/legion/issues/5, " +
+		"see https://github.com/sjawhar/legion-smoke/issues/599 and #12."
+	want := []string{
+		"https://github.com/cybermonklabs/legion/issues/5",
+		"https://github.com/sjawhar/legion-smoke/issues/599",
+		"https://github.com/cybermonklabs/legion/issues/12",
+	}
+	if got := citedIssues(renames, "sjawhar/legion", body); !slices.Equal(got, want) {
+		t.Errorf("citedIssues(%q) = %v, want %v", body, got, want)
 	}
 }
 
@@ -253,7 +271,7 @@ func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
 	const deadline = 10 * time.Second
 	body := strings.Repeat("/a/b/issues/1", 1<<20/13) + ",github.com/acme/widgets/issues/7"
 	began := time.Now()
-	got := citedIssues("acme/widgets", body)
+	got := citedIssues(refs.Renames{}, "acme/widgets", body)
 	if took := time.Since(began); took > deadline {
 		t.Errorf("citedIssues over %d bytes took %s, want under %s", len(body), took, deadline)
 	}
@@ -261,7 +279,7 @@ func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
 		t.Fatalf("a body of %d bytes cites %v, want %s and nothing else", len(body), got, cited)
 	}
 	whole := "https://github.com/acme/widgets/issues/7" + strings.Repeat("x", 4096)
-	if got := citedIssues("acme/widgets", whole); len(got) != 0 {
+	if got := citedIssues(refs.Renames{}, "acme/widgets", whole); len(got) != 0 {
 		t.Fatalf("a path running past the issue number cites %v, want nothing", got)
 	}
 }

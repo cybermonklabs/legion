@@ -183,10 +183,10 @@ func isHostByte(b byte) bool {
 	return isDigitByte(b) || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b == '.' || b == '-'
 }
 
-func attributionInputsFrom(facts attributionFacts) AttributionInputs {
+func attributionInputsFrom(renames refs.Renames, facts attributionFacts) AttributionInputs {
 	return AttributionInputs{
 		TitleKeys:   uniqueKeys(facts.Title + "\n" + facts.Body),
-		CitedIssues: citedIssues(facts.Repo, facts.Body),
+		CitedIssues: citedIssues(renames, facts.Repo, facts.Body),
 		BranchKeys:  uniqueKeys(strings.ToUpper(facts.HeadRef)),
 		CommitKeys:  uniqueKeys(strings.Join(facts.CommitMessages, "\n")),
 	}
@@ -206,8 +206,10 @@ func appendUnique(list []string, values ...string) []string {
 }
 
 // citedIssues is every GitHub issue body cites, as https://github.com/<owner>/<repo>/issues/<n>,
-// in the order the citations appear; a bare #N names an issue of repo.
-func citedIssues(repo, body string) []string {
+// in the order the citations appear; a bare #N names an issue of repo. Each URL is under its
+// repository's new name where a rename pair renames it away (refs.Renames.CanonicalURL), as every
+// stored URL is, so a citation of an old name and one of the new name are one URL here, kept once.
+func citedIssues(renames refs.Renames, repo, body string) []string {
 	type citation struct {
 		at  int
 		url string
@@ -225,7 +227,7 @@ func citedIssues(repo, body string) []string {
 	slices.SortStableFunc(citations, func(a, b citation) int { return cmp.Compare(a.at, b.at) })
 	urls := []string{}
 	for _, c := range citations {
-		urls = appendUnique(urls, c.url)
+		urls = appendUnique(urls, renames.CanonicalURL(c.url))
 	}
 	return urls
 }

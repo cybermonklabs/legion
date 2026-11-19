@@ -30,6 +30,13 @@ import (
 // under the name it has now, so no pass asks GitHub about a name it cannot read
 // (cireconcile/repositories.go, Reconciler.covered).
 //
+// Every write of a stored repository name or GitHub URL puts it through the same rule first
+// (Canonical, CanonicalURL), so no write stores an old name: an issue's own repository and its
+// external links on a create and a patch, a project's default repository, the delivery
+// settings' repositories and an architecture source's repository (api), and the issue URLs a
+// pull request's body cites (delivery's citedIssues). The rows stored before this rule are
+// rewritten once, by the boot's pass (store.RewriteRenamedRepositories).
+//
 // One step is enough: the route that wrote the pairs refused a pair pointing at a repository
 // that is itself renamed, and refused renaming a repository another pair already points at, so
 // no chain and no cycle exists to walk. Dispatch never asks GitHub to resolve a name. For a
@@ -77,6 +84,19 @@ func (r Renames) Canonical(repo string) string {
 		}
 	}
 	return repo
+}
+
+// CanonicalURL is url under the canonical name of the repository it names: url rewritten to the
+// new name of the pair whose old name it names, by the URL rule (store.RepoURLRule), else url as
+// it is given. So a write that stores a GitHub URL never stores an old name, and a URL that names
+// no old name keeps every character it has.
+func (r Renames) CanonicalURL(url string) string {
+	for _, pair := range r.pairs {
+		if rewritten, named := pair.toNew.Rewrite(url); named {
+			return rewritten
+		}
+	}
+	return url
 }
 
 // CanonicalRepoSQL is Canonical as a SQL expression over repo, an expression naming a

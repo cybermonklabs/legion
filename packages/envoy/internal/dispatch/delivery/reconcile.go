@@ -684,7 +684,7 @@ func (r *Reconcile) readAttributionInputs(ctx context.Context, pr DeliveryPullRe
 		slog.Warn("dispatch delivery: read attribution inputs", "repo", pr.Repo, "number", pr.Number, "error", err)
 		return nil
 	}
-	inputs := attributionInputsFrom(facts)
+	inputs := attributionInputsFrom(r.attributor.renames, facts)
 	issueKey, _, err := r.attributor.resolveStoredIssueKey(ctx, r.pool, pr.Repo, pr.URL, inputs)
 	if err != nil {
 		slog.Warn("dispatch delivery: resolve the issue of a backfilled pull request", "repo", pr.Repo, "number", pr.Number, "error", err)

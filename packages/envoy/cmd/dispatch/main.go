@@ -366,9 +366,9 @@ func main() {
 
 	// The rename pairs are read once, here, before any part that reads them is built: the API,
 	// the delivery reconcile and intakes and the CI reconcile are each given this one value
-	// (refs.Renames). A read that fails does not stop the boot: it is logged, and the process
-	// serves with no pairs, so an old name reads as a repository of its own until a later boot
-	// reads the pairs.
+	// (refs.Renames). A read that fails does not stop the boot: it is logged, it is one failure
+	// in the rename pass's summary below (renameRepositories), and the process serves with no
+	// pairs, so an old name reads as a repository of its own until a later boot reads the pairs.
 	renamesCtx, cancelRenames := context.WithTimeout(ctx, repoRenamesReadTimeout)
 	renamePairs, renamesErr := store.ReadRepoRenames(renamesCtx, database.Pool)
 	cancelRenames()
@@ -474,6 +474,7 @@ func main() {
 	issueAskRepairDeps := api.Deps{Store: database, Docs: documentService, Events: broker}
 	repairIssueAsks(ctx, issueAskRepairDeps, issueAskRepairBootTimeout)
 	fillReviewContentHashes(ctx, database.Pool, reviewContentHashFillTimeout)
+	renameRepositories(ctx, database.Pool, renamePairs, renamesErr, repoRenamePassTimeout)
 
 	serviceTokens := serviceTokenVerifier(boot)
 	if serviceTokens != nil {
@@ -633,8 +634,9 @@ func main() {
 	//     the other processes' writes and answers their room queries) and the document sockets'
 	//     schema re-check (it closes this process's own sockets).
 	//   - a boot one-shot already serialised by an advisory lock or idempotent: the migrations,
-	//     retirePlainRefreshTokens, restoreDecidedWordings and repairIssueAsks above, and the
-	//     embedding coverage pass (two processes' passes at once leave what one leaves).
+	//     retirePlainRefreshTokens, restoreDecidedWordings, repairIssueAsks and
+	//     renameRepositories above, and the embedding coverage pass (two processes' passes at
+	//     once leave what one leaves).
 	leaseCallers, err := database.Pool.Leases()
 	if err != nil {
 		slog.Error("dispatch: open the lease pool for the maintenance loops", "error", err)
@@ -1659,6 +1661,32 @@ func fillReviewContentHashes(ctx context.Context, pool *store.Pool, timeout time
 			result, err := docs.FillReviewContentHashes(ctx, pool)
 			return []any{"filled", result.Filled, "unhashable", result.Unhashable}, err
 		})
+}
+
+// repoRenamePassTimeout bounds the boot's repository rename pass: one short transaction for each
+// of its thirteen lines of fields. A pass that reaches the bound fails the transaction in flight
+// and the lines after it, and the next boot writes what is left. The pass's count of the rows
+// left has a bound of its own after this one, so the summary says what the bound left.
+const repoRenamePassTimeout = 30 * time.Second
+
+// renameRepositories is the boot's pass that writes, in every stored repository field, the new
+// name of each rename pair in place of its old name (store.RewriteRenamedRepositories), bounded by
+// timeout. pairs and readErr are what the boot's read of the pairs answered. A read that failed is
+// one failure of the pass, which then has no pairs and writes nothing, and the rows left on an old
+// name are unknown, since the pairs are. The pass logs its own lines; this logs its summary at
+// every boot, at INFO when nothing failed and no old name is known to be left, and at ERROR
+// otherwise, with left=unknown where nothing counted it. Either way the start goes on, and the
+// next boot tries again.
+func renameRepositories(ctx context.Context, pool *store.Pool, pairs []store.RepoRename, readErr error, timeout time.Duration) {
+	const summary = "dispatch: rewrote renamed repositories' old names"
+	bootTask(ctx, timeout, summary, summary, func(ctx context.Context) ([]any, error) {
+		pass := store.RewriteRenamedRepositories(ctx, pool, pairs)
+		if readErr != nil {
+			pass.Failures++
+			pass.Left = store.RepoRenamesLeft{}
+		}
+		return pass.LogArgs(), pass.Err()
+	})
 }
 
 // issueAskRepairBootTimeout bounds the boot's repair of the asks of closed and reopened issues.
