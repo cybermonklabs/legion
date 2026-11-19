@@ -1722,10 +1722,13 @@ What you do depends on how the database came to hold another file:
   the database, create it empty, and start the broker, which migrates it from the first file.
   This includes a fresh preview or development database that a newer image created and an older
   image then starts on: the older image refuses it, and you reset it. It includes too a
-  development or preview database that an unmerged branch with an edited migration first started
-  on under this check: that start recorded the branch's file, not the text the database ran, and
-  the main branch's image refuses it. Never reset the production database this way; a refusal
-  there is a release to stop and investigate.
+  development or preview database whose rows recorded no name when a branch's image first started
+  on it under this check, where that branch edits a migration in place and its file does not yet
+  declare the main branch's identity of it in a replaces line: that start recorded the branch's
+  own identity, not the main branch's, and the main branch's image refuses it. A branch whose
+  edited file already declares the main branch's identity, as the pre-merge check requires,
+  records that identity, and the main branch's image starts on it. Never reset the production
+  database this way; a refusal there is a release to stop and investigate.
 - **The file was edited or renamed on purpose**, and the database already holds the schema it
   means: add the line the refusal names, alone on a line of its own and outside every quoted
   string or function body, to the file, after the replaces lines it has, and ship it. The next

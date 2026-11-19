@@ -542,11 +542,15 @@ commit's migration, or an edit of one, such as a test or preview database, is re
 create it empty, and start Dispatch, which migrates it from the first file. This includes a fresh
 preview or development database that a newer build created and an older build then starts on:
 the older build refuses it, and you reset it. It includes too a development or preview database
-that an unmerged branch with an edited migration first started on under this check: that start
-recorded the branch's file, not the text the database ran, and the main branch's release refuses
-it. A migration edited or renamed on purpose takes the `-- replaces: <name> sha256:<hex>` line the
-refusal gives, after the replaces lines it has, and the next start accepts the recorded row as it
-is. A release cannot accept a text it has never seen, so it refuses a database whose migration a
+whose rows recorded no name when a branch's build first started on it under this check, where that
+branch edits a migration in place and its file does not yet declare the main branch's identity of
+it in a replaces line: that start recorded the branch's own identity, not the main branch's, and
+the main branch's release refuses it. A branch whose edited file already declares the main
+branch's identity, as the pre-merge check requires, records that identity, and the main branch's
+release starts on it. A migration edited or renamed on purpose takes the
+`-- replaces: <name> sha256:<hex>` line the refusal gives, after the replaces lines it has, and the
+next start accepts the recorded row as it is. A release cannot accept a text it has never seen, so
+it refuses a database whose migration a
 later release applied from an edited text. On a production database, created once, that happens
 only on a rollback by hand to a release the database never ran: roll back only to a release it
 ran, as the auto-deployer does, which goes back to the image that was running. An edited text a

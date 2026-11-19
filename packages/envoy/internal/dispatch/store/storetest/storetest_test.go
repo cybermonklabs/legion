@@ -14,7 +14,10 @@ func TestMain(m *testing.M) { os.Exit(Main(m)) }
 // the write-ahead log of the one backend that runs a clone (pg_stat_get_backend_wal, Postgres 18),
 // so what other sessions on the server write does not count.
 func TestACloneWritesTheLogOfAFileCopyNotOfTheTemplate(t *testing.T) {
-	Open(t) // prepares the template, or skips the test
+	Open(t) // makes Open's template, or skips the test
+	templates.Lock()
+	template := templates.byKey[openKey].name
+	templates.Unlock()
 	ctx := context.Background()
 	conn, err := shared.admin.Acquire(ctx)
 	if err != nil {
@@ -22,13 +25,13 @@ func TestACloneWritesTheLogOfAFileCopyNotOfTheTemplate(t *testing.T) {
 	}
 	defer conn.Release()
 	var templateBytes int64
-	if err := conn.QueryRow(ctx, "select pg_database_size($1)", shared.template).Scan(&templateBytes); err != nil {
+	if err := conn.QueryRow(ctx, "select pg_database_size($1)", template).Scan(&templateBytes); err != nil {
 		t.Fatalf("read the template's size: %v", err)
 	}
 
 	name := randomName(t, "dispatch_test_")
 	before := backendWALBytes(t, conn)
-	if _, err := conn.Exec(ctx, cloneStatement(name, shared.template)); err != nil {
+	if _, err := conn.Exec(ctx, cloneStatement(name, template)); err != nil {
 		t.Fatalf("clone the template: %v", err)
 	}
 	dropDatabase(name)

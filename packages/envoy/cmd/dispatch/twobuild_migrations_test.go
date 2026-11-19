@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -29,10 +30,12 @@ const (
 	attributionRule = "20261105070440_pull_request_heads_attribution_rule.up.sql"
 )
 
-// editedFile is one migration nextRelease edits: its name, and N's text and N+1's.
+// editedFile is one migration nextRelease edits: its name, N's text and N+1's, and N's file as N's
+// runner loads it (pgmigrate.Load).
 type editedFile struct {
 	name             string
 	original, edited []byte
+	release          pgmigrate.Migration
 }
 
 // nextRelease is release N+1: this tree, N, with each of names edited in place as a pull request
@@ -43,8 +46,16 @@ func nextRelease(t *testing.T, names ...string) (string, []editedFile) {
 	t.Helper()
 	dir := t.TempDir()
 	replace := map[string]string{}
+	set, err := pgmigrate.Load(os.DirFS(filepath.Join("..", "..", "internal", "dispatch", "store")), "migrations")
+	if err != nil {
+		t.Fatalf("load this tree's migrations: %v", err)
+	}
 	var files []editedFile
 	for _, name := range names {
+		index := slices.IndexFunc(set, func(m pgmigrate.Migration) bool { return m.Name == name })
+		if index < 0 {
+			t.Fatalf("this tree has no migration %s", name)
+		}
 		source, err := filepath.Abs(filepath.Join("..", "..", "internal", "dispatch", "store", "migrations", name))
 		if err != nil {
 			t.Fatal(err)
@@ -59,7 +70,7 @@ func nextRelease(t *testing.T, names ...string) (string, []editedFile) {
 			t.Fatal(err)
 		}
 		replace[source] = replacement
-		files = append(files, editedFile{name: name, original: original, edited: edited})
+		files = append(files, editedFile{name: name, original: original, edited: edited, release: set[index]})
 	}
 	overlay, err := json.Marshal(map[string]map[string]string{"Replace": replace})
 	if err != nil {
@@ -70,6 +81,28 @@ func nextRelease(t *testing.T, names ...string) (string, []editedFile) {
 		t.Fatal(err)
 	}
 	return cmdtest.BuildCommand(t, cmdtest.Command{Name: "envoy-dispatch-next", Flags: []string{"-overlay", overlayFile}}), files
+}
+
+// accepts says whether m accepts the applied text whose sha256 is checksum: its own text, or one a
+// replaces line of it names.
+func accepts(m pgmigrate.Migration, checksum string) bool {
+	return checksum == m.Checksum || slices.ContainsFunc(m.Replaces, func(replaced pgmigrate.Identity) bool { return replaced.Checksum == checksum })
+}
+
+// appliedTextRefusal is how m's runner refuses a row of m's version that records m's first identity
+// (Migration.RecordedIdentity) and the applied text whose sha256 is applied, a text m does not
+// accept: the sentence names the row, m's own identity and each replaces line m has.
+func appliedTextRefusal(m pgmigrate.Migration, applied string) string {
+	declared := ""
+	if len(m.Replaces) > 0 {
+		names := make([]string, len(m.Replaces))
+		for i, replaced := range m.Replaces {
+			names[i] = replaced.String()
+		}
+		declared = ", whose replaces lines name only " + strings.Join(names, ", ")
+	}
+	version := strconv.Itoa(m.Version)
+	return "version " + version + " is recorded as " + m.RecordedIdentity().String() + ", which this build's file of version " + version + ", " + m.Identity().String() + declared + ", accepts, but the text applied under it has sha256 " + applied
 }
 
 // refusedBoot starts binary on the database url names and requires it to refuse to start: exit 1,
@@ -99,10 +132,10 @@ func TestTheReleaseBeforeBootsOverADatabaseTheNextReleaseBootedWithAReplacedFile
 	b := newTwoBuilds(t)
 	ctx := context.Background()
 	next, files := nextRelease(t, editedMigration)
-	original, edited := files[0].original, files[0].edited
-	// recorded reads what version 1's row records: its identity, and the text applied, which the
-	// lane's database records as N's text, or as none where this tree filled the row the previous
-	// build's runner wrote with no name.
+	edited, release := files[0].edited, files[0].release
+	// recorded reads what version 1's row records: the identity N's runner records of its file, and
+	// the text applied, which the lane's database records as a text N's file accepts, or as none
+	// where this tree filled the row the previous build's runner wrote with no name.
 	recorded := func() (name, checksum, applied string) {
 		t.Helper()
 		var text *string
@@ -124,8 +157,9 @@ func TestTheReleaseBeforeBootsOverADatabaseTheNextReleaseBootedWithAReplacedFile
 		t.Logf("%s booted and stopped", which)
 	}
 	name, checksum, applied := recorded()
-	if name != editedMigration || checksum != pgmigrate.Checksum(original) || (applied != "" && applied != pgmigrate.Checksum(original)) {
-		t.Fatalf("version 1 records %s sha256:%s, applied %q, before N+1 boots; want N's own %s sha256:%s and N's text or none", name, checksum, applied, editedMigration, pgmigrate.Checksum(original))
+	first := release.RecordedIdentity()
+	if name != first.Name || checksum != first.Checksum || (applied != "" && !accepts(release, applied)) {
+		t.Fatalf("version 1 records %s sha256:%s, applied %q, before N+1 boots; want %s, the identity N's runner records of its file, and a text N's file accepts, or none", name, checksum, applied, first)
 	}
 	boot(next, "release N+1, whose file declares N's identity,")
 	if n, c, a := recorded(); n != name || c != checksum || a != applied {
@@ -144,30 +178,31 @@ func TestTheReleaseBeforeBootsOverADatabaseTheNextReleaseBootedWithAReplacedFile
 		t.Fatalf("control: move the row to N+1's identity: %v", err)
 	}
 	refusedBoot(t, b, b.databaseURL(t), b.binary, "control: release N over the moved row",
-		"migrations refused, none applied: version 1 is recorded as "+editedMigration+" sha256:"+pgmigrate.Checksum(edited))
+		"migrations refused, none applied: version 1 is recorded as "+first.Name+" sha256:"+pgmigrate.Checksum(edited))
 }
 
 // Once this runner is the previous build, this lane boots it over a database a pull request's tree
 // migrated. A pull request that edits a shipped migration in place, with the replaces line the
 // pre-merge check requires, must keep the lane green. Here this tree, N, stands for that previous
 // build, since its runner judges the applied text, and N+1 (nextRelease) for the pull request's
-// tree, which edits 0001_init and #4466's migration. The lane's database, built in production's
-// order (migrateInOrder: N migrates it from empty, N+1 migrates it forward), records N's text of
-// each edited version as applied, and N boots over it. The control is the lane's old setup, a
-// database N+1 migrated from empty, which records N+1's texts as applied: N refuses it and exits
-// 1, naming each, which is the red lane production's order keeps away.
+// tree, which edits 0001_init and #4466's migration. The row's database comes from laneDatabase,
+// where every row's database comes from, given N as the earlier build and N+1 as the later: N
+// migrates it from empty and N+1 migrates it forward, so it records N's text of each edited
+// version as applied, and N boots over it. Were laneDatabase to put the later build first, N would
+// refuse that database as the template is made, and this row would fail. The control is the lane's
+// old setup, a database N+1 migrated from empty, which records N+1's texts as applied: N refuses it
+// and exits 1, naming each, which is the red lane production's order keeps away.
 func TestTheReleaseBeforeBootsOverTheLaneDatabaseOfAPullRequestThatEditsAShippedMigration(t *testing.T) {
 	b := newTwoBuilds(t)
 	next, files := nextRelease(t, editedMigration, attributionRule)
 
-	lane := storetest.Empty(t)
-	migrateInOrder(t, lane, b.binary, next)
+	lane := laneDatabase(t, "release N, then N+1 editing "+editedMigration+" and "+attributionRule, b.binary, next)
 	options := b.options(nil)
 	options.Binary = b.binary
-	release := startDispatchProcessWith(t, lane, options)
+	release := startDispatchProcessWith(t, databaseURLOf(t, lane), options)
 	release.waitHealthy(t)
 	stop(t, release)
-	t.Logf("release N booted over the lane's database, which N migrated from empty and N+1, editing %s and %s, migrated forward", editedMigration, attributionRule)
+	t.Logf("release N booted over the lane's database (laneDatabase), which N migrated from empty and N+1, editing %s and %s, migrated forward", editedMigration, attributionRule)
 
 	old := storetest.Empty(t)
 	migrateInOrder(t, old, next)
@@ -181,14 +216,7 @@ func TestTheReleaseBeforeBootsOverTheLaneDatabaseOfAPullRequestThatEditsAShipped
 	}
 	output := refused.Output.String()
 	for _, file := range files {
-		version, err := strconv.ParseInt(strings.SplitN(file.name, "_", 2)[0], 10, 64)
-		if err != nil {
-			t.Fatal(err)
-		}
-		own := file.name + " sha256:" + pgmigrate.Checksum(file.original)
-		v := strconv.FormatInt(version, 10)
-		want := "version " + v + " is recorded as " + own + ", which this build's file of version " + v + ", " + own + ", accepts, but the text applied under it has sha256 " + pgmigrate.Checksum(file.edited)
-		if !strings.Contains(output, want) {
+		if want := appliedTextRefusal(file.release, pgmigrate.Checksum(file.edited)); !strings.Contains(output, want) {
 			t.Errorf("control: release N's refusal does not say %q:\n%s", want, output)
 		}
 	}

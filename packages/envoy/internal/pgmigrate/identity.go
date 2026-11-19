@@ -269,7 +269,9 @@ type Fix struct {
 //     (Migration.RecordedIdentity) and no applied text. Nothing says which file wrote it, so it is
 //     never refused, and the fill records the booting build's file, not the text the database
 //     ran: an edited text a database ran before the runners recorded identities is not detected,
-//     and a database an unmerged branch's edit first booted records that branch's file;
+//     and a branch's build that first boots a database records its own file's first identity:
+//     the branch's own where its edit does not yet declare main's identity in a replaces line,
+//     which main then refuses, and main's where it does, on which main boots;
 //   - refused, by a *Refusal, where it records an identity other than the file's own and other
 //     than any the file declares it replaces (Migration.Replaces);
 //   - refused, by a *Refusal, where it records the text it applied and that text is neither the
