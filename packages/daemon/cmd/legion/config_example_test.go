@@ -157,6 +157,28 @@ func TestShippedLegionYAMLExamplesCommitIssueTrailerReposPassesCheckConfig(t *te
 	}
 }
 
+// The example's commented leak_check block, uncommented with a sha256 in place of its placeholder,
+// passes the same check and settles on the repository and the checker it names. It needs no
+// volume and no mount: the block names a repository and a digest, not files.
+func TestShippedLegionYAMLExamplesLeakCheckPassesCheckConfig(t *testing.T) {
+	checker := strings.Repeat("5e", 32)
+	config := checkShippedExample(t, func(example string) string {
+		example = uncommentExample(t, example,
+			"# leak_check:",
+			"#   repository: example-org/deployment",
+			"#   checker_sha256: <64 hex digits>",
+		)
+		return strings.Replace(example, "checker_sha256: <64 hex digits>", "checker_sha256: "+checker, 1)
+	})
+	cfg, err := configpkg.LoadForValidation(config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.LeakCheck; got.Repository.String() != "example-org/deployment" || got.CheckerSHA256 != checker {
+		t.Errorf("the leak_check block uncommented settles on %+v, want example-org/deployment and %s", got, checker)
+	}
+}
+
 // The example's first commented hook is the hook a file that names no `hooks:` key runs, its
 // words included, so an operator reads the shipped default in the file it edits. Uncommented, it
 // loads as exactly that hook: a default changed in one place and not the other would have the

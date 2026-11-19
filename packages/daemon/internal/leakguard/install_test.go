@@ -32,7 +32,7 @@ const theTag = "leak-check-v15"
 // outside that directory is in the tarball too, to show that the rest of the repository is left
 // where it is.
 const (
-	theNeighbour = "public_leak_check.py"
+	theNeighbour = leakguardtest.ProgramName
 	theFixture   = "must-pass-lines.txt"
 	theNested    = "revert-gate/run.py"
 )
@@ -63,7 +63,7 @@ exit 2
 func theCheck(launcher string) map[string]leakguardtest.Member {
 	return map[string]leakguardtest.Member{
 		checkName:    {Body: launcher, Mode: 0o755},
-		theNeighbour: {Body: "# the check itself\n", Mode: 0o644},
+		theNeighbour: {Body: leakguardtest.Program, Mode: 0o644},
 		theFixture:   {Body: "a line the self-test must pass\n", Mode: 0o600},
 		theNested:    {Body: "# the revert gate\n", Mode: 0o644},
 	}
@@ -488,11 +488,15 @@ func TestAHelpRunThatEndsWithNoExitIsRefusedNamingWhy(t *testing.T) {
 	}
 }
 
-// A role's shim reads the install and starts no agent unless it is the pin's: an absent check, an
-// install that records no tag and one of another tag are each refused naming the pin and what is
-// there. With no pin, which is every tmux pane, nothing is read and nothing refused.
+// A role's shim reads the install and starts no agent unless it is the pin's and its program is
+// the deployment's checker: an absent check, an install that records no tag, one of another tag,
+// one whose program hashes to another sha256 and one with no program are each refused naming the
+// pin and what is there. With no pin, which is every tmux pane, nothing is read and nothing
+// refused; and with the pin but no deployment checker (CheckerVar), which is every role of a
+// deployment that runs no shared leak check, nothing is read either, even where there is no
+// install at all.
 func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
-	pinned := []string{"PATH=/usr/bin:/bin", TagVariable + "=" + theTag}
+	pinned := []string{"PATH=/usr/bin:/bin", TagVariable + "=" + theTag, CheckerVar + "=" + leakguardtest.ProgramSHA256}
 	installedAt := func(t *testing.T) string {
 		t.Helper()
 		dir := filepath.Join(t.TempDir(), "leak-check")
@@ -511,6 +515,12 @@ func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
 	})
 	t.Run("no pin", func(t *testing.T) {
 		check, err := Installed([]string{"PATH=/usr/bin:/bin"}, filepath.Join(t.TempDir(), "absent"))
+		if err != nil || check != "" {
+			t.Fatalf("Installed = %q, %v; want no check and no refusal", check, err)
+		}
+	})
+	t.Run("the pin and no checker", func(t *testing.T) {
+		check, err := Installed([]string{"PATH=/usr/bin:/bin", TagVariable + "=" + theTag}, filepath.Join(t.TempDir(), "absent"))
 		if err != nil || check != "" {
 			t.Fatalf("Installed = %q, %v; want no check and no refusal", check, err)
 		}
@@ -538,6 +548,21 @@ func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
 				}
 			},
 			want: []string{TagVariable + "=" + theTag, "is of leak-check-v14"},
+		},
+		{
+			name: "a program that does not hash to the deployment's checker",
+			spoil: func(t *testing.T, dir string) {
+				if err := os.WriteFile(filepath.Join(dir, theNeighbour), []byte("# a check of another version\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: []string{TagVariable + "=" + theTag, "holds a public_leak_check.py whose sha256 is ",
+				"not the deployment's checker " + CheckerVar + "=" + leakguardtest.ProgramSHA256},
+		},
+		{
+			name:  "no program beside the check",
+			spoil: func(t *testing.T, dir string) { remove(t, filepath.Join(dir, theNeighbour)) },
+			want:  []string{TagVariable + "=" + theTag, "holds no public_leak_check.py to hash against " + CheckerVar},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

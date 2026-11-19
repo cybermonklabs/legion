@@ -379,6 +379,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		Setup:                   k.Setup,
 		TestPostgres:            k.TestPostgres,
 		MemoryGuard:             memoryGuard,
+		LeakCheckSetting:        cfg.LeakCheck,
 		BootTimeout:             cfg.WorkerBootTimeout,
 		RegistrationIntervals:   cfg.WorkerBootRegistrationDeadlineIntervals,
 		BusyBackoff:             busyBackoffFirst,
@@ -573,10 +574,11 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// answered for that bundle again.
 		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
 		// The shared public leak check each pod's launcher is pushed before any role of the pod
-		// starts, read with the implement App's read lease on the check's owner (leakCheckToken);
-		// a daemon with no Apps reads none, and the runtime refuses the start of a role whose
-		// launcher names a tag with the cause that says so.
-		opts.LeakCheck = leakCheckSource(apps, githubAPI)
+		// starts, read from the repository the deployment names (opts.LeakCheckSetting) with the
+		// implement App's read lease on its owner (leakCheckToken). A deployment that names none
+		// is pushed none; a daemon with no Apps reads none, and the runtime refuses the start of a
+		// role whose launcher names a tag under a named check with the cause that says so.
+		opts.LeakCheck = leakCheckSource(apps, githubAPI, opts.LeakCheckSetting)
 		// Each process an issue pod's memory guard ends reaches the daemon through the kill
 		// holder (memoryGuardKills).
 		opts.MemoryGuardKilled = kills.killed
@@ -724,27 +726,30 @@ func (t *implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (st
 	return lease.Token, nil
 }
 
-// leakCheckSource is the daemon's reader of the shared public leak check, minting through apps
-// (leakCheckToken) and reading under githubAPI, GitHub's REST root ("" is
-// https://api.github.com), which the Sandbox runtime pushes to each pod's launcher before any role
-// of the pod starts (sandbox.Options.LeakCheck). Where apps drops an owner's leases
-// (appauth.Forgetter), a read GitHub answers 401 drops the lease leakCheckToken mints, so the next
-// read mints a new one. A daemon with no GitHub Apps has no reader: the answer is then
-// the nil interface, never a nil *leakguard.Source inside one, so the runtime's comparison with
-// nil reads the daemon as holding no credential.
-func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckReader {
-	if apps == nil {
+// leakCheckSource is the daemon's reader of the shared public leak check the deployment names
+// (setting, config's leak_check), minting through apps (leakCheckToken) and reading the setting's
+// repository under githubAPI, GitHub's REST root ("" is https://api.github.com), which the Sandbox
+// runtime pushes to each pod's launcher before any role of the pod starts
+// (sandbox.Options.LeakCheck). Where apps drops an owner's leases (appauth.Forgetter), a read
+// GitHub answers 401 drops the lease leakCheckToken mints, so the next read mints a new one. A
+// deployment that names no check, and a daemon with no GitHub Apps, have no reader: the answer is
+// then the nil interface, never a nil *leakguard.Source inside one. The runtime reads the first as
+// a deployment that runs no check (sandbox.Options.LeakCheckSetting) and pushes nothing, and the
+// second, under a configured setting, as the daemon holding no credential to read it with.
+func leakCheckSource(apps appauth.Tokens, githubAPI string, setting leakguard.Setting) sandbox.LeakCheckReader {
+	if apps == nil || !setting.Configured() {
 		return nil
 	}
-	source := &leakguard.Source{Token: leakCheckToken(apps), API: githubAPI}
+	repository := setting.Repository
+	source := &leakguard.Source{Repository: repository, Token: leakCheckToken(apps, repository), API: githubAPI}
 	if forgetter, ok := apps.(appauth.Forgetter); ok {
-		source.Forget = func() { forgetter.Forget(appauth.Implement, leakguard.CheckRepository.Owner()) }
+		source.Forget = func() { forgetter.Forget(appauth.Implement, repository.Owner()) }
 	}
 	return source
 }
 
 // leakCheckToken mints the token the shared public leak check is read with: the implement App's
-// read lease on the check's owner (appauth.Tokens.ReadToken, whose read permissions hold all a
+// read lease on repository's owner (appauth.Tokens.ReadToken, whose read permissions hold all a
 // tarball read needs). No request names a repository any longer (INFRA-2543), so the lease reaches
 // every repository that owner's installation holds and the reading permissions are the whole of
 // what keeps it from writing. It mints nothing else: an installation the account has not granted
@@ -756,16 +761,16 @@ func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckRea
 // told from every other failed mint, since the two are fixed in different places — what the
 // account grants the App's installation, and the App's configuration or its installation on the
 // owner.
-func leakCheckToken(apps appauth.Tokens) func(context.Context) (string, error) {
+func leakCheckToken(apps appauth.Tokens, repository ghrepo.Repository) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
-		lease, err := apps.ReadToken(ctx, appauth.Implement, leakguard.CheckRepository.Owner())
+		lease, err := apps.ReadToken(ctx, appauth.Implement, repository.Owner())
 		switch {
 		case err == nil:
 			return lease.Token, nil
 		case appauth.NarrowingRefused(err):
-			return "", fmt.Errorf("GitHub refused the daemon's implement App the reading permissions on %s, and the daemon reads %s with no wider token: %w", leakguard.CheckRepository.Owner(), leakguard.CheckSlug, err)
+			return "", fmt.Errorf("GitHub refused the daemon's implement App the reading permissions on %s, and the daemon reads %s with no wider token: %w", repository.Owner(), repository, err)
 		default:
-			return "", fmt.Errorf("the daemon could not mint its read-only token for %s: %w", leakguard.CheckSlug, err)
+			return "", fmt.Errorf("the daemon could not mint its read-only token for %s: %w", repository, err)
 		}
 	}
 }

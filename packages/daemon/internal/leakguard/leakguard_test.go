@@ -2,8 +2,11 @@ package leakguard
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -11,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
@@ -426,15 +430,16 @@ func TestPushUsesTheRoleKeptVisibility(t *testing.T) {
 	}
 }
 
-// The two shared-check failures: no check resolves at all, and a check that exits 2. Each refuses
-// the write, and each says it is a failure of setup rather than of the text.
+// The two shared-check failures: no check resolves at all under a deployment that names one (its
+// checker, CheckerVar, in the environment), and a check that exits 2. Each refuses the write, and
+// each says it is a failure of setup rather than of the text.
 func TestTheSharedChecksFailuresAreSetupFailures(t *testing.T) {
 	t.Run("no check resolves", func(t *testing.T) {
 		// An environment with no PUBLIC_LEAK_CHECK, a PATH with no check on it, and a
 		// configuration home holding no pointer file: the three places Resolve looks.
 		guard := New(Options{
 			Visibility: answers(Public, nil),
-			Env:        append(fixtureenv.Isolated(t.TempDir()), "PATH="+t.TempDir()),
+			Env:        append(fixtureenv.Isolated(t.TempDir()), "PATH="+t.TempDir(), CheckerVar+"="+theChecker),
 		})
 		err := guard.Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
 		failed := setupFailure(t, err)
@@ -453,4 +458,182 @@ func TestTheSharedChecksFailuresAreSetupFailures(t *testing.T) {
 			t.Errorf("the message is %q, want the shared check's own setup-error line", failed.Error())
 		}
 	})
+}
+
+// theChecker stands for the deployment's checker (Setting.CheckerSHA256) in an environment whose
+// deployment runs a shared leak check: no check of these tests hashes to it.
+var theChecker = strings.Repeat("5e", 32)
+
+// A deployment that names no shared leak check (no CheckerVar in the environment) refuses no
+// write for the check's absence: with no check named anywhere, a push, a text and a gh call each
+// pass the guard with no shared check run, and this repository's own rules still read each — the
+// gh call's body on standard input among them, which the guard buffers itself where no check's
+// handshake asks for it, and hands back for gh. A check that is named and not there is a broken
+// setup whatever the deployment runs, and is refused.
+func TestAGuardOfADeploymentThatNamesNoCheckRunsTheRulesAlone(t *testing.T) {
+	noCheck := func(t *testing.T, extra ...string) *Guard {
+		t.Helper()
+		return New(Options{
+			Visibility: answers(Public, nil),
+			Env:        append(append(fixtureenv.Isolated(t.TempDir()), "PATH="+t.TempDir()), extra...),
+		})
+	}
+	t.Run("a clean text passes", func(t *testing.T) {
+		if err := noCheck(t).Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"}); err != nil {
+			t.Fatalf("a clean text = %v, want it cleared", err)
+		}
+	})
+	t.Run("the rules refuse a text", func(t *testing.T) {
+		err := noCheck(t).Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a title\na body naming " + theHost + "\n"})
+		if refused := refusal(t, err); refused.By != byRules {
+			t.Fatalf("the refusal is by %q, want this repository's own rules", refused.By)
+		}
+	})
+	t.Run("a clean gh call passes and its body comes back", func(t *testing.T) {
+		const body = "a clean body\n"
+		answer, err := noCheck(t).GhCall(bound(t), GhRequest{
+			Args: []string{"pr", "create", "--body-file", "-"}, Stdin: strings.NewReader(body), Repo: "invented-org/invented-repo",
+		})
+		if err != nil || string(answer.Stdin) != body || answer.CheckedOnly {
+			t.Fatalf("a clean gh call = %+v, %v; want it cleared, its body handed back whole and not checked-only", answer, err)
+		}
+	})
+	t.Run("the rules refuse a gh call's body on standard input", func(t *testing.T) {
+		for _, req := range []GhRequest{
+			{Args: []string{"pr", "create", "--body-file", "-"}},
+			{Args: []string{"pr", "create", "--body-file", "-"}, Files: []GhFile{}, StdinSent: true},
+		} {
+			req.Stdin, req.Repo = strings.NewReader("a body naming "+theHost+"\n"), "invented-org/invented-repo"
+			_, err := noCheck(t).GhCall(bound(t), req)
+			if refused := refusal(t, err); refused.By != byRules {
+				t.Fatalf("the refusal of %+v is by %q, want this repository's own rules", req, refused.By)
+			}
+		}
+	})
+	t.Run("a read is guarded whole", func(t *testing.T) {
+		var asked []string
+		guard := New(Options{
+			Visibility: answers(Public, &asked),
+			Env:        append(fixtureenv.Isolated(t.TempDir()), "PATH="+t.TempDir()),
+		})
+		answer, err := guard.GhCall(bound(t), GhRequest{Args: []string{"pr", "list"}, Repo: "invented-org/invented-repo", Files: []GhFile{}, WritesNothing: true})
+		if err != nil || answer.CheckedOnly || len(asked) != 1 {
+			t.Fatalf("a read = %+v, %v after %d visibility reads; want it cleared by the whole guard, one read", answer, err, len(asked))
+		}
+	})
+	t.Run("a push passes and the rules still read it", func(t *testing.T) {
+		// The push's records are read with git, so the guard's PATH holds git's own directory
+		// and nothing else: no check is on it.
+		git, err := exec.LookPath("git")
+		if err != nil {
+			t.Fatal(err)
+		}
+		push := func(t *testing.T, message string) error {
+			t.Helper()
+			home, repo := t.TempDir(), filepath.Join(t.TempDir(), "repo")
+			fixture := fixturegit.Isolated(t, home)
+			fixture.Run(filepath.Dir(repo), fixturegit.InitWorkTree(repo, "main")...)
+			fixture.Run(repo, "git", "commit", "--allow-empty", "--quiet", "-m", message)
+			head := fixture.Run(repo, "git", "rev-parse", "HEAD")
+			return noCheck(t, "PATH="+filepath.Dir(git)).Push(bound(t), PushRequest{
+				Dir: repo, Remote: "origin", URL: "https://github.com/invented-org/invented-repo.git",
+				Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
+			})
+		}
+		if err := push(t, "a commit of nothing in particular"); err != nil {
+			t.Fatalf("a clean push = %v, want it cleared", err)
+		}
+		if refused := refusal(t, push(t, "a commit naming "+theHost)); refused.By != byRules {
+			t.Fatalf("the refusal of the push is by %q, want this repository's own rules", refused.By)
+		}
+	})
+	t.Run("a check named and not there is refused", func(t *testing.T) {
+		gone := filepath.Join(t.TempDir(), checkName)
+		err := noCheck(t, CheckVar+"="+gone).Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
+		if failed := setupFailure(t, err); failed.Why != whyNoCheck || !strings.Contains(failed.Error(), gone) {
+			t.Fatalf("the setup failure is %q, want the missing check named", failed.Error())
+		}
+	})
+}
+
+// Under a deployment checker (CheckerVar) a write runs only under the check that checker names: a
+// check whose program (public_leak_check.py beside it) hashes to the checker runs and clears the
+// write; one whose program hashes to another sha256, and one with no program beside it, are each
+// refused as whyOtherCheck naming the checker and what is there, and the check is never run. With
+// no checker the same check with no program runs, as it did before the setting.
+func TestAGuardUnderACheckerRunsOnlyTheCheckItNames(t *testing.T) {
+	const otherProgram = "# a check of another version\n"
+	otherSum := sha256.Sum256([]byte(otherProgram))
+	otherSHA256 := hex.EncodeToString(otherSum[:])
+	write := func(t *testing.T, program string, checker string) (*Guard, string) {
+		t.Helper()
+		dir, record := t.TempDir(), filepath.Join(t.TempDir(), "record")
+		check := leakguardtest.Write(t, dir, leakguardtest.Recording(leakguardtest.Passes))
+		if program != "" {
+			if err := os.WriteFile(filepath.Join(dir, leakguardtest.ProgramName), []byte(program), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		env := append(fixtureenv.Isolated(t.TempDir()), "LEAK_CHECK_RECORD="+record)
+		if checker != "" {
+			env = append(env, CheckerVar+"="+checker)
+		}
+		return New(Options{Check: check, Visibility: answers(Public, nil), Env: env}), record
+	}
+	ran := func(t *testing.T, record string) bool {
+		t.Helper()
+		got, err := os.ReadFile(record)
+		return err == nil && len(got) > 0
+	}
+	text := TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"}
+	for _, tc := range []struct {
+		name, program, checker string
+	}{
+		{name: "the checker's own program", program: leakguardtest.Program, checker: leakguardtest.ProgramSHA256},
+		{name: "no checker and no program", program: "", checker: ""},
+		{name: "no checker and another program", program: otherProgram, checker: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			guard, record := write(t, tc.program, tc.checker)
+			if err := guard.Text(bound(t), text); err != nil || !ran(t, record) {
+				t.Fatalf("a clean text = %v, check ran %t; want it cleared by the check", err, ran(t, record))
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name, program string
+		want          []string
+	}{
+		{name: "a program of another digest", program: otherProgram,
+			want: []string{CheckerVar + "=" + leakguardtest.ProgramSHA256, "hashes to " + otherSHA256}},
+		{name: "no program beside the check", program: "",
+			want: []string{CheckerVar + "=" + leakguardtest.ProgramSHA256, "could not be hashed"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, shape := range []struct {
+				name  string
+				write func(*Guard) error
+			}{
+				{"a text", func(g *Guard) error { return g.Text(bound(t), text) }},
+				{"a gh call", func(g *Guard) error {
+					_, err := g.GhCall(bound(t), GhRequest{Args: []string{"pr", "list"}, Repo: "invented-org/invented-repo", Files: []GhFile{}})
+					return err
+				}},
+			} {
+				guard, record := write(t, tc.program, leakguardtest.ProgramSHA256)
+				failed := setupFailure(t, shape.write(guard))
+				if failed.Why != whyOtherCheck {
+					t.Errorf("%s: the setup failure is %q, want %q", shape.name, failed.Error(), whyOtherCheck)
+				}
+				for _, want := range tc.want {
+					if !strings.Contains(failed.Error(), want) {
+						t.Errorf("%s: the setup failure %q does not name %q", shape.name, failed.Error(), want)
+					}
+				}
+				if ran(t, record) {
+					t.Errorf("%s: the check ran, want it never run under another checker", shape.name)
+				}
+			}
+		})
+	}
 }

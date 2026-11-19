@@ -70,6 +70,9 @@ var runtimeOwned = map[string]bool{
 	"GH_CONFIG_DIR": true, "GH_TOKEN": true, "GITHUB_TOKEN": true, "GH_HOST": true,
 	"LEGION_GH_OWNERS_DIR": true, "LEGION_GH_PATH": true,
 	"PI_SHELL_PREFIX": true, "PI_CONFIG_FILES": true,
+	// The deployment's checker (Options.LeakCheckSHA256), told where the deployment names a shared
+	// leak check: the daemon's setting alone, so no operator's pane variable and no spec moves it.
+	leakguard.CheckerVar: true,
 }
 
 // controllerOwned are the variables a controller pane is told in place of a tree pane's
@@ -234,9 +237,11 @@ type PaneInputs struct {
 	Variants        []runtime.Variant
 	// LeakCheck is the shared public leak check the daemon resolved on its own machine
 	// (resolveLeakCheck), the pane's PUBLIC_LEAK_CHECK; "" where the machine carries none, and
-	// the pane is then told no such variable and refuses every public write with the setup error
-	// naming the check.
-	LeakCheck string
+	// the pane is then told no such variable. LeakCheckSHA256 is the deployment's checker
+	// (Options.LeakCheckSHA256), the pane's leakguard.CheckerVar, "" where the deployment names
+	// no shared leak check. Told a checker and no check, the pane refuses every public write with
+	// the setup error naming the check; told neither, it refuses none for the check's absence.
+	LeakCheck, LeakCheckSHA256 string
 }
 
 // panePairs are a pane's -e pairs, in one order: the variables every Legion pane is told (the
@@ -257,7 +262,8 @@ type PaneInputs struct {
 // settings overlay at all — empty where none of the three names one), the
 // four XDG base directories under `<state_dir>/home`, PUBLIC_LEAK_CHECK where the daemon
 // resolved a shared public leak check on its own machine (LeakCheck) and nothing where it
-// resolved none, the operator's pane variables sorted, less the composed one (composed), then
+// resolved none, the deployment's checker where it names one (LeakCheckSHA256), the operator's
+// pane variables sorted, less the composed one (composed), then
 // OTEL_RESOURCE_ATTRIBUTES itself, the operator's own spend attributes with this launch's issue
 // and role written after them (runtime.SpendResourceAttributes), so a pane's attributes name the
 // issue it serves, then the
@@ -323,6 +329,9 @@ func panePairs(spec runtime.SpawnSpec, in PaneInputs, files []runtime.SecretFile
 	}
 	if in.LeakCheck != "" {
 		add(leakguard.CheckVar, in.LeakCheck)
+	}
+	if in.LeakCheckSHA256 != "" {
+		add(leakguard.CheckerVar, in.LeakCheckSHA256)
 	}
 	for _, name := range sortedKeys(in.OperatorEnv) {
 		if !composed[name] {
@@ -575,11 +584,13 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 	command := shimShellCommand(r.socket, path, workDir, r.legion, r.streamAddress, files[0].Path, r.providerEnvDir, inner)
 	// The check is resolved here, once per launch, in the daemon's own environment, because a
 	// pane can resolve none of the three places itself (resolveLeakCheck). A machine that carries
-	// none is no launch failure: the pane is told no PUBLIC_LEAK_CHECK and every public write
-	// from it is refused, naming the missing check, which is the honest answer on a machine that
-	// writes to public repositories with no check.
+	// none is no launch failure: the pane is told no PUBLIC_LEAK_CHECK, and under a deployment that
+	// names a shared leak check (Options.LeakCheckSHA256) every public write from it is refused,
+	// naming the missing check, which is the honest answer on a machine that writes to public
+	// repositories with no check. Under a deployment that names none, nothing is refused for it,
+	// and nothing is said of it here: boot has said once that no check is configured.
 	leakCheck, err := resolveLeakCheck(r.ownEnviron)
-	if err != nil {
+	if err != nil && r.leakCheckSHA256 != "" {
 		r.log.Warn("tmux runtime: no shared public leak check on this machine, so every write this pane makes to a public GitHub repository will be refused; install it with the check's own installer (docs/deployment.md, \"What a pane's gh, git and jj are\")",
 			"claim", spec.Claim, "why", err)
 	}
@@ -587,7 +598,7 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 		StateDir: r.stateDir, Workspace: workDir, DaemonURL: r.daemonURL, EnvoyURL: r.envoyURL, NATSURLs: r.natsURLs,
 		DispatchURL: r.dispatchURL, DispatchTokenFile: r.dispatchToken, GHOwnersDir: credential.root, GHDefault: ghDefault, GH: r.gh,
 		OperatorEnv: r.operatorEnv, PiConfigFiles: r.piConfigFiles, RoleConfigFiles: r.roleConfigFiles[spec.Role],
-		Variants: spec.Variants, LeakCheck: leakCheck,
+		Variants: spec.Variants, LeakCheck: leakCheck, LeakCheckSHA256: r.leakCheckSHA256,
 	}, files)
 	return r.openPane(ctx, spec, ghDefault, paneCommand(append(pairs, backendPairs...), command))
 }

@@ -2193,6 +2193,7 @@ func TestLegionGhLetsOnlyTheRateLimitReadBypassTheGuard(t *testing.T) {
 				"LEGION_GH_OWNERS_DIR": root,
 				"LEGION_GH_PATH":       stub,
 				"PUBLIC_LEAK_CHECK":    ghCheckAt(t, tc.check),
+				leakguard.CheckerVar:   ghProvenProgramSHA256,
 				testProvenCheckEnv:     ghProvenProgramSHA256,
 			}
 			if code, _, stderr := legionGhIn(t, repository, env, "", tc.args...); code != tc.wantCode {

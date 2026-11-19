@@ -40,11 +40,14 @@ type launchers struct {
 	mu       sync.Mutex
 	sessions map[claim.Token]*launcherSession
 
-	// leakCheck reads the shared public leak check a launcher's hello names (Options.LeakCheck);
-	// nil is a daemon that runs with no GitHub App to read it with. leakCheckHop bounds one push
-	// of it to a launcher, leakCheckHopBound outside the tests.
-	leakCheck    LeakCheckReader
-	leakCheckHop time.Duration
+	// leakCheckSetting is the deployment's shared public leak check (Options.LeakCheckSetting);
+	// the zero Setting is a deployment that runs none, whose launchers are pushed nothing.
+	// leakCheck reads the check a launcher's hello names (Options.LeakCheck); nil under a
+	// configured setting is a daemon that runs with no GitHub App to read it with. leakCheckHop
+	// bounds one push of it to a launcher, leakCheckHopBound outside the tests.
+	leakCheckSetting leakguard.Setting
+	leakCheck        LeakCheckReader
+	leakCheckHop     time.Duration
 	// saved is the bundle an issue's last release left and restored the confirmation that drops
 	// it, the daemon's store behind both (Options.SavedWorkspaceBundle, WorkspaceBundleRestored).
 	// A launchers built without the pair restores nothing.
@@ -91,9 +94,9 @@ type launcherSession struct {
 	leakCheckInstalled bool
 }
 
-func newLaunchers(leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored,
+func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored,
 	guardKilled runtime.MemoryGuardKilled, log *slog.Logger) *launchers {
-	return &launchers{sessions: map[claim.Token]*launcherSession{}, leakCheck: leakCheck, leakCheckHop: leakCheckHopBound,
+	return &launchers{sessions: map[claim.Token]*launcherSession{}, leakCheckSetting: setting, leakCheck: leakCheck, leakCheckHop: leakCheckHopBound,
 		saved: saved, restored: restored, guardKilled: guardKilled, log: log}
 }
 
@@ -382,7 +385,10 @@ const leakCheckHopBound = 2 * time.Minute
 // Nothing is sent to a launcher whose hello named no tag: it takes no check from the daemon,
 // and its roles start as they always have. Nothing is sent either to one that holds the tag
 // installed, as its hello said or as its answer on this connection did, so a later start of the
-// role and a daemon that restarts push nothing to a running pod.
+// role and a daemon that restarts push nothing to a running pod. And nothing is sent under a
+// deployment that names no shared leak check (Options.LeakCheckSetting): the image carries its
+// pin whatever the deployment runs, and the roles, told no leakguard.CheckerVar
+// (mainEnvironment), read no install (leakguard.Installed) and start without one.
 //
 // Every other outcome but an install is a runtime.LeakCheckRefusal, whose cause sentence
 // (leakguard.Cause) says why: the daemon holds no credential to read the check, its read was
@@ -398,14 +404,14 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 	session.mu.Lock()
 	installed := session.leakCheckInstalled
 	session.mu.Unlock()
-	if tag == "" || installed {
+	if tag == "" || installed || !d.leakCheckSetting.Configured() {
 		return nil
 	}
 	refuse := func(what string, err error) error {
 		return runtime.LeakCheckRefusal{Cause: leakguard.Cause(what, err)}
 	}
 	if d.leakCheck == nil {
-		return refuse("the daemon runs with no GitHub App, so it cannot read "+leakguard.CheckSlug, nil)
+		return refuse("the daemon runs with no GitHub App, so it cannot read "+d.leakCheckSetting.Repository.String(), nil)
 	}
 	served, err := d.leakCheck.Get(ctx, tag)
 	if err != nil {
@@ -440,7 +446,8 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 		confirmed.leakCheckInstalled = true
 		confirmed.mu.Unlock()
 		d.log.Info("launcher leak check: the pod's launcher installed the shared public leak check the daemon read",
-			"launcher", token, "pod", podUID, "tag", tag, "bytes", len(served.Body), "slices", len(served.Frames))
+			"launcher", token, "pod", podUID, "repository", d.leakCheckSetting.Repository.String(), "tag", tag,
+			"checker_sha256", d.leakCheckSetting.CheckerSHA256, "bytes", len(served.Body), "slices", len(served.Frames))
 		return nil
 	}
 	return refuse(fmt.Sprintf("the pod's launcher took every slice of %s without installing it", tag), nil)

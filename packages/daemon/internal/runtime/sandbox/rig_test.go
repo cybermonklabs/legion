@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -65,10 +66,17 @@ var (
 	childToken = claim.Token("legion-legion-legion-209-implementer")
 )
 
+// testLeakCheck is the shared public leak check every test's deployment names, a stand-in
+// repository and checker (leakguard.Setting): the runtime a test configures tells its roles the
+// install and the checker, and pushes the check to a launcher that names its pin, as a
+// deployment that runs one has it done.
+var testLeakCheck = leakguard.Setting{Repository: ghrepo.MustParse("example-org/deployment"), CheckerSHA256: strings.Repeat("5e", 32)}
+
 // testOptions are the options every test starts from: production's shape — a store that keeps
 // sessions in a database included, which configure requires, here the postgres one with its URL key
-// — both pods' reservations at the daemon's defaults (reservations), with budgets short enough that
-// a wait the test expects to end never slows the suite.
+// — both pods' reservations at the daemon's defaults (reservations), the deployment's shared leak
+// check (testLeakCheck), with budgets short enough that a wait the test expects to end never slows
+// the suite.
 func testOptions() Options {
 	return Options{
 		Namespace:    testNamespace,
@@ -102,8 +110,9 @@ func testOptions() Options {
 			Volume: resource.MustParse("20Gi"), Refresh: 10 * time.Minute, Retain: 168 * time.Hour,
 			Resources: reservations().Controller,
 		},
-		Mapped: func() []ghrepo.Repository { return nil },
-		Log:    slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		Mapped:           func() []ghrepo.Repository { return nil },
+		LeakCheckSetting: testLeakCheck,
+		Log:              slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
 	}
 }
 
@@ -587,7 +596,7 @@ func withCauselessLeakCheck() rigOption {
 // carry and no receiver for a memory guard's reports: the tests that build one drive the launcher
 // protocol itself.
 func testLaunchers() *launchers {
-	return newLaunchers(nil, nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return newLaunchers(testLeakCheck, nil, nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 // launcherIssue is the issue key a role token's pod is of, as the role Secret's annotation

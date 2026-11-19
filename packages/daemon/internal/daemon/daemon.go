@@ -288,6 +288,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if err != nil {
 		return err
 	}
+	logLeakCheck(log, cfg.LeakCheck)
 	if cfg.Runtime.Name == "kubernetes" {
 		logPlugins(log, plan.plugins, plan.pluginsSource)
 		logProbeBudget(log, cfg)
@@ -1244,7 +1245,8 @@ func claimRepository(issueOf func(context.Context, claim.Token) (string, error),
 // tmuxOptions translates the configuration into the tmux runtime's Options, all but the worker
 // stream and the GitHub credential function, which boot hands the factory: the `runtime.tmux`
 // block's pane variables, Oh My Pi overlays and take_over among them, each role's own overlays
-// (role_config_files), and every declared experiment's arms (experiment.DeclaredVariants).
+// (role_config_files), every declared experiment's arms (experiment.DeclaredVariants), and the
+// checker of the deployment's shared leak check (leak_check), which every pane is told.
 func tmuxOptions(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile string, log *slog.Logger) tmux.Options {
 	opts := tmux.Options{
 		Project:           project,
@@ -1260,6 +1262,7 @@ func tmuxOptions(cfg config.Config, project string, launchers map[runtime.Backen
 		AdoptTimeout:      cfg.SlowCommandTimeout,
 		ProviderEnvDir:    providerEnvDir,
 		RoleConfigFiles:   cfg.RoleConfigFiles,
+		LeakCheckSHA256:   cfg.LeakCheck.CheckerSHA256,
 		Log:               log,
 	}
 	if block := cfg.Runtime.Tmux; block != nil {

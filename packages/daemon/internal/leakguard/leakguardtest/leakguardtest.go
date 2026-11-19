@@ -22,6 +22,8 @@
 package leakguardtest
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,6 +35,20 @@ import (
 // own resolution tests fail on: they write a stand-in with Write and read it back through the
 // guard's PATH lookup (leakguard/check_test.go).
 const CheckName = "public-leak-check.sh"
+
+// ProgramName is the file beside the check that the check only runs, the program a role's shim
+// hashes against the deployment's checker (leakguard.CheckerVar) before it starts an agent, and
+// Program a stand-in body for it, which a stand-in check a test installs carries beside itself.
+const (
+	ProgramName = "public_leak_check.py"
+	Program     = "# the check itself\n"
+)
+
+// ProgramSHA256 is the sha256 of Program, in lowercase hex.
+var ProgramSHA256 = func() string {
+	sum := sha256.Sum256([]byte(Program))
+	return hex.EncodeToString(sum[:])
+}()
 
 // recordVar names the file a recording stand-in appends what it was asked to, which is how a test
 // reads whether the check ran at all and with what. A stand-in run without it records nowhere.

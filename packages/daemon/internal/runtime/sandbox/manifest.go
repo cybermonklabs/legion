@@ -125,7 +125,7 @@ var runtimeOwned = func() map[string]bool {
 		"LEGION_STATE_DIR": true, "LEGION_WORKSPACE": true, "ENVOY_NATS_URL": true, "ENVOY_URL": true,
 		"DISPATCH_URL": true, "GH_CONFIG_DIR": true, "GH_TOKEN": true, "GITHUB_TOKEN": true, "GH_HOST": true,
 		"LEGION_GH_OWNERS_DIR": true, "LEGION_GH_PATH": true,
-		"PATH": true, "PI_SHELL_PREFIX": true, "GIT_TERMINAL_PROMPT": true, leakguard.CheckVar: true,
+		"PATH": true, "PI_SHELL_PREFIX": true, "GIT_TERMINAL_PROMPT": true, leakguard.CheckVar: true, leakguard.CheckerVar: true,
 		"XDG_CONFIG_HOME": true, "XDG_CACHE_HOME": true, "XDG_DATA_HOME": true, "XDG_STATE_HOME": true,
 		"TMPDIR": true, "GOCACHE": true, "GOMODCACHE": true, "BUN_INSTALL_CACHE_DIR": true,
 		"POD_UID": true, bootTokenKey + "_FILE": true, dispatchTokenKey + "_FILE": true,
@@ -1545,15 +1545,25 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	add("GIT_TERMINAL_PROMPT", "0")
 	env = append(env, gitConfigEnv()...)
 	// The shared public leak check every write of this role runs first: its `legion gh` and its
-	// pushes each resolve PUBLIC_LEAK_CHECK before anything else
-	// (leakguard's Resolve) and refuse the write when they find no check. The check is not in the
-	// image — it is published by tag, the image carries the pin, and the daemon reads the check at
-	// that pin and pushes it to the pod's launcher, which installs it once for the pod before any
-	// role starts (launchers.serveLeakCheck; each role's shim only reads that install) — so what
-	// is named here is the installed copy, under the scratch the roles of this pod share. The path
-	// is the installer's own constant, so the path a role is told and the path the install writes
-	// are one string and cannot drift (TestEveryRoleIsToldTheLeakCheckItsPodInstalls).
-	add(leakguard.CheckVar, leakguard.InstalledCheck)
+	// pushes each resolve PUBLIC_LEAK_CHECK before anything else (leakguard's Resolve) and, told
+	// the deployment's checker (leakguard.CheckerVar), refuse the write when they find no check.
+	// The check is not in the image — it is published by tag from the repository the deployment
+	// names, the image carries the pin, and the daemon reads the check at that pin and pushes it
+	// to the pod's launcher, which installs it once for the pod before any role starts
+	// (launchers.serveLeakCheck; each role's shim only reads that install) — so what is named here
+	// is the installed copy, under the scratch the roles of this pod share. The path is the
+	// installer's own constant, so the path a role is told and the path the install writes are
+	// one string and cannot drift (TestEveryRoleIsToldTheLeakCheckItsPodInstalls). The checker is
+	// the sha256 of the check's public_leak_check.py the deployment names. It is the sign, to the
+	// shim and the guard, that the deployment runs a check at all; `legion gh` trusts its read
+	// rule under the program that rule was proven against, whose digest it compiles in, and not
+	// under this checker. A deployment that names none (Options.LeakCheckSetting) tells neither:
+	// its pods are pushed no check, and its roles start without one and refuse no write for its
+	// absence.
+	if r.leakCheck.Configured() {
+		add(leakguard.CheckVar, leakguard.InstalledCheck)
+		add(leakguard.CheckerVar, r.leakCheck.CheckerSHA256)
+	}
 	// The two variables an agent reads to decide it holds a broker at all, gated on the same one
 	// decision as the shim's agent-secrets flags (enrollsIn, launcherCommand): a generation in a
 	// kept pod that carries no enrollment is started with neither the flags nor these, so its
