@@ -2155,13 +2155,20 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 	if err != nil {
 		return nil, fmt.Errorf("%s %s: %w", dispatchType, name, err)
 	}
-	// The cluster existingCluster names is looked up after the providers checks and before
-	// anything registers, so a cluster Dispatch cannot run in is refused with nothing registered,
-	// and the cluster half builds the kubeconfig from plain values.
-	var existing *dispatchLookedUpCluster
+	// The cluster half is decided once, from existingCluster alone: the component's own cluster
+	// (newDispatchCluster), or else the cluster existingCluster names (newDispatchExistingCluster).
+	// That cluster is looked up here, after the providers checks and before anything registers, so
+	// a cluster Dispatch cannot run in is refused with nothing registered, and its half builds the
+	// kubeconfig from the lookup's plain values. Either half runs after the network half, whose
+	// network both read.
+	newCluster := newDispatchCluster
 	if s.existingCluster != nil {
-		if existing, err = lookupDispatchCluster(ctx, s.existingCluster, gcpProvider); err != nil {
+		existing, err := lookupDispatchCluster(ctx, s.existingCluster, gcpProvider)
+		if err != nil {
 			return nil, fmt.Errorf("%s %s: %w", dispatchType, name, err)
+		}
+		newCluster = func(_ *pulumi.Context, _ *Dispatch, name string, _ dispatchSettings, vpc *dispatchNetwork) (*dispatchCluster, error) {
+			return newDispatchExistingCluster(name, vpc, existing), nil
 		}
 	}
 
@@ -2173,10 +2180,8 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 	if err != nil {
 		return nil, err
 	}
-	var cloud *dispatchCluster
-	if existing != nil {
-		cloud = newDispatchExistingCluster(name, vpc, existing)
-	} else if cloud, err = newDispatchCluster(ctx, comp, name, s, vpc); err != nil {
+	cloud, err := newCluster(ctx, comp, name, s, vpc)
+	if err != nil {
 		return nil, err
 	}
 	// The three outputs the cluster alone decides, which both modes carry.

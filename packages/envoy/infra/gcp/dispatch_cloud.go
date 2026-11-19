@@ -344,60 +344,33 @@ func dispatchKubeconfig(dispatch string, cluster *container.Cluster) pulumi.Stri
 }
 
 // newDispatchDatabase registers what Dispatch itself runs on, which clusterOnly builds none of:
-// the Cloud SQL instance with its database and user, which existingDatabaseInstance replaces with
-// an instance the component does not make, the generated passwords, which it keeps either way,
-// and the Secret Manager grants the pods' principal needs. It takes the network half's network,
-// peering and project, and the cluster half's Workload Identity pool and the resources its grants
-// wait for, and answers with its own.
+// the generated passwords, which it keeps whichever Cloud SQL instance the proxy connects to;
+// that instance, which it decides once, from existingDatabaseInstance alone: the component's own,
+// with its database and user (newDispatchOwnInstance), or else the one existingDatabaseInstance
+// names, which the component does not make (dispatchDatabaseConnectionName); and the Secret
+// Manager grants the pods' principal needs. It takes the network half's network and peering, which
+// only the component's own instance reads, and its project, and the cluster half's Workload
+// Identity pool and the resources its grants wait for, and answers with its own.
 func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args *DispatchArgs, s dispatchSettings, vpc *dispatchNetwork, cloud *dispatchCluster) (*dispatchDatabase, error) {
 	dispatch := dispatchType + " " + name
 	child := pulumi.Parent(comp)
 	network, connection, project := vpc.network, vpc.connection, vpc.project
+	password, err := random.NewRandomPassword(ctx, s.hostname+"-password", &random.RandomPasswordArgs{Length: pulumi.Int(32), Special: pulumi.Bool(false)}, child)
+	if err != nil {
+		return nil, err
+	}
 	// The instance the proxy connects to: the one existingDatabaseInstance names, for which the
 	// component registers no DatabaseInstance, Database or User, and which nothing waits for, since
 	// it exists before the component runs and the component never restarts it; or else the
-	// component's own, DatabaseInstance <hostname>, with its database and its login below.
+	// component's own, DatabaseInstance <hostname>, with its database and its login
+	// (newDispatchOwnInstance).
 	var (
-		instance       *sql.DatabaseInstance
 		connectionName pulumi.StringOutput
 		waitFor        []pulumi.Resource
-		err            error
 	)
 	if s.existingDatabaseInstance {
 		connectionName = dispatchDatabaseConnectionName(dispatch, args.ExistingDatabaseInstance)
-	} else {
-		// databaseWaitsFor names a value of a resource the consumer wants the instance's update to
-		// follow, its own step before the restart (deleting the old tailnet device, say). The value
-		// itself reaches no resource here: only the dependencies it carries do, which is all
-		// dependsOnInput reads off it. A seed is still refused once it resolves, as it is in every
-		// other Pulumi input of this component, since refuseDispatchSeed's ApplyT keeps the input's
-		// own dependencies.
-		instanceOpts := []pulumi.ResourceOption{child, pulumi.DependsOn([]pulumi.Resource{connection})}
-		if args.DatabaseWaitsFor != nil {
-			instanceOpts = append(instanceOpts, dependsOnInput(refuseDispatchSeed(args.DatabaseWaitsFor, dispatch, "databaseWaitsFor")))
-		}
-		// AvailabilityType is databaseAvailabilityType. The bridged Terraform provider declares
-		// settings.availability_type without ForceNew (terraform-provider-google-beta v8.6.0, commit
-		// e6f3d61a347c, the upstream pulumi-gcp v10.1.0 bridges:
-		// google-beta/services/sql/resource_sql_database_instance.go:449-462), so switching between
-		// ZONAL and REGIONAL updates the instance in place: Cloud SQL restarts it once, and the change
-		// cannot be stopped once started.
-		instance, err = sql.NewDatabaseInstance(ctx, s.hostname, &sql.DatabaseInstanceArgs{
-			DatabaseVersion: pulumi.String(s.databaseVersion), Region: pulumi.String(s.region), DeletionProtection: pulumi.Bool(s.deletionProtection),
-			Settings: &sql.DatabaseInstanceSettingsArgs{
-				DeletionProtectionEnabled: pulumi.Bool(s.deletionProtection),
-				Tier:                      pulumi.String(s.databaseTier), Edition: pulumi.String("ENTERPRISE"), AvailabilityType: pulumi.String(s.databaseAvailabilityType), DiskType: pulumi.String("PD_SSD"), DiskSize: pulumi.Int(10), DiskAutoresize: pulumi.Bool(true),
-				IpConfiguration:     &sql.DatabaseInstanceSettingsIpConfigurationArgs{Ipv4Enabled: pulumi.Bool(false), PrivateNetwork: network.ID(), SslMode: pulumi.String("ENCRYPTED_ONLY")},
-				BackupConfiguration: &sql.DatabaseInstanceSettingsBackupConfigurationArgs{Enabled: pulumi.Bool(true), PointInTimeRecoveryEnabled: pulumi.Bool(true), StartTime: pulumi.String("08:00"), TransactionLogRetentionDays: pulumi.Int(7), BackupRetentionSettings: &sql.DatabaseInstanceSettingsBackupConfigurationBackupRetentionSettingsArgs{RetainedBackups: pulumi.Int(14)}},
-			},
-		}, instanceOpts...)
-		if err != nil {
-			return nil, err
-		}
-		connectionName, waitFor = instance.ConnectionName, []pulumi.Resource{instance}
-	}
-	password, err := random.NewRandomPassword(ctx, s.hostname+"-password", &random.RandomPasswordArgs{Length: pulumi.Int(32), Special: pulumi.Bool(false)}, child)
-	if err != nil {
+	} else if connectionName, waitFor, err = newDispatchOwnInstance(ctx, dispatch, args, s, child, network, connection, password); err != nil {
 		return nil, err
 	}
 	// One key per generation the list names, in its order. Generation 0 keeps the name and the
@@ -426,25 +399,6 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 	listenerToken, err := random.NewRandomPassword(ctx, s.hostname+"-listener-token", &random.RandomPasswordArgs{Length: pulumi.Int(48), Special: pulumi.Bool(false)}, child)
 	if err != nil {
 		return nil, err
-	}
-	// The component's own instance holds the database dispatch and the login dispatch, with the
-	// generated password. An instance existingDatabaseInstance names holds both already, as a
-	// promoted replica of the component's own instance does, so neither is registered for it.
-	if instance != nil {
-		// deletionProtection also keeps the database itself: PREVENT refuses its delete, which an
-		// instance replacement would otherwise make first.
-		databasePolicy := "DELETE"
-		if s.deletionProtection {
-			databasePolicy = "PREVENT"
-		}
-		_, err = sql.NewDatabase(ctx, s.hostname, &sql.DatabaseArgs{Instance: instance.Name, Name: pulumi.String("dispatch"), DeletionPolicy: pulumi.String(databasePolicy)}, child)
-		if err != nil {
-			return nil, err
-		}
-		_, err = sql.NewUser(ctx, s.hostname, &sql.UserArgs{Instance: instance.Name, Name: pulumi.String("dispatch"), Password: password.Result}, child)
-		if err != nil {
-			return nil, err
-		}
 	}
 	// The principal lives in the cluster's Workload Identity pool, which Google creates with the
 	// cluster. It is built from the pool the cluster half reports, the cluster's own
@@ -492,6 +446,61 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 		principal: principal, seedAccessor: seedAccessor,
 		azureKeyAccessor: azureKeyAccessor, chatTokenAccessor: chatTokenAccessor,
 	}, nil
+}
+
+// newDispatchOwnInstance registers the component's own Cloud SQL instance, which
+// existingDatabaseInstance replaces: DatabaseInstance <hostname> in region, which takes its
+// private IP on network through connection, the private services peering, and on it Database and
+// User <hostname>, the database dispatch and the login dispatch with password. It answers with the
+// instance's connection name and the resources that wait for its in-place restart
+// (dispatchDatabase.waitFor), the DatabaseInstance alone.
+func newDispatchOwnInstance(ctx *pulumi.Context, dispatch string, args *DispatchArgs, s dispatchSettings, child pulumi.ResourceOption, network *compute.Network, connection *servicenetworking.Connection, password *random.RandomPassword) (pulumi.StringOutput, []pulumi.Resource, error) {
+	// databaseWaitsFor names a value of a resource the consumer wants the instance's update to
+	// follow, its own step before the restart (deleting the old tailnet device, say). The value
+	// itself reaches no resource here: only the dependencies it carries do, which is all
+	// dependsOnInput reads off it. A seed is still refused once it resolves, as it is in every
+	// other Pulumi input of this component, since refuseDispatchSeed's ApplyT keeps the input's
+	// own dependencies.
+	instanceOpts := []pulumi.ResourceOption{child, pulumi.DependsOn([]pulumi.Resource{connection})}
+	if args.DatabaseWaitsFor != nil {
+		instanceOpts = append(instanceOpts, dependsOnInput(refuseDispatchSeed(args.DatabaseWaitsFor, dispatch, "databaseWaitsFor")))
+	}
+	// AvailabilityType is databaseAvailabilityType. The bridged Terraform provider declares
+	// settings.availability_type without ForceNew (terraform-provider-google-beta v8.6.0, commit
+	// e6f3d61a347c, the upstream pulumi-gcp v10.1.0 bridges:
+	// google-beta/services/sql/resource_sql_database_instance.go:449-462), so switching between
+	// ZONAL and REGIONAL updates the instance in place: Cloud SQL restarts it once, and the change
+	// cannot be stopped once started.
+	instance, err := sql.NewDatabaseInstance(ctx, s.hostname, &sql.DatabaseInstanceArgs{
+		DatabaseVersion: pulumi.String(s.databaseVersion), Region: pulumi.String(s.region), DeletionProtection: pulumi.Bool(s.deletionProtection),
+		Settings: &sql.DatabaseInstanceSettingsArgs{
+			DeletionProtectionEnabled: pulumi.Bool(s.deletionProtection),
+			Tier:                      pulumi.String(s.databaseTier), Edition: pulumi.String("ENTERPRISE"), AvailabilityType: pulumi.String(s.databaseAvailabilityType), DiskType: pulumi.String("PD_SSD"), DiskSize: pulumi.Int(10), DiskAutoresize: pulumi.Bool(true),
+			IpConfiguration:     &sql.DatabaseInstanceSettingsIpConfigurationArgs{Ipv4Enabled: pulumi.Bool(false), PrivateNetwork: network.ID(), SslMode: pulumi.String("ENCRYPTED_ONLY")},
+			BackupConfiguration: &sql.DatabaseInstanceSettingsBackupConfigurationArgs{Enabled: pulumi.Bool(true), PointInTimeRecoveryEnabled: pulumi.Bool(true), StartTime: pulumi.String("08:00"), TransactionLogRetentionDays: pulumi.Int(7), BackupRetentionSettings: &sql.DatabaseInstanceSettingsBackupConfigurationBackupRetentionSettingsArgs{RetainedBackups: pulumi.Int(14)}},
+		},
+	}, instanceOpts...)
+	if err != nil {
+		return pulumi.StringOutput{}, nil, err
+	}
+	// The component's own instance holds the database dispatch and the login dispatch, with the
+	// generated password. An instance existingDatabaseInstance names holds both already, as a
+	// promoted replica of the component's own instance does, so neither is registered for it.
+	// deletionProtection also keeps the database itself: PREVENT refuses its delete, which an
+	// instance replacement would otherwise make first.
+	databasePolicy := "DELETE"
+	if s.deletionProtection {
+		databasePolicy = "PREVENT"
+	}
+	_, err = sql.NewDatabase(ctx, s.hostname, &sql.DatabaseArgs{Instance: instance.Name, Name: pulumi.String("dispatch"), DeletionPolicy: pulumi.String(databasePolicy)}, child)
+	if err != nil {
+		return pulumi.StringOutput{}, nil, err
+	}
+	_, err = sql.NewUser(ctx, s.hostname, &sql.UserArgs{Instance: instance.Name, Name: pulumi.String("dispatch"), Password: password.Result}, child)
+	if err != nil {
+		return pulumi.StringOutput{}, nil, err
+	}
+	return instance.ConnectionName, []pulumi.Resource{instance}, nil
 }
 
 // dispatchDatabaseConnectionName is existingDatabaseInstance, the connection name of a Cloud SQL
