@@ -110,11 +110,19 @@ type CIObservation struct {
 	// ObservedAt orders observations of one run: completed_at, else started_at
 	// (check runs) or updated_at (suites).
 	ObservedAt string
+	// CheckRunCount is the latest_check_runs_count a check_suite webhook gave for
+	// its suite, and nil where the event gave no whole number or the observation
+	// is no suite's. It is display only: the CI store names it in the line for a
+	// head it holds, and nothing decides on it.
+	CheckRunCount *int
 }
 
 // GithubCIObservations extracts one CI observation per associated PR. Both
 // check runs and suites are folded into durable per-head state; neither emits a
-// raw webhook envelope.
+// raw webhook envelope. A check suite's observation carries the event's run
+// count (CheckRunCount), which only this mapping reads: GithubCIObservation is
+// shared with Dispatch's CI reconcile, which records only completed suites and
+// so would store no count.
 func GithubCIObservations(event string, body map[string]any) []CIObservation {
 	numbers := githubCIPullRequests(event, body)
 	if len(numbers) == 0 {
@@ -129,9 +137,13 @@ func GithubCIObservations(event string, body map[string]any) []CIObservation {
 	}
 	owner, repo := githubRepo(body)
 	// The CI event name is also the key of its object in the body.
-	obs, ok := GithubCIObservation(event, mapValue(body[event]), owner, repo, numbers[0])
+	object := mapValue(body[event])
+	obs, ok := GithubCIObservation(event, object, owner, repo, numbers[0])
 	if !ok {
 		return nil
+	}
+	if event == "check_suite" {
+		obs.CheckRunCount = githubCount(object["latest_check_runs_count"])
 	}
 	out := make([]CIObservation, 0, len(numbers))
 	for _, number := range numbers {
@@ -139,6 +151,18 @@ func GithubCIObservations(event string, body map[string]any) []CIObservation {
 		out = append(out, obs)
 	}
 	return out
+}
+
+// githubCount is a count GitHub gives as a JSON number, which a decoded body holds as a float64,
+// and nil for anything that is no whole number of zero or more: absent, null, negative,
+// fractional, or a string. GitHub caps a check suite at 50,000 check runs, so a value past
+// math.MaxInt32 is no count it gives, and the bound keeps the conversion exact on every platform.
+func githubCount(value any) *int {
+	number, ok := value.(float64)
+	if !ok || number < 0 || number > math.MaxInt32 || number != math.Trunc(number) {
+		return nil
+	}
+	return new(int(number))
 }
 
 // GithubCIObservation maps one GitHub check-run or check-suite object (event is "check_run" or
