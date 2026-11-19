@@ -2,8 +2,6 @@ package roles
 
 import (
 	"context"
-	"fmt"
-	"sync"
 	"testing"
 	"time"
 
@@ -11,38 +9,21 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// lockedWithin reports whether mu could be taken within wait, and lets it go again when it could.
-func lockedWithin(mu *sync.Mutex, wait time.Duration) bool {
-	deadline := time.Now().Add(wait)
-	for {
-		if mu.TryLock() {
-			mu.Unlock()
-			return true
-		}
-		if time.Now().After(deadline) {
-			return false
-		}
-		time.Sleep(time.Millisecond)
-	}
-}
-
 // A bucket's open holds no lock of Buckets across a reconnect's handshake. While the hub holds its
 // answer to the client's CONNECT, nats.go holds its connection lock, and the open's STREAM.INFO
 // waits for it. The open was made under b.mu with no context, so it held b.mu until the handshake
 // attempt ended, long after the read that made it had answered its caller: every other read of
-// Buckets waited behind it. A second caller tries for b.mu from the moment a read made during the
-// hold begins until that read has answered, again and again, and must take it within
-// bus.ConnLockWait each time it tries; the read answers its caller at its own bound; and b.mu is
-// free within testnats.HeldHandshakeAnswerWait of that answer.
+// Buckets waited behind it. The row decides by events, never by how long a call took: a read made
+// during the hold begins its open with b.mu free, which the row reads as the open begins
+// (openBucketHook); a second caller takes b.mu while that open has begun and not ended, since the
+// open waits for it; and the read answers its caller, at its own bound, within the attempt held when
+// it began (HandshakeHold.AnswersWithinAttempt).
 //
 // The role bucket does not exist, so no read keeps a handle and the read in the hold opens one, as
-// a first read after a reconnect does. The controls: nats.go's lock is still held when the two
-// have answered (RequireLockHeld), so they answered during the handshake; and a read before the
-// hold and one after its release answer the role's empty claim, so the row's answers are the
-// hold's. The negative control is bucket as it was (OpenKeyValue with context.Background() under
-// b.mu): the second caller does not take b.mu, and b.mu is still held when the wait ends. An open
-// under b.mu bounded by anything longer than bus.ConnLockWait fails the second caller too, since it
-// keeps trying for as long as the read takes.
+// a first read after a reconnect does. The controls: a read before the hold and one after its
+// release answer the role's empty claim, so the row's answers are the hold's. The negative controls:
+// bucket as it was (OpenKeyValue with context.Background() under b.mu), and an open under b.mu with
+// any bound, 150 ms or the read's own, begin the open with b.mu held.
 func TestABucketsOpenHoldsNoLockAcrossAHeldHandshake(t *testing.T) {
 	_, url := testnats.Start(t)
 	hold := testnats.StartHandshakeHold(t, url)
@@ -59,40 +40,52 @@ func TestABucketsOpenHoldsNoLockAcrossAHeldHandshake(t *testing.T) {
 
 	conn := client.Connection()
 	hold.HoldReconnect(t, conn)
-	// The read's own bound, inside the answer wait.
-	const readWait = time.Second
-	read := make(chan struct{})
-	answers := testnats.AnswersWhileHeld(t, "a read of the role's claim, and a second caller of b.mu,",
+	// At each open's start: whether b.mu was free, so the row reads that the open runs with it
+	// released. The open then waits until the second caller has tried for b.mu, so that caller
+	// tries while the open has begun and not ended.
+	opens := make(chan bool, 16)
+	secondDone := make(chan struct{})
+	seeOpen := func() {
+		free := buckets.mu.TryLock()
+		if free {
+			buckets.mu.Unlock()
+		}
+		opens <- free
+		<-secondDone
+	}
+	openBucketHook.Store(&seeOpen)
+	t.Cleanup(func() { openBucketHook.Store(nil) })
+	read := make(chan error, 1)
+	answers := hold.AnswersWithinAttempt(t, conn, "a read of the role's claim, and a second caller of b.mu,",
 		func() error {
-			defer close(read)
-			ctx, cancel := context.WithTimeout(t.Context(), readWait)
-			defer cancel()
-			_, err := buckets.RoleClaim(ctx, "reviewer")
+			_, err := buckets.RoleClaim(t.Context(), "reviewer")
+			read <- err
 			return err
 		},
 		func() error {
-			for tries := 1; ; tries++ {
-				select {
-				case <-read:
-					return nil
-				default:
+			defer close(secondDone)
+			select {
+			case free := <-opens:
+				if !free {
+					return errOpenUnderLock
 				}
-				if !lockedWithin(&buckets.mu, bus.ConnLockWait) {
-					return fmt.Errorf("try %d did not take b.mu within %s while the read waited on its open", tries, bus.ConnLockWait)
-				}
+			case err := <-read:
+				read <- err
+				return errNoOpen
 			}
+			// The open has begun with b.mu free and waits for this caller: it takes b.mu now.
+			buckets.mu.Lock()
+			buckets.mu.Unlock()
+			return nil
 		})
-	testnats.RequireLockHeld(t, conn)
 	if answers[0] == nil {
 		t.Fatal("a read of the role's claim answered nil while the handshake was held, want its bound's error")
 	}
 	if answers[1] != nil {
-		t.Fatalf("a second caller of b.mu, trying while the read waited: %v", answers[1])
-	}
-	if !lockedWithin(&buckets.mu, testnats.HeldHandshakeAnswerWait) {
-		t.Fatalf("b.mu was still held %s after the read answered %v: the open that read made holds it through the handshake", testnats.HeldHandshakeAnswerWait, answers[0])
+		t.Fatalf("a second caller of b.mu: %v", answers[1])
 	}
 
+	openBucketHook.Store(nil)
 	hold.Release()
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
@@ -107,3 +100,12 @@ func TestABucketsOpenHoldsNoLockAcrossAHeldHandshake(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+var (
+	errOpenUnderLock = rowError("the read began its bucket's open with b.mu held, so every other read of Buckets waits behind the open")
+	errNoOpen        = rowError("control: the read answered without opening its bucket")
+)
+
+type rowError string
+
+func (e rowError) Error() string { return string(e) }

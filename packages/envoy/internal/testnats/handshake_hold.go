@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -48,6 +49,9 @@ type HandshakeHold struct {
 	// held is closed once a CONNECT has reached the server under the hold Hold began.
 	held     chan struct{}
 	heldOnce *sync.Once
+	// attempts counts the CONNECTs that have reached the server under a hold: each is one handshake
+	// attempt whose answer the hold keeps.
+	attempts atomic.Int64
 }
 
 // StartHandshakeHold relays to the NATS server at target, a client URL such as Start returns,
@@ -100,10 +104,17 @@ func (h *HandshakeHold) HoldReconnect(t testing.TB, conn *natsgo.Conn) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("no reconnect's CONNECT reached the server through the handshake hold within 30 s")
 	}
+	AwaitLockHeld(t, conn)
+}
+
+// AwaitLockHeld waits until nats.go keeps a read of conn's status waiting, so its connection lock is
+// held, failing the test when it is not within 30 s.
+func AwaitLockHeld(t testing.TB, conn *natsgo.Conn) {
+	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for lockFree(conn) {
 		if time.Now().After(deadline) {
-			t.Fatal("nats.go still answered a read of the connection's status 30 s after a CONNECT reached the server through the hold: no handshake of it is held")
+			t.Fatal("nats.go still answered a read of the connection's status after 30 s: no handshake or write of it holds its lock")
 		}
 	}
 }
@@ -231,6 +242,28 @@ func AwaitLockFree(t testing.TB, conn *natsgo.Conn) {
 	}
 }
 
+// Attempts is how many handshake attempts have reached the server under a hold: each CONNECT the
+// hold has kept the answer to.
+func (h *HandshakeHold) Attempts() int64 { return h.attempts.Load() }
+
+// AnswersWithinAttempt runs each call at once, each on a goroutine of its own, and returns their
+// answers in order. It fails the test, naming what, unless every call answered within the handshake
+// attempt the hold held when they began: no later attempt has reached the hold by the time all have
+// answered, and nats.go's lock is still held then (RequireLockHeld). A call that waits for nats.go's
+// lock answers only once that attempt has ended, at the client's connect timeout: in the gap after
+// it, with the lock free, or once the next attempt has begun. The row decides by those events, and
+// no wall-clock bound but a 30 s guard against a call that never answers.
+func (h *HandshakeHold) AnswersWithinAttempt(t testing.TB, conn *natsgo.Conn, what string, calls ...func() error) []error {
+	t.Helper()
+	began := h.Attempts()
+	answers := AnswersWithin(t, 30*time.Second, what, calls...)
+	if ended := h.Attempts(); ended != began {
+		t.Fatalf("%s answered only after %d more handshake attempt(s) had reached the hold: it waited out the attempt held when it began", what, ended-began)
+	}
+	RequireLockHeld(t, conn)
+	return answers
+}
+
 // serve relays each connection the proxy makes to the hold until the hold's listener closes.
 func (h *HandshakeHold) serve() {
 	for {
@@ -289,6 +322,7 @@ func (h *HandshakeHold) join(client net.Conn) {
 			if release != nil && !stream.connected {
 				stream.wrote(buffer[:read])
 				if stream.connected {
+					h.attempts.Add(1)
 					heldOnce.Do(func() { close(held) })
 				}
 			}

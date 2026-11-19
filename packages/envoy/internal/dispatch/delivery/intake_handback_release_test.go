@@ -10,6 +10,8 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -67,48 +69,35 @@ func (r *durableEvents) count() int {
 	return len(r.events)
 }
 
-// A hand-back NATS had not taken when the holder's stop went on without it lands before the
-// standby takes the durable over, never on the durable the standby recreates.
-//
-// A hand-back is a publish at the message's reply subject, which names the durable rather than the
-// consumer: one that lands after the standby's take-over has deleted the durable and created it again
-// under the same name moves that message's pending entry on the standby's consumer and has the
-// standby delivered it a second time. The stop waits for each publish at most bus.ConnLockWait
-// (intakeDelivery.publishHandBack) and goes on without one NATS has not taken, so the hold's release,
-// which lets the standby take over, waits for every such publish first (heldDurable.awaitHandBacks).
-//
-// The holder's NATS link runs through a proxy of its own. The holder's handler holds one pull request
-// and a second message of it waits behind; the handler is let finish once the stop has stopped the
-// keyed runner, and a write is held on the holder's link from inside the stop's hand-back of the
-// waiting message, after the connected read has answered and before the publish
-// (beforeHandBackPublish). That publish is left running. The link moves again when either event
-// comes: the holder's release is waiting for the hand-back (awaitingHandBacks), or the standby has
-// created the durable. Every step waits for an event; none for a time.
-//
-// The row reads, in the order the server sent them, the answers published to the durable and the
-// durable's creations after the stop began: a hand-back (-NAK) must be among them, and must come
-// before the standby's creation. The negative control is a release that does not wait for the
-// hand-backs: the standby creates the durable first, the link then moves, and the hand-back lands
-// after the creation.
-func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
+// stopWithAHeldHandBack starts a holder and a standby, has the holder's handler hold one pull
+// request with a second message of it waiting behind, stops the holder, and holds a write on the
+// holder's link from inside the stop's hand-back of the waiting message, after the connected read
+// has answered and before the publish (beforeHandBackPublish), so that publish waits for nats.go's
+// lock. It returns once the write is held, with the stop under way. The stop's deadline is
+// intakeStopBudget, shrunk to stopBudget.
+func stopWithAHeldHandBack(t *testing.T) heldHandBack {
+	t.Helper()
 	shrinkIntakeFlowControl(t)
-	// The stop gives the drain, which the held write keeps from ending, this long to end.
 	budget := intakeStopBudget
-	intakeStopBudget = 3 * time.Second
+	intakeStopBudget = stopBudget
 	t.Cleanup(func() { intakeStopBudget = budget })
+	var row heldHandBack
 	pool, ctx := deliveryTestPool(t)
+	row.pool = pool
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
 	link := testnats.StartHandshakeHold(t, natsURL)
 	t.Cleanup(link.Restore)
 	publisher := intakeTestClient(t)
-	recorded := watchDurableEvents(t, natsURL)
+	row.publisher = publisher
+	row.recorded = watchDurableEvents(t, natsURL)
 
 	const inFlight = 100
 	holder := startIntakeProcess(t, pool, link.URL(), func(number int) bool { return number == inFlight })
 	awaitBoundDurable(t, publisher)
-	standby := startIntakeProcess(t, pool, natsURL, nil)
+	startIntakeProcess(t, pool, natsURL, nil)
 	holderConn := holder.client.Connection()
+	row.conn = holderConn
 
 	publishMergedPullRequest(t, publisher, inFlight)
 	waitFor(t, 20*time.Second, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
@@ -119,15 +108,22 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 
 	var holding sync.Once
 	held := make(chan struct{})
+	thawed := make(chan func(), 1)
 	hook := func() {
 		holding.Do(func() {
-			link.HoldWriteLock(t, holderConn)
+			thawed <- link.HoldWriteLock(t, holderConn)
 			close(held)
 		})
 	}
-	subscribedDelivery(holder.intake).beforeHandBackPublish.Store(&hook)
-	from := recorded.count()
-	go holder.stop()
+	row.delivery = subscribedDelivery(holder.intake)
+	row.delivery.beforeHandBackPublish.Store(&hook)
+	row.from = row.recorded.count()
+	done := make(chan struct{})
+	row.stopped = done
+	go func() {
+		holder.stop()
+		close(done)
+	}()
 	waitFor(t, 20*time.Second, holder.keyedRunnerStopped, func() string {
 		return "the stopping holder has not stopped its keyed runner: " + consumerState(publisher)
 	})
@@ -139,26 +135,137 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("control: the stop's hand-back never reached its publish: " + consumerState(publisher))
 	}
+	row.thaw = <-thawed
+	return row
+}
 
-	created := func() bool { return slicesContains(recorded.since(from), durableCreated) }
-	waitFor(t, 60*time.Second, func() bool { return holder.intake.awaitingHandBacks.Load() || created() }, func() string {
-		return fmt.Sprintf("neither did the holder's release wait for the hand-back nor did the standby create the durable: %q; %s", recorded.since(from), consumerState(publisher))
-	})
-	link.Restore()
+// heldHandBack is a holder's stop with a hand-back's publish held (stopWithAHeldHandBack): thaw
+// lets the holder's link move and ends the held write; stopped closes when the holder's Run has
+// returned; conn is the holder's connection, delivery the subscription its stop stopped, and from
+// the first durable event of the stop.
+type heldHandBack struct {
+	pool      *store.Pool
+	thaw      func()
+	recorded  *durableEvents
+	from      int
+	stopped   <-chan struct{}
+	publisher *bus.Client
+	conn      *natsgo.Conn
+	delivery  *intakeDelivery
+}
 
+// handBackPending reports whether a hand-back publish of the stopped delivery is still waiting for
+// NATS.
+func (r heldHandBack) handBackPending() bool {
+	select {
+	case <-r.delivery.handBacksLanded():
+		return false
+	default:
+		return true
+	}
+}
+
+// stopBudget is the stop's deadline in the rows below (intakeStopBudget).
+const stopBudget = 3 * time.Second
+
+// holdLive reports whether the delivery durable's hold still names a holder, live.
+func holdLive(t *testing.T, pool *store.Pool) bool {
+	t.Helper()
+	_, live, err := duty.HoldToken(t.Context(), pool, intakeHoldName(bus.DispatchDeliveryDurable))
+	if err != nil {
+		t.Fatalf("read the delivery durable's hold: %v", err)
+	}
+	return live
+}
+
+// requireHandBackBeforeCreation waits until the server has had both the holder's hand-back and the
+// standby's creation of the durable, and fails the test when the hand-back came after.
+func requireHandBackBeforeCreation(t *testing.T, recorded *durableEvents, from int, publisher *bus.Client) {
+	t.Helper()
 	waitFor(t, 60*time.Second, func() bool {
 		events := recorded.since(from)
 		return slicesContains(events, "-NAK") && slicesContains(events, durableCreated)
 	}, func() string {
-		return fmt.Sprintf("the hand-back and the standby's creation of the durable did not both reach the server once the link moved: %q; standby fetched %d; %s",
-			recorded.since(from), standby.fetches(inFlight), consumerState(publisher))
+		return fmt.Sprintf("the hand-back and the standby's creation of the durable did not both reach the server: %q; %s", recorded.since(from), consumerState(publisher))
 	})
 	events := recorded.since(from)
-	nak, creation := indexOf(events, "-NAK"), indexOf(events, durableCreated)
-	if nak > creation {
-		t.Fatalf("the hand-back the stop left running landed after the standby created the durable, so it reached the standby's consumer: %q", events)
+	if indexOf(events, "-NAK") > indexOf(events, durableCreated) {
+		t.Fatalf("the hand-back landed after the standby created the durable, so it reached the standby's consumer: %q", events)
 	}
 }
+
+// A hand-back the holder's stop published never reaches the durable a standby recreates.
+//
+// A hand-back is a publish at the message's reply subject, which names the durable rather than the
+// consumer: one that reaches the server after the standby's take-over has deleted the durable and
+// created it again under the same name moves that message's pending entry on the standby's consumer
+// and has the standby delivered it a second time. The stop waits for each publish at most
+// bus.ConnLockWait (intakeDelivery.publishHandBack) and goes on without one NATS has not taken, so
+// the stop releases the hold only once every hand-back has reached the server, and leaves it to
+// lapse otherwise (heldDurable.stop).
+//
+// Both subtests hold a write on the holder's link from inside its stop's hand-back
+// (stopWithAHeldHandBack). Each reads, in the order the server sent them, the answers published to
+// the durable and the durable's creations, on a connection of its own, and every step waits for an
+// event:
+//   - a hand-back that lands before the stop's deadline: the link moves once the stop has gone on
+//     without the publish (its log line). The hold is released by the time the stop returns, and the
+//     hand-back reached the server before the standby created the durable.
+//   - a hand-back still pending at the stop's deadline: the link stays held, and the stop returns
+//     while it is, with the hand-back still pending (handBacksLanded). The hold still names the
+//     holder then, and the standby has not created the durable. Once the link moves, the hand-back
+//     reaches the server before the standby creates the durable, at the hold's lapse.
+//
+// No step waits on a time but the stop's own deadline (intakeStopBudget); a 30 s wait only guards
+// against a stop that never returns. The negative controls: a release that does not wait for the
+// hand-backs fails the first's order; a stop that leaves its hold to lapse whenever a publish was
+// left running fails the first's release; a release made at the deadline with a hand-back pending
+// fails the second's hold; and a release that waits for the pending hand-back up to the hold's loss
+// deadline, with no regard to the stop's (this change's earlier 6dc62f5514), fails the second's
+// hold too, since that deadline is not the hold's lapse while the hold renews.
+func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
+	t.Run("a hand-back that lands before the stop's deadline", func(t *testing.T) {
+		logs := captureLogs(t)
+		row := stopWithAHeldHandBack(t)
+		waitFor(t, 30*time.Second, func() bool { return loggedMessage(logs(), callLeftRunning) }, func() string {
+			return "control: the stop never went on without the held hand-back's publish: " + consumerState(row.publisher)
+		})
+		row.thaw()
+		select {
+		case <-row.stopped:
+		case <-time.After(30 * time.Second):
+			t.Fatal("the holder's stop did not return within 30 s of the link moving")
+		}
+		if holdLive(t, row.pool) {
+			t.Fatalf("the stop left its hold to lapse although its hand-back reached the server before its deadline, which costs the standby the lapse; the holder logged %q", loggedMessages(logs()))
+		}
+		requireHandBackBeforeCreation(t, row.recorded, row.from, row.publisher)
+	})
+
+	t.Run("a hand-back still pending at the stop's deadline", func(t *testing.T) {
+		row := stopWithAHeldHandBack(t)
+		select {
+		case <-row.stopped:
+		case <-time.After(30 * time.Second):
+			t.Fatal("the holder's stop did not return within 30 s while its hand-back was held: it waits for the hand-back")
+		}
+		testnats.RequireLockHeld(t, row.conn)
+		if !row.handBackPending() {
+			t.Fatal("control: the stop's hand-back reached NATS while the write was held")
+		}
+		if !holdLive(t, row.pool) {
+			t.Fatal("the stop released its hold with a hand-back still pending, so a standby may recreate the durable before the hand-back reaches the server")
+		}
+		if slicesContains(row.recorded.since(row.from), durableCreated) {
+			t.Fatalf("the standby created the durable while the holder's hand-back was pending: %q", row.recorded.since(row.from))
+		}
+		row.thaw()
+		requireHandBackBeforeCreation(t, row.recorded, row.from, row.publisher)
+	})
+}
+
+// callLeftRunning is the line callNATS logs for a call it goes on without.
+const callLeftRunning = "dispatch delivery: NATS did not answer a call in time, so it goes on without waiting for it"
 
 func slicesContains(events []string, want string) bool { return indexOf(events, want) >= 0 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,18 +35,23 @@ func heldHandshakeClient(t *testing.T) (*Client, *testnats.HandshakeHold) {
 // A window's pin is not held across a reconnect's handshake. While the hub holds its answer to the
 // client's CONNECT, nats.go holds its connection lock, and a send of a window that read the
 // connection under the window's pin held the pin until the handshake attempt ended: the send that
-// held it gave no answer, and every other send of the window waited behind it. Sends of one window
-// made at once while the handshake is held each answer ErrUnavailable: two sends and a Probe of a
-// window pinned before the hold within 600 ms, since the check waits for nothing, and two
-// first sends of a window made during it within 250 ms past their 400 ms wait for a connection,
-// which two sends that waited one behind the other would miss.
+// held it gave no answer, and every other send of the window waited behind it. The row decides by
+// events and counts, never by how long a call took:
+//   - pinned before the hold: two sends and a Probe of a window pinned before the hold, made at once
+//     while a handshake is held, each answer ErrUnavailable within that attempt
+//     (HandshakeHold.AnswersWithinAttempt), and none of them makes a bounded wait (Bounded): the
+//     check of a pinned window reads nothing of nats.go's, so it waits for nothing and holds the
+//     pin across nothing;
+//   - first send during the hold: two first sends of a window made during the hold each reach their
+//     wait for a connection (Bounded) while neither has answered, so they wait side by side and
+//     neither waits behind the other on the pin; once the hold is released, both pin the connection.
 //
-// The controls: nats.go's lock is still held when the sends have answered (RequireLockHeld), so
-// they answered during the handshake and not after it; and each client pins a window before the
-// hold, and once the hold is released and the client has heard of its reconnect, a new window
-// sends twice, so the answers are the hold's and not a client that cannot connect. The negative
-// control is the pin as it was (ensureConnWithContext, Stats and current() under pinning): neither
-// send answers within its bound.
+// The controls: each client pins a window before the hold, and once the hold is released and the
+// client has heard of its reconnect, a new window sends twice, so the answers are the hold's and not
+// a client that cannot connect. The negative controls: the pin as it was (ensureConnWithContext,
+// Stats and current() under pinning) answers only once the attempt has ended, and its first sends
+// make no bounded wait; and a check that holds the pin across a read of nats.go's state bounded at
+// 150 ms or 400 ms makes a bounded wait in each send.
 func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 	pinsAgain := func(t *testing.T, client *Client, hold *testnats.HandshakeHold) {
 		t.Helper()
@@ -63,14 +69,6 @@ func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 			}
 		}
 	}
-	unavailable := func(t *testing.T, what string, answers []error) {
-		t.Helper()
-		for i, err := range answers {
-			if !errors.Is(err, ErrUnavailable) {
-				t.Errorf("%s %d answered %v while the handshake was held, want ErrUnavailable", what, i+1, err)
-			}
-		}
-	}
 
 	t.Run("pinned before the hold", func(t *testing.T) {
 		client, hold := heldHandshakeClient(t)
@@ -79,11 +77,17 @@ func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 			t.Fatalf("control: the window's first send could not pin the connection before the hold: %v", err)
 		}
 		hold.HoldReconnect(t, w.conn)
-		// The check reads nats.go's own report that the life ended, so each answers at once:
-		// within 600 ms on a loaded runner.
+		waits := countBoundedWaits(t)
 		probe := func() error { return w.Probe(time.Second) }
-		unavailable(t, "a send or probe of the pinned window", testnats.AnswersWithin(t, 600*time.Millisecond, "a send or probe of the pinned window", w.pinToSend, w.pinToSend, probe))
-		testnats.RequireLockHeld(t, w.conn)
+		answers := hold.AnswersWithinAttempt(t, w.conn, "a send or probe of the pinned window", w.pinToSend, w.pinToSend, probe)
+		for i, err := range answers {
+			if !errors.Is(err, ErrUnavailable) {
+				t.Errorf("a send or probe of the pinned window %d answered %v while the handshake was held, want ErrUnavailable", i+1, err)
+			}
+		}
+		if n := waits.Load(); n != 0 {
+			t.Errorf("the sends and the probe of the pinned window made %d bounded wait(s); the check of a pinned window must wait for nothing", n)
+		}
 		pinsAgain(t, client, hold)
 	})
 
@@ -94,15 +98,52 @@ func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 		}
 		conn := client.Connection()
 		hold.HoldReconnect(t, conn)
-		// The first send's wait for a connection. Two first sends that waited one behind the other
-		// would answer at twice it, past the answer wait below; side by side they answer at it.
-		const wait = 400 * time.Millisecond
+		waits := countBoundedWaits(t)
 		w := client.WindowUntil(nil).(*window)
-		pin := func() error { return w.pin(wait) }
-		unavailable(t, "a first send of the window", testnats.AnswersWithin(t, wait+250*time.Millisecond, "a first send of the window", pin, pin))
+		answers := make(chan error, 2)
+		for range 2 {
+			go func() { answers <- w.pin(time.Minute) }()
+		}
+		deadline := time.Now().Add(30 * time.Second)
+		for waits.Load() < 2 {
+			select {
+			case err := <-answers:
+				t.Fatalf("a first send answered %v before both first sends had reached their wait for a connection: they did not wait side by side", err)
+			default:
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("only %d of two first sends reached their wait for a connection within 30 s: one waits behind the other on the window's pin", waits.Load())
+			}
+			time.Sleep(time.Millisecond)
+		}
+		select {
+		case err := <-answers:
+			t.Fatalf("a first send answered %v while the handshake was held, want it still waiting for a connection", err)
+		default:
+		}
 		testnats.RequireLockHeld(t, conn)
-		pinsAgain(t, client, hold)
+		hold.Release()
+		for send := range 2 {
+			select {
+			case err := <-answers:
+				if err != nil {
+					t.Errorf("first send %d answered %v once the hold was released, want nil", send+1, err)
+				}
+			case <-time.After(30 * time.Second):
+				t.Fatalf("first send %d gave no answer within 30 s of the hold's release", send+1)
+			}
+		}
 	})
+}
+
+// countBoundedWaits counts the Bounded calls made from now until the test ends.
+func countBoundedWaits(t *testing.T) *atomic.Int64 {
+	t.Helper()
+	var waits atomic.Int64
+	count := func() { waits.Add(1) }
+	boundedEntered.Store(&count)
+	t.Cleanup(func() { boundedEntered.Store(nil) })
+	return &waits
 }
 
 // heardReconnects returns a channel that takes a value each time client has heard of a reconnect:

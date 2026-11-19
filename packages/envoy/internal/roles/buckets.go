@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -61,6 +62,18 @@ func NewBuckets(client JetStream, windows Windows) *Buckets {
 	return &Buckets{Windows: windows, client: client}
 }
 
+// openBucket opens a bucket (bus.OpenKeyValue). A row replaces it, through openBucketHook, to see
+// each open as it begins: that the open runs with b.mu released.
+func openBucket(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, name string) (bus.KeyValue, error) {
+	if hook := openBucketHook.Load(); hook != nil {
+		(*hook)()
+	}
+	return bus.OpenKeyValue(ctx, conn, js, name)
+}
+
+// openBucketHook, when set, runs as each bucket open begins (openBucket). It is nil outside tests.
+var openBucketHook atomic.Pointer[func()]
+
 // bucket returns the handle of bucket on the client's current connection, opening it within ctx
 // when it is not open on that connection yet.
 //
@@ -88,7 +101,7 @@ func (b *Buckets) bucket(ctx context.Context, name string) (bus.KeyValue, error)
 		return kv, nil
 	}
 	b.mu.Unlock()
-	kv, err := bus.OpenKeyValue(ctx, b.client.Connection(), js, name)
+	kv, err := openBucket(ctx, b.client.Connection(), js, name)
 	if err != nil {
 		return bus.KeyValue{}, err
 	}

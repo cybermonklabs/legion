@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -503,6 +504,11 @@ func (kv KeyValue) Status() (nats.KeyValueStatus, error) {
 	return refusedOn(kv, []string{jsAPI("STREAM.INFO", "KV_"+kv.Bucket())}, kv.legacy.Status)
 }
 
+// boundedEntered, when set, runs as each Bounded call begins. It is nil outside tests: a row sets
+// it to see the bounded waits a path makes, and that the check of a pinned window makes none
+// (window.current).
+var boundedEntered atomic.Pointer[func()]
+
 // Bounded is call, a bucket call that takes no context, as a caller holding ctx waits for it:
 // nats.go's KV reads, writes and deletes take none and wait out the JetStream MaxWait (10 s), so
 // the wait ends at the earlier of call's answer and ctx's end. answered is false when ctx ended
@@ -514,6 +520,9 @@ func (kv KeyValue) Status() (nats.KeyValueStatus, error) {
 // its own loop's ctx, which the listener's shutdown ends under a pass in flight
 // (store.StartRoleClaimReaper).
 func Bounded[T any](ctx context.Context, call func() (T, error)) (value T, answered bool, err error) {
+	if entered := boundedEntered.Load(); entered != nil {
+		(*entered)()
+	}
 	if ctx.Done() == nil {
 		value, err = call()
 		return value, true, err
