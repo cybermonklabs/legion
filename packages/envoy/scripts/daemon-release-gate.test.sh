@@ -448,6 +448,27 @@ check "exits 2" "$(is "$status" 2)"
 check "names what it got" "$(grep -qF -- "--deployment example-org is not <owner>/<repo>" "$err" && echo true || echo false)"
 check "reads nothing" "$(is "$(wc -l <"$calls")" 0)"
 
+echo "case: a --deployment whose value is left out"
+new_case deployment-no-value
+run_bare -- --deployment "$commit"
+check "exits 2" "$(is "$status" 2)"
+check "says the flag took the commit and no commit follows" \
+  "$(grep -qF -- "no <commit> follows the flags; --deployment took ${commit} as its <owner/repo>" "$err" && echo true || echo false)"
+check "reads nothing" "$(is "$(wc -l <"$calls")" 0)"
+
+echo "case: --deployment=<owner/repo> is read as --deployment <owner/repo>"
+new_case deployment-equals
+legion_stack "$fleet"
+single "$worker_a" "$legion" "$ahead_rev"
+single "$worker_b" "$legion" "$identical_rev"
+compare "$ahead_rev" ahead 0
+compare "$identical_rev" identical 0
+run_bare -- "--deployment=${deployment}" "$commit"
+check "exits 0" "$(is "$status" 0)"
+check "reads the deployment it names" \
+  "$(grep -qF "gh api repos/${deployment}/contents/legion/Pulumi.prod.yaml" "$calls" && echo true || echo false)"
+check "the verdict is GATE OPEN" "$(last_line_is "GATE OPEN")"
+
 # Each stack's config keys are under the name its own Pulumi.yaml declares: the gate reads that name
 # and never guesses one. A stack whose Pulumi.yaml is missing or declares no name is UNKNOWN, by name.
 echo "case: the projects list is read under the name legion/Pulumi.yaml declares"
@@ -576,6 +597,45 @@ check "refuses UNKNOWN naming the listing and GitHub's answer" \
   "$(has_line "UNKNOWN: cannot list ${deployment} legion/projects: gh: Server Error (HTTP 500)")"
 check "reads no image" "$(lacks "docker" "$calls")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
+
+# A failed listing is never read as a missing directory: with a list left in legion/Pulumi.prod.yaml,
+# a gate that took the 500 for a 404 would read that list and judge pins no daemon runs.
+echo "case: legion/projects/ cannot be listed, with a list left in legion/Pulumi.prod.yaml"
+new_case project-listing-down-leftover
+legion_stack "$fleet"
+fleet_files
+single "$worker_a" "$legion" "$ahead_rev"
+single "$worker_b" "$legion" "$identical_rev"
+compare "$ahead_rev" ahead 0
+compare "$identical_rev" identical 0
+run_gate FAKE_LIST_DOWN=1 -- "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the listing and GitHub's answer" \
+  "$(has_line "UNKNOWN: cannot list ${deployment} legion/projects: gh: Server Error (HTTP 500)")"
+check "never reads the leftover list's pins" "$(lacks "docker" "$calls")"
+check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
+
+echo "case: a project file that is not UTF-8"
+new_case project-file-not-utf8
+legion_settings
+fleet_files
+printf 'key: \xff\xfe\n' >"${case_root}/files/legion/projects/30-ODD.yaml"
+run_gate -- "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the file" "$(has_line "UNKNOWN: ${deployment} legion/projects/30-ODD.yaml is not UTF-8 text")"
+check "reads no image" "$(lacks "docker" "$calls")"
+
+echo "case: a projects list whose entry is not a mapping"
+new_case list-entry-not-mapping
+legion_stack "    - key: LINUX
+      replicas: 1
+      daemonImage: ${worker_a}
+    - just a string"
+run_gate -- "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the list and the entry" \
+  "$(has_line "UNKNOWN: ${deployment} legion/Pulumi.prod.yaml's ${legion_project}:projects list holds an entry that is not a mapping (entry 2)")"
+check "reads no image" "$(lacks "docker" "$calls")"
 
 echo "case: legion/Pulumi.yaml is missing"
 new_case no-project-file
@@ -758,7 +818,7 @@ compare "$other_rev" ahead 0
 run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the record it could not read" \
-  "$(has_line "UNKNOWN: envoy: built from ${old_name}, and the repository renames of ${deployment}'s Legion projects could not be read: gh: Not Found (HTTP 404)")"
+  "$(has_line "UNKNOWN: envoy: built from ${old_name}, and the repository renames of ${deployment}'s Legion projects could not be read: cannot read ${deployment} legion/Pulumi.prod.yaml: gh: Not Found (HTTP 404)")"
 check "makes no compare call for its revision" "$(lacks "...${other_rev}" "$calls")"
 
 echo "case: --listeners, a pin built under the old name when legion/Pulumi.yaml is missing"
@@ -943,6 +1003,18 @@ check "refuses 6 hex digits" "$(has_line "UNKNOWN: envoy-cluster: ${cluster_pin}
 check "refuses 41 hex digits" "$(has_line "UNKNOWN: dispatch: ${dispatch_listener_pin} names revision ${ahead_rev}a, which is no commit id")"
 check "makes no compare call" "$(lacks "/compare/" "$calls")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
+
+echo "case: --listeners, a stack file that is not UTF-8"
+new_case listener-stack-not-utf8
+listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin" "$dispatch_listener_pin"
+printf 'config:\n  %s:envoyImage: \xff\n' "$cluster_project" >"${case_root}/files/envoy-cluster/Pulumi.prod.yaml"
+index "$envoy_pin" "$legion" "$ahead_rev"
+index "$dispatch_listener_pin" "$legion" "$ahead_rev"
+compare "$ahead_rev" ahead 0
+run_gate -- --listeners "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the file in one line" \
+  "$(has_line "UNKNOWN: envoy-cluster: cannot read envoy-cluster/Pulumi.prod.yaml: it is not UTF-8 text")"
 
 if [ "$failures" -ne 0 ]; then
   printf '%s check(s) failed\n' "$failures"
