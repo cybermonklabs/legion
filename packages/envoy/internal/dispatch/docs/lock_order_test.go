@@ -17,8 +17,11 @@ import (
 func lockOrderServiceFor(t *testing.T, database *store.Store) *Service {
 	t.Helper()
 	service := New(Deps{Store: database, Settle: time.Hour})
+	// The service's shutdown runs the settlements it still owes against the test's database; it is
+	// given what the test's deadline leaves (testwait.Answered), not a fixed 5 s, which a loaded host
+	// could spend while Postgres still answers and then drop the database under a settlement.
 	t.Cleanup(func() {
-		stop, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		stop, cancel := testwait.Answered(t, context.Background())
 		defer cancel()
 		_ = service.Shutdown(stop)
 	})
