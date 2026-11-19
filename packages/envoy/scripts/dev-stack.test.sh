@@ -66,7 +66,7 @@ set -m
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 readonly project_root
 # scripts/e2e/lib/wait-gone.sh holds wait_gone, the wait the --callout case runs on its second
-# broker.
+# broker, and stop_gone, the cleanup's stop of the process groups this test made.
 # shellcheck source-path=SCRIPTDIR source=../../../scripts/e2e/lib/wait-gone.sh
 . "$project_root/scripts/e2e/lib/wait-gone.sh"
 readonly driver="${project_root}/packages/envoy/scripts/dev-stack.sh"
@@ -85,18 +85,37 @@ readonly admin_url_no_query=${admin_url%%\?*}
 readonly server_url=${admin_url%/postgres*}
 
 declare -a instance_pid=()
+# The process groups this test made: each instance leads one (set -m above), which holds every
+# process of its stack. Each is held with its leader's start time (process_start,
+# lib/wait-gone.sh), so that a pid the kernel has handed to a new process since is never taken for
+# it.
+declare -A instance_group_start=()
 cleanup() {
   # Best-effort: if an assertion fails mid-test, leave no dev-stack.sh instance, and no stub it
-  # started, running.
-  local pid
+  # started, running, and signal nothing this test did not start. Each instance still running
+  # gets SIGTERM and is reaped, so its own stop runs; then each process group this test made is
+  # stopped whole and waited for (stop_gone: SIGTERM, then SIGKILL), which ends a stub its
+  # instance left. A group whose leader is still there is this test's only while that leader's
+  # start time is the one recorded. A leader that is gone is no other process's: the kernel hands
+  # its pid to no new process while a member of its group runs.
+  local pid group start found
+  local -a groups=()
   for pid in "${instance_pid[@]}"; do
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
       kill -TERM "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
     fi
   done
-  # no-wait: the stand-ins it matches end on TERM and write nothing under temporary_dir after it.
-  pkill -f "${temporary_dir}/dev-stack\." 2>/dev/null || true
+  for group in "${!instance_group_start[@]}"; do
+    start="" found=0
+    process_start "$group" start || found=$?
+    case $found in
+      0) [[ "$start" == "${instance_group_start[$group]}" ]] || continue ;;
+      2) continue ;;
+    esac
+    groups+=("-$group")
+  done
+  stop_gone 5 "$((EPOCHSECONDS + 15))" ${groups[@]+"${groups[@]}"} || true
   rm -rf "$temporary_dir"
 }
 trap cleanup EXIT
@@ -433,6 +452,9 @@ run_instance() {
     DEV_STACK_TEST_GO_CALL_FILE="${DEV_STACK_TEST_GO_CALL_FILE:-}" \
     bash "$driver" --database-url "$admin_url" "$@" >"$log_file" 2>&1 &
   instance_pid[which]=$!
+  local start=""
+  process_start "$!" start || true
+  instance_group_start[$!]=$start
 }
 
 wait_for_ready() {
@@ -986,7 +1008,7 @@ done
 kill -TERM "$second_broker_port"
 # Gone first: a broker still in the process table would make the check below pass with nothing
 # stopped. dev-stack.sh, its parent, reaps it.
-wait_gone 10 "$second_broker_port" ||
+wait_gone "$((EPOCHSECONDS + 10))" "$second_broker_port" ||
   fail "the --callout run's second broker (pid $second_broker_port) was still in the process table 10 s after its SIGTERM"
 sleep 1
 kill -0 "${instance_pid[1]}" 2>/dev/null || fail "the --callout run stopped when its second broker did"

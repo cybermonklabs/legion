@@ -81,9 +81,9 @@ jobs:
       # ProcessInvoker.cs). A git killed while it wrote refs or config can also leave a lock
       # (.git/config.lock, packed-refs.lock, a ref's .lock) that actions/checkout does not delete
       # before it reuses a directory: it deletes index.lock and shallow.lock alone
-      # (src/git-directory-helper.ts). So the step between the two attempts ends every git
-      # process on the runner, which runs this one job, and then empties the workspace, and the
-      # second attempt is a fresh clone.
+      # (src/git-directory-helper.ts). So the step between the two attempts ends every process
+      # working in the workspace, which are the git processes the cut attempt left, waits for
+      # each to be gone, and then empties the workspace, and the second attempt is a fresh clone.
       - id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 2
@@ -95,11 +95,23 @@ jobs:
         if: steps.checkout.outcome != 'success'
         timeout-minutes: 2
         run: |
-          pgrep -a git || true
-          pkill -KILL -x git || true
-          pkill -KILL -f git-remote-http || true
-          while pgrep -x git > /dev/null || pgrep -f git-remote-http > /dev/null; do sleep 1; done
-          pgrep -a git || echo "no git process is left"
+          # The git and git-remote-http a cut checkout leaves run in the workspace, so the ones
+          # working there are ended, and nothing else of the runner's. Each is waited for until
+          # kill -0 finds it gone, which is once its last thread has exited and it is reaped,
+          # up to 20 s, before the workspace is emptied under it; one still there fails the step,
+          # named. scripts/e2e/lib/wait-gone.sh holds this wait for the scripts, and the checkout
+          # that failed may have left no copy of it here. This shell works outside the workspace.
+          cd /
+          left=()
+          for p in /proc/[0-9]*; do
+            case "$(readlink "$p/cwd" 2>/dev/null)/" in "$GITHUB_WORKSPACE"/*) left+=("${p#/proc/}") ;; esac
+          done
+          echo "working in the workspace: ${left[*]:-none}"
+          for pid in "${left[@]}"; do
+            kill -KILL "$pid" 2>/dev/null || true
+            for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
+            ! kill -0 "$pid" 2>/dev/null || { echo "::error::pid $pid ($(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)) is still there 20 s after its SIGKILL"; exit 1; }
+          done
           find "$GITHUB_WORKSPACE" -mindepth 1 -delete
       - name: Check out again, after a first attempt that did not complete
         if: steps.checkout.outcome != 'success'
@@ -304,11 +316,18 @@ jobs:
         if: steps.checkout.outcome != 'success'
         timeout-minutes: 2
         run: |
-          pgrep -a git || true
-          pkill -KILL -x git || true
-          pkill -KILL -f git-remote-http || true
-          while pgrep -x git > /dev/null || pgrep -f git-remote-http > /dev/null; do sleep 1; done
-          pgrep -a git || echo "no git process is left"
+          # As the job above's step of the same name says.
+          cd /
+          left=()
+          for p in /proc/[0-9]*; do
+            case "$(readlink "$p/cwd" 2>/dev/null)/" in "$GITHUB_WORKSPACE"/*) left+=("${p#/proc/}") ;; esac
+          done
+          echo "working in the workspace: ${left[*]:-none}"
+          for pid in "${left[@]}"; do
+            kill -KILL "$pid" 2>/dev/null || true
+            for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
+            ! kill -0 "$pid" 2>/dev/null || { echo "::error::pid $pid ($(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)) is still there 20 s after its SIGKILL"; exit 1; }
+          done
           find "$GITHUB_WORKSPACE" -mindepth 1 -delete
       - name: Check out again, after a first attempt that did not complete
         if: steps.checkout.outcome != 'success'

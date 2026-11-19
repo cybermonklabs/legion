@@ -151,34 +151,67 @@ say 'LEGION_TEST_PG_DSN is set'
 
 # --- the trap -----------------------------------------------------------------------
 
+# scripts/e2e/lib/wait-gone.sh holds stop_gone and process_start, the stop of what this
+# run started and the read that tells a recorded pid from one the kernel handed on.
+# shellcheck source-path=SCRIPTDIR source=../../../scripts/e2e/lib/wait-gone.sh
+. "$repo_root/scripts/e2e/lib/wait-gone.sh"
+
 server_pid=''
+# Each experiment runs in a session of its own (run_experiment), and every process it
+# starts stays in that session, a worker in a process group of its own included. Each
+# entry is a session's id, which is its leader's pid, and that leader's start time.
+sessions=()
 
 stop_dev_server() {
 	[[ -n "$server_pid" ]] || return 0
-	if kill -0 "$server_pid" 2>/dev/null; then
-		kill -TERM "$server_pid" 2>/dev/null || true
-		# Give it a moment to close its database, then insist.
-		local waited=0
-		while kill -0 "$server_pid" 2>/dev/null && ((waited < 50)); do
-			sleep 0.2
-			waited=$((waited + 1))
-		done
-		kill -KILL "$server_pid" 2>/dev/null || true
-	fi
+	# Up to 10 s to close its database, then SIGKILL, and gone either way before
+	# anything after reads what it held; one still there is named.
+	stop_gone 10 "$((EPOCHSECONDS + 20))" "$server_pid" || true
 	wait "$server_pid" 2>/dev/null || true
 	server_pid=''
+}
+
+# run_experiment BOUND ARGUMENT...: the experiments binary under timeout BOUND, in a
+# session of its own, recorded in sessions; returns its status.
+run_experiment() {
+	local bound=$1 pid start=''
+	shift
+	setsid timeout "$bound" "$bin_dir/experiments" "$@" &
+	pid=$!
+	process_start "$pid" start || true
+	sessions+=("$pid:$start")
+	wait "$pid"
+}
+
+# stop_sessions ends every process of every session sessions records and waits for each
+# (stop_gone): what an experiment, a worker or a restate-server left. A session whose
+# leader's pid now names a process with another start time is another's, and a leader
+# that is gone is no other process's while its session has a member: the kernel hands
+# that pid to no new process meanwhile.
+stop_sessions() {
+	local entry sid start now found p stat
+	local -a members=()
+	for entry in ${sessions[@]+"${sessions[@]}"}; do
+		sid=${entry%%:*} start=${entry#*:} now='' found=0
+		process_start "$sid" now || found=$?
+		((found != 2)) || continue
+		((found != 0)) || [[ "$now" == "$start" ]] || continue
+		for p in /proc/[0-9]*; do
+			{ read -r stat <"$p/stat"; } 2>/dev/null || continue
+			read -r -a stat <<<"${stat##*) }"
+			[[ "${stat[3]:-}" != "$sid" ]] || members+=("${p#/proc/}")
+		done
+	done
+	stop_gone 5 "$((EPOCHSECONDS + 15))" ${members[@]+"${members[@]}"}
 }
 
 cleanup() {
 	local status=$?
 	trap - EXIT INT TERM
 	stop_dev_server
-	# Any experiment, worker or restate-server still running was started from this
-	# run's directory, whose path is in its command line and in no other process's.
-	# no-wait: the cleanup's last act before it exits; a later run probes its ports free.
-	pkill -KILL -f -- "$bin_dir/" 2>/dev/null || true
-	# no-wait: as above, for what runs from the run's directory.
-	pkill -KILL -f -- "$run_dir/" 2>/dev/null || true
+	# The cleanup's last act before it exits; one still there is named, and a later run
+	# probes its ports free.
+	stop_sessions || true
 	exit "$status"
 }
 trap cleanup EXIT
@@ -483,7 +516,7 @@ for n in 1 2 3 4 5 6 19 20 21 7 8 9 10 11 12 13 14 15 16 17 18; do
 
 	printf '\n=== experiment %d%s ===\n' "$n" "$label"
 	status=0
-	timeout "$bound" "$bin_dir/experiments" \
+	run_experiment "$bound" \
 		-experiment "$n" -work-dir "$work_dir" "${flags[@]}" || status=$?
 	if ((status != 0)); then
 		failed+=("$n")
@@ -511,7 +544,7 @@ for n in 1 2 3 4 5 6 19 20 21 7 8 9 10 11 12 13 14 15 16 17 18; do
 			fi
 			printf '\n=== experiment %d control (no kill)%s ===\n' "$n" "$control_label"
 			control_status=0
-			timeout "$bound" "$bin_dir/experiments" \
+			run_experiment "$bound" \
 				-experiment "$n" -work-dir "$control_dir" "${control_flags[@]}" -no-kill ||
 				control_status=$?
 			if ((control_status == 0)); then
