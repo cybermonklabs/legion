@@ -962,18 +962,22 @@ func New(deps Deps) *Service {
 	// (room_appends.go), so the suppression slots still match one update apiece.
 	srv.PersistCoalesceWindow = -1
 	srv.CompactEvery = 200
-	// A room parks under the service's own cap (Service.maxPendingItems; see maxUpdateItems),
-	// which ygo reads as each room loads: about ten times ygo's default, and the cap on its
-	// parked delete ranges apart from its parked structs. ygo sets it before it runs
-	// OnLoadDocument and hands the room no state to decode itself (sjawhar/ygo v1.55.1-sami.8,
-	// loadRoom, provider/websocket/server.go:1921-1924), so that hook's own decode of the stored
-	// state and every peer's apply are capped (bootstrapLoadedState,
+	// A room parks structs under the service's own cap (Service.maxPendingItems; see
+	// maxUpdateItems), which ygo reads as each room loads: about ten times ygo's default. ygo sets
+	// it before it runs OnLoadDocument and hands the room no state to decode itself (sjawhar/ygo
+	// v1.55.1-sami.8, loadRoom, provider/websocket/server.go:1921-1924), so that hook's own decode
+	// of the stored state and every peer's apply are capped (bootstrapLoadedState,
 	// TestAPeerApplyIsHeldToTheRoomsPendingCapAfterTheLoad). The state it loads was decoded under
 	// this cap first (loadTree, or LoadDoc's decodeStoredCopy), so the room starts within it.
 	// Bounding what one peer's update can do to a room is LEGION-487. ygo's check of each update
 	// the service broadcasts (Server.BroadcastUpdate) takes no pending queue: the room has
 	// already applied the update (reearth/ygo#268, in the pinned fork).
 	srv.MaxPendingItems = service.maxPendingItems
+	// Its parked delete ranges have a cap of their own, far below that one
+	// (maxParkedDeleteRanges), set at the same point of the load: an update that would park more
+	// is refused before it changes anything, and its sender answered not applied and left
+	// connected, as for the structs' cap (refusedByApply).
+	srv.MaxPendingDeleteRanges = maxParkedDeleteRanges
 	// A room whose last peer leaves, or that only Server.Apply touches, stays resident until it has
 	// been idle for roomIdleTimeout: ygo stamps a room idle when its last peer leaves, and when an
 	// Apply on a room no peer is in returns (reearth/ygo#269). Idle eviction refuses a room any
@@ -1056,7 +1060,10 @@ func New(deps Deps) *Service {
 	// a room's load sets on the room's document, keepReplica). A frame is relayed as what its apply
 	// integrated - the commit's own update, the structs a drain landed included - rather than as
 	// the bytes the browser sent, so a frame whose structs parked reaches no other browser until
-	// the commit that lands them, which carries them. A frame that left anything of its own parked
+	// the commit that lands them, which carries them. That commit goes to the browser whose frame
+	// landed it as well where its drain landed anything (crdt.ApplyOutcome.Drained), so the browser
+	// that filled the gap holds what its fill landed, as every other browser does; a frame whose
+	// drain landed nothing goes to the others alone. A frame that left anything of its own parked
 	// is answered not applied, so the editor keeps its saved row and sends it again; nothing
 	// stores parked bytes (the stored rows hold what landed and nothing else), so that row is what
 	// keeps the edit.
@@ -1065,9 +1072,25 @@ func New(deps Deps) *Service {
 	// 'Saved' means stored: a frame's answer waits until the room's persistence says the commit
 	// it made is stored (StoreUpdateStored), in the order the frames came, and is not applied
 	// where it was not stored - the room failed, or the append was refused - so the editor keeps
-	// the row and sends it to the room that replaces this one. The relay does not wait: the other
-	// browsers are shown the commit as it integrates, as they always were.
+	// the row and sends it to the room that replaces this one. A frame whose apply commits
+	// nothing - a sync step 2, a resend or the answer to a resync carrying only what the room
+	// holds, which it may hold only by another frame's commit still being stored - waits for the
+	// store of every commit the room had made when it was answered, a read-only browser's sync
+	// step 2 included. And once a commit of a room instance was not stored, every answer that
+	// instance sends is not applied, since what it holds is no longer what the store holds. Here
+	// a commit goes unstored only with the room failing (failRoom) or closing for its issue
+	// (refuseClosedIssueAppend), each of which retires the instance, so that rule refuses nothing
+	// the instance would otherwise answer for long. The relay does not wait: the other browsers
+	// are shown the commit as it integrates, as they always were.
 	srv.AnswerOnceStored = true
+	// A read-only browser's sync step 2 reaches no hook, and ygo answers it by decoding the whole
+	// of it into a document of its own to ask whether the room holds it all, outside every load
+	// slot, and any signed-in person can open a read-only socket. One past unslottedApplyBytes,
+	// what a browser's apply decodes outside a slot, is answered not applied without a decode, so
+	// the page keeps its saved rows as it does for any answer not applied. One at or under it is
+	// still decoded whole, and under no value limit: ygo's read-only answer takes none
+	// (TestAReadOnlySocketsLongStepTwoIsAnsweredWithoutADecode).
+	srv.ReadOnlySyncStep2MaxBytes = unslottedApplyBytes
 	srv.OnLoadDocument = service.onLoadDocument
 	// ygo calls it as a room's first browser joins it, after the browser is in the room.
 	srv.OnFirstPeer = service.takeUpSettlementRoom

@@ -223,7 +223,10 @@ func splitEveryOtherCharacter(client crdt.ClientID, run int) []byte {
 // name clocks the room does not hold and park. A parked delete range is no struct the document
 // holds and the report counts none, where the ceiling this used to be charged from counted one
 // apiece (structCeiling): 144 of the room's half a million, which the log below carries both
-// figures for.
+// figures for. The budget charges those 144 parked ranges beside the two copies' weight, at
+// bytesOfHeapAParkedRange each (roomChargeWeight), so the charge is compared with that sum: this
+// compared it with the copies' weight alone (roomWeight) from before parked ranges were charged,
+// which the charge now stands 144 x 32 = 4,608 bytes above.
 func TestASplitDenseRoomIsChargedNoLessThanItsStructsHeap(t *testing.T) {
 	skipAtTheBoundsUnderRace(t)
 	const run = splitDenseRun
@@ -234,6 +237,7 @@ func TestASplitDenseRoomIsChargedNoLessThanItsStructsHeap(t *testing.T) {
 	ceiling := int64(structCeiling(room.live))
 	tracked := room.replica.roomStateBytes()
 	charged := chargedWeight(room.charge)
+	parked := room.replica.applies().parkedRangeCount()
 	t.Logf("a run of %d characters with every other one deleted leaves the room %d structs, %d reported with what its delete frame parked and a ceiling of %d, tracked at %d bytes of state: its state term charges %d bytes and its struct term %d, and it is charged %d",
 		run, structs, reported, ceiling, tracked, tracked*bytesOfHeapAStateByte*roomCopies, reported*bytesOfHeapAStruct*roomCopies, charged)
 	if structs < run/2 {
@@ -243,9 +247,9 @@ func TestASplitDenseRoomIsChargedNoLessThanItsStructsHeap(t *testing.T) {
 		t.Errorf("the room is charged %d bytes for the %d structs its two copies hold, under the %d those structs measure: the budget under-charges a split-dense room",
 			charged, structs, want)
 	}
-	if charged != roomWeight(tracked, reported) {
-		t.Errorf("the room is charged %d bytes, want the %d its %d tracked bytes of state and the %d structs its last apply reported come to (roomWeight)",
-			charged, roomWeight(tracked, reported), tracked, reported)
+	if want := roomChargeWeight(tracked, reported, parked); charged != want {
+		t.Errorf("the room is charged %d bytes, want the %d its %d tracked bytes of state, the %d structs its last apply reported and the %d delete ranges it parks come to (roomChargeWeight)",
+			charged, want, tracked, reported, parked)
 	}
 }
 

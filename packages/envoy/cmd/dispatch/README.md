@@ -827,8 +827,8 @@ curl -s http://127.0.0.1:<port>/debug/vars | jq .dispatch_rooms
 - `resident_bytes`: the encoded bytes the resident rooms took, each load and every update since: loaded state only.
   It leaves out the updates a room parks after it loaded, while they wait for an edit it has not received;
   parked rows already stored are part of the history a load decodes, so they count.
-  ygo bounds those per room by `MaxPendingItems`, which Dispatch sets to `maxUpdateItems` (1<<20, `internal/dispatch/docs/service.go` `New`):
-  a count of parked items and, separately, of parked delete ranges, not bytes.
+  ygo bounds those per room by count, not bytes: parked items by `MaxPendingItems`, which Dispatch sets to `maxUpdateItems` (1<<20, `internal/dispatch/docs/service.go` `New`),
+  and parked delete ranges, apart, by `MaxPendingDeleteRanges`, which it sets to `maxParkedDeleteRanges` (4,096).
 
 - `settlement_wakeups`: the wakes of the waits for a room's appends.
 
@@ -5328,12 +5328,14 @@ Each item below names a status and code, then its meaning.
   and a page that presents a `client_id` claims an id only within those 30 days, its admission's claim stored as landed and counted in those 64 a day, and a fresh id given where it is refused.
   A sync step 2 is judged as an incremental update is: one carrying another person's structs past what the room holds - a browser handing back on its reconnect an edit the room relayed to it and then lost before its store - is refused whole and nothing of it lands, so no answer tells the browser that edit is saved.
   The person whose edit it was resends it from their own browser, which kept it unsaved.
-  Deletions are not judged: a person deletes other people's text.
+  A delete of what the room holds is not judged: a person deletes other people's text.
   Nor are structs the room already holds, which land nothing whoever sends them, so a browser may hand back the whole history it holds,
   with one exception that keeps a lost edit from passing in silence: structs under an id below 2^32 that another person claimed are compared, from the clock the claim started at (`claimed_from`), with what the room holds at the same clocks, and refused where they differ.
   Only an update carrying such structs under at most 4 claimed ids is compared, as a keystroke in flight, a resend or a replayed saved row is;
   a whole-state handoff carrying them under more is neither compared nor refused for it from a page that presents a `client_id`, and is refused whole from one that presents none, since an honest tab of that kind writes under one id.
   A co-author who claims an earlier build's tab's id first, or a reader who reads an id no history names off the tab's presence and claims it first, at the clock the tab writes next, otherwise left the tab's own edit at that clock a duplicate the room dropped while the tab believed it saved; an equal resend passes.
+  A delete past the clocks the room holds of a client id waits in the room for that client's next edits and would delete each as it landed, while its writer was answered saved, so it is taken only under an id the socket holds, judged where it would wait (`parkJudge`), and refused the same way otherwise, with the id in the refusal's log line;
+  the close is this permanent one even where the room is behind another process's rows that carry those clocks, since the room cannot tell that exactly, and the page that sent it rebuilds from the room and loses only that delete.
   A person holds at most 64 client ids in a document that no edit landed under - integrated, not only parked behind a clock the room lacks - and an admission past them gives back, in the statement that stores its own, the one presented least recently, never one an open socket holds: an open socket presents its id again every 5 minutes until an edit lands under it, and only an id no admission or socket presented for 15 minutes is given back; where every one of them is that fresh, the admission is closed `4503 DOC_BUSY` for the editor to retry.
   A page whose id was given back is given a fresh one at its next admission, and loses only what it typed offline under the old one that never landed.
   A client id no edit landed under and nothing presented for 30 days is deleted by the hourly compaction sweep, and a page that presents it after that is given a fresh one.

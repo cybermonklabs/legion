@@ -33,9 +33,11 @@ import (
 // What this keeps is bounded by the room's pending queue: a sender is listed only while a frame
 // of its has left something parked, with one clock for each client its frames reach past the
 // room, each of which waits behind a struct or a delete range the queue holds, which takes at most
-// MaxPendingItems of each (maxUpdateItems). A sender is dropped once it is resynced, once its
-// connection ends, and, while it waits on nothing the queue still holds, once the queue empties:
-// what it parked was then discarded with a refused drain, which closes it (closeDiscardedSenders).
+// MaxPendingItems structs (maxUpdateItems) and MaxPendingDeleteRanges delete ranges
+// (maxParkedDeleteRanges), the ranges only under clients the sender's socket holds (parkJudge). A
+// sender is dropped once it is resynced, once its connection ends, and, while it waits on nothing
+// the queue still holds, once the queue empties: what it parked was then discarded with a refused
+// drain, which closes it (closeDiscardedSenders).
 
 // parkedWaits is, for one room instance, each browser connection whose frames left something
 // parked that has not landed yet, by the origin ygo applies its updates with.
@@ -86,9 +88,11 @@ func (a *roomApplies) noteParked(info websocket.PeerUpdateInfo, before, after cr
 // client to for all of update to have landed: where its structs end (crdt.ParseUpdateMeta, which
 // reads their headers alone), and, where readDeletes says the apply left the room more delete
 // ranges parked than it found, where each of its delete ranges ends, read from the update's delete
-// set (crdt.ContentIDsFromUpdateV1, which decodes the update without integrating it). Only a frame
-// that grew the queue's delete ranges pays that decode, and only a frame carrying structs or
-// growing them reads doc's state vector: a delete that grew nothing answers nothing.
+// set (eachV1Range, which passes the structs without decoding their content). Only a frame that
+// grew the queue's delete ranges reads its delete set, and only a frame carrying structs or
+// growing them reads doc's state vector: a delete that grew nothing answers nothing. A delete set
+// the reader does not read to its end adds nothing, since what it read of it may not be the
+// update's.
 func parkedNeeds(doc *crdt.Doc, update []byte, readDeletes bool) crdt.StateVector {
 	_, to, err := crdt.ParseUpdateMeta(update)
 	if (err != nil || len(to) == 0) && !readDeletes {
@@ -104,13 +108,15 @@ func parkedNeeds(doc *crdt.Doc, update []byte, readDeletes bool) crdt.StateVecto
 		}
 	}
 	if readDeletes {
-		if ids, err := crdt.ContentIDsFromUpdateV1(update); err == nil && ids.Deletes != nil {
-			for _, client := range ids.Deletes.Clients() {
-				for _, deleted := range ids.Deletes.Ranges(client) {
-					if end := deleted.Clock + deleted.Len; end > held[client] {
-						needs[client] = max(needs[client], end)
-					}
-				}
+		deletes := crdt.StateVector{}
+		read := eachV1Range(update, func(crdt.ClientID, uint64, uint64) {}, func(client crdt.ClientID, clock, length uint64) {
+			if end := clock + length; length > 0 && end > held[client] {
+				deletes[client] = max(deletes[client], end)
+			}
+		})
+		if read {
+			for client, end := range deletes {
+				needs[client] = max(needs[client], end)
 			}
 		}
 	}

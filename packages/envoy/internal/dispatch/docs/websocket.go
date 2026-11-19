@@ -902,8 +902,10 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 // With the server's half (New: RelayIntegratedOnly, AnswerParkedNotApplied) a parked frame is
 // neither relayed, nor answered applied, nor stored, nor shown to a reader, so it is kept only by
 // the editor that sent it, which sends it again, and by the queue until the gap fills. The queue
-// itself stays bounded by the room's pending cap (Server.MaxPendingItems); its structs are charged
-// against the decode cap's headroom (ceilingWithQueue), and its delete ranges to the room budget
+// itself stays bounded by the room's pending caps, Server.MaxPendingItems for its structs and
+// Server.MaxPendingDeleteRanges for its delete ranges (maxParkedDeleteRanges), which park only
+// under clients their sender's socket holds (parkJudge); its structs are charged against the
+// decode cap's headroom (ceilingWithQueue), and its delete ranges to the room budget
 // (bytesOfHeapAParkedRange).
 //
 // The replica's documents take it as the room's does, so the two agree on what a drain landed:
@@ -934,7 +936,7 @@ func leaveParkedOut(doc *crdt.Doc) {
 // answer to a browser holding nothing held 24,071,008 to 25,428,848 bytes above the document,
 // having allocated about 25.7 MB in under 900 objects
 // (TestAStateAnswerHoldsNoMoreHeapThanItsGrantParkedOrNot). Before the fork's v1.55.1-sami.14,
-// which the pinned theorem-labs/ygo v1.55.1-theorem.9 carries, a room that parked anything was
+// which the pinned theorem-labs/ygo v1.55.1-theorem.10 carries, a room that parked anything was
 // cut from its encoded state instead, decoding the whole document twice - 371,149,976 to
 // 429,891,496 bytes held and about 840 MB
 // allocated for the same room - and is no longer. Nothing in ygo bounds how many answers run

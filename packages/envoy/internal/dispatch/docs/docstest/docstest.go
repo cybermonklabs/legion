@@ -108,6 +108,10 @@ type Peer struct {
 	// the room sent and the connection's end, as they arrived since (Heard).
 	hearing atomic.Bool
 	heard   []Heard
+	// owed is how many frames the peer has sent that the room answers with a SyncStatus - each
+	// Update and sync step 2, the reader's own answers to the room's sync step 1 included - and
+	// answered how many SyncStatus answers it has read, hearing or not (AwaitAnswered).
+	owed, answered atomic.Int64
 }
 
 // Heard is one thing a peer heard from the room - a SyncStatus answer or the connection's end -
@@ -388,9 +392,34 @@ func (c *firstFrameConn) Write(p []byte) (int, error) {
 }
 
 // Write sends syncMessage to the room as Hocuspocus carries it: the document's name, then the sync
-// kind.
+// kind. An Update or a sync step 2 is owed the SyncStatus the room answers it with
+// (AwaitAnswered).
 func (p *Peer) Write(syncMessage []byte) error {
+	if kind, _, err := ygsync.ReadSyncMessage(syncMessage); err == nil && (kind == ygsync.MsgUpdate || kind == ygsync.MsgSyncStep2) {
+		p.owed.Add(1)
+	}
 	return p.writeFrame(messageSync, func(encoder *encoding.Encoder) { encoder.WriteRaw(syncMessage) })
+}
+
+// AwaitAnswered waits until the room has answered every frame the peer sent that it answers with a
+// SyncStatus, or the connection has ended, within within. The room answers a socket's frames in
+// the order they came, each once what it waits on is known: under Server.AnswerOnceStored a frame
+// that commits nothing is answered once every commit the room had made when it was read is stored
+// (theorem-labs/ygo v1.55.1-theorem.10), so a later frame's other answers, such as the document a
+// sync step 1 asks for, can come first.
+func (p *Peer) AwaitAnswered(within time.Duration) error {
+	deadline := time.Now().Add(within)
+	for p.answered.Load() < p.owed.Load() {
+		select {
+		case <-p.Ended:
+			return nil
+		case <-time.After(10 * time.Millisecond):
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the room answered %d of the %d frames the peer sent within %s", p.answered.Load(), p.owed.Load(), within)
+		}
+	}
+	return nil
 }
 
 // writeFrame sends the room one Hocuspocus frame: the document's name, kind, then what body writes.
@@ -656,6 +685,7 @@ func (p *Peer) read(first []byte, answers chan<- []byte, awareness chan<- []Awar
 			p.readAuth(decoder)
 		case messageSyncStatus:
 			if applied, err := decoder.ReadVarUint(); err == nil {
+				p.answered.Add(1)
 				p.hear("SyncStatus %d (applied: %t)", applied, applied == 1)
 			}
 		}

@@ -914,15 +914,27 @@ func sendStepTwo(t *testing.T, page *docstest.Peer, update []byte) {
 }
 
 // hearFromNow has page keep what it hears from here on (docstest.Peer.Hear), once the room has
-// answered the frames page sent before, each of which committed nothing: the room reads a
-// socket's frames in order and answers one that commits nothing as it reads it, so the answer to a
-// sync step 1 sent after them comes after theirs.
+// answered every frame page sent before (docstest.Peer.AwaitAnswered). It asks for the document
+// first, so the room's own sync step 1, which it sends as the page joins and the page's reader
+// answers with a sync step 2, has come and been answered too.
+//
+// It waited for the answer to that sync step 1 alone, which came after the answers to the frames
+// before it while the room answered a frame that commits nothing as it read it. Under
+// theorem-labs/ygo v1.55.1-theorem.10 the room answers such a frame once every commit it had made
+// when it read the frame is stored (Server.AnswerOnceStored), which can be after it answers the
+// sync step 1 behind it, so a reconnect's own empty sync step 2, answered applied once another
+// person's commit was stored, reached what the page heard after this returned and read as the
+// answer to the frame the test sent next
+// (TestRV8APageOfThisBuildsRestoredRowUnderAClaimedIDIsAnsweredAppliedInItsStepTwo).
 func hearFromNow(t *testing.T, page *docstest.Peer, who string) {
 	t.Helper()
 	if err := page.AskForDocument(); err != nil {
 		t.Fatal(err)
 	}
 	awaitAnswer(t, page, "the document again in "+who)
+	if err := page.AwaitAnswered(30 * time.Second); err != nil {
+		t.Fatalf("%s: %v", who, err)
+	}
 	page.Hear()
 }
 

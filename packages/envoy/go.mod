@@ -268,4 +268,20 @@ require (
 // document of 40,000 clients no longer walks every client for the room's render check
 // (BenchmarkATangledRoomTakesAKeystroke; the fork's BenchmarkApplyUpdateV1_ApplyCheckManyClients,
 // 87.65 ms to 63.86 ms).
-replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.9
+// v1.55.1-theorem.10 closes what review 8 found the room could not bound or answer truthfully.
+// ApplyBudget.MayParkDeletes judges each client a delete range would park under, and an apply it
+// answers false for is refused whole (ErrParkedDeleteRefused), so a range parks only under a
+// client the sender's socket holds (parkJudge); Server.MaxPendingDeleteRanges caps a room's parked
+// delete ranges apart from its parked structs (maxParkedDeleteRanges), and the record of who
+// parked them keeps only what each frame newly parked; PendingStats.ContentBytes is what the
+// queue holds of content now (noteQueued); DocContainsUpdateV1Limit and HeldStructsDifferV1Limit
+// stop a decode outside an apply at the apply's value limit (roomHolds, refusedDuplicate);
+// Server.ReadOnlySyncStep2MaxBytes answers a read-only browser's sync step 2 past
+// unslottedApplyBytes without a decode; under AnswerOnceStored a frame that commits nothing waits
+// for the stores in flight, and a room instance one commit of which was not stored answers
+// nothing applied again; and under RelayIntegratedOnly a frame whose drain landed anything is
+// relayed to its own sender too (ApplyOutcome.Drained).
+// TEMPORARY local replace: round 9 develops against the fork's cut release/v1.55.1/2026-11-19
+// (theorem-labs/ygo 3943af6f, theorem.10, not tagged yet), checked out at this path. Move it to
+// the published tag, github.com/theorem-labs/ygo v1.55.1-theorem.10, before this is committed.
+replace github.com/reearth/ygo => /legion/scratch/tmp/ygo-t10

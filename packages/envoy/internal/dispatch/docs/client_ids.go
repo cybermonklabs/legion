@@ -52,11 +52,15 @@ import (
 // The rule, judged on each browser update before its apply (judgeClients): an update carrying
 // structs under a client id stored for another person is refused whole, with
 // DocumentClientIdRefusedCloseReason, and so is one carrying structs under an id at
-// mintedClientFloor or above that no admission gave out. Deletions are not judged: a person
-// deletes other people's text, and a delete set names the deleted items' clients. The stored row
-// is the binding, so a reload, a restart and every other process read the same one, and the person
-// a row names never changes, so a binding read at any moment before an apply is the binding at
-// that apply.
+// mintedClientFloor or above that no admission gave out. A delete of clocks the room holds is not
+// judged: a person deletes other people's text, and a delete set names the deleted items' clients.
+// A delete past the clocks the room holds of a client is judged where it would park, inside the
+// apply (parkJudge, crdt.ApplyBudget.MayParkDeletes): it parks only under a client the socket
+// holds, and under any other the whole update is refused with the same close, since what it
+// parked would delete that person's next keystrokes as they land while that person is answered
+// saved. The stored row is the binding, so a reload, a restart and every other process read the
+// same one, and the person a row names never changes, so a binding read at any moment before an
+// apply is the binding at that apply.
 //
 // A sync step 2 is judged as an incremental update is: ygo hands the hook both alike, and a large
 // one is judged inside the load slot its apply takes (weighPeerUpdate). Structs the room already
@@ -119,14 +123,15 @@ import (
 // lands nothing of it and says nothing, and the tab would believe it saved. So an update carrying
 // structs under a claimed id below the floor that is not its sender's, at clocks the room already
 // holds from the claim on, has them compared with what the room holds there
-// (crdt.HeldStructsDifferV1, refusedDuplicates), and is refused DocumentClientIdRefusedCloseReason
-// where they differ, from any socket and whether or not the claim window is open. An equal resend
-// - any browser handing back what the room relayed - passes. The row keeps the id's clock in the
-// document as the claim was made (claimed_from), so only clocks the claim could have written are
-// compared, never the tab's own history before it. Each comparison reads the whole update, so an
-// update is compared only where it carries such structs under at most maxComparedClaims claimed
-// ids, as a keystroke in flight, a resend or a saved row replayed does; a whole-state handoff of
-// the history, which carries the structs of every claim the room holds, is not compared, and is
+// (crdt.HeldStructsDifferV1Limit, refusedDuplicates), and is refused
+// DocumentClientIdRefusedCloseReason where they differ, from any socket and whether or not the
+// claim window is open. An equal resend - any browser handing back what the room relayed -
+// passes. The row keeps the id's clock in the document as the claim was made (claimed_from), so
+// only clocks the claim could have written are compared, never the tab's own history before it.
+// Each comparison decodes the whole update, under the apply's own value limit, so an update is
+// compared only where it carries such structs under at most maxComparedClaims claimed ids, as a
+// keystroke in flight, a resend or a saved row replayed does; a whole-state handoff of the
+// history, which carries the structs of every claim the room holds, is not compared, and is
 // refused whole from a legacy socket alone, since an honest legacy tab writes under one id. Only an
 // update carrying structs under an id below the floor that its socket does not hold and that fall
 // wholly at clocks the room holds pays the one lookup of their ids' rows that finds the claims
@@ -1029,11 +1034,13 @@ type clientJudgement struct {
 
 // roomHolds is whether room holds a struct of client: whether its clock of client is past 0. It
 // reads that one clock and no other: it asks whether room holds a GC struct of client one clock
-// long at clock 0 (crdt.DocContainsUpdateV1, which decodes the probe, a few bytes, and compares
-// the struct's end with the store's clock of its client under the room's read lock), where the
-// room's state vector would copy an entry for each client it holds - 40,001 in the tangled
-// document the keystroke drive types into. A parked struct is in the pending queue, not the
-// store, so a room whose structs of client only parked holds none. A nil room holds nothing.
+// long at clock 0 (crdt.DocContainsUpdateV1Limit, which decodes the probe, a few bytes, and
+// compares the struct's end with the store's clock of its client under the room's read lock),
+// where the room's state vector would copy an entry for each client it holds - 40,001 in the
+// tangled document the keystroke drive types into. The probe is this package's own one struct, so
+// the apply's value limit it decodes under, as every decode outside an apply here does, never
+// stops it. A parked struct is in the pending queue, not the store, so a room whose structs of
+// client only parked holds none. A nil room holds nothing.
 func roomHolds(room *crdt.Doc, client crdt.ClientID) bool {
 	if room == nil {
 		return false
@@ -1047,7 +1054,7 @@ func roomHolds(room *crdt.Doc, client crdt.ClientID) bool {
 		encoder.WriteVarUint(1) // one clock long
 		encoder.WriteVarUint(0) // and no deletions
 	})
-	held, err := crdt.DocContainsUpdateV1(room, probe)
+	held, err := crdt.DocContainsUpdateV1Limit(room, probe, maxDecodedValuesPerApply)
 	return err == nil && held
 }
 
@@ -1184,13 +1191,25 @@ func (s *Service) refusedDuplicates(info websocket.PeerUpdateInfo, connection *c
 
 // refusedDuplicate is the refusal of update's structs under client, an id another person claimed
 // whose structs in update fall wholly at clocks the room holds, where they differ from what the
-// room holds at the same clocks from the claim on (crdt.HeldStructsDifferV1): an edit typed at a
-// clock another person claimed first. It is nil for an update that hands back the room's own
+// room holds at the same clocks from the claim on (crdt.HeldStructsDifferV1Limit): an edit typed
+// at a clock another person claimed first. It is nil for an update that hands back the room's own
 // structs, as a browser relayed them. An update whose structs do not decode is the apply's to
 // refuse.
+//
+// The comparison decodes the whole update into a document of its own, which no apply's budget
+// reaches, so it decodes under the apply's own value limit (maxDecodedValuesPerApply), and an
+// update past it (crdt.ErrValueLimit) is refused as the apply refuses one past it,
+// DOC_TOO_LARGE (ruleDecodedValues): the apply would decode the same values and stop at the same
+// count.
 func (s *Service) refusedDuplicate(info websocket.PeerUpdateInfo, connection *connectionState, owner clientOwner, client uint64, from crdt.StateVector) error {
 	id := crdt.ClientID(client)
-	differs, err := crdt.HeldStructsDifferV1(info.Doc, info.Update, id, max(from[id], owner.claimedFrom))
+	differs, err := crdt.HeldStructsDifferV1Limit(info.Doc, info.Update, id, max(from[id], owner.claimedFrom), maxDecodedValuesPerApply)
+	if errors.Is(err, crdt.ErrValueLimit) {
+		refusal := ruleDecodedValues.refusal(false)
+		logRefusal(info, refusal, "dispatch: refused a browser's update its apply may not take", "rule", ruleDecodedValues.why(),
+			"decode_limit", maxDecodedValuesPerApply, "decoded_by", "the comparison of a claimed id's structs with the room's")
+		return refusedWith(refusal, err)
+	}
 	if err != nil || !differs {
 		return nil
 	}
@@ -1270,9 +1289,9 @@ func (s *Service) settleClients(info websocket.PeerUpdateInfo, judged clientJudg
 	}
 }
 
-// refuseClient is the refusal of an update carrying structs under client, which is not the
-// sender's for why.
-func (s *Service) refuseClient(info websocket.PeerUpdateInfo, connection *connectionState, client uint64, why string) error {
+// refuseClient is the refusal of an update carrying an edit under client - structs, or a delete
+// range that would park (parkJudge) - which is not the sender's for why.
+func (s *Service) refuseClient(info websocket.PeerUpdateInfo, connection *connectionState, client uint64, why string) *websocket.PeerClose {
 	refusal := documentClientIDRefused()
 	logRefusal(info, refusal, "dispatch: refused a browser's update carrying an edit under a client id that is not its sender's",
 		"client", client, "why", why, "actor", ActorRef(connection.actor), "own_client", uint64(connection.clients.own),

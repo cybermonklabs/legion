@@ -32,7 +32,7 @@ func TestR7SplitsOfADeleteTakeTheRoomPastTheStateCap(t *testing.T) {
 	update := crdt.EncodeStateAsUpdateV1(browser, room.StateVector())
 	encodedBefore := len(crdt.EncodeStateAsUpdateV1(room, nil))
 	trackedBefore := service.roomWeighingOf(room).roomStateBytes()
-	allowance := peerApplyAllowance(int64(len(update)), 0, trackedBefore, heldStructs(room), false, peerPressure{})
+	allowance := peerApplyAllowance(int64(len(update)), 0, trackedBefore, heldStructs(room), false, peerPressure{}, nil)
 	err, called := weighInto(service, room, update)
 	encodedAfter := len(crdt.EncodeStateAsUpdateV1(room, nil))
 	trackedAfter := service.roomWeighingOf(room).roomStateBytes()

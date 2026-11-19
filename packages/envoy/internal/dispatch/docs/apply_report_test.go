@@ -144,8 +144,8 @@ func TestARoomWithNoReportYetIsWeighedFromItsDocument(t *testing.T) {
 	// The first update's allowance: built from the reading, since no apply has reported.
 	update := peerTyping(t, room.live, "a browser's first keystrokes")
 	rendering, measured := room.replica.size()
-	want := peerApplyAllowance(int64(len(update)), rendering, tracked, read, measured, peerPressure{})
-	if given := weighOneUpdate(t, room, update); given != want.budget {
+	want := peerApplyAllowance(int64(len(update)), rendering, tracked, read, measured, peerPressure{}, nil)
+	if given := weighOneUpdate(t, room, update); !sameBudget(given, want.budget) {
 		t.Fatalf("the first update after the load applied under %+v, want the %+v a room of %d structs allows", given, want.budget, read)
 	}
 	reported, ok := applies.reportedStructs()
@@ -163,10 +163,19 @@ func TestARoomWithNoReportYetIsWeighedFromItsDocument(t *testing.T) {
 	// The update after it is bounded by the report rather than by a reading of its own.
 	second := peerTyping(t, room.live, "more")
 	rendering, measured = room.replica.size()
-	want = peerApplyAllowance(int64(len(second)), rendering, room.replica.roomStateBytes(), reported, measured, peerPressure{})
-	if given := weighOneUpdate(t, room, second); given != want.budget {
+	want = peerApplyAllowance(int64(len(second)), rendering, room.replica.roomStateBytes(), reported, measured, peerPressure{}, nil)
+	if given := weighOneUpdate(t, room, second); !sameBudget(given, want.budget) {
 		t.Fatalf("the update after the first applied under %+v, want the %+v the %d structs its room reported allow", given, want.budget, reported)
 	}
+}
+
+// sameBudget is whether two budgets allow the same: their four counts alike, and a judge of the
+// clients a delete range may park under in both or in neither (crdt.ApplyBudget.MayParkDeletes, a
+// func, which leaves the budget itself no comparable type). An update handed the hook by no
+// socket carries no judge (peerApplyAllowance).
+func sameBudget(a, b crdt.ApplyBudget) bool {
+	return a.Decoded == b.Decoded && a.Structs == b.Structs && a.Bytes == b.Bytes && a.Split == b.Split &&
+		(a.MayParkDeletes == nil) == (b.MayParkDeletes == nil)
 }
 
 // weighOneUpdate hands update to the hook as one browser's and returns the allowance the hook

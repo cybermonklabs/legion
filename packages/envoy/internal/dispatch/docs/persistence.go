@@ -1069,7 +1069,8 @@ var _ persistence.VersionedPersistence = (*PgVersioned)(nil)
 // of its clients, and a decode that would park more than this is refused, so a history holding
 // more parked delete ranges than this does not load. A room stores nothing it parks
 // (leaveParkedOut), so no room the peer update hook guards stores one, and the room's own queue
-// of them is held to this cap by the same check. ygo's own check of each update the service broadcasts
+// of them is held far below this, at a cap of its own (Server.MaxPendingDeleteRanges,
+// maxParkedDeleteRanges), by the same check. ygo's own check of each update the service broadcasts
 // (Server.BroadcastUpdate) takes no pending queue at all: it is the check ygo's bundled stores
 // run, since the room has already applied the update (reearth/ygo#268, in the pinned fork).
 // TestTheStoreTakesOneBrowserUpdateItsRoomTook is an update the store decodes itself under this
