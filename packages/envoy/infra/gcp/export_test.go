@@ -99,6 +99,29 @@ func ResolveClusteredNatsHub(args *ClusteredNatsHubArgs) (ClusteredNatsHubSettin
 	return settings, nil
 }
 
+// ClusteredHubListenerNamed is the session listener args resolve, with its refusals naming path in
+// place of the input the listener is declared at, for the test that holds the listener's token
+// check to where it is declared rather than to the name a refusal gives it: its environment, and
+// the token check it requires, its issuer, audience and accounts, each "" or nil for none.
+func ClusteredHubListenerNamed(args *ClusteredNatsHubArgs, path string) (env []string, issuer, audience string, accounts []string, err error) {
+	s, err := newClusteredHubSettings(args)
+	if err != nil {
+		return nil, "", "", nil, err
+	}
+	l, _, err := clusteredHubListenerArgs(args)
+	if err != nil {
+		return nil, "", "", nil, err
+	}
+	listener, _, err := newClusteredHubListenerSettings(args, l, path, s)
+	if err != nil {
+		return nil, "", "", nil, err
+	}
+	if c := listener.credential; c != nil {
+		return listener.env, c.issuer, c.audience, c.accounts, nil
+	}
+	return listener.env, "", "", nil, nil
+}
+
 // RefuseClusteredHubSecret is gcp:ClusteredNatsHub's check of a secret Input once it resolves.
 var RefuseClusteredHubSecret = refuseClusteredHubSecret
 

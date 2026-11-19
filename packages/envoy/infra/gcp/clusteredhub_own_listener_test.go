@@ -182,6 +182,53 @@ func TestClusteredNatsHubTailnetListenerWithClientNamespacesRequiresACredential(
 	require.Empty(t, listenerCredentialProblem(env, clusteredListenerAccount))
 }
 
+// Whether the session listener requires a caller's token follows from where it is declared, the
+// hub's own listener input or the tailnet entry's, and from clientNamespaces, never from the name
+// its refusals give it: resolved with that name swapped for the other place's, or for a name
+// neither place has, each listener resolves the environment and the token check it resolves under
+// its own name. Control: under its own name the tailnet listener with no clientNamespaces
+// requires no token and the other two require one, so the comparison sees both outcomes.
+func TestClusteredNatsHubListenerTokenCheckFollowsWhereItIsDeclared(t *testing.T) {
+	type resolved struct {
+		env              []string
+		issuer, audience string
+		accounts         []string
+	}
+	resolve := func(args *gcp.ClusteredNatsHubArgs, path string) (resolved, error) {
+		env, issuer, audience, accounts, err := gcp.ClusteredHubListenerNamed(args, path)
+		return resolved{env, issuer, audience, accounts}, err
+	}
+	for _, row := range []struct {
+		name   string
+		args   func() *gcp.ClusteredNatsHubArgs
+		path   string
+		checks bool
+	}{
+		{"tailnet.listener with no clientNamespaces", clusteredArgs, "tailnet.listener", false},
+		{"tailnet.listener with clientNamespaces", func() *gcp.ClusteredNatsHubArgs {
+			args := clusteredArgs()
+			withCredential(listener(args)).ClientNamespaces = []string{"legion"}
+			return args
+		}, "tailnet.listener", true},
+		{"the hub's own listener", func() *gcp.ClusteredNatsHubArgs {
+			args := clusteredArgs()
+			ownListener(args)
+			return args
+		}, "listener", true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			want, err := resolve(row.args(), row.path)
+			require.NoError(t, err)
+			require.Equal(t, row.checks, want.issuer != "", "%+v", want)
+			for _, other := range []string{"listener", "tailnet.listener", "example.renamed"} {
+				got, err := resolve(row.args(), other)
+				require.NoError(t, err, "named %q", other)
+				require.Equal(t, want, got, "named %q", other)
+			}
+		})
+	}
+}
+
 // natsReplicas is the session listener's, so a hub without tailnet takes it beside its own
 // listener and renders it there, as it refuses it with no listener at all
 // (TestClusteredNatsHubResolverRefusesInvalidInputs).

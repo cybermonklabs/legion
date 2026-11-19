@@ -25,6 +25,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	comProvider "github.com/pulumi/pulumi/sdk/v3/go/pulumi/provider"
 	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -826,110 +827,12 @@ func prodRenderKey(t *testing.T, v any) string {
 	return string(b)
 }
 
-// prodRenderDiff is "" when want and got are the same bytes. Otherwise it is a unified-style hunk
-// of the first lines that differ, with three lines of context either side, and the count of
-// differing hunks in all.
-func prodRenderDiff(want, got []byte) string {
-	if bytes.Equal(want, got) {
-		return ""
-	}
-	a, b := strings.Split(string(want), "\n"), strings.Split(string(got), "\n")
-	var out strings.Builder
-	fmt.Fprintf(&out, "--- want (%d bytes, %d lines)\n+++ got (%d bytes, %d lines)\n", len(want), len(a), len(got), len(b))
-	hunks := 0
-	for i, j := 0, 0; ; {
-		for i < len(a) && j < len(b) && a[i] == b[j] {
-			i, j = i+1, j+1
-		}
-		if i == len(a) && j == len(b) {
-			break
-		}
-		nextI, nextJ, synced := prodRenderResync(a, b, i, j)
-		hunks++
-		if hunks == 1 {
-			prodRenderHunk(&out, a, b, i, j, nextI, nextJ, synced)
-		}
-		if !synced {
-			break
-		}
-		i, j = nextI, nextJ
-	}
-	if hunks == 0 {
-		fmt.Fprintf(&out, "the bytes differ and every line is the same: a line ending or a final newline differs\n")
-	}
-	fmt.Fprintf(&out, "%d differing hunk(s) in all\n", hunks)
-	return out.String()
-}
-
-// prodRenderResync finds the nearest lines from a[i] and b[j] on at which three lines agree again,
-// searching up to window lines on each side.
-func prodRenderResync(a, b []string, i, j int) (int, int, bool) {
-	const window, anchor = 2000, 3
-	agree := func(x, y int) bool {
-		for k := range anchor {
-			if x+k >= len(a) || y+k >= len(b) {
-				return x+k >= len(a) && y+k >= len(b)
-			}
-			if a[x+k] != b[y+k] {
-				return false
-			}
-		}
-		return true
-	}
-	for total := 1; total <= 2*window; total++ {
-		for da := max(0, total-window); da <= min(total, window); da++ {
-			x, y := i+da, j+total-da
-			if x > len(a) || y > len(b) {
-				continue
-			}
-			if agree(x, y) {
-				return x, y, true
-			}
-		}
-	}
-	return len(a), len(b), false
-}
-
-func prodRenderHunk(out *strings.Builder, a, b []string, i, j, nextI, nextJ int, synced bool) {
-	const context, most = 3, 60
-	from := max(0, i-context)
-	after := min(len(a), nextI+context)
-	if !synced {
-		after = nextI
-	}
-	fmt.Fprintf(out, "@@ -%d,%d +%d,%d @@\n", from+1, after-from, j-(i-from)+1, (after-nextI)+(nextJ-j)+(i-from))
-	for k := from; k < i; k++ {
-		fmt.Fprintf(out, " %s\n", a[k])
-	}
-	for k := i; k < nextI && k < i+most; k++ {
-		fmt.Fprintf(out, "-%s\n", a[k])
-	}
-	if nextI-i > most {
-		fmt.Fprintf(out, "-… %d more lines\n", nextI-i-most)
-	}
-	for k := j; k < nextJ && k < j+most; k++ {
-		fmt.Fprintf(out, "+%s\n", b[k])
-	}
-	if nextJ-j > most {
-		fmt.Fprintf(out, "+… %d more lines\n", nextJ-j-most)
-	}
-	if synced {
-		for k := nextI; k < after; k++ {
-			fmt.Fprintf(out, " %s\n", a[k])
-		}
-	} else {
-		fmt.Fprintf(out, "(no three lines agree again within the search window)\n")
-	}
-}
-
 // TestProductionRender renders production's calls twice in one process, requires the two
 // documents to be the same bytes, and then writes the document to PRODUCTION_RENDER_OUT or, with
 // that unset, requires it to be testdata/production-render.golden byte for byte.
 func TestProductionRender(t *testing.T) {
 	got := prodRenderDocument(t, prodRenderShapes())
-	if diff := prodRenderDiff(got, prodRenderDocument(t, prodRenderShapes())); diff != "" {
-		t.Fatalf("two renders in one process differ, so the render is not deterministic:\n%s", diff)
-	}
+	require.Equal(t, string(got), string(prodRenderDocument(t, prodRenderShapes())), "two renders in one process differ, so the render is not deterministic")
 	if out := os.Getenv(prodRenderOutEnv); out != "" {
 		require.NoError(t, os.WriteFile(out, got, 0o644))
 		t.Logf("wrote the production render, %d bytes, to %s", len(got), out)
@@ -938,14 +841,22 @@ func TestProductionRender(t *testing.T) {
 	golden := filepath.Join("testdata", prodRenderGolden)
 	want, err := os.ReadFile(golden)
 	require.NoError(t, err, "read the golden; %s=<file> writes the document instead", prodRenderOutEnv)
-	if diff := prodRenderDiff(want, got); diff != "" {
-		t.Fatalf("production's render differs from %s:\n%s", golden, diff)
-	}
+	require.Equal(t, string(want), string(got), "production's render differs from %s", golden)
+}
+
+// prodRenderReport is a testing.T that records what a failed assertion would report and fails
+// nothing, so the control below can run TestProductionRender's own comparison and read its
+// verdict.
+type prodRenderReport struct{ messages []string }
+
+func (r *prodRenderReport) Errorf(format string, args ...any) {
+	r.messages = append(r.messages, fmt.Sprintf(format, args...))
 }
 
 // TestProductionRenderSeesAOneInputChange is the instrument's control: gcp:Dispatch's replicas,
 // which reaches only the app Deployment's spec, moved from 1 to 2 must change the document, and
-// the comparison TestProductionRender runs must report it.
+// the comparison TestProductionRender runs, testify's Equal on the two documents, must fail and
+// report the replica count's lines.
 func TestProductionRenderSeesAOneInputChange(t *testing.T) {
 	base := prodRenderDocument(t, prodRenderShapes())
 	shapes := prodRenderShapes()
@@ -953,9 +864,11 @@ func TestProductionRenderSeesAOneInputChange(t *testing.T) {
 	require.Equal(t, prodRenderInt(1), shapes[0].inputs["replicas"], "the control changes an input production sets")
 	shapes[0].inputs["replicas"] = prodRenderInt(2)
 	changed := prodRenderDocument(t, shapes)
-	diff := prodRenderDiff(base, changed)
-	require.NotEmpty(t, diff, "Dispatch's replicas moved from 1 to 2 and the document did not change")
-	require.Contains(t, diff, `"replicas"`, "the first differing lines are the replica count's")
+	var report prodRenderReport
+	require.False(t, assert.Equal(&report, string(base), string(changed)), "Dispatch's replicas moved from 1 to 2 and the comparison passed")
+	require.Len(t, report.messages, 1)
+	diff := report.messages[0][strings.Index(report.messages[0], "Diff:"):]
+	require.Contains(t, diff, `"replicas"`, "the differing lines the comparison reports are the replica count's")
 	t.Logf("the comparison reports the one-input change:\n%s", diff)
 }
 
@@ -969,9 +882,7 @@ func TestProductionRenderHarnessMatchesPulumitest(t *testing.T) {
 	}
 	ours := prodRenderDocumentBy(t, shapes, prodRenderConstruct)
 	theirs := prodRenderDocumentBy(t, shapes, prodRenderPulumitest)
-	if diff := prodRenderDiff(theirs, ours); diff != "" {
-		t.Fatalf("prodRenderConstruct renders what pulumitest.Construct does not:\n%s", diff)
-	}
+	require.Equal(t, string(theirs), string(ours), "prodRenderConstruct renders what pulumitest.Construct does not")
 	require.NotContains(t, string(ours), `"read":`, "with no priorityClassName no shape reads anything")
 	require.Contains(t, string(prodRenderDocument(t, prodRenderShapes())), `"read":`,
 		"with production's priorityClassName the render holds the PriorityClass reads")

@@ -853,7 +853,7 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 	if err != nil {
 		return nil, nil, err
 	}
-	credential, err := clusteredHubListenerCredentialFor(l, path)
+	credential, err := clusteredHubListenerCredentialFor(args, l, path)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -913,6 +913,9 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 // lists. Each of the three is then required, by its path, and allowedHosts is refused, since a
 // listener that requires a bearer serves /v1 to any Host and reads no ENVOY_ALLOWED_HOSTS. Where
 // the listener requires none, each of the three is refused by its path rather than dropped.
+// Which of the two it is follows from the input args selected, the hub's own listener or the
+// tailnet entry's, and from clientNamespaces: path names the inputs a refusal is about and decides
+// nothing.
 //
 // The listener refuses at boot half the issuer and audience pair and a subject of any other
 // shape (cmd/listener/apiauth.go, resolveListenerOIDCAccounts), so those are refused here first;
@@ -920,7 +923,7 @@ func newClusteredHubListenerSettings(args *ClusteredNatsHubArgs, l *ClusteredHub
 // is, since the listener reads its keys from it, and none of the three may hold whitespace or a
 // control character, which an environment variable's value cannot carry intact. An account list
 // may not repeat a subject. A seed in any of them is clusteredHubSeededInput's to refuse.
-func clusteredHubListenerCredentialFor(l *ClusteredHubListenerArgs, path string) (*clusteredHubListenerCredential, error) {
+func clusteredHubListenerCredentialFor(args *ClusteredNatsHubArgs, l *ClusteredHubListenerArgs, path string) (*clusteredHubListenerCredential, error) {
 	inputs := []struct {
 		name string
 		set  bool
@@ -929,7 +932,10 @@ func clusteredHubListenerCredentialFor(l *ClusteredHubListenerArgs, path string)
 		{path + ".oidcAudience", l.OidcAudience != ""},
 		{path + ".oidcAccounts", len(l.OidcAccounts) > 0},
 	}
-	if path == "tailnet.listener" && len(l.ClientNamespaces) == 0 {
+	// clusteredHubListenerArgs selects args.Listener when it is set, and the tailnet entry's
+	// listener otherwise, so l is the tailnet entry's exactly when it is not args.Listener.
+	inTailnet := l != args.Listener
+	if inTailnet && len(l.ClientNamespaces) == 0 {
 		for _, in := range inputs {
 			if in.set {
 				return nil, core.InputErrorf(in.name, "%s is given on a tailnet.listener with no clientNamespaces, which serves the tailnet hosts with no credential, so it would check nothing; declare the listener as listener, or give it clientNamespaces, to require a token of its callers", in.name)
@@ -938,7 +944,7 @@ func clusteredHubListenerCredentialFor(l *ClusteredHubListenerArgs, path string)
 		return nil, nil
 	}
 	why := "the listener is the hub's own listener input"
-	if path == "tailnet.listener" {
+	if inTailnet {
 		why = "tailnet.listener has clientNamespaces"
 	}
 	for _, in := range inputs {
