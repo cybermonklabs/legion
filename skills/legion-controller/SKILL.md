@@ -84,7 +84,7 @@ Every move to `todo` you make is one of these:
 
 File an issue only when a person asks you to, for a clear defect no running tree owns, and the report issue. Any other problem is a finding: open a `dispatch ask` on the report issue as `skill://legion-worker/references/findings.md` says, and file nothing until a person answers. Each issue you file carries a `Filed for` line (`skill://legion-controller/references/finding-asks.md#the-filed-for-line`).
 
-A role's report of a red check that one re-run cleared: one issue for each test, never one for each occurrence. When no issue tracks the test, file one with the test's full name, the job, the head and both results, and say the round went on. When its issue is done, reopen it if its fix is in place and the same test failed again; otherwise file a new issue that cites it.
+A test that failed and then passed on one re-run of the same head is a clear defect: one issue for each test, never one for each occurrence. When no issue tracks the test, file one with the test's full name, the job, the head and both results, and say the round went on. When its issue is done, reopen it if its fix is in place and the same test failed again; otherwise file a new issue that cites it.
 
 ## Daily report
 
