@@ -6138,7 +6138,9 @@ the stages call it once the run's processes are gone, since a process that opene
 ## lib/model-gateway-unserved.sh
 
 Says whether the key command [`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh) or [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh) wrote left an agent without a key, and why.
-Oh My Pi answers every call that gets no key the same way (`No API key found for anthropic.`, exit 1, and for `omp -p` on 18.2.9 no session file at all), whatever the cause, so a run cannot say for itself that it never got a model turn.
+Oh My Pi answers a call that gets no key in one of two ways, and neither says why the key was missing, so the run itself cannot say why it never got a model turn.
+A provider with no key at all gets `No API key found for anthropic.` and exit 1 (and for `omp -p` on 18.2.9 no session file at all).
+A key command (`!exec …`, as both installers write it) that prints nothing is run again three times, about 30 s apart, and the call then exits 1 after about 105 s with `The apiKey command for provider anthropic produced no key`: measured on 2026-11-19 on `18.18.6-sami.20261119-162325` and on `18.18.6-sami.20261117-013345`, which behave the same.
 
 ```sh
 bash scripts/e2e/lib/model-gateway-unserved.sh --record "$run/model-gateway-calls"                                # a scorer: one agent run
