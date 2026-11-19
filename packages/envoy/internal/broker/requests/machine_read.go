@@ -920,7 +920,9 @@ type pendingRequestRow struct {
 // lifetime and its credential-request record. Create holds every requested name's advisory lock
 // before it asks (lockPendingNames), so no other Create of the enrollment can pass the lookup and
 // open another record for one of those names, and one read sees every overlapping request there
-// is. A request past its deadline, though the sweep has not ended it yet, is neither kept, ended
+// is. endBesideReusedGrant first reads straight on the pool, under no lock, only to tell whether
+// any request is signed for another broker, and ends what a second read under those locks finds.
+// A request past its deadline, though the sweep has not ended it yet, is neither kept, ended
 // nor in the way: every decision of it answers ErrExpired, so a session coalesced onto it would
 // wait on an answer that can never come, its approver seeing only a request nobody can approve,
 // and one refused over it (ErrRequestPending) could ask again only once the sweep had run. The new
@@ -935,8 +937,9 @@ type pendingRequestRow struct {
 // (endSignedForAnotherBroker). The record is a left join, so a request with no record is still
 // found. The order is the request's created_at and then its id, a total order, so two
 // transactions that end the same requests take their row locks in one order.
-// It reads every row and closes them before it returns: its caller ends requests in the same
-// transaction, and a pgx transaction runs no statement while rows of its connection are open.
+// It reads every row and closes them before it returns: a caller that ends requests does so in
+// the same transaction, and a pgx transaction runs no statement while rows of its connection are
+// open.
 func pendingRequests(ctx context.Context, q querier, enrollmentID string, sorted []string) ([]pendingRequestRow, error) {
 	rows, err := q.Query(ctx, `select req.id, req.lifetime_seconds, array_agg(s.name order by s.name), `+writtenBeforeMigration13("req")+`,
 			cr.body, cr.created_at
@@ -1081,14 +1084,14 @@ func writtenBeforeMigration13(alias string) string {
 // that enrolled on another box gets back the grant that moved with it instead of asking a person
 // a second time for names it already holds
 // (TestTheMovedSessionAsksAgainAndGetsTheSameGrantBack).
-func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, names []string, lifetime *int, set *policy.Set) (Request, bool, error) {
+func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted []string, lifetime *int, set *policy.Set) (Request, bool, error) {
 	matches, err := matchingRequests(ctx, m.Store.Pool, `select r.id, g.id::text, array_agg(s.name) from requests r
 		join request_secrets s on s.request_id=r.id
 		join grants g on g.request_id=r.id
 		where r.enrollment_id=$1 and (
 			r.lifetime_seconds is not distinct from $2 or ($2::int is null and `+writtenBeforeMigration13("r")+`)
 		) and r.state='granted' and g.revoked_at is null and `+grantUnexpired("g")+`
-		group by r.id, g.id order by g.created_at desc`, enr.ID, lifetime, sortedCopy(names))
+		group by r.id, g.id order by g.created_at desc`, enr.ID, lifetime, sorted)
 	if err != nil {
 		return Request{}, false, err
 	}

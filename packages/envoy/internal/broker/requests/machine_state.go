@@ -493,26 +493,44 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 // is referred to), so a commit that fails logs none.
 //
 // An ask a live grant answers (reuseLiveGrant) writes no request, and Create hands that grant
-// back before the transaction above. It ends the same requests all the same, in a short
-// transaction of its own under the advisory locks of the asked names and the enrollment's lock,
-// which commits and then logs each end naming the reused grant's request (endBesideReusedGrant);
-// an error of that transaction is the ask's. An ask Create refuses before it writes anything ends
-// nothing: an invalid or replayed request object, an unknown name (policy.ErrUnknownSecret, which
-// the evaluation answers), a name whose value is pending, a lifetime over a name's max-grant, a
-// narrowing refusal or ErrMixedApprovers (the evaluation's too). Each of them returns before any
-// end runs, since the main transaction ends requests only once the evaluation has answered and
-// the reuse path only once a live grant has: no request of that ask exists for the line to name,
-// and the session's next valid ask ends that request.
+// back before the transaction above. endBesideReusedGrant ends the same requests all the same: a
+// read in no transaction tells whether any of them is signed for another broker address, and only
+// when one is does a short transaction of its own, under the advisory locks of the asked names and
+// the enrollment's lock, end them, commit and then log each end naming the reused grant's request.
+// With none it opens no transaction and writes nothing, so such an ask waits on no writer of the
+// enrollment row. An error of that read or of that transaction is the ask's. An ask Create refuses
+// before it writes anything ends nothing: an invalid or replayed request object, an unknown name
+// (policy.ErrUnknownSecret, which the evaluation answers), a name whose value is pending, a
+// lifetime over a name's max-grant, a narrowing refusal or ErrMixedApprovers (the evaluation's
+// too). Each of them returns before any end runs, since the main transaction ends requests only
+// once the evaluation has answered and the reuse path only once a live grant has: no request of
+// that ask exists for the line to name, and the session's next valid ask ends that request.
 //
 // An end takes the request's row lock after the advisory locks, which every Create takes in
 // sorted name order, and after the enrollment's lock for share. applyDecisionAttempt, which
 // decides such a request on the broker it was signed for, takes the enrollment's lock for share
 // and then the row's, Cancel the row's alone, and an enrollment's end (enroll's endEnrollment)
 // updates the enrollment before it ends the enrollment's pending requests, so none of them waits
-// on a lock Create holds while Create waits on the row: no deadlock. Two Creates of the
-// enrollment for different names can both find one request that holds a name of each; they end
-// what they find in one order (pendingRequests), so the second waits on the first's row and holds
-// none the first waits on.
+// on a lock Create holds while Create waits on the row, and none of them deadlocks with it. Two
+// Creates of the enrollment for different names can both find one request that holds a name of
+// each; they end what they find in one order (pendingRequests), so the second waits on the
+// first's row and holds none the first waits on.
+// Two sweeps fall outside that order: each takes no enrollment lock and ends many pending
+// requests in one statement, in whatever order that statement reaches them. One is the sweep's
+// expiry (expirePending, store.RequestsPastDeadline). The other is the sweep's denyUndecidable
+// (store.RequestsByIDs) on a broker of another address that runs with BROKER_SIGNIN=off: it ends
+// the pending requests that verify for that broker, the very requests this broker ends as signed
+// for another broker. An end here takes the rows one at a time in (created_at, id) order
+// (endSignedForAnotherBroker), so when such a sweep ends two stale requests of one session while
+// that session's ask ends them, the two transactions can lock the rows in opposite orders, and
+// Postgres ends one of them with a deadlock error: the sweep's, which its next tick runs again, or
+// the ask's, which answers that error and which the session's next ask runs again. The
+// transaction Postgres ends rolls back whole and the other ends each row once, so no row is left
+// in a wrong state. For the expiry the window is narrow: pendingRequests reads only requests
+// whose deadline had not passed when the transaction began (requestBeforeDeadline, over
+// Postgres's now()), so the expiry and an end here reach the same row only when its deadline
+// passes between that start and the sweep's own now, and two of a session's requests must both
+// do so for the locks to cross.
 // An end that finds the request decided meanwhile ends nothing and leaves that decision as it is.
 //
 // A request it writes pending that the judge holds (judgeHolds) is handed to Machine.Judge once
@@ -606,7 +624,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 		}
 	}
 	sorted := sortedCopy(names)
-	if existing, ok, err := m.reuseLiveGrant(ctx, enr, names, lifetime, set); err != nil {
+	if existing, ok, err := m.reuseLiveGrant(ctx, enr, sorted, lifetime, set); err != nil {
 		return Request{}, err
 	} else if ok {
 		if err := m.endBesideReusedGrant(ctx, enrollmentID, sorted, existing.ID); err != nil {
@@ -789,18 +807,44 @@ func (m *Machine) endSignedForAnotherBroker(ctx context.Context, tx pgx.Tx, enro
 // endBesideReusedGrant is endSignedForAnotherBroker for an ask a live grant answered
 // (reuseLiveGrant), which writes no request, so Create returns before its own transaction: it
 // ends each pending request of enrollmentID for one of sorted whose record is signed for another
-// broker address in a short transaction of its own, under the advisory locks of sorted
-// (lockPendingNames) and then the enrollment's row lock for share, in the order Create's
-// transaction takes them, commits, and then logs each end naming reused, the reused grant's
-// request, as the request the session is referred to (logBrokerMoved). The enrollment's lock is
-// what keeps an enrollment's end (enroll's endEnrollment), which updates the enrollment and then
-// ends all its pending requests in one statement, in whatever order that statement reaches them,
-// from holding one of these requests while this transaction holds another: one of the two waits
-// for the other's commit before it takes a row. Unlike lockLiveEnrollment it does not ask that the
-// enrollment be live, since a live grant has already answered the ask. It runs whether or not
-// such a request exists, since only its read can tell. An error of it is Create's, so a
-// transaction that fails, or a commit that fails, answers the ask with that error and logs no end.
+// broker address, commits, and then logs each end naming reused, the reused grant's request, as
+// the request the session is referred to (logBrokerMoved).
+// It reads those requests first straight on the pool, in no transaction (pendingRequests), and
+// when none is signed for another broker (signedForAnotherBroker) it answers nil: no
+// transaction, no lock and no log line. Most asks a live grant answers find none, and a
+// transaction would cost each of them: the enrollment's lock for share assigns it a transaction
+// id, so it would commit durably and wait behind any writer of the enrollment row, where the ask
+// otherwise writes nothing. Only when that read finds such a request does it open a short
+// transaction of its own, take the advisory locks of sorted (lockPendingNames) and then the
+// enrollment's row lock for share, in the order Create's transaction takes them, and end what
+// endSignedForAnotherBroker, reading again under those locks, finds; that second read decides
+// what is ended. The read without locks misses nothing the locked one would end. Create writes
+// only requests whose aud is this broker's (record.VerifyRequestObject with Machine.Audience), so
+// no request another Create of this broker writes meanwhile is signed for another broker, and an
+// adoption moves requests onto an enrollment only as it creates that enrollment (enroll's adopt),
+// before its first ask. A request the broker it was signed for decides between the two reads is
+// no longer pending at the locked read, which ends nothing for it.
+// The enrollment's lock is what keeps an enrollment's end (enroll's endEnrollment), which updates
+// the enrollment and then ends all its pending requests in one statement, in whatever order that
+// statement reaches them, from holding one of these requests while this transaction holds
+// another: one of the two waits for the other's commit before it takes a row. It does not order
+// this transaction against the sweep's expiry (expirePending) or, on a broker of another address
+// with BROKER_SIGNIN=off, the sweep's denyUndecidable, which take no enrollment lock and end
+// several requests in one statement too: one of those and this transaction can lock two of the
+// session's requests in opposite orders (the expiry only in the narrow window Create's doc
+// names), and Postgres then ends one of the two with a deadlock error; the next tick or the next
+// ask runs it again, and no row is left in a wrong state. Unlike lockLiveEnrollment it does not
+// ask that the enrollment be live, since a live grant has already answered the ask. An error of it
+// is Create's, so a read, a transaction or a commit that fails answers the ask with that error and
+// logs no end.
 func (m *Machine) endBesideReusedGrant(ctx context.Context, enrollmentID string, sorted []string, reused string) error {
+	pending, err := pendingRequests(ctx, m.Store.Pool, enrollmentID, sorted)
+	if err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(pending, m.signedForAnotherBroker) {
+		return nil
+	}
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
 		return err
