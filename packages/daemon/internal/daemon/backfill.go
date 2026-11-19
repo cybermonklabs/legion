@@ -89,8 +89,9 @@ func writeBackfill(ctx context.Context, pool *store.Pool, write func(pgx.Tx) err
 // its clone keeps and with the pair's spelling of that same name as GitHub's spelling, never with
 // the name the repository moved to, since a record's two repository columns must name one
 // repository (record.Store.FillIssueRepository). The record keeps the name it was recorded under
-// for its whole life, and heardRepositories hears the pair's other name too, so the events GitHub
-// now publishes under the name it moved to still reach it.
+// until this release's one-time rename pass writes the pair's `to` over it (renamePass), and
+// heardRepositories hears the pair's other name too, so the events GitHub now publishes under the
+// name it moved to reach it before that pass as after it.
 func fillRepositories(ctx context.Context, pool *store.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) (filled, left bool, err error) {
 	var unfilled []record.Issue
 	pulls := map[string]record.PullRequest{}
@@ -272,10 +273,11 @@ func workspaceElsewhere(workspaces map[string]string, resolved, named ghrepo.Rep
 //
 // A record's two repository columns must name one repository, compared without case
 // (record.Store.FillIssueRepository and NameIssueRepository refuse anything else), and the
-// record keeps the name it was recorded under for its whole life. So the pair's own side is what
-// goes in: the record stays one repository and the boot goes on, and the events GitHub publishes
-// under the name the repository moved to still reach the record, because heardRepositories hears
-// the pair's other name as well.
+// record keeps the name it was recorded under until this release's one-time rename pass writes the
+// pair's `to` over both columns (renamePass). So the pair's own side is what goes in: the record
+// stays one repository and the boot goes on, and the events GitHub publishes under the name the
+// repository moved to still reach the record, because heardRepositories hears the pair's other
+// name as well.
 func recordedSpelling(renames ghrepo.Renames, recorded string, github ghrepo.Repository) string {
 	if partner, paired := renames.Partner(github.String()); paired && strings.EqualFold(partner.String(), recorded) {
 		return partner.String()
@@ -288,13 +290,14 @@ func recordedSpelling(renames ghrepo.Renames, recorded string, github ghrepo.Rep
 // spelling, read from GitHub once per repository (backfillRead): SQL cannot know it, since a record
 // may keep a clone's spelling that differs from GitHub's in case. A read GitHub refuses or does not
 // answer leaves the record unnamed, naming it, so nothing subscribes to a repository in a spelling
-// its events are not published under; so does a repository GitHub renamed, since the record's
-// repository never changes, and only a pre-release build of this daemon left records with no
-// GitHub spelling. A rename the deployment configures (renames) is no such rename: the read is
-// made of the repository the rename rule serves the record's one as (named, which maps every read
-// through repositories.serving), since after the transfer only the new owner's installation covers
-// it, and GitHub answers with the pair's other name. The record is then named with the pair's
-// spelling of its own name (recordedSpelling), which keeps it one repository.
+// its events are not published under; so does a repository GitHub renamed, since only the rename
+// pass of a pair in `repository_renames` writes a new name on a record, and only a pre-release
+// build of this daemon left records with no GitHub spelling. A rename the deployment configures
+// (renames) is no such rename: the read is made of the repository the rename rule serves the
+// record's one as (named, which maps every read through repositories.serving), since after the
+// transfer only the new owner's installation covers it, and GitHub answers with the pair's other
+// name. The record is then named with the pair's spelling of its own name (recordedSpelling),
+// which keeps it one repository.
 func nameRepositories(ctx context.Context, pool *store.Pool, records record.Store, project string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) (wrote, left bool, err error) {
 	var unnamed []record.Issue
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -319,7 +322,7 @@ func nameRepositories(ctx context.Context, pool *store.Pool, records record.Stor
 			continue
 		}
 		if !renames.Same(read.Name.String(), issue.Repo) {
-			leaveUnfilled(log, issue.Key, issue.Repo, fmt.Sprintf("GitHub renamed %s to %s, and a record's repository never changes; only a pre-release build of this daemon leaves a record with no GitHub spelling, so recreate that build's database",
+			leaveUnfilled(log, issue.Key, issue.Repo, fmt.Sprintf("GitHub renamed %s to %s, and a record keeps its repository name unless a pair of repository_renames names both; only a pre-release build of this daemon leaves a record with no GitHub spelling, so recreate that build's database",
 				issue.Repo, read.Name))
 			left = true
 			continue

@@ -27,7 +27,7 @@ import (
 // push however many pull requests sit on it, rather than once per pull request. The first read is
 // one indexed lookup of the open pull requests recorded on that base
 // (record.Store.OpenPullRequestsOnBase), so a push to a branch Legion records no pull request on -
-// every push of the other automation a mapped repository carries - ends the transaction there,
+// every push of the other automation a heard repository carries - ends the transaction there,
 // having written nothing. A pull request whose recorded base is still the empty one no read has
 // filled matches no push: the daemon's next read of that pull request - at a handoff, at its
 // start, or for a round waiting on the merge state - fills the base, and from then on its base's

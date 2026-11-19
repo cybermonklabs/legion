@@ -23,9 +23,9 @@ type Repositories interface {
 
 // Resolution is the repository an issue is recorded on: Repo and DefaultBranch when Legion serves
 // it, with GitHubRepo, GitHub's spelling of Repo that Envoy's event subjects carry, or Refusal, why
-// it does not. LeftOut is a mapped repository Legion leaves out, for a GitHub App not installed on
-// it or, with Unread, for now, because GitHub did not answer its installation read, or its
-// default-branch read past GitHub's rate limit; Refusal names which. An Unread issue is not refused
+// it does not. LeftOut is a repository Legion leaves out, for a GitHub App not installed on it
+// or, with Unread, for now, because GitHub did not answer its installation read, or its read of
+// the repository's name and default branch; Refusal names which. An Unread issue is not refused
 // but left: RefuseRecording says nothing on it, and the daemon takes it from Dispatch's listing
 // once GitHub answers for the repository (its recovery).
 type Resolution struct {
@@ -48,7 +48,7 @@ func (e *Engine) ResolveRepository(resolved string) (Resolution, error) {
 		return Resolution{Refusal: resolvesToNone}, nil
 	}
 	if e.cfg.Repositories == nil {
-		return Resolution{}, errors.New("the workflow holds no repository mapping to record an issue's repository from")
+		return Resolution{}, errors.New("the workflow holds no repository state to record an issue's repository from")
 	}
 	return e.cfg.Repositories.ResolveRepository(resolved)
 }
@@ -57,10 +57,10 @@ func (e *Engine) ResolveRepository(resolved string) (Resolution, error) {
 // refusal fact's own preparation read from GitHub when it carries one
 // (intake.DispatchIssue.RepositoryRefusal), and otherwise what the daemon holds in memory
 // (ResolveRepository). A preparation carries its refusal on the fact because nothing of it is
-// kept: an issue on a repository no mapping names is read from GitHub at each preparation, so a
-// role App installed since is taken at the next one, with no wait, no restart and no mapping
-// change. It is the one resolution that records an issue: admission's roots and orphans
-// (putNewRoot) and the engine's children (recordChild).
+// kept: an issue on a repository GitHub refused is read from GitHub again at each preparation, so
+// a role App installed since is taken at the next one, with no wait and no restart. It is the one
+// resolution that records an issue: admission's roots and orphans (putNewRoot) and the engine's
+// children (recordChild).
 func (e *Engine) ResolveIssueRepository(fact intake.DispatchIssue) (Resolution, error) {
 	if fact.RepositoryRefusal != "" {
 		return Resolution{Refusal: fact.RepositoryRefusal, LeftOut: true}, nil
@@ -155,8 +155,8 @@ func (e *Engine) noteOnce(ctx context.Context, tx pgx.Tx, key, resolved, note st
 
 // refuseChild says on a child, and to the architect that owns its Dispatch parent, why the child
 // was not recorded under root's tree: its repository resolves to none, or GitHub does not answer
-// for it as one a role App reaches. The architect is told what the issue is told, since the
-// repository is no longer the project's mapping to choose from: any repository both role Apps are
+// for it as one a role App reaches. The architect is told what the issue is told, since no list of
+// the project's repositories is there to choose from: any repository both role Apps are
 // installed on records an issue, so what is wrong is the name or the installation. The notice is
 // queued on that parent when the record holds it in root's tree, so the owner walk takes it to the
 // parent's own architect while that claim holds its role, the one that releases the parent's

@@ -134,11 +134,11 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	// daemon bounds checkouts by.
 	//
 	// It is also the one command past those steps that no change of this repository's makes fit
-	// CommandTimeout's five minutes: one write of the largest repository mapped took nine minutes
-	// in an issue pod (CheckoutTimeout), and the runner killing it there failed the whole
-	// provision and spent one of the claim's three launches. So this command alone takes
-	// CheckoutTimeout (request.checkoutBound), and every provisioning command but it and those
-	// steps keeps the runner's slow-command budget.
+	// CommandTimeout's five minutes: one write of the largest repository a project then worked
+	// in took nine minutes in an issue pod (CheckoutTimeout), and the runner killing it there
+	// failed the whole provision and spent one of the claim's three launches. So this command
+	// alone takes CheckoutTimeout (request.checkoutBound), and every provisioning command but it
+	// and those steps keeps the runner's slow-command budget.
 	store.unlock()
 	if checkout {
 		release, err := request.checkoutPlace(ctx)

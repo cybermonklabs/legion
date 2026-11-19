@@ -79,7 +79,7 @@ func defaultRepositoryCache(t *testing.T) sandbox.RepositoryCache {
 	return cache
 }
 
-// noRepositories is a mapping that names none, for a test whose runtime makes no cache.
+// noRepositories is a cache set that names none, for a test whose runtime makes no cache.
 func noRepositories() []ghrepo.Repository { return nil }
 
 // writeKubeconfig is a kubeconfig of one cluster at server and one context, its current context

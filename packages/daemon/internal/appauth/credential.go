@@ -82,8 +82,9 @@ var ErrDefaultOwnerNotInstalled = errors.New("is no owner the controller's App i
 // a tmux tree pane whose claim the daemon records no repository for makes, takes the first owner
 // the mint answered for, sorted, as its default; its directories hold the role's own leases as
 // any other call's do, since what a role may do is its App's installation and not what its claim
-// records. An App installed nowhere at all is runtime.ErrNoGitHubOwner. Every controller bundle,
-// the launch's and the API route's both, is asked for by owner instead (ControllerCredential).
+// records. Such a call for an App installed on no account has no GitHub owner to mint for:
+// runtime.ErrNoGitHubOwner. Every controller bundle, the launch's and the API route's both, is
+// asked for by owner instead (ControllerCredential).
 //
 // A mint for any owner but the default directory's that GitHub answers definitively about that
 // owner's installation — not installed, suspended, granted none of the role's permissions, the
@@ -183,14 +184,15 @@ func (b *Bundles) Bundle(ctx context.Context, role claim.Role, repo ghrepo.Repos
 // An owner the bundle holds no directory for is refused (ErrDefaultOwnerNotInstalled) before
 // anything is minted: the controller asks for its default over the API, and a default is no
 // authority to read an owner the review App is not installed on. That refusal is what bounds the
-// owner this route may be asked for, as the directories of a role's bundle bound `legion gh`. An App
-// installed nowhere at all is runtime.ErrNoGitHubOwner, which the route answers as a daemon with
-// nothing to act as. An owner whose lease cannot be minted is left out of the bundle, as it is of
-// a role's, and recorded in left (mintBundle, LeftOut); the one it is asked for cannot be left
-// out, and its failure fails the bundle naming that owner — ErrNarrowingRefused where GitHub
-// refused the lease — since the controller's GH_CONFIG_DIR names that directory and nothing else.
-// An owner whose name is no directory's is left out in the same way (bundleDirs), and fails the
-// bundle in the same way where it is the owner asked for.
+// owner this route may be asked for, as the directories of a role's bundle bound `legion gh`. A
+// review App installed on no account leaves the controller no GitHub owner
+// (runtime.ErrNoGitHubOwner), which the route answers as a daemon with nothing to act as, saying
+// that the App is installed on no account. An owner whose lease cannot be minted is left out of
+// the bundle, as it is of a role's, and recorded in left (mintBundle, LeftOut); the one it is
+// asked for cannot be left out, and its failure fails the bundle naming that owner —
+// ErrNarrowingRefused where GitHub refused the lease — since the controller's GH_CONFIG_DIR names
+// that directory and nothing else. An owner whose name is no directory's is left out in the same
+// way (bundleDirs), and fails the bundle in the same way where it is the owner asked for.
 func ControllerCredential(source Source, served func(ghrepo.Repository) bool, renames ghrepo.Renames,
 	installed *Installed, left *LeftOut, log *slog.Logger) runtime.ControllerCredential {
 	return func(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
@@ -720,8 +722,8 @@ func leaveOutReason(err error) string {
 // (LeftOut), so the drift check's own answer (GitHubDirs) names what a bundle built now holds and
 // nothing more.
 //
-// A layout with no owner at all is an App installed nowhere, and no configured rename's owner
-// beside it: runtime.ErrNoGitHubOwner, for both credentials.
+// A layout with no owner at all is an App installed on no account, and no configured rename's
+// owner beside it: runtime.ErrNoGitHubOwner, for both credentials.
 func mintBundle(ctx context.Context, tokens Tokens, appRole AppRole, role claim.Role, read bool, dflt string, layout bundleLayout, left *LeftOut, log *slog.Logger) (ghconfig.Bundle, error) {
 	if len(layout.owners) == 0 {
 		return ghconfig.Bundle{}, fmt.Errorf("the %s App for %s: %w", appRole, role, runtime.ErrNoGitHubOwner)

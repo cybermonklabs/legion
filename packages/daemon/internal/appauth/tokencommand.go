@@ -590,13 +590,13 @@ func (m *Manager) installedFromCommand(ctx context.Context, role AppRole, repo g
 // among them.
 //
 // The read is that answer's one source, so it drops whatever the Manager remembers of that
-// scope's refusal first (forgetNarrowingRefusal) and mints: the mapping's check is made
-// precisely when an operator has changed something — the App's installation above all — and a
-// refusal served from the five minutes one is remembered for would fail the check for an
+// scope's refusal first (forgetNarrowingRefusal) and mints: a repository's preparation makes the
+// check precisely when an operator may have changed something — the App's installation above all
+// — and a refusal served from the five minutes one is remembered for would fail the check for an
 // account the App was just installed on (lease, narrowingRefusalWindow, INFRA-513). A refusal
 // the mint itself meets is remembered as any mint's is: it is GitHub's answer of this moment,
 // which the bundles refreshing behind the check would otherwise ask for again at once, and the
-// next mapping read drops it again as this one did.
+// next preparation's check drops it again as this one did.
 func (m *Manager) listInstallation(ctx context.Context, role AppRole, repo ghrepo.Repository) (installed, refused bool, err error) {
 	m.forgetNarrowingRefusal(role, repo.Owner())
 	lease, err := m.ReadToken(ctx, role, repo.Owner())

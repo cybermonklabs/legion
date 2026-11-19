@@ -298,7 +298,7 @@ func TestTheBackfillOfARepositoryGitHubRenamedNamesTheFix(t *testing.T) {
 
 	t.Run("a record on the old name with no GitHub spelling", func(t *testing.T) {
 		w, state := seed(t, "acme/old", "main")
-		want := leftAs("LEGION-1", "acme/old", "GitHub renamed acme/old to acme/new, and a record's repository never changes; "+
+		want := leftAs("LEGION-1", "acme/old", "GitHub renamed acme/old to acme/new, and a record keeps its repository name unless a pair of repository_renames names both; "+
 			"only a pre-release build of this daemon leaves a record with no GitHub spelling, so recreate that build's database")
 		if left, logged := backfill(t, w, state); !left || !strings.Contains(logged, want) {
 			t.Fatalf("backfill left %t, logging:\n%s\nwant the record left, logged as %s", left, logged, want)
@@ -329,7 +329,7 @@ func (t servedOwnerTokens) Token(ctx context.Context, role appauth.AppRole, owne
 
 // A transfer the deployment configures as a pair (`repository_renames`) leaves no record: GitHub
 // holds the repository under cybermonklabs/legion, which the rename rule serves, while Dispatch still
-// resolves sjawhar/legion and the record keeps the name it was recorded under for its whole life,
+// resolves sjawhar/legion and the record keeps the name it was recorded under until the rename pass,
 // so the backfill writes the pair's spelling of that same name as GitHub's spelling of it. A
 // record's two repository columns must name one repository (record.Store.FillIssueRepository,
 // NameIssueRepository), which the name it moved to would not.

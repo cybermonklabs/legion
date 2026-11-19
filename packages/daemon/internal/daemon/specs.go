@@ -83,14 +83,11 @@ type specs struct {
 	// POD's (sandbox.PodAppRoles): an issue pod projects only the directories both Apps' bundles
 	// hold, so an owner one App alone reaches is in no container of that pod and `legion gh`
 	// refuses it there, while a tmux pane holds the role's own bundle and reads that App alone.
-	// The daemon answers it from
-	// what the last gh bundle of that App read from GitHub (appauth.Installed, plan.appOwners),
-	// which costs no read of its own on a launch; a role whose App no bundle has been built for
-	// yet — the first launch of a daemon that has built none — is answered the owners of the
-	// repositories the project is mapped, every one of which has both Apps installed, so the
-	// clause names a true part of the reach and never more than it. The daemon sets it at boot
-	// whether or not a workflow is configured; a nil one names no owner, as an App installed
-	// nowhere does.
+	// The daemon answers it from what GitHub last answered of that App's installations
+	// (appauth.Installed, plan.appOwners): the boot's proof of the App's key first, then the last
+	// gh bundle of it, which costs no read of its own on a launch. The daemon sets it at boot
+	// whether or not a workflow is configured; a nil one, and a daemon with no GitHub Apps, names
+	// no owner, as an App installed nowhere does.
 	appOwners func(role claim.Role) []string
 	// owner is the architect that owns a claim on an issue that is not its tree's root, as the
 	// store records the architect claims of the issue's tree at the launch

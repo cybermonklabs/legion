@@ -113,8 +113,8 @@ func TestTheControllerWorksInADirectoryAndAWindowOfItsOwn(t *testing.T) {
 	}
 }
 
-// A project with no GitHub owner to mint for (runtime.ErrNoGitHubOwner: no mapped repository has an
-// App) still runs the controller the daemon launches, with gh acting as nobody, as `legion
+// A project with no GitHub owner to mint for (runtime.ErrNoGitHubOwner: its App installed on no
+// account) still runs the controller the daemon launches, with gh acting as nobody, as `legion
 // controller start` and the sandbox runtime do there: the launch succeeds, the controller's gh
 // directory is an empty 0700 one — whatever an earlier launch left there removed — named by
 // GH_CONFIG_DIR with the tokens emptied, and the refresher leaves it be without logging a failure.

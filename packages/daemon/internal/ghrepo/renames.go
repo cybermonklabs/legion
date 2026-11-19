@@ -148,8 +148,9 @@ func (r Renames) MovedTo(recorded Repository) (Repository, bool) {
 // Under runs read for name and, when it answers the zero value with no error, again for the other
 // name of name's configured pair. It is the one place the order of a read keyed by a repository is
 // written: the name the fact carries, as the fact spells it, and then the pair's other name, since
-// a record keeps the repository it was written under for its whole life while the facts that
-// arrive after a transfer name the one it moved to. It is a lookup order, not an equality — `Same`
+// a record keeps the repository it was written under until the daemon's one-time rename pass writes
+// the pair's `to` over it, while the facts that arrive after a transfer name the one it moved to. It
+// is a lookup order, not an equality — `Same`
 // answers whether two names are one repository, while this reads what may be held under either.
 //
 // The zero value of T is what read answers when it finds nothing: a nil *record.PullRequest, a
@@ -224,11 +225,12 @@ func (r Renames) OwnerAliases(served func(Repository) bool) map[string]string {
 // pair's `from` is not. Every other recorded name, the pair's `to` and a name no pair holds
 // included, is answered unchanged.
 //
-// A record keeps the repository it was written under for its whole life, so every GitHub call the
-// daemon makes for a tree opened before a transfer starts from a name whose owner's installation
-// no longer covers the repository. The token is what that costs: GitHub answers the old address
-// itself (a REST call to it redirects, and a GraphQL query resolves the repository), while no
-// token of the old owner reaches it. This is the one place a recorded name is mapped to the one
+// A record keeps the repository it was written under until the daemon's one-time rename pass
+// writes the pair's `to` over it, so every GitHub call the daemon makes for a tree opened before a
+// transfer, until then, starts from a name whose owner's installation no longer covers the
+// repository. The token is what that costs: GitHub answers the old address itself (a REST call to
+// it redirects, and a GraphQL query resolves the repository), while no token of the old owner
+// reaches it. This is the one place a recorded name is turned into the one
 // GitHub holds, and callers take both halves of the answer: its owner, which is the half they
 // cannot do without, and its name, which keeps a write off a redirect and names the repository
 // GitHub holds in whatever the caller writes down.

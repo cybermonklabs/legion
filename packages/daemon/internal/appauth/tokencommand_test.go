@@ -387,13 +387,13 @@ func TestTokenModeARepositoryOutsideTheInstallationsListIsNotInstalled(t *testin
 	}
 }
 
-// A narrowing the broker refuses is ErrNarrowingRefused, the refusal key mode gives, and the
-// mapping's installation read is the one source of its own answer: it runs the command and reads
-// GitHub however recently a narrowing was refused for the read scope it asks under
+// A narrowing the broker refuses is ErrNarrowingRefused, the refusal key mode gives, and a
+// repository's installation read is the one source of its own answer: it runs the command and
+// reads GitHub however recently a narrowing was refused for the read scope it asks under
 // (listInstallation, forgetNarrowingRefusal). Served from the Manager's memory instead, an
-// operator who fixes what the broker refused and saves the mapping inside the five minutes a
-// refusal is remembered for would be told the check failed, while the bundle refreshes behind it
-// kept that memory alive (INFRA-513).
+// operator who fixes what the broker refused, inside the five minutes a refusal is remembered
+// for, would be told at the repository's next preparation that the check failed, while the
+// bundle refreshes behind it kept that memory alive (INFRA-513).
 func TestTheInstallationReadAsksPastARememberedNarrowingRefusal(t *testing.T) {
 	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 	broker := newFakeBroker(t, []string{"acme"}, now.Add(time.Hour))
@@ -408,8 +408,8 @@ func TestTheInstallationReadAsksPastARememberedNarrowingRefusal(t *testing.T) {
 		t.Fatalf("the read lease the broker refuses the narrowing of = %v, want ErrNarrowingRefused", err)
 	}
 
-	// The operator fixes what the broker refused and saves the mapping a minute later, well
-	// inside the window the refusal is remembered for.
+	// The operator fixes what the broker refused a minute later, well inside the window the
+	// refusal is remembered for, and the repository is prepared again.
 	t.Setenv("FAKE_BROKER_NARROW", "")
 	now = now.Add(time.Minute)
 

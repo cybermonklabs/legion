@@ -157,7 +157,7 @@ func (failingTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string
 }
 
 // uninstalledTokens is an App installed on no account at all, which is what a daemon with no
-// GitHub owner to act as now means: the bundle holds no directory, whatever the mapping names.
+// GitHub owner to act as means: the bundle holds no directory, whatever the records name.
 type uninstalledTokens struct{ handoffTokens }
 
 func (uninstalledTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
@@ -541,7 +541,7 @@ func TestControllerGitHubCredential(t *testing.T) {
 
 // installedTokens is refusingTokens over a review App installed on owners of its own, where
 // handoffTokens answers the two accounts the harnesses' project serves repositories under: the
-// installations are the account's choice and no mapping's.
+// installations are the account's choice alone.
 type installedTokens struct {
 	refusingTokens
 	installed []string
@@ -597,7 +597,9 @@ func TestControllerGitHubCredentialAnswersTheOwnersTheReviewAppIsInstalledOn(t *
 // A review App installed on no account at all answers the credential route's
 // GITHUB_OWNER_UNCONFIGURED, which legion controller start reads as a daemon with nothing to
 // act as: the bundle's directories are the App's installations, so an App installed nowhere is
-// a bundle with no directory to serve (appauth.ControllerCredential).
+// a bundle with no directory to serve (appauth.ControllerCredential). The code keeps its name for
+// the clients already deployed, and the sentence says what is true: the App is installed on no
+// account, and no configuration names an owner.
 func TestControllerGitHubCredentialWithoutAnOwner(t *testing.T) {
 	h := newHarness(t)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
@@ -605,8 +607,16 @@ func TestControllerGitHubCredentialWithoutAnOwner(t *testing.T) {
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Tokens: uninstalledTokens{},
 	}).Handler
-	secret := h.mintedSecret()
-	wantFailure(t, h.controllerGitHubCredential(secret), http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED")
+	served := h.controllerGitHubCredential(h.mintedSecret())
+	if served.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body %s", served.Code, http.StatusInternalServerError, served.Body)
+	}
+	var failure Failure
+	decodeInto(t, served, &failure)
+	want := Failure{Code: "GITHUB_OWNER_UNCONFIGURED", Error: "the review App is installed on no account, so the controller has no GitHub owner"}
+	if failure != want {
+		t.Fatalf("failure = %+v, want %+v", failure, want)
+	}
 }
 
 // A daemon that launches its own controller (`controller: daemon`) refuses the credential route

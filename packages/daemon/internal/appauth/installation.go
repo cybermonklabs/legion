@@ -9,8 +9,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
-// Installations answers whether a GitHub App is installed on a repository. The daemon serves a
-// repository of its project's mapping only once both Apps are.
+// Installations answers whether a GitHub App is installed on a repository. The daemon records an
+// issue on a repository only once both role Apps are installed on it.
 type Installations interface {
 	InstalledOn(ctx context.Context, role AppRole, repo ghrepo.Repository) (bool, error)
 }

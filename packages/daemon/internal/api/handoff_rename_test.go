@@ -37,7 +37,7 @@ func servesOneOf(repos ...ghrepo.Repository) func(ghrepo.Repository) bool {
 // the configured pair with the project serving the repository GitHub holds it under, that same
 // pair with one more repository of the owner the transfer moved it away from served beside it,
 // and no pair at all. The second is the state of the production failure of 2026-11-06, where
-// adding sjawhar/oh-my-pi to the project's mapping made sjawhar an owner of the project and the
+// serving sjawhar/oh-my-pi as well made sjawhar an owner of the project and the
 // owner rule this replaced switched the live pair off; it must read exactly what the first does.
 // The third is the control: with no pair configured the record's own repository is read.
 var transferStates = []struct {

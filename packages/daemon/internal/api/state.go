@@ -637,7 +637,8 @@ type Issue struct {
 	// (an operator's claim, Unrecorded), which stands in no tree.
 	Tree string `json:"tree,omitempty"`
 	// Repo is the repository (owner/name) the issue targets and DefaultBranch that repository's
-	// default branch, both taken when the daemon first recorded the issue and never changed after.
+	// default branch, both taken when the daemon first recorded the issue and kept after, except
+	// that the daemon's one-time rename pass writes a `repository_renames` pair's `to` over Repo.
 	// Both are absent on an issue the workflow does not record (an operator's claim, Unrecorded).
 	Repo          string `json:"repo,omitempty"`
 	DefaultBranch string `json:"defaultBranch,omitempty"`

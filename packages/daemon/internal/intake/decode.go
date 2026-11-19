@@ -627,9 +627,9 @@ func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload 
 // (claim.BranchIssue). One on any other branch is no fact, read before anything else of the
 // event, so it is acknowledged without a transaction: the workflow records a pull request only on
 // an issue's branch (PullRequestOpened), and every later event applies only to a recorded one. A
-// mapped repository whose other pull requests open and move many times a minute would otherwise
-// cost the daemon one transaction under the fact lock (ApplyFact) for every one, all of them
-// changing nothing. Every action carries head_ref.
+// repository the daemon hears whose other pull requests open and move many times a minute would
+// otherwise cost the daemon one transaction under the fact lock (ApplyFact) for every one, all of
+// them changing nothing. Every action carries head_ref.
 func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, error) {
 	branch, _ := rawString(raw, "head_ref")
 	if _, isIssueBranch := claim.BranchIssue(branch); !isIssueBranch {
@@ -721,7 +721,7 @@ func decodeReview(repository ghrepo.Repository, raw map[string]json.RawMessage) 
 // whether each head on a base still merges into it when the base moves and sends no event for the
 // pull request itself, so a head the record holds as clean goes behind or dirty unheard.
 //
-// A base push costs the daemon one transaction under the fact lock (ApplyFact), which a mapped
+// A base push costs the daemon one transaction under the fact lock (ApplyFact), which a heard
 // repository that other automation pushes to many times a minute pays per push; the cost is paid
 // because the alternative is a mergeability the record cannot know is stale. The handler's first
 // read is one indexed lookup of the open pull requests recorded on that base

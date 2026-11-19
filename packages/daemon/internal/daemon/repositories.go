@@ -179,8 +179,9 @@ func (r *repositories) entry(key string) *repositoryEntry {
 // pair's `to` among them, is answered unchanged. It is the one rule every GitHub call the daemon
 // makes for a recorded tree reads — the owner its App token is minted for and, where the call is
 // a REST write or a GraphQL query, the repository it addresses — since a record keeps the name it
-// was written under for its whole life while GitHub, after a transfer, holds the repository under
-// the other name, on the other owner's installation.
+// was written under until this release's one-time rename pass writes the pair's `to` over it
+// (renamePass), while GitHub, after a transfer, holds the repository under the other name, on the
+// other owner's installation.
 //
 // What the rule asks the entries is whether each of the pair's two names is served, one map
 // lookup apiece, and never whether any repository of their owners is; ghrepo.Renames.Serving is

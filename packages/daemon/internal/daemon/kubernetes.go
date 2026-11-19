@@ -685,7 +685,7 @@ func memoryGuardKillEventID(report shimwire.LauncherMemoryKill) string {
 //
 // It is the one token source the Sandbox runtime's three mint sites share (runtime/sandbox's
 // provision, its gh credential refresh and its repository cache Secret), so the repository a
-// configured rename moved to another owner is mapped here, once, to the name whose installation
+// configured rename moved to another owner is turned here, once, into the name whose installation
 // holds it now (serving): nothing under runtime/sandbox knows of a rename.
 //
 // Only the token follows the rename. Every address those three sites build — the pod's feed, its

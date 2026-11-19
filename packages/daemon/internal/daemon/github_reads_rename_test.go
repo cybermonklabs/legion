@@ -18,7 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
-// A record keeps the repository's name for its whole life, and GitHub, after a transfer, holds
+// A record keeps the repository's name until the one-time rename pass, and GitHub, after a transfer, holds
 // the repository under the other name on the other owner's installation. Every GitHub call the
 // daemon makes for a recorded tree therefore reads the name GitHub serves (repositories.serving),
 // and the two reads of a pull request are no exception:

@@ -34,8 +34,8 @@ const defaultBranchTTL = 10 * time.Minute
 // owner and the call addresses it. The rename rule is read here, where the token is minted, so
 // that no caller hands an owner in and none can forget. A repository the rule leaves as it is is
 // its own serving repository, so its read is the read it always was, and a nil repository state
-// maps nothing — which only a test passes, since the boot builds one whatever the deployment
-// configures (newRepositories, in daemon.go's plan).
+// serves every name as it is — which only a test passes, since the boot builds one whatever the
+// deployment configures (newRepositories, in daemon.go's plan).
 //
 // What is kept is keyed by the name the caller asked for, never the served one, since that is the
 // name the caller holds and asks Kept for; the answer itself carries GitHub's own spelling of the

@@ -1117,9 +1117,10 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 // is fetched once per App and cached).
 //
 // recorded is the repository the issue's record names, and the mint is made for the owner GitHub
-// serves it under now (repositories.serving): the record keeps the name it was written under for
-// its whole life, while after a transfer the installation that covers the repository is the owner
-// it moved to's. Taking the repository rather than an owner is what keeps that rule here, in
+// serves it under now (repositories.serving): the record keeps the name it was written under
+// until the one-time rename pass writes the pair's `to` over it (renamePass), while after a
+// transfer the installation that covers the repository is the owner it moved to's. Taking the
+// repository rather than an owner is what keeps that rule here, in
 // the one place both callers reach — a launch's spec (specs.SpawnSpec) and a working copy's
 // adoption (adoptIdentity) — so neither can mint on an owner the repository has left and fail
 // every launch of a tree open at the transfer.

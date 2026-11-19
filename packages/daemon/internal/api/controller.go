@@ -189,6 +189,12 @@ func (s *server) controllerSecret(w http.ResponseWriter, r *http.Request) {
 // it has and tries again at its next tick, since the owner is reached again the moment the
 // account grants the App those permissions. A caller that names no owner is answered from the
 // owners the mint did reach, so this is the recorded default's case alone.
+//
+// A review App installed on no account (runtime.ErrNoGitHubOwner) leaves the controller no GitHub
+// owner, and the answer says exactly that. Its code stays GITHUB_OWNER_UNCONFIGURED, although no
+// configuration names an owner: a `legion controller start` already deployed reads that code as a
+// daemon with nothing to act as (cmd/legion's controllerStartGitHubCredential), and a deployed
+// client must still read the answer.
 func (s *server) controllerGitHubCredential(w http.ResponseWriter, r *http.Request) {
 	if s.controllerLaunched {
 		s.log.Warn("api: refused a controller GitHub credential: this daemon launches the project's controller itself")
@@ -233,7 +239,7 @@ func (s *server) controllerGitHubCredential(w http.ResponseWriter, r *http.Reque
 	bundle, err := appauth.ControllerCredential(s.tokens, s.served, s.renames, read, nil, s.log)(r.Context(), req.Default)
 	switch {
 	case errors.Is(err, runtime.ErrNoGitHubOwner):
-		writeFailure(w, http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED", "no repository owner is configured for GitHub App tokens")
+		writeFailure(w, http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED", "the review App is installed on no account, so the controller has no GitHub owner")
 		return
 	case errors.Is(err, appauth.ErrDefaultOwnerNotInstalled):
 		s.log.Warn("api: refused a controller GitHub credential: DEFAULT_OWNER_NOT_INSTALLED", "default", strings.ToLower(req.Default))

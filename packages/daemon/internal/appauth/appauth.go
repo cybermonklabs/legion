@@ -382,11 +382,11 @@ func (m *Manager) Forget(role AppRole, owner string) {
 
 // forgetNarrowingRefusal drops the narrowing refusal remembered for role's read lease on owner
 // (lease, narrowingRefusalWindow), and nothing else: no lease, and no other scope's refusal. It
-// is for the caller that knows that one memory is stale — the token-mode mapping check, which
-// asks whether the App's installation holds a repository and must have GitHub's answer rather
-// than the memory of a refusal met before an operator fixed the grant (listInstallation) —
-// where Forget, which drops every lease and every refusal of the owner, would throw away a
-// token that is good and make the owner's other scope mint again.
+// is for the caller that knows that one memory is stale — the token-mode installation check of a
+// repository's preparation, which asks whether the App's installation holds a repository and must
+// have GitHub's answer rather than the memory of a refusal met before an operator fixed the grant
+// (listInstallation) — where Forget, which drops every lease and every refusal of the owner, would
+// throw away a token that is good and make the owner's other scope mint again.
 func (m *Manager) forgetNarrowingRefusal(role AppRole, owner string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -438,10 +438,10 @@ func (r mintRequest) scope() scope { return leaseScope(r.read, r.role, r.owner) 
 // scope that succeeds drops what was remembered of it.
 //
 // The memory answers the ask that would repeat a refusal, never one that already knows better.
-// A caller holding what the window cannot know — the token-mode mapping check, which asks
-// whether an installation holds a repository after an operator may have changed the grant
-// (listInstallation) — drops that one scope's memory before it asks (forgetNarrowingRefusal),
-// so what it is served is GitHub's answer now.
+// A caller holding what the window cannot know — the token-mode installation check of a
+// repository's preparation, which asks whether an installation holds a repository after an
+// operator may have changed the grant (listInstallation) — drops that one scope's memory before it
+// asks (forgetNarrowingRefusal), so what it is served is GitHub's answer now.
 //
 // What a cached answer is worth is worth saying, since a caller may read such an ask as what
 // its installation does: a lease served from here says a token of that scope was minted within
@@ -452,9 +452,9 @@ func (r mintRequest) scope() scope { return leaseScope(r.read, r.role, r.owner) 
 // at every build (InstalledOwners, credential.go).
 //
 // A mint that succeeds also drops every lease the cache holds that has expired. The cache is
-// keyed by the owner a lease is minted on, so a mapping that changes over a long-lived daemon's
-// life leaves entries no caller asks for again, and an expired one can never be served: a lease
-// is served only while more than refreshWindow remains.
+// keyed by the owner a lease is minted on, so the owners a long-lived daemon works under change
+// over its life and leave entries no caller asks for again, and an expired one can never be
+// served: a lease is served only while more than refreshWindow remains.
 func (m *Manager) lease(ctx context.Context, request mintRequest) (Lease, error) {
 	request.owner = strings.TrimSpace(request.owner)
 	if request.owner == "" {

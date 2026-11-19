@@ -241,8 +241,9 @@ func TestGitHubCredentialBundlesEveryOwnerTheAppIsInstalledOn(t *testing.T) {
 		t.Errorf("a mint that fails for another owner = %q (default %q), %v; want acme's directory alone, served", other.DirNames(), other.Default, err)
 	}
 	none := GitHubCredential(sourceOf(ownerTokens{}, installedOnOwners()), projectRepos(), ghrepo.Renames{}, nil, nil, quietBundleLog())
-	if _, err := none(context.Background(), claim.RoleController, ghrepo.Repository{}); !errors.Is(err, runtime.ErrNoGitHubOwner) {
-		t.Errorf("a bundle of an App installed nowhere = %v, want runtime.ErrNoGitHubOwner", err)
+	const noOwner = "the review App for controller: the App is installed on no account, so there is no GitHub owner to mint a lease for"
+	if _, err := none(context.Background(), claim.RoleController, ghrepo.Repository{}); !errors.Is(err, runtime.ErrNoGitHubOwner) || err.Error() != noOwner {
+		t.Errorf("a bundle of an App installed on no account = %v, want runtime.ErrNoGitHubOwner saying %q", err, noOwner)
 	}
 }
 
@@ -852,8 +853,9 @@ func TestControllerCredentialIsReadOnlyForEveryOwner(t *testing.T) {
 		t.Errorf("the controller asking for an owner the App is not installed on = %v, minted %q; want ErrDefaultOwnerNotInstalled naming it and no mint", err, minted)
 	}
 	none := ControllerCredential(sourceOf(ownerTokens{}, installedOnOwners()), projectRepos(), ghrepo.Renames{}, nil, nil, quietBundleLog())
-	if _, err := none(context.Background(), ""); !errors.Is(err, runtime.ErrNoGitHubOwner) {
-		t.Errorf("a controller bundle of an App installed nowhere = %v, want runtime.ErrNoGitHubOwner", err)
+	const noOwner = "the review App for controller: the App is installed on no account, so there is no GitHub owner to mint a lease for"
+	if _, err := none(context.Background(), ""); !errors.Is(err, runtime.ErrNoGitHubOwner) || err.Error() != noOwner {
+		t.Errorf("a controller bundle of an App installed on no account = %v, want runtime.ErrNoGitHubOwner saying %q", err, noOwner)
 	}
 }
 

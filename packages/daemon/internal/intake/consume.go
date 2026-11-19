@@ -957,8 +957,8 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 // (resolveReviewBody, resolveReviewPermission): the workflow applies either fact only to a
 // recorded pull request, so one of any other pull request is acknowledged with no transaction
 // under the fact lock (ApplyFact) and no GitHub read, whatever the number of other pull requests
-// a mapped repository reviews and checks. A pull request recorded after this read, by a later
-// opened, gets its checks and reviews from their next event.
+// a repository the daemon hears reviews and checks. A pull request recorded after this read, by
+// a later opened, gets its checks and reviews from their next event.
 func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact Fact) (bool, error) {
 	var repo string
 	var number int

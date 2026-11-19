@@ -26,7 +26,7 @@ func twoOwnerBundle(acmeToken string) Bundle {
 // WriteBundle writes each owner's two gh files under <root>/<owner>, reports the owners whose
 // hosts.yml changed (all of them on the first write, sorted), then only the owner whose token
 // turned, and removes every entry of root that is neither an owner of the bundle nor its pairs
-// file: an owner dropped from the mapping, a file of a
+// file: an owner the App's installations no longer hold, a file of a
 // directory written before bundles, and anything else, such as a file naming a default owner, that
 // is no owner's directory, since nothing under the root but the gh files and the pairs the
 // wrappers route by is the daemon's.

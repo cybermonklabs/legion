@@ -13,12 +13,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 )
 
-// liveRepo is the repository the project's Dispatch mapping serves (workflowConfig's
-// servedBootCall), which every issue a live proof and the idle rig seed is on.
+// liveRepo is the repository every issue a live proof and the idle rig seed is on.
 const liveRepo = "acme/widgets"
 
-// liveDispatch is workflowConfig's Dispatch stand-in — the repository mapping and an empty issue
-// list — grown into the board the daemon reads and writes: it holds each issue's status, parent and
+// liveDispatch is workflowConfig's Dispatch stand-in — the calls every boot makes and an empty
+// issue list — grown into the board the daemon reads and writes: it holds each issue's status, parent and
 // labels, as Dispatch's own board does, answers the issue reads the daemon makes (the outbox's
 // before a status write, a release's walk up an issue's parent chain, an event's walk up its
 // Dispatch chain to the top) and 404s an issue it does not hold, records every status and message

@@ -294,8 +294,8 @@ production check as `check` on `GET /legion/v1/state`, `handoff_complete`'s opti
 `LEGION_REPOSITORY_CACHE_TOKEN_FILE`, and the state's `repositories[].cache` and `caches`), after
 contract 31's issue repository on
 `GET /legion/v1/state` and `read_record` (sjawhar/legion#1986: each issue's `repo` and
-`defaultBranch`, its pull request's `repo`, and the state's `repositories`, the project's mapping
-as the daemon serves it), after contract 30's per-owner gh bundle
+`defaultBranch`, its pull request's `repo`, and the state's `repositories`, the repositories the
+daemon then served), after contract 30's per-owner gh bundle
 (sjawhar/legion#1986: `LEGION_GH_OWNERS_DIR` with one gh directory per owner, `LEGION_GH_PATH`,
 the `legion gh` wrapper and `legion git-credential`, and the controller's per-owner credential
 answer), after contract 29's daemon-launched controller (sjawhar/legion#1998: its pod enrolled

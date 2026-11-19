@@ -165,9 +165,9 @@ func TestAClaimsBackendIsItsRolesAndAClaudeRoleIsToldClaudeCodesTools(t *testing
 // A worker's addressing ends naming its issue's repository and default branch, then the reach
 // its role's own GitHub App gives it: the owner accounts that App is installed on, and that its
 // token reaches every repository of those owners. It names no repository list, since the
-// installation and not the mapping decides where the project may work (INFRA-2543 R6), and the
-// owners are the App's own and not the owners of the repositories the project is mapped, which
-// the daemon answers per role (plan.appOwners). A daemon that runs no workflow resolves no
+// installation decides where the project may work (INFRA-2543 R6), and the owners are the App's
+// own and not the owners of the repositories the project's records name, which the daemon
+// answers per role (plan.appOwners). A daemon that runs no workflow resolves no
 // repository for its claims: the whole sentence is left off, not just the issue's own
 // repository. A deployment whose Apps are installed nowhere is told the App is installed on
 // none, as the controller's addressing is.
@@ -224,7 +224,7 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 
 	// The owners named are the role's own App's: an implementer's and a reviewer's addressing
 	// differ where their Apps' installations do, which is what the clause promises and what the
-	// owners of the project's mapped repositories could not say (INFRA-2543 R6).
+	// owners of the repositories the project's records name could not say (INFRA-2543 R6).
 	s.appOwners = func(role claim.Role) []string { return []string{string(appauth.AppRoleFor(role)) + "-owner"} }
 	if got, want := launch(), own+"your role's GitHub App is installed on the owner implement-owner, and its token reaches every repository of that owner."; !strings.HasSuffix(got, want) {
 		t.Fatalf("the implementer's addressing = %q, want it to end with %q", got, want)

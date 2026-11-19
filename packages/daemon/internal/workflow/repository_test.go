@@ -167,7 +167,7 @@ func TestARecordedIssueSaysNothingWhenItsResolutionIsItsRenamePartner(t *testing
 			apply("re-pointed", repointed)
 			apply("re-pointed-again", childTodo(4, "cybermonklabs/legion"))
 			if child := issueRecord(t, pool, "LEGION-209"); child == nil || child.Repo != "sjawhar/legion" || child.GitHubRepo != "sjawhar/legion" {
-				t.Fatalf("child = %#v, want it still recorded on sjawhar/legion: a rename rewrites no record", child)
+				t.Fatalf("child = %#v, want it still recorded on sjawhar/legion: the engine's apply of a re-pointed issue rewrites no record", child)
 			}
 			var kept []outboxEntry
 			for _, message := range outboxOf(t, pool, "dispatch_message") {

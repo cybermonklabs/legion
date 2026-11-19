@@ -275,8 +275,8 @@ type ReservationSettings struct {
 }
 
 // RepositoryCacheSettings is the settled `runtime.kubernetes.repository_cache`: each repository
-// cache's volume, its fetch period, how long an unmapped repository's cache is kept, and its one
-// container's reservation in a pod's shape.
+// cache's volume, its fetch period, how long the cache of a repository no live record names is
+// kept, and its one container's reservation in a pod's shape.
 type RepositoryCacheSettings struct {
 	Volume         string              `json:"volume"`
 	RefreshMinutes int                 `json:"refresh_minutes"`
@@ -300,8 +300,9 @@ type PluginsSettings struct {
 	PiEnvoy  string `json:"pi_envoy"`
 }
 
-// ProjectSettings is one `projects.<KEY>` entry. Dispatch holds the project's repository mapping,
-// which the state's `repositories` shows, and this file holds none of it.
+// ProjectSettings is one `projects.<KEY>` entry. It names no repository the project works in: an
+// issue's repository is Dispatch's resolution of it, and the state's `repositories` shows the
+// repositories the live records name.
 type ProjectSettings struct {
 	SlackChannels []string       `json:"slack_channels"`
 	Memory        MemorySettings `json:"memory"`

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -238,15 +239,19 @@ func (s *server) redeemIdentityCheck(w http.ResponseWriter, r *http.Request, bod
 
 // appLease is the GitHub App token mint every credential route needs: the token source must be
 // configured, repo must name the repository the token acts on, whose owner holds the
-// installation it is minted from, and the mint itself must succeed. logRole names the role in the
-// error log line; it carries no secret.
+// installation it is minted from, and the mint itself must succeed. A request that names no
+// repository has no owner to mint for, and its answer says so; its code is
+// GITHUB_OWNER_UNCONFIGURED, the code the controller's credential route answers when its App is
+// installed on no account (controllerGitHubCredential). logRole names the role in the error log
+// line; it carries no secret.
 func (s *server) appLease(w http.ResponseWriter, r *http.Request, role appauth.AppRole, repo ghrepo.Repository, logRole string) (appauth.Lease, bool) {
 	if s.tokens == nil {
 		writeFailure(w, http.StatusInternalServerError, "GITHUB_TOKEN_SOURCE_UNAVAILABLE", "GitHub token source is unavailable")
 		return appauth.Lease{}, false
 	}
 	if repo.IsZero() {
-		writeFailure(w, http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED", "no repository owner is configured for GitHub App tokens")
+		writeFailure(w, http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED",
+			fmt.Sprintf("the request names no repository, so the %s App has no GitHub owner to mint a token for", role))
 		return appauth.Lease{}, false
 	}
 	lease, err := s.tokens.Token(r.Context(), role, repo.Owner())
