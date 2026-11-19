@@ -156,12 +156,12 @@ export const issueAsksQuery = (key: string) =>
  * rename, removal or review, and an ask or comment in it; and a names read
  * (`["reference-targets", …]`) on an event that changes the words or the name under an address
  * its key holds, on the issue or project document that address is of: a comment's edit, an
- * ask's edit, a document's new version, rename or removal, and an issue's write that changes its
- * title (`referenceNameTargets`). A names read's key is the set of addresses it names, so a tree
- * that comes to hold another set reads again under a key of its own, and only a change under an
- * address the tree already names needs a rule. No rule there names `["whoami"]`: the reader's
- * login does not change while the page is open. A gap in the feed refreshes every read the app
- * holds (`refreshQueries`), these among them, and window focus fetches again only a read in
+ * ask's edit, a document's creation, new version, rename or removal, and an issue's write that
+ * changes its title (`referenceNameTargets`). A names read's key is the set of addresses it names,
+ * so a tree that comes to hold another set reads again under a key of its own, and only a change
+ * under an address the tree already names needs a rule. No rule there names `["whoami"]`: the
+ * reader's login does not change while the page is open. A gap in the feed refreshes every read the
+ * app holds (`refreshQueries`), these among them, and window focus fetches again only a read in
  * error (`refetchFailedOnFocus`).
  */
 const EVENT_FRESH = {
