@@ -2020,9 +2020,10 @@ test("an agent row is one line at 1440, and at 390 puts the age and the whole pa
           client: element.clientWidth,
           scroll: element.scrollWidth,
         }));
-      expect(clipped.scroll, "the name of 64 UTF-16 code units is shortened on screen").toBeGreaterThan(
-        clipped.client
-      );
+      expect(
+        clipped.scroll,
+        "the name of 64 UTF-16 code units is shortened on screen"
+      ).toBeGreaterThan(clipped.client);
     }
   } finally {
     await context.close();
