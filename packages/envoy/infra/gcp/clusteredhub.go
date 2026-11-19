@@ -375,7 +375,7 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 		return clusteredHubSettings{}, core.InputErrorf("namespace", "namespace %q must be a DNS label", args.Namespace)
 	}
 	if len(args.ServiceName) > 63 || !dns1035LabelRule.MatchString(args.ServiceName) {
-		return clusteredHubSettings{}, core.InputErrorf("serviceName", "serviceName %q must be a DNS-1035 label, a Service's name: a letter first, at most 63 characters", args.ServiceName)
+		return clusteredHubSettings{}, core.InputErrorf("serviceName", "serviceName %q must be a DNS-1035 label, a Service's name: a letter first, at most 63 ASCII characters", args.ServiceName)
 	}
 	for _, image := range []struct{ input, ref string }{
 		{"natsImage", args.NatsImage}, {"reloaderImage", args.ReloaderImage}, {"exporterImage", args.ExporterImage},

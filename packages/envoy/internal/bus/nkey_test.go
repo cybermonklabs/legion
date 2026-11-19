@@ -276,7 +276,7 @@ func TestHoldsSeed(t *testing.T) {
 		// The README seed's bytes behind a seed's prefix of the account type, with a valid checksum.
 		{"an account seed", "SAAKYRHVIOREXV7EUZTBHUHL7NUMHPMAS7QMDU3GTIUWEI5LDNOXD443AI", true},
 		{"truncated", seed[:57], false},
-		{"one character changed", seed[:5] + "A" + seed[6:], false},
+		{"one base32 character changed", seed[:5] + "A" + seed[6:], false},
 		// The same 32 bytes behind the prefix bytes (0, 0), with a valid checksum: no seed.
 		{"a seed's bytes behind another prefix byte", "AAAKYRHVIOREXV7EUZTBHUHL7NUMHPMAS7QMDU3GTIUWEI5LDNOXD43I5I", false},
 		{"a public key", publicKey, false},

@@ -90,7 +90,7 @@ func TestPromptReaderFeed(t *testing.T) {
 			err:   promptControlByteError{c: '\t'},
 		},
 		{
-			name:  "an Escape between two characters is a control byte inside the value",
+			name:  "an Escape between two ASCII characters is a control byte inside the value",
 			steps: []feedStep{{in: "ab\x1bcd\r", done: true}},
 			err:   promptControlByteError{c: 0x1b, textBefore: true, textAfter: true},
 		},

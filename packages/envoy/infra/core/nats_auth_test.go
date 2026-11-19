@@ -214,7 +214,7 @@ func TestValidateAccepts(t *testing.T) {
 		change func(a *core.Authorization)
 	}{
 		{"the placeholder", func(*core.Authorization) {}},
-		{"a one-character name", func(a *core.Authorization) { a.Users[0].Name = "a" }},
+		{"a name of one ASCII letter", func(a *core.Authorization) { a.Users[0].Name = "a" }},
 		{"a name of 48 ASCII letters", func(a *core.Authorization) { a.Users[0].Name = strings.Repeat("a", 48) }},
 		{"no fallback, the fallback's user keeping a seed", func(a *core.Authorization) {
 			a.NoAuthUser = ""

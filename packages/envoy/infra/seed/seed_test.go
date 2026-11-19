@@ -474,7 +474,7 @@ func TestVerifyReportsAStoredValueThatIsNoUserSeed(t *testing.T) {
 		{"not base32", "SU!!!not-base32", notASeed + "the value is not base32"},
 		{"padding inside", readmeSeed[:8] + "=" + readmeSeed[9:], notASeed + "the value is not base32"},
 		{"a truncated seed", readmeSeed[:56], notASeed + "the value decodes to 35 bytes, not the 36 of a seed"},
-		{"one character changed", readmeSeed[:5] + "A" + readmeSeed[6:], notASeed + "the value's checksum does not match"},
+		{"one base32 character changed", readmeSeed[:5] + "A" + readmeSeed[6:], notASeed + "the value's checksum does not match"},
 		// The README seed's 32 bytes behind other prefix bytes, each with a valid checksum: (0, 0);
 		// a seed's prefix with type 8, which nkeys knows no key of; a seed's prefix with the account
 		// type (nkeys' account seed).

@@ -246,6 +246,6 @@ func TestExecReleasesACommandOverTheBodyCap(t *testing.T) {
 		t.Fatalf("decode the release body: %v", err)
 	}
 	if len(sent.Command) != 32 || sent.Command[3] != strings.Repeat("é", 128) || sent.Command[4] != strings.Repeat("x", 120) {
-		t.Fatalf("the release named %d arguments (the 4th %d bytes), want 32, the 4th cut to 128 whole characters", len(sent.Command), len(sent.Command[min(3, len(sent.Command)-1)]))
+		t.Fatalf("the release named %d arguments (the 4th %d bytes), want 32, the 4th cut to 128 whole é (256 bytes)", len(sent.Command), len(sent.Command[min(3, len(sent.Command)-1)]))
 	}
 }

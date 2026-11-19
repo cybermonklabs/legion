@@ -290,7 +290,7 @@ func TestSpendAttributesRefusalAppliesTheDetectorsOwnRules(t *testing.T) {
 			"\uFEFF=v", `its member "=v" has an empty key`},
 		{"a member of U+FEFF alone, which the detector trims to empty and filters away",
 			"theorem.project=legion,\uFEFF", ""},
-		{"a key of U+0085, which the detector keeps as one character and parses",
+		{"a key of U+0085, which the detector keeps as one code point and parses",
 			"\u0085=v", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
