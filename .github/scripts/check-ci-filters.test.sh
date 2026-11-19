@@ -2910,4 +2910,49 @@ PY
 check "the guide's list and the label's gates are the same set" \
   "$(is "$mismatch" "")"
 
+# The toolchain guard: the check runs every go command on the toolchain `go env GOROOT` names,
+# under GOTOOLCHAIN=local, and a go older than the module's `go` directive cannot list it at all.
+# Without the guard every closure is unknown, so every gate reads as missing the files the check
+# could not see, and `write` rewrites the generated blocks from read sets it never computed. The
+# fake go below answers `env GOROOT` with its own root and `version` with a go older than the
+# fixture's `go 1.21`, which is what a version manager's exported GOROOT does on a real machine.
+echo "case: a resolved go older than the module's directive stops both modes"
+root=$(fixture old-toolchain)
+fake_root="$work/fake-go"
+mkdir -p "$fake_root/bin"
+cat > "$fake_root/bin/go" <<EOF
+#!/bin/sh
+# A go that is older than the fixture's directive, and names its own root as a real go does.
+case "\$1 \$2" in
+  "env GOROOT") echo "$fake_root" ;;
+  "version ") echo "go version go1.20.0 \$(uname -s | tr 'A-Z' 'a-z')/amd64" ;;
+  *) echo "fake go: refusing \$*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$fake_root/bin/go"
+ci_before=$(sha256sum "$root/.github/workflows/ci.yaml")
+set +e
+out=$(PATH="$fake_root/bin:$PATH" "$root/.github/scripts/check-ci-filters.sh" 2>&1)
+status=$?
+set -e
+check "fails" "$(is "$status" 1)"
+check "names both versions and the binary it resolved" \
+  "$(contains "$out" "runs its go commands on $fake_root/bin/go (go1.20.0) under GOTOOLCHAIN=local, which is older than the go 1.21 that go.work requires")"
+check "names go env GOROOT as what resolved it" "$(contains "$out" 'resolves that binary with `go env GOROOT`')"
+check "reports no gate, since it ran no go command" "$(is "$(grep -c '^report: ' <<<"$out" || true)" 0)"
+set +e
+out=$(PATH="$fake_root/bin:$PATH" "$root/.github/scripts/check-ci-filters.sh" write 2>&1)
+status=$?
+set -e
+check "the write mode fails too" "$(is "$status" 1)"
+check "and writes nothing" "$(is "$(sha256sum "$root/.github/workflows/ci.yaml")" "$ci_before")"
+
+# The control for that guard: the same fixture and the same run, on this machine's own go, which
+# is newer than the fixture's directive. A guard that refused on any difference, rather than on a
+# go too old to list the module, would fail here and on every case above.
+echo "case: a resolved go newer than the module's directive runs the check"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "and reports the gate" "$(contains "$out" '^report: app: [0-9][0-9]* files, 0 uncovered (filter app)$')"
+
 summary "check-ci-filters.sh holds each filter to its job's Go closure, its rules and its table"

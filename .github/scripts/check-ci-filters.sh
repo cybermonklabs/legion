@@ -396,6 +396,21 @@
 # directory and under this machine's own GOMODCACHE and GOPROXY (`go env GOROOT`), and runs
 # every go command with that toolchain's own binary under GOTOOLCHAIN=local.
 #
+# That resolution has a hole, which the guard below closes. `go env GOROOT` answers the GOROOT in
+# the environment before it answers the binary that ran, so where something has exported a GOROOT
+# naming another go - a version manager does, and keeps it across a change of PATH - the engine
+# runs that go, whatever is first on PATH, and GOTOOLCHAIN=local then forbids the upgrade that
+# would have repaired it. On this repository's dev box that is three go versions in one run: the
+# toolchain on PATH (go1.26.11, which `ls …/toolchain@*/bin | head -1` picked by name), the GOROOT
+# a version manager exported (go1.27.0), and the go1.27.3 go.work pins. Every `go list` then fails
+# with `go.work requires go >= 1.27.3`, every closure is unknown, and the run reports each gate's
+# filter as missing the files it could not see: 1,558 problems, none of them the tree's. The write
+# mode is worse than useless there, since it rewrites the gate filters' generated blocks from read
+# sets it never computed. So the version is held before the first go command: both modes stop, and
+# neither reports nor writes, when the go this check resolves is older than the `go` directive of
+# go.work or of a module it lists. A newer go is not stopped, since go itself runs a directive
+# below its own version and CI's own toolchain is the pinned one.
+#
 # EXCLUDED leaves worker_image to check-image-trigger-paths.sh, which proves it covers every file
 # its image build reads. envoy_smoke is a gate whose image inputs are that check's: this one holds
 # it to the job's go commands and other step reads. The RULES and the static reads are kept by
@@ -418,12 +433,16 @@
 # Legion worker pod is one - every closure above fails with `toolchain not available`, because the
 # go commands run over an emptied GOMODCACHE and so cannot reach the toolchain module either. The
 # real findings then sit among those, where a reader judging this by its tail or its exit status
-# sees nothing. Run it on the toolchain's own binary instead, and it answers as CI does, expanding
-# the glob in a command of its own: inside the double quotes PATH needs the shell leaves it
-# literal, and GOTOOLCHAIN=local then pins the bootstrap, whose refusal reads as a version
-# mismatch rather than as the setup it is.
-#   tc=$(ls -d "$(go env GOMODCACHE)"/golang.org/toolchain@*/bin | head -1)
-#   PATH="$tc:$PATH" GOTOOLCHAIN=local .github/scripts/check-ci-filters.sh
+# sees nothing. Run it on the toolchain's own binary instead, and it answers as CI does: name the
+# toolchain the workspace pins, rather than the first one the cache happens to hold, and take the
+# GOROOT of another go out of the environment, since `go env GOROOT` answers that variable before
+# it answers the binary that ran (the guard below says what that costs). GOTOOLCHAIN=local then
+# pins the bootstrap, whose refusal reads as a version mismatch rather than as the setup it is.
+#   pin=$(sed -n 's/^go //p' go.work)
+#   tc="$(go env GOMODCACHE)/golang.org/toolchain@v0.0.1-go${pin}.$(go env GOOS)-$(go env GOARCH)/bin"
+#   env -u GOROOT PATH="$tc:$PATH" GOTOOLCHAIN=local .github/scripts/check-ci-filters.sh
+# A `ls …/toolchain@*/bin | head -1` picks by name, so a cache holding go1.26.11 beside the pinned
+# go1.27.3 hands over the older one, and the guard below stops the run.
 # Either way, read its output by grepping for the problem rather than by its last line.
 set -euo pipefail
 
@@ -439,6 +458,50 @@ case "$#:${1:-}" in
     ;;
 esac
 export CI_FILTERS_MODE="${1:-check}"
+
+# THE TOOLCHAIN GUARD. The header's paragraph on the empty module cache says what this closes: the
+# engine runs every go command on the toolchain `go env GOROOT` names, under GOTOOLCHAIN=local, and
+# that answer follows a GOROOT exported in the environment rather than the go on PATH. A go older
+# than the directive of the modules below cannot list them at all, so every closure would be
+# unknown and every gate would be reported as missing the files this check could not see - and the
+# write mode would rewrite the gate filters' generated blocks from read sets it never computed.
+# Resolved here exactly as the engine resolves it, and held to the highest `go` directive of
+# go.work and of the modules under the directories it uses, which is the set the engine lists and
+# what CI's own setup-go installs. A module outside the workspace is left out: the engine lists
+# none of them, so its directive is no reason to stop this run (docs/research's prototype is one).
+# A newer go passes: go runs a module whose directive is below its own version, and this check's
+# first-party closures are the same under it.
+go_directive() { sed -n 's/^go[[:space:]]\{1,\}\([0-9][0-9.]*\)[[:space:]]*$/\1/p' "$1" | head -1; }
+# go.work first, so that it is the file the message cites where every module names one version.
+module_directives=$(
+  {
+    [ -f go.work ] && printf '%s\t%s\n' "$(go_directive go.work)" go.work
+    {
+      # Both forms go.work takes: `use ./dir` on its own line, and the lines of a `use (…)` block.
+      [ -f go.work ] && sed -n 's#^[[:space:]]*\(use[[:space:]]\{1,\}\)\{0,1\}\(\./[^[:space:]()]*\)[[:space:]]*$#\2#p' go.work
+      [ -f go.work ] || echo .
+    } | sort -u | while read -r used; do
+      [ -d "$used" ] || continue
+      find "$used" -name node_modules -prune -o -name go.mod -print | sort | while read -r module_file; do
+        printf '%s\t%s\n' "$(go_directive "$module_file")" "${module_file#./}"
+      done
+    done
+  } | grep -v '^	'
+)
+required_go=$(printf '%s\n' "$module_directives" | cut -f1 | sort -V | tail -1)
+required_from=$(printf '%s\n' "$module_directives" | awk -F'\t' -v want="$required_go" '$1 == want { print $2; exit }')
+resolved_root=$(go env GOROOT 2>/dev/null || true)
+resolved_go=$([ -n "$resolved_root" ] && [ -x "$resolved_root/bin/go" ] && printf '%s' "$resolved_root/bin/go" || command -v go || true)
+resolved_version=$([ -n "$resolved_go" ] && "$resolved_go" version 2>/dev/null | sed -n 's/^go version go\([0-9][0-9.]*\).*/\1/p' || true)
+if [ -n "$required_go" ] && [ -z "$resolved_version" ]; then
+  echo "::error file=.github/scripts/check-ci-filters.sh::this check runs a go command for every job's closure and found no go to run them on (\`go env GOROOT\` gave ${resolved_root:-nothing} and PATH holds no \`go\`), so it would report every gate as missing the files it could not see. Install the go ${required_from} requires (go ${required_go}) and run it again." >&2
+  exit 1
+fi
+if [ -n "$required_go" ] && [ "$resolved_version" != "$required_go" ] &&
+  [ "$(printf '%s\n%s\n' "$required_go" "$resolved_version" | sort -V | head -1)" = "$resolved_version" ]; then
+  echo "::error file=.github/scripts/check-ci-filters.sh::this check runs its go commands on ${resolved_go} (go${resolved_version}) under GOTOOLCHAIN=local, which is older than the go ${required_go} that ${required_from} requires: every \`go list\` would fail, every job's closure would be unknown, and this run would report each gate's filter as missing files that are this toolchain's doing rather than the tree's, while its write mode would rewrite the gate filters' generated blocks from read sets it never computed. It resolves that binary with \`go env GOROOT\`, which answers the GOROOT in the environment (${GOROOT:-unset}) before the go on PATH ($(command -v go || echo none)). Run it on the toolchain the workspace pins, with no GOROOT of another go in the environment: pin=\$(sed -n 's/^go //p' go.work); tc=\"\$(go env GOMODCACHE)/golang.org/toolchain@v0.0.1-go\${pin}.\$(go env GOOS)-\$(go env GOARCH)/bin\"; env -u GOROOT PATH=\"\$tc:\$PATH\" GOTOOLCHAIN=local .github/scripts/check-ci-filters.sh ${CI_FILTERS_MODE}" >&2
+  exit 1
+fi
 
 # The engine (ci_filter_coverage.py), its data (ci_job_reads.py), the rules that read no filter
 # and no go command (ci_workflow_rules.py: rules 10 to 14 above, the workspace one
