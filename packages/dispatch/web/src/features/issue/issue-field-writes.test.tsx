@@ -12,6 +12,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
+import { type Commits, drawnPick, recordCommits } from "../../__tests__/commits";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
 import {
   bodies,
@@ -376,7 +377,9 @@ test("a pick takes out no waiting write of the issue but a pick of its own field
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
   const board = renderHook(() => useBoardMoves(issue.project), { wrapper });
-  const assignee = renderHook(() => useIssueFieldWrite(issue.key, "assignee"), { wrapper });
+  const assignee = renderHook(() => useIssueFieldWrite(issue.key, "assignee", issue.assignee), {
+    wrapper,
+  });
   const plain = (label: string, input: UpdateIssueInput) =>
     act(() => {
       void writesOf(client)
@@ -1269,11 +1272,14 @@ test("a pick refused after a lapse and the same person's sign-in puts back the p
   const client = signedIn();
   const writes = writesOf(client);
   act(() => writes.signedIn("alice"));
-  const picker = renderHook(() => useIssueFieldWrite(issue.key, "priority"), {
-    wrapper: ({ children }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    ),
-  });
+  const picker = renderHook(
+    () => useIssueFieldWrite(issue.key, "priority", issuePriority(issue.priority)),
+    {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
+  );
   let surfaces: RenderResult | undefined;
   try {
     await act(async () => {
@@ -2026,7 +2032,9 @@ test("a pick refused after a read older than the cached issue answered puts back
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  const assignee = renderHook(() => useIssueFieldWrite(issue.key, "assignee"), { wrapper });
+  const assignee = renderHook(() => useIssueFieldWrite(issue.key, "assignee", issue.assignee), {
+    wrapper,
+  });
   const user = userEvent.setup();
   const landedAt = "2026-09-09T00:01:00Z";
   const seen: string[] = [];
@@ -2206,7 +2214,9 @@ test("a refused priority pick puts back the priority an assignee pick that lande
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  const assignee = renderHook(() => useIssueFieldWrite(issue.key, "assignee"), { wrapper });
+  const assignee = renderHook(() => useIssueFieldWrite(issue.key, "assignee", issue.assignee), {
+    wrapper,
+  });
   const user = userEvent.setup();
   const seen: string[] = [];
   const see = (step: string) => {
@@ -2412,7 +2422,9 @@ test("a refused assignee pick puts back the person an Inbox row waited on in Dis
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
   // The page's write store is made before any read, as the app's shell makes it.
-  const assignee = renderHook(() => useIssueFieldWrite(issue.key, "assignee"), { wrapper });
+  const assignee = renderHook(() => useIssueFieldWrite(issue.key, "assignee", issue.assignee), {
+    wrapper,
+  });
   const inbox = renderIn(client, <Inbox />);
   let detail: RenderResult | undefined;
   const seen: string[] = [];
@@ -2758,9 +2770,10 @@ function storedPriority(patchIssue: { mock: { calls: unknown[][] } }): IssuePrio
 }
 
 /** The project's board as the Board reads it (`projectIssuesQuery`, whose read waits until every
- *  board move on the project is answered), showing the priority of CORE-1's card, and, with
- *  `picker`, the card's own priority picker, as each card of the board draws one. */
-function BoardCard({ picker = false }: { picker?: boolean }): ReactNode {
+ *  board move on the project is answered), showing the priority of CORE-1's card, and, given
+ *  `commits`, the card's own priority picker, as each card of the board draws one, each commit of
+ *  it recorded there with the card's priority. */
+function BoardCard({ commits }: { commits?: Commits<IssuePriority | null> }): ReactNode {
   const board = useQuery({
     ...projectIssuesQuery(issue.project, []),
     staleTime: Number.POSITIVE_INFINITY,
@@ -2769,8 +2782,10 @@ function BoardCard({ picker = false }: { picker?: boolean }): ReactNode {
   return (
     <>
       <p data-testid="board-priority">P{card?.priority}</p>
-      {picker && card !== undefined ? (
-        <PriorityControl issueKey={card.key} priority={issuePriority(card.priority)} />
+      {commits !== undefined && card !== undefined ? (
+        <commits.Recorded host={issuePriority(card.priority)}>
+          <PriorityControl issueKey={card.key} priority={issuePriority(card.priority)} />
+        </commits.Recorded>
       ) : null}
     </>
   );
@@ -2780,7 +2795,8 @@ function BoardCard({ picker = false }: { picker?: boolean }): ReactNode {
  *  alone, as the board page draws it - with `others` on it besides CORE-1, whose list and detail
  *  Dispatch answers with the priority it stores as each read reaches it (`stored`), once the row
  *  lets the reads it holds go (`hold`). The client holds the list as Dispatch last answered it,
- *  or, `unread`, holds none yet, so the board reads it. */
+ *  or, `unread`, holds none yet, so the board reads it. `commits` records each commit of the
+ *  card's picker, `onCard`: what its select holds and what its badge says. */
 function renderBoard(
   client: DispatchQueryClient,
   stored: () => IssuePriority | null,
@@ -2806,10 +2822,14 @@ function renderBoard(
     ...dispatchReads(),
     detail: read(() => ({ ...details, priority: stored() })),
   };
+  const commits = recordCommits<IssuePriority | null>(() => {
+    const [select] = prioritySelects();
+    return select === undefined ? "(none)" : drawnPick(select);
+  });
   const view = renderIn(
     client,
     onCard ? (
-      <BoardCard picker />
+      <BoardCard commits={commits} />
     ) : (
       <>
         <CachedPriority reads={reads} />
@@ -2823,6 +2843,7 @@ function renderBoard(
     ),
   });
   return {
+    commits,
     /** Holds every read of the board and the issue that starts from now on until the returned
      *  function lets them answer. */
     hold: () => {
@@ -3214,6 +3235,86 @@ test("a pick refused while a later drag of its card still waits behind another c
     patchIssue.mockRestore();
   }
 });
+
+// A pick made on a card while a drag of that card still waits its turn behind another card's
+// move is older than the drag (`fieldWritesOf`): the pick goes out first, Dispatch stores the
+// drag's lane last, and the card shows that lane. The card's picker draws the card's own priority
+// in every commit from the pick on - never a pick the card does not draw - and the drag's lane
+// once every write has landed, whichever of the pick and the other card's move Dispatch answers
+// first, with no picker drawn again. The row asserts that and not "never P2": when the other
+// card's move lands first, the card itself draws P2 for one commit, while the drag has left its
+// board's queue and not yet joined the issue's line, so `fieldWritesOf` counts it as neither and
+// the pick is the newest write for those microtasks. That gap is the write engine's; the picker
+// draws P2 there because its card does.
+for (const first of ["the pick", "the other card's move"] as const) {
+  test(`a pick made on a card while a drag of it waits behind another card's move draws the card's priority in every commit, when ${first} lands first`, async () => {
+    const other = Promise.withResolvers<Issue>();
+    const pick = Promise.withResolvers<Issue>();
+    const drag = Promise.withResolvers<Issue>();
+    const patchIssue = answerIssuePatches()
+      .mockImplementationOnce(() => other.promise)
+      .mockImplementationOnce(() => pick.promise)
+      .mockImplementationOnce(() => drag.promise);
+    const client = signedIn();
+    const board = renderBoard(client, () => storedPriority(patchIssue), {
+      onCard: true,
+      others: [neighbour],
+    });
+    const user = userEvent.setup();
+    const land = async (
+      save: { readonly promise: Promise<Issue>; readonly resolve: (answer: Issue) => void },
+      answer: Issue
+    ) => {
+      await act(async () => {
+        save.resolve(answer);
+        await save.promise;
+      });
+    };
+    try {
+      act(() => {
+        void board.moves().moveCardToLane(neighbour.key, "todo", 2, 0);
+      });
+      await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
+      act(() => {
+        void board.moves().moveCardToLane(issue.key, "todo", 3, 0);
+      });
+      // The drag waits in the board's scope, out of the store.
+      expect(
+        writesOf(client)
+          .rows()
+          .map((row) => row.label)
+      ).toEqual(["CORE-2 moved on the board"]);
+      expect(board.shown()).toBe("P3");
+      const [picker] = prioritySelects();
+      const fromPick = board.commits.markAt(picker as HTMLSelectElement, "change");
+      await user.selectOptions(picker as HTMLSelectElement, "2");
+      await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
+      if (first === "the pick") {
+        await land(pick, { ...issue, priority: 2 });
+        await land(other, { ...issue, key: neighbour.key });
+      } else {
+        await land(other, { ...issue, key: neighbour.key });
+        await land(pick, { ...issue, priority: 2 });
+      }
+      await waitFor(() => expect(bodies(patchIssue)).toHaveLength(3));
+      await land(drag, { ...issue, priority: 3 });
+      await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+      await waitFor(() => expect(client.isFetching()).toBe(0));
+
+      expect(bodies(patchIssue).map((body) => (body as UpdateIssueInput).priority)).toEqual([
+        2, 2, 3,
+      ]);
+      expect(board.shown()).toBe("P3");
+      expect(fromPick().map(({ drawn }) => drawn)).toEqual(
+        fromPick().map(({ host }) => `${host} P${host}`)
+      );
+      expect(fromPick().at(-1)?.drawn).toBe("3 P3");
+    } finally {
+      board.unmount();
+      patchIssue.mockRestore();
+    }
+  });
+}
 
 // R2, for drags of a card that still wait their turn on the board: a pick of P2 is out, and so
 // is another card's move, so two drags of this card - to P3, then to P0 - both wait behind that

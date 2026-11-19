@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -855,7 +856,9 @@ func (a *Attributor) headAttribution(ctx context.Context, pool *store.Pool, fact
 // complete: the caller's write adds no issue, deletes none (UpsertPullRequestHead), and leaves
 // the row unstamped where the caller can, for the reconcile to read again. A rate limit is
 // returned rather than swallowed, so no caller persists a weaker attribution and then stamps
-// the row read.
+// the row read. The read given up is noted on the attempt ctx carries (githubreads), which only
+// the reconcile's leased pass carries: the intakes and the results routes call this too, and
+// their contexts carry none, so the note changes nothing there.
 func (a *Attributor) attributeHead(ctx context.Context, pool *store.Pool, client *githubapp.Client, token func() (string, error), facts attributionFacts, headRepo string, number int) (headAttributionResult, error) {
 	attributed, err := a.headAttribution(ctx, pool, facts, headRepo)
 	if err != nil || attributed.issueKey != nil || !attributed.ownHead {
@@ -872,6 +875,7 @@ func (a *Attributor) attributeHead(ctx context.Context, pool *store.Pool, client
 		}
 		slog.Debug("dispatch delivery: a pull request head is attributed without its commit messages",
 			"repo", facts.Repo, "number", number, "error", readErr)
+		githubreads.NoteFailuref(ctx, "attribute the head of %s PR #%d without its commit messages: %w", facts.Repo, number, readErr)
 		attributed.complete = false
 		return attributed, nil
 	}

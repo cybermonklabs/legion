@@ -924,6 +924,21 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("NATS_NKEY_SEED_FILE set but empty: err = %v, want it refused", err)
 			}
 		},
+		"NATS_SERVICE_TOKEN_FILE": func(t *testing.T) {
+			missing := filepath.Join(t.TempDir(), "missing")
+			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": missing}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE names "+missing) {
+				t.Errorf("NATS_SERVICE_TOKEN_FILE: err = %v, want the missing token file refused", err)
+			}
+			token := writeFile(t, "token", "a.b.c\n")
+			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": token, "NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE and NATS_NKEY_SEED are both set") {
+				t.Errorf("beside a seed: err = %v, want both named", err)
+			}
+		},
+		"NATS_SERVICE_GOOGLE_AUDIENCE": func(t *testing.T) {
+			if err := natsConnect(map[string]string{"NATS_SERVICE_GOOGLE_AUDIENCE": " "}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_GOOGLE_AUDIENCE is set but empty") {
+				t.Errorf("NATS_SERVICE_GOOGLE_AUDIENCE: err = %v, want the empty audience refused", err)
+			}
+		},
 		"DISPATCH_NATS_DISABLED": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "1"}); !boot.NATSDisabled {
 				t.Error("DISPATCH_NATS_DISABLED=1: NATS on")
@@ -1847,6 +1862,18 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_RECONCILE_AT_START": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.ArchitectureImportAtStart {
+				t.Error("DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START unset: ArchitectureImportAtStart true")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": "1"}); !boot.ArchitectureImportAtStart {
+				t.Error("DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1: ArchitectureImportAtStart false")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": "true"}); boot.ArchitectureImportAtStart {
+				t.Error("DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=true: ArchitectureImportAtStart true, want only 1 to set it")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_CI_RECONCILE_INTERVAL": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.CIReconcileInterval != 0 {
 				t.Errorf("DISPATCH_TEST_CI_RECONCILE_INTERVAL unset: CIReconcileInterval = %v, want 0 (cireconcile.Interval's five minutes)", boot.CIReconcileInterval)
@@ -1864,6 +1891,24 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					fmt.Sprintf("DISPATCH_TEST_CI_RECONCILE_INTERVAL=%q (expected a positive Go duration)", invalid))
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_CI_RECONCILE_INTERVAL": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_REDELIVERY_INTERVAL": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.RedeliveryInterval != 0 {
+				t.Errorf("DISPATCH_TEST_REDELIVERY_INTERVAL unset: RedeliveryInterval = %v, want 0 (redeliver.Interval's two minutes)", boot.RedeliveryInterval)
+			}
+			const quick = 2 * time.Second
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":               "1",
+				"DISPATCH_TEST_REDELIVERY_INTERVAL": quick.String(),
+			})
+			if boot.RedeliveryInterval != quick {
+				t.Errorf("DISPATCH_TEST_REDELIVERY_INTERVAL: RedeliveryInterval = %v, want %v", boot.RedeliveryInterval, quick)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_REDELIVERY_INTERVAL": invalid},
+					fmt.Sprintf("DISPATCH_TEST_REDELIVERY_INTERVAL=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_REDELIVERY_INTERVAL": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.DeliveryReconcileInterval != 0 {

@@ -556,8 +556,9 @@ describe("the session's settings", () => {
 });
 
 // How full the session's context window is, which a viewer draws as a ring (INFRA-812). The
-// figures come from the host's own `getContextUsage()`, and a reading that would draw a ring at
-// nought for a conversation that is nothing of the sort is not sent at all.
+// figures come from the host's own `getContextUsage()`. A reading that would draw a ring at
+// nought for a conversation that is nothing of the sort is not sent at all, and an answer of no
+// window sends the frame that takes the ring away (INFRA-4325).
 describe("the session's context usage", () => {
   const settings: AgentStreamSettingsState = {
     model: "anthropic/claude-opus-5",
@@ -590,26 +591,87 @@ describe("the session's context usage", () => {
     expect(publisher.replay("s1").frames).toEqual([published.at(-1) as AgentStreamFrame]);
   });
 
-  // The pinned binary wires `getContextUsage` more than once: the canonical reading comes from
-  // the session's context breakdown, and the status line's startup session answers
-  // `{tokens: 0, contextWindow, percent: null}`. Sending the second draws a ring at nought per
-  // cent over a conversation that is well underway, which is the whole point of not sending it.
+  // An older pinned build's status-line startup wiring answered
+  // `{tokens: 0, contextWindow, percent: null}`. Sending it draws a ring at nought per cent over a
+  // conversation that is well underway, and it does report a window, so it clears nothing either.
   test("is not sent for a reading a viewer would draw a false ring from", () => {
     const { published, publisher } = harness();
     publisher.noteViewer();
-    publisher.setContext(SUBJECT, { contextWindow: 0, percent: 12, tokens: 24_000 });
     publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: null, tokens: 0 });
-    publisher.setContext(SUBJECT, undefined);
     expect(published).toEqual([]);
     expect(publisher.replay("s1").frames).toEqual([]);
 
-    // A reading the session did send stands: a later refusal neither replaces nor erases it.
+    // A reading the session did send stands: the same answer after it neither replaces it nor
+    // clears it.
     publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: 25, tokens: 50_000 });
     publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: null, tokens: 0 });
-    publisher.setContext(SUBJECT, undefined);
     expect(published).toEqual([
       { contextWindow: 200_000, kind: "context", seq: SEQ_START + 1, tokens: 50_000, v: 1 },
     ]);
+    expect(publisher.replay("s1").frames).toEqual([published[0] as AgentStreamFrame]);
+  });
+
+  // A model with no window, no model at all, or a host with no usage to answer leaves nothing to
+  // draw a share of, and a ring kept from before would claim a share of a window that is gone.
+  for (const [answer, usage] of [
+    ["a window of zero", { contextWindow: 0, percent: 0, tokens: 8_192 }],
+    ["no usage", undefined],
+  ] as const) {
+    test(`is cleared when the host answers ${answer}`, () => {
+      const { published, publisher } = harness();
+      publisher.noteViewer();
+      publisher.setContext(SUBJECT, { contextWindow: 32_768, percent: 25, tokens: 8_192 });
+      publisher.setContext(SUBJECT, usage);
+
+      expect(published).toEqual([
+        { contextWindow: 32_768, kind: "context", seq: SEQ_START + 1, tokens: 8_192, v: 1 },
+        { kind: "context-cleared", seq: SEQ_START + 2, v: 1 },
+      ]);
+      // The replay holds the clearing frame in the reading's place, and the reading no more.
+      expect(publisher.replay("s1").frames).toEqual([published.at(-1) as AgentStreamFrame]);
+    });
+  }
+
+  test("is cleared once, however many answers of no window follow", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    publisher.setContext(SUBJECT, { contextWindow: 32_768, percent: 25, tokens: 8_192 });
+    publisher.setContext(SUBJECT, { contextWindow: 0, percent: 0, tokens: 8_192 });
+    publisher.setContext(SUBJECT, undefined);
+    expect(published.map((frame) => frame.kind)).toEqual(["context", "context-cleared"]);
+    expect(publisher.replay("s1").frames).toEqual([published.at(-1) as AgentStreamFrame]);
+
+    // The second clear took no sequence number either: the next reading is the one after it.
+    publisher.setContext(SUBJECT, { contextWindow: 32_768, percent: 50, tokens: 16_384 });
+    expect(published.at(-1)).toMatchObject({ kind: "context", seq: SEQ_START + 3 });
+  });
+
+  // The clear forgot the reading, so the same figures after it are news to a viewer whose ring
+  // the clear took away.
+  test("is sent again after a clear, even when it reads as the reading before the clear", () => {
+    const { published, publisher } = harness();
+    const usage = { contextWindow: 32_768, percent: 25, tokens: 8_192 };
+    publisher.noteViewer();
+    publisher.setContext(SUBJECT, usage);
+    publisher.setContext(SUBJECT, { contextWindow: 0, percent: 0, tokens: 8_192 });
+    publisher.setContext(SUBJECT, usage);
+
+    expect(published).toEqual([
+      { contextWindow: 32_768, kind: "context", seq: SEQ_START + 1, tokens: 8_192, v: 1 },
+      { kind: "context-cleared", seq: SEQ_START + 2, v: 1 },
+      { contextWindow: 32_768, kind: "context", seq: SEQ_START + 3, tokens: 8_192, v: 1 },
+    ]);
+    expect(publisher.replay("s1").frames).toEqual([published.at(-1) as AgentStreamFrame]);
+  });
+
+  // A page held open while its session is relaunched with `--resume` still draws the earlier
+  // process's ring, and only a clearing frame numbered above that reading takes it away.
+  test("is cleared before any reading, since a page may still draw an earlier process's ring", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    publisher.setContext(SUBJECT, { contextWindow: 0, percent: 0, tokens: 0 });
+
+    expect(published).toEqual([{ kind: "context-cleared", seq: SEQ_START + 1, v: 1 }]);
     expect(publisher.replay("s1").frames).toEqual([published[0] as AgentStreamFrame]);
   });
 
@@ -665,32 +727,53 @@ describe("the session's context usage", () => {
     expect(published.map((frame) => frame.kind)).toEqual(["settings", "context", "commands"]);
   });
 
-  // The command list is the one frame of the three a replay may cut, so the room the context
-  // frame takes is room the list gives up. A replay over the budget is a reply the NATS server
-  // refuses, which costs the viewer its whole history.
-  test("takes its room from the command list, not from the replay's budget", () => {
-    // A catalog filling most of the budget, so the command list is cut where it runs out.
-    const models = Array.from({ length: 5_000 }, (_, index) =>
-      `provider-${index % 7}/model-${String(index).padStart(5, "0")}`.padEnd(100, "-")
-    );
-    const commands = Array.from({ length: AGENT_STREAM_LIMITS.commands }, (_, index) => ({
-      name: `c-${index}`,
-      source: "builtin" as const,
-    }));
-    const listed = (publisher: AgentStreamPublisher): number => {
-      const last = publisher.replay("s1").frames.at(-1);
-      return last?.kind === "commands" ? last.commands.length : -1;
-    };
+  test("as cleared unwatched, goes to a viewer once it is attached, in the reading's place", () => {
+    const { published, publisher } = harness();
+    publisher.setSettings(SUBJECT, settings);
+    publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: 25, tokens: 50_000 });
+    publisher.setContext(SUBJECT, undefined);
+    publisher.setCommands(SUBJECT, [{ name: "compact", source: "builtin" }]);
+    publisher.publishState(SUBJECT);
+    expect(published).toEqual([]);
 
-    const withoutContext = harness().publisher;
-    withoutContext.noteViewer();
-    withoutContext.setSettings(SUBJECT, { ...settings, models });
-    withoutContext.setCommands(SUBJECT, commands);
+    publisher.noteViewer();
+    publisher.publishState(SUBJECT);
+    expect(published).toEqual([...publisher.replay("s1").frames]);
+    expect(published.map((frame) => frame.kind)).toEqual([
+      "settings",
+      "context-cleared",
+      "commands",
+    ]);
+  });
 
+  // A catalog filling most of the budget, so the command list is cut where it runs out.
+  const models = Array.from({ length: 5_000 }, (_, index) =>
+    `provider-${index % 7}/model-${String(index).padStart(5, "0")}`.padEnd(100, "-")
+  );
+  const commands = Array.from({ length: AGENT_STREAM_LIMITS.commands }, (_, index) => ({
+    name: `c-${index}`,
+    source: "builtin" as const,
+  }));
+  /** A watched publisher holding that catalog and every command, the list cut to what fits. */
+  const crowded = (): AgentStreamPublisher => {
     const { publisher } = harness();
     publisher.noteViewer();
     publisher.setSettings(SUBJECT, { ...settings, models });
     publisher.setCommands(SUBJECT, commands);
+    return publisher;
+  };
+  /** How many commands a replay's last frame lists, or -1 when that frame is no command list. */
+  const listed = (publisher: AgentStreamPublisher): number => {
+    const last = publisher.replay("s1").frames.at(-1);
+    return last?.kind === "commands" ? last.commands.length : -1;
+  };
+
+  // The command list is the one frame of the three a replay may cut, so the room the context
+  // frame takes is room the list gives up. A replay over the budget is a reply the NATS server
+  // refuses, which costs the viewer its whole history.
+  test("takes its room from the command list, not from the replay's budget", () => {
+    const withoutContext = crowded();
+    const publisher = crowded();
     publisher.setContext(SUBJECT, { contextWindow: 200_000, percent: 25, tokens: 50_000 });
 
     const { frames } = publisher.replay("s1");
@@ -700,6 +783,21 @@ describe("the session's context usage", () => {
     );
     // The list was already cut by the catalog, and the context frame cuts it further.
     expect(listed(withoutContext)).toBeGreaterThan(0);
+    expect(listed(withoutContext)).toBeLessThan(commands.length);
+    expect(listed(publisher)).toBeLessThan(listed(withoutContext));
+  });
+
+  // The clearing frame rides in the reading's place, so the list pays for its bytes instead.
+  test("takes the clearing frame's room from the command list too", () => {
+    const withoutContext = crowded();
+    const publisher = crowded();
+    publisher.setContext(SUBJECT, undefined);
+
+    const { frames } = publisher.replay("s1");
+    expect(frames.map((frame) => frame.kind)).toEqual(["settings", "context-cleared", "commands"]);
+    expect(new TextEncoder().encode(JSON.stringify(frames)).length).toBeLessThanOrEqual(
+      AGENT_STREAM_LIMITS.historyBytes
+    );
     expect(listed(withoutContext)).toBeLessThan(commands.length);
     expect(listed(publisher)).toBeLessThan(listed(withoutContext));
   });
@@ -716,6 +814,25 @@ describe("the session's context usage", () => {
     // The next session's first reading is news to its viewer, even when it reads the same.
     publisher.setContext(SUBJECT, usage);
     expect(published.map((frame) => frame.kind)).toEqual(["context", "context"]);
+    expect(publisher.replay("s2").frames).toEqual([published.at(-1) as AgentStreamFrame]);
+  });
+
+  test("a clear goes with the conversation when the session is replaced", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    publisher.setContext(SUBJECT, { contextWindow: 32_768, percent: 25, tokens: 8_192 });
+    publisher.setContext(SUBJECT, undefined);
+    publisher.reset();
+    publisher.noteViewer();
+    expect(publisher.replay("s2").frames).toEqual([]);
+
+    // The next session's first answer is news to its viewer, even when it is another clear.
+    publisher.setContext(SUBJECT, undefined);
+    expect(published.map((frame) => frame.kind)).toEqual([
+      "context",
+      "context-cleared",
+      "context-cleared",
+    ]);
     expect(publisher.replay("s2").frames).toEqual([published.at(-1) as AgentStreamFrame]);
   });
 });

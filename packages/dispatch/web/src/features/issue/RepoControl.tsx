@@ -20,6 +20,7 @@ import {
 } from "../../theme/classes";
 import { NOT_OWNER_NAME, wholeValue } from "../settings/classes";
 import { focusOnDocument } from "../shell/roving";
+import { pickLook } from "./issue-field-looks";
 import { useIssueRepo } from "./useIssueRepo";
 
 /** The grammar a repository GitHub could hold is written in, which is the grammar the server
@@ -151,8 +152,8 @@ export function RepoControl({
   inRow = false,
   issueKey,
   project,
-  repo,
-  resolvedRepo,
+  repo: hostRepo,
+  resolvedRepo: hostResolvedRepo,
 }: {
   disabled?: boolean;
   /** Whether the control is the value of a row of the new issue page's Details. It acts inside
@@ -175,6 +176,17 @@ export function RepoControl({
    *  row's text - "None" or the repository - and has not since left it and its clear control,
    *  pressed Escape in it or made a write from it. */
   const [opened, setOpened] = useState(false);
+  const write = useIssueRepo(issueKey, hostRepo);
+  // The issue's own repository and the one it resolves to, as every part of the control draws
+  // them: the write's `shown` (`IssueFieldWrite.shown`), and while that is a pick the host does
+  // not pass, the repository the pick resolves to as the caches draw it (`pickLook`), which for
+  // an inherited one is the host's until Dispatch answers.
+  const repo = write.shown;
+  const resolvedRepo =
+    repo === hostRepo
+      ? hostResolvedRepo
+      : (pickLook({ field: "repo", issueKey, value: repo }).fields.resolved_repo ??
+        hostResolvedRepo);
   const defaultRepo = useQuery({
     ...projectsQuery(),
     select: (projects) => projects.find((candidate) => candidate.key === project)?.default_repo,
@@ -184,7 +196,6 @@ export function RepoControl({
   // Inside `NoTooltips` the clear control's description, named after the box's own so that the
   // control asks React for no id `main` does not.
   const clearDescriptionId = `${descriptionId}clear`;
-  const write = useIssueRepo(issueKey);
   const description =
     resolvedRepo === null
       ? "No repository"
@@ -211,9 +222,9 @@ export function RepoControl({
     setDraft(null);
     setRefused(false);
   };
-  // The draft goes back to the issue's own repository as it is written, so the optimistic value
-  // is what the box shows and a rollback puts the previous one back under it. A refused draft
-  // stays in the box: it is what the reader has to correct.
+  // The draft goes back to the issue's own repository as it is written: the control draws the
+  // repository written from the press on (`repo`), and a rollback puts the previous one back
+  // under it. A refused draft stays in the box: it is what the reader has to correct.
   const commit = () => {
     if (draft === null) {
       return;

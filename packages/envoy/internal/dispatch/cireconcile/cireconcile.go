@@ -88,12 +88,14 @@ package cireconcile
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"maps"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -177,6 +179,11 @@ type Reconciler struct {
 	// this one's, and a loop must not wait on that. A nil Instance, and one that answers "", is
 	// a pass that records no row at all.
 	Instance func() string
+	// GitHubReads records each pass as the newest attempt of githubreads.CIReconcile, which
+	// GET /healthz answers: whether a GitHub read of the pass failed, and the first failure. It is
+	// a record apart from ci_reconcile_passes, which says how the pass ended: a pass can complete
+	// there and still have failed here, on a repository it skipped. Nil records nothing.
+	GitHubReads githubreads.Recorder
 	// now is the clock the answers held in absent are timed by, and time.Now when it is nil,
 	// which is every Reconciler but a test's: a test of how long an answer is held moves its
 	// own clock rather than waiting out AbsentAppRecheck.
@@ -230,6 +237,13 @@ type Reconciler struct {
 type stop struct {
 	scope string
 	until time.Time
+}
+
+// ended is the failure a pass notes on its attempt (githubreads) when this limit ended it: the
+// limit's scope and end, and where, which says how far the pass had read.
+func (s *stop) ended(where string) error {
+	return fmt.Errorf("a GitHub rate limit on %s in force until %s ended the CI reconcile pass %s",
+		s.scope, s.until.UTC().Format(time.RFC3339), where)
 }
 
 // limited reads the shared GitHub rate limits and reports the limit in force on the scopes it is

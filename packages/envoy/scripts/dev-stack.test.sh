@@ -38,7 +38,14 @@
 # prebuilt stubs into its own bin directory, and runs them, held to everything (a), (b),
 # (c) and (e) hold a built run to; and (i) a --binaries directory short of one of them, or
 # holding one that is not an executable file, is refused with exit 2, naming each such file,
-# before anything is created or started.
+# before anything is created or started; and (j) a --callout run starts natsd behind the auth
+# callout with a monitor port, two brokers that each run the auth service on it, and the listener
+# and Dispatch each with a NATS service token the issuer writes, exports what callout-check.sh
+# reads, and outlives its second broker being killed, while a run without --callout does none of
+# it; and (k) every run gives each broker its database URL with pool_max_conns=10, production's
+# pool size, joined to the server URL's own query string or starting one where it has none (the
+# --callout run names a server URL with no query string), while Dispatch, which refuses that
+# parameter, gets the URL's query string alone.
 set -euo pipefail
 # Monitor mode, for the two cases that signal an instance: a background command of a shell
 # without job control inherits SIGINT ignored, and a shell cannot trap a signal that was ignored
@@ -60,6 +67,11 @@ mkdir -p "$fake_bin_dir"
 # The Postgres server every instance below is told to use. Nothing connects to it: the fake psql
 # answers every call.
 readonly admin_url='postgres://tester:s3cret@127.0.0.1:5999/postgres?sslmode=disable'
+# The same server named with no query string, so the URL a run builds for a database of its own
+# has to start one: the --callout run (j) is given it. server_url is the server alone, which each
+# run's own database URL starts with.
+readonly admin_url_no_query=${admin_url%%\?*}
+readonly server_url=${admin_url%/postgres*}
 
 declare -a instance_pid=()
 cleanup() {
@@ -243,6 +255,7 @@ ISSUER
 #!/usr/bin/env bash
 echo "fake broker: database=${BROKER_DATABASE_URL:-} issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-}" >&2
 echo "fake broker: machine-login=${BROKER_MACHINE_LOGIN_URL:-} sign-in-client=${BROKER_SIGNIN_CLIENT_ID:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} metrics=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
+echo "fake broker: nats=${BROKER_NATS_URLS:-} seeds=${BROKER_NATS_SEED_FILE:-},${BROKER_NATS_ISSUER_SEED_FILE:-},${BROKER_NATS_XKEY_SEED_FILE:-} nats-audience=${BROKER_NATS_K8S_AUDIENCE:-} services=${BROKER_NATS_SERVICES:-}" >&2
 BROKER
       if [[ -n "${DEV_STACK_TEST_BROKER_FAILS:-}" ]]; then
         cat >>"$target" <<'REFUSES'
@@ -252,6 +265,9 @@ REFUSES
       else
         cat >>"$target" <<'LISTENS'
 printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:%s"}\n' "$$" >&2
+if [[ -n "${BROKER_NATS_URLS:-}" ]]; then
+  printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker: the NATS auth service is answering"}\n' >&2
+fi
 LISTENS
       fi
       ;;
@@ -259,7 +275,11 @@ LISTENS
       cat >"$target" <<'NATSD'
 #!/usr/bin/env bash
 echo "[INF] Starting nats-server" >&2
+echo "fake natsd: args=$*" >&2
 echo "[INF] Listening for client connections on 127.0.0.1:$$" >&2
+if [[ " $* " == *" -m -1 "* ]]; then
+  echo "[INF] Starting http monitor on 127.0.0.1:$$" >&2
+fi
 echo "[INF] Server is ready" >&2
 NATSD
       ;;
@@ -267,17 +287,18 @@ NATSD
       cat >"$target" <<'LISTENER'
 #!/usr/bin/env bash
 printf '{"level":"INFO","msg":"listener API auth: none","nats":"%s"}\n' "${NATS_URLS:-}" >&2
+echo "fake listener: machine=${ENVOY_MACHINE_ID:-} nats-token=${NATS_SERVICE_TOKEN_FILE:-}" >&2
 printf '{"level":"INFO","msg":"envoy-listener listening","addr":"127.0.0.1:%s"}\n' "$$" >&2
 LISTENER
       ;;
     dispatch)
       cat >"$target" <<'DISPATCH'
 #!/usr/bin/env bash
-echo "fake dispatch: database=${DATABASE_URL:-} server-url=${DISPATCH_SERVER_URL:-} listen-fd=${DISPATCH_LISTEN_FD:-} envoy=${ENVOY_URL:-} broker=${DISPATCH_AGENT_SECRETS_URL:-} nats=${NATS_URLS:-} home=${HOME:-}" >&2
+echo "fake dispatch: database=${DATABASE_URL:-} server-url=${DISPATCH_SERVER_URL:-} listen-fd=${DISPATCH_LISTEN_FD:-} envoy=${ENVOY_URL:-} broker=${DISPATCH_AGENT_SECRETS_URL:-} nats=${NATS_URLS:-} home=${HOME:-} nats-token=${NATS_SERVICE_TOKEN_FILE:-}" >&2
 echo "time=2026-01-01T00:00:00.000Z level=INFO msg=\"dispatch: listening\" addr=127.0.0.1:$$" >&2
 DISPATCH
       ;;
-    agent-secrets | agent-secrets-helper)
+    agent-secrets | agent-secrets-helper | natsprobe)
       cat >"$target" <<'CLIENT'
 #!/usr/bin/env bash
 exit 0
@@ -391,8 +412,10 @@ work_dir=""
 run_suffix=""
 kept_port=""
 declare -A process_port=()
+# The fifth argument is the query string of the server URL the run was given (with its "?"), by
+# default admin_url's.
 assert_instance_ready() {
-  local label="$1" log_file="$2" psql_call_file="$3" curl_call_file="$4"
+  local label="$1" log_file="$2" psql_call_file="$3" curl_call_file="$4" query="${5-?sslmode=disable}"
   if ! wait_for_ready "$log_file"; then
     cat "$log_file" >&2
     fail "$label never reached ready"
@@ -538,15 +561,17 @@ assert_instance_ready() {
   grep -qxF -e "-sf http://127.0.0.1:${process_port[dispatch]}/api/v1" "$curl_call_file" ||
     fail "$label did not read its own Dispatch's route index at port ${process_port[dispatch]}"
 
-  # Two databases of this run's own, named for it, and no other; each server pointed at its own.
-  local created
+  # Two databases of this run's own, named for it, and no other; each server pointed at its own,
+  # the broker with production's pool size (k), whole URL to whole URL.
+  local created broker_query="?pool_max_conns=10"
+  [[ -z "$query" ]] || broker_query="${query}&pool_max_conns=10"
   created="$(created_databases "$psql_call_file")"
   [[ "$created" == "dev_stack_broker_${run_suffix} dev_stack_dispatch_${run_suffix} " ]] ||
     fail "$label created '$created', not one broker and one Dispatch database of its own"
-  grep -q "database=postgres://tester:s3cret@127.0.0.1:5999/dev_stack_broker_${run_suffix}" "${work_dir}/logs/broker.log" ||
-    fail "$label did not point its broker at its own database"
-  grep -q "database=postgres://tester:s3cret@127.0.0.1:5999/dev_stack_dispatch_${run_suffix}" "${work_dir}/logs/dispatch.log" ||
-    fail "$label did not point Dispatch at its own database"
+  grep -qF "fake broker: database=${server_url}/dev_stack_broker_${run_suffix}${broker_query} issuer=" "${work_dir}/logs/broker.log" ||
+    fail "$label did not point its broker at its own database with pool_max_conns=10: $(grep 'fake broker: database' "${work_dir}/logs/broker.log")"
+  grep -qF "fake dispatch: database=${server_url}/dev_stack_dispatch_${run_suffix}${query} server-url=" "${work_dir}/logs/dispatch.log" ||
+    fail "$label did not point Dispatch at its own database with the URL's query string alone: $(grep 'fake dispatch: database' "${work_dir}/logs/dispatch.log")"
 }
 
 # Every process of the run is gone, by the PID each reported as its port, and the keeper with them.
@@ -591,6 +616,15 @@ declare -A port1=()
 for name in "${!process_port[@]}"; do port1["$name"]="${process_port[$name]}"; done
 printf "PASS: instance 1 started every process and took each port from that process's own report (issuer %s, broker %s, natsd %s, listener %s, dispatch %s; Dispatch keeper %s)\n" \
   "${port1[dev-oidc-issuer]}" "${port1[broker]}" "${port1[natsd]}" "${port1[listener]}" "${port1[dispatch]}" "$kept_port1"
+# The control for (j): a run without --callout runs natsd with no callout and one broker that runs
+# no auth service, gives the listener and Dispatch no NATS token, and exports nothing of a callout.
+grep -q 'fake broker: nats= seeds=,, nats-audience= services=$' "${work_dir1}/logs/broker.log" ||
+  fail "instance 1, run without --callout, gave its broker NATS auth service settings"
+[[ ! -e "${work_dir1}/logs/broker-2.log" ]] || fail "instance 1, run without --callout, started a second broker"
+grep -q -- '-callout-keys' "${work_dir1}/logs/natsd.log" && fail "instance 1, run without --callout, ran natsd with -callout-keys"
+grep -q 'nats-token=$' "${work_dir1}/logs/listener.log" || fail "instance 1, run without --callout, gave its listener a NATS token"
+[[ -z "$(exported "$log1" DEV_STACK_CALLOUT)" ]] || fail "instance 1, run without --callout, exported DEV_STACK_CALLOUT"
+printf 'PASS: a run without --callout runs no auth service, no second broker and no NATS token\n'
 
 assert_instance_ready 'instance 2' "$log2" "$psql_calls2" "$curl_calls2"
 work_dir2="$work_dir"
@@ -693,17 +727,21 @@ if grep -q 'dev-stack: ready\.' "$log1"; then
 fi
 failed_work_dir="$(work_dir_of "$log1")"
 [[ -n "$failed_work_dir" ]] || fail "the failed run named no work directory"
+# natsd starts before the brokers, which with --callout read the seeds it makes, so it is running
+# when the broker refuses, and is stopped with the rest.
 process_port=()
 process_port[dev-oidc-issuer]="$(issuer_log_port "${failed_work_dir}/logs/dev-oidc-issuer.log")"
 [[ -n "${process_port[dev-oidc-issuer]}" ]] || fail "the failed run started no issuer to stop"
+process_port[natsd]="$(nats_log_port "${failed_work_dir}/logs/natsd.log")"
+[[ -n "${process_port[natsd]}" ]] || fail "the failed run started no natsd to stop"
 kept_port="$(cat "${failed_work_dir}/dispatch-port")"
 assert_everything_stopped 'the failed run'
 assert_databases_dropped 'the failed run' "$psql_calls1" "$(printf '%s' "${failed_work_dir##*.}" | tr '[:upper:]' '[:lower:]')"
-for name in natsd listener dispatch; do
+for name in listener dispatch; do
   [[ ! -s "${failed_work_dir}/logs/${name}.log" ]] ||
     fail "the failed run started $name after its broker had refused"
 done
-printf 'PASS: a broker that refuses to start leaves nothing running: the issuer and the keeper are stopped and both databases dropped\n'
+printf 'PASS: a broker that refuses to start leaves nothing running: the issuer, natsd and the keeper are stopped and both databases dropped\n'
 
 # (f) No database URL at all: the refusal names all three sources and exits 2, before anything is
 # created.
@@ -727,7 +765,7 @@ printf 'PASS: a run with no database URL names --database-url, LEGION_TEST_PG_DS
 prebuilt="${temporary_dir}/prebuilt"
 # One list of the stack's packages; the binary names the copy check reads come from it.
 prebuilt_packages=(./cmd/broker ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener
-  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd)
+  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd ./cmd/natsprobe)
 env -u DEV_STACK_TEST_BROKER_FAILS -u DEV_STACK_TEST_GO_CALL_FILE "${fake_bin_dir}/go" build -o "${prebuilt}/" \
   "${prebuilt_packages[@]}"
 go_calls_prebuilt="${temporary_dir}/go-calls-prebuilt"
@@ -801,5 +839,53 @@ refuse_binaries 'a --binaries directory with two unusable binaries' "$two_unusab
 refused_files_are 'a --binaries directory with two unusable binaries' "$two_unusable" \
   "  ${two_unusable}/listener: not an executable file" "  ${two_unusable}/natsd: missing"
 printf 'PASS: a --binaries directory with two unusable binaries names each of them\n'
+
+# (j) --callout: natsd behind the auth callout with a monitor port, two brokers each running the
+# auth service on it with the listener and Dispatch listed under their machine ids, the issuer
+# writing each of those two a NATS-audience token, which each is started with, the exports
+# callout-check.sh reads, and a stack that outlives its second broker. Its server URL has no query
+# string, so the broker's pool_max_conns starts one (k).
+run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --callout --database-url "$admin_url_no_query"
+assert_instance_ready 'the --callout run' "$log1" "$psql_calls1" "$curl_calls1" ''
+callout_dir="${work_dir}/nats-callout"
+grep -q -- "fake natsd: args=-p -1 -store_dir ${work_dir}/nats-store -callout-keys ${callout_dir} -m -1$" "${work_dir}/logs/natsd.log" ||
+  fail "the --callout run did not run natsd behind the callout with a monitor port: $(grep 'fake natsd' "${work_dir}/logs/natsd.log")"
+second_broker_port="$(broker_log_port "${work_dir}/logs/broker-2.log")"
+if [[ -z "$second_broker_port" ]] || ! kill -0 "$second_broker_port" 2>/dev/null; then
+  fail "the --callout run started no second broker"
+fi
+want_services="listener/dev-stack-${run_suffix}/*=system:serviceaccount:example-ns:example-listener dispatch/dev-stack-dispatch/*=system:serviceaccount:example-ns:example-dispatch"
+for broker_log in broker.log broker-2.log; do
+  grep -qF "fake broker: nats=nats://127.0.0.1:${process_port[natsd]} seeds=${callout_dir}/service.seed,${callout_dir}/issuer.seed,${callout_dir}/xkey.seed nats-audience=envoy-nats services=${want_services}" \
+    "${work_dir}/logs/${broker_log}" || fail "the --callout run's ${broker_log} was not given the auth service's settings: $(grep 'fake broker: nats' "${work_dir}/logs/${broker_log}")"
+  grep -qF "fake broker: database=${server_url}/dev_stack_broker_${run_suffix}?pool_max_conns=10 issuer=" "${work_dir}/logs/${broker_log}" ||
+    fail "the --callout run's ${broker_log} was not given its database URL with pool_max_conns=10: $(grep 'fake broker: database' "${work_dir}/logs/${broker_log}")"
+done
+for token in listener-nats-token dispatch-nats-token; do
+  [[ -s "${work_dir}/${token}" ]] || fail "the --callout run's issuer wrote no ${token}"
+done
+grep -q "fake listener: machine=dev-stack-${run_suffix} nats-token=${work_dir}/listener-nats-token$" "${work_dir}/logs/listener.log" ||
+  fail "the --callout run's listener was not started with its NATS token"
+grep -q "nats-token=${work_dir}/dispatch-nats-token$" "${work_dir}/logs/dispatch.log" ||
+  fail "the --callout run's Dispatch was not started with its NATS token"
+for pair in "DEV_STACK_CALLOUT=1" "NATS_AUTH=broker" "DEV_STACK_NATS_SERVICE_TOKEN_FILE=${work_dir}/listener-nats-token" \
+  "DEV_STACK_EXCHANGE_SESSION=example-worker-session" \
+  "DEV_STACK_BROKER_PIDS=\"${process_port[broker]} ${second_broker_port}\"" \
+  "DEV_STACK_NATS_MONITOR_URL=http://127.0.0.1:${process_port[natsd]}"; do
+  [[ "$(exported "$log1" "${pair%%=*}")" == "${pair#*=}" ]] ||
+    fail "the --callout run exported ${pair%%=*}=$(exported "$log1" "${pair%%=*}"), not ${pair#*=}"
+done
+kill -TERM "$second_broker_port"
+sleep 1
+kill -0 "${instance_pid[1]}" 2>/dev/null || fail "the --callout run stopped when its second broker did"
+if grep -q 'a process of this stack stopped' "$log1"; then
+  fail "the --callout run stopped when its second broker did"
+fi
+kill -INT "${instance_pid[1]}"
+wait_for_exit 1
+[[ "$exited_status" -eq 130 ]] || fail "the --callout run exited $exited_status on INT, not 130"
+assert_everything_stopped 'the --callout run'
+assert_databases_dropped 'the --callout run' "$psql_calls1" "$run_suffix"
+printf 'PASS: --callout ran natsd behind the callout, two brokers running the auth service, the listener and Dispatch with NATS tokens, exported what callout-check.sh reads, and outlived its second broker\n'
 
 printf 'ALL PASS: dev-stack.test.sh\n'
