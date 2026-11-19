@@ -3208,14 +3208,20 @@ fi
 # header file, so the case reads that each held that token while the run went on, and one
 # copies the replay's recorded files, every row's output, command, failed reads and statuses,
 # out of the run's scratch before the run removes it. The run is bounded: the fixture builds
-# nothing with env.sh and reads no budget and no private repository (IOC_NO_ENV), and GitHub
-# refuses the case's token, so the rows that send it fail replay-command, which the case does
-# not judge. Its clone root, IOC_CLONES, is a directory of the case's own beside its TMPDIR,
-# since the gate keeps clones there across runs, so whatever the run leaves under its TMPDIR
-# is its own. The case fails when the token's prefix stands in the run's whole log, its
-# stdout and stderr, in any recorded file, or in any file under the fixture, the clone root
-# or the TMPDIR, when a header file did not hold the token, or when the run leaves any file
-# under its TMPDIR, the header files among them.
+# nothing with env.sh and reads no budget and no private repository (IOC_NO_ENV), and a curl of
+# the case's own, first on PATH, answers each read of api.github.com with 200 and an empty list,
+# so the replay walks every row and reads no network; the rows' predicates then fail, which the
+# case does not judge. Since round 39 a refusal of the credential ends the mode cannot-run at the
+# first row that sends it, so a case that let GitHub refuse its token would end before its copy
+# row ran. That curl records its arguments and whether the header file it was handed held the
+# case's token, and writes nothing of the token: so the token on a command line would stand in
+# that record, and a read that sent no header file shows there. Its clone root, IOC_CLONES, is a
+# directory of the case's own beside its TMPDIR, since the gate keeps clones there across runs,
+# so whatever the run leaves under its TMPDIR is its own. The case fails when the token's prefix
+# stands in the run's whole log, its stdout and stderr, in any recorded file, in the curl's own
+# record, or in any file under the fixture, the clone root or the TMPDIR, when a header file did
+# not hold the token, when a read of api.github.com was sent without it, or when the run leaves
+# any file under its TMPDIR, the header files among them.
 TOKEN_CASE="$WORK/github-token"
 TOKEN_PREFIX=ghs_IOCFAKETOKEN117
 mkdir -p "$TOKEN_CASE/bin" "$TOKEN_CASE/tmp" "$TOKEN_CASE/clones" "$TOKEN_CASE/outputs"
@@ -3232,6 +3238,29 @@ exec REAL_GIT "$@"
 STUB
 sed -i "s|REAL_GIT|'$(command -v git)'|" "$TOKEN_CASE/bin/git"
 chmod +x "$TOKEN_CASE/bin/git"
+cat >"$TOKEN_CASE/bin/curl" <<'STUB'
+#!/bin/sh
+case " $* " in
+*" https://api.github.com/"*) ;;
+*) exec REAL_CURL "$@" ;;
+esac
+printf '%s\n' "$*" >>CASE_DIR/outputs/curl-argv
+held=header-lacks-token
+prev=
+for arg in "$@"; do
+    if [ "$prev" = -H ]; then
+        case "$arg" in
+        @*) grep -q '^Authorization: Bearer ghs_IOCFAKETOKEN117' "${arg#@}" 2>/dev/null && held=header-holds-token ;;
+        esac
+    fi
+    prev="$arg"
+done
+printf '%s\n' "$held" >>CASE_DIR/outputs/curl-reads
+printf '[]\n'
+exit 0
+STUB
+sed -i "s|REAL_CURL|'$(command -v curl)'|; s|CASE_DIR|'$TOKEN_CASE'|g" "$TOKEN_CASE/bin/curl"
+chmod +x "$TOKEN_CASE/bin/curl"
 dir="$(fresh github-token-fixture)"
 claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
 jq -c 'select((.command // "") | test("IOC_GITHUB_AUTH_"))' "$HERE/claims.jsonl" >"$TOKEN_CASE/rows"
@@ -3253,6 +3282,10 @@ if case_read "$token_case" "$out"; then
         case_failed "$token_case" "the token's prefix stands in $(printf '%s' "$leaks" | head -3 | tr '\n' ' ')"
     elif [ ! -s "$TOKEN_CASE/outputs/replay/$(jq -r '.id' "$TOKEN_CASE/rows" | head -1).out.command" ]; then
         case_failed "$token_case" "the recorded files of the rows that send a header were not copied, so none was read: $RUN_LINE"
+    elif [ ! -s "$TOKEN_CASE/outputs/curl-reads" ]; then
+        case_failed "$token_case" "no row's read reached the case's curl of api.github.com, so no read was seen to send a header file: $RUN_LINE"
+    elif grep -qxF header-lacks-token "$TOKEN_CASE/outputs/curl-reads"; then
+        case_failed "$token_case" "$(grep -cxF header-lacks-token "$TOKEN_CASE/outputs/curl-reads") read(s) of api.github.com sent no header file holding the case's token"
     elif [ "$sizes" != "$header_bytes" ]; then
         case_failed "$token_case" "the header files did not each hold the case's token while the run went on: their sizes were $(printf '%s' "$sizes" | tr '\n' ' ')where $header_bytes was asked"
     elif [ -n "$left" ]; then
