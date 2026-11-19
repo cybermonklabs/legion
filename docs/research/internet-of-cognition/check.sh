@@ -127,8 +127,8 @@
 # function, live_read, in the mode's own shell before any assertion over what it reads
 # judges: the judgement and the two records under check from Dispatch, whose copies every
 # row that reads a record reads too, Dispatch's answer to each dispatch:// reference, the
-# Dispatch API, the GitHub budget, GitHub's read of the private repository a row reads with
-# gh, the default branch and its fetch, the fetch of each
+# Dispatch API, the GitHub budget, GitHub's answer to git ls-remote of the private
+# repository six rows read, the default branch and its fetch, the fetch of each
 # pinned clone, and the run of coordination/count.py, the walker of the count, which
 # reads the feed of the count's window, so that a read inside it that fails is that feed
 # not answering. A source that does not answer is a mode that cannot run, naming the
@@ -169,7 +169,16 @@
 # nothing installed, which is how the self-test's fixture, whose proof is `true`, runs.
 #
 # It reaches GitHub with git and the REST API and never with gh, which in a Legion pod is
-# scoped to this project's owners and refuses ioc-project.
+# scoped to this project's owners and refuses ioc-project; so does every recorded command
+# and every script one runs, and --admitted refuses a row that runs gh, since ADMITTED holds
+# no entry for it. A repository's files are read from a clone at the commits sources.json
+# pins, with git show, git log and git grep: the three projects' clones and agent-infra's,
+# a private repository env.sh fetches blobless through the machine's git credential helper
+# (env.sh's ioc_env_clone_private). What only the REST API answers, a pull request's reviews,
+# its times and its size, is read with curl, sending the header file of the token git
+# credential fill gives for that repository ("The GitHub tokens stand on no command line"
+# below), or no header where it gives none, and then GitHub's sixty requests an hour for one
+# address bound the read.
 #
 # Where it writes. It clones under the directory IOC_CLONES names, $TMPDIR/ioc-clones by
 # default, at the commits sources.json pins. Everything env.sh builds is under IOC_CACHE,
@@ -321,6 +330,20 @@
 # into a file under its own scratch, readable by its owner alone, exports that file's path
 # as IOC_DISPATCH_HEADER, and every curl of the Dispatch API, the recorded ones included,
 # reads it with -H @"$IOC_DISPATCH_HEADER". The scratch is removed when the run ends.
+#
+# The GitHub tokens stand on no command line either. Before it sources env.sh, --replay
+# writes one header file per repository of env.sh's ioc_env_github_table under its own
+# scratch (github_headers): each is made with umask 077 before a byte of it is written, so
+# its owner alone reads it, and holds Authorization: Bearer and the token git credential
+# fill gives for that repository, or nothing when it gives none. It exports each file's path
+# as the variable the table names, IOC_GITHUB_AUTH_LEGION and IOC_GITHUB_AUTH_AGENT_INFRA,
+# and env.sh's read of the review corpus, the read of GitHub's budget (github_budget) and
+# every recorded curl of GitHub's REST API send the file of the repository they read with
+# -H @"$<variable>". No line the gate prints and
+# no output a row records holds a token: a failure names a header file by its path at
+# most. The files go with the scratch, which the EXIT trap removes however the run ends,
+# and check.test.sh's case 117 holds both: a replay of the rows that send them, with a token
+# of the case's own, prints the token nowhere and leaves no header file behind.
 #
 # The evidence it reads:
 #
@@ -611,17 +634,16 @@ usage() {
 #              source that did not answer
 prerequisite_table() {
     cat <<'TABLE'
-replay|tool|git|reads our own history and runs the recorded git commands|apt-get install git
+replay|tool|git|reads our own history, reads the private repository six rows read with git ls-remote, clones it through the machine's credential helper with env.sh, and runs the recorded git commands|apt-get install git, with a credential helper that answers for https://github.com/theorem-labs/agent-infra.git, as a Legion pod's legion git-credential does
 replay|tool|jq|reads claims.jsonl and runs the recorded jq commands|apt-get install jq
 replay|tool|python3|runs the reader of every recorded command, the recorded python3 commands and coordination/count.py, which takes the count again|apt-get install python3
-replay|tool|curl|reads the GitHub budget and runs the recorded reads of the Dispatch API and of GitHub|apt-get install curl
+replay|tool|curl|reads the GitHub budget and the review corpus env.sh fetches, and runs the recorded reads of the Dispatch API and of GitHub's REST API|apt-get install curl
 replay|tool|uv|builds env.sh's python environments and runs the recorded uv commands|curl -LsSf https://astral.sh/uv/0.13.5/install.sh | sh
 replay|tool|go|runs the two recorded commands that count rows of our own table|curl -fsSL https://go.dev/dl/go1.27.3.linux-amd64.tar.gz | tar -xzC /usr/local, then PATH=/usr/local/go/bin:$PATH
-replay|tool|gh|reads the review corpus env.sh fetches and the private repository six rows read, and runs the ten recorded gh reads|apt-get install gh, then gh auth login
 replay|tool|dispatch|reads the two records under check, the judgement and the recorded Dispatch reads|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
 replay|variable|DISPATCH_URL|the address every recorded read of the Dispatch API reads, and so does coordination/count.py's read of the feed of the count's window|export DISPATCH_URL=<the Dispatch server>, which a Legion pod sets
 replay|variable|DISPATCH_TOKEN_FILE|the bearer every recorded read of the Dispatch API sends, and so does coordination/count.py's read of the feed of the count's window|export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets
-replay|clone|IOC_CLONES|env.sh clones mas-lab, scope and cognition-protocols under it|export IOC_CLONES=<a directory this user can write>, or leave it unset for $TMPDIR/ioc-clones
+replay|clone|IOC_CLONES|env.sh clones mas-lab, scope, cognition-protocols and agent-infra under it|export IOC_CLONES=<a directory this user can write>, or leave it unset for $TMPDIR/ioc-clones
 shape|tool|git|reads the history of this pull request|apt-get install git
 shape|tool|jq|reads sources.json|apt-get install jq
 shape|tool|dispatch|reads the judgement|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
@@ -1292,8 +1314,8 @@ PY
 # live_read <source> <file> <command...>; the one read of a live source the gate makes
 # itself, which every mode makes in its own shell before any assertion over what it reads
 # judges: the judgement and the records under check from Dispatch, a reference Dispatch is
-# asked to resolve, the Dispatch API, the GitHub budget and default branch, GitHub's read
-# of the private repository a row reads with gh (private_repository_read), a clone's
+# asked to resolve, the Dispatch API, the GitHub budget and default branch, GitHub's answer
+# to git ls-remote of the private repository six rows read (private_repository_read), a clone's
 # fetch, and the run of coordination/count.py over the feed of the count's window
 # (count_load); a recorded command's own reads are the row's (the header's live-read
 # rule). It runs the command, writes what it printed into <file>, and returns 0 when the
@@ -1361,7 +1383,8 @@ dispatch_get() {
 
 # env_functions makes env.sh's functions and lists those of this shell, so that check.sh
 # and env.sh share each rule they both read: the command that reads a Dispatch record
-# (ioc_env_record_command), a clone (ioc_env_clone), the table of tool caches and its
+# (ioc_env_record_command), a clone (ioc_env_clone), git that never prompts (ioc_env_git),
+# the GitHub header files (ioc_env_github_auth), the table of tool caches and its
 # export (ioc_env_cache_table, ioc_env_caches), the variables it sets or clears in every
 # row's environment (IOC_ENV_ENFORCED), the environments and their locks (IOC_ENV_FROZEN,
 # read by ioc_env_frozen_labels and ioc_env_frozen_entry), the stamp of an environment
@@ -1638,10 +1661,10 @@ prepare_env() {
 # refused, or when a line here differs from what it measured; --self-test runs it.
 #
 #   form                            rows  what it is
-#   &&                               213  runs the next pipeline when this one exits 0
+#   &&                               215  runs the next pipeline when this one exits 0
 #   ||                                 9  runs the next pipeline when this one fails
-#   |                                452  joins the commands of a pipeline
-#   ;                                 65  ends a pipeline
+#   |                                455  joins the commands of a pipeline
+#   ;                                 63  ends a pipeline
 #   newline                            3  an unquoted newline, ending a pipeline as ; does
 #   >                                  8  writes the output to a file
 #   2>                                23  writes the error output to a file
@@ -1650,19 +1673,19 @@ prepare_env() {
 #   }                                 28  closes a group
 #   (                                  2  opens a subshell
 #   )                                  2  closes a subshell
-#   for                               23  opens a for loop
-#   in                                23  comes before a for loop's words
-#   do                                23  comes before a for loop's body
-#   done                              23  closes a for loop
-#   simple command                   643  a command word and its arguments
-#   pipeline                         452  two or more commands joined by |
-#   list                             240  two or more pipelines joined by ;, &&, || or newline
+#   for                               21  opens a for loop
+#   in                                21  comes before a for loop's words
+#   do                                21  comes before a for loop's body
+#   done                              21  closes a for loop
+#   simple command                   645  a command word and its arguments
+#   pipeline                         455  two or more commands joined by |
+#   list                             242  two or more pipelines joined by ;, &&, || or newline
 #   group                             28  { list; }, whose status is its last command's
 #   subshell                           2  ( list ), whose status is its last command's
-#   for loop                          23  for NAME in words; do list; done
+#   for loop                          21  for NAME in words; do list; done
 #   assignment before a command       29  NAME=value, set in that command's environment
 #   assignment alone                   6  NAME=value with no command word
-#   command substitution in a word    13  $( ) in a word, its code admitted by this table
+#   command substitution in a word    12  $( ) in a word, its code admitted by this table
 #   assigns ACCORD_MODEL_DIR          16  a name the rows assign
 #   assigns GOFLAGS                    1  a name the rows assign
 #   assigns IOC_EXPECT_STATUS          9  the declared status, the last prefix of one command
@@ -1670,33 +1693,32 @@ prepare_env() {
 #   assigns VIRTUAL_ENV                3  a name the rows assign
 #   assigns W                          1  a name the rows assign
 #   assigns c                          7  a name the rows assign
-#   assigns f                          7  a name the rows assign
+#   assigns f                          6  a name the rows assign
 #   assigns g                          1  a name the rows assign
 #   assigns m                          1  a name the rows assign
 #   assigns n                          6  a name the rows assign
 #   assigns o                          1  a name the rows assign
-#   assigns p                          6  a name the rows assign
+#   assigns p                          5  a name the rows assign
 #   assigns r                          5  a name the rows assign
-#   program awk                       23  wrapped in a function that records its status
+#   program awk                       25  wrapped in a function that records its status
 #   program cat                       25  wrapped in a function that records its status
 #   program cd                        76  wrapped in a function that records its status
 #   program cmp                        2  wrapped in a function that records its status
 #   program cp                         1  wrapped in a function that records its status
-#   program curl                      27  wrapped in a function that records its status
+#   program curl                      32  wrapped in a function that records its status
 #   program cut                        5  wrapped in a function that records its status
 #   program dispatch                  76  wrapped in a function that records its status
 #   program echo                      15  wrapped in a function that records its status
-#   program gh                        10  wrapped in a function that records its status
-#   program git                      366  wrapped in a function that records its status
+#   program git                      373  wrapped in a function that records its status
 #   program go                         2  wrapped in a function that records its status
 #   program grep                     238  wrapped in a function that records its status
-#   program jq                        64  wrapped in a function that records its status
+#   program jq                        69  wrapped in a function that records its status
 #   program mkdir                      1  wrapped in a function that records its status
 #   program mktemp                     1  wrapped in a function that records its status
 #   program printf                    12  wrapped in a function that records its status
 #   program python3                   37  wrapped in a function that records its status
 #   program rm                         2  wrapped in a function that records its status
-#   program sed                      303  wrapped in a function that records its status
+#   program sed                      304  wrapped in a function that records its status
 #   program sh                         1  wrapped in a function that records its status
 #   program sha256sum                  8  wrapped in a function that records its status
 #   program sort                      32  wrapped in a function that records its status
@@ -1705,7 +1727,7 @@ prepare_env() {
 #   program tr                        11  wrapped in a function that records its status
 #   program uniq                      18  wrapped in a function that records its status
 #   program uv                         8  wrapped in a function that records its status
-#   program wc                        65  wrapped in a function that records its status
+#   program wc                        66  wrapped in a function that records its status
 #   program xargs                      5  wrapped in a function that records its status
 #   variable $IOC_PY                  43  a program variable, whose shim records its status
 #   variable $IOC_MASLAB_PY            4  a program variable, whose shim records its status
@@ -1721,9 +1743,9 @@ prepare_env() {
 #   uv run python                      4  uv run's python, whose status uv run exits with
 #   sh running a script file           1  the script's status reaches the row as sh's
 #   true                               9  a command whose status is no read
-#   $NAME or ${NAME}                 437  a parameter, its name in braces or not
+#   $NAME or ${NAME}                 443  a parameter, its name in braces or not
 #   $?                                11  the status of the last command
-#   $( )                              13  a command substitution
+#   $( )                              12  a command substitution
 #   a literal $                        2  a $ that starts no expansion, left as it stands
 #
 # Each program the table names is wrapped in a function of that name that records its
@@ -2038,43 +2060,84 @@ failed_read() {
 
 # github_budget
 #
-# About thirty-four recorded commands read api.github.com without a credential, which
-# GitHub allows sixty of an hour for one address. A second --replay inside that hour runs
-# out of budget, and every one of those rows then fails for a reason that is not this
-# deliverable's: the gate would read GitHub's refusal as a claim that no longer holds. So
-# the budget is read first, and a run that cannot carry those commands stops here, naming
-# the budget and the moment it resets, rather than printing failures nobody should act on.
+# A --replay makes GITHUB_CORPUS_REQUESTS + GITHUB_ROW_REQUESTS requests to GitHub's REST
+# API, counted below: env.sh's read of the review corpus and the rows' own curls. A read
+# with no token is held to sixty an hour for one address, fewer than the corpus alone
+# takes, and a run without the budget for them would see env.sh refuse the corpus at
+# GitHub's refusal, or the rows fail for a reason that is not this deliverable's: the gate
+# would read GitHub's refusal as a claim that no longer holds. So the budget is read after
+# github_headers has written the header files and before env.sh builds anything, with curl
+# sending the file of cybermonklabs/legion, IOC_GITHUB_AUTH_LEGION, which env.sh's read of
+# the corpus and every row's curl but n-arms-precedent's read of theorem-labs/agent-infra
+# send. The budget read is the token's when git credential fill gave one, and this
+# address's unauthenticated one when it gave none and the file is empty, which GitHub
+# answers with a limit of 60. A run with fewer requests left than the mode makes stops
+# here, cannot run, of the kind source, naming which budget it is, how many of how many
+# are left, how many the mode makes and the moment the budget resets, rather than printing
+# failures nobody should act on. The count is a cold IOC_CACHE's, whatever the cache
+# already holds, so a run with no token always stops here. An answer that holds no budget
+# is left to the reads themselves, which name what GitHub answered them.
+#
+# The counts, at this tree's head: env.sh's read of the review corpus, a hundred reviews
+# to a page for each pull request of evidence/concord-prs.txt, printed "env.sh read the
+# review corpus: 5160 review bodies of 200 pull requests in 207 requests"; and the rows
+# whose commands curl api.github.com make six, two by n-arms-precedent and one each by
+# tc-review-docs-only, tc-review-both-run, tc-input-1 and tc-input-2. A row that comes to
+# read that API, or a corpus that takes another page, changes them.
+GITHUB_CORPUS_REQUESTS=207
+GITHUB_ROW_REQUESTS=6
 github_budget() {
-    local answer remaining reset
+    local answer remaining limit reset budget requests=$((GITHUB_CORPUS_REQUESTS + GITHUB_ROW_REQUESTS))
     # The self-test's fixture reads no GitHub, and it sets IOC_NO_ENV as it does for env.sh.
     [ "${IOC_NO_ENV:-0}" = 1 ] && return 0
-    live_read "GitHub, the read of its rate limit" "$RUN_SCRATCH/rate-limit.json" curl -sS https://api.github.com/rate_limit
+    live_read "GitHub, the read of its rate limit" "$RUN_SCRATCH/rate-limit.json" curl -sS -H @"$IOC_GITHUB_AUTH_LEGION" https://api.github.com/rate_limit
     answer="$(cat "$RUN_SCRATCH/rate-limit.json")"
     remaining="$(printf '%s' "$answer" | jq -r '.resources.core.remaining // empty' 2>/dev/null)"
+    limit="$(printf '%s' "$answer" | jq -r '.resources.core.limit // empty' 2>/dev/null)"
     reset="$(printf '%s' "$answer" | jq -r '.resources.core.reset // empty' 2>/dev/null)"
     [ -n "$remaining" ] || return 0
-    if [ "$remaining" -lt 40 ]; then
-        cannot_run source "$(printf ' --replay now: this address has %s of its 60 unauthenticated GitHub requests left and this mode makes about 34. The budget resets at %s.' \
-            "$remaining" "$(date -u -d "@$reset" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '%s' "$reset")")"
+    [ "$remaining" -lt "$requests" ] || return 0
+    if [ "$limit" = 60 ]; then
+        budget="this address's unauthenticated GitHub budget, the one a read with no token draws on,"
+    else
+        budget="the GitHub budget of the token git credential fill gave for cybermonklabs/legion"
     fi
+    cannot_run source " --replay now: $budget has $remaining of its $limit requests left, and this mode makes $requests: $GITHUB_CORPUS_REQUESTS to read env.sh's review corpus and $GITHUB_ROW_REQUESTS for the rows. The budget resets at $(date -u -d "@$reset" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '%s' "$reset")."
 }
 
 # private_repository_read
 #
-# Six rows read theorem-labs/agent-infra, a private repository, with gh at pinned commits:
-# n-collector-keep-keys, n-arms-precedent, n-spend-call-keys, n-spend-span-fields,
-# n-spend-no-step-view and n-3176-columns. A reader whose gh cannot read that repository
-# would see each row's read fail, a FAIL of
-# replay-command that is no verdict on the deliverable. So the repository is read first,
-# before the budget, and a run whose gh cannot read it stops here, naming the repository and
-# the rows, rather than printing a failure nobody should act on.
+# Six rows read theorem-labs/agent-infra, a private repository: n-collector-keep-keys,
+# n-spend-call-keys, n-spend-span-fields, n-spend-no-step-view and n-3176-columns with git,
+# from the clone env.sh fetches through the machine's git credential helper, and
+# n-arms-precedent one of its pull requests through the REST API, with the token the same
+# helper gives. A reader whose git cannot read that repository would see env.sh refuse its
+# clone, or each row's read fail, a FAIL of replay-command that is no verdict on the
+# deliverable. So the repository is read first, with git ls-remote through live_read, before
+# the budget and before env.sh builds anything, and a run whose git cannot read it stops
+# here, naming the repository and the rows, rather than printing a failure nobody should act
+# on.
 private_repository_read() {
     local name=theorem-labs/agent-infra file="$RUN_SCRATCH/private-repository"
+    local what="GitHub's answer to git ls-remote of theorem-labs/agent-infra, the private repository the six rows n-collector-keep-keys, n-arms-precedent, n-spend-call-keys, n-spend-span-fields, n-spend-no-step-view and n-3176-columns read,"
     # The self-test's fixture reads no GitHub, and it sets IOC_NO_ENV as it does for env.sh.
     [ "${IOC_NO_ENV:-0}" = 1 ] && return 0
-    live_read "GitHub's read of $name, the private repository six rows read with gh, n-collector-keep-keys among them," "$file" gh api "repos/$name" --jq .full_name
-    [ "$(cat "$file")" = "$name" ] && return 0
-    cannot_run source " --replay: GitHub's read of $name, the private repository six rows read with gh, n-collector-keep-keys among them, printed '$(head -c 160 "$file" | tr '\n' ' ')' where it names the repository, so gh cannot read it"
+    env_functions || cannot_run gate " --replay: env.sh, which holds the git that never prompts, did not load."
+    live_read "$what" "$file" ioc_env_git ls-remote "https://github.com/$name.git" HEAD
+    grep -qE '^[0-9a-f]{40}'$'\t''HEAD$' "$file" && return 0
+    cannot_run source " --replay: $what printed '$(head -c 160 "$file" | tr '\n' ' ')' where it names the repository's head, so git cannot read it"
+}
+
+# github_headers; the GitHub header files (the header's "The GitHub tokens stand on no
+# command line"): env.sh's ioc_env_github_auth writes one per repository of its
+# ioc_env_github_table under this run's scratch, which the EXIT trap removes however the run
+# ends, and exports the variable that names it, so env.sh's read of the review corpus, the
+# read of GitHub's budget and every recorded curl of GitHub's REST API send it. A file that cannot be written is the
+# run's own scratch failing, of the kind environment.
+github_headers() {
+    env_functions || cannot_run gate " --replay: env.sh, which holds how a GitHub header file is written, did not load."
+    IOC_ENV_SCRATCH="$RUN_SCRATCH" ioc_env_github_auth 2>"$RUN_SCRATCH/github-headers.err" ||
+        cannot_run environment " --replay: $(head -c 240 "$RUN_SCRATCH/github-headers.err" | tr '\n' ' ')"
 }
 
 # unpinned_installs; prints one line per package a recorded command installs or runs with
@@ -2517,10 +2580,11 @@ class Refused(Exception):
 
 # The programs the rows run by a bare word. Each is an entry "program <name>" of ADMITTED,
 # and the runner wraps each in a function of its name that records its status; a program
-# name with no entry is refused by name, whatever the shell would run.
-PROGRAMS = ("awk", "cat", "cd", "cmp", "cp", "curl", "cut", "dispatch", "echo", "gh",
-            "git", "go", "grep", "jq", "mkdir", "mktemp", "printf", "python3", "rm", "sed",
-            "sh", "sha256sum", "sort", "stat", "tail", "tr", "uniq", "uv", "wc", "xargs")
+# name with no entry is refused by name, whatever the shell would run. gh is not one: the
+# gate reads GitHub through git and the REST API and never through gh (the header).
+PROGRAMS = ("awk", "cat", "cd", "cmp", "cp", "curl", "cut", "dispatch", "echo", "git",
+            "go", "grep", "jq", "mkdir", "mktemp", "printf", "python3", "rm", "sed", "sh",
+            "sha256sum", "sort", "stat", "tail", "tr", "uniq", "uv", "wc", "xargs")
 
 # The names the rows assign, alone, before a command or as a for loop's variable. Each is
 # an entry "assigns <name>" of ADMITTED, and an assignment or a loop to any other name is
@@ -3422,6 +3486,7 @@ REFUSAL_REASONS = {
     **dict.fromkeys(("env", "timeout", "nice", "nohup", "sudo", "stdbuf"), "a wrapper, which runs a program past the function that records it"),
     **dict.fromkeys(("bash", "zsh", "dash", "ksh"), "a shell other than sh, a program the evaluator does not admit"),
     "find": "whose -exec runs a program past the function that records it",
+    "gh": "which the gate never reads GitHub with: a repository's files are read with git, and its REST API with curl",
     **dict.fromkeys(("declare", "local", "typeset", "readonly"), "which a wrapping function would make local to it"),
     **dict.fromkeys(("export", "unset", "alias", "trap", "set", "enable"), "which changes the shell the runner records in"),
     **dict.fromkeys(("exit", "return"), "which ends the shell before its row is read"),
@@ -3870,12 +3935,23 @@ mode_replay() {
     fi
     # The scratch of the rows, each row's output and its own empty TMPDIR, is under the
     # run's scratch, which the EXIT trap removes however the run ends, and this function
-    # removes it at its end too. env.sh clones the three repositories at the commits
-    # sources.json pins, so nothing clones them here.
-    # The private repository a row reads, and then the budget, are read before the
-    # environment is prepared, so a run that cannot carry those commands refuses at once
-    # rather than after an install, and a refused repository is named whatever the budget.
+    # removes it at its end too. env.sh clones the three repositories and agent-infra at
+    # the commits sources.json pins, so nothing clones them here.
+    # The private repository a row reads is read first, then the GitHub header files are
+    # written and the budget is read, all before the live inputs below and before the
+    # environment is prepared, so a run that cannot carry GitHub's reads refuses at once
+    # rather than after count.py's read of the feed or an install, and a refused repository
+    # is named whatever the budget. The header files are the ones env.sh's read of the
+    # review corpus and the recorded curls of GitHub's REST API send, written under this
+    # run's scratch before env.sh is sourced, and the budget is read with the one of
+    # cybermonklabs/legion, so it is the token's budget when there is a token
+    # (github_budget). The self-test's fixture builds nothing with env.sh, so it writes them
+    # only when one of its rows sends one, as check.test.sh's case 117 plants, and reads no
+    # budget.
     private_repository_read
+    if [ "${IOC_NO_ENV:-0}" != 1 ] || claims | grep -qF 'IOC_GITHUB_AUTH_'; then
+        github_headers
+    fi
     github_budget
     # The live inputs of the assertions below, read before any of them judges and before
     # env.sh prepares anything: the two records under check, whose copies every row that

@@ -1,7 +1,9 @@
 #!/bin/sh
 # Rebuilds evidence/concord-run.txt, run from a directory whose ./venv it installs into, as the
 # row tc-rng-2 runs it from IOC_TC_WORK. It reads the clones under IOC_CLONES, and it runs the
-# committed driver beside it, which reads the committed concord-input.json beside it.
+# committed driver beside it, which reads the committed concord-input.json beside it. It
+# reads GitHub's REST API with curl, sending the header file IOC_GITHUB_AUTH_LEGION names, and
+# never with gh (check.sh's header); run by hand with that variable unset, it sends no token.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../../../.." && pwd)
@@ -84,10 +86,10 @@ grep -rnE 'run_id|uuid|version=|concord-resend|concord-cancel' "$CP/packages/ioc
 
 sec '$ the disagreement search over our own review record'
 printf '%s\n' 'corpus: the review bodies of the 200 merged pull requests listed in out/concord-prs.txt,'
-printf '%s\n' 'fetched 2026-11-12 with:'
-printf '%s\n' '  for n in $(cat concord-prs.txt); do gh api --paginate "repos/cybermonklabs/legion/pulls/$n/reviews" \\'
-printf '%s\n' '    --jq ".[] | {pr: $n, id: .id, state: .state, commit: .commit_id, author: .user.login, submitted: .submitted_at, body: .body}" \\'
-printf '%s\n' '    >> reviews.jsonl; done'
+printf '%s\n' 'fetched by env.sh'"'"'s ioc_env_reviews, a hundred reviews to a page, with:'
+printf '%s\n' '  for n in $(cat concord-prs.txt); do curl -sS --fail-with-body -H @"$IOC_GITHUB_AUTH_LEGION" \\'
+printf '%s\n' '    "https://api.github.com/repos/cybermonklabs/legion/pulls/$n/reviews?per_page=100&page=<each page>" \\'
+printf '%s\n' '    | jq -S -c --argjson n "$n" '"'"'.[] | {pr: $n, id: .id, state: .state, commit: .commit_id, author: .user.login, submitted: .submitted_at, body: .body}'"'"' >> reviews.jsonl; done'
 printf '%s\n' "reviews.jsonl: $(wc -l < reviews.jsonl) review bodies, sha256 $(sha256sum reviews.jsonl | cut -d' ' -f1)"
 printf '%s\n' ''
 printf '%s\n' '$ jq -r '"'"'select(.body|test("[Tt]hermonuclear pair at")) | [(.pr|tostring),(.id|tostring),.commit,.submitted] as $m | (.body|split("\n")[]) | select(test("[Tt]hermonuclear pair at")) | ($m|join("\t")) + "\t" + .'"'"' reviews.jsonl \\'
@@ -96,11 +98,11 @@ printf '%s\n' ''
 jq -r 'select(.body|test("[Tt]hermonuclear pair at")) | [(.pr|tostring),(.id|tostring),.commit,.submitted] as $m | (.body|split("\n")[]) | select(test("[Tt]hermonuclear pair at")) | ($m|join("\t")) + "\t" + .' reviews.jsonl \
  | awk -F'\t' '{ l=$5; d=""; q=""; if (match(l, /[Dd]eep[- ]review[^.;]{0,40}(APPROVE|CHANGES)/)) { s=substr(l,RSTART,RLENGTH); d=(s ~ /APPROVE/)?"APPROVE":"CHANGES" } if (match(l, /[Cc]ode[- ]quality[^.;]{0,40}(APPROVE|CHANGES)/)) { s=substr(l,RSTART,RLENGTH); q=(s ~ /APPROVE/)?"APPROVE":"CHANGES" } if (d != "" && q != "" && d != q) printf "%s\t%s\t%s\t%s\tdeep=%s\tquality=%s\n", $1,$2,substr($3,1,12),$4,d,q }'
 
-sec '$ gh api repos/cybermonklabs/legion/pulls/3522/reviews --jq ".[] | select(.id==5854791039) | .body" | grep -n "thermonuclear pair at this head"'
-gh api repos/cybermonklabs/legion/pulls/3522/reviews --jq '.[] | select(.id==5854791039) | .body' | grep -n 'thermonuclear pair at this head'
+sec '$ curl -sS --fail-with-body -H @"$IOC_GITHUB_AUTH_LEGION" https://api.github.com/repos/cybermonklabs/legion/pulls/3522/reviews | jq -r ".[] | select(.id==5854791039) | .body" | grep -n "thermonuclear pair at this head"'
+curl -sS --fail-with-body -H @"${IOC_GITHUB_AUTH_LEGION:-/dev/null}" https://api.github.com/repos/cybermonklabs/legion/pulls/3522/reviews | jq -r '.[] | select(.id==5854791039) | .body' | grep -n 'thermonuclear pair at this head'
 
-sec '$ gh api repos/cybermonklabs/legion/pulls/3522/reviews --jq ".[] | select(.id==5854791039) | .body" | grep -o "dispatch results --issue INFRA-[0-9]*"'
-gh api repos/cybermonklabs/legion/pulls/3522/reviews --jq '.[] | select(.id==5854791039) | .body' | grep -o 'dispatch results --issue INFRA-[0-9]*'
+sec '$ curl -sS --fail-with-body -H @"$IOC_GITHUB_AUTH_LEGION" https://api.github.com/repos/cybermonklabs/legion/pulls/3522/reviews | jq -r ".[] | select(.id==5854791039) | .body" | grep -o "dispatch results --issue INFRA-[0-9]*"'
+curl -sS --fail-with-body -H @"${IOC_GITHUB_AUTH_LEGION:-/dev/null}" https://api.github.com/repos/cybermonklabs/legion/pulls/3522/reviews | jq -r '.[] | select(.id==5854791039) | .body' | grep -o 'dispatch results --issue INFRA-[0-9]*'
 
 sec '$ does our review record hold a satisfaction rating or an anchor pair for either grader?'
 printf '%s\n' '$ jq -r '"'"'select(.body|test("[Tt]hermonuclear pair at")) | .body'"'"' reviews.jsonl | grep -nE "raw_reject|raw_ideal|satisfaction[_ ]threshold|0-100 scale|normali[sz]ed score"'

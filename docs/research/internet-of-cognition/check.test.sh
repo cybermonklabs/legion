@@ -1240,19 +1240,30 @@ case_result "an unbound variable in the second part of admitted-reserved fails i
 # deliverable failing. A mode that cannot run now ends exit 2 with its reason as the last
 # line and no assertion counted; one that ran and failed ends exit 1 with the count; one
 # that passed ends exit 0. Each form is read by ending_result, at the top of this file.
+# The budget's form fakes GitHub's answer to the read of its rate limit in a copy of
+# check.sh twice, with fewer requests left than --replay makes: once an address's
+# unauthenticated budget, a limit of 60, and once a token's. Each run must end exit 2
+# naming which budget it is, how many requests of how many are left, how many the mode
+# makes and when the budget resets.
 dir="$(fresh ending-no-env)"
 rm "$dir/repo/docs/research/internet-of-cognition/env.sh"
 out="$(fixture_run "$dir" --replay)"
 ending_result "a mode whose env.sh is missing cannot run: exit 2, the reason last" 2 '^check\.sh cannot run: env\.sh' "$out"
 dir="$(fresh ending-budget-spent)"
-sed -i '/^github_budget() {$/,/^}$/{/IOC_NO_ENV/d;s#curl -sS https://api.github.com/rate_limit#cat "$IOC_FAKE_RATE_LIMIT"#}' "$dir/repo/docs/research/internet-of-cognition/check.sh"
+sed -i '/^github_budget() {$/,/^}$/{/IOC_NO_ENV/d;s#curl -sS -H @"\$IOC_GITHUB_AUTH_LEGION" https://api.github.com/rate_limit#cat "$IOC_FAKE_RATE_LIMIT"#}' "$dir/repo/docs/research/internet-of-cognition/check.sh"
 grep -qF 'cat "$IOC_FAKE_RATE_LIMIT"' "$dir/repo/docs/research/internet-of-cognition/check.sh" || {
     printf 'FAIL the budget read could not be faked in the fixture copy of check.sh\n'
     exit 1
 }
+budget_made="this mode makes $((GITHUB_CORPUS_REQUESTS + GITHUB_ROW_REQUESTS)): $GITHUB_CORPUS_REQUESTS to read env\\.sh's review corpus and $GITHUB_ROW_REQUESTS for the rows\\. The budget resets at 2026-11-15T[0-9:]+Z\\.$"
 printf '{"resources":{"core":{"limit":60,"remaining":3,"reset":1794700800}}}\n' >"$dir/budget.json"
 out="$(IOC_FAKE_RATE_LIMIT="$dir/budget.json" fixture_run "$dir" --replay)"
-ending_result "a spent GitHub budget cannot run: exit 2, naming the reset" 2 '^check\.sh cannot run --replay now: .* The budget resets at 2026-11-15T[0-9:]+Z\.$' "$out"
+ending_result "a spent unauthenticated GitHub budget cannot run: exit 2, naming the address's budget, what is left of it, what the mode makes and the reset" 2 \
+    "^check\\.sh cannot run --replay now: this address's unauthenticated GitHub budget, the one a read with no token draws on, has 3 of its 60 requests left, and $budget_made" "$out"
+printf '{"resources":{"core":{"limit":5000,"remaining":200,"reset":1794700800}}}\n' >"$dir/budget-token.json"
+out="$(IOC_FAKE_RATE_LIMIT="$dir/budget-token.json" fixture_run "$dir" --replay)"
+ending_result "a token's spent GitHub budget cannot run: exit 2, naming the token's budget, what is left of it, what the mode makes and the reset" 2 \
+    "^check\\.sh cannot run --replay now: the GitHub budget of the token git credential fill gave for cybermonklabs/legion has 200 of its 5000 requests left, and $budget_made" "$out"
 dir="$(fresh ending-failed)"
 sed -i 's/"expect":{"contains":"ran once"}/"expect":{"contains":"ran twice"}/' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
 out="$(fixture_run "$dir" --replay)"
@@ -2082,8 +2093,9 @@ fi
 # ioc_env_reviews, over a copy of claims.jsonl whose two rows are recorded with
 # {"matches": ...}: env.sh is to prepare the snapshot the row's sha256 pins, which the case
 # plants under a sha256 of its own, and a corpus of at least the row's floor, fetched by a
-# gh of the case's own that prints 30 review bodies per pull request over a corpus the case
-# plants short. The steps around the two reads that build an environment, which need uv and
+# curl of the case's own that answers 30 reviews for each pull request over a corpus the case
+# plants short, with an empty header file, no token, as IOC_GITHUB_AUTH_LEGION. The steps
+# around the two reads that build an environment, which need uv and
 # the package index, are taken as built. The honest form is the same copy with both
 # predicates as committed. A field of the wrong type is no row of the one parse: a row the
 # case appends to the fixture's claims.jsonl fails --replay's claim-form alone, naming the
@@ -2113,8 +2125,9 @@ env_reads() {
     printf '%s\n' "$MODEL_BYTES" >"$snapshot/model.safetensors"
     printf '1110a243fdf4706b3f48f1d95db1a4f5529b4d41 %s\n' "$MODEL_SHA" >"$cache/model.built-from"
     seq 10 >"$cache/tc-work/reviews.jsonl"
-    printf '#!/bin/sh\nseq 30\n' >"$cache/bin/gh"
-    chmod +x "$cache/bin/gh"
+    printf '#!/bin/sh\njq -n '"'"'[range(30) | {id: ., state: "COMMENTED", commit_id: "c", user: {login: "u"}, submitted_at: "2026-11-01T00:00:00Z", body: "b"}]'"'"'\n' >"$cache/bin/curl"
+    chmod +x "$cache/bin/curl"
+    : >"$cache/legion.header"
     (
         IOC_ENV_FUNCTIONS_ONLY=1
         # shellcheck source=env.sh
@@ -2122,7 +2135,7 @@ env_reads() {
         ioc_env_built() { return 0; }
         ioc_env_check_frozen() { return 0; }
         ioc_env_stamp_write() { return 0; }
-        export IOC_CACHE="$cache" IOC_EVID="$HERE/evidence" IOC_ENV_HERE="$HERE" IOC_ENV_CLAIMS="$2" IOC_PY=/nonexistent-ioc/python PATH="$cache/bin:$PATH"
+        export IOC_CACHE="$cache" IOC_EVID="$HERE/evidence" IOC_ENV_HERE="$HERE" IOC_ENV_CLAIMS="$2" IOC_PY=/nonexistent-ioc/python IOC_GITHUB_AUTH_LEGION="$cache/legion.header" PATH="$cache/bin:$PATH"
         ioc_env_caches
         ioc_env_model && ioc_env_reviews || exit 1
         [ "$(wc -l <"$IOC_REVIEWS")" -ge "$(ioc_env_row_field tc-corpus-1 corpus_floor)" ] || {
@@ -3095,49 +3108,159 @@ else
     printf 'SKIP the proof of the combining rule with its later-round half taken out: bun is missing\n'
 fi
 
-# 115. A row that reads a private repository cannot run where gh cannot read it (test round
-# 37). Six rows, n-collector-keep-keys among them, read theorem-labs/agent-infra, a private
-# repository, with gh at pinned commits. A reader whose gh cannot read that repository would
-# see each row's read fail, a FAIL of replay-command that is no verdict on
-# the deliverable. --replay now reads the repository through live_read before the GitHub
-# budget and before env.sh builds anything (private_repository_read), so such a reader gets
-# check.sh cannot run, exit 2, naming the repository and the rows. The case runs --replay over
-# this directory with a gh of the case's own first on PATH, which refuses
-# repos/theorem-labs/agent-infra with exit 1, as gh does for a repository its credential
-# cannot read, and answers nothing else; the run must end exit 2, its last line naming
-# theorem-labs/agent-infra and the row, with no FAIL line. A curl of the case's own, also first
-# on PATH, answers nothing, so a gate that read the repository after the budget, or not at
-# all, would end at the budget's read, which names neither, and never start the whole replay.
-# Both reads are the case's own plants, GitHub's, so the run's reason is read as planted when
-# it is either, and a run that ends at the budget's read fails the case rather than reading
-# as one that could not run.
+# 115. A row that reads a private repository cannot run where git cannot read it (test round
+# 37, and R11 of round 38, under which the gate reads GitHub through git and the REST API and
+# never through gh). Six rows read theorem-labs/agent-infra, a private repository:
+# n-collector-keep-keys and four more from the clone env.sh fetches with git, and
+# n-arms-precedent one of its pull requests through the REST API. A reader whose git cannot
+# read that repository would see env.sh refuse its clone, or each row's read fail, a FAIL of
+# replay-command that is no verdict on the deliverable. --replay reads the repository with git
+# ls-remote through live_read before the GitHub budget and before env.sh builds anything
+# (private_repository_read), so such a reader gets check.sh cannot run, exit 2, naming the
+# repository and the rows. The case runs --replay over this directory with a git of the
+# case's own first on PATH, which refuses ls-remote of theorem-labs/agent-infra with exit 128,
+# as git does for a repository its credential cannot read, and runs the real git for
+# everything else; the run must end exit 2, its last line naming theorem-labs/agent-infra and
+# the rows, with no FAIL line. A curl of the case's own, also first on PATH, answers nothing,
+# so a gate that read the repository after the budget, or not at all, would end at the
+# budget's read, which names neither, and never start the whole replay. Both reads are the
+# case's own plants, GitHub's, so the run's reason is read as planted when it is either, and a
+# run that ends at the budget's read fails the case rather than reading as one that could not
+# run.
 PRIVATE="$WORK/private-repository"
 mkdir -p "$PRIVATE/bin"
-cat >"$PRIVATE/bin/gh" <<'STUB'
+cat >"$PRIVATE/bin/git" <<'STUB'
 #!/bin/sh
-case "$*" in
-*repos/theorem-labs/agent-infra*)
-    printf 'gh: Not Found (HTTP 404)\n' >&2
-    exit 1
+case " $* " in
+*" ls-remote "*theorem-labs/agent-infra*)
+    printf 'remote: Repository not found.\nfatal: repository '\''https://github.com/theorem-labs/agent-infra.git/'\'' not found\n' >&2
+    exit 128
     ;;
 esac
-printf 'the stub gh of case 115 answers no %s\n' "$*" >&2
-exit 1
+exec REAL_GIT "$@"
 STUB
+sed -i "s|REAL_GIT|'$(command -v git)'|" "$PRIVATE/bin/git"
 cat >"$PRIVATE/bin/curl" <<'STUB'
 #!/bin/sh
 printf 'curl: (7) the stub curl of case 115 answers no %s\n' "$*" >&2
 exit 7
 STUB
-chmod +x "$PRIVATE/bin/gh" "$PRIVATE/bin/curl"
+chmod +x "$PRIVATE/bin/git" "$PRIVATE/bin/curl"
 out="$(PATH="$PRIVATE/bin:$PATH" gate_run "$HERE/check.sh" --replay)"
-private_case="--replay whose gh cannot read theorem-labs/agent-infra cannot run, exit 2, naming the repository and the rows that read it, and prints no FAIL"
+private_case="--replay whose git cannot read theorem-labs/agent-infra cannot run, exit 2, naming the repository and the rows that read it, and prints no FAIL"
 if grep -q '^FAIL' "$out/text"; then
     case_failed "$private_case" "$(grep '^FAIL' "$out/text" | head -2 | tr '\n' ' ')"
 else
     ending_result "$private_case" 2 \
-        "^check\\.sh cannot run --replay: GitHub's read of theorem-labs/agent-infra, the private repository six rows read with gh, n-collector-keep-keys among them, did not answer: gh: Not Found \\(HTTP 404\\)" "$out" \
+        "^check\\.sh cannot run --replay: GitHub's answer to git ls-remote of theorem-labs/agent-infra, the private repository the six rows n-collector-keep-keys, n-arms-precedent, n-spend-call-keys, n-spend-span-fields, n-spend-no-step-view and n-3176-columns read, did not answer: remote: Repository not found\\. fatal: repository 'https://github\\.com/theorem-labs/agent-infra\\.git/' not found" "$out" \
         '^check\.sh cannot run --replay: GitHub'
+fi
+
+# 116. No gh anywhere in the gate (R11 of round 38): the gate reads GitHub through git and the
+# REST API and never through gh, which in a Legion pod is scoped to this project's owners
+# alone. ADMITTED holds no entry for gh, so --admitted refuses a row whose command runs it:
+# the case plants a row that runs `gh api …` into a copy of claims.jsonl and env.sh, and
+# --admitted must fail admitted-rows alone, naming that row and gh. And no file the gate or a
+# row runs calls gh: gh_calls reads every .sh and .py file under this directory but
+# check.test.sh, check.sh, env.sh, citations.py, coordination/count.py, similarity/ and the
+# scripts under evidence/ that rows run among them, for a line outside comments that calls gh
+# as a word, and the case fails naming the file and the line of each it finds. A line is a
+# comment when its first character that is not a space is #. gh_calls is shown to bite first:
+# over a directory holding one script with gh in a comment and gh called on the next line, it
+# names that line alone.
+NO_GH="$WORK/no-gh"
+mkdir -p "$NO_GH"
+cp "$HERE/claims.jsonl" "$HERE/env.sh" "$NO_GH/"
+ln -s "$HERE/evidence" "$NO_GH/evidence"
+printf '%s\n' '{"claim": "theorem-labs/agent-infra names its commit 6908f072 by its id.", "command": "gh api repos/theorem-labs/agent-infra/commits/6908f07257629dfb202b91c35c2fc2c70753b3a7 --jq .sha", "evidence": {"surface": "cli"}, "expect": {"equals": "6908f07257629dfb202b91c35c2fc2c70753b3a7"}, "id": "f-gh-read", "kind": "behaviour", "mark": "verified", "note": "planted by case 116", "output": "6908f07257629dfb202b91c35c2fc2c70753b3a7", "requirement": "r7", "source": "the case"}' \
+    >>"$NO_GH/claims.jsonl"
+one_failure_result "--admitted over a row that runs gh fails admitted-rows alone, naming the row and gh" admitted-rows \
+    '^1 of 4 assertions failed: admitted-rows$' '^FAIL admitted-rows: the row f-gh-read is refused: gh, ' \
+    "$(IOC_EVIDENCE="$NO_GH" gate_run "$HERE/check.sh" --admitted)"
+# gh_calls <directory>; prints <file>:<line>:<text> for each line of a .sh or .py file under
+# <directory>, check.test.sh aside, that calls gh as a word outside a comment.
+gh_calls() {
+    find "$1" -type f \( -name '*.sh' -o -name '*.py' \) ! -name check.test.sh -print0 | sort -z |
+        xargs -0 grep -nE '(^|[^a-z_.-])gh( |$)' /dev/null | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#'
+}
+mkdir -p "$WORK/gh-planted"
+printf '#!/bin/sh\n# gh api in a comment is no call\ngh api repos/theorem-labs/agent-infra --jq .full_name\n' >"$WORK/gh-planted/planted.sh"
+calls="$(gh_calls "$WORK/gh-planted")"
+if [ "$calls" = "$WORK/gh-planted/planted.sh:3:gh api repos/theorem-labs/agent-infra --jq .full_name" ]; then
+    case_passed "gh_calls names a script's call of gh by its file and line, and not gh in a comment"
+else
+    case_failed "gh_calls names a script's call of gh by its file and line, and not gh in a comment" "it printed: $(printf '%s' "$calls" | head -3 | tr '\n' ' ')"
+fi
+calls="$(gh_calls "$HERE")"
+if [ -z "$calls" ]; then
+    case_passed "no script the gate or a row runs calls gh outside a comment"
+else
+    case_failed "no script the gate or a row runs calls gh outside a comment" "$(printf '%s\n' "$calls" | cut -c1-200 | head -5 | tr '\n' ' ')"
+fi
+
+# 117. The GitHub tokens stand on no command line, in no output and in no file the run leaves
+# (the architect's conditions of round 38 on R11's header files). --replay writes one header
+# file per repository under its own scratch with umask 077 (github_headers), every recorded
+# curl of GitHub's REST API sends the file with -H @<file>, and the scratch goes when the run
+# ends. The case replays, over the fixture, the rows of claims.jsonl that send a header file,
+# with a git of the case's own first on PATH that answers git credential fill with a token of
+# the case's own, whose prefix ghs_IOCFAKETOKEN117 stands nowhere else, and runs the real git
+# for everything else. Two rows of the case's own follow them: one prints the size of each
+# header file, so the case reads that each held that token while the run went on, and one
+# copies the replay's recorded files, every row's output, command, failed reads and statuses,
+# out of the run's scratch before the run removes it. The run is bounded: the fixture builds
+# nothing with env.sh and reads no budget and no private repository (IOC_NO_ENV), and GitHub
+# refuses the case's token, so the rows that send it fail replay-command, which the case does
+# not judge. Its clone root, IOC_CLONES, is a directory of the case's own beside its TMPDIR,
+# since the gate keeps clones there across runs, so whatever the run leaves under its TMPDIR
+# is its own. The case fails when the token's prefix stands in the run's whole log, its
+# stdout and stderr, in any recorded file, or in any file under the fixture, the clone root
+# or the TMPDIR, when a header file did not hold the token, or when the run leaves any file
+# under its TMPDIR, the header files among them.
+TOKEN_CASE="$WORK/github-token"
+TOKEN_PREFIX=ghs_IOCFAKETOKEN117
+mkdir -p "$TOKEN_CASE/bin" "$TOKEN_CASE/tmp" "$TOKEN_CASE/clones" "$TOKEN_CASE/outputs"
+cat >"$TOKEN_CASE/bin/git" <<'STUB'
+#!/bin/sh
+case " $* " in
+*" credential fill "*)
+    cat >/dev/null
+    printf 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=ghs_IOCFAKETOKEN117c4s3n0tAr34lt0k3n\n'
+    exit 0
+    ;;
+esac
+exec REAL_GIT "$@"
+STUB
+sed -i "s|REAL_GIT|'$(command -v git)'|" "$TOKEN_CASE/bin/git"
+chmod +x "$TOKEN_CASE/bin/git"
+dir="$(fresh github-token-fixture)"
+claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+jq -c 'select((.command // "") | test("IOC_GITHUB_AUTH_"))' "$HERE/claims.jsonl" >"$TOKEN_CASE/rows"
+[ -s "$TOKEN_CASE/rows" ] || {
+    printf 'FAIL no row of claims.jsonl sends a GitHub header file, so case 117 has no row to replay\n'
+    exit 1
+}
+cat "$TOKEN_CASE/rows" >>"$claims_copy"
+jq -cn '{id: "f-header-size", requirement: "r7", source: "the case", kind: "behaviour", claim: "Each GitHub header file holds one header line.", mark: "verified", evidence: {surface: "cli"}, command: "wc -c \"$IOC_GITHUB_AUTH_LEGION\" \"$IOC_GITHUB_AUTH_AGENT_INFRA\"", expect: {exit: 0}, output: "", note: "planted by case 117"}' >>"$claims_copy"
+jq -cn --arg to "$TOKEN_CASE/outputs/replay" '{id: "f-copy-outputs", requirement: "r7", source: "the case", kind: "behaviour", claim: "The recorded files of the rows before it are copied.", mark: "verified", evidence: {surface: "cli"}, command: ("cp -r \"$TMPDIR/..\" " + $to), expect: {exit: 0}, output: "", note: "planted by case 117"}' >>"$claims_copy"
+out="$(PATH="$TOKEN_CASE/bin:$PATH" TMPDIR="$TOKEN_CASE/tmp" IOC_CLONES="$TOKEN_CASE/clones" fixture_run "$dir" --replay)"
+token_case="a replay of the rows that send a GitHub header file prints the token in no line and no recorded output, and leaves no header file behind"
+header_bytes="$(printf 'Authorization: Bearer %s\n' "${TOKEN_PREFIX}c4s3n0tAr34lt0k3n" | wc -c)"
+if case_read "$token_case" "$out"; then
+    leaks="$(grep -rlF "$TOKEN_PREFIX" "$dir" "$TOKEN_CASE/outputs" "$TOKEN_CASE/clones" "$TOKEN_CASE/tmp" 2>/dev/null)"
+    sizes="$(awk '$2 != "total" { print $1 }' "$TOKEN_CASE/outputs/replay/f-header-size.out" 2>/dev/null | sort -u)"
+    left="$(find "$TOKEN_CASE/tmp" -mindepth 1 2>/dev/null | head -3)"
+    if [ -n "$leaks" ]; then
+        case_failed "$token_case" "the token's prefix stands in $(printf '%s' "$leaks" | head -3 | tr '\n' ' ')"
+    elif [ ! -s "$TOKEN_CASE/outputs/replay/$(jq -r '.id' "$TOKEN_CASE/rows" | head -1).out.command" ]; then
+        case_failed "$token_case" "the recorded files of the rows that send a header were not copied, so none was read: $RUN_LINE"
+    elif [ "$sizes" != "$header_bytes" ]; then
+        case_failed "$token_case" "the header files did not each hold the case's token while the run went on: their sizes were $(printf '%s' "$sizes" | tr '\n' ' ')where $header_bytes was asked"
+    elif [ -n "$left" ]; then
+        case_failed "$token_case" "the run left files under its TMPDIR: $(printf '%s' "$left" | tr '\n' ' ')"
+    else
+        case_passed "$token_case"
+    fi
 fi
 
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====

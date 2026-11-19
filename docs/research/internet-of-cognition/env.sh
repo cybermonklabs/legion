@@ -35,7 +35,9 @@
 # What it exports, one line per input:
 #
 #   IOC_CACHE       the cache root, everything below is under it
-#   IOC_CLONES      the clone root, the three clones at the commits sources.json pins
+#   IOC_CLONES      the clone root: the three clones at the commits sources.json pins, and
+#                   agent-infra, the private repository five rows read with git, fetched
+#                   blobless at the commits its private_repositories entry pins
 #   IOC_EVID        the absolute path of the committed evidence/ directory
 #   IOC_DESIGN      the design under check, dispatch://INFRA-3134/artifact/ioc-design-2026-11-12-md
 #   IOC_COMMENT     the reconciliation under check, dispatch://INFRA-3134/comment/326a044a-…
@@ -57,9 +59,18 @@
 #                   evidence/build-constraints.txt, which the tc-run rows run with uv run
 #   Each of IOC_PY, IOC_MASLAB_PY, IOC_MASLAB_CTL, IOC_MASLAB_WHEEL_CTL and IOC_TC_PY
 #   names one program, and they are the only variables a recorded command may run.
-#   IOC_REVIEWS     the review corpus of tc-corpus-1, fetched with gh. A review a reader
-#                   may not see is not in it: a PENDING review is visible to its author
-#                   alone, and the row counts only the bodies submitted by its instant.
+#   IOC_REVIEWS     the review corpus of tc-corpus-1, fetched with curl from GitHub's REST
+#                   API, sending the header file IOC_GITHUB_AUTH_LEGION names. A review a
+#                   reader may not see is not in it: a PENDING review is visible to its
+#                   author alone, and the row counts only the bodies submitted by its instant.
+#   IOC_GITHUB_AUTH_LEGION IOC_GITHUB_AUTH_AGENT_INFRA  the header files of the token the
+#                   machine's git credential helper gives for cybermonklabs/legion and for
+#                   theorem-labs/agent-infra, each empty when it gives none
+#                   (ioc_env_github_table); every recorded curl of GitHub's REST API sends
+#                   the one of the repository it reads with -H @"$<variable>". check.sh
+#                   --replay writes both under its run's scratch before it sources env.sh;
+#                   run on its own, env.sh writes them under a scratch of its own, which it
+#                   removes when it exits
 #   IOC_OUR_TREE    our repository's go.work and its packages/daemon and packages/envoy
 #                   as they stand at the commit sources.json pins, which every row that
 #                   counts or tests our code reads; the working tree carries whatever the
@@ -81,7 +92,8 @@
 #
 #   entry                                   kept whole by
 #   each clone, IOC_CLONES/<name>           a stamp, .git/ioc-complete, naming the pinned
-#                                           commit; a clone without it is cloned again
+#                                           commit, or for agent-infra the pinned commits
+#                                           and paths; a clone without it is cloned again
 #   ioc-design.md, comment-326a.md          a temporary name, <file>.part, renamed when the
 #                                           read ended well; only when run on its own
 #   IOC_VENV, IOC_MASLAB_VENV,              a stamp, .ioc-built-from, of what it was built
@@ -114,8 +126,10 @@
 # ioc-concord wheel is the sha256 of the files and the clone commit it was built from, so a
 # venv or a wheel that predates the hashed files is never used.
 #
-# It needs uv, git, jq, gh, python3 and dispatch, and it needs the three clones, which it
-# clones at the commits sources.json pins when they are missing or not whole. It refuses,
+# It needs uv, git, jq, curl, python3 and dispatch, and it needs the three clones and
+# agent-infra's, which it clones at the commits sources.json pins when they are missing or
+# not whole. It reads GitHub through git and the REST API and never through gh, which in a
+# Legion pod is scoped to this project's owners alone. It refuses,
 # with a line naming what it could not prepare and a non-zero status, rather than leaving a
 # variable pointing at something that is not there.
 
@@ -161,6 +175,100 @@ ioc_env_clone() {
         ioc_env_refuse "the clone $name" "it holds no commit $commit" || return 1
     printf '%s\n' "$commit" >"$stamp" ||
         ioc_env_refuse "the clone $name" "its stamp $stamp could not be written"
+}
+
+# ioc_env_git <git arguments>; git that never prompts. The private repository and every
+# token of GitHub reach git through the machine's credential helper, which in a Legion pod
+# is `legion git-credential` and answers for the repository's path (credential.useHttpPath).
+# GIT_TERMINAL_PROMPT=0 keeps git from asking on the terminal, and an empty GIT_ASKPASS keeps
+# it from running core.askPass or SSH_ASKPASS in its place, so a machine with no credential
+# for a repository gets git's refusal and never a prompt.
+ioc_env_git() { GIT_TERMINAL_PROMPT=0 GIT_ASKPASS='' git "$@"; }
+
+# The private repository five rows read with git, theorem-labs/agent-infra, as a fourth
+# clone under IOC_CLONES, by its entry of sources.json's private_repositories. It is fetched
+# blobless (--filter=blob:none), with no checkout, at exactly the commits the entry pins;
+# then the blobs of the paths the entry names, at each of those commits, are fetched by
+# their ids in one request, so each row reads every file it reads from the clone and none
+# fetches a blob of its own. The clone is reused only when its stamp, .git/ioc-complete,
+# written last, names those commits and paths; any other, one a fetch that was killed
+# part-way left among them, is removed and fetched again.
+ioc_env_clone_private() {
+    local name="$1" entry url commits paths dir stamp want commit
+    entry="$(jq -c --arg n "$name" '.private_repositories[]? | select(.name==$n)' "$IOC_ENV_HERE/sources.json")"
+    url="$(printf '%s' "$entry" | jq -r '.url // empty')"
+    commits="$(printf '%s' "$entry" | jq -r '.commits[]?')"
+    paths="$(printf '%s' "$entry" | jq -r '.paths[]?')"
+    [ -n "$url" ] && [ -n "$commits" ] && [ -n "$paths" ] ||
+        ioc_env_refuse "the clone $name" "sources.json pins no such private repository, with its commits and its paths" || return 1
+    dir="$IOC_CLONES/$name"
+    stamp="$dir/.git/ioc-complete"
+    want="$(printf '%s\n' "$commits" "$paths")"
+    [ "$(cat "$stamp" 2>/dev/null)" = "$want" ] && return 0
+    rm -rf "$dir" && mkdir -p "$dir" && git -C "$dir" init --quiet >&2 ||
+        ioc_env_refuse "the clone $name" "git init of $dir failed" || return 1
+    git -C "$dir" remote add origin "$url" ||
+        ioc_env_refuse "the clone $name" "git remote add of $url failed" || return 1
+    # shellcheck disable=SC2086
+    ioc_env_git -C "$dir" fetch --quiet --filter=blob:none --no-tags origin $commits >&2 ||
+        ioc_env_refuse "the clone $name" "git fetch of the commits sources.json pins from $url failed, so git cannot read it here" || return 1
+    : >"$dir/.git/ioc-blobs"
+    for commit in $commits; do
+        # shellcheck disable=SC2086
+        git -C "$dir" ls-tree -r "$commit" -- $paths >>"$dir/.git/ioc-blobs" ||
+            ioc_env_refuse "the clone $name" "it holds no tree of $commit" || return 1
+    done
+    # shellcheck disable=SC2086
+    awk '$2 == "blob" { print $3 }' "$dir/.git/ioc-blobs" | sort -u | ioc_env_git -C "$dir" \
+        -c fetch.negotiationAlgorithm=noop fetch --quiet --no-tags --no-write-fetch-head --filter=blob:none --stdin origin >&2 ||
+        ioc_env_refuse "the clone $name" "git fetch of the files under $(printf '%s, ' $paths)at the pinned commits, from $url, failed" || return 1
+    printf '%s\n' "$want" >"$stamp" ||
+        ioc_env_refuse "the clone $name" "its stamp $stamp could not be written"
+}
+
+# The GitHub repositories whose REST API a recorded curl reads, one per line as
+# <variable>|<owner>/<repo>: the variable names the header file of that repository's token,
+# which the row sends with curl -H @"$<variable>", and env.sh's read of the review corpus
+# sends the first. One file per repository, since a Legion pod's helper gives a token per
+# repository.
+ioc_env_github_table() {
+    cat <<'TABLE'
+IOC_GITHUB_AUTH_LEGION|cybermonklabs/legion
+IOC_GITHUB_AUTH_AGENT_INFRA|theorem-labs/agent-infra
+TABLE
+}
+
+# ioc_env_github_header <owner>/<repo> <file>; writes <file>, readable by its owner alone
+# from before its first byte, holding one HTTP header, Authorization: Bearer <token>, with
+# the token git credential fill gives for https://github.com/<owner>/<repo>.git, or nothing
+# when it gives none, which curl then sends as no header: a read with no token, held to
+# GitHub's sixty requests an hour. The token goes from git's output into the file alone: it
+# stands on no command line, and nothing here prints it; git's own refusal is dropped, since
+# a machine with no credential is no failure. It returns non-zero only when the file cannot
+# be written.
+ioc_env_github_header() {
+    (
+        umask 077
+        rm -f -- "$2" || exit 1
+        printf 'protocol=https\nhost=github.com\npath=%s.git\n\n' "$1" |
+            ioc_env_git -c credential.interactive=false credential fill 2>/dev/null |
+            sed -n 's/^password=\(..*\)$/Authorization: Bearer \1/p' >"$2"
+    )
+}
+
+# ioc_env_github_auth; writes the header file of each repository of ioc_env_github_table
+# under IOC_ENV_SCRATCH, the directory the caller removes when it ends, and exports the
+# variable that names it. check.sh --replay calls it with its run's scratch before it
+# sources env.sh; run on its own, env.sh calls it with a scratch of its own. A shell that
+# sources env.sh otherwise writes none, and env.sh reads the files that shell names.
+ioc_env_github_auth() {
+    local name repo
+    [ -n "${IOC_ENV_SCRATCH:-}" ] || ioc_env_refuse "the GitHub header files" "no scratch directory is named for them" || return 1
+    while IFS='|' read -r name repo; do
+        ioc_env_github_header "$repo" "$IOC_ENV_SCRATCH/$name.header" ||
+            ioc_env_refuse "$name" "the header file of $repo could not be written under $IOC_ENV_SCRATCH" || return 1
+        export "$name=$IOC_ENV_SCRATCH/$name.header"
+    done < <(ioc_env_github_table)
 }
 
 # Every tool cache, one line each: the variable the tool reads, the directory under
@@ -748,40 +856,60 @@ ioc_env_scope_shapes() {
 }
 
 # The corpus of tc-corpus-1: the review bodies of the 200 merged pull requests the
-# committed number list pins, read with gh, at least as many as the corpus_floor the
-# evidence of that row names (ioc_env_row_fields). The fetch takes about four minutes and
-# runs once; the file is the corpus the disagreement search and the recorded script read.
+# committed number list pins, read with curl from GitHub's REST API, a hundred to a page,
+# sending the header file IOC_GITHUB_AUTH_LEGION names, at least as many as the
+# corpus_floor the evidence of that row names (ioc_env_row_fields). Each body is one line,
+# its keys in the order gh printed them when the corpus was first fetched. A machine whose
+# credential helper gives no token for cybermonklabs/legion reads with none, and GitHub's
+# sixty requests an hour for one address are fewer than the corpus takes, so the read stops
+# at GitHub's refusal, naming it. The fetch takes about two minutes and runs once; the file
+# is the corpus the disagreement search and the recorded script read. It prints how many
+# requests it made and whether it sent a token, never the token.
 ioc_env_reviews() {
     export IOC_TC_WORK="$IOC_CACHE/tc-work"
     export IOC_TC_PY="$IOC_TC_WORK/venv/bin/python"
     export IOC_REVIEWS="$IOC_TC_WORK/reviews.jsonl"
-    local want part n
+    local want part n page length requests=0 token="with no token"
     want="$(ioc_env_row_field tc-corpus-1 corpus_floor)"
     [ -n "$want" ] ||
         ioc_env_refuse "IOC_REVIEWS" "claims.jsonl holds no row tc-corpus-1 whose evidence names a corpus_floor" || return 1
     mkdir -p "$IOC_TC_WORK"
     if [ ! -s "$IOC_REVIEWS" ] || [ "$(wc -l <"$IOC_REVIEWS")" -lt "$want" ]; then
+        [ -n "${IOC_GITHUB_AUTH_LEGION:-}" ] && [ -r "$IOC_GITHUB_AUTH_LEGION" ] ||
+            ioc_env_refuse "IOC_REVIEWS" "IOC_GITHUB_AUTH_LEGION names no readable header file, which check.sh --replay and env.sh run on its own each write" || return 1
+        [ -s "$IOC_GITHUB_AUTH_LEGION" ] && token="sending the token git credential fill gave"
         part="$IOC_REVIEWS.part"
         : >"$part"
         for n in $(cat "$IOC_EVID/concord-prs.txt"); do
-            # One read that fails leaves the corpus short of that pull request's reviews,
-            # and a search of a partial corpus is no search of the corpus: the build stops
-            # and names the pull request.
-            gh api --paginate "repos/cybermonklabs/legion/pulls/$n/reviews" \
-                --jq ".[] | {pr: $n, id: .id, state: .state, commit: .commit_id, author: .user.login, submitted: .submitted_at, body: .body}" \
-                2>"$part.err" >>"$part" || {
-                ioc_env_refuse "IOC_REVIEWS" "gh api of the reviews of cybermonklabs/legion pull request $n failed: $(head -c 200 "$part.err" | tr '\n' ' ')"
-                rm -f "$part" "$part.err"
-                return 1
-            }
+            page=1
+            while :; do
+                # One read that fails leaves the corpus short of that pull request's
+                # reviews, and a search of a partial corpus is no search of the corpus: the
+                # build stops and names the pull request and what GitHub answered.
+                requests=$((requests + 1))
+                if ! curl -sS --fail-with-body -H @"$IOC_GITHUB_AUTH_LEGION" \
+                    "https://api.github.com/repos/cybermonklabs/legion/pulls/$n/reviews?per_page=100&page=$page" \
+                    >"$part.page" 2>"$part.err" ||
+                    ! length="$(jq -r 'if type == "array" then length else error("the answer is no list of reviews") end' "$part.page" 2>>"$part.err")" ||
+                    ! jq -S -c --argjson n "$n" '.[] | {pr: $n, id: .id, state: .state, commit: .commit_id, author: .user.login, submitted: .submitted_at, body: .body}' \
+                        "$part.page" >>"$part" 2>>"$part.err"; then
+                    ioc_env_refuse "IOC_REVIEWS" "curl of page $page of the reviews of cybermonklabs/legion pull request $n, $token, failed: $(cat "$part.err" "$part.page" | head -c 240 | tr '\n' ' ')"
+                    rm -f "$part" "$part.page" "$part.err"
+                    return 1
+                fi
+                [ "$length" -lt 100 ] && break
+                page=$((page + 1))
+            done
         done
-        rm -f "$part.err"
+        rm -f "$part.page" "$part.err"
         if [ "$(wc -l <"$part")" -lt "$want" ]; then
             rm -f "$part"
-            ioc_env_refuse "IOC_REVIEWS" "gh read fewer than $want review bodies of cybermonklabs/legion"
+            ioc_env_refuse "IOC_REVIEWS" "curl read fewer than $want review bodies of cybermonklabs/legion in $requests requests, $token"
             return 1
         fi
         mv "$part" "$IOC_REVIEWS"
+        printf 'env.sh read the review corpus: %s review bodies of %s pull requests in %s requests to GitHub'"'"'s REST API, %s\n' \
+            "$(wc -l <"$IOC_REVIEWS")" "$(wc -l <"$IOC_EVID/concord-prs.txt")" "$requests" "$token" >&2
     fi
     # The recorded script builds its own install into ./venv of this directory, so env.sh
     # makes it empty, and makes it again from nothing when its stamp is not that of this
@@ -839,14 +967,18 @@ ioc_env_main() {
     export IOC_EVID="$IOC_ENV_HERE/evidence"
     export ACCORD_SRC="$IOC_CLONES/cognition-protocols"
 
-    ioc_env_need uv git jq gh python3 dispatch || return 1
+    ioc_env_need uv git jq curl python3 dispatch || return 1
     mkdir -p "$IOC_CACHE" || ioc_env_refuse "the cache" "mkdir $IOC_CACHE failed" || return 1
     [ -d "$IOC_EVID" ] || ioc_env_refuse "IOC_EVID" "$IOC_EVID is not a directory" || return 1
+    # check.sh --replay writes the GitHub header files under its run's scratch before it
+    # sources env.sh; run on its own, env.sh writes them under IOC_ENV_SCRATCH, its own.
+    [ -z "${IOC_ENV_SCRATCH:-}" ] || ioc_env_github_auth || return 1
 
     local name
     for name in mas-lab scope cognition-protocols; do
         ioc_env_clone "$name" || return 1
     done
+    ioc_env_clone_private agent-infra || return 1
 
     ioc_env_enforce || return 1
     ioc_env_records || return 1
@@ -861,6 +993,12 @@ ioc_env_main() {
 }
 
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    # Run on its own, env.sh writes the GitHub header files (ioc_env_github_auth) under a
+    # scratch of its own, made before the first of them and removed when env.sh exits,
+    # however it exits, so no token outlives the run that read it.
+    IOC_ENV_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/ioc-env.XXXXXX")" ||
+        { ioc_env_refuse "the GitHub header files" "no scratch directory could be made under ${TMPDIR:-/tmp}"; exit 1; }
+    trap 'rm -rf "$IOC_ENV_SCRATCH"' EXIT
     ioc_env_main || exit 1
     for ioc_env_name in IOC_CACHE IOC_CLONES IOC_EVID IOC_DESIGN IOC_COMMENT IOC_VENV IOC_PY \
         IOC_MODEL_DIR IOC_MASLAB_VENV IOC_MASLAB_WHEEL_VENV IOC_MASLAB_PY IOC_MASLAB_CTL IOC_MASLAB_WHEEL_CTL IOC_TC_PY IOC_SCOPE_SHAPES IOC_SCOPE_MAS_SHAPES \
