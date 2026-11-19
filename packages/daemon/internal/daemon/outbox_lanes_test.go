@@ -370,6 +370,17 @@ func outboxRowsOf(t *testing.T, pool *store.Pool, issue string) int {
 	return rows
 }
 
+// outboxRowsOfKind is how many rows of kind issue has left. A finished row is deleted
+// (record.Postgres.FinishOutbox).
+func outboxRowsOfKind(t *testing.T, pool *store.Pool, issue string, kind record.OutboxKind) int {
+	t.Helper()
+	var rows int
+	if err := pool.QueryRow(context.Background(), "select count(*) from outbox where issue = $1 and kind = $2", issue, string(kind)).Scan(&rows); err != nil {
+		t.Fatalf("count the %s rows of %s: %v", kind, issue, err)
+	}
+	return rows
+}
+
 // rowState is what a row's claim, renewal and settle left on it.
 type rowState struct {
 	leaseToken string

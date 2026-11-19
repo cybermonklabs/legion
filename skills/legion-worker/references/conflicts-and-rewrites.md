@@ -1,6 +1,7 @@
 # Conflicts, retargets, and a wrong pushed commit
 
-Part of `skill://legion-worker`. Read it when GitHub reports the pull request `CONFLICTING`, a
+Part of `skill://legion-worker`. Read it when GitHub reports the pull request `CONFLICTING`, the
+daemon asks you to merge the base forward (a merge-forward message on your role topic), another
 message asks you to merge the base or resolve a conflict, the change needs something only the base
 has, the pull request is retargeted to a new base, or a commit you already pushed is wrong.
 Every path it cites is in cybermonklabs/legion.
@@ -10,10 +11,11 @@ Every path it cites is in cybermonklabs/legion.
 - **Merge the base forward only on a real conflict, a need only the base meets, or a retarget,
   and never with `jj rebase`.**
   The implementer merges the base into the issue branch only when GitHub reports it `CONFLICTING`,
-  a message from the controller, an architect or any other session asks for it and names the
-  conflict GitHub reports, the change needs something that exists only on the base (a fix for its
-  only red check, a child's merged code that a parent's failing check needs, or a sentence it must
-  change), or after the pull request is retargeted to a new
+  the daemon's merge-forward message asks for it (*The daemon's ask*, below), a message from the
+  controller, an architect or any other session asks for it and names the conflict GitHub reports,
+  the change needs something that exists only on the base (a fix for its only red check, a child's
+  merged code that a parent's failing check needs, or a sentence it must change), or after the
+  pull request is retargeted to a new
   base. Otherwise, never reintegrate the base to pick up the default branch or refresh CI. Each
   merge is a new head, reruns CI and can void a review. A message that names no conflict is no
   reason to merge: answer it with this rule, and merge nothing. Never merge the base to carry it
@@ -79,6 +81,20 @@ Every path it cites is in cybermonklabs/legion.
   (`base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && jj -R "$LEGION_WORKSPACE" new legion/<KEY> "${base}@origin" -m "<message>"`, its `<message>` in the repository's own commit convention, as above) and push it the
   ordinary way, a genuine fast-forward, so the new head runs Tests
   against the new merge result, and cite that run in the PR body.
+- **The daemon's ask.** A head that conflicts with its base keeps the issue in its phase. The
+  daemon reads GitHub twice, a minute apart, and acts on a conflict only
+  when the next step needs a mergeable head: the issue stands in `accepting`, `retro` or
+  `merging`, a check the base requires has no green result on the head (GitHub runs no check on
+  a conflicting head), the base requires a pull request to be current with it, or the daemon
+  could not read the base's rules. Then the issue keeps its phase, and the implementer gets a
+  merge-forward message on its role topic: merge the base forward in `$LEGION_WORKSPACE`, the one
+  workspace every role of the issue shares, after the working-copy check of
+  `skill://legion-worker/references/foreign-path.md`, as this section says, and push the issue
+  branch. Write no handoff and make no completion for the merge itself. In `testing`,
+  `reviewing` and `merging` the phase is another role's: the daemon told its worker to stop
+  writing the workspace and tells it the new head when your push lands. In `accepting` the phase
+  is the architect's. In `implementing` and in `retro` the phase is your own, and your
+  assignment and its completion stand.
 
 ## A wrong pushed commit
 

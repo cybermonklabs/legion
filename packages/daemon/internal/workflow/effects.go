@@ -263,43 +263,19 @@ func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, stat
 	return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(status, issue.Status, reason))
 }
 
-// moveReason is what a move's status write posts on the issue, for the two moves that nothing else
-// on Dispatch explains. One is the move the daemon makes on its own, a head that conflicts with its
-// base (TriggerConflict). The other is a worker's backward move (TriggerBackward,
-// request_backward_move): the request reaches the daemon's API and no Dispatch record, so an
-// architect's send-back from accepting showed a bare status change, with its reason only in the
-// notice and the next role's task over Envoy. Every other move is recorded on Dispatch by the act
-// that makes it, a tester's or a reviewer's hand-off, so it posts nothing: transition also carries a
-// review's whole body, which does not go on the issue a second time.
-// A person reads this text on the issue, so a conflict's is built from the pull request, not from
-// the conflict handler's sentence to the implementer, and a backward move's names the role that
-// asked and gives its words.
-func moveReason(trigger TriggerKind, from, to phase.Phase, pr *record.PullRequest, reason string) string {
-	switch trigger {
-	case TriggerConflict:
-	case TriggerBackward:
-		return backwardMoveReason(from, to, reason)
-	default:
+// moveReason is what a move's status write posts on the issue, for the one move nothing else on
+// Dispatch explains: a worker's backward move (TriggerBackward, request_backward_move). The request
+// reaches the daemon's API and no Dispatch record, so an architect's send-back from accepting
+// showed a bare status change, with its reason only in the notice and the next role's task over
+// Envoy. Every other move is recorded on Dispatch by the act that makes it, a tester's or a
+// reviewer's hand-off, so it posts nothing: transition also carries a review's whole body, which
+// does not go on the issue a second time. A person reads this text on the issue, so a backward
+// move's names the role that asked and gives its words.
+func moveReason(trigger TriggerKind, from, to phase.Phase, reason string) string {
+	if trigger != TriggerBackward {
 		return ""
 	}
-	what, base := "its pull request", "its base"
-	if pr != nil {
-		if pr.Number != 0 {
-			what = fmt.Sprintf("pull request #%d", pr.Number)
-			if head := pr.HeadSHA; head != "" {
-				if len(head) > 12 {
-					head = head[:12]
-				}
-				what += " at head " + head
-			}
-		}
-		if pr.Base != "" {
-			base = pr.Base
-		}
-	}
-	return fmt.Sprintf("Legion moved this issue from %s back to %s, because %s conflicts with %s. "+
-		"GitHub runs no checks on a head that conflicts with its base, so the implementer merges %s forward.",
-		from, to, what, base, base)
+	return backwardMoveReason(from, to, reason)
 }
 
 // backwardMoveReason is a worker's backward move as the issue shows it: the phase it left, the one
@@ -1062,6 +1038,14 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 // a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the implementer's check report is no
 // phase completion and starts nobody), so the line names the tester: the reviewer it starts on a
 // pass reads it as the tester's report, never as a field of its own completion.
+//
+// A merger started in merging at the head a merge forward landed past the review, while the
+// review that landing asked of the reviewer stands for that head (mergeForwardReviewOwed), is told
+// to merge that head only once the reviewer's approval of it is on the pull request: the daemon
+// records no decision outside reviewing, so the approval is the merger's to read on GitHub. The
+// merger's task is built at retro's completion, the one move into merging, and at the retry of a
+// held merging (retryPhase); each reads the pull request in its own transaction, so pr says what
+// the record holds.
 func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
 	text := continueLine(issue)
 	if handoff.HandoffRecord != "" {
@@ -1076,6 +1060,10 @@ func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, r
 	}
 	if pr != nil && pr.Number != 0 {
 		text += fmt.Sprintf(" Pull request: #%d.", pr.Number)
+	}
+	if issue.Phase == phase.Merging && pr != nil && mergeForwardReviewOwed(*pr) {
+		text += fmt.Sprintf(" Head %s is the merge of %s forward that landed after the review, and the reviewer is asked to read it: merge head %s only once the reviewer's approval of it is on the pull request.",
+			pr.HeadSHA, pr.MergeForward.Base, pr.HeadSHA)
 	}
 	if reason != "" {
 		text += " Reason: " + reason + "."

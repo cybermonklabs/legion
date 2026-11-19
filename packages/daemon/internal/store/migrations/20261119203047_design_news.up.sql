@@ -1,4 +1,4 @@
--- 20261117133401_design_news.up.sql — what each holder of a tree's work took of its approved
+-- 20261119203047_design_news.up.sql — what each holder of a tree's work took of its approved
 -- design, the change sets between two approved versions, the questions of a document's review
 -- history that could not be read, the news a delivery carries, and the outbox kind that reconciles
 -- them (dispatch://INFRA-175).
@@ -103,22 +103,27 @@
 --
 -- The outbox kind design_changes is the row that runs that reconcile for one tree. The check is
 -- one list, so it is rewritten whole naming every kind, as 20261110235320 did: the list of
--- 20261117023932, which stands below this one and added plan_record to the step record's list of
--- 20261117000528, itself the role-holders list of 20261116165926 with step_record added, with
+-- 20261119003157, which stands below this one and added conflict_confirm and merge_forward to the
+-- plan record's list of 20261117023932, itself the step record's list of 20261117000528 with
+-- plan_record added, which is the role-holders list of 20261116165926 with step_record added, with
 -- design_changes added. Its version stands above each of them on purpose. Migrate applies every
 -- unrecorded migration in version order, so the list with the higher version is the last word on
 -- any database. Numbered below any of them, this list would run first on a fresh database, and the
 -- list above it, which does not name design_changes, would then refuse every reconcile row. A list
--- here that left out step_record or plan_record would refuse every row of that kind, and fail the
--- upgrade of a database that holds one pending. This file was numbered below such a list twice,
--- and moved above it at the forward merge that brought the list in: first 20261113212423, below
--- the merge-queue kinds' 20261114031356, then 20261114082752, below the role-holders kind's
--- 20261116165926. It stood above the step record's 20261117000528 when that list came in, and
--- above the plan record's 20261117023932 when that one came in. No release carries either
--- earlier version and main never merged them, so no deployment's database records them. Only a
--- database that a build of this branch migrated before a forward merge does, and such a database
--- is a test's own: it would apply this file a second time and fail on the first create table
--- below, so make it again rather than upgrade it.
+-- here that left out step_record, plan_record, conflict_confirm or merge_forward would refuse
+-- every row of that kind, and fail the upgrade of a database that holds one pending. phase_ended
+-- stays in the list for the reason 20261119003157 keeps it: no release since that one queues a
+-- row of it, but the release before it does, and after a rollback to that release it runs on the
+-- last list a migration wrote, which is this one. This file was numbered below such a list three
+-- times, and moved above it at the forward merge that brought the list in: first 20261113212423,
+-- below the merge-queue kinds' 20261114031356, then 20261114082752, below the role-holders kind's
+-- 20261116165926, then 20261117133401, below the merge forward's 20261119003157. It stood above
+-- the step record's 20261117000528 when that list came in, and above the plan record's
+-- 20261117023932 when that one came in. No release carries any earlier version and main never
+-- merged them, so no deployment's database records them. Only a database that a build of this
+-- branch migrated before a forward merge does, and such a database is a test's own: it would
+-- apply this file a second time and fail on the first create table below, so make it again rather
+-- than upgrade it.
 -- design_history_unread, design_changes.unchanged with its check, design_news_told.opening_seq and
 -- unreached, the functions below, and the columns pending_task_deliveries.carried_news,
 -- carried_ran and news_only were added to this file before any release carried it, so they are
@@ -128,9 +133,9 @@
 --
 -- 20261116165926 also creates outbox_role_holders_publish_issue_unique, a unique index on the
 -- outbox's issue over role_holders_publish rows alone. Nothing below reads or writes that index or
--- a row of that kind, or a step_record or plan_record row; the kind check below names
--- role_holders_publish, step_record and plan_record so that such a row stands through the rewrite
--- and is still taken after it.
+-- a row of that kind, or a step_record, plan_record, conflict_confirm or merge_forward row; the
+-- kind check below names role_holders_publish, step_record, plan_record, conflict_confirm and
+-- merge_forward so that such a row stands through the rewrite and is still taken after it.
 --
 -- Rolling the image back to the release before this one needs no restore of the schema, but it
 -- needs four statements first, run with this release's daemon stopped: that release refuses an
@@ -368,7 +373,7 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
-  'design_changes'));
+  'conflict_confirm', 'merge_forward', 'design_changes'));
 
 -- The seed. Each tree root holding gate rows, with the approved version of each row that holds
 -- one (versions) and whether it holds any (approved). A row whose approval a changes request

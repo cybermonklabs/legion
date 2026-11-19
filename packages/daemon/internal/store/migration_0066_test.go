@@ -6,13 +6,15 @@ import (
 	"testing"
 )
 
-// A phase-ended row is the message the daemon publishes to the role whose phase a CI-red
-// transition ended (record.PhaseEnded). The outbox refuses a kind its constraint does not name, so
-// the row the workflow now writes could not be queued before 0066, and the transaction that wrote
-// it — the one that sends the work back to implementing — would fail with it: the negative control
-// is that refusal, read before the migration. After it the row is queued, and so is every kind the
-// constraint still names, since the migration rewrites the list whole and a kind left out would
-// stop its own effect. A kind that is none is still refused.
+// A phase-ended row was the message the daemon published to the role whose phase a CI-red
+// transition ended (record.PhaseEnded, whose producer the change that added migration
+// 20261119003157 removed; that migration keeps the kind in the constraint and deletes the rows
+// still queued). The outbox refuses a kind its constraint does not name, so the row the workflow
+// wrote then could not be queued before 0066, and the transaction that wrote it — the one that sent
+// the work back to implementing — would have failed with it: the negative control is that refusal,
+// read before the migration. After it the row is queued, and so is every kind the constraint still
+// names, since the migration rewrites the list whole and a kind left out would stop its own
+// effect. A kind that is none is still refused.
 //
 // The reading after the migration is of the schema whole, because store.Migrate applies every
 // migration there is rather than this one: the three kinds the daemon's own merge wrote

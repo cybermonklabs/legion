@@ -199,7 +199,7 @@ const cutoverIdleTick = 250 * time.Millisecond
 //     (record.KeepsSlot), so it is claimable at once, as any start of `merging` is.
 //   - E's merger is not started while its gate is closed, and gets exactly one merging task once
 //     the test opens the gate. The opening approves version 2 of the spec over the version 1 the
-//     upgrade recorded the merger's phase as having taken (20261117133401_design_news), so the
+//     upgrade recorded the merger's phase as having taken (20261119203047_design_news), so the
 //     merger also gets the news of that version once (dispatch://INFRA-175), and its start waits
 //     until what changed is recorded (mergerWaitsForTheDesignGate).
 //   - A's merger is relaunched and gets exactly one task, the merging task; G's merger claim is

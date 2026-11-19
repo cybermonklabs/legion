@@ -685,7 +685,7 @@ func scanPhase(row scanner) (PhaseRow, error) {
 const pullRequestColumns = `issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
 	failing, cancelled, check_runs,
 	generation, snapshot, statuses, pushes, head_moves, head_run, review_seen, review_seen_at, state,
-	checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha`
+	checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha, conflict_read, merge_forward`
 
 func (s *Postgres) PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error) {
 	pr, err := scanPullRequest(tx.QueryRow(ctx, "select "+pullRequestColumns+" from pull_requests where issue = $1", issue))
@@ -871,6 +871,18 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 			return fmt.Errorf("put pull request for %s: encode the head run: %w", pr.Issue, err)
 		}
 	}
+	// No first conflicting read and no ask to merge forward are null, as no head run is.
+	var conflictRead, mergeForward []byte
+	if pr.ConflictRead != nil {
+		if conflictRead, err = json.Marshal(pr.ConflictRead); err != nil {
+			return fmt.Errorf("put pull request for %s: encode the first conflicting read: %w", pr.Issue, err)
+		}
+	}
+	if pr.MergeForward != nil {
+		if mergeForward, err = json.Marshal(pr.MergeForward); err != nil {
+			return fmt.Errorf("put pull request for %s: encode the ask to merge forward: %w", pr.Issue, err)
+		}
+	}
 	// fix_attempts, blocked_attempts and head_counted are stopped columns: nothing counts a fix
 	// attempt since dispatch://INFRA-956 R4, and nothing reads them at all since a CI result
 	// stopped moving an issue (dispatch://INFRA-714/spec R1), so they are kept rather than
@@ -881,8 +893,9 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 	_, err = tx.Exec(ctx, `insert into pull_requests (issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
 		failing, cancelled, check_runs, generation, snapshot, statuses, pushes, head_moves,
 		head_run, review_seen, review_seen_at, state, checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha,
-		fix_attempts, blocked_attempts, head_counted)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, 0, 0, '')
+		conflict_read, merge_forward, fix_attempts, blocked_attempts, head_counted)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
+		$27, $28, 0, 0, '')
 		on conflict (issue) do update set repo = excluded.repo, number = excluded.number, branch = excluded.branch,
 		base = excluded.base, base_moved = excluded.base_moved,
 		head_sha = excluded.head_sha, head_updated_at = excluded.head_updated_at,
@@ -892,12 +905,13 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 		review_seen = excluded.review_seen,
 		review_seen_at = excluded.review_seen_at, state = excluded.state, checked_head = excluded.checked_head,
 		mergeability = excluded.mergeability, merge_state = excluded.merge_state, state_read_at = excluded.state_read_at,
-		conflicting_head = excluded.conflicting_head, merge_sha = excluded.merge_sha`,
+		conflicting_head = excluded.conflicting_head, merge_sha = excluded.merge_sha,
+		conflict_read = excluded.conflict_read, merge_forward = excluded.merge_forward`,
 		pr.Issue, pr.Repo, pr.Number, pr.Branch, pr.Base, pr.BaseMoved, pr.HeadSHA, pr.HeadUpdatedAt,
 		failing, cancelled, checkRuns,
 		pr.Generation, pr.Snapshot, statuses, pushes, moves, run,
 		pr.ReviewSeen.ID, pr.ReviewSeen.SubmittedAt, pr.State, pr.CheckedHead,
-		pr.Mergeability, pr.MergeState, pr.StateReadAt, pr.ConflictingHead, pr.MergeSHA,
+		pr.Mergeability, pr.MergeState, pr.StateReadAt, pr.ConflictingHead, pr.MergeSHA, conflictRead, mergeForward,
 	)
 	if err != nil {
 		return fmt.Errorf("put pull request for %s: %w", pr.Issue, err)
@@ -1447,10 +1461,15 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		// mergeability beside it, it is GitHub's answer about that head and that base, which a new
 		// generation of the issue's work does not make false. A head that still does not merge
 		// still does not merge, and the count it excuses starts again with the rounds below, so
-		// nothing of the old generation's counting survives it.
+		// nothing of the old generation's counting survives it. conflict_read, a first conflicting
+		// read still waiting for its second (PullRequest.ConflictRead), stays for the same reason:
+		// it is GitHub's answer, and the second read that confirms or releases it is still owed.
+		// merge_forward goes (PullRequest.MergeForward): it is the old run's ask that its
+		// implementer merge the base forward, and the new generation decides afresh, on its own
+		// confirmed conflict, whether to ask again.
 		"update pull_requests set " +
 			"head_run = null, planned_red = false, checked_head = '', failing = '[]'::jsonb, cancelled = '[]'::jsonb, " +
-			"check_runs = '[]'::jsonb, statuses = '[]'::jsonb where " + where,
+			"check_runs = '[]'::jsonb, statuses = '[]'::jsonb, merge_forward = null where " + where,
 		// The entry's task goes with the run, and the entry itself stays where it stands: the
 		// number is never reset, so a worker still holding the old entry's task is behind the row
 		// rather than level with it, and the re-admitted tree's promotion raises the entry again
@@ -1525,11 +1544,12 @@ func (s *Postgres) clearGates(ctx context.Context, tx pgx.Tx, where, key, descri
 
 func scanPullRequest(row scanner) (*PullRequest, error) {
 	var pr PullRequest
-	var failing, cancelled, checkRuns, statuses, pushes, moves, run []byte
+	var failing, cancelled, checkRuns, statuses, pushes, moves, run, conflictRead, mergeForward []byte
 	if err := row.Scan(&pr.Issue, &pr.Repo, &pr.Number, &pr.Branch, &pr.Base, &pr.BaseMoved, &pr.HeadSHA, &pr.HeadUpdatedAt,
 		&failing, &cancelled, &checkRuns, &pr.Generation, &pr.Snapshot, &statuses,
 		&pushes, &moves, &run, &pr.ReviewSeen.ID, &pr.ReviewSeen.SubmittedAt, &pr.State,
-		&pr.CheckedHead, &pr.Mergeability, &pr.MergeState, &pr.StateReadAt, &pr.ConflictingHead, &pr.MergeSHA); err != nil {
+		&pr.CheckedHead, &pr.Mergeability, &pr.MergeState, &pr.StateReadAt, &pr.ConflictingHead, &pr.MergeSHA,
+		&conflictRead, &mergeForward); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(failing, &pr.Failing); err != nil {
@@ -1553,6 +1573,16 @@ func scanPullRequest(row scanner) (*PullRequest, error) {
 	if run != nil {
 		if err := json.Unmarshal(run, &pr.Run); err != nil {
 			return nil, fmt.Errorf("decode the head run: %w", err)
+		}
+	}
+	if conflictRead != nil {
+		if err := json.Unmarshal(conflictRead, &pr.ConflictRead); err != nil {
+			return nil, fmt.Errorf("decode the first conflicting read: %w", err)
+		}
+	}
+	if mergeForward != nil {
+		if err := json.Unmarshal(mergeForward, &pr.MergeForward); err != nil {
+			return nil, fmt.Errorf("decode the ask to merge forward: %w", err)
 		}
 	}
 	return &pr, nil

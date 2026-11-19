@@ -6,13 +6,15 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // designNewsVersion is the version of the migration this file tests, so the test can migrate
 // through everything before it whatever lands beside it.
-const designNewsVersion = 20261117133401
+const designNewsVersion = 20261119203047
 
-// 20261117133401 records what each holder of a tree's work took of its approved design
+// 20261119203047 records what each holder of a tree's work took of its approved design
 // (design_news_told, with the number of each settlement of its opening, opening_seq), the change
 // sets between two approved versions (design_changes), the questions of a document's review
 // history the reconcile could not answer (design_history_unread), the news a delivery carries, the
@@ -38,14 +40,16 @@ const designNewsVersion = 20261117133401
 // started, so its first opening and each member's first phase take their own. The done member gets
 // none.
 //
-// The negative control is the schema before the migration, the plan record's kind list of
-// 20261117023932 included, which holds neither the told rows table nor the unread history table
-// and refuses a design_changes outbox row; after it, every kind the constraint already named is
-// still taken, the merge-queue kinds, role_holders_publish, step_record and plan_record among them,
-// since this migration writes the list last on any database, an unread history is taken only with
-// its reason and a version above 0, and a change set is taken as unchanged only where Dispatch
-// answered it and it is not decision-only.
-func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261117133401(t *testing.T) {
+// The negative control is the schema before the migration, the merge forward's kind list of
+// 20261119003157 included, which holds neither the told rows table nor the unread history table
+// and refuses a design_changes outbox row; after it, every kind a lane of the daemon runs is taken,
+// read from the lanes (record.OutboxLanes, record.LaneKinds) rather than listed here, the
+// merge-queue kinds, role_holders_publish, step_record, plan_record, conflict_confirm,
+// merge_forward and design_changes among them, and so is phase_ended, which no lane runs and the
+// list keeps for a rollback, since this migration writes the list last on any database; an unread
+// history is taken only with its reason and a version above 0, and a change set is taken as
+// unchanged only where Dispatch answered it and it is not decision-only.
+func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261119203047(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, designNewsVersion-1)
@@ -195,14 +199,13 @@ func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261117133401(t 
 	if _, err := store.Pool().Exec(ctx, "select opening_seq from design_news_told"); err != nil {
 		t.Fatalf("read the told rows' opening numbers after the migration: %v", err)
 	}
-	for _, kind := range []string{
-		"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",
-		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
-		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
-		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
-		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "step_record", "plan_record",
-		"design_changes",
-	} {
+	kinds := []string{"phase_ended"}
+	for _, lane := range record.OutboxLanes() {
+		for _, kind := range record.LaneKinds(lane) {
+			kinds = append(kinds, string(kind))
+		}
+	}
+	for _, kind := range kinds {
 		if err := queue(kind); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)
 		}

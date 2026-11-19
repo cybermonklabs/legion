@@ -23,7 +23,7 @@ import (
 // working-copy adoption and identity mint went through.
 //
 // That copy, on a confirmed delivery, is the delivery's credit, and it is held nowhere else: the
-// record of what each audience took (design_news_told, 20261117133401_design_news) is read as a
+// record of what each audience took (design_news_told, 20261119203047_design_news) is read as a
 // function of the told rows and of every credit that stands (the SQL function
 // design_news_told_in), so no write raises or puts back a told version for a confirmation. The
 // write that records the confirmation makes the credit by writing the delivery; the write that

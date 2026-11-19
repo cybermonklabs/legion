@@ -12,7 +12,8 @@ commit, so the head that merges carries none. Retro commits nothing (*Retro*, be
 approved head is the head that merges, and no Legion check holds the head that merges to the head
 the review approved in any case: a repository that wants its newest push reviewed says so in its
 own rulesets. A conflict-forced merge goes back to the reviewer, who reviews what the merge
-changed (*The reviewer*, below).
+changed (*The reviewer*, below), and the issue keeps its phase while the implementer makes it
+(`skill://legion-worker/references/conflicts-and-rewrites.md`, *The daemon's ask*).
 
 ## The reviewer
 
@@ -87,7 +88,7 @@ changed (*The reviewer*, below).
   Read the merge state first, whatever the head's other runs show (`gh pr view <n> --repo <o>/<r> --json mergeable,mergeStateStatus`): a head that conflicts with its base (`DIRTY`) has no merge ref, so GitHub starts no `pull_request` run for it, while a `pull_request_target` run, which GitHub builds from the base with no merge ref, can be green beside the missing item.
   A merge state of `UNKNOWN` is one GitHub has not computed yet: read it again after a minute, and for up to five minutes. A state still `UNKNOWN` after that, or a read that fails twice, is reported to the architect with the answer GitHub gave, as a refused read is: do not approve, and wait with a `WAITING` line naming the read. A read that GitHub answers with a rate limit waits for the reset the answer names, and is then made again.
   Count the head's runs: `gh api repos/<o>/<r>/commits/<headRefOid>/check-runs --jq .total_count`.
-  A head GitHub computes no merge for (`DIRTY`) takes a merge of its base forward, which is the implementer's push, and never the remedy below; the daemon itself sends such a head back to implementing, so it never waits in the issue's `mergeWait` once a read has answered for it.
+  A head GitHub computes no merge for (`DIRTY`) takes a merge of its base forward, which is the implementer's push, and never the remedy below. The daemon asks the implementer for that merge while the issue keeps its phase: at once when a check the base requires has no green result on the head, the base requires a current branch, or the daemon could not read the base's rules, and otherwise once the issue enters `accepting`. So a `DIRTY` head whose required checks are green on it is approved or not as any head is: an approval of it ends the round, and once the merge lands the daemon asks you to read the merge and approve the new head (*A merge of the base is reviewed for what it changed*, below).
   A commit status is no check run, so read the head's commit statuses as well as the check-runs list above, every page: `gh api --paginate 'repos/<o>/<r>/commits/<headRefOid>/status?per_page=100' --jq '.statuses[] | [.context, .state] | @tsv'`.
   A required item in either list is reported: a check run whose status is `queued`, `requested`, `waiting`, `pending` or `in_progress`, or a commit status whose state is `pending`, is running, not missing, and a check run concluded `failure`, `timed_out`, `cancelled` or `startup_failure`, or a commit status in state `failure` or `error`, is red; read the status list, never that endpoint's top-level `state`, which reads `pending` for a head with no status at all.
   Only a required item in neither list has no run, and it falls in one of the named cases below.
@@ -163,6 +164,16 @@ changed (*The reviewer*, below).
   A re-review after a request for changes also checks each of its findings against the new head.
   You may tell the architect of a forward merge that had no conflict and whose comment names no
   reason *Reintegrating the base* allows (`skill://legion-worker/references/conflicts-and-rewrites.md`).
+- **A merge of the base is reviewed for what it changed.** Read it as the item above says, from
+  your earlier head. A finding the merge raises is a `REQUEST_CHANGES` like any other.
+  When the merge lands while the issue stands past its review (`accepting`, `retro` or
+  `merging`), where no review round is open, the daemon asks you to review it in a merge-forward
+  message, which names the old head and the new head: the old head is your earlier head. Then
+  approve the new head by its SHA with the Legion footer naming that head, or request changes;
+  write no handoff and make no completion; then tell the architect and the worker of the phase
+  the issue stands in (the implementer in `retro`, the merger in `merging`; the architect alone in
+  `accepting`) on their role topics what you decided. A request for changes there goes back
+  through that role's `request_backward_move`.
 - Answer every thread you opened, and every thread a bot opened that is none of Legion's role
   Apps, as `skill://legion-worker/references/review-threads.md` says; the same reference says
   when every thread is settled enough to approve, and resolving one never gates your approval.
@@ -227,9 +238,10 @@ it there until that answer comes clean.
   merges. Nothing in Legion compares that head with the one the approval named either: a
   repository that wants a push made after the approval reviewed says so in its own rulesets (a
   stale review dismissed, a review required again), and GitHub holds the merge to them. A
-  conflict merge pushed above the approved head still goes back to the reviewer, who reviews what
-  the merge changed (*The reviewer*, above), because the branch's own procedure says so and not
-  because any Legion check refuses the head. Retro removes nothing.
+  conflict merge pushed above the approved head still goes back to the reviewer, who reviews
+  what the merge changed (*The reviewer*, above): the daemon asks it to when the merge lands,
+  because the branch's own procedure says so and not because any Legion check refuses the head.
+  Retro removes nothing.
 - **Retro brings the PR body's path-derived content up to date before it completes.** Whatever the
   repository's instructions derive from the pull request's changed paths (a checklist named for
   each class of path, read by a required check), retro recomputes for the whole diff at its head
@@ -263,9 +275,12 @@ it there until that answer comes clean.
     (`required_linear_history`), since a squash there leaves each open pull request built on the
     merged branch a conflict of history alone; otherwise it squashes and tells the architect its
     addressing line names which open pull requests of the tree build on the merged branch. Each one
-    whose issue stands past `implementing` and that GitHub then reports `CONFLICTING` comes back to
-    `implementing` by the daemon's own move, with a task that names the base to merge forward, and
-    the architect that owns its issue hears of it by a `checks-red` notice. The architect the
+    whose issue stands past `implementing` and that GitHub then reports `CONFLICTING` on two reads
+    a minute apart stays in its phase, and the daemon asks its implementer to merge the base
+    forward (a merge-forward message) once the next step needs a mergeable head
+    (`skill://legion-worker/references/conflicts-and-rewrites.md`, *The daemon's ask*); the
+    architect that owns its issue hears of that ask by a `checks-red` notice that names the phase
+    the issue stays in. The architect the
     merger told tells the implementer of each of those pull requests whose issue is still in
     `implementing` and is an issue it owns to expect the conflict and to merge the base forward in
     that implementing round. The implementer of one whose issue that architect does not own merges
@@ -293,7 +308,10 @@ it there until that answer comes clean.
     required check still running, a required review only a person can give) and merge again;
     merge again at the head it re-reads when a push moved it, or when GitHub refused while it was
     still computing mergeability; send the issue back with `request_backward_move` when the head
-    itself must change (a conflict with the base, a check that failed); or tell the architect
+    itself must change for a reason the daemon's merge forward does not cover (a check that
+    failed); wait for the daemon's merge forward when the head conflicts with the base (`DIRTY`),
+    which keeps the issue in `merging` and tells you to merge or enqueue nothing until the new
+    head lands and the reviewer has approved it; or tell the architect
     what no worker can do — a repository setting, a rule or an App permission only a person can
     change — with the blocker and GitHub's own answer quoted. The repository's required reviews
     and checks decide what may merge: Legion bypasses none, and a review only a person can give

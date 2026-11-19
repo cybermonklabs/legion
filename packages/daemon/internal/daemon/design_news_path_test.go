@@ -375,7 +375,7 @@ func startOf(issue string, role claim.Role, newsOnly bool) func(pathRow) bool {
 }
 
 // addressedTo matches every row addressed to the claim of role on issue, whose token is token, or
-// to that role: a role message to its topic, a start or stop of it, a phase-ended message and a
+// to that role: a role message to its topic, a start or stop of it, a merge-forward message and a
 // hook prompt to it. A notice is the architect's, whatever role it names.
 func addressedTo(issue string, role claim.Role, token claim.Token) func(pathRow) bool {
 	return func(row pathRow) bool {
@@ -384,7 +384,7 @@ func addressedTo(issue string, role claim.Role, token claim.Token) func(pathRow)
 			return payload.Role == string(token)
 		case record.SuperviseRequest:
 			return row.issue == issue && payload.Role == role
-		case record.PhaseEnded:
+		case record.MergeForwardMessage:
 			return row.issue == issue && payload.Role == role
 		case record.HookPrompt:
 			return row.issue == issue && payload.Role == role

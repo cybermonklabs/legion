@@ -283,9 +283,9 @@ test("no staged skill or daemon prompt says what a pull request body `CI` line h
 // Background work is on for every role: Legion writes no Oh My Pi settings
 // overlay, so a long bash call becomes a background job and a `task` subagent runs as one, and a
 // role reads a result with the `wait` tool, which a message to its session also returns from. No
-// task agent declares `blocking`, and nothing interrupts a turn: a CI red that ends a
-// phase starts the implementer at once and tells the role whose phase ended by one message, which
-// stops nothing of its. So no skill, no shipped agent and no file of the plugin a Claude Code role
+// task agent declares `blocking`, and nothing interrupts a turn: a message the daemon sends a role,
+// a merge-forward message among them, stops nothing of its. So no skill, no shipped agent and no
+// file of the plugin a Claude Code role
 // loads may say that a takeover cancels a turn or tell a role to keep its work in
 // the foreground, and each that dispatches a task subagent names the tool that reads its result.
 //

@@ -72,7 +72,7 @@ body: |-
   and so does the wake of a released merger for the message that its pull request left the merge
   queue. At the gate's opening, a holder owed news gets the opening as the first sentence of that
   task's news, and every other holder gets the opened message, which now says, where the record
-  shows it, that nothing its issue holds changed. Migration `20261117133401_design_news` adds the
+  shows it, that nothing its issue holds changed. Migration `20261119203047_design_news` adds the
   tables `design_news_told` (with its columns `opening_seq` and `unreached`), `design_changes` and
   `design_history_unread`, the functions `design_news_known`, `design_news_folded`,
   `design_news_opening_settled`, `design_news_opening_told`, `design_news_current`,
