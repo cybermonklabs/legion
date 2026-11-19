@@ -423,5 +423,41 @@ check "a merge group's run fails with exit 2, the pr-title job's failure" "$(is 
 check "says the list is missing" \
   "$(contains "$out" '::error::check-private-names: PRIVATE_NAME_TERMS is unset or empty on a merge_group run')"
 
+echo "case: a term the list holds beside a byte-order mark or a no-break space still matches"
+# [[:space:]] holds neither, so a term kept with one matched nothing while the count line said it
+# was read.
+root=$(fixture terms-bom-nbsp)
+printf 'Ask the %s team.\n' "${planted^}" > "$root/docs/notes.md"
+run_check_as merge_group "$(printf '\xef\xbb\xbf%s\n%s\n' "$planted" "$planted_dotted")" "$root"
+check "a byte-order mark before the term: fails" "$(is "$status" 1)"
+check "names the line" "$(contains "$out" 'docs/notes.md:1: names a term')"
+run_check_as merge_group "$(printf '%s\xc2\xa0\n%s\n' "$planted" "$planted_dotted")" "$root"
+check "a no-break space after the term: fails" "$(is "$status" 1)"
+run_check_as merge_group "$(printf '\xc2\xa0 %s \xc2\xa0\n%s\n' "$planted" "$planted_dotted")" "$root"
+check "no-break spaces and blanks on both sides: fails" "$(is "$status" 1)"
+check "prints no spelling of the term" "$(is "$(names_planted "$out")" false)"
+
+echo "case: no term reaches a command's arguments, which any process of the job can read"
+# argv_grep (check-private-names-test-lib.sh) logs each pattern a grep is handed on its command
+# line, never a file's path, which is the tree's own text and not the list's. The term is in a path
+# here as well as in a file, so the run masks the path, which runs every term's own pattern over it
+# (term_spans).
+root=$(fixture terms-argv)
+printf 'Ask the %s team.\n' "${planted^}" > "$root/docs/notes.md"
+mkdir -p "$root/docs/${planted^^}"
+printf 'clean\n' > "$root/docs/${planted^^}/notes.md"
+git -C "$root" add docs
+argv_dir="$work/argv-grep"
+argv_log="$work/argv-grep.log"
+mkdir -p "$argv_dir"
+: > "$argv_log"
+argv_grep "$argv_dir/grep" "$argv_log"
+PATH="$argv_dir:$PATH" run_check_as merge_group "$planted_terms" "$root"
+check "the run still finds the term, in the file and in the path: fails" "$(is "$status" 1)"
+check "the path's report is masked" "$(contains "$out" 'docs/<name>/notes.md: names a term')"
+check "the fake grep logged the committed rules' patterns, so it saw the run's greps" \
+  "$(is "$([ -s "$argv_log" ] && echo yes)" yes)"
+check "no grep was handed a term in its arguments" "$(is "$(names_planted "$(< "$argv_log")")" false)"
+
 finish_self_log
 summary "check-private-names.sh's term list"

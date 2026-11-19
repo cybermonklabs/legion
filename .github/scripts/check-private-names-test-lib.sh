@@ -125,6 +125,34 @@ run_check_as() {
   set -e
 }
 
+# argv_grep <file> <log>: writes a grep for a case's PATH that appends to <log> each pattern it is
+# handed on its command line (an -e or --regexp value, or the first operand when it has neither -e
+# nor -f), never a file's path, then runs the grep that PATH named when argv_grep ran, with the
+# same arguments. Both paths are written into the script as it is made, before the case puts it on
+# PATH, so it never finds itself as the grep it runs.
+argv_grep() {
+  {
+    printf '#!/usr/bin/env bash\nREAL_GREP=%q\nARGV_LOG=%q\n' "$(command -v grep)" "$2"
+    cat <<'GREP'
+skip=no explicit=no operand=no
+for a in "$@"; do
+  if [ "$skip" = pattern ]; then printf '%s\n' "$a" >> "$ARGV_LOG"; skip=no; continue; fi
+  if [ "$skip" = yes ]; then skip=no; continue; fi
+  case $a in
+    -e | --regexp) skip=pattern; explicit=yes ;;
+    --regexp=*) printf '%s\n' "${a#--regexp=}" >> "$ARGV_LOG"; explicit=yes ;;
+    -f | --file | -m | -A | -B | -C) skip=yes; explicit=yes ;;
+    --file=*) explicit=yes ;;
+    -*) ;;
+    *) if [ "$explicit" = no ] && [ "$operand" = no ]; then printf '%s\n' "$a" >> "$ARGV_LOG"; fi; operand=yes ;;
+  esac
+done
+exec "$REAL_GREP" "$@"
+GREP
+  } > "$1"
+  chmod +x "$1"
+}
+
 # write_pr_text <title> <body> <commit message> [branch] [author email] [committer email]: writes
 # the fixture check-pr-text.sh reads as CI runs it. A pull_request event payload carries the head
 # the run checks (its base and head sha, and its one commit); the stand-in `gh` answers the pull
@@ -145,7 +173,8 @@ run_check_as() {
 # run_pr_text, which runs the script and sets `out` and `status`; the stub logs each call it
 # answers to `$work/calls`. For the issue-key rule it answers four routes more, each from a file a
 # case writes and otherwise as GitHub answers a repository with no such record: the commits that
-# touch the cutoff marker (`$work/cutoff-commits`, else none, so the rule is inactive); one
+# touch the cutoff marker on the pull request's base branch, whichever it is
+# (`$work/cutoff-commits`, else none, so the rule is inactive); one
 # release by its tag (`$work/release.<tag>`, else a 404 as gh prints it, and a file holding
 # `HTTP 500` a server error); one commit's files (`$work/commit.<sha>`, else a refusal); and the
 # pull request's files (`$work/pr-files`, one JSON list a page as `gh api --paginate` prints
@@ -176,7 +205,7 @@ case "$1 $2" in
   "api repos/example/repo/pulls/7/comments?per_page=100&page="[1-9]*) page review-comments "$2" ;;
   "api repos/example/repo/pulls/7/commits") cat "$PR_TEXT_TEST_DIR/pr-commits" ;;
   "api repos/example/repo/pulls/7") cat "$PR_TEXT_TEST_DIR/pull" ;;
-  "api repos/example/repo/commits?path=.github/issue-key-cutoff&sha=main&per_page=100")
+  "api repos/example/repo/commits?path=.github/issue-key-cutoff&sha="*"&per_page=100")
     if [ -e "$PR_TEXT_TEST_DIR/cutoff-commits" ]; then cat "$PR_TEXT_TEST_DIR/cutoff-commits"; else echo '[]'; fi ;;
   "api repos/example/repo/releases/tags/"*)
     file="$PR_TEXT_TEST_DIR/release.${2#repos/example/repo/releases/tags/}"

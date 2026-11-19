@@ -567,6 +567,43 @@ key_run
 check "a removed scheme spelled with a dotted capital I, which rule 7 reads as no link, carries no link: fails" \
   "$(is "$status" 1)"
 check "names the added link's line" "$(contains "$out" 'commit:new-sha:docs/notes.md:2: holds a Dispatch link')"
+for mark in . ',' ';' :; do
+  carry_commit modified docs/notes.md \
+    "$(printf '@@ -2,1 +2,1 @@\n-Tracked at %sexample/1 today.\n+Recorded at %sexample/1%s which the operator answered' \
+      "$link" "$link" "$mark")"
+  key_run
+  check "a link the line already held, now followed by '$mark', is carried: passes" "$(is "$status" 0)"
+  carry_commit modified docs/notes.md \
+    "$(printf '@@ -2,1 +2,1 @@\n-Tracked as %s today.\n+Now %s%s as before' "$planted_key" "$planted_key" "$mark")"
+  key_run
+  check "a key the line already held, now followed by '$mark', is carried: passes" "$(is "$status" 0)"
+done
+
+echo "case: a key one commit removes and a later one puts back is carried across the commits"
+# two_commits <first message> <first file> <first patch> <second message> <second file> <second
+# patch>: a pull request opened after the cutoff whose two commits change one file each.
+two_commits() {
+  write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+  key_rule_on
+  opened_at 2026-11-21T00:00:00Z
+  commits first-sha 2026-11-21T01:00:00Z "$1" second-sha 2026-11-21T02:00:00Z "$4"
+  commit_file first-sha modified "$2" "$3"
+  commit_file second-sha modified "$5" "$6"
+}
+removed_line=$(printf '@@ -2,1 +1,0 @@\n-Tracked as %s.' "$planted_key")
+added_line=$(printf '@@ -0,0 +1,1 @@\n+Tracked as %s.' "$planted_key")
+two_commits "refactor: take the note out" docs/a.md "$removed_line" "refactor: put the note back" docs/b.md "$added_line"
+key_run
+check "removed by the first commit, put back by the second: passes" "$(is "$status" 0)"
+two_commits "refactor: put the note in" docs/b.md "$added_line" "refactor: take the old one out" docs/a.md "$removed_line"
+key_run
+check "put in by the first commit, its old copy removed by the second: passes" "$(is "$status" 0)"
+two_commits "refactor: take the note out" docs/a.md "$removed_line" "refactor: put it back twice" docs/b.md \
+  "$(printf '@@ -0,0 +1,2 @@\n+Tracked as %s.\n+Tracked as %s.' "$planted_key" "$planted_key")"
+key_run
+check "put back twice, one removal carries one copy: fails" "$(is "$status" 1)"
+check "names the second copy's line" "$(contains "$out" "commit:second-sha:docs/b.md:2: $key_refused")"
+check "and not the carried one's" "$(is "$(contains "$out" "commit:second-sha:docs/b.md:1:")" false)"
 
 echo "case: a merge commit's own diff is not read, and the pull request's net diff is, once"
 # A forward merge's diff against its first parent is everything the base branch changed since the
@@ -616,6 +653,37 @@ pr_files modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
 key_run
 check "a merge's message is still read" "$(is "$status" 1)"
 check "names the merge's message" "$(contains "$out" "commit:merge-sha:1: $key_refused")"
+# A forward merge's message names the pull request's branch, and an issue branch is named after its
+# key: the branch is not read through the message. A key the message names some other way still is.
+forward_merge() {
+  write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order" "legion/$planted_key"
+  key_rule_on
+  opened_at 2026-11-21T00:00:00Z
+  commits new-sha 2026-11-21T01:00:00Z "fix: keep the order" merge-sha 2026-11-21T02:00:00Z "$1"
+  as_merge merge-sha
+  commit_file new-sha modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
+  pr_files modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
+}
+forward_merge "Merge main into legion/$planted_key"
+key_run
+check "the worker skill's 'Merge main into <branch>': passes" "$(is "$status" 0)"
+forward_merge "Merge branch 'main' into legion/$planted_key"
+key_run
+check "GitHub's update-branch message: passes" "$(is "$status" 0)"
+forward_merge "Merge remote-tracking branch 'origin/main' into legion/$planted_key"
+key_run
+check "git's message for a merge of origin/main: passes" "$(is "$status" 0)"
+forward_merge "Merge main into legion/$planted_key, as $key_project-""77 asked"
+key_run
+check "the same message naming another key: fails" "$(is "$status" 1)"
+check "names the merge's message" "$(contains "$out" "commit:merge-sha:1: $key_refused")"
+# A stacked pull request's base is another issue branch, which its forward merge names too.
+forward_merge "Merge legion/$key_project-""77 into legion/$planted_key"
+git_fixture "$work/remote/example/repo" branch -f "legion/$key_project-""77" main
+jq --arg base "legion/$key_project-""77" '.base.ref = $base' "$work/pull" > "$work/pull.next"
+mv "$work/pull.next" "$work/pull"
+key_run
+check "a stacked pull request's merge of its base issue branch: passes" "$(is "$status" 0)"
 merge_branch
 pr_files modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text' modified docs/big.md -
 jq -c '.[1].additions = 5 | .[1].changes = 5' "$work/pr-files" > "$work/pr-files.next"
@@ -722,6 +790,24 @@ keys_run_in "$root" "$key_terms" docs
 check "the same run with the project's key: line finds the key: exits 1" "$(is "$status" 1)"
 run_check_as merge_group "$planted_terms" "$root"
 check "a names run of the tree, which reads no key, still passes with no key: line" "$(is "$status" 0)"
+
+echo "case: no issue key's project reaches a command's arguments"
+# argv_grep (check-private-names-test-lib.sh) logs each pattern a grep is handed on its command
+# line. The key is in a path and in a file, so the keys run searches both and masks the path.
+root=$(fixture key-argv)
+printf 'Tracked as %s.\n' "$planted_key" > "$root/docs/notes.md"
+mkdir -p "$root/docs/$planted_key"
+printf 'clean\n' > "$root/docs/$planted_key/notes.md"
+argv_dir="$work/key-argv-grep"
+argv_log="$work/key-argv-grep.log"
+mkdir -p "$argv_dir"
+: > "$argv_log"
+argv_grep "$argv_dir/grep" "$argv_log"
+PATH="$argv_dir:$PATH" keys_run_in "$root" "$key_terms" docs
+check "the keys run still finds the key: fails" "$(is "$status" 1)"
+check "the path's report is masked" "$(contains "$out" "docs/<name>/notes.md: $key_refused")"
+check "the fake grep logged the link rule, so it saw the run's greps" "$(is "$([ -s "$argv_log" ] && echo yes)" yes)"
+check "no grep was handed the project's key in its arguments" "$(is "$(contains "$(< "$argv_log")" "$key_project")" false)"
 
 finish_self_log
 summary "check-private-names.sh's issue-key rule"

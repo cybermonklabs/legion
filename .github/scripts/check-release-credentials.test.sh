@@ -458,6 +458,39 @@ check "exits 1" "$(is "$status" 1)"
 check "names the call and the secret at the secret's line" \
   "$(contains "$out" "^::error::$RELEASE:$(line_of "$root/$RELEASE" '^      PRIVATE_NAME_TERMS:'): job 'notes_names' calls ./.github/workflows/worker-image.yaml, a workflow this check does not read, but its text names secrets.PRIVATE_NAME_TERMS")"
 
+echo "case: a call to the names workflow with secrets: inherit, which hides from rule 8 which secret it passes"
+root=$(fixture names-call-inherit)
+mutate "$root/$RELEASE" $'    secrets:\n      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}\n' $'    secrets: inherit\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the call at its secrets line" \
+  "$(contains "$out" "^::error::$RELEASE:$(line_of "$root/$RELEASE" '^    secrets: inherit'): job 'notes_names' calls ./.github/workflows/release-notes-names.yaml with 'secrets: inherit'")"
+
+echo "case: a names job uses only the allow-listed actions, through its local composite actions too"
+third_party=$'      - uses: some-org/any-js-action@3d3c42e5aac5ba805825da76410c181273ba90b1\n'
+root=$(fixture names-third-party)
+mutate "$root/$NOTES_NAMES" $'      - name: Check the entries name nothing private\n' "$third_party"$'      - name: Check the entries name nothing private\n'
+run_check "$root"
+check "a third-party action beside the term list: exits 1" "$(is "$status" 1)"
+check "names the job and the action" \
+  "$(contains "$out" "^::error::$NOTES_NAMES:[0-9]*: job 'names' holds the deployment's term list (secrets.PRIVATE_NAME_TERMS), but step 'some-org/any-js-action@[0-9a-f]*' uses 'some-org/any-js-action@[0-9a-f]*' which is not on the checker's allow-list")"
+root=$(fixture names-composite-third-party)
+mkdir -p "$root/.github/actions/wrap"
+printf 'name: wrap\nruns:\n  using: composite\n  steps:\n    - uses: some-org/any-js-action@3d3c42e5aac5ba805825da76410c181273ba90b1\n' \
+  > "$root/.github/actions/wrap/action.yml"
+mutate "$root/$NOTES_NAMES" $'      - name: Check the entries name nothing private\n' $'      - uses: ./.github/actions/wrap\n      - name: Check the entries name nothing private\n'
+run_check "$root"
+check "a local composite action that brings one in: exits 1" "$(is "$status" 1)"
+check "names the action it brings in" \
+  "$(contains "$out" "uses './.github/actions/wrap', which brings in 'some-org/any-js-action@[0-9a-f]*', which is not on the checker's allow-list")"
+root=$(fixture names-composite-allowed)
+mkdir -p "$root/.github/actions/wrap"
+printf 'name: wrap\nruns:\n  using: composite\n  steps:\n    - uses: actions/download-artifact@3d3c42e5aac5ba805825da76410c181273ba90b1\n' \
+  > "$root/.github/actions/wrap/action.yml"
+mutate "$root/$NOTES_NAMES" $'      - name: Check the entries name nothing private\n' $'      - uses: ./.github/actions/wrap\n      - name: Check the entries name nothing private\n'
+run_check "$root"
+check "a local composite action that uses only allow-listed actions passes" "$(is "$status" 0)"
+
 echo "case: worker_image, which calls a workflow this check does not read, is handed a secret"
 root=$(fixture worker-image-secret)
 mutate "$root/$RELEASE" $'    uses: ./.github/workflows/worker-image.yaml\n' $'    uses: ./.github/workflows/worker-image.yaml\n    secrets:\n      DEPLOY_TOKEN: ${{ secrets.PRIVATE_NAME_TERMS }}\n'

@@ -205,13 +205,15 @@ fi
 # pull request's, so it also holds the lines of its commits dated before the cutoff: a pull request
 # opened after the cutoff that holds a forward merge is read whole, those older lines included.
 # That exception errs toward reading more, and each of those lines lands on main as new text
-# anyway. A key or a link that the same diff also removes is carried over, not new: a line edited
-# around a link it already held, or a file moved with its keys, passes (THE DIFF READING below). A
-# diff GitHub's REST answer does not hold whole (a file that adds lines with no patch, which GitHub
+# anyway. A key or a link that the new commits also remove is carried over, not new: a line edited
+# around a link it already held (whatever punctuation now follows it), a file moved with its keys,
+# or a line one commit removes and a later one puts back, passes (THE DIFF READING below). A diff
+# GitHub's REST answer does not hold whole (a file that adds lines with no patch, which GitHub
 # leaves out for a large file, or a list short of the diff's totals) is read from git instead, and
 # only a diff neither holds whole is UNKNOWN, and refused. The branch name is not read by this
-# rule: the daemon names an issue's branch after its key today, and the change that names branches
-# another way adds the branch to this rule.
+# rule, neither on its own nor where a commit's message names the pull request's branch or its
+# base branch, as a forward merge's does: the daemon names an issue's branch after its key today,
+# and the change that names branches another way adds the branch to this rule.
 key_status=0
 cutoff_file=.github/issue-key-cutoff
 base_ref=$(jq -r '.base.ref // "main"' "$live")
@@ -306,10 +308,13 @@ elif [ -n "$cutoff" ]; then
   # <stage>/count. GitHub's REST answer is read first. Where it does not hold the whole diff, git
   # reads the same diff from the pull request's head, which it never truncates. Then carry.awk
   # (written below) writes each entry's added lines at their line numbers in the new file, every
-  # other line empty, with each issue-key-shaped word or Dispatch link that one of the diff's
-  # removed lines also holds blanked as <carried>: one removed occurrence carries one added one,
-  # across the diff's files in their order, so a key moved or a line re-worded around its link is
-  # not new text, and a second copy of it is. carry.awk runs under LC_ALL=C, so it reads bytes and
+  # other line empty, with each issue-key-shaped word or Dispatch link that a removed line also
+  # holds blanked as <carried>: one removed occurrence carries one added one. The pool is every new
+  # commit's removed lines together, across their files and commits, so a key moved, a line
+  # re-worded around its link, or a line one commit removes and a later one puts back (as `jj split`
+  # divides a move) is not new text, and a second copy of it is; the net diff, read for a merge, is
+  # its own pool. A link's token ends before a sentence's trailing `.`, `,`, `;` or `:`, so changing
+  # the punctuation after it adds nothing. carry.awk runs under LC_ALL=C, so it reads bytes and
   # folds the case of ASCII letters alone, as its words and its link scheme are defined: in a UTF-8
   # locale gawk's tolower folds a dotted capital I to an i, where rule 7's grep -i does not.
   link_scheme='dispatch'':''//'
@@ -324,7 +329,8 @@ elif [ -n "$cutoff" ]; then
 # word that rule would not read as a key never carries an added one it would. The cost runs the
 # safe way: a key beside non-ASCII punctuation (a curly quote, a no-break space) is no word here,
 # so it is never carried and rule 6 reads it as new. A link is the scheme, in ASCII letters of any
-# case, and what follows it up to a blank, a quote or a bracket.
+# case, and what follows it up to a blank, a quote or a bracket, less any `.`, `,`, `;` or `:` that
+# ends it, which stays in the line as written.
 function scan(line, collect,    out, i, n, c, prev, j, k, tok, sl) {
   out = ""; n = length(line); i = 1; sl = length(scheme)
   while (i <= n) {
@@ -332,6 +338,7 @@ function scan(line, collect,    out, i, n, c, prev, j, k, tok, sl) {
     if (tolower(substr(line, i, sl)) == scheme) {
       j = i + sl
       while (j <= n && index(stops, substr(line, j, 1)) == 0) j++
+      while (j > i + sl && index(".,;:", substr(line, j - 1, 1)) > 0) j--
       tok = scheme substr(line, i + sl, j - i - sl)
       if (take(tok, collect)) out = out "<carried>"; else out = out substr(line, i, j - i)
       i = j
@@ -379,36 +386,48 @@ BEGIN {
     print (uncarried ? "new" : "carried")
     exit
   }
-  for (i = 1; i <= count; i++) {
-    file = stage "/" i ".patch"; started = 0
-    while ((getline line < file) > 0) {
-      if (line ~ /^@@ /) { started = 1; continue }
-      if (started && substr(line, 1, 1) == "-") scan(substr(line, 2), 1)
-    }
-    close(file)
+  # Every stage the list names (`<stage><TAB><count>` a line), as one pool: first every removed
+  # line of every stage, then each stage's added lines.
+  while ((getline entry < stages) > 0) {
+    split(entry, field, "\t")
+    nstages++; stage_dir[nstages] = field[1]; stage_count[nstages] = field[2] + 0
   }
-  for (i = 1; i <= count; i++) {
-    file = stage "/" i ".patch"; out = stage "/" i ".added"; started = 0; n = 0; written = 0
-    printf "" > out
-    while ((getline line < file) > 0) {
-      # A typechange's patch holds two sections; the second's header lines, its `+++ b/<path>`
-      # among them, are no added line. (The removed-line pass above needs no reset: the only header
-      # line of a second section that starts with "-" is `--- /dev/null`, which holds no word.)
-      if (line ~ /^diff --git /) { started = 0; continue }
-      if (line ~ /^@@ /) {
-        split(line, parts, " "); split(parts[3], plus, ",")
-        n = substr(plus[1], 2) + 0; started = 1
-        continue
+  close(stages)
+  for (s = 1; s <= nstages; s++) {
+    for (i = 1; i <= stage_count[s]; i++) {
+      file = stage_dir[s] "/" i ".patch"; started = 0
+      while ((getline line < file) > 0) {
+        if (line ~ /^@@ /) { started = 1; continue }
+        if (started && substr(line, 1, 1) == "-") scan(substr(line, 2), 1)
       }
-      if (!started) continue
-      first = substr(line, 1, 1)
-      if (first == "+") {
-        while (written < n - 1) { print "" > out; written++ }
-        print scan(substr(line, 2), 0) > out
-        written++; n++
-      } else if (first == " ") n++
+      close(file)
     }
-    close(file); close(out)
+  }
+  for (s = 1; s <= nstages; s++) {
+    for (i = 1; i <= stage_count[s]; i++) {
+      file = stage_dir[s] "/" i ".patch"; out = stage_dir[s] "/" i ".added"; started = 0; n = 0; written = 0
+      printf "" > out
+      while ((getline line < file) > 0) {
+        # A typechange's patch holds two sections; the second's header lines, its `+++ b/<path>`
+        # among them, are no added line. (The removed-line pass above needs no reset: the only
+        # header line of a second section that starts with "-" is `--- /dev/null`, which holds no
+        # word.)
+        if (line ~ /^diff --git /) { started = 0; continue }
+        if (line ~ /^@@ /) {
+          split(line, parts, " "); split(parts[3], plus, ",")
+          n = substr(plus[1], 2) + 0; started = 1
+          continue
+        }
+        if (!started) continue
+        first = substr(line, 1, 1)
+        if (first == "+") {
+          while (written < n - 1) { print "" > out; written++ }
+          print scan(substr(line, 2), 0) > out
+          written++; n++
+        } else if (first == " ") n++
+      }
+      close(file); close(out)
+    }
   }
 }
 AWK
@@ -517,14 +536,20 @@ AWK
       "the lines it adds cannot all be read; it is refused, not passed" >&2
     key_status=2
   }
-  # write_stage <stage> <part>: each staged entry's added lines, carried words blanked, under
-  # <part>/<path>: in $keyed when the path is new text (an added file, or a renamed or copied one
-  # whose path holds a word its old path does not carry), and in $lines_only otherwise. A removed
-  # file adds nothing; its removed lines still carry.
-  write_stage() {
+  # carry_stages <stage>...: carry.awk over those stages as one pool (THE DIFF READING above), which
+  # writes each entry's added lines, carried words blanked, to <stage>/<i>.added.
+  carry_stages() {
+    local stage
+    for stage in "$@"; do printf '%s\t%s\n' "$stage" "$(< "$stage/count")"; done > "$work/stages"
+    LC_ALL=C awk -v stages="$work/stages" -v scheme="$link_scheme" -f "$work/carry.awk"
+  }
+  # place_stage <stage> <part>: each staged entry's added lines under <part>/<path>: in $keyed when
+  # the path is new text (an added file, or a renamed or copied one whose path holds a word its old
+  # path does not carry), and in $lines_only otherwise. A removed file adds nothing; its removed
+  # lines still carry.
+  place_stage() {
     local stage=$1 part=$2 count i file_status name old dest
     count=$(< "$stage/count")
-    LC_ALL=C awk -v stage="$stage" -v count="$count" -v scheme="$link_scheme" -f "$work/carry.awk"
     for ((i = 1; i <= count; i++)); do
       file_status=$(< "$stage/$i.status")
       [ "$file_status" != removed ] || continue
@@ -548,9 +573,20 @@ AWK
   jq -r --arg cutoff "$cutoff" '.commits[] | select(.commit.committer.date >= $cutoff) | .sha' \
     "$compare_json" > "$work/new-commits"
   merges=0
+  # Each commit's message is read with the pull request's own branch and its base branch each
+  # written <head branch> and <base branch>: the daemon names an issue's branch after its key, and
+  # a forward merge's message names both (the worker skill's `Merge <base> into <branch>`, GitHub's
+  # "Update branch" `Merge branch 'main' into <branch>`, git's `Merge branch 'x' into <branch>`),
+  # so a branch name, which this rule does not read, is not read through a message either.
+  head_ref=$(jq -r '.head.ref // ""' "$live")
+  commit_stages=()
+  commit_parts=()
   while IFS= read -r sha; do
     short=${sha:0:12}
-    jq -r --arg sha "$sha" '.commits[] | select(.sha == $sha) | .commit.message' "$compare_json" |
+    jq -r --arg sha "$sha" --arg head "$head_ref" --arg base "$base_ref" '
+        def unbranch($ref; $as): if $ref == "" then . else split($ref) | join($as) end;
+        .commits[] | select(.sha == $sha) | .commit.message
+        | unbranch($head; "<head branch>") | unbranch($base; "<base branch>")' "$compare_json" |
       tr -d '\000' > "$keyed/commit/$short"
     parents=$(jq -r --arg sha "$sha" '.commits[] | select(.sha == $sha) | .parents // [] | length' "$compare_json")
     if [ "$parents" -gt 1 ]; then
@@ -577,8 +613,13 @@ AWK
         continue
       fi
     fi
-    write_stage "$stage" "added/$short"
+    commit_stages+=("$stage")
+    commit_parts+=("added/$short")
   done < "$work/new-commits"
+  if [ ${#commit_stages[@]} -gt 0 ]; then
+    carry_stages "${commit_stages[@]}"
+    for i in "${!commit_stages[@]}"; do place_stage "${commit_stages[i]}" "${commit_parts[i]}"; done
+  fi
   # The net diff, once, for the merges above: the files route lists 100 a page, up to GitHub's
   # limit of 3000 files, and the pull request route totals them. A list short of those totals, or
   # a file with no patch, is read from git instead: the diff from where the head leaves the base
@@ -609,7 +650,10 @@ AWK
         stage=''
       fi
     fi
-    if [ -n "$stage" ]; then write_stage "$stage" net; fi
+    if [ -n "$stage" ]; then
+      carry_stages "$stage"
+      place_stage "$stage" net
+    fi
   fi
   # Two runs of rules 6 and 7: one over the title, body, items, commit messages and the files the
   # new commits (or the net diff) add, or rename to a path with a word its old path lacks, whose

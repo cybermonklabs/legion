@@ -70,7 +70,8 @@
 #    unless its `uses:` is `./` and the path of a workflow on WORKFLOWS: the called workflow's jobs
 #    are what run the secret, and this check reads only those. So a names job pointed at
 #    worker-image.yaml, which runs a docker build, or a `secrets:` block added to worker_image, is
-#    refused here rather than passing unread.
+#    refused here rather than passing unread. A call to a listed workflow carries no
+#    `secrets: inherit` either: it would hide from rule 8 which secret the call passes.
 # 8. A step that starts publishing a build job's output waits for that output's private-name check.
 #    A names job is a job whose text names secrets.PRIVATE_NAME_TERMS; it checks the output of
 #    each job it needs. In any other job, a step whose `if:` tests `needs.<build>.result ==
@@ -78,7 +79,9 @@
 #    chain, since every later step of it reads the step before it: that `if:` also tests
 #    `needs.<names job>.result == 'success'`. Else a finding of the names job publishes anyway.
 #    An `if:` that joins packages with `||`, such as the setup-node step that serves every npm
-#    publish, is no step of one package and is not read.
+#    publish, is no step of one package and is not read. A names job also brings in, through its
+#    steps and the local composite actions they use at any depth, only the remote actions on
+#    CREDENTIALED_USES, so no third-party action runs beside the term list.
 #
 # "Runs dependency code" is a tripwire over named patterns, not a proof that no other code runs: a
 # step runs dependency code when its `uses:` starts with one of DEPENDENCY_USES, when the shell its
@@ -372,6 +375,32 @@ def local_action_code(uses: str, seen: tuple) -> str | None:
     return "; ".join(found) or None
 
 
+def action_uses(uses: str, seen: tuple = ()) -> list[str]:
+    """The remote actions a step's `uses:` brings into its job: itself, or, for a local composite
+    action, every remote `uses:` of its steps at any depth. A local action this check cannot read
+    brings one entry that names it as such, which no allow-list holds."""
+    if not uses.startswith("./"):
+        return [uses]
+    if uses in seen:
+        return []
+    directory = Path(uses)
+    files = [directory / name for name in ("action.yml", "action.yaml") if (directory / name).is_file()]
+    if not files:
+        return [f"{uses} (no action.yml in the checkout to read)"]
+    try:
+        action = yaml.load(files[0].read_text(), Loader=LineLoader)
+    except yaml.YAMLError:
+        return [f"{uses} (an action.yml this check cannot parse)"]
+    runs = action.get("runs") if isinstance(action, Mapping) else None
+    if not isinstance(runs, Mapping) or runs.get("using") != "composite":
+        return [f"{uses} (not a composite action)"]
+    found = []
+    for step in runs.get("steps") or []:
+        if isinstance(step, Mapping) and isinstance(step.get("uses"), str):
+            found += action_uses(step["uses"], seen + (uses,))
+    return found
+
+
 def dependency_code(step: Mapping, job: Mapping, workflow: Mapping, seen: tuple = ()) -> str | None:
     """How the step runs dependency code (`runs 'bun'`, `uses 'actions/setup-go@…'`, `runs its body
     under shell 'python', not bash or sh`, `uses './.github/actions/x', whose step …`), or None."""
@@ -591,6 +620,24 @@ def check_job(
                     f"in the env of a step whose run calls {PUSH_COMMAND}",
                 )
 
+    # A names job holds the deployment's term list: only the allow-listed actions run beside it, so
+    # no third-party code reads the list from its step's environment or the runner's memory. A
+    # local composite action is read through, at any depth (action_uses).
+    if not (scopes or key_sites) and any(NAMES_SECRET.search(text) for _, _, text in texts):
+        for index, step in enumerate(steps):
+            uses = step.get("uses")
+            if not isinstance(uses, str):
+                continue
+            for remote in action_uses(uses):
+                if remote.split("@", 1)[0].lower() in CREDENTIALED_USES:
+                    continue
+                brought = "" if remote == uses else f", which brings in '{remote}',"
+                problem(
+                    path, step.lines.get("uses", line_of(step, job_line)),
+                    f"job '{name}' holds the deployment's term list (secrets.PRIVATE_NAME_TERMS), "
+                    f"but {describe(step, index)} uses '{uses}'{brought} which is not on the "
+                    f"checker's allow-list for a job that holds a secret; add it there deliberately",
+                )
     if dependency:
         build_jobs += 1
         index, step, found = dependency[0]
@@ -738,7 +785,17 @@ LOCAL_CALLS = {f"./{workflow}" for workflow in WORKFLOWS}
 
 def check_call(path: Path, name: str, job: Mapping, job_line: int) -> None:
     uses = job.get("uses")
-    if not isinstance(uses, str) or uses in LOCAL_CALLS:
+    if not isinstance(uses, str):
+        return
+    if uses in LOCAL_CALLS:
+        # A listed workflow's own jobs are read, but `secrets: inherit` hands it every secret and
+        # hides from rule 8 which one the call passes: a names job called so stops counting as one.
+        if job.get("secrets") == "inherit":
+            problem(
+                path, job.lines.get("secrets", job_line),
+                f"job '{name}' calls {uses} with 'secrets: inherit', which hands it every secret "
+                f"and hides from rule 8 the one it needs; pass that one secret by name",
+            )
         return
     named = [
         (line, secret.group(0))

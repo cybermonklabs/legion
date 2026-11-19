@@ -197,7 +197,10 @@ paths=$(mktemp)
 files=$(mktemp)
 errors=$(mktemp)
 patterns_file=$(mktemp)
-trap 'rm -f "$matches" "$hits" "$paths" "$files" "$errors" "$patterns_file"' EXIT
+# One file for each pattern a search reads alone (term_spans, and the sixth rule's key pattern), so
+# no term or key reaches grep's arguments, which any process of the job can read.
+pattern_dir=$(mktemp -d)
+trap 'rm -f "$matches" "$hits" "$paths" "$files" "$errors" "$patterns_file"; rm -rf "$pattern_dir"' EXIT
 
 # The characters whose case mapping folds to a letter but which grep's -i does not count beside
 # it, each spelled as its UTF-8 bytes, since a Unicode normaliser rewrites three of them (the
@@ -244,13 +247,25 @@ term_pattern() {
 # none left empty (the header says why), each beside its pattern; and the sixth rule's projects,
 # each line of the form `key:<KEY>`, LEGION never among them. They are read before this script
 # prints anything, since every line below that carries a path or another command's message is
-# masked with them.
+# masked with them. A byte-order mark is dropped wherever it is, and a no-break space counts as a
+# blank at either end: [[:space:]] holds neither, and a term that kept one would match nothing
+# while the count line still reported it read.
 terms=()
 term_patterns=()
 keys=()
+bom=$'\xef\xbb\xbf'
+nbsp=$'\xc2\xa0'
 while IFS= read -r term; do
-  term=${term#"${term%%[![:space:]]*}"}
-  term=${term%"${term##*[![:space:]]}"}
+  term=${term//"$bom"/}
+  while :; do
+    term=${term#"${term%%[![:space:]]*}"}
+    term=${term%"${term##*[![:space:]]}"}
+    case $term in
+      "$nbsp"*) term=${term#"$nbsp"} ;;
+      *"$nbsp") term=${term%"$nbsp"} ;;
+      *) break ;;
+    esac
+  done
   if [[ $term =~ ^key:([A-Z][A-Z0-9]*)$ ]]; then
     if [ "${BASH_REMATCH[1]}" != LEGION ]; then keys+=("${BASH_REMATCH[1]}"); fi
   elif [ -n "$term" ]; then
@@ -261,9 +276,12 @@ done <<< "${PRIVATE_NAME_TERMS:-}"
 # The sixth rule's pattern: any of the keys, a "-" and a number, with no letter or digit on either
 # side (a GNU "\b" would pass a key beside a "_", as the tailnet rule's comment says).
 key_pattern=''
+key_file="$pattern_dir/key"
 if [ ${#keys[@]} -gt 0 ]; then
   key_pattern="(^|[^[:alnum:]])($(IFS='|'; echo "${keys[*]}"))-[0-9]+([^[:alnum:]]|\$)"
+  printf '%s\n' "$key_pattern" > "$key_file"
 fi
+for i in "${!term_patterns[@]}"; do printf '%s\n' "${term_patterns[i]}" > "$pattern_dir/term.$i"; done
 # One line says how many terms and keys the run read, and never a term or a key: on a pull
 # request's own run, the proof that the job holds the list. An empty list prints the warning
 # below instead.
@@ -292,7 +310,7 @@ named_parts() {
 # by the grep its search runs.
 names_term() {
   { [ ${#terms[@]} -gt 0 ] && grep -q -E -i -f "$patterns_file" <<< "$1"; } ||
-    { [ -n "$key_pattern" ] && grep -q -E -e "$key_pattern" <<< "$1"; }
+    { [ -n "$key_pattern" ] && grep -q -E -f "$key_file" <<< "$1"; }
 }
 
 # byte_length <text>: text's length in bytes, the unit of grep's -b offsets.
@@ -303,14 +321,15 @@ byte_length() { (LC_ALL=C; printf '%s' "${#1}"); }
 # starts again one character after the start of the occurrence before it, so an occurrence that
 # overlaps another, of the same term or of another, has a line of its own.
 term_spans() {
-  local text=$1 pattern at found start match case_flag
-  local -a patterns=("${term_patterns[@]}")
-  if [ -n "$key_pattern" ]; then patterns+=("$key_pattern"); fi
-  for pattern in "${patterns[@]}"; do
+  local text=$1 pattern_file at found start match case_flag i
+  local -a pattern_files=()
+  for i in "${!term_patterns[@]}"; do pattern_files+=("$pattern_dir/term.$i"); done
+  if [ -n "$key_pattern" ]; then pattern_files+=("$key_file"); fi
+  for pattern_file in "${pattern_files[@]}"; do
     case_flag=-i
-    if [ "$pattern" = "$key_pattern" ]; then case_flag=-E; fi
+    if [ "$pattern_file" = "$key_file" ]; then case_flag=-E; fi
     at=0
-    while found=$(grep -a -o -b -E "$case_flag" -e "$pattern" <<< "$(LC_ALL=C; printf '%s' "${text:at}")"); do
+    while found=$(grep -a -o -b -E "$case_flag" -f "$pattern_file" <<< "$(LC_ALL=C; printf '%s' "${text:at}")"); do
       found=${found%%$'\n'*}
       start=$((at + ${found%%:*}))
       match=${found#*:}
@@ -510,8 +529,8 @@ fi
 # is a `term` search, which drops nothing.
 if [ "$rules" = keys ]; then
   if [ -n "$key_pattern" ]; then
-    search "$issue_key_label" term -E -e "$key_pattern"
-    search_paths "$issue_key_label" -E -e "$key_pattern"
+    search "$issue_key_label" term -E -f "$key_file"
+    search_paths "$issue_key_label" -E -f "$key_file"
   fi
   search "$link_label" term -F -i -e "$link_rule"
 fi
