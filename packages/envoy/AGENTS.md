@@ -406,25 +406,6 @@ Each item below names a task and where its code is, then notes on it.
   A later decision of that claim, such as a second stop, makes that write again only while the claim still holds a pending task that the decision retires, such as the task of a turn that is over, because the retirement writes the claim with it; otherwise the session stays listed until another write of that claim lands, and the daemon's next start takes the claim up from its row as live.
   Such ends include a suspension, a stop or a failure whose claim write the database refused, and a stop whose retirement of its round's ask failed.
 
-- **Step records of an issue**: `internal/dispatch/api/steps.go`, `internal/dispatch/workflowstore/`, `store/migrations/20261116235202_workflow_nodes.up.sql`
-
-  The Legion daemon writes each run of each step of an issue twice, at its start and at its end, under one id it derives for the run, with `PUT /api/v1/issues/{key}/steps/{id}`;
-  a write names the session `legion-daemon:<PROJECT>` of the issue's project as its actor (`403 STEP_WRITER` otherwise), as the daemon's `DaemonSession` names it from the key.
-  A bearer bound to a session cannot name another one (`403 ACTOR_SESSION_MISMATCH`), and a credential that proves no session, such as the shared agent token, can name the daemon's session and write, as the role-holders publish can.
-  A write sets each field the record does not hold yet and leaves every field it holds, so a start and an end land in either order, a write sent again changes nothing and no write is refused for its order;
-  `returned_to` is the one field taken otherwise: the result of a run and the step it returned to are one fact, so only the write that sets the result sets it, and a record that holds a result keeps the destination its own end named, none included;
-  the first write of a run names its task, step, kind, role and generation (`400 STEP_INPUT`, as every value outside its form, the message naming the field).
-  The agent, the session and the model are printable ASCII with no space, from 1 to 128 characters (`contracts.StepAgentTextPattern`, generated from `packages/contracts`), since `dispatch steps` joins a record's fields with spaces;
-  the daemon holds the session and the model it reads from an agent's frames to that form through the public `steprecord` package and leaves text outside it out of the record, so it never sends one this route refuses.
-  The kinds (`step`, `retro`, `merge`), the results (`passed`, `failed`, `stopped`), the three refusal codes and the place rule (a step from 1, a retro or a merge at 0) are each stated once in `packages/contracts` and generated into `internal/contracts`, which the store and the route use and `steprecord` re-exports to the daemon, so no word is written twice.
-  An id whose record is a run of another issue is `409 STEP_OTHER_ISSUE`, and an issue Dispatch does not hold `404 ISSUE_NOT_FOUND`, which the daemon tells from the router's `NOT_FOUND` of a Dispatch older than the route.
-  The write reads the issue `for key share` with no open check, so the merge that closes an issue still records its step, and it appends no issue event.
-  `GET /api/v1/issues/{key}/steps` answers every run task by task, in the order of each task's first run, each with its attempt, which the read computes and no write stores;
-  an issue no step ran on reads with no task, and a key no issue carries is `404 NOT_FOUND`, as `GET /api/v1/issues/{key}` answers it, so a mistyped key never reads as an issue Legion never ran: only a read that finds no run pays the one read of the issue row, since the write reads the issue before it records a run and no issue is ever deleted.
-  A read-only token may call it (`readScopeRoutes`).
-  `workflowstore` is the one writer of the two tables, a node per run and a tuple per fact.
-  Shapes: `StepRecord`, `StepTask`, `IssueSteps` in `internal/dispatch/model/model.go`, generated into `packages/contracts/src/dispatch-api.generated.ts`
-
 - **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/results_currency.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`
 
   `POST /api/v1/issues/{key}/results` records one result against a `check` block of the issue's Verification document or of an ancestor's, as `check_results`, keeping the block's `changed_version` and `text_sha256` with it, and answers the pull-request body line it implies;
