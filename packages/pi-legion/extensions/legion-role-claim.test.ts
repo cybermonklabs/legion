@@ -9,6 +9,7 @@ import {
 } from "@legion/envoy-client/envoy-settings";
 import type { ZodNumberProperty } from "@legion/pi-shared/pi-types";
 import { captureEnvironment, type EnvironmentRestore } from "@legion/test-fixtures/environment";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type envoyEntryDefault from "../../pi-envoy/extensions/envoy";
 import type { resetNatsConnectForTests as ResetNatsConnectForTests } from "../../pi-envoy/extensions/envoy";
@@ -191,10 +192,12 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   const tree = "REPO-42";
   const sessionID = "ses_legion_root";
   const role = roleToken("omp", tree, "architect");
+  const bootToken = fixtureSecret("boot");
+  const registrationSecret = fixtureSecret("reg");
   process.env.ENVOY_NATS_URL = "nats://nats-under-test:4222";
   process.env.ENVOY_URL = "http://envoy.test";
   process.env.LEGION_DAEMON_URL = "http://daemon.test";
-  process.env.LEGION_BOOT_TOKEN = "claim-heartbeat";
+  process.env.LEGION_BOOT_TOKEN = bootToken;
   process.env.LEGION_STATE_DIR = "/tmp/legion-state";
   process.env.LEGION_TREE = tree;
   process.env.LEGION_ROLE = "architect";
@@ -209,7 +212,7 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
         issue: tree,
         role: "architect",
         generation: 3,
-        secret: "root-secret",
+        secret: registrationSecret,
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });

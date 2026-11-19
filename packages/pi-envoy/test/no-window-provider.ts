@@ -13,6 +13,8 @@
 // finalization (`custom-models.ts:158`), so the session's `getContextUsage()` answers a window of
 // zero (`session/session-stats.ts:287-288`).
 
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+
 /** The one method of the host's `ExtensionAPI` this file calls, as the pin declares it
  *  (`extensibility/extensions/types.ts`, `registerProvider` and `ProviderModelConfig`). */
 interface ProviderHost {
@@ -49,9 +51,9 @@ export default function noWindowProvider(pi: ProviderHost): void {
   pi.registerProvider(NO_WINDOW_MODEL.provider, {
     baseUrl,
     api: "anthropic-messages",
-    // The stand-in reads no key. The value names itself a placeholder, which the pre-push leak
-    // check takes as no credential.
-    apiKey: "standin-not-a-secret",
+    // The stand-in reads no key. It is random (`fixtureSecret`), as every secret this package's
+    // tests hand a client is, so no scrub of a held secret takes words out of a line a test reads.
+    apiKey: fixtureSecret("standin"),
     models: [
       {
         id: NO_WINDOW_MODEL.modelId,

@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { IssueAdvance, Priorities } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { runDispatchCli } from "../dispatch-cli";
 import { commandFlags, fieldFlag } from "../dispatch-command";
@@ -22,6 +23,8 @@ interface Recorded {
 
 const requests: Recorded[] = [];
 const makeDirectory = temporaryDirectories("dispatch-priorities");
+/** The Dispatch bearer each command is handed. */
+const TOKEN = fixtureSecret("dsp");
 
 const ana = { kind: "user", id: "ana@example.com" };
 
@@ -225,7 +228,7 @@ async function run(argv: readonly string[]): Promise<{ code: number; stdout: str
       DISPATCH_HOST: "omp",
       DISPATCH_SESSION_ID: "ses-1",
       DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-      DISPATCH_TOKEN: "test-token",
+      DISPATCH_TOKEN: TOKEN,
       DISPATCH_STATE_DIR: stateDir,
     },
     {

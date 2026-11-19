@@ -27,7 +27,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
@@ -35,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/netaddr"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/broker/rulehost"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -332,15 +332,36 @@ type Config struct {
 	JudgeModelProtocol string
 	// BROKER_JUDGE_MODEL_AUDIENCE: the audience of the Google identity token the broker
 	// presents to the endpoint at BROKER_JUDGE_MODEL_URL, minted for the broker's own machine
-	// identity. Required with the rest of JudgeSettings.
+	// identity, or for the service account BROKER_JUDGE_MODEL_ACCOUNT names when that is set.
+	// Required with the rest of JudgeSettings.
 	JudgeModelAudience string
+	// BROKER_JUDGE_MODEL_ACCOUNT: optional, the Google service account, by its email, whose
+	// identity token the judge presents to the endpoint at BROKER_JUDGE_MODEL_URL. With it set,
+	// the broker mints that account's token for BROKER_JUDGE_MODEL_AUDIENCE at IAM Service
+	// Account Credentials' generateIdToken, with includeEmail, spending the pod's own credential,
+	// the access token its metadata server answers; it never reads the metadata server's identity
+	// token and never falls back to it, and a mint that fails hands the request to its person with
+	// an error naming the account and the audience. Unset, the judge reads the metadata server's
+	// identity token as before. It is for a pod that runs as a bare Workload Identity principal,
+	// whose metadata server mints no identity token. The broker's principal needs
+	// roles/iam.serviceAccountOpenIdTokenCreator on that account, and the account's project needs
+	// the IAM Service Account Credentials API (iamcredentials.googleapis.com) turned on.
+	//
+	// It is not one of JudgeSettings, so the five set without it start the judge as before. Set
+	// while none of the five is, it names a judge that was never configured, and the start is
+	// refused as a half-configured judge's is. Its value is one user-managed Google service
+	// account, <account id>@<project id>.iam.gserviceaccount.com in lowercase, held to
+	// secrets.ValidServiceAccountEmail, and a Google-managed service agent is refused, as it is in
+	// BROKER_SERVICE_ACCOUNT_SECRETS: Google's own services run as those accounts and the broker
+	// must not be able to mint their tokens. Each refusal names the setting and the value.
+	JudgeModelAccount string
 	// BROKER_JUDGE_DISPATCH_URL: the base URL of the Dispatch the judge reads an issue from, an
-	// absolute http(s) URL. It makes two GETs there — one for the issue a request's reason
-	// names, which answers that issue's key, title and status, and one for the whole markdown
-	// of the issue's spec document — and writes nothing: no ask, no comment, no status. The
-	// broker also reads one issue there for a request a Legion pod makes for a shared
-	// human-tier secret: the issue its claim names, whose assignee alone is asked to decide it
-	// in their Dispatch Inbox. Required with the rest of JudgeSettings.
+	// absolute http(s) URL. It makes GETs there — one for the issue a request's reason names,
+	// which answers that issue's key, title and status, one for the whole markdown of the issue's
+	// spec document, and one for the ask the reason cites — and writes nothing: no ask, no
+	// comment, no status. The broker also reads one issue there for a request a Legion pod makes
+	// for a shared human-tier secret: the issue its claim names, whose assignee alone is asked to
+	// decide it in their Dispatch Inbox. Required with the rest of JudgeSettings.
 	JudgeDispatchURL string
 	// BROKER_JUDGE_DISPATCH_TOKEN_FILE: the file holding the broker's own projected
 	// ServiceAccount token for the Dispatch at BROKER_JUDGE_DISPATCH_URL. Read when the judge
@@ -750,7 +771,8 @@ var airlockProxySettings = []string{"BROKER_AIRLOCK_PROXY_URL", "BROKER_AIRLOCK_
 // The five settings the broker's model judge needs, each read by its own name: the endpoint it
 // calls its model at, the model's id, the audience of the identity token it presents there, the
 // Dispatch it reads an issue from, and the file holding its token for that Dispatch. The
-// protocol that endpoint speaks has a default, so it is not one of them.
+// protocol that endpoint speaks has a default, and the service account whose identity token the
+// judge presents is optional, so neither is one of them.
 const (
 	judgeModelURLSetting          = "BROKER_JUDGE_MODEL_URL"
 	judgeModelSetting             = "BROKER_JUDGE_MODEL"
@@ -758,6 +780,7 @@ const (
 	judgeDispatchURLSetting       = "BROKER_JUDGE_DISPATCH_URL"
 	judgeDispatchTokenFileSetting = "BROKER_JUDGE_DISPATCH_TOKEN_FILE"
 	judgeModelProtocolSetting     = "BROKER_JUDGE_MODEL_PROTOCOL"
+	judgeModelAccountSetting      = "BROKER_JUDGE_MODEL_ACCOUNT"
 )
 
 // JudgeSettings are those five settings, all-or-none: none of them set is a broker with no
@@ -1540,20 +1563,22 @@ func requireClusterRanges(ranges []netip.Prefix, serviceHost string) error {
 
 // parseAirlockTestAzureAuthority reads BROKER_AIRLOCK_TEST_AZURE_AUTHORITY, the host the proxy
 // holds every exchange to and compares the ASCII lower-cased host of a token request's
-// connection with, exactly. It refuses, naming the value, a host no rules entry can bind
-// (airlock.HostShapeOK: a scheme, a port, a path, an empty label, a label opening or closing
-// with "-", a last label of digits alone, which an address has), since a token request reaches
-// the proxy only at a host an entry binds; a "*." suffix, which is no one host; and a capital
-// letter, since the proxy compares the value as it is written with a lower-cased host. A value
-// of any of those would refuse every exchange.
+// connection with, exactly. It refuses, naming the value and the reason, a host rulehost.Refusal
+// refuses, since a token request reaches the proxy only at a host an entry binds. On top of that
+// grammar it refuses two hosts a rules entry may hold: a "*." suffix, which is no one host, and a
+// capital letter, since the proxy compares the value as it is written with a lower-cased host. A
+// value of any of those would refuse every exchange.
 func parseAirlockTestAzureAuthority(value string) (string, error) {
 	const setting = "BROKER_AIRLOCK_TEST_AZURE_AUTHORITY"
 	host := strings.TrimSpace(value)
 	if host == "" {
 		return "", nil
 	}
-	if !airlock.HostShapeOK(host) || strings.HasPrefix(host, "*.") || strings.ToLower(host) != host {
-		return "", fmt.Errorf("%s must be a host name in lower case that an airlock rules entry can bind, with no scheme, port, path, address or \"*.\", got %q", setting, host)
+	if why := rulehost.Refusal(host); why != "" {
+		return "", fmt.Errorf("%s must be a host name that an airlock rules entry can bind, got %q, which %s", setting, host, why)
+	}
+	if strings.HasPrefix(host, "*.") || strings.ToLower(host) != host {
+		return "", fmt.Errorf("%s must be a host name in lower case, with no \"*.\", since the proxy compares it as written with one lower-cased host, got %q", setting, host)
 	}
 	return host, nil
 }
@@ -1741,6 +1766,7 @@ func Load(getenv func(string) string) (Config, error) {
 		JudgeModel:                strings.TrimSpace(getenv("BROKER_JUDGE_MODEL")),
 		JudgeModelProtocol:        orDefault(getenv("BROKER_JUDGE_MODEL_PROTOCOL"), "anthropic-messages"),
 		JudgeModelAudience:        strings.TrimSpace(getenv("BROKER_JUDGE_MODEL_AUDIENCE")),
+		JudgeModelAccount:         strings.TrimSpace(getenv(judgeModelAccountSetting)),
 		JudgeDispatchURL:          strings.TrimSpace(getenv("BROKER_JUDGE_DISPATCH_URL")),
 		JudgeDispatchTokenFile:    strings.TrimSpace(getenv("BROKER_JUDGE_DISPATCH_TOKEN_FILE")),
 		ProjectAccessURL:          strings.TrimRight(strings.TrimSpace(getenv("BROKER_PROJECT_ACCESS_URL")), "/"),
@@ -1868,7 +1894,11 @@ func Load(getenv func(string) string) (Config, error) {
 	// still counted as naming a judge, so a deployment that sets it alone is refused rather
 	// than read as one that meant no judge. On its own it configures nothing — it says which
 	// shape an endpoint that was never named speaks — and that is the same mistake as the four
-	// of five above, which the broker refuses rather than runs past.
+	// of five above, which the broker refuses rather than runs past. BROKER_JUDGE_MODEL_ACCOUNT
+	// is optional, so it is never one of the missing ones either, and it counts as naming a judge
+	// for the same reason: on its own it names whose token a judge that was never configured
+	// would present. Its refusal names it and its value in front of the five, since it is the
+	// one setting that named the judge.
 	//
 	// One value per JudgeSettings entry, read in that order, so the missing ones are named in
 	// the order every message naming them uses and one list is walked rather than two that
@@ -1881,8 +1911,11 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 	}
 	switch {
-	case len(judgeMissing) == len(JudgeSettings) && getenv(judgeModelProtocolSetting) == "":
+	case len(judgeMissing) == len(JudgeSettings) && getenv(judgeModelProtocolSetting) == "" && cfg.JudgeModelAccount == "":
 		// No judge, which is every deployment until one is configured.
+	case len(judgeMissing) == len(JudgeSettings) && cfg.JudgeModelAccount != "":
+		return Config{}, fmt.Errorf("%s is set to %q, the service account whose identity token a model judge presents, and no judge is configured: the broker's model judge needs %s; missing %s",
+			judgeModelAccountSetting, cfg.JudgeModelAccount, strings.Join(JudgeSettings, ", "), strings.Join(judgeMissing, ", "))
 	case len(judgeMissing) > 0:
 		return Config{}, fmt.Errorf("the broker's model judge needs %s; missing %s",
 			strings.Join(JudgeSettings, ", "), strings.Join(judgeMissing, ", "))
@@ -1901,6 +1934,19 @@ func Load(getenv func(string) string) (Config, error) {
 		if !slices.Contains(judgeModelProtocols, cfg.JudgeModelProtocol) {
 			return Config{}, fmt.Errorf("%s must be one of %s, got %q",
 				judgeModelProtocolSetting, strings.Join(judgeModelProtocols, ", "), cfg.JudgeModelProtocol)
+		}
+		// The account is held to the rule BROKER_SERVICE_ACCOUNT_SECRETS' accounts are held to
+		// (parseServiceAccountSecrets), for the same reasons: a value that is no one service
+		// account's address would boot and then hand every request the judge holds to its person
+		// on a refused mint, and a service agent is an account of Google's own that the broker
+		// must not mint for.
+		if cfg.JudgeModelAccount != "" {
+			if !secrets.ValidServiceAccountEmail(cfg.JudgeModelAccount) {
+				return Config{}, fmt.Errorf("%s must name one user-managed Google service account, <account id>@<project id>.iam.gserviceaccount.com in lowercase, got %q", judgeModelAccountSetting, cfg.JudgeModelAccount)
+			}
+			if googleServiceAgentPattern.MatchString(cfg.JudgeModelAccount) {
+				return Config{}, fmt.Errorf("%s names a Google-managed service agent, got %q: Google's own services run as it and the broker must not be able to mint its token; name a user-managed account of your own", judgeModelAccountSetting, cfg.JudgeModelAccount)
+			}
 		}
 	}
 	// A judge decides a request that waits for a person, and with sign-in off no request waits:
