@@ -85,7 +85,7 @@ test("the machine logins section shows a person's pod login as that person's own
     );
     const podQuestion = await revokeQuestion(page, podRow);
     expect(podQuestion).toBe(
-      "Revoke the machine login for people/alice (your pod)? Every session it started ends at once. The pod logs in again with its token, under a new login, while the broker's BROKER_POD_OPERATORS maps its Kubernetes account to you."
+      "Revoke the machine login for people/alice (your pod)? Every session it started ends at once. The pod logs in again with its token, under a new login, while the broker's BROKER_SERVICE_LOGINS names its Kubernetes account, and that login is yours while BROKER_POD_OPERATORS maps the account to you."
     );
     expect(podQuestion).not.toContain(alicePodService);
 

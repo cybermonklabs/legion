@@ -493,7 +493,10 @@ type Config struct {
 	// own workers, with that service's secrets. It refuses a mapped account whose login service a
 	// BROKER_VM_SERVICES entry names, because the broker registers the services of BROKER_SERVICES
 	// and BROKER_VM_SERVICES alike as owners a secret may name. It refuses a mapped account that a
-	// BROKER_EXCHANGE_ACCOUNTS entry maps to another person. Unset, the setting maps no account.
+	// BROKER_EXCHANGE_ACCOUNTS entry maps to another person. It refuses a mapped account that a
+	// BROKER_NATS_SERVICES entry names, because the NATS auth service would then answer a
+	// connection of the person's pod with a service's NATS grant. Unset, the setting maps no
+	// account.
 	PodOperators map[string]string
 	// BROKER_K8S_OIDC_ISSUER: the issuer of the Kubernetes service-account tokens pods enroll
 	// with. Set it with BROKER_K8S_OIDC_AUDIENCE, or neither, in which case no pod can enroll.
@@ -1265,7 +1268,11 @@ func parsePodOperators(setting, value string) (map[string]string, error) {
 // account whose login service a BROKER_VM_SERVICES entry names, because cmd/broker's serviceNames
 // gives the policy loader the services of BROKER_SERVICES and BROKER_VM_SERVICES alike. It
 // refuses a mapped account that a BROKER_EXCHANGE_ACCOUNTS entry maps to another person, after it
-// writes both people in record.CanonicalLogin's form.
+// writes both people in record.CanonicalLogin's form. It refuses a mapped account that a
+// BROKER_NATS_SERVICES entry names, because the NATS auth service (internal/broker/natscallout)
+// would then answer a connection of the person's pod with that entry's service grant. It reads
+// each entry's account as natscallout.ParseServices does, the text after the entry's first =,
+// which that parser holds to ParseAccount's form at the boot; this package cannot import it.
 func mappedAccountRefusal(cfg *Config) error {
 	const setting = "BROKER_POD_OPERATORS"
 	if len(cfg.PodOperators) == 0 {
@@ -1282,6 +1289,12 @@ func mappedAccountRefusal(cfg *Config) error {
 	exchangePeople := make(map[string]string, len(cfg.ExchangeAccounts))
 	for _, entry := range cfg.ExchangeAccounts {
 		exchangePeople[entry.Account] = entry.Person
+	}
+	natsEntries := make(map[string]string)
+	for _, text := range strings.Fields(cfg.NATS.Services) {
+		if _, account, ok := strings.Cut(text, "="); ok {
+			natsEntries[account] = text
+		}
 	}
 	for _, account := range slices.Sorted(maps.Keys(cfg.PodOperators)) {
 		person := cfg.PodOperators[account]
@@ -1300,6 +1313,9 @@ func mappedAccountRefusal(cfg *Config) error {
 		}
 		if other, exchanges := exchangePeople[account]; exchanges && record.CanonicalLogin(other) != record.CanonicalLogin(person) {
 			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_EXCHANGE_ACCOUNTS maps it to %s; one account acts for one person, so map it to the same person in both settings or take it out of one of them", setting, account, person, other)
+		}
+		if entry, names := natsEntries[account]; names {
+			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_NATS_SERVICES entry %q names it; the NATS auth service would answer a connection of the person's pod with that service's NATS grant, so take the account out of BROKER_NATS_SERVICES or out of %s", setting, account, person, entry, setting)
 		}
 	}
 	return nil
@@ -2074,15 +2090,6 @@ func Load(getenv func(string) string) (Config, error) {
 	if len(cfg.ExchangeAccounts) > 0 && cfg.ExchangeK8sAudience == "" {
 		return Config{}, fmt.Errorf("BROKER_EXCHANGE_ACCOUNTS needs BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present")
 	}
-	// BROKER_POD_OPERATORS is read after each setting it is checked against: the logins
-	// (BROKER_SERVICE_LOGINS), the services of both kinds (BROKER_SERVICES and
-	// BROKER_VM_SERVICES) and the exchange's accounts (BROKER_EXCHANGE_ACCOUNTS).
-	if cfg.PodOperators, err = parsePodOperators("BROKER_POD_OPERATORS", getenv("BROKER_POD_OPERATORS")); err != nil {
-		return Config{}, err
-	}
-	if err := mappedAccountRefusal(&cfg); err != nil {
-		return Config{}, err
-	}
 	if cfg.ExchangeReadAccounts, err = parseExchangeReadAccounts("BROKER_EXCHANGE_READ_ACCOUNTS", getenv("BROKER_EXCHANGE_READ_ACCOUNTS")); err != nil {
 		return Config{}, err
 	}
@@ -2115,6 +2122,16 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 	}
 	if cfg.NATS, err = loadNATSCallout(getenv, cfg.K8sOIDCIssuer); err != nil {
+		return Config{}, err
+	}
+	// BROKER_POD_OPERATORS is read after each setting it is checked against: the logins
+	// (BROKER_SERVICE_LOGINS), the services of both kinds (BROKER_SERVICES and
+	// BROKER_VM_SERVICES), the exchange's accounts (BROKER_EXCHANGE_ACCOUNTS) and the NATS auth
+	// service's (BROKER_NATS_SERVICES).
+	if cfg.PodOperators, err = parsePodOperators("BROKER_POD_OPERATORS", getenv("BROKER_POD_OPERATORS")); err != nil {
+		return Config{}, err
+	}
+	if err := mappedAccountRefusal(&cfg); err != nil {
 		return Config{}, err
 	}
 	var sessionSeconds int

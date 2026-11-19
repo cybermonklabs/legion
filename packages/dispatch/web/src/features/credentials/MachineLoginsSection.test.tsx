@@ -389,7 +389,7 @@ test("a person's pod login reads as the viewer's own pod, and its Revoke says th
     await user.click(within(podRow).getByRole("button", { name: "Revoke" }));
     expect(confirm.mock.calls).toEqual([
       [
-        "Revoke the machine login for people/ada (your pod)? Every session it started ends at once. The pod logs in again with its token, under a new login, while the broker's BROKER_POD_OPERATORS maps its Kubernetes account to you.",
+        "Revoke the machine login for people/ada (your pod)? Every session it started ends at once. The pod logs in again with its token, under a new login, while the broker's BROKER_SERVICE_LOGINS names its Kubernetes account, and that login is yours while BROKER_POD_OPERATORS maps the account to you.",
       ],
     ]);
     expect(revokeMachineLogin).not.toHaveBeenCalled();

@@ -25,7 +25,7 @@ function approvedBy(login: LauncherCredentialResp): string {
  *  approved, and a service's token login. */
 function revokeOutcome(login: LauncherCredentialResp): string {
   if (login.person != null) {
-    return "Every session it started ends at once. The pod logs in again with its token, under a new login, while the broker's BROKER_POD_OPERATORS maps its Kubernetes account to you.";
+    return "Every session it started ends at once. The pod logs in again with its token, under a new login, while the broker's BROKER_SERVICE_LOGINS names its Kubernetes account, and that login is yours while BROKER_POD_OPERATORS maps the account to you.";
   }
   if (!login.service) {
     return "Every agent session it started loses its secrets at once, and the machine needs a new login.";
@@ -76,7 +76,8 @@ const columns: readonly RevocableColumn<LauncherCredentialResp>[] = [
  * Revoke ends a login, expired or not: it enrolls no more sessions, and every session it enrolled
  * (a service's worker pods, or the viewer's pod) loses the broker at once, its grants with it, so
  * Live grants is refreshed too. A pod or a service logging in with its token logs in again under
- * a new login: a pod while BROKER_POD_OPERATORS maps its account to the viewer, and a service for
+ * a new login: a pod while the broker's BROKER_SERVICE_LOGINS names its account, that login being
+ * the viewer's while BROKER_POD_OPERATORS maps the account to them, and a service for
  * the pods it launches next, while a pod it launched before stays without secrets until it is
  * replaced. Dispatch names the viewer as the person revoking, and the broker refuses anyone but
  * the approver of a person's machine login and anyone but the person of a person's pod login.

@@ -848,8 +848,9 @@ func (s *Service) bindSessionName(ctx context.Context, tx pgx.Tx, in Enrollment)
 //     of its own, so a role of one daemon's pod that names a session of another daemon's pod
 //     takes none of its grants (plan E's t-e-54). A pod enrolled under a
 //     login that proved no account, one a person approved through a machine-login code, carries
-//     nothing: no such login says which launcher it is, and a service's login holds no operator
-//     (authorized refuses a pod to every credential that carries one).
+//     nothing: no such login says which launcher it is. The one credential with an operator that
+//     enrols a pod, a person's pod login (PersonPodLogin), enrols its own pod under no session
+//     name (podUnderTokenLogin), so that pod carries nothing either.
 //   - A session under a credential that carries an operator — a person's own box, and that
 //     person's sign-in on a machine — belongs to that person (exchange.PersonPrincipal), so it
 //     follows them from one box to the next.
@@ -2250,8 +2251,9 @@ func (s *Service) liveCredentials(ctx context.Context, person string, services b
 // A token login whose subject BROKER_POD_OPERATORS maps is its person's own machine login,
 // whatever its row's operator, as LiveCredentials lists it. Only that person revokes it, and
 // RevokeOwnCredential revokes it too. The pod logs in again with its token under a new
-// credential. So the revoke ends the enrollments that the login made, but it does not keep the
-// pod out while the setting maps its account.
+// credential while BROKER_SERVICE_LOGINS names its account (machine.Service.verifyKubernetes);
+// BROKER_POD_OPERATORS decides only whether that new login acts for the person. So the revoke
+// ends the enrollments that the login made, but it does not keep the pod out.
 func (s *Service) RevokeCredential(ctx context.Context, id, person, actor string) error {
 	return s.revokeCredential(ctx, id, person, actor, true)
 }

@@ -242,7 +242,9 @@ func (c *Client) MachineLogins(ctx context.Context, approver string) (json.RawMe
 }
 
 // RevokeMachineLogin relays a person's revoke of a machine login; the broker allows anyone signed
-// in for a service's login, and only the person who approved it for a person's machine login.
+// in for a service's login, only the person who approved it for a person's machine login, and only
+// the person BROKER_POD_OPERATORS maps the pod's account to for a person's pod login, although
+// such a login carries a service.
 func (c *Client) RevokeMachineLogin(ctx context.Context, credentialID, approver string) (json.RawMessage, error) {
 	body, err := Decision{Approver: approver}.body()
 	if err != nil {

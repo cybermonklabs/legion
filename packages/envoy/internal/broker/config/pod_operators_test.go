@@ -86,6 +86,7 @@ func TestPodOperatorsRefusesAnEntryItCannotRead(t *testing.T) {
 // environment with BROKER_POD_OPERATORS unset and asserts the state that makes the refusal
 // reachable, so the refusal is the mapping's and not a fault of the other settings.
 func TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole(t *testing.T) {
+	natsUser, natsIssuer, natsCurve, _ := natsSeeds(t)
 	for _, tc := range []struct {
 		name string
 		env  func() map[string]string
@@ -168,6 +169,25 @@ func TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole(t *testing.T)
 			},
 			names: []string{"BROKER_EXCHANGE_ACCOUNTS maps it to grace@example.com"},
 		},
+		{
+			name: "a BROKER_NATS_SERVICES entry names it",
+			env: func() map[string]string {
+				e := withK8sIssuer()
+				e["BROKER_SERVICE_LOGINS"] = adaLoginService + "=" + adaAccount
+				e["BROKER_NATS_URLS"] = "nats://hub-a:4222"
+				e["BROKER_NATS_SEED_FILE"] = natsUser
+				e["BROKER_NATS_ISSUER_SEED_FILE"] = natsIssuer
+				e["BROKER_NATS_XKEY_SEED_FILE"] = natsCurve
+				e["BROKER_NATS_SERVICES"] = "daemon/-/*=" + adaAccount
+				return e
+			},
+			reachable: func(cfg Config) (string, bool) {
+				return "the NATS auth service runs, BROKER_NATS_SERVICES names " + adaAccount + ", and no other setting gives the account a role",
+					cfg.NATS.Enabled() && cfg.NATS.Services == "daemon/-/*="+adaAccount && cfg.ServiceLogins[adaAccount] == adaLoginService &&
+						len(cfg.ServicesByAccount) == 0 && len(cfg.VMServicesByAccount) == 0 && len(cfg.ExchangeAccounts) == 0
+			},
+			names: []string{"the BROKER_NATS_SERVICES entry " + strconv.Quote("daemon/-/*="+adaAccount) + " names it"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			unmapped, err := Load(env(tc.env()))
@@ -197,11 +217,18 @@ func TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole(t *testing.T)
 // PodOperators keyed by account, each answering its person in record.CanonicalLogin's form. A
 // person may have two accounts. A BROKER_EXCHANGE_ACCOUNTS entry that maps a mapped account to the
 // same person, in other letter case, is no refusal. Nor is a BROKER_SERVICES entry that binds
-// another account to another service. No entry gives a nil map.
+// another account to another service, nor a BROKER_NATS_SERVICES entry that names another
+// account. No entry gives a nil map.
 func TestPodOperatorsLoadsMappedAccounts(t *testing.T) {
+	natsUser, natsIssuer, natsCurve, _ := natsSeeds(t)
 	e := withK8sIssuer()
 	e["BROKER_SERVICE_LOGINS"] = adaLoginService + "=" + adaAccount + " person-ada-batch=" + adaSecondAccount + " person-grace=" + graceAccount
 	e["BROKER_SERVICES"] = "legion-daemon=system:serviceaccount:legion:legion-worker"
+	e["BROKER_NATS_URLS"] = "nats://hub-a:4222"
+	e["BROKER_NATS_SEED_FILE"] = natsUser
+	e["BROKER_NATS_ISSUER_SEED_FILE"] = natsIssuer
+	e["BROKER_NATS_XKEY_SEED_FILE"] = natsCurve
+	e["BROKER_NATS_SERVICES"] = "daemon/-/*=system:serviceaccount:legion-system:legion-daemon"
 	e["BROKER_EXCHANGE_K8S_AUDIENCE"] = "dispatch"
 	e["BROKER_EXCHANGE_ACCOUNTS"] = adaAccount + "=EXAMPLE=Ada@Example.com"
 	e["BROKER_POD_OPERATORS"] = " " + adaPodOperator + "\n\tada@example.com=" + adaSecondAccount + " grace@example.com=" + graceAccount + " "

@@ -15,8 +15,9 @@ body: |-
     acting as the person at its next request, and from then on the pod reads and cancels its own
     requests alone. The broker refuses to
     start on a mapped account that `BROKER_SERVICE_LOGINS` does not name, that `BROKER_SERVICES`
-    binds, whose login service `BROKER_SERVICES` or `BROKER_VM_SERVICES` names, or that
-    `BROKER_EXCHANGE_ACCOUNTS` maps to another person. `GET /v1/launcher-credentials` names such a
+    binds, whose login service `BROKER_SERVICES` or `BROKER_VM_SERVICES` names, that
+    `BROKER_EXCHANGE_ACCOUNTS` maps to another person, or that a `BROKER_NATS_SERVICES` entry names.
+    `GET /v1/launcher-credentials` names such a
     login's person in a new `person` field, and Dispatch's machine logins page shows the login as
     the viewer's own pod.
 time: 2026-11-18T23:02:57.000000000Z
