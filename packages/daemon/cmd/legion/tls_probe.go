@@ -272,6 +272,10 @@ func tlsCertificateError(detail string) bool {
 		"certificate revoked",
 		"certificate verify failed",
 		"invalid peer certificate",
+		// git's https transport through libcurl 8.17.0 or later built with GnuTLS, as Ubuntu's
+		// git uses it: "SSL certificate verification failed: certificate signer not trusted",
+		// where libcurl 8.14 says "server verification failed" (curl's lib/vtls/gtls.c).
+		"ssl certificate verification failed",
 		// curl before 8.18 says "SSL certificate problem: <reason>"; 8.18 says "SSL certificate
 		// OpenSSL verify result: <reason> (<code>)" for the same refusal (exit 60).
 		"ssl certificate problem",

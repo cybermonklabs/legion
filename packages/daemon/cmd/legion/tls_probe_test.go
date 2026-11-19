@@ -108,6 +108,25 @@ func TestTLSCertificateErrorRecognizesClientRefusals(t *testing.T) {
 	}
 }
 
+// git 2.53.0 of Ubuntu 26.04 refused the emSign chain with this line in the image probe of a
+// worker image built on that base on 2026-11-19. Read as no certificate error, the probe failed an
+// image that is safe. A refusal that names no certificate is still none.
+func TestTLSCertificateErrorRecognizesUbuntuGitsRefusal(t *testing.T) {
+	for _, testCase := range []struct {
+		name, detail string
+		want         bool
+	}{
+		{"git 2.53.0 on Ubuntu 26.04", `fatal: unable to access 'https://dv-g3b-emudhra.we-have-a-problem.com/': SSL certificate verification failed: certificate signer not trusted. (CAfile: /etc/ssl/certs/ca-certificates.crt CRLfile: none)`, true},
+		{"no such host", `fatal: unable to access 'https://dv-g3b-emudhra.we-have-a-problem.com/': Could not resolve host: dv-g3b-emudhra.we-have-a-problem.com`, false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := tlsCertificateError(testCase.detail); got != testCase.want {
+				t.Fatalf("tlsCertificateError(%q) = %v, want %v", testCase.detail, got, testCase.want)
+			}
+		})
+	}
+}
+
 // curl names one refusal in two ways, by version, and an image may carry either: an image built
 // on another distribution keeps that distribution's curl. Read as no certificate error, a positive
 // control's refusal is "unavailable" and the probe fails an image that is safe.
