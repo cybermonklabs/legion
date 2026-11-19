@@ -1,13 +1,19 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { answerInboxReads } from "../../__tests__/send-answers";
-import { ApiError } from "../../api/client";
-import { inboxThreadsQuery, myRepliesCountQuery, whoAmIQuery } from "../../api/queries";
+import { ApiError, api } from "../../api/client";
+import {
+  inboxThreadsQuery,
+  myRepliesCountQuery,
+  myRepliesKey,
+  whoAmIQuery,
+} from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
 import type { MyRepliesResponse, MyReplyRow } from "../../api/types";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { InboxBar, type InboxFilters } from "./InboxBar";
@@ -21,6 +27,17 @@ const AS_OF = "2026-10-12T02:00:00Z";
 
 function threadsRead(rows: readonly MyReplyRow[]): MyRepliesResponse {
   return { as_of: AS_OF, limit: 0, offset: 0, rows: [...rows], total: rows.length };
+}
+
+/** What `GET /api/v1/me/replies` answers while Dispatch holds `rows`: the Inbox's list, or for
+ *  the one-row page the shared count reads (`limit: 1`, `myRepliesCountQuery`) the number of
+ *  them still unread. */
+function repliesAnswer(
+  page: { readonly limit?: number },
+  rows: readonly MyReplyRow[]
+): MyRepliesResponse {
+  if (page.limit !== 1) return threadsRead(rows);
+  return { ...threadsRead([]), limit: 1, total: rows.filter((row) => row.unread).length };
 }
 
 function noop(): void {}
@@ -71,13 +88,21 @@ function Bar({ filters = {} }: { filters?: InboxFilters }): ReactNode {
   );
 }
 
-function renderBar(rows: readonly MyReplyRow[], count: number, filters?: InboxFilters) {
-  const client = new QueryClient({
-    defaultOptions: {
-      mutations: { retry: false },
-      queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
-    },
-  });
+/** What every client of this file is made with: a read the row seeds is never stale, so nothing
+ *  reads the server but what the row asks for. */
+const CLIENT_OPTIONS = {
+  defaultOptions: {
+    mutations: { retry: false },
+    queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
+  },
+};
+
+function renderBar(
+  rows: readonly MyReplyRow[],
+  count: number,
+  filters?: InboxFilters,
+  client: QueryClient = new QueryClient(CLIENT_OPTIONS)
+) {
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
   client.setQueryData(inboxThreadsQuery().queryKey, threadsRead(rows));
   client.setQueryData(myRepliesCountQuery().queryKey, count);
@@ -190,4 +215,142 @@ test("a refused press brings the rows and the counts back and says nothing was m
   expect(inboxCount()).toBe("2");
   expect(unread()).toBe("2");
   expect(listed()).toBe("2");
+});
+
+// A read of the list asked before the press - an event's refresh, say - answers the rows as they
+// stood, unread. Landing after the press, it would draw both rows unread again under an Inbox
+// count of zero while the press is still going through.
+test("a read of the list asked before Mark all read does not put back the rows the press drew read", async () => {
+  const user = userEvent.setup();
+  const marked = answerInboxReads();
+  const settle = Promise.withResolvers<{ marked: number }>();
+  marked.mockReturnValue(settle.promise);
+  const before = [replyRow("c1"), replyRow("c2")];
+  const after = [replyRow("c1", { unread: false }), replyRow("c2", { unread: false })];
+  const asked = Promise.withResolvers<MyRepliesResponse>();
+  const listMyReplies = spyOn(api, "listMyReplies")
+    .mockImplementationOnce(() => asked.promise)
+    .mockImplementation(async (page) => repliesAnswer(page, after));
+  try {
+    const client = renderBar(before, 2);
+    let read = Promise.resolve();
+    await act(async () => {
+      read = client.refetchQueries({ queryKey: inboxThreadsQuery().queryKey });
+    });
+    expect(listMyReplies).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "Mark all read" }));
+    await waitFor(() => expect(unread()).toBe("0"));
+    // The read answers as Dispatch held the rows when it was asked: both unread.
+    await act(async () => {
+      asked.resolve(threadsRead(before));
+      await read;
+    });
+    expect(unread()).toBe("0");
+    expect(listed()).toBe("2");
+
+    await act(async () => {
+      settle.resolve({ marked: 2 });
+    });
+    // The press's own refresh reads the list and the count again, after the mark.
+    await waitFor(() => expect(listMyReplies).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(unread()).toBe("0");
+    expect(inboxCount()).toBe("0");
+  } finally {
+    listMyReplies.mockRestore();
+  }
+});
+
+// A read of the shared count asked before the press answers the count as it stood. Landing after
+// the press, it would put the sidebar's Inbox count and the compact header's Inbox link back at
+// two over rows the press drew read.
+test("a read of the unread count asked before Mark all read does not put back the count the press zeroed", async () => {
+  const user = userEvent.setup();
+  const marked = answerInboxReads();
+  const settle = Promise.withResolvers<{ marked: number }>();
+  marked.mockReturnValue(settle.promise);
+  const before = [replyRow("c1"), replyRow("c2")];
+  const after = [replyRow("c1", { unread: false }), replyRow("c2", { unread: false })];
+  const asked = Promise.withResolvers<MyRepliesResponse>();
+  const listMyReplies = spyOn(api, "listMyReplies")
+    .mockImplementationOnce(() => asked.promise)
+    .mockImplementation(async (page) => repliesAnswer(page, after));
+  try {
+    const client = renderBar(before, 2);
+    let read = Promise.resolve();
+    await act(async () => {
+      read = client.refetchQueries({ queryKey: myRepliesCountQuery().queryKey });
+    });
+    expect(listMyReplies).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "Mark all read" }));
+    await waitFor(() => expect(inboxCount()).toBe("0"));
+    // The read answers as Dispatch held the count when it was asked: two unread.
+    await act(async () => {
+      asked.resolve(repliesAnswer({ limit: 1 }, before));
+      await read;
+    });
+    expect(inboxCount()).toBe("0");
+
+    await act(async () => {
+      settle.resolve({ marked: 2 });
+    });
+    await waitFor(() => expect(listMyReplies).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(inboxCount()).toBe("0");
+    expect(unread()).toBe("0");
+  } finally {
+    listMyReplies.mockRestore();
+  }
+});
+
+// A read asked while the press is out - an event's refresh of the Inbox's threads, say - would
+// reach Dispatch before the press marks anything, and draw the rows unread and the count back at
+// two while the press is still going through. It waits for the press's answer, and then reads
+// what Dispatch holds after it.
+test("a read of the list or the count asked while Mark all read is out waits for its answer", async () => {
+  const user = userEvent.setup();
+  const marked = answerInboxReads();
+  const settle = Promise.withResolvers<{ marked: number }>();
+  marked.mockReturnValue(settle.promise);
+  const before = [replyRow("c1"), replyRow("c2")];
+  // What Dispatch holds once the press is in: both rows read, and a reply written since.
+  const after = [
+    replyRow("c1", { unread: false }),
+    replyRow("c2", { unread: false }),
+    replyRow("c3"),
+  ];
+  let served = before;
+  const listMyReplies = spyOn(api, "listMyReplies").mockImplementation(async (page) =>
+    repliesAnswer(page, served)
+  );
+  try {
+    const client = renderBar(before, 2, undefined, new DispatchQueryClient(CLIENT_OPTIONS));
+    await user.click(screen.getByRole("button", { name: "Mark all read" }));
+    await waitFor(() => expect(unread()).toBe("0"));
+    expect(inboxCount()).toBe("0");
+
+    await act(async () => {
+      void client.invalidateQueries({ queryKey: myRepliesKey });
+    });
+    // Neither read has asked Dispatch anything, though both have started.
+    expect(listMyReplies).not.toHaveBeenCalled();
+    expect(client.getQueryState(inboxThreadsQuery().queryKey)?.fetchStatus).toBe("fetching");
+    expect(client.getQueryState(myRepliesCountQuery().queryKey)?.fetchStatus).toBe("fetching");
+    expect(unread()).toBe("0");
+    expect(inboxCount()).toBe("0");
+
+    served = after;
+    await act(async () => {
+      settle.resolve({ marked: 2 });
+    });
+    await waitFor(() => expect(listed()).toBe("3"));
+    expect(listMyReplies).toHaveBeenCalled();
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(unread()).toBe("1");
+    expect(inboxCount()).toBe("1");
+  } finally {
+    listMyReplies.mockRestore();
+  }
 });

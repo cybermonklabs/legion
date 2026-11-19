@@ -5,11 +5,18 @@
  */
 
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  QueryClient,
+  QueryClientProvider,
+  useInfiniteQuery,
+  useQuery,
+} from "@tanstack/react-query";
+import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { settle } from "../../__tests__/fake-clock";
 import { answerInboxDismisses } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import {
@@ -17,8 +24,10 @@ import {
   inboxQuery,
   inboxThreadsQuery,
   myRepliesCountQuery,
+  myRepliesKey,
   whoAmIQuery,
 } from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
 import type { InboxRow, IssueDetails, MyRepliesResponse, MyReplyRow } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
@@ -29,6 +38,7 @@ import {
   dismissRefusalText,
   dismissThreadRow,
   inboxDismissBody,
+  useInboxDismiss,
 } from "./useInboxDismiss";
 
 /** What a press carries for one of this file's Reply rows: the version the fixture draws them
@@ -194,6 +204,77 @@ test("a row a refused dismiss put back is the reader's hand's again, held under 
     client.setQueryData(inboxThreadsQuery().queryKey, threadsRead([replyRow("c9")]));
   });
   expect(rowIds()).toEqual(["reply:c1", "reply:c9"]);
+});
+
+// A read of the Inbox's threads, of the Dismissed view or of the count asked while a dismiss is
+// out - an event's refresh, another surface - can reach Dispatch before the dismiss does, and its
+// answer would put the dismissed thread back in the list and in the unread count while the press
+// is still out.
+test("a read of either view or the count asked while a dismiss is out waits for its answer, and never puts the thread back", async () => {
+  // What Dispatch holds, which each read answers with as it is when it is asked.
+  const server = { dismissed: [] as MyReplyRow[], inbox: [replyRow("c1"), replyRow("c9")] };
+  const listMyReplies = spyOn(api, "listMyReplies").mockImplementation(async (page) =>
+    threadsRead(page.state === "dismissed" ? server.dismissed : server.inbox)
+  );
+  restores.push(listMyReplies);
+  const dismissed = answerInboxDismisses();
+  const answer = Promise.withResolvers<{ dismissed: number }>();
+  dismissed.mockReturnValue(answer.promise);
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const { result } = renderHook(
+    () => ({
+      count: useQuery(myRepliesCountQuery()).data,
+      dismiss: useInboxDismiss(),
+      dismissedThreads: useInfiniteQuery(dismissedThreadsQuery()).data?.pages.flatMap(
+        (page) => page.rows?.map((row) => row.thread_id) ?? []
+      ),
+      inboxThreads: useQuery(inboxThreadsQuery()).data?.rows?.map((row) => row.thread_id),
+    }),
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+
+  await waitFor(() =>
+    expect(result.current).toMatchObject({
+      count: 2,
+      dismissedThreads: [],
+      inboxThreads: ["c1", "c9"],
+    })
+  );
+  act(() => result.current.dismiss.submit({ rows: [dismissThreadRow(replyRow("c1"))] }));
+  await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
+  expect(result.current).toMatchObject({ count: 1, inboxThreads: ["c9"] });
+
+  // Dispatch has not taken the dismiss, so a read that reached it now would answer c1 still in
+  // the Inbox, and counted.
+  const reads = listMyReplies.mock.calls.length;
+  await act(async () => {
+    void client.invalidateQueries({ queryKey: myRepliesKey });
+    await settle();
+  });
+  expect(listMyReplies).toHaveBeenCalledTimes(reads);
+  expect(result.current).toMatchObject({ count: 1, dismissedThreads: [], inboxThreads: ["c9"] });
+
+  // Dispatch takes it, and a reply lands on c5 meanwhile: the reads go now, and draw what it
+  // holds.
+  server.inbox = [replyRow("c9"), replyRow("c5")];
+  server.dismissed = [replyRow("c1")];
+  await act(async () => {
+    answer.resolve({ dismissed: 1 });
+    await settle();
+  });
+  await waitFor(() => expect(listMyReplies.mock.calls.length).toBeGreaterThan(reads));
+  await waitFor(() =>
+    expect(result.current).toMatchObject({
+      count: 2,
+      dismissedThreads: ["c1"],
+      inboxThreads: ["c9", "c5"],
+    })
+  );
 });
 
 test("`e` dismisses the thread row in hand and does nothing on an ask", async () => {

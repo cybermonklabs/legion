@@ -1,12 +1,12 @@
 import { afterEach, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the two clicks of one same-tick double press, which user-event cannot fire inside a single task
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { jump } from "../../__tests__/fake-clock";
+import { jump, settle } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import {
   dwellOn,
@@ -19,6 +19,7 @@ import { answerIssueStates, answerThreadReads } from "../../__tests__/send-answe
 import { wholeText } from "../../__tests__/whole-text";
 import type { WriteBounds } from "../../api/client";
 import { ApiError, api } from "../../api/client";
+import { userStateQuery } from "../../api/queries";
 import type {
   Actor,
   Agent,
@@ -2324,6 +2325,86 @@ test("the read mark writes the issue's head seq as the reader, and retries an un
     await waitFor(() =>
       expect(queryClient.getQueryData<UserState>(["user-state"])?.["CORE-1"]?.last_read_seq).toBe(7)
     );
+  } finally {
+    view.unmount();
+    getMyState.mockRestore();
+    putIssueState.mockRestore();
+    stub.restore();
+    viewport.restore();
+  }
+});
+
+const NO_ARTIFACTS: ReadonlyMap<string, Artifact> = new Map();
+
+/** CORE-1's Conversation under the viewer's states as the issue page's read of them holds them
+ *  (`IssuePage`), so a write into that read reaches the tab as it does on the page. */
+function ConversationUnderReadStates(): ReactNode {
+  const state = useQuery(userStateQuery()).data;
+  return (
+    <ConversationTab
+      issueArtifacts={NO_ARTIFACTS}
+      isClosed={false}
+      issueKey="CORE-1"
+      state={state}
+      visible
+    />
+  );
+}
+
+// A read of the viewer's issue states that was out when the read mark answered was answered from
+// the states before the mark. When it lands after the mark's answer, it must not put back the
+// issue's old read mark, which would count the conversation the reader just read unread again.
+test("a read asked before the read mark answered does not put back the mark it replaced", async () => {
+  const viewport = installIntersectionObserver();
+  const stub = stubLists({
+    comments: [comment("comment-1", { body: "Newest" })],
+    head: [headEvent(7)],
+  });
+  const asked: ReturnType<typeof Promise.withResolvers<UserState>>[] = [];
+  const getMyState = spyOn(api, "getMyState").mockImplementation(() => {
+    const read = Promise.withResolvers<UserState>();
+    asked.push(read);
+    return read.promise;
+  });
+  const putIssueState = answerIssueStates().mockImplementation(async (_key, input) =>
+    issueState([], input.last_read_seq ?? 0)
+  );
+  const queryClient = newQueryClient();
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const lastReadSeq = () =>
+    queryClient.getQueryData<UserState>(userStateQuery().queryKey)?.["CORE-1"]?.last_read_seq;
+  const view = render(
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <KeymapProvider>
+        <QueryClientProvider client={queryClient}>
+          <ConversationUnderReadStates />
+        </QueryClientProvider>
+      </KeymapProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    await waitFor(() => expect(asked).toHaveLength(1));
+    await act(async () => asked[0]?.resolve({ "CORE-1": issueState([], 1) }));
+    await screen.findByText("Newest");
+    const card = view.container.querySelector('[data-turn="comment:comment-1"]');
+    if (card === null) throw new Error("expected the newest card");
+
+    // A read of the states goes out, as an event's refresh asks one, and is still out at the mark.
+    act(() => {
+      void queryClient.invalidateQueries({ queryKey: userStateQuery().queryKey });
+    });
+    await waitFor(() => expect(asked).toHaveLength(2));
+    await dwellOnFakeClock(viewport, card);
+    expect(putIssueState).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(lastReadSeq()).toBe(7));
+
+    // The read asked before the mark answers the states from before it.
+    await act(async () => {
+      asked[1]?.resolve({ "CORE-1": issueState([], 1) });
+      await settle();
+    });
+    expect(lastReadSeq()).toBe(7);
   } finally {
     view.unmount();
     getMyState.mockRestore();

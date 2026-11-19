@@ -1,14 +1,19 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+import { settle } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { api } from "../../api/client";
+import { DispatchQueryClient } from "../../api/query-client";
+import type { RepoProject } from "../../api/types";
 import { SettingsPage } from "./SettingsPage";
 
-function renderPage() {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderPage(
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+) {
   return render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
@@ -240,5 +245,274 @@ test("a grant with no expiry says it ends when its session ends", async () => {
     for (const spy of Object.values(unrelated)) {
       spy.mockRestore();
     }
+  }
+});
+
+const mapping: RepoProject = {
+  created_at: "2026-09-10T00:00:00Z",
+  created_by: { id: "alice", kind: "user" },
+  default: true,
+  project: "CORE",
+  renamed_to: null,
+  repo: "owner/repo",
+};
+
+/** The repository mapping routes over rows a test holds (`mappingServer`). */
+interface MappingServer {
+  answer(): void;
+  holdReads(): void;
+  list(): Promise<RepoProject[]>;
+  put(repo: string, input: Parameters<typeof api.putRepoProject>[1]): Promise<RepoProject>;
+  releaseRead(): void;
+  releaseReads(): void;
+  remove(repo: string): Promise<void>;
+}
+
+/** The repository mapping routes' server state as the Settings page reaches it, with every write
+ *  held until the row answers it (`answer`): the write reaches the rows only then. Once
+ *  `holdReads` is called, each read answers the rows as they stood when it was asked, but only as
+ *  the row lets it go - the oldest first (`releaseRead`), or all (`releaseReads`, which also ends
+ *  the holding) - as a read Dispatch took before a write and answers after it does. */
+function mappingServer(initial: readonly RepoProject[]): MappingServer {
+  let rows = initial.map((row) => ({ ...row }));
+  const answer = Promise.withResolvers<void>();
+  const heldReads: (() => void)[] = [];
+  let holding = false;
+  return {
+    answer: () => answer.resolve(),
+    holdReads: () => {
+      holding = true;
+    },
+    list: async (): Promise<RepoProject[]> => {
+      const listed = rows.map((row) => ({ ...row }));
+      if (holding) {
+        const released = Promise.withResolvers<void>();
+        heldReads.push(released.resolve);
+        await released.promise;
+      }
+      return listed;
+    },
+    // As the server decides it: the body's default, else the mapping's own while its project is
+    // unchanged, else not the default; one default per project.
+    put: async (
+      repo: string,
+      input: Parameters<typeof api.putRepoProject>[1]
+    ): Promise<RepoProject> => {
+      await answer.promise;
+      const existing = rows.find((row) => row.repo === repo);
+      const saved: RepoProject = {
+        ...mapping,
+        default: input.default ?? (existing?.project === input.project ? existing.default : false),
+        project: input.project,
+        renamed_to: existing?.renamed_to ?? null,
+        repo,
+      };
+      rows = [
+        ...rows
+          .filter((row) => row.repo !== repo)
+          .map((row) =>
+            saved.default && row.project === saved.project ? { ...row, default: false } : row
+          ),
+        saved,
+      ];
+      return { ...saved };
+    },
+    releaseRead: () => heldReads.shift()?.(),
+    releaseReads: () => {
+      holding = false;
+      for (const release of heldReads.splice(0)) release();
+    },
+    remove: async (repo: string): Promise<void> => {
+      await answer.promise;
+      rows = rows.filter((row) => row.repo !== repo);
+    },
+  };
+}
+
+/** The Settings page on Dispatch's own client, as the app runs, with its mappings read from
+ *  `server` over the projects CORE and OPS, and `restore` to put every stub back. */
+async function renderMappings(server: MappingServer): Promise<{
+  deleteRepoProject: Mock<typeof api.deleteRepoProject>;
+  listRepoProjects: Mock<typeof api.listRepoProjects>;
+  putRepoProject: Mock<typeof api.putRepoProject>;
+  queryClient: DispatchQueryClient;
+  restore: () => void;
+}> {
+  const unrelated = stubUnrelatedQueries();
+  unrelated.listRepoProjects.mockImplementation(server.list);
+  unrelated.listProjects.mockResolvedValue(
+    ["CORE", "OPS"].map((key) => ({
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: [],
+      key,
+      name: key,
+      open_asks: 0,
+    }))
+  );
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
+  const putRepoProject = spyOn(api, "putRepoProject").mockImplementation((repo, input) =>
+    server.put(repo, input)
+  );
+  const deleteRepoProject = spyOn(api, "deleteRepoProject").mockImplementation(server.remove);
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  renderPage(queryClient);
+  await screen.findByRole("cell", { name: "owner/repo" });
+  return {
+    deleteRepoProject,
+    listRepoProjects: unrelated.listRepoProjects,
+    putRepoProject,
+    queryClient,
+    restore: () => {
+      cleanup();
+      queryClient.clear();
+      getCredentialPending.mockRestore();
+      putRepoProject.mockRestore();
+      deleteRepoProject.mockRestore();
+      for (const spy of Object.values(unrelated)) {
+        spy.mockRestore();
+      }
+    },
+  };
+}
+
+/** Each repository mapping the page lists, as `repo → project`, top to bottom. */
+function listedMappings(): string[] {
+  const section = screen.getByRole("region", { name: "Repositories → Projects" });
+  return within(section)
+    .getAllByRole("row")
+    .flatMap((row) => {
+      const [repo, project] = Array.from(row.querySelectorAll("td"), (cell) => cell.textContent);
+      return project === undefined ? [] : [`${repo} → ${project}`];
+    });
+}
+
+/** Maps `owner/repo` to `project` through the page's form. */
+async function mapThrough(user: UserEvent, project: string) {
+  await user.click(screen.getByLabelText("Repository"));
+  await user.paste("owner/repo");
+  await user.selectOptions(screen.getByLabelText("Project"), project);
+  await user.click(screen.getByRole("button", { name: "Add mapping" }));
+}
+
+// A read of the mappings asked while a mapping's save is out - an event's refresh, another
+// surface - can reach Dispatch before the save does, and would answer the project from before
+// the press over the one the reader just picked. It waits for the save's answer, then reads what
+// the save left.
+test("a read of the mappings asked while a mapping's save is out waits for the answer", async () => {
+  const user = userEvent.setup();
+  const server = mappingServer([mapping]);
+  const page = await renderMappings(server);
+
+  try {
+    await mapThrough(user, "OPS");
+    await waitFor(() =>
+      expect(page.putRepoProject).toHaveBeenCalledWith(
+        "owner/repo",
+        { project: "OPS" },
+        keyedAttempt
+      )
+    );
+    expect(listedMappings()).toEqual(["owner/repo → OPS"]);
+
+    const asked = page.listRepoProjects.mock.calls.length;
+    await act(async () => {
+      void page.queryClient.invalidateQueries({ queryKey: ["repo-projects"] });
+      await settle();
+    });
+    expect(page.listRepoProjects).toHaveBeenCalledTimes(asked);
+    expect(listedMappings()).toEqual(["owner/repo → OPS"]);
+
+    await act(async () => {
+      server.answer();
+    });
+    await waitFor(() => expect(page.listRepoProjects.mock.calls.length).toBeGreaterThan(asked));
+    await waitFor(() => expect(page.queryClient.isFetching()).toBe(0));
+    expect(listedMappings()).toEqual(["owner/repo → OPS"]);
+  } finally {
+    page.restore();
+  }
+});
+
+// A read of the mappings asked while a mapping's removal is out can reach Dispatch before the
+// removal does, and would answer the mapping the reader just deleted, back in the list. It waits
+// for the removal's answer, then reads the mappings without it.
+test("a read of the mappings asked while a mapping's removal is out waits for the answer", async () => {
+  const user = userEvent.setup();
+  const other: RepoProject = { ...mapping, default: false, repo: "owner/other" };
+  const server = mappingServer([mapping, other]);
+  const page = await renderMappings(server);
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Delete mapping for owner/repo" }));
+    await waitFor(() =>
+      expect(page.deleteRepoProject).toHaveBeenCalledWith("owner/repo", keyedAttempt)
+    );
+    expect(listedMappings()).toEqual(["owner/other → CORE"]);
+
+    const asked = page.listRepoProjects.mock.calls.length;
+    await act(async () => {
+      void page.queryClient.invalidateQueries({ queryKey: ["repo-projects"] });
+      await settle();
+    });
+    expect(page.listRepoProjects).toHaveBeenCalledTimes(asked);
+    expect(listedMappings()).toEqual(["owner/other → CORE"]);
+
+    await act(async () => {
+      server.answer();
+    });
+    await waitFor(() => expect(page.listRepoProjects.mock.calls.length).toBeGreaterThan(asked));
+    await waitFor(() => expect(page.queryClient.isFetching()).toBe(0));
+    expect(listedMappings()).toEqual(["owner/other → CORE"]);
+  } finally {
+    page.restore();
+  }
+});
+
+// A read of the mappings out when a save's answer lands, asked while the save was out, would put
+// the project from before the press back over the one the reader just picked, if Dispatch took
+// it before the save. Each read here answers the rows as they stood when it reached the server.
+test("a read of the mappings out when a mapping's save is answered does not put back the old project", async () => {
+  const user = userEvent.setup();
+  const server = mappingServer([mapping]);
+  const page = await renderMappings(server);
+
+  try {
+    await mapThrough(user, "OPS");
+    await waitFor(() =>
+      expect(page.putRepoProject).toHaveBeenCalledWith(
+        "owner/repo",
+        { project: "OPS" },
+        keyedAttempt
+      )
+    );
+
+    // Asked while the save is out, as an event's refresh would ask it.
+    server.holdReads();
+    await act(async () => {
+      void page.queryClient.invalidateQueries({ queryKey: ["repo-projects"] });
+      await settle();
+    });
+    await act(async () => {
+      server.answer();
+    });
+    // The answer is in: the form is emptied for the next mapping.
+    await waitFor(() => expect(screen.getByLabelText("Repository")).toHaveProperty("value", ""));
+    expect(listedMappings()).toEqual(["owner/repo → OPS"]);
+
+    // The oldest read still out answers.
+    await act(async () => {
+      server.releaseRead();
+      await settle();
+    });
+    expect(listedMappings()).toEqual(["owner/repo → OPS"]);
+
+    await act(async () => {
+      server.releaseReads();
+      await settle();
+    });
+    await waitFor(() => expect(page.queryClient.isFetching()).toBe(0));
+    expect(listedMappings()).toEqual(["owner/repo → OPS"]);
+  } finally {
+    page.restore();
   }
 });

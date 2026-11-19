@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import type { AcceptSuggestionResponse } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { hashKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode } from "react";
@@ -9,9 +9,11 @@ import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
+import { DispatchQueryClient } from "../../api/query-client";
 import type {
   Artifact,
   Comment,
+  CommentWithTrees,
   Decision,
   DecisionLink,
   DispatchEvent,
@@ -732,6 +734,122 @@ test("a failed action carries the API's reason, and a refusal of what it writes 
     unmount();
     acceptComment.mockRestore();
     listComments.mockRestore();
+  }
+});
+
+/** The issue's margin as it lists its threads, open and resolved, with a Resolve on thread A. */
+function ResolvableThreads() {
+  const { mutateItem, resolvedThreads, threads } = useMarginItems(
+    { key: "CORE-1", kind: "issue" },
+    "comments",
+    artifact,
+    new Map(),
+    new Map(),
+    undefined
+  );
+  return createElement(
+    "div",
+    null,
+    createElement(
+      "output",
+      { "aria-label": "Threads" },
+      JSON.stringify({
+        open: threads.map((thread) => thread.key),
+        resolved: resolvedThreads.map((thread) => thread.key),
+      })
+    ),
+    createElement(
+      "button",
+      { onClick: () => mutateItem({ id: "A", kind: "resolve" }), type: "button" },
+      "Resolve A"
+    )
+  );
+}
+
+function threadLists(): { open: string[]; resolved: string[] } {
+  return JSON.parse(screen.getByLabelText("Threads").textContent ?? "");
+}
+
+// A refresh of the issue's comments asked while a resolve was out could reach Dispatch before the
+// resolve did, and its answer put the thread back among the open ones under the reader's press.
+// The read waits for the resolve's answer and is asked once it is in, so the margin shows what
+// Dispatch holds after the resolve.
+test("a read of the comments asked while a resolve is out waits for its answer, and the margin shows what it reads then", async () => {
+  const user = userEvent.setup();
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: {
+      mutations: { retry: false },
+      queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
+    },
+  });
+  const commentsKey = ["comments", "CORE-1"];
+  const open = comment("A", "m-a", "2026-09-09T00:00:00Z");
+  queryClient.setQueryData(["issue", "CORE-1"], {
+    artifacts: [artifact],
+    primary_artifact_id: artifact.id,
+  });
+  queryClient.setQueryData(["asks", "CORE-1"], []);
+  queryClient.setQueryData(commentsKey, [open]);
+  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(["user-state"], {});
+  // Each read of the comments, listed as it calls its function: a read the resolve holds is
+  // listed before it waits, and one that is not held has asked by then.
+  const asked: string[] = [];
+  const stopListening = queryClient.onAttempt((queryHash) => {
+    if (queryHash === hashKey(commentsKey)) asked.push(queryHash);
+  });
+  const reads: ReturnType<typeof Promise.withResolvers<Comment[]>>[] = [];
+  const listComments = spyOn(api, "listComments").mockImplementation(() => {
+    const read = Promise.withResolvers<Comment[]>();
+    reads.push(read);
+    return read.promise;
+  });
+  const save = Promise.withResolvers<CommentWithTrees>();
+  const resolveComment = spyOn(api, "resolveComment").mockReturnValue(save.promise);
+  const view = render(
+    createElement(
+      MemoryRouter,
+      { initialEntries: ["/issues/CORE-1/spec"] },
+      createElement(QueryClientProvider, { client: queryClient }, createElement(ResolvableThreads))
+    )
+  );
+  // What Dispatch holds once it took the resolve.
+  const resolved: CommentWithTrees = {
+    ...open,
+    resolved: true,
+    resolved_at: "2026-09-09T00:01:00Z",
+    resolved_by: { id: "alice", kind: "user" },
+  };
+  try {
+    expect(threadLists()).toEqual({ open: ["A"], resolved: [] });
+    await user.click(screen.getByRole("button", { name: "Resolve A" }));
+    await waitFor(() => expect(resolveComment).toHaveBeenCalledWith("A", keyedAttempt));
+    await waitFor(() => expect(threadLists()).toEqual({ open: [], resolved: ["A"] }));
+
+    await act(async () => {
+      void queryClient.invalidateQueries({ queryKey: commentsKey });
+    });
+    // The refresh is asked, and waits: the comments are not read while the resolve is out.
+    await waitFor(() => expect(asked).toHaveLength(1));
+    expect(listComments).not.toHaveBeenCalled();
+    expect(threadLists()).toEqual({ open: [], resolved: ["A"] });
+
+    await act(async () => {
+      save.resolve(resolved);
+    });
+    await waitFor(() => expect(listComments).toHaveBeenCalledTimes(1));
+    listComments.mockResolvedValue([resolved]);
+    await act(async () => {
+      reads[0]?.resolve([resolved]);
+    });
+    await waitFor(() => expect(queryClient.getQueryData<Comment[]>(commentsKey)).toEqual([resolved]));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect(threadLists()).toEqual({ open: [], resolved: ["A"] });
+  } finally {
+    view.unmount();
+    stopListening();
+    listComments.mockRestore();
+    resolveComment.mockRestore();
   }
 });
 

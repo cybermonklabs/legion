@@ -14,6 +14,7 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerThreadReads } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import { myRepliesOwnerQuery } from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
 import type {
   AnswerAskInput,
   Ask,
@@ -103,10 +104,12 @@ function thread(ask: Ask, answers: AskAnswer[] = ask.answer === null ? [] : [ask
   };
 }
 
-function renderCard(node: ReactNode) {
-  const queryClient = new QueryClient({
+function renderCard(
+  node: ReactNode,
+  queryClient: QueryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
+  })
+) {
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>{node}</QueryClientProvider>
@@ -172,6 +175,73 @@ test("the answerer can change an answer and sees both answers immediately", asyn
     expect(threadReads).toBe(1);
     refreshed.resolve(thread(after, [firstAnswer, secondAnswer]));
     await waitFor(() => expect(view.getByText("Show 1 earlier answer")).toBeTruthy());
+  } finally {
+    view.unmount();
+  }
+});
+
+// A read of the thread asked before a changed answer landed - an event's refresh of the ask, say
+// - answers the thread as it stood, with the first answer alone. Landing after the change, it
+// would take the earlier answer away from under the new one, until the change's own refresh came
+// back. On Dispatch's client that refresh waits for the running read rather than cancelling it,
+// so the row reads on that client.
+test("a read of the thread asked before a changed answer landed does not put back the answers it replaced", async () => {
+  const user = userEvent.setup();
+  const before = answeredAsk();
+  const secondAnswer: AskAnswer = {
+    at: "2026-10-08T02:00:00Z",
+    selected: ["Hold"],
+    text: null,
+    user: "alice",
+  };
+  const after = answeredAsk({ answer: secondAnswer });
+  const reads: ReturnType<typeof Promise.withResolvers<AskRead>>[] = [];
+  const getAskThread = () => {
+    const read = Promise.withResolvers<AskRead>();
+    reads.push(read);
+    return read.promise;
+  };
+  const { queryClient, view } = renderCard(
+    <AskCard
+      answerAsk={async () => after}
+      ask={before}
+      getAskThread={getAskThread}
+      initialThread={thread(before)}
+    />,
+    new DispatchQueryClient({
+      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    })
+  );
+  const history = () =>
+    within(view.getByTestId("ask-ask-1")).queryByText(/earlier answer/)?.textContent;
+  try {
+    const change = await view.findByRole("button", { name: "Change answer" });
+    let asked = Promise.resolve();
+    await act(async () => {
+      asked = queryClient.refetchQueries({ queryKey: ["ask-thread", before.id] });
+    });
+    expect(reads).toHaveLength(1);
+
+    await user.click(change);
+    await user.click(await view.findByRole("radio", { name: "Hold" }));
+    await user.clear(view.getByLabelText("Your answer"));
+    await user.click(view.getByRole("button", { name: "Save answer" }));
+    await waitFor(() => expect(history()).toBe("Show 1 earlier answer"));
+
+    // The read answers as Dispatch held the thread when it was asked: the first answer alone.
+    await act(async () => {
+      reads[0]?.resolve(thread(before));
+      await asked;
+    });
+    // The change's own refresh of the thread is out now, asked after the change.
+    await waitFor(() => expect(reads).toHaveLength(2));
+    expect(history()).toBe("Show 1 earlier answer");
+
+    await act(async () => {
+      reads[1]?.resolve(thread(after, [firstAnswer, secondAnswer]));
+    });
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(history()).toBe("Show 1 earlier answer");
   } finally {
     view.unmount();
   }
