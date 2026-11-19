@@ -27,7 +27,8 @@ test("a process ended by exitProcess first writes out everything queued on stdou
     writeFileSync(${JSON.stringify(exiting)}, "")
     await exited
   `
-  const child = Bun.spawn(["bun", "-e", script], { stdout: "pipe", stderr: "pipe" })
+  // This process's own Bun, by its path: PATH need not name a `bun` at all.
+  const child = Bun.spawn([process.execPath, "-e", script], { stdout: "pipe", stderr: "pipe" })
   // A reader that starts only once the exit is asked for. A child that exits first, as one whose
   // exit drops what it queued does, ends the wait too, and the lengths below say what it dropped.
   while (!existsSync(exiting) && child.exitCode === null && child.signalCode === null) {
