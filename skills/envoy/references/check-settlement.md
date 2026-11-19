@@ -1,64 +1,46 @@
 # Ordering pull request check settlements
 
 Read this when you write or review code that consumes `pr.<n>.checks` settlements and must decide which of several settlements of one commit is current.
+The Legion daemon's implementation is the reference: `CompareAttemptSets`, `ClassifySettlement`, `EffectiveOutcome` and `ApplySettlement` in `packages/daemon/internal/classify`.
 
 ## What a settlement carries
 
-- A commit can settle more than once. A later settlement can carry `superseded_settlement: "true"`, and an exact copy can arrive, because delivery is at-least-once.
-- `check_runs`, the attempt set: the latest GitHub check-run id per check name, sorted by name. Each entry is `{name, id, conclusion}`.
-- `conclusion`: GitHub's own word for that run (`success`, `skipped`, `neutral`, `timed_out` and the rest), passed on as GitHub gave it, a word GitHub adds later included. It is absent where the listener's record holds no word for the run, and from every entry a listener of an earlier release sends. It takes no part in ordering. Show a check by its word, and decide by the status groups, not by the word. The listener does not check the word's form: the Legion daemon keeps only a word of the form `^[a-z_]{1,32}$` (`conclusionWord`, `packages/daemon/internal/intake/decode.go`) and names a run with any other word by the conclusion the status groups give it.
-- The status groups `failed`, `running`, `passed`, `queued`, `cancelled` and `skipped`, each `{count, checks}`, put every check in one group by the listener's rule, so a word you do not know still lands in one group: a completed run with a word the listener does not know is in `failed`. `skipped` names each check whose run GitHub concluded `skipped`: that check ran nothing on the commit.
-- `generation`: the listener record's state version. `snapshot`: the record's hash.
-- A head publishes only when at least one check has a positive run id. Legacy checks without one appear in the status groups and the failing names, never in `check_runs`.
+- A commit can settle more than once. A later settlement can carry `superseded_settlement: "true"`, and an exact copy can arrive.
+- `check_runs`, the attempt set: the latest GitHub check-run id per check name, sorted by name. `generation`: the listener record's state version. `snapshot`: the record's hash.
+- Each `check_runs` entry is `{name, id, conclusion}`. `conclusion` is GitHub's own word for that run (`success`, `skipped`, `neutral`, `timed_out` and the rest, and a word GitHub adds later), absent where the record holds none and from every entry a listener of an earlier release sends. Show a check by its word, and order and decide by the ids and the status groups. The `skipped` group names each check whose run GitHub concluded `skipped`: that check ran nothing on the commit.
+- A head publishes only when at least one check has a positive run id. A legacy check without one is in the status groups and `failing_checks`, never in `check_runs`.
+- `statuses`: each commit status the record holds, as `{context, state, created_at}`. Dispatch's CI reconcile records them from GitHub, where its App token holds the Commit statuses permission; the listener drops GitHub's `status` event. A status alone never makes a head publish.
 
-## Order two attempt sets of one commit
+## Order settlements of one commit
 
-Compare the ids of the names both sets share:
+Compare the check-run ids of the names both attempt sets share; a name only the incoming set has counts as higher:
 
-1. No id lower, and some id higher or a new name: newer. A new name counts as higher.
-2. Every shared id equal and no new name: the same set.
-3. No id higher, no new name, and some id lower: older.
-4. Anything else (a higher or new id alongside a lower one): a mixed view. Drop it as a conflict.
+1. Some id higher, none lower: newer.
+2. Every id equal: the same set.
+3. Some id lower, none higher: older, so stale.
+4. Higher and lower together: a mixed view. Apply it, and decide each name by its newest run.
 
-Ignore names that only the stored set has: a check can vanish from GitHub's view, and a record recreated after the seven-day KV TTL starts sparse.
-
-## Keep a fence
-
-- The fence is the per-name maximum id over every set you accepted. Merge each accepted set into it, and prune nothing.
-- Within one listener record, per-name ids never decrease, so the fence never decreases either.
-- So a newer attempt is newer whatever its completion time, no timestamp takes part in ordering, and a name an incomplete view left out cannot later come back as new.
-
-## At the same set, order by generation
-
-- A lower `generation` is stale.
-- An equal `generation` with the same `snapshot` is a duplicate. With a different `snapshot`, drop it as a conflict: that pair occurs only when a record was recreated and reused a generation.
+- Ignore names only the stored set has: a check can vanish from GitHub's view, and a record recreated after the seven-day KV TTL starts sparse.
+- Keep a fence: the per-name maximum id over every set you accepted, pruning nothing. No timestamp orders check runs.
+- At the same set, a higher `generation` is newer and a lower one stale. An equal `generation` with the same `snapshot` is a duplicate; with a different `snapshot`, drop it as a conflict, since only a recreated record reuses a generation.
+- Order two statuses of one context by `created_at`, and keep the later. A settlement that is otherwise stale, a duplicate or a conflict still applies a status entry with a later `created_at`, and changes nothing else.
 
 ## Apply a live settlement
 
-- A live settlement (one the listener sent) may be an incomplete view of the head: a webhook was missed, or the record was recreated after the KV TTL.
-- It decides the outcome of every name it reports, at any id the ordering accepted, the same run seen in place included. It says nothing about the names it leaves out.
-- A known failure among the names it leaves out stands, because you keep failure names, not a per-name status map. The head is red while any failure remains.
+- A live settlement may be an incomplete view of the head: a webhook was missed, or the record was recreated. It decides every name it reports and says nothing about the names it leaves out.
+- A known failure among the names it leaves out stands. The head is red while any check-run failure remains, or while a status you keep is `failure` or `error`.
+- Keep commit statuses apart from check-run failures, because a status has no check run: a check run with a status's name cannot retire that status.
 
 ## Reconcile with GitHub's rollup
 
-- Compare the rollup's attempt set in the same way. GitHub's read is complete: its failing check runs and failing commit statuses replace the stored ones wholesale.
-- Keep commit statuses apart from check-run failures, because statuses have no check run and the listener never sees them. A check run with a status's name cannot retire that status; only GitHub's read can. The same holds for a deleted check's failure.
-- A newer rollup set merges into the fence and takes the identity, with no listener generation.
-- The same set applies GitHub's verdict and keeps the listener identity for duplicate detection.
-- Ignore an older set, a mixed set, and an empty set when the fence already holds ids.
-
-## After a terminal GitHub read
-
-A terminal read is a green or red one. GitHub's verdict then holds authority at that set:
-
-- Accept a live settlement at the same set only if its effective outcome agrees with GitHub's verdict. The effective outcome is the check-run failures it reports, plus the stored ones it leaves out, plus the stored commit-status failures. Accepting it refreshes the listener identity, and GitHub's verdict keeps its authority.
-- A live settlement that disagrees is stale, whatever its generation, until the set advances.
-- A pending or cancelled-only read takes the green off a green head, leaves a red head red, and ends GitHub's authority at that set. The next terminal live settlement then applies at once, under the usual generation and duplicate rules: a replay or a lower generation still does not apply.
-- So the order of reads matters: a pending read after a live green takes the green off until the next terminal view.
+- GitHub's read is complete: its failing check runs and failing statuses replace the stored ones wholesale.
+- Compare its attempt set in the same way. A newer set merges into the fence and takes the identity, with no listener generation; the same set applies GitHub's verdict and keeps the listener identity for duplicate detection; ignore an older set, a mixed set, and an empty set when the fence already holds ids.
+- After a terminal (green or red) read, accept a live settlement at the same set only if its effective outcome agrees with GitHub's verdict: the check-run failures it reports, plus the stored ones it leaves out, plus each failed status you keep once its `statuses` merge in. One that disagrees is stale, whatever its generation, until the set advances.
+- A pending or cancelled-only read takes the green off a green head, leaves a red head red, and ends GitHub's authority at that set; the next terminal live settlement then applies under the usual generation and duplicate rules.
 
 ## Known gaps
 
-- A run whose conclusion changes in place, on the same run id: GitHub's view stands. The listener's view comes back with the next successful, non-skipped read at that set; the dropped delivery is not replayed.
-- A check whose highest run is deleted on GitHub: the fence keeps that id, so a rollup that reports a lower run under that name is older until a newer run appears.
-- A consumer that orders head changes by the PR's `updated_at` (one-second resolution) accepts a read of another head at an equal clock. A stale read that returns the previous head in the same second as its replacement rewinds that consumer until its next accurate, non-skipped read.
-- A legacy in-progress check whose completion is never seen holds the head unsettled until it reruns: rerun that check to release it.
+- A run whose conclusion changes in place, on the same run id: GitHub's view stands until the next successful, non-skipped read at that set.
+- A check whose highest run is deleted on GitHub: the fence keeps that id, and only GitHub's read retires its failure.
+- A legacy in-progress check whose completion is never seen holds the head unsettled: rerun that check.
+- A consumer that orders head changes by the pull request's `updated_at` (one-second resolution) accepts a stale read of the previous head made in the same second as its replacement, until its next accurate read.

@@ -849,7 +849,16 @@ function formatCheckResults(results: IssueCheckResults, brief = false): string {
   return [`Checks of ${results.issue}:`, ...blocks].join("\n\n");
 }
 
-/** `dispatch result`: record one result of one check of an issue's Verification document. */
+/** Whether the CLI's `--dry-run` of a call asks Dispatch what the call's write would answer: a
+ *  `dispatch result` record, whose dry run prints the pull-request body line the record would
+ *  print, since that line is Dispatch's to write and a copy written here would be a second
+ *  grammar. Every other dry run, a retraction's included, prints the arguments and sends nothing. */
+export function dryRunAsksDispatch(tool: string, args: Readonly<Record<string, unknown>>): boolean {
+  return tool === "dispatch_result" && args["retract"] === undefined;
+}
+
+/** `dispatch result`: record one result of one check of an issue's Verification document, or, as
+ *  the CLI's dry run, ask Dispatch for the pull-request body line the record would print. */
 export async function resultCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor } = context;
   const retract = optionalString(args, "retract");
@@ -881,16 +890,24 @@ export async function resultCommand(context: CommandContext): Promise<DispatchTo
     ...defined("excluded", optionalNumber(args, "excluded")),
     ...defined("screenshots", optionalStringArray(args, "screenshots")),
   };
+  const input = {
+    actor,
+    check: stringArg(args, "check"),
+    role: stringArg(args, "role"),
+    verdict: stringArg(args, "verdict") as "pass" | "fail",
+    commit: stringArg(args, "commit"),
+    ...optional,
+  };
+  if (context.input.dryRun === true) {
+    const dry = await client.dryRunResult(issue, input);
+    return {
+      text: `Nothing was recorded: this is a dry run.\n\nPull request body line:\n${dry.line}`,
+      details: { issue, check: input.check, verdict: input.verdict, line: dry.line },
+    };
+  }
   let recorded: CheckResultRecorded;
   try {
-    recorded = await client.recordResult(issue, {
-      actor,
-      check: stringArg(args, "check"),
-      role: stringArg(args, "role"),
-      verdict: stringArg(args, "verdict") as "pass" | "fail",
-      commit: stringArg(args, "commit"),
-      ...optional,
-    });
+    recorded = await client.recordResult(issue, input);
   } catch (error) {
     // CHECK_CONTENDED is the one refusal of this route that asks for nothing but the same
     // call again: a document version reworded the check at both of the write's attempts, so
