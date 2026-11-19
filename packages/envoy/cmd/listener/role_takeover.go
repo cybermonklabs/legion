@@ -4,11 +4,16 @@
 // whoever holds the role, so the role's next holder receives each at least once.
 //
 // The claim route writes a takeover record before each try of its claim write (publishTakeover,
-// bus.TakeoverSubject); a pass of a record reads the previous holder's subject from the
-// acknowledgement floor of its session consumer on and copies each role message of the role
-// (runTakeoverPasses); the claim route's handover and the kept lane's sweep run the passes
-// (handOverTakenRole). The session relay copies a role message whose role another session holds
-// instead of delivering it (sessionRelays.takeOverFrame).
+// bus.TakeoverSubject), and a try whose record did not store writes no claim and answers 503
+// (errTakeoverUnrecorded), which the Legion claim boot and controller claim again after
+// (claimRoleAgainOnBusy in packages/pi-shared). A pass of a record reads the previous holder's
+// subject from the acknowledgement floor of its session consumer on and copies each role message of
+// the role under a minted dedupe key of its own (runTakeoverPasses, takenFrameDedupeKey), and writes
+// the record when it changed it or once its last write is takeoverRecordRefresh old; the claim
+// route's handover and the kept lane's sweep run the passes (handOverTakenRole). The session relay
+// copies a role message whose role another session holds instead of delivering it
+// (sessionRelays.takeOverFrame). Dispatch marks a send for a role route from its own identity alone
+// (internal/dispatch/envoy, Send), which is what lets a copy find a message Dispatch sent.
 
 package main
 

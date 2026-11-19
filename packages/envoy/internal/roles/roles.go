@@ -213,6 +213,12 @@ func ResolutionTooOld(resolvedAt, now time.Time) bool {
 // once ctx has ended: that is ctx's error, wrapped to name the role, at ClaimRead.
 //
 // One resolution is one claim read: there is no release for a second read to see past.
+//
+// It is the one judgement of a holder every role route makes - the role lookup, the role publish,
+// the role lane, the kept lane's handover and Dispatch's outbox - so a holder inside the live
+// window is live on each of them, whatever its relay subscriber does, and none of them probes its
+// relay subject. Only the send route probes a session's relay subject, and its answer goes in the
+// send's own state, never in a role answer's holder_state.
 func ResolveHolder(ctx context.Context, claims ClaimStore, sessions SessionLookup, role string) (Resolution, error) {
 	if err := ctx.Err(); err != nil {
 		return Resolution{}, &ReadError{Step: ClaimRead, Err: fmt.Errorf("resolve role %s's holder: %w", role, err)}

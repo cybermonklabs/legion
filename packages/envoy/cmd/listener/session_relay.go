@@ -174,6 +174,11 @@ const (
 // listener the session moved to is delivered them at once rather than after the consumer's ack
 // wait, and writes one line saying it has.
 //
+// The relay judges no frame by the listener's caches, with one exception: a frame that is a role
+// message is read against the role's claim, and one whose role another session holds, or none
+// does, is copied to the role's kept lane and acknowledged rather than delivered (takeOverFrame).
+// Every other frame it pulls is published whatever the caches hold.
+//
 // One loop goroutine owns the set of relays (relays) and applies the events it is sent in order;
 // each relay runs on a goroutine of its own.
 type sessionRelays struct {
