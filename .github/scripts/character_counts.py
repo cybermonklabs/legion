@@ -23,7 +23,8 @@ def main() -> int:
         print(f"  ok  {name}")
     for name, _ in counters:
         print(f"  ok  {name}")
-    print("  ok  a count in a workflow, a test and a generated file fires; each class left out is counted; an empty listing is UNKNOWN")
+    print("  ok  a count in a workflow, a test and a generated file fires; each class left out is counted; each rule that leaves"
+          " files out has a case, and each path the check must read is read; an empty listing is UNKNOWN")
     listed = subprocess.run(
         ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
         capture_output=True, check=True,

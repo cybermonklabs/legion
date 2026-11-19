@@ -3,7 +3,7 @@ each with the verdicts it must get. They run before every scan."""
 from __future__ import annotations
 
 from character_counts_analysis import OTHER_COUNTERS, scan
-from character_counts_tree import BINARY, DATED, LEFT_OUT, LINK, MISSING, SELF, judge_tree
+from character_counts_tree import BINARY, DATED, FIXTURE, LEFT_OUT, LINK, MISSING, SELF, classify, judge_tree
 
 EXEMPT_SITE = (
     "package planted\n\n"
@@ -25,8 +25,13 @@ CONTROLS = [
      'package planted\n\nfunc h(title string) error {\n'
      '\treturn fmt.Errorf("title is at most %d characters; the commit beside it is 40 hex", itemblocks.Units16(title))\n}\n',
      ["instance"]),
-    ("a message naming its unit stays quiet", "packages/envoy-client/src/unit.ts",
-     "export const line = (n: number) => `One block: ${n} characters (UTF-16 units).`;\n", ["names its unit"]),
+    ("a message naming the unit its counter counts stays quiet", "packages/envoy-client/src/unit.ts",
+     "export const line = (text: string) => `One block: ${text.length} characters (UTF-16 units).`;\n", ["names its unit"]),
+    ("a unit a message names fires where its counter counts another", "packages/envoy/internal/planted/unit.go",
+     'package planted\n\nfunc u(s string) error {\n\treturn fmt.Errorf("title is %d characters (UTF-16 code units)", len(s))\n}\n',
+     ["instance | it names UTF-16 code units, and len() counts bytes"]),
+    ("a unit a message names over a value the check cannot follow fires", "packages/envoy-client/src/unnamed.ts",
+     "export const line = (n: number) => `One block: ${n} characters (UTF-16 units).`;\n", ["instance | cannot judge"]),
     ("a bound its if counts in code points stays quiet", "packages/envoy/internal/planted/runes.go",
      'package planted\n\nfunc g(id string) string {\n\tif n := utf8.RuneCountInString(id); n > 200 {\n'
      '\t\treturn fmt.Sprintf("an id is at most 200 characters, and this one is %d", n)\n\t}\n\treturn ""\n}\n',
@@ -117,6 +122,95 @@ CONTROLS = [
      "jobs:\n  a:\n    steps:\n      - run: echo \"title is $(printf '%s' \"$T\" | wc -c) characters\"\n", ["instance"]),
     ("chars is the word", "packages/pi-legion/scripts/planted/score.ts",
      "export const note = (q: string) => `chars=${q.length}`;\n", ["instance"]),
+    ("the word in capitals is the word", "packages/envoy/internal/planted/upper.go",
+     'package planted\n\nfunc u(t string) string {\n\treturn fmt.Sprintf("TITLE: %d CHARACTERS", len(t))\n}\n',
+     ["instance | len() counts"]),
+    ("the word written with an escape is the word in Go", "packages/envoy/internal/planted/escape.go",
+     'package planted\n\nfunc e(s string) error {\n\treturn fmt.Errorf("title is %d \\u0063haracters", len(s))\n}\n',
+     ["instance | len() counts"]),
+    ("the word written with an escape is the word in JSON", "packages/contracts/planted/escape.json",
+     '{"rule": "a title is at most 2000 \\u0063haracters"}\n', ["instance"]),
+    ("a word between the count and the word names the count's unit", "packages/envoy/internal/planted/qualifier.go",
+     'package planted\n\nfunc q(s string) error {\n\treturn fmt.Errorf("at most %d Unicode characters", len(s))\n}\n',
+     ["instance | it names code points, and len() counts bytes"]),
+    ("a count in words or after a hyphen fires, and at least one is any unit", "docs/planted/words.md",
+     "A query needs at least two characters.\n\nIt refuses over-40-character labels.\n\n"
+     "A word of five or more characters.\n\nA name holds at least one character.\n",
+     ["instance", "instance", "instance", "not empty"]),
+    ("a range, a count in code or in bold and a k suffix fire in prose", "docs/planted/forms.md",
+     "A label is 1-40 characters.\n\nAt most `2000` characters.\n\nAt most **2,000** characters.\n\nAt most 32k characters.\n",
+     ["instance", "instance", "instance", "instance"]),
+    ("a count after the word fires: a limit of it, a count used, a length in the word",
+     "packages/envoy/internal/planted/after.go",
+     'package planted\n\nfunc a(s string) error {\n\treturn fmt.Errorf("over the character limit (%d)", len(s))\n}\n'
+     'func b(s string) string {\n\treturn fmt.Sprintf("characters used: %d of 200", len(s))\n}\n'
+     'func c(s string) error {\n\treturn fmt.Errorf("its length in characters is %d", len(s))\n}\n',
+     ["instance | len() counts", "instance | len() counts", "instance | len() counts"]),
+    ("a Go print call's separate arguments are one message", "packages/envoy/internal/planted/println.go",
+     'package planted\n\nfunc p(s string) string {\n\tfmt.Println("title is", len(s), "characters")\n'
+     '\treturn fmt.Sprint(len(s), " characters")\n}\n', ["instance | len() counts", "instance | len() counts"]),
+    ("a TypeScript print call's arguments and an array's join are one message", "packages/envoy-client/src/joined.ts",
+     'export const f = (s: string) => console.log("title is", s.length, "characters");\n'
+     'export const g = (s: string) => [s.length, "characters"].join(" ");\n',
+     ["instance | .length counts", "instance | .length counts"]),
+    ("a Python print call's separate arguments are one message", "scripts/planted/print.py",
+     'import sys\ns = sys.argv[1].encode()\nprint("title is", len(s), "characters")\n', ["instance | cannot judge: Python's len()"]),
+    ("a %s whose argument is the word, or a name holding it, reads as the word", "packages/envoy/internal/planted/wordarg.go",
+     'package planted\n\nfunc w(t string) string {\n\treturn fmt.Sprintf("%d %s", len(t), "characters")\n}\n'
+     'func v(t string) string {\n\tword := "characters"\n\treturn fmt.Sprintf("the title is %d %s", len(t), word)\n}\n',
+     ["instance | len() counts", "instance | len() counts"]),
+    ("Python's format fields and % mapping keys are counts", "scripts/planted/format.py",
+     'import sys\nb = sys.stdin.buffer.read()\nprint("{} characters".format(len(b)))\n'
+     'print("{n} characters".format(n=len(b)))\nprint("%(n)d characters" % {"n": len(b)})\n',
+     ["instance | cannot judge: Python's len()"] * 3),
+    ("a Python f-string count is its value, and Python's len() is no code-point count", "scripts/planted/fstring.py",
+     'import sys\nb = sys.stdin.buffer.read()\nprint(f"{len(b)} characters")\n', ["instance | cannot judge: Python's len()"]),
+    ("an LC_ALL that is not UTF-8 sets no UTF-8 locale", "packages/envoy/scripts/planted-c.sh",
+     "#!/usr/bin/env bash\nexport LC_ALL=C\nname=$1\nprintf 'name: %d characters\\n' \"${#name}\"\n", ["instance"]),
+    ("a UTF-8 locale set after the count, or for one command, is not the count's",
+     "packages/envoy/scripts/planted-after.sh",
+     "#!/usr/bin/env bash\nLC_ALL=C.UTF-8 sort -o \"$2\" \"$2\"\nname=$1\nprintf 'name: %d characters\\n' \"${#name}\"\n"
+     "export LC_ALL=C.UTF-8\n", ["instance"]),
+    ("a grammar word in another clause of the sentence passes nothing", "packages/envoy/internal/planted/clause.go",
+     'package planted\n\nfunc c(id, s string) error {\n\tif s == "" {\n\t\treturn fmt.Errorf("issue %s, a uuid, has a body of %d characters", id, len(s))\n\t}\n'
+     '\treturn fmt.Errorf("ask %s (a hex id) holds %d characters", id, len(s))\n}\n',
+     ["instance | len() counts", "instance | len() counts"]),
+    ("unquoted shell words are read by the one grammar", "packages/envoy/scripts/planted-words.sh",
+     '#!/usr/bin/env bash\nn=$(printf %s "$1" | wc -c)\necho chars=$n\necho "$n" characters\necho "the title is $n" "characters"\n',
+     ["instance | wc -c counts", "instance | wc -c counts", "instance | wc -c counts"]),
+    ("JSX text is read by the one grammar", "packages/dispatch/web/src/planted/Text.tsx",
+     "export const C = ({ s }: { s: string }) => <p>chars={s.length}</p>;\n"
+     "export const A = ({ s }: { s: string }) => <p>at character {s.length}</p>;\n",
+     ["instance | .length counts", "instance | .length counts"]),
+    ("a cap named in the word is judged by its counter", "packages/envoy-client/src/cap.ts",
+     "const MAX = 8000;\nexport const f = (t: string) => {\n  if (t.length > MAX) {\n    return 'over the character cap';\n  }\n  return '';\n};\n",
+     ["instance | .length counts"]),
+    ("a cap named in the word in prose fires", "docs/planted/cap.md",
+     "A margin is bounded in bytes and not by that character limit.\n\nIt names the characters left for it.\n",
+     ["instance", "instance"]),
+    ("an exemption covers the message under it and no other", "packages/envoy/internal/planted/window.go",
+     'package planted\n\nfunc e(id, name string) error {\n'
+     '\t// characters: code points, validSessionID counts the id with utf8.RuneCountInString.\n'
+     '\tif !validSessionID(id) { return fmt.Errorf("an id is at most 64 characters") }\n'
+     '\treturn fmt.Errorf("a name is at most 40 characters, and this one is %d", name)\n}\n',
+     ["exempt, code points: validSessionID counts the id with utf8.RuneCountInString.", "instance | cannot judge"]),
+    ("an ASCII-alone exemption passes a counter the check followed, a code-points one does not",
+     "packages/envoy/internal/planted/ascii_exempt.go",
+     'package planted\n\nfunc a(id, name string) (error, error) {\n\t// characters: ASCII alone, an id is lowercase hex.\n'
+     '\tx := fmt.Errorf("id is %d characters", len(id))\n\t// characters: code points, the name is counted in runes.\n'
+     '\ty := fmt.Errorf("name is %d characters", len(name))\n\treturn x, y\n}\n',
+     ["exempt, ASCII alone: an id is lowercase hex.", "instance | len() counts"]),
+    ("a count a branch assigns again is judged by each value", "packages/envoy/internal/planted/branch.go",
+     'package planted\n\nfunc b(s string, raw bool) error {\n\tn := utf8.RuneCountInString(s)\n\tif raw {\n\t\tn = len(s)\n\t}\n'
+     '\treturn fmt.Errorf("the text is %d characters", n)\n}\n', ["instance | len() counts"]),
+    ("a Go template's value fires", "packages/envoy/internal/planted/tmpl.go",
+     'package planted\n\nvar T = template.Must(template.New("t").Parse("the title holds {{.N}} characters"))\n',
+     ["instance | cannot judge: a template"]),
+    ("a plural helper's count and a word held in a name are read", "packages/envoy-client/src/plurals.ts",
+     'const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;\n'
+     'export const f = (s: string) => `${plural(s.length, "character")} left`;\n'
+     'export const g = (t: string) => {\n  const word = t.length === 1 ? "character" : "characters";\n  return `${t.length} ${word} left`;\n};\n',
+     ["instance | .length counts", "instance | .length counts"]),
     ("an exempt site stays quiet, and fires once its comment or its reason is gone", None, None, None),
 ]
 
@@ -129,6 +223,7 @@ COUNTER_CASES = [
     ("ts", ".length", "name.length"),
     ("ts", "byteLength", "Buffer.byteLength(name)"),
     ("sh", "wc -c", "$(printf '%s' \"$name\" | wc -c)"),
+    ("ts", "TextEncoder", "new TextEncoder().encode(name).length"),
 ]
 
 
@@ -173,6 +268,9 @@ def control(name, path, content, want) -> str | None:
         "\t// characters: code points, the caller counts n with utf8.RuneCountInString\n": "exempt, code points",
         "": "instance",
         "\t// characters: code points\n": "instance",
+        # A reason is at least 10 characters: 9 pass nothing, 10 pass.
+        "\t// characters: code points, too short\n": "instance",
+        "\t// characters: code points, is counted\n": "exempt, code points",
     }
     for marker, want_verdict in readings.items():
         got = [hit.verdict for hit in scan(path, EXEMPT_SITE.replace("{marker}", marker))]
@@ -181,10 +279,51 @@ def control(name, path, content, want) -> str | None:
     return None
 
 
+# One planted path per rule of LEFT_OUT, written out apart from it, with the class it is left out
+# as, and paths the check must read: a rule added to LEFT_OUT has no case here, and one that
+# reaches a path it must read leaves that path out, so either fails.
+LEFT_OUT_CASES = [
+    (SELF, LEFT_OUT[0][1]),
+    ("packages/envoy/CHANGELOG.md", DATED[0]),
+    ("docs/plans/planted.md", DATED[0]),
+    ("docs/superpowers/planted.md", DATED[0]),
+    ("docs/research/planted.md", DATED[0]),
+    ("docs/solutions/planted.md", DATED[0]),
+    ("packages/daemon/cmd/legion/testdata/gh-help/planted.txt", FIXTURE[0]),
+    ("packages/daemon/cmd/legion/testdata/gh-help-walk/planted.txt", FIXTURE[0]),
+    ("scripts/planted.cast", FIXTURE[0]),
+    ("packages/envoy/internal/dispatch/pmdoc/heavybodies/testdata/planted.md", FIXTURE[0]),
+    ("scripts/approval-eval/fixtures/planted.md", FIXTURE[0]),
+]
+MUST_READ = [
+    "docs/site/src/content/docs/dispatch/planted.md", "docs/planted.md", "README.md", "packages/envoy/AGENTS.md",
+    "skills/planted/SKILL.md", "packages/daemon/cmd/legion/testdata/planted.txt", "packages/envoy/internal/dispatch/pmdoc/planted.md",
+    "scripts/planted.sh", ".github/scripts/character_counts_analysis.py", ".github/scripts/check-character-counts.sh",
+]
+
+
+def left_out_controls() -> list[str]:
+    """Each rule of LEFT_OUT has a case, each case is left out as its class, and each path of
+    MUST_READ is read."""
+    problems = []
+    for rule, kind, _ in LEFT_OUT:
+        if not any(rule.search(path) for path, _ in LEFT_OUT_CASES):
+            problems.append(f"the left-out rule {rule.pattern} has no case in LEFT_OUT_CASES")
+    for path, kind in LEFT_OUT_CASES:
+        found = classify(path, b"text")
+        if found is None or found[0] != kind:
+            problems.append(f"{path} is left out as {kind!r}: answered {found}")
+    for path in MUST_READ:
+        found = classify(path, b"text")
+        if found is not None:
+            problems.append(f"{path} is read: answered left out, {found}")
+    return problems
+
+
 def tree_controls() -> list[str]:
     """The files the check reads and leaves out, and UNKNOWN over an empty listing, through the
     same code as the scan."""
-    problems = []
+    problems = left_out_controls()
     planted = {
         ".github/workflows/planted.yaml": b"- run: echo \"$(printf '%s' \"$T\" | wc -c) characters\"\n",
         "packages/envoy/internal/planted/planted_test.go": b'package planted\n\nvar _ = fmt.Sprintf("%d characters", len(s))\n',
