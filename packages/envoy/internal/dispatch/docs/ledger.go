@@ -763,18 +763,25 @@ func recordPendingApproval(ctx context.Context, tx pgx.Tx, artifactID string, as
 }
 
 // recordPendingReview records review as the newest review of artifactID on the ledger ctx queues
-// tx's writes on: writeCarriedReview, its one caller, has queued the insert that writes it
-// (QueueReview), and a read of artifact_reviews before the write phase still answers the review
-// before this one. What a later carry makes of the entry's presence is on the field (reviews).
-func recordPendingReview(ctx context.Context, tx pgx.Tx, artifactID string, review model.ArtifactReview) {
+// tx's writes on, dated with the transaction's now() (Ledger.Now), the time its row will carry:
+// writeCarriedReview, its one caller, has queued the insert that writes it (QueueReview), and a
+// read of artifact_reviews before the write phase still answers the review before this one. What
+// a later carry makes of the entry's presence is on the field (reviews).
+func recordPendingReview(ctx context.Context, tx pgx.Tx, artifactID string, review model.ArtifactReview) error {
 	ledger := queueFor(ctx, tx)
 	if ledger == nil {
-		return
+		return nil
 	}
+	createdAt, err := ledger.Now(ctx)
+	if err != nil {
+		return err
+	}
+	review.CreatedAt = createdAt
 	if ledger.reviews == nil {
 		ledger.reviews = make(map[string]model.ArtifactReview)
 	}
 	ledger.reviews[artifactID] = review
+	return nil
 }
 
 // PendingReview is the review of artifactID this transaction has queued and not yet written

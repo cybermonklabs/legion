@@ -499,10 +499,16 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 	}
 	// The carry's own approval is this document's newest review from here on, and no read of the
 	// table sees it until the write phase runs, so the read of the newest review that the write
-	// advice makes later in this transaction (supersededApprovalAdvice) takes it off the ledger.
-	// The carry makes no such read itself: it runs at most once for a document in a transaction
-	// (refuseSecondCarry).
-	recordPendingReview(ctx, tx, artifactID, model.ArtifactReview{
+	// advice makes later in this transaction (supersededApprovalAdvice, the standing review a
+	// question's advice names) takes it off the ledger. The carry makes no such read itself: it
+	// runs at most once for a document in a transaction (refuseSecondCarry).
+	//
+	// The ledger's review is dated with tx's now() (recordPendingReview, Ledger.Now), and the row
+	// QueueReview inserts is dated by its column's default, now() (artifact_reviews.created_at,
+	// migration 0014_artifact_reviews). Postgres holds now() at the transaction's start for the
+	// whole transaction, and the insert runs in tx, so the two are one value: a reader before the
+	// write phase names the carry at the time the stored row carries.
+	return recordPendingReview(ctx, tx, artifactID, model.ArtifactReview{
 		ArtifactID: artifactID,
 		Version:    number,
 		State:      "approved",
@@ -511,7 +517,6 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 		Reason:     &reason,
 		AskID:      askID,
 	})
-	return nil
 }
 
 // restoresVersionText reports whether markdown, the text a new version of artifactID is written
