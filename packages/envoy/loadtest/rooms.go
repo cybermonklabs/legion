@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/pgsetting"
 )
 
 // roomConnectionsQuery counts, in one read, the backends of database dispatch that hold rooms'
@@ -73,12 +75,16 @@ func (s *roomSampler) loop(ctx context.Context, url string, from, to time.Time, 
 // connectAs opens a direct connection over url under application name name. loadgen's own
 // connections take a name starting loadgen-, which roomConnectionsQuery leaves out.
 func connectAs(ctx context.Context, url, name string) (*pgx.Conn, error) {
-	config, err := pgx.ParseConfig(url)
+	config, err := pgsetting.ParseConfig("-pg", url)
 	if err != nil {
 		return nil, err
 	}
 	config.RuntimeParams["application_name"] = name
-	return pgx.ConnectConfig(ctx, config)
+	conn, err := pgx.ConnectConfig(ctx, config)
+	if err != nil {
+		return nil, pgsetting.ConnectFailure(err)
+	}
+	return conn, nil
 }
 
 // dispatchRooms is the part of Dispatch's dispatch_rooms variable (/debug/vars) the tables use:
@@ -138,7 +144,7 @@ func readWindow(ctx context.Context, ep endpoints) windowReading {
 	}
 	pgCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	conn, err := pgx.Connect(pgCtx, ep.pg)
+	conn, err := connectPG(pgCtx, ep.pg)
 	if err != nil {
 		r.versionsErr = err.Error()
 		return r

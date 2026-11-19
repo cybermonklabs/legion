@@ -42,6 +42,29 @@ async function run(
   };
 }
 
+// --url may carry a user and a password: one that is no http or https URL with a host is a usage
+// error naming its length and the cause the one function found. The run names its one sign-in
+// flag, so that the URL is what it is refused for. The password is made for this run.
+test("a --url that is no http or https URL with a host is a usage error naming its length and cause", async () => {
+  const password = crypto.randomUUID();
+  const said: { code: number; holds: boolean; named: boolean }[] = [];
+  const values = [
+    `made-up-user:${password}@127.0.0.1:1`,
+    `ftp://made-up-user:${password}@host.example`,
+  ];
+  for (const url of values) {
+    const { code, stderr } = await run("--url", url, "--user", "alice@example.com");
+    said.push({
+      code,
+      holds: stderr.includes(password),
+      named: stderr.includes(
+        `--url must be Dispatch's http or https address: its value is ${url.length} characters long`
+      ),
+    });
+  }
+  expect(said).toEqual(values.map(() => ({ code: 2, holds: false, named: true })));
+});
+
 test("the live event probe resumes after rotation and stops once an event matches", async () => {
   const upgrades: string[] = [];
   const subscriptions: unknown[] = [];

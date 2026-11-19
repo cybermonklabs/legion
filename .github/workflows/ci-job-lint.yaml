@@ -179,6 +179,17 @@ jobs:
       - name: Check every Bun gate's filter selects the files its typecheck compiles
         run: .github/scripts/check-ts-filters.sh
 
+      # An opener of a Postgres connection string can be added in any Go module or TypeScript file,
+      # so the search for them reads the whole tree and runs here, on every change, after the
+      # install that gives it the TypeScript parser. Its Go half builds export data for pgx and
+      # pgsetting alone (every other package outside a module is read as an empty one), so it
+      # downloads those modules and builds no other dependency.
+      - name: Test that the opener search says UNKNOWN when it lists nothing
+        run: bun test scripts/checks/db-openers.test.ts
+
+      - name: Check every opener of a Postgres connection string reads it through pgsetting or is judged
+        run: bun scripts/checks/db-openers.ts
+
       # The notices step below builds go-licenses and loads every release binary's modules. It
       # keeps them in a cache family of its own, go-notices: one entry, read on every run, so never
       # evicted, and refreshed only when Go is bumped. Keyed on the go.sum files it would leave a

@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // testAzureKey is the API key azureEmbedEnvironment sets, which no log line or refusal may carry.
@@ -99,16 +100,18 @@ func TestResolveBootConfigRefusesEveryEmbedderShapeItCannotUse(t *testing.T) {
 			[]string{"DISPATCH_AZURE_EMBED_ENDPOINT is required when DISPATCH_EMBEDDER is azure"}},
 		{"a plain-http endpoint", endpoint("http://embed.example/models"),
 			[]string{`DISPATCH_AZURE_EMBED_ENDPOINT="http://embed.example/models" ` + endpointShape}},
+		// A value redact.URL cannot prove clean is named as redact.NotPrinted: it may carry a user
+		// part (a relative value's user:password@host reads as no user at all).
 		{"a relative endpoint", endpoint("embed.example/models"),
-			[]string{`DISPATCH_AZURE_EMBED_ENDPOINT="embed.example/models" ` + endpointShape}},
+			[]string{`DISPATCH_AZURE_EMBED_ENDPOINT="` + redact.NotPrinted + `" ` + endpointShape}},
 		{"an endpoint with no host", endpoint("https:///models"),
-			[]string{`DISPATCH_AZURE_EMBED_ENDPOINT="https:///models" ` + endpointShape}},
+			[]string{`DISPATCH_AZURE_EMBED_ENDPOINT="` + redact.NotPrinted + `" ` + endpointShape}},
 		{"an endpoint with a query", endpoint("https://embed.example/models?api-version=2024-05-01-preview"),
 			[]string{"DISPATCH_AZURE_EMBED_ENDPOINT=", endpointShape}},
 		{"an endpoint with an empty query", endpoint("https://embed.example/models?"),
-			[]string{`DISPATCH_AZURE_EMBED_ENDPOINT="https://embed.example/models?" ` + endpointShape}},
+			[]string{`DISPATCH_AZURE_EMBED_ENDPOINT="` + redact.NotPrinted + `" ` + endpointShape}},
 		{"an endpoint with a fragment", endpoint("https://embed.example/models#embeddings"),
-			[]string{`DISPATCH_AZURE_EMBED_ENDPOINT="https://embed.example/models#embeddings" ` + endpointShape}},
+			[]string{`DISPATCH_AZURE_EMBED_ENDPOINT="` + redact.NotPrinted + `" ` + endpointShape}},
 		{"azure without a quota", quota(""),
 			[]string{"DISPATCH_AZURE_EMBED_TOKENS_PER_MINUTE is required when DISPATCH_EMBEDDER is azure"}},
 		{"a zero quota", quota("0"), []string{`DISPATCH_AZURE_EMBED_TOKENS_PER_MINUTE="0" ` + quotaShape}},

@@ -31,8 +31,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 )
 
 // --- sending ---------------------------------------------------------------------------------------
@@ -227,7 +225,7 @@ func (st *step) prepareReplay(ctx context.Context, a *api) error {
 	rr := &replayRun{setup: rs, futures: map[replayRef]*replayFuture{}, pid: st.cfg.ep.pids["dispatch"], pprof: st.cfg.ep.pprof, pg: st.cfg.ep.pg,
 		out: st.cfg.out, lg: st.lg, writes: map[string]*replayWriteCount{}, skipped: map[string]int{}, endRead: make(chan struct{}),
 		wrote: map[string]bool{}}
-	conn, err := pgx.Connect(ctx, st.cfg.ep.pg)
+	conn, err := connectPG(ctx, st.cfg.ep.pg)
 	if err != nil {
 		return fmt.Errorf("replay: postgres: %w", err)
 	}

@@ -2,6 +2,13 @@ import { afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
+import {
+  REDIRECT_CODES,
+  type RedirectServers,
+  redirectCase,
+  redirectServers,
+  UNNAMED_TARGETS,
+} from "@legion/test-fixtures/redirect-servers";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type * as seedModule from "./seed";
 
@@ -1126,3 +1133,184 @@ describe("tester-proof", () => {
     ]);
   });
 });
+
+/** The scratch Dispatch of a seed mode as `bun seed.ts <mode>` meets it: the first of the two
+ * servers answers what each mode asks before the call it is refused at (the person's dev sign-in,
+ * the issue spec-rewrite files, the spec's one ask block, the handoff implement-handoff records),
+ * and redirects the one route `redirect` names; the other answers each call as a success. */
+function seedRedirects(): { servers: RedirectServers; redirect: (route: string) => void } {
+  let redirected = "";
+  const servers = redirectServers({
+    redirects: (pathname) => pathname === redirected,
+    direct: (request) => {
+      const { pathname } = new URL(request.url);
+      if (pathname === "/auth/_dev/signin") {
+        return new Response(null, {
+          status: 302,
+          headers: { Location: "/", "Set-Cookie": "dsession=2.made-up.0.0.made-up-mac; Path=/" },
+        });
+      }
+      if (pathname === "/api/v1/issues") {
+        return Response.json({ key: "ACME-1", primary_artifact_id: "art-1" }, { status: 201 });
+      }
+      if (pathname === "/api/v1/artifacts/art-1/blocks") {
+        return Response.json([{ id: "b1", type: "ask" }]);
+      }
+      if (request.method === "GET") return Response.json([]);
+      return Response.json({ id: "h1", version: 1 }, { status: 201 });
+    },
+    atElsewhere: (request) =>
+      request.method === "GET" ? Response.json([]) : Response.json({}, { status: 201 }),
+  });
+  return {
+    servers,
+    redirect: (route) => {
+      redirected = route;
+    },
+  };
+}
+
+/** The modes the rows run, each with its arguments in `dir`. */
+type SeedMode = "spec-rewrite" | "capture-handoffs" | "implement-handoff";
+
+/** A directory holding what each mode reads (the fixture, an implement handoff whose body holds a
+ * made-up key, a spec source), and a run of `bun seed.ts <mode>` against `servers`, as rig.sh's
+ * seed_ts runs it, with DISPATCH_E2E_PORT naming the server, since e2e/api.ts reads that port when
+ * it loads: its exit, and the message of the error it died of as Bun prints it (the whole stderr
+ * when it printed none). */
+function seedRuns(
+  servers: RedirectServers,
+  name: string
+): (mode: SeedMode) => Promise<{ exit: number; died: string }> {
+  const dir = freshDir(name);
+  const file = path.join(dir, "fixture.json");
+  writeFileSync(
+    path.join(dir, "implement.json"),
+    JSON.stringify({ phase: "implement", key: "made-up-handoff-key" })
+  );
+  const source = path.join(dir, "source");
+  mkdirSync(source);
+  writeFileSync(path.join(source, "title.txt"), "A made-up title\n");
+  writeFileSync(path.join(source, "messages.md"), "");
+  writeFileSync(path.join(source, "asks.json"), "[]");
+  writeFileSync(path.join(source, "old-spec.md"), "## Problem\n\nA made-up spec.\n");
+  const args: Record<SeedMode, string[]> = {
+    "spec-rewrite": ["spec-rewrite", file, source],
+    "capture-handoffs": ["capture-handoffs", file, dir],
+    "implement-handoff": [
+      "implement-handoff",
+      file,
+      path.join(dir, "implement.json"),
+      "1".repeat(40),
+    ],
+  };
+  return async (mode) => {
+    writeFileSync(file, JSON.stringify({ issue: "ACME-1" }));
+    const child = Bun.spawn(["bun", path.join(import.meta.dir, "seed.ts"), ...args[mode]], {
+      cwd: dir,
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: dir,
+        DISPATCH_E2E_PORT: new URL(servers.origin).port,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exit, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    const line = stderr.split("\n").find((one) => one.startsWith("error: "));
+    return { exit, died: line === undefined ? stderr : line.slice("error: ".length) };
+  };
+}
+
+/** The words a refusal ends with, by the client that refused: seed.ts's own requests, and
+ * e2e/api.ts's, which seed.ts calls for the rest. */
+const SEED =
+  "seed.ts follows no redirect, since it carries the agent bearer: DISPATCH_E2E_PORT must name the port of rig.sh's scratch Dispatch itself";
+const E2E =
+  "the e2e client follows no redirect, since it carries the agent bearer: PLAYWRIGHT_BASE_URL, or DISPATCH_E2E_PORT where it is unset, must name Dispatch's own address";
+
+/** Each call of the three modes that carries the agent bearer, in the order a mode makes it, with
+ * the client that sends it. spec-rewrite reads the spec's blocks and then the issue's asks
+ * (specBlockAsks); capture-handoffs reads the issue's handoffs; implement-handoff writes the
+ * handoff, whose body holds the made-up key, and then the check's result. */
+const SEED_CALLS = [
+  ["spec-rewrite", "GET", "/api/v1/artifacts/art-1/blocks", SEED],
+  ["spec-rewrite", "GET", "/api/v1/issues/ACME-1/asks", E2E],
+  ["capture-handoffs", "GET", "/api/v1/issues/ACME-1/handoffs", SEED],
+  ["implement-handoff", "POST", "/api/v1/issues/ACME-1/handoffs/implement", E2E],
+  ["implement-handoff", "POST", "/api/v1/issues/ACME-1/results", SEED],
+] as const;
+
+// fetch drops `Authorization` on a redirect to another origin, so the agent bearer stays behind,
+// but it sends a 307's or 308's body on, and a seed that follows takes the other origin's answer as
+// the scratch Dispatch's. No request of the agent bearer follows a redirect: the 3xx is the answer,
+// and the mode fails naming it. Each call meets the redirect in turn, the calls before it answered;
+// one case for each code, so a seed that follows again fails at each. The 60 s limit is a hang
+// guard over five `bun seed.ts` runs.
+for (const code of REDIRECT_CODES) {
+  test(redirectCase(code), async () => {
+    const { servers, redirect } = seedRedirects();
+    servers.code = code;
+    const run = seedRuns(servers, `redirected-${code}`);
+    try {
+      for (const [mode, method, route, client] of SEED_CALLS) {
+        redirect(route);
+        const outcome = await run(mode);
+        expect(servers.received, `the other origin after a ${code} of ${route}`).toEqual([]);
+        expect(outcome).toEqual({
+          exit: 1,
+          died: `${method} ${route} failed: ${code}, redirecting to ${servers.elsewhere}, and ${client}`,
+        });
+      }
+    } finally {
+      servers.stop();
+    }
+  }, 60_000);
+}
+
+// A seed that read a redirect's body before its status would wait on a body that never ends, and
+// refuse nothing; the test's limit is that wait's bound. Each client of the seed meets it.
+test("a redirect whose body never ends is refused naming its status, before any of its body is read", async () => {
+  const { servers, redirect } = seedRedirects();
+  servers.endlessBody = true;
+  const run = seedRuns(servers, "redirected-endless");
+  try {
+    for (const [mode, method, route, client] of [SEED_CALLS[3], SEED_CALLS[4]]) {
+      redirect(route);
+      expect(await run(mode)).toEqual({
+        exit: 1,
+        died: `${method} ${route} failed: 307, redirecting to ${servers.elsewhere}, and ${client}`,
+      });
+    }
+  } finally {
+    servers.stop();
+  }
+}, 20_000);
+
+// A redirect within the scratch Dispatch's own address names no address the seed lacks, and the
+// seed builds each route's path itself, so its refusal says what to check. One that names nowhere
+// is not named as the address the seed already has, and a host longer than any host name is never
+// printed.
+test("a redirect to another path of the same address, to no target, or to an overlong host is refused saying so", async () => {
+  const { servers, redirect } = seedRedirects();
+  const run = seedRuns(servers, "redirected-unnamed");
+  try {
+    const [mode, method, route] = SEED_CALLS[4];
+    redirect(route);
+    const said: string[] = [];
+    for (const { location } of UNNAMED_TARGETS) {
+      servers.location = location;
+      said.push((await run(mode)).died);
+    }
+    const ownPath =
+      "seed.ts follows no redirect, since it carries the agent bearer: the client builds that path itself, so the server at that address, or a proxy in front of it, chose the other one: check what answers there";
+    expect(said).toEqual(
+      UNNAMED_TARGETS.map(
+        ({ where, sameAddress }) =>
+          `${method} ${route} failed: 307, ${where}, and ${sameAddress ? ownPath : SEED}`
+      )
+    );
+  } finally {
+    servers.stop();
+  }
+}, 60_000);

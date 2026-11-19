@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import * as path from "node:path";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 import type { SyncSubprocess } from "bun";
 import { z } from "zod";
 import { hasErrnoCode, messageFor } from "./errors";
@@ -134,10 +135,18 @@ export function envoyConfigPath(harness: EnvoyHarness, env: EnvoyConfigEnvironme
   return neutral.path;
 }
 
-const httpUrlSchema = z.url({ protocol: /^https?$/, error: "must be an http or https URL" });
+// An http or https URL, as the Dispatch server's own reading of the file takes it and with its
+// words, and one that `shownSettingUrl` shows: a value that still holds a raw `@` once the user
+// part the URL parser found is taken out (a token with a `/` in it reads as a host taken from the
+// token) is refused too, named by its length and what to correct, so no request goes to that host.
+const httpUrlSchema = z
+  .url({ protocol: /^https?$/, error: "must be an http or https URL" })
+  .refine((value) => shownSettingUrl(value) !== undefined, {
+    error: (issue) => `must be an http or https URL: ${unshownSettingUrl(String(issue.input))}`,
+  });
 
 // Strict per section, http(s) addresses, tolerant top level. The Dispatch server reads the same
-// file and follows these validation rules.
+// file and follows these validation rules, but for that refusal of a raw `@`.
 const DispatchSectionSchema = z.strictObject({
   enabled: z.boolean().optional(),
   serverUrl: httpUrlSchema.optional(),
@@ -248,15 +257,11 @@ export function offWithError(error: string): SectionOff {
   return { enabled: false, notice: null, error };
 }
 
-/** `value` as an http or https URL, or undefined for anything else. */
+/** `value` as an http or https URL that `shownSettingUrl` shows, or undefined for anything else:
+ * a value that still holds a raw `@` once its user part is taken out can name a host taken from a
+ * token, so no request goes to it. */
 export function httpUrl(value: string): URL | undefined {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    return undefined;
-  }
-  return url.protocol === "http:" || url.protocol === "https:" ? url : undefined;
+  return shownSettingUrl(value) === undefined ? undefined : new URL(value);
 }
 
 type ParsedFile<Settings> =

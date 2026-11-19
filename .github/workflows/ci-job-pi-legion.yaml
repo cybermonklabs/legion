@@ -111,6 +111,16 @@ jobs:
         working-directory: packages/pi-legion
         env:
           LEGION_TEST_NATS_URL: nats://127.0.0.1:4222
+      # The redirect check: the test row beside each client of its list, in five packages, each run
+      # alone and read from its JUnit report, one case for each redirect status; it fails on a case
+      # that fails or did not run, on a listed client with no such row, on a list that is not as
+      # long as the count beside it, and says UNKNOWN for a list that names no client. Each
+      # package's job also runs its own rows in its whole suite. This job holds the step because its
+      # filter already selects every file the rows read.
+      - name: Test that the redirect check refuses a list of sites it cannot count
+        run: bun test scripts/checks/redirect-refusals.test.ts
+      - name: Check that no request carrying a credential follows a redirect
+        run: bun scripts/checks/redirect-refusals.ts
       # The release's pack (release.yaml's pi_legion_build job), which is also this job's build: the
       # manifest pointed at the one bundle, then scripts/pi-plugin-prepack.sh, which bundles
       # legion.ts, writes dist/THIRD_PARTY_NOTICES (failing the pack on a bundled package whose

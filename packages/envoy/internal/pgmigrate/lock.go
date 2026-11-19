@@ -11,6 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/pgsetting"
 )
 
 // LockTimeout bounds every lock wait of every migration a runner applies. A migration's
@@ -315,13 +317,13 @@ func Exec(ctx context.Context, tx pgx.Tx, migration Migration, signIn func(conte
 	return nil
 }
 
-// execWatched executes on the connection's current transaction, explicit or implicit. Both
-// execution modes set their lock bound before starting the same diagnostic watch.
-func execWatched(ctx context.Context, conn *pgx.Conn, migration Migration, signIn func(context.Context, *pgx.ConnConfig) error) error {
-	// The watch's own copy of the configuration (pgx.Conn.Config), which signIn may give a fresh
-	// password before each dial.
-	config := conn.Config()
-	dial := func(ctx context.Context) (*pgx.Conn, error) {
+// watchDialer is the lock watch's dial: a connection of config, signed in by signIn first when
+// there is one (it may give config a fresh password before each dial). config is the migrated
+// connection's, whose user may be a token written where the user stands, and pgx names the user
+// and the database in front of what failed, so a failed connect is named without them
+// (pgsetting.ConnectFailure).
+func watchDialer(config *pgx.ConnConfig, signIn func(context.Context, *pgx.ConnConfig) error) func(context.Context) (*pgx.Conn, error) {
+	return func(ctx context.Context) (*pgx.Conn, error) {
 		if signIn != nil {
 			if err := signIn(ctx, config); err != nil {
 				return nil, fmt.Errorf("sign the lock watch in: %w", err)
@@ -329,10 +331,17 @@ func execWatched(ctx context.Context, conn *pgx.Conn, migration Migration, signI
 		}
 		dialed, err := pgx.ConnectConfig(ctx, config)
 		if err != nil {
-			return nil, fmt.Errorf("connect the lock watch: %w", err)
+			return nil, fmt.Errorf("connect the lock watch: %w", pgsetting.ConnectFailure(err))
 		}
 		return dialed, nil
 	}
+}
+
+// execWatched executes on the connection's current transaction, explicit or implicit. Both
+// execution modes set their lock bound before starting the same diagnostic watch.
+func execWatched(ctx context.Context, conn *pgx.Conn, migration Migration, signIn func(context.Context, *pgx.ConnConfig) error) error {
+	// The watch dials with its own copy of the configuration (pgx.Conn.Config).
+	dial := watchDialer(conn.Config(), signIn)
 	watch := startWatch(ctx, dial, conn.PgConn().PID())
 	var err error
 	if migration.NonTransactional {

@@ -99,7 +99,8 @@ import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/cont
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { credentialDeadline, type RequestCredential } from "./bearer";
 import { reachedNothing } from "./errors";
-import { bodyForText, excerpt, redirectOrigin, SentTokens } from "./excerpt";
+import { bodyForText, excerpt, SentTokens } from "./excerpt";
+import { redirectedTo, redirectTarget } from "./redirect";
 import { type WriteEvent, type WriteState, writeStep } from "./write-outcome";
 
 /** What names the Dispatch URL in a text where the URL does not parse (`urlForText`,
@@ -2811,11 +2812,15 @@ export class DispatchClient {
     const body = bodyForText(text, tokens, notWhat);
     const reasonPhrase = excerpt(response.statusText, tokens);
     const reason = reasonPhrase === "" ? "" : ` ${reasonPhrase}`;
-    // A redirect is never followed (`#fetch`), so its error names where it pointed: the origin
-    // alone, which is what tells a Dispatch URL to correct from one that something answers for.
-    const target = redirectOrigin(response, url, tokens);
+    // A redirect is never followed (`#fetch`), so its error names where it pointed as every client
+    // that refuses a redirect names it (`redirectTarget`, `redirectedTo`): another origin alone,
+    // which is what tells a Dispatch URL to correct from one that something answers for, through
+    // `excerpt` so no token this client presented is printed.
+    const target = redirectTarget(response, url);
     const redirected =
-      target === undefined ? "" : ` (a redirect to ${target}, which this client does not follow)`;
+      target === undefined
+        ? ""
+        : ` (${excerpt(redirectedTo(target), tokens)}, which this client does not follow)`;
     const request = `${method} ${requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)}`;
     return new DispatchGatewayError(
       response.status,

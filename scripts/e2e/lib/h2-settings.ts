@@ -15,6 +15,8 @@
 import http2 from "node:http2";
 import { isIP } from "node:net";
 import tls from "node:tls";
+import { urlForText } from "../../../packages/contracts/src/log-text";
+import { shownSettingUrl, unshownSettingUrl } from "../../../packages/contracts/src/setting-url";
 
 const USAGE = "usage: bun scripts/e2e/lib/h2-settings.ts <https-url>";
 /** How long the TLS handshake and the server's first SETTINGS may take together. */
@@ -34,21 +36,24 @@ function fail(message: string, code: number): never {
   process.exit(code);
 }
 
-/** The https URL the one argument names, or a usage error. */
+/** The https URL the one argument names, or a usage error. The URL may carry a user and a
+ *  password, which a TLS probe never sends: every line names it as `urlForText` does, and a value
+ *  that `shownSettingUrl` does not read by its length and what to correct (`unshownSettingUrl`). */
 function target(argv: readonly string[]): URL {
   const [raw, ...extra] = argv;
   if (raw === undefined || extra.length > 0) fail(USAGE, 2);
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    fail(`not a URL: ${raw}\n${USAGE}`, 2);
+  if (shownSettingUrl(raw) === undefined) {
+    fail(`not an https URL: ${unshownSettingUrl(raw)}\n${USAGE}`, 2);
   }
-  if (parsed.protocol !== "https:") fail(`not an https URL: ${raw}\n${USAGE}`, 2);
+  const parsed = new URL(raw);
+  if (parsed.protocol !== "https:")
+    fail(`not an https URL: ${urlForText(raw, "the URL")}\n${USAGE}`, 2);
   return parsed;
 }
 
 const url = target(process.argv.slice(2));
+// The answer's URL as a line names it (`urlForText`): whole where it is plain, by its phrase otherwise.
+const shownUrl = urlForText(url.href, "the URL");
 const host = url.hostname.replace(/^\[(.*)\]$/u, "$1");
 
 const deadline = setTimeout(
@@ -68,7 +73,7 @@ socket.once("secureConnect", () => {
   const alpn = socket.alpnProtocol ?? false;
   if (alpn !== "h2") {
     socket.destroy();
-    answer.resolve({ alpn, settings: null, url: url.href });
+    answer.resolve({ alpn, settings: null, url: shownUrl });
     return;
   }
   // The session takes over the socket the handshake chose h2 on.
@@ -76,7 +81,7 @@ socket.once("secureConnect", () => {
   session.once("error", (error) => fail(`${url.origin}: ${error.message}`, 2));
   session.once("remoteSettings", (settings) => {
     session.close();
-    answer.resolve({ alpn, settings, url: url.href });
+    answer.resolve({ alpn, settings, url: shownUrl });
   });
 });
 

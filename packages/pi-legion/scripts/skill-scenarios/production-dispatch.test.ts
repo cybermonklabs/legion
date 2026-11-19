@@ -3,6 +3,13 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { bearerCredential } from "@legion/envoy-client/bearer";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import {
+  REDIRECT_CODES,
+  type RedirectServers,
+  redirectCase,
+  redirectServers,
+  UNNAMED_TARGETS,
+} from "@legion/test-fixtures/redirect-servers";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import {
   checkoutAbove,
@@ -255,4 +262,84 @@ test("a read hands the credential its share of the deadline its request runs on"
   expect(given[0], "the read handed its credential no deadline").toBeInstanceOf(AbortSignal);
   expect(sent[0]?.init.signal, "the request ran on no deadline").toBeInstanceOf(AbortSignal);
   expect(sent[0]?.init.signal).not.toBe(given[0]);
+});
+
+/** The issues read from the first of `servers`, with a made-up broker credential: what it refused
+ * with, or undefined when it answered. */
+async function readRefusal(servers: RedirectServers): Promise<unknown> {
+  const broker = {
+    scheme: "DPoP" as const,
+    headers: () => ({ Authorization: "DPoP made-up-access-token", DPoP: "made-up-dpop-proof" }),
+    stale: () => {},
+    secret: () => "made-up-access-token",
+  };
+  const dispatch = new ProductionDispatch(
+    { url: servers.origin, credential: broker },
+    (url, init) => fetch(url, init),
+    noSleep
+  );
+  return await dispatch.issues().then(
+    () => undefined,
+    (error: unknown) => error
+  );
+}
+
+const FIX =
+  "set the Dispatch URL (DISPATCH_URL, or envoy.json's dispatch.serverUrl) to Dispatch's own address";
+
+// fetch would send a broker credential's DPoP proof on to the origin a redirect names (it drops
+// `Authorization` alone), so a read follows no redirect: the 3xx is the answer, a refusal naming
+// it, and the read is not tried again. One case for each code, so a read that follows again fails
+// at each.
+for (const code of REDIRECT_CODES) {
+  test(redirectCase(code), async () => {
+    const servers = redirectServers({ atElsewhere: () => json([]) });
+    servers.code = code;
+    try {
+      const refusal = await readRefusal(servers);
+      expect(servers.received, `the other origin after a ${code}`).toEqual([]);
+      expect(refusal, `the read after a ${code}`).toBeInstanceOf(Error);
+      expect((refusal as Error).message).toBe(
+        `GET /api/v1/issues answered ${code}, redirecting to ${servers.elsewhere}, and a read follows no redirect, since it carries the Dispatch credential: ${FIX}`
+      );
+    } finally {
+      servers.stop();
+    }
+  });
+}
+
+// A read that read a redirect's body before its status would wait on a body that never ends, and
+// refuse nothing; the test's limit is that wait's bound.
+test("a redirect whose body never ends is refused naming its status, before any of its body is read", async () => {
+  const servers = redirectServers({ atElsewhere: () => json([]) });
+  servers.endlessBody = true;
+  try {
+    expect(((await readRefusal(servers)) as Error).message).toBe(
+      `GET /api/v1/issues answered 307, redirecting to ${servers.elsewhere}, and a read follows no redirect, since it carries the Dispatch credential: ${FIX}`
+    );
+  } finally {
+    servers.stop();
+  }
+}, 10_000);
+
+// A redirect within Dispatch's own address says to correct the path of the Dispatch URL, which the
+// read puts before each route; one that names nowhere is not named as Dispatch's own address; a
+// host longer than any host name is never printed.
+test("a redirect to another path of the same address, to no target, or to an overlong host is refused saying so", async () => {
+  const servers = redirectServers({ atElsewhere: () => json([]) });
+  try {
+    const said: string[] = [];
+    for (const { location } of UNNAMED_TARGETS) {
+      servers.location = location;
+      said.push(((await readRefusal(servers)) as Error).message);
+    }
+    expect(said).toEqual(
+      UNNAMED_TARGETS.map(
+        ({ where, sameAddress }) =>
+          `GET /api/v1/issues answered 307, ${where}, and a read follows no redirect, since it carries the Dispatch credential: ${sameAddress ? `correct the path of the Dispatch URL (DISPATCH_URL, or envoy.json's dispatch.serverUrl); a missing or an extra "/" is the usual cause` : FIX}`
+      )
+    );
+  } finally {
+    servers.stop();
+  }
 });

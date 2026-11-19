@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/pgsetting"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -88,10 +89,16 @@ func Connect(ctx context.Context, dsnFile string) (*pgx.Conn, error) {
 	return ConnectURL(ctx, dsn)
 }
 
-// ConnectURL opens the session database at dsn, a URL ReadDSN read. A refusal names the
-// database's address, never the URL's password (store.ConnectError).
+// ConnectURL opens the session database at dsn, a URL ReadDSN read. It reads dsn through
+// pgsetting: a URL whose user part pgx and net/url read apart, or that pgx cannot parse, is
+// refused by its length and cause, and a failed connect names the database's address and no part
+// of the user part (store.ConnectError).
 func ConnectURL(ctx context.Context, dsn string) (*pgx.Conn, error) {
-	conn, err := pgx.Connect(ctx, dsn)
+	config, err := pgsetting.ParseConfig("the session database URL "+DSNFileVariable+" names", dsn)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := pgx.ConnectConfig(ctx, config)
 	if err != nil {
 		return nil, store.ConnectError(dsn, err)
 	}

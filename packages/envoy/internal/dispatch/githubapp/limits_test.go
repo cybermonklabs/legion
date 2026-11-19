@@ -353,15 +353,16 @@ func TestEveryRateLimitARequestMeetsIsNotedOnItsAttempt(t *testing.T) {
 	// answeredAt200 is the cause noted for a limit GitHub answers a query with at 200 and body:
 	// the limit's own text with wording, GitHub's own words for the limit, in place of the body.
 	// The caller is given the limit with that wording and an empty Body, worded as RateLimitError
-	// words it, and never the body.
+	// words it, and never the body. The cause names the request by its path after the API base
+	// (Client.shownTarget), since the base may carry a user and a password.
 	answeredAt200 := func(body, wording string) func(*limitGitHub, error) string {
-		return func(fake *limitGitHub, err error) string {
+		return func(_ *limitGitHub, err error) string {
 			limited, ok := AsRateLimit(err)
 			if !ok || limited.Held || limited.Status != http.StatusOK || limited.Body != "" || limited.wording != wording ||
 				err.Error() != fmt.Sprintf("rate-limited by GitHub (status 200), next request in %s: %s", limited.Wait, wording) {
 				return fmt.Sprintf("(want GitHub's own 200 as a limit carrying GitHub's wording %q of it in place of its body %s, got %v)", wording, body, err)
 			}
-			return fmt.Sprintf("POST %s/graphql: rate-limited by GitHub (status 200), next request in %s: %s", fake.server.URL, limited.Wait, wording)
+			return fmt.Sprintf("POST /graphql: rate-limited by GitHub (status 200), next request in %s: %s", limited.Wait, wording)
 		}
 	}
 	cases := []struct {
@@ -439,11 +440,11 @@ func TestEveryRateLimitARequestMeetsIsNotedOnItsAttempt(t *testing.T) {
 		},
 		request: query,
 		sent:    true,
-		cause: func(fake *limitGitHub, err error) string {
+		cause: func(_ *limitGitHub, err error) string {
 			if limited, ok := AsRateLimit(err); !ok || limited.Held || limited.Scope != InstallationScope(7) || limited.Wait <= time.Second {
 				return fmt.Sprintf("(want GitHub's 403 as a secondary limit struck under %s past GitHub's own second, got %v)", InstallationScope(7), err)
 			}
-			return "POST " + fake.server.URL + "/graphql: " + err.Error()
+			return "POST /graphql: " + err.Error()
 		},
 	}, {
 		name:    "a query GitHub answers",

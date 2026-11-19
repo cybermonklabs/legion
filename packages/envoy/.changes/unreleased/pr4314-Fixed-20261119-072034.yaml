@@ -1,0 +1,45 @@
+kind: Fixed
+body: |-
+  Every program of the module that opens a Postgres connection string reads it through
+  `pgsetting`: the Dispatch server's boot, `store.Open`, the census, the dev sign-in fence, the
+  secrets broker's store and its RDS IAM check, and the load tools' `-pg`. A value with a raw `@`
+  after its first `@`, whose user part pgx and Go's URL parser read apart, or one pgx cannot parse,
+  is refused by its length and the cause, with the words to write that `@` as `%40`, and a failed
+  connect names no user and no database.
+
+  The Dispatch server names each setting that can be a URL through `redact.URL`, which prints
+  nothing of a value that holds an `@`: `ENVOY_URL`, `DISPATCH_GITHUB_API_BASE`,
+  `DISPATCH_OIDC_ISSUER`, `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SERVER_URL`, the Azure endpoints and
+  the dev sign-in dashboard origin. `ENVOY_URL` and `DISPATCH_AGENT_SECRETS_URL` are refused at
+  boot by their length when net/url reads their user part apart, and the bus refuses such a NATS
+  URL before any connect. An HTTP call to such a setting names a failure by its class alone where
+  the URL does not print whole (`redact.RequestError`).
+
+  A Postgres connection string that holds `://` but that pgx would read as keyword=value text (a
+  scheme not in lower case, such as `POSTGRES://`, or white space around the URL) is refused by its
+  length at every boot and opener (`pgsetting`), with words that say to write the scheme in lower
+  case with no space around the value: pgx would send the URL up to its first `=`, the password
+  among it, to the server as the name of a setting.
+
+  `DISPATCH_IAP_AUDIENCE` takes only letters, digits, `.`, `_`, `-` and `/` after
+  `/projects/<project number>/`, so a URL with a user part written there is refused by its length
+  and never reaches the boot line that logs the audience.
+
+  loadgen refuses by its length an endpoint (`-url`, `-listener`, `-nats`, `-nats-mon`, `-pprof`,
+  or a `-loop-listeners` endpoint) whose user part net/url reads apart, such as a token with a raw
+  `/` written as the whole user part, and records such a value redacted; `cloudsql-cpu` refuses an
+  `-api` or `-token-url` that holds a user part.
+
+  The cause `GET /healthz` names for a failed GitHub read names the request by its path after
+  `DISPATCH_GITHUB_API_BASE`, never the base, which may carry a user and a password, and so does
+  every error of the GitHub App client, a blob read's included.
+
+  The broker refuses by its length a `BROKER_NATS_URLS` entry whose user part net/url reads apart,
+  such as a token with a raw `/` written as the whole user part, which its start line and the NATS
+  auth service's connect error would print whole.
+
+  `gcp:Dispatch` and `gcp:ClusteredNatsHub` name a refused `oidcIssuer` by its length, never
+  quoting it, since an issuer refused for its user part holds a password.
+time: 2026-11-19T07:20:34Z
+custom:
+    Issue: pr4314

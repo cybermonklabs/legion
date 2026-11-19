@@ -1,7 +1,16 @@
 import { expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import {
+  REDIRECT_CODES,
+  type RedirectServers,
+  redirectCase,
+  redirectServers,
+  UNNAMED_TARGETS,
+} from "@legion/test-fixtures/redirect-servers";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { isYes, main, QUESTIONS } from "./label-comments";
 
@@ -518,4 +527,268 @@ test("missing credentials or a missing model route stop the run before any read"
     "label-comments: Dispatch is not configured: DISPATCH_URL is set and no token is"
   );
   expect(sent).toEqual([]);
+});
+
+/** The servers of a redirected model call: Dispatch answers at the same origin as the gateway,
+ * so only the model call is redirected. */
+function gatewayRedirects(): RedirectServers {
+  return redirectServers({
+    redirects: (pathname) => pathname === "/v1/messages",
+    direct: (request) => {
+      const { pathname } = new URL(request.url);
+      if (pathname === "/api/v1/issues") return json([{ key: "ACME-1" }]);
+      if (pathname !== "/api/v1/issues/ACME-1/comments") return json({ error: "not found" }, 404);
+      return json([
+        {
+          id: "c1",
+          issue_key: "ACME-1",
+          author: person("alice@example.com"),
+          body: "A made-up comment.",
+          anchor: null,
+          created_at: "2026-10-17T00:00:00Z",
+        },
+      ]);
+    },
+    atElsewhere: () => reply("jargon: no"),
+  });
+}
+
+/** One run against `servers` with --gateway and a key command that prints a made-up key: its exit,
+ * its stderr, and the labels file it would write. */
+async function gatewayRun(servers: RedirectServers, name: string) {
+  const command = path.join(dir(`redirected-${name}`), "key-command");
+  writeFileSync(command, "#!/bin/sh\necho made-up-model-key\n");
+  chmodSync(command, 0o700);
+  const out = path.join(dir(`redirected-${name}`), "labels");
+  const run = io((url, init) => fetch(url, init));
+  const exit = await main(
+    [
+      ...["--since", SINCE, "--until", UNTIL, "--out", out],
+      ...["--gateway", servers.origin, "--key-command", command],
+    ],
+    {
+      ...run.io,
+      env: { HOME: scratch, DISPATCH_URL: servers.origin, DISPATCH_TOKEN: fixtureSecret("bearer") },
+    }
+  );
+  return { exit, stderr: run.stderr, labels: path.join(out, "labels.jsonl") };
+}
+
+/** The two lines of a run whose one comment's model call was refused: `refused`, after the
+ * comment's name, and the count. */
+function refusedRun(refused: string, labels: string): string[] {
+  return [
+    `label-comments: no label for ACME-1 comment c1: ${refused}`,
+    `label-comments: 1 of 1 comments got no label. The run did not write ${labels}.`,
+  ];
+}
+
+const FIX = "give --gateway the gateway's own address";
+
+// fetch would send the model key's `x-api-key` header on to the origin a redirect names, and a
+// 307's or 308's comment with it (it drops `Authorization` alone), so a model call follows no
+// redirect: the 3xx is the answer, and the comment gets no label, its line naming the status. One
+// case for each code, so a call that follows again fails at each.
+for (const code of REDIRECT_CODES) {
+  test(redirectCase(code), async () => {
+    const servers = gatewayRedirects();
+    servers.code = code;
+    try {
+      const { exit, stderr, labels } = await gatewayRun(servers, String(code));
+      expect(servers.received, `the other origin after a ${code}`).toEqual([]);
+      expect({ exit, stderr }).toEqual({
+        exit: 1,
+        stderr: refusedRun(
+          `the model at ${servers.origin} answered ${code}, redirecting to ${servers.elsewhere}, and a model call follows no redirect, since it carries the key: ${FIX}`,
+          labels
+        ),
+      });
+    } finally {
+      servers.stop();
+    }
+  });
+}
+
+// A call that read a redirect's body before its status would wait on a body that never ends, and
+// refuse nothing; the test's limit is that wait's bound.
+test("a redirect whose body never ends is refused naming its status, before any of its body is read", async () => {
+  const servers = gatewayRedirects();
+  servers.endlessBody = true;
+  try {
+    const { exit, stderr, labels } = await gatewayRun(servers, "endless");
+    expect({ exit, stderr }).toEqual({
+      exit: 1,
+      stderr: refusedRun(
+        `the model at ${servers.origin} answered 307, redirecting to ${servers.elsewhere}, and a model call follows no redirect, since it carries the key: ${FIX}`,
+        labels
+      ),
+    });
+  } finally {
+    servers.stop();
+  }
+}, 10_000);
+
+// A redirect within the gateway's own address says to correct the path of --gateway, which the
+// call puts before /v1/messages; one that names nowhere is not named as the gateway's own address;
+// a host longer than any host name is never printed.
+test("a redirect to another path of the same address, to no target, or to an overlong host is refused saying so", async () => {
+  const servers = gatewayRedirects();
+  try {
+    const said: string[][] = [];
+    const want: string[][] = [];
+    for (const [index, { location, where, sameAddress }] of UNNAMED_TARGETS.entries()) {
+      servers.location = location;
+      const { stderr, labels } = await gatewayRun(servers, `unnamed-${index}`);
+      said.push(stderr);
+      const fix = sameAddress
+        ? 'correct the path of --gateway; a missing or an extra "/" is the usual cause'
+        : FIX;
+      want.push(
+        refusedRun(
+          `the model at ${servers.origin} answered 307, ${where}, and a model call follows no redirect, since it carries the key: ${fix}`,
+          labels
+        )
+      );
+    }
+    expect(said).toEqual(want);
+  } finally {
+    servers.stop();
+  }
+});
+
+// The --key-file route's address is Anthropic's own, which no setting of the script names, so a
+// redirect of it names no setting to correct: the line says so, and what to check. The model's
+// address is the first server's here, through the call's own fetch; a call that followed the
+// redirect would reach the second server. One case for each code.
+for (const code of REDIRECT_CODES) {
+  test(`a redirect of the --key-file route's model call is refused naming Anthropic's own address and what to check (${code})`, async () => {
+    const servers = gatewayRedirects();
+    servers.code = code;
+    try {
+      const anthropic = "https://api.anthropic.com";
+      const out = path.join(dir(`direct-${code}`), "labels");
+      // The model call to Anthropic's own address goes to the first server: the URL is parsed, and
+      // its scheme, host and path are compared whole.
+      const run = io((url, init) => {
+        const asked = new URL(url);
+        const toAnthropic =
+          asked.protocol === "https:" &&
+          asked.host === "api.anthropic.com" &&
+          asked.pathname === "/v1/messages";
+        return fetch(toAnthropic ? `${servers.origin}/v1/messages` : url, init);
+      });
+      const exit = await main(
+        ["--since", SINCE, "--until", UNTIL, "--out", out, "--key-file", keyFile()],
+        {
+          ...run.io,
+          env: {
+            HOME: scratch,
+            DISPATCH_URL: servers.origin,
+            DISPATCH_TOKEN: fixtureSecret("bearer"),
+          },
+        }
+      );
+      expect(servers.received, `the other origin after a ${code}`).toEqual([]);
+      expect({ exit, stderr: run.stderr }).toEqual({
+        exit: 1,
+        stderr: refusedRun(
+          `the model at ${anthropic} answered ${code}, redirecting to ${servers.elsewhere}, and a model call follows no redirect, since it carries the key: the --key-file route goes to Anthropic's own address, which no setting changes: check for a proxy between this machine and Anthropic`,
+          path.join(out, "labels.jsonl")
+        ),
+      });
+    } finally {
+      servers.stop();
+    }
+  });
+}
+
+// A --gateway URL may carry a user and a password. One the URL parser does not read as an http or
+// https URL with a host is refused naming its length and the cause the one function found: that
+// reading cannot be trusted to have found the password, since `user:password@host` parses with
+// `user:` as its scheme and the password in its path. The password is made for this run.
+test("a --gateway that is no http or https URL with a host is refused naming its length and cause", async () => {
+  const password = crypto.randomUUID();
+  const command = path.join(dir("refused-gateway"), "key-command");
+  writeFileSync(command, "#!/bin/sh\necho made-up-model-key\n");
+  chmodSync(command, 0o700);
+  const out = path.join(dir("refused-gateway"), "labels");
+  const refused = [
+    `made-up-user:${password}@gateway.example/anthropic`,
+    `mailto:made-up-user:${password}@gateway.example`,
+    `//made-up-user:${password}@gateway.example/anthropic`,
+    "   ",
+    `ftp://made-up-user:${password}@gateway.example/anthropic`,
+    `https://made-up-user:${password}@bad host/anthropic`,
+  ];
+  const said: string[][] = [];
+  for (const gateway of refused) {
+    const { fetch, sent } = world();
+    const run = io(fetch);
+    expect(
+      await main(
+        [
+          ...["--since", SINCE, "--until", UNTIL, "--out", out],
+          ...["--gateway", gateway, "--key-command", command],
+        ],
+        run.io
+      )
+    ).toBe(2);
+    expect(sent).toEqual([]);
+    said.push(run.stderr);
+  }
+  // Each refused value is named in the one function's words.
+  expect(said).toEqual(
+    refused.map((gateway) => [
+      `label-comments: --gateway must be an http or https URL: ${unshownSettingUrl(gateway)}`,
+    ])
+  );
+});
+
+// An http or https --gateway is named with no user and no password, whatever the case of its
+// scheme: here in the refusal of a redirect of its model call, which the first server answers
+// through the call's own fetch. The password is made for this run.
+test("an upper-case HTTPS --gateway with a user part is named without it", async () => {
+  const password = crypto.randomUUID();
+  const gateway = `HTTPS://made-up-user:${password}@gateway.example/anthropic`;
+  const servers = gatewayRedirects();
+  try {
+    const command = path.join(dir("upper-case-gateway"), "key-command");
+    writeFileSync(command, "#!/bin/sh\necho made-up-model-key\n");
+    chmodSync(command, 0o700);
+    const out = path.join(dir("upper-case-gateway"), "labels");
+    // The model call to the gateway goes to the first server: the URL is parsed, and its scheme,
+    // host and path are compared whole.
+    const run = io((url, init) => {
+      const asked = new URL(url);
+      const toGateway =
+        asked.protocol === "https:" &&
+        asked.host === "gateway.example" &&
+        asked.pathname === "/anthropic/v1/messages";
+      return fetch(toGateway ? `${servers.origin}/v1/messages` : url, init);
+    });
+    const exit = await main(
+      [
+        ...["--since", SINCE, "--until", UNTIL, "--out", out],
+        ...["--gateway", gateway, "--key-command", command],
+      ],
+      {
+        ...run.io,
+        env: {
+          HOME: scratch,
+          DISPATCH_URL: servers.origin,
+          DISPATCH_TOKEN: fixtureSecret("bearer"),
+        },
+      }
+    );
+    expect(servers.received).toEqual([]);
+    expect({ exit, stderr: run.stderr }).toEqual({
+      exit: 1,
+      stderr: refusedRun(
+        `the model at --gateway ${URL_NOT_PRINTED} answered 307, redirecting to ${servers.elsewhere}, and a model call follows no redirect, since it carries the key: ${FIX}`,
+        path.join(out, "labels.jsonl")
+      ),
+    });
+  } finally {
+    servers.stop();
+  }
 });

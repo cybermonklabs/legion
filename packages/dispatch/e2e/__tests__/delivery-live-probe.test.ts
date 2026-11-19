@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import {
   type FakeDispatchServer,
   startFakeDispatch,
@@ -840,6 +841,40 @@ test(
     expect(dispatch.upgrades).toEqual([]);
   },
   rowLimit("short")
+);
+
+// --url may carry a user and a password. One that is no http or https URL with a host is a usage
+// error naming its length and the cause the one function found, and the socket of one that
+// carries a user part is named by --url's fixed phrase (`urlForText`) when Dispatch refuses it.
+// The password is made for this run.
+test(
+  "a --url that is no http or https URL with a host is named by its length, and one with a user part without it",
+  async () => {
+    const password = crypto.randomUUID();
+    const dispatch = probeDispatch({ onSubscribe() {} });
+    const unreadable = `made-up-user:${password}@127.0.0.1:1`;
+    const usage = await runProbeToEnd(
+      args(dispatch).map((arg) => (arg === dispatch.url ? unreadable : arg))
+    );
+    expect({ code: usage.code, holds: usage.stderr.includes(password) }).toEqual({
+      code: 2,
+      holds: false,
+    });
+    expect(usage.stderr).toContain(
+      `--url must be Dispatch's http or https address: its value is ${unreadable.length} characters long`
+    );
+    const withUser = dispatch.url.replace("http://", `http://made-up-user:${password}@`);
+    const refused = await runProbeToEnd(
+      args(dispatch, "not-the-token").map((arg) => (arg === dispatch.url ? withUser : arg))
+    );
+    expect({ code: refused.code, holds: refused.stderr.includes(password) }).toEqual({
+      code: 1,
+      holds: false,
+    });
+    expect(refused.stderr).toContain(`Dispatch refused the connection to --url ${URL_NOT_PRINTED}`);
+  },
+  // The usage error's probe, then the refused one's, one after the other.
+  rowLimit("short", "short")
 );
 
 /** A Dispatch on a loopback port of its own that sends each subscribe the fixture snapshot and

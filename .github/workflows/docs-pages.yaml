@@ -139,11 +139,13 @@ on:
       - 'packages/envoy/listenerwire/*'
       - 'packages/envoy/listenfd/*'
       - 'packages/envoy/migrationid/*'
+      - 'packages/envoy/pgsetting/*'
       - 'packages/envoy/roleholder/*'
       - 'packages/envoy/sessiontiming/*'
       - 'packages/envoy/subjectforms/*'
       - 'packages/envoy/natsversion/*'
       - 'packages/envoy/steprecord/*'
+      - 'packages/envoy/urlsetting/*'
       # ci.yaml's *dispatch_server:
       - 'packages/envoy/cmd/dispatch/*'
       - 'packages/envoy/going/*'

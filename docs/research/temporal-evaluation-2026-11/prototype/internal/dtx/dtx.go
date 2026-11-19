@@ -25,6 +25,7 @@ import (
 	"github.com/dapr/durabletask-go/task"
 
 	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/libx"
+	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/pgdsn"
 )
 
 // Tables are the tables durabletask-go's PostgreSQL backend creates for itself. The
@@ -135,14 +136,14 @@ func (e *Engine) Shutdown(ctx context.Context) {
 // options turns the experiment's DSN into the library's own options struct, pointed
 // at the evaluation database with the run's schema as its search path.
 func options(o Options) (*postgres.PostgresOptions, error) {
-	u, err := url.Parse(o.DSN)
+	u, err := pgdsn.Parse(o.DSN)
 	if err != nil {
-		return nil, fmt.Errorf("-postgres-dsn %q is not a URL: %w", o.DSN, err)
+		return nil, err
 	}
 	host := u.Hostname()
 	port, err := strconv.ParseUint(portOf(u), 10, 16)
 	if err != nil {
-		return nil, fmt.Errorf("-postgres-dsn %q has no usable port: %w", o.DSN, err)
+		return nil, pgdsn.Refusal(o.DSN, pgdsn.NoPort)
 	}
 	password, _ := u.User.Password()
 	opts := postgres.NewPostgresOptions(host, uint16(port), libx.EvalDatabase, u.User.Username(), password)

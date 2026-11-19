@@ -430,7 +430,7 @@ func TestReadRejectsAResponseLargerThanTheLimit(t *testing.T) {
 	}
 
 	body, status, header, err := client.Read(context.Background(), "installation-token", "/repos/acme/web/pulls/7")
-	if err == nil || !strings.Contains(err.Error(), "GET "+server.URL+"/repos/acme/web/pulls/7: ") ||
+	if err == nil || !strings.Contains(err.Error(), "GET /repos/acme/web/pulls/7: ") ||
 		!strings.Contains(err.Error(), "1048576-byte limit") {
 		t.Fatalf("Read: err = %v, want a response-limit error naming the method and path", err)
 	}
@@ -503,9 +503,11 @@ func answeringGitHub(t *testing.T) (*Client, string) {
 // separator left at the end of an answer that has no body. Every other answer is the caller's to
 // judge, so a 200, a 304, a 403 that carries no limit, a 404, a 409 and a 422 are not noted. Each
 // request is marked sent either way, and the same request on a context with no attempt is
-// answered exactly as on one with an attempt.
+// answered exactly as on one with an attempt. A note names the request by its path after the API
+// base (Client.shownTarget), since the base may carry a user and a password and GET /healthz
+// serves the note.
 func TestSendNotesTheAnswersNoCallerTakesAsData(t *testing.T) {
-	client, base := answeringGitHub(t)
+	client, _ := answeringGitHub(t)
 	cases := []struct {
 		name  string
 		path  string
@@ -520,14 +522,14 @@ func TestSendNotesTheAnswersNoCallerTakesAsData(t *testing.T) {
 		{name: "404", path: "/answer/404"},
 		{name: "409", path: "/answer/409"},
 		{name: "422", path: "/answer/422"},
-		{name: "503", path: "/answer/503", cause: "GET " + base + `/answer/503: status 503: {"message":"answered 503"}`},
-		{name: "500", path: "/answer/500", cause: "GET " + base + `/answer/500: status 500: {"message":"answered 500"}`},
-		{name: "a 503 with no body", path: "/answer/503?empty=1", cause: "GET " + base + "/answer/503?empty=1: status 503"},
-		{name: "401", path: "/answer/401", cause: "GET " + base + `/answer/401: status 401: {"message":"answered 401"}`},
-		{name: "429", path: "/answer/429?limited=1", cause: "GET " + base + `/answer/429?limited=1: rate-limited by GitHub (status 429), next request in 1m0s: {"message":"answered 429"}`},
-		{name: "a 429 with no body", path: "/answer/429?limited=1&empty=1", cause: "GET " + base + "/answer/429?limited=1&empty=1: rate-limited by GitHub (status 429), next request in 1m0s"},
-		{name: "a 403 that RateLimit reads as a limit", path: "/answer/403?limited=1", cause: "GET " + base + `/answer/403?limited=1: rate-limited by GitHub (status 403), next request in 1m0s: {"message":"answered 403"}`},
-		{name: "a body past the caller's limit", path: "/large", limit: 16, cause: "GET " + base + "/large: GitHub response body exceeds the 16-byte limit"},
+		{name: "503", path: "/answer/503", cause: `GET /answer/503: status 503: {"message":"answered 503"}`},
+		{name: "500", path: "/answer/500", cause: `GET /answer/500: status 500: {"message":"answered 500"}`},
+		{name: "a 503 with no body", path: "/answer/503?empty=1", cause: "GET /answer/503?empty=1: status 503"},
+		{name: "401", path: "/answer/401", cause: `GET /answer/401: status 401: {"message":"answered 401"}`},
+		{name: "429", path: "/answer/429?limited=1", cause: `GET /answer/429?limited=1: rate-limited by GitHub (status 429), next request in 1m0s: {"message":"answered 429"}`},
+		{name: "a 429 with no body", path: "/answer/429?limited=1&empty=1", cause: "GET /answer/429?limited=1&empty=1: rate-limited by GitHub (status 429), next request in 1m0s"},
+		{name: "a 403 that RateLimit reads as a limit", path: "/answer/403?limited=1", cause: `GET /answer/403?limited=1: rate-limited by GitHub (status 403), next request in 1m0s: {"message":"answered 403"}`},
+		{name: "a body past the caller's limit", path: "/large", limit: 16, cause: "GET /large: GitHub response body exceeds the 16-byte limit"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -568,9 +570,10 @@ func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 		refuse string
 		status int
 		call   func(ctx context.Context, client *Client) error
-		// want is the error's text when GitHub answered no body, {base} standing for the API
-		// origin; with a body it is that text, `: ` and the body, unless data says the status is
-		// a 2xx, whose body is data that the text never carries.
+		// want is the error's text when GitHub answered no body, the request named by its path
+		// after the API base (Client.shownTarget, since the base may carry a user and a password);
+		// with a body it is that text, `: ` and the body, unless data says the status is a 2xx,
+		// whose body is data that the text never carries.
 		want string
 		data bool
 	}{{
@@ -581,7 +584,7 @@ func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 			_, err := client.Installation(ctx, "acme", "web")
 			return err
 		},
-		want: "GET {base}/repos/acme/web/installation: status 500",
+		want: "GET /repos/acme/web/installation: status 500",
 	}, {
 		name:   "a token mint",
 		refuse: "POST /app/installations/7/access_tokens",
@@ -590,7 +593,7 @@ func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 			_, err := client.Token(ctx, 7)
 			return err
 		},
-		want: "POST {base}/app/installations/7/access_tokens: status 500",
+		want: "POST /app/installations/7/access_tokens: status 500",
 	}, {
 		// The mint expects 201, and a 200 would carry the token itself.
 		name:   "a token mint GitHub answered 200",
@@ -600,7 +603,7 @@ func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 			_, err := client.Token(ctx, 7)
 			return err
 		},
-		want: "POST {base}/app/installations/7/access_tokens: status 200",
+		want: "POST /app/installations/7/access_tokens: status 200",
 		data: true,
 	}, {
 		name:   "the repository read of a source's check",
@@ -610,7 +613,7 @@ func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 			_, err := client.CheckSource(ctx, "acme", "web")
 			return err
 		},
-		want: "GET {base}/repos/acme/web: status 500",
+		want: "GET /repos/acme/web: status 500",
 	}, {
 		name:   "a branch's head commit",
 		refuse: "GET /repos/acme/web/commits/main",
@@ -619,7 +622,7 @@ func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 			_, err := client.Ref(ctx, "ghs_test", "acme", "web", "main")
 			return err
 		},
-		want: "GET {base}/repos/acme/web/commits/main: status 409",
+		want: "GET /repos/acme/web/commits/main: status 409",
 	}, {
 		name:   "a branch's exact ref",
 		refuse: "GET /repos/acme/web/git/ref/heads/main",
@@ -628,7 +631,7 @@ func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 			_, err := client.Branch(ctx, "ghs_test", "acme", "web", "main")
 			return err
 		},
-		want: "GET {base}/repos/acme/web/git/ref/heads/main: status 502",
+		want: "GET /repos/acme/web/git/ref/heads/main: status 502",
 	}, {
 		name:   "a directory's listing",
 		refuse: "GET /repos/acme/web/git/trees/c0ffee:docs",
@@ -637,7 +640,7 @@ func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 			_, err := client.Dir(ctx, "ghs_test", "acme", "web", "c0ffee", "docs")
 			return err
 		},
-		want: "GET {base}/repos/acme/web/git/trees/c0ffee:docs: status 500",
+		want: "GET /repos/acme/web/git/trees/c0ffee:docs: status 500",
 	}, {
 		name:   "a file's blob",
 		refuse: "GET /repos/acme/web/git/blobs/b1",
@@ -646,7 +649,7 @@ func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 			_, err := client.DirFiles(ctx, "ghs_test", "acme", "web", Dir{SHA: "t1", Files: []DirFile{{Name: "a.md", Path: "docs/a.md", SHA: "b1", Size: 1}}})
 			return err
 		},
-		want: "GET {base}/repos/acme/web/git/blobs/b1 (docs/a.md): status 500",
+		want: "GET /repos/acme/web/git/blobs/b1 (docs/a.md): status 500",
 	}, {
 		name:   "the App webhook's deliveries",
 		refuse: "GET /app/hook/deliveries",
@@ -655,7 +658,7 @@ func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 			_, err := client.Deliveries(ctx, time.Now(), nil)
 			return err
 		},
-		want: "GET {base}/app/hook/deliveries?per_page=100: status 500",
+		want: "GET /app/hook/deliveries?per_page=100: status 500",
 	}, {
 		name:   "a redelivery request",
 		refuse: "POST /app/hook/deliveries/5/attempts",
@@ -663,7 +666,7 @@ func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 		call: func(ctx context.Context, client *Client) error {
 			return client.Redeliver(ctx, 5)
 		},
-		want: "POST {base}/app/hook/deliveries/5/attempts: status 422",
+		want: "POST /app/hook/deliveries/5/attempts: status 422",
 	}, {
 		name:   "a limit GitHub answered",
 		refuse: "GET /app/hook/deliveries",
@@ -700,7 +703,7 @@ func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 				if err != nil {
 					t.Fatalf("new client: %v", err)
 				}
-				want := strings.ReplaceAll(row.want, "{base}", base)
+				want := row.want
 				if answer != "" && !row.data {
 					want += ": " + answer
 				}
@@ -731,7 +734,7 @@ func TestSendNotesARequestGitHubDidNotAnswerUnlessItsCallerEnded(t *testing.T) {
 			t.Fatal("a read of a closed server succeeded")
 		}
 		sent, failed, cause := attempt.Outcome()
-		if !sent || !failed || cause != readErr.Error() || !strings.HasPrefix(cause, "GET "+closed.URL+"/repos/acme/web: ") {
+		if !sent || !failed || cause != readErr.Error() || !strings.HasPrefix(cause, "GET /repos/acme/web: ") {
 			t.Fatalf("sent %v, failed %v, cause %q; want sent and the read's own error %q", sent, failed, cause, readErr)
 		}
 	})

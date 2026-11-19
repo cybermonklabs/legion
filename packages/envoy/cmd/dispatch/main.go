@@ -58,6 +58,7 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/listenfd"
+	"github.com/sjawhar/envoy/pgsetting"
 )
 
 const (
@@ -299,11 +300,7 @@ func main() {
 		slog.Info("dispatch: loaded github app", "slug", appCfg.Slug, "client_id", appCfg.ClientID, "source", appSource.String())
 	}
 	if boot.DevSignIn {
-		cookies := "cookies are valid on this process only"
-		if boot.DevSignInSharedKey != "" {
-			cookies = "cookies are valid on every process given this DISPATCH_DEV_SIGNIN_SHARED_KEY"
-		}
-		slog.Warn("dispatch: dev sign-in mounted: any email signs in at /auth/_dev/signin without the sign-in issuer; "+cookies, "origin", serverURL)
+		logDevSignInMounted(boot, serverURL)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -494,7 +491,7 @@ func main() {
 
 	serviceTokens := serviceTokenVerifier(boot)
 	if serviceTokens != nil {
-		slog.Info("dispatch: verifying service-account tokens", "issuer", boot.OIDCIssuer, "audience", boot.OIDCAudience)
+		logServiceTokens(boot)
 		go serviceTokens.Run(ctx)
 	}
 
@@ -1287,6 +1284,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.DatabaseURL == "" {
 		return bootConfig{}, errors.New("DATABASE_URL required")
 	}
+	if err := pgsetting.Refuse("DATABASE_URL", boot.DatabaseURL); err != nil {
+		return bootConfig{}, err
+	}
 	agentTokens := env.get("DISPATCH_AGENT_TOKEN")
 	if strings.TrimSpace(agentTokens) == "" {
 		return bootConfig{}, errors.New("DISPATCH_AGENT_TOKEN required")
@@ -1393,7 +1393,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, errors.New("DISPATCH_IAP_AUDIENCE required: DISPATCH_IDENTITY=iap admits a request only on an assertion Identity-Aware Proxy signed for that audience, /projects/<project number>/global/backendServices/<backend service id> behind a load balancer")
 		}
 		if !iapAudienceShape.MatchString(iapAudience) {
-			return bootConfig{}, fmt.Errorf("DISPATCH_IAP_AUDIENCE=%q must be the audience IAP signs its assertions for, which begins /projects/<project number>/, such as /projects/<project number>/global/backendServices/<backend service id>", iapAudience)
+			return bootConfig{}, redact.Refusal("DISPATCH_IAP_AUDIENCE", iapAudience, notAnIAPAudience)
 		}
 		boot.IAPAudience, boot.IAPKeySetURL = iapAudience, oidc.IAPKeySetURL
 	case strings.HasPrefix(mode, "header:"):
@@ -1414,9 +1414,12 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if envoyURL == "" {
 		envoyURL = defaultEnvoyURL
 	}
+	if why := redact.Misread(envoyURL); why != "" {
+		return bootConfig{}, redact.Refusal("ENVOY_URL", envoyURL, why)
+	}
 	parsed, err := url.Parse(envoyURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return bootConfig{}, fmt.Errorf("ENVOY_URL=%q (expected an absolute http(s) URL)", envoyURL)
+		return bootConfig{}, fmt.Errorf("ENVOY_URL=%q (expected an absolute http(s) URL)", redact.URL(envoyURL))
 	}
 	boot.EnvoyURL = strings.TrimSuffix(envoyURL, "/")
 
@@ -1431,6 +1434,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 
 	agentSecretsURL := strings.TrimSuffix(strings.TrimSpace(env.get("DISPATCH_AGENT_SECRETS_URL")), "/")
 	if agentSecretsURL != "" {
+		if why := redact.Misread(agentSecretsURL); why != "" {
+			return bootConfig{}, redact.Refusal("DISPATCH_AGENT_SECRETS_URL", agentSecretsURL, why)
+		}
 		parsed, err := url.Parse(agentSecretsURL)
 		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" {
 			return bootConfig{}, fmt.Errorf("DISPATCH_AGENT_SECRETS_URL=%q (expected an absolute http(s) URL with no path)", redact.URL(agentSecretsURL))
@@ -1499,7 +1505,7 @@ func devSignInFence(boot bootConfig, env settingValues) error {
 		}
 	}
 	if !routes.LoopbackURL(boot.EnvoyURL) {
-		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 delivers through this machine's Envoy listener only: ENVOY_URL=%q must name 127.0.0.1, [::1] or localhost", boot.EnvoyURL)
+		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 delivers through this machine's Envoy listener only: ENVOY_URL=%q must name 127.0.0.1, [::1] or localhost", redact.URL(boot.EnvoyURL))
 	}
 	return nil
 }
@@ -1529,27 +1535,58 @@ func devSignInLoadedFence(boot bootConfig, serverURL string, app *auth.AppConfig
 		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 refuses the App private key in %s, whatever DISPATCH_GITHUB_API_BASE names: that file is where the real App's key is kept, and with the flag any loopback client can have the App sign calls. Pass a throwaway App in the environment instead (DISPATCH_APP_CLIENT_ID and a generated DISPATCH_APP_PEM_B64, which take precedence over app.json), with DISPATCH_GITHUB_API_BASE naming a GitHub fake on a loopback host, as packages/dispatch/e2e/run-server.sh does", source.Path)
 	}
 	if !routes.LoopbackURL(boot.GitHubAPIBase) {
-		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 lets the App private key (DISPATCH_APP_PEM_B64) sign calls only to a loopback host: DISPATCH_GITHUB_API_BASE=%q (empty is https://api.github.com) must name 127.0.0.1, [::1] or localhost. Use a throwaway key: every App call hands a signed App JWT to whatever listens there", boot.GitHubAPIBase)
+		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 lets the App private key (DISPATCH_APP_PEM_B64) sign calls only to a loopback host: DISPATCH_GITHUB_API_BASE=%q (empty is https://api.github.com) must name 127.0.0.1, [::1] or localhost. Use a throwaway key: every App call hands a signed App JWT to whatever listens there", redact.URL(boot.GitHubAPIBase))
 	}
 	return nil
+}
+
+// logServiceTokens writes the boot line that says the server verifies service-account tokens,
+// naming their issuer through redact.URL (an issuer may carry a user and a password) and their
+// audience.
+func logServiceTokens(boot bootConfig) {
+	slog.Info("dispatch: verifying service-account tokens", "issuer", redact.URL(boot.OIDCIssuer), "audience", boot.OIDCAudience)
+}
+
+// logDevSignInMounted writes the WARN line that says the dev sign-in route is mounted. It names
+// the host and port the route serves, which routes.DevSignInOrigin reads from the dashboard
+// origin. Main calls it only after devSignInLoadedFence accepted serverURL, so that is a loopback
+// name or IP literal with an optional port. It names nothing of an origin net/url misreads
+// (redact.Misread): an @ left once net/url takes out its user part may end a user part that held
+// a /, whose password's first characters net/url then read as the port
+// (http://localhost:4821/<rest>@127.0.0.1:8766), so no host net/url read from it is printed.
+func logDevSignInMounted(boot bootConfig, serverURL string) {
+	cookies := "cookies are valid on this process only"
+	if boot.DevSignInSharedKey != "" {
+		cookies = "cookies are valid on every process given this DISPATCH_DEV_SIGNIN_SHARED_KEY"
+	}
+	host, err := routes.DevSignInOrigin(serverURL)
+	if err != nil || redact.Misread(serverURL) != "" {
+		host = redact.NotPrinted
+	}
+	slog.Warn("dispatch: dev sign-in mounted: any email signs in at /auth/_dev/signin without the sign-in issuer; "+cookies, "host", host)
 }
 
 // loopbackDatabase refuses a DATABASE_URL with a host that is not this machine: the data a
 // dev-sign-in server serves to any local process must be a scratch database here. pgx parses
 // both the URL and the key=value forms, multi-host lists included, exactly as store.Open will.
+// The value may carry a user and a password, so a value pgx cannot parse is named by its length:
+// pgx's own error for it names its user. A host pgx read is named: resolveBootConfig refused a
+// value whose user part pgx and net/url read apart (pgsetting.Refuse) before this runs, so both
+// readers end the user part at the same @, before the host.
 func loopbackDatabase(databaseURL string) error {
-	config, err := pgx.ParseConfig(databaseURL)
+	config, err := pgsetting.ParseConfig("DATABASE_URL", databaseURL)
 	if err != nil {
-		return fmt.Errorf("DATABASE_URL: %w", err)
+		return err
 	}
 	hosts := []string{config.Host}
 	for _, fallback := range config.Fallbacks {
 		hosts = append(hosts, fallback.Host)
 	}
 	for _, host := range hosts {
-		if !strings.HasPrefix(host, "/") && !routes.LoopbackName(host) {
-			return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 serves a loopback database only: DATABASE_URL names host %q", host)
+		if strings.HasPrefix(host, "/") || routes.LoopbackName(host) {
+			continue
 		}
+		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 serves a loopback database only: DATABASE_URL names host %q", host)
 	}
 	return nil
 }

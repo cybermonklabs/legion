@@ -12,13 +12,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/dbos-inc/dbos-transact-golang/dbos"
 	"github.com/dbos-inc/dbos-transact-golang/dbos/internals"
+
+	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/pgdsn"
 )
 
 // EvalDatabase is the database the DBOS experiments run in. The pod's PostgreSQL role
@@ -33,15 +33,9 @@ const EvalDatabase = "legion_dbos_eval"
 // DatabaseURL is the system-database URL the experiments open: the DSN the command line
 // was given, pointed at EvalDatabase instead of whatever database it named.
 func DatabaseURL(dsn string) (string, error) {
-	if strings.TrimSpace(dsn) == "" {
-		return "", fmt.Errorf("-postgres-dsn is empty")
-	}
-	u, err := url.Parse(dsn)
+	u, err := pgdsn.Parse(dsn)
 	if err != nil {
-		return "", fmt.Errorf("-postgres-dsn %q is not a URL: %w", dsn, err)
-	}
-	if u.Scheme != "postgres" && u.Scheme != "postgresql" {
-		return "", fmt.Errorf("-postgres-dsn %q must be a postgres:// URL, not %q", dsn, u.Scheme)
+		return "", err
 	}
 	u.Path = "/" + EvalDatabase
 	return u.String(), nil

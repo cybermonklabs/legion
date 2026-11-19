@@ -313,6 +313,15 @@ once, and the caller decides whether to wait `retryAfterSeconds` and send the me
 listener's bearer is the `token` the client is given (`envoySettings`); without one it sends no
 `Authorization` header.
 
+No call follows a redirect: fetch would send the credential's headers (a DPoP proof among them)
+and a 307's or 308's body on to the origin a 3xx names, and Bun drops only `Authorization` and
+`Cookie` on the way. Every call is sent with `redirect: "manual"` (a fetch given to the client
+must keep it), and a 3xx, read from its status before any of its body, which is cancelled, throws
+`EnvoyRedirectError` at once, never sent again: it names the status, where the redirect points
+(another origin by its scheme and host, another path of the same address, or no target) and what
+to correct in the Envoy URL. A send it refuses is no `EnvoySendUnconfirmedError`, since no
+listener read it.
+
 Every call whose body names the session it acts for — `subscribe`, `unsubscribe`,
 `unregisterSession`, `setRole`, and a `send` or `publish` with a `sourceSessionID` —
 presents that session's own credential, since the listener holds such a write to the session its

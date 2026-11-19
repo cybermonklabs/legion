@@ -4,7 +4,15 @@ import {
   type InboxThreadKind,
   type paths,
 } from "@legion/contracts";
+import { urlForText } from "@legion/contracts/log-text";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 import type { Cookie } from "@playwright/test";
+import {
+  OWN_PATH_CHECK,
+  type RedirectTarget,
+  redirectedTo,
+  redirectTarget,
+} from "../../envoy-client/src/redirect";
 import {
   type Body,
   type Op,
@@ -24,9 +32,27 @@ import { type DispatchProcess, pinnedTo } from "./harness-processes";
 /** The Dispatch server a process of `env`'s stack addresses: the deployed server `env` names,
  *  else the harness server of that stack, whose port e2e/global-setup.ts writes into the
  *  environment of every worker before the worker imports this module (e2e/harness-ports.ts).
- *  `e2e/global-setup.ts` resolves another stack's the same way this one resolves its own. */
+ *  `e2e/global-setup.ts` resolves another stack's the same way this one resolves its own. A
+ *  PLAYWRIGHT_BASE_URL that `shownSettingUrl` would not show is refused before anything parses
+ *  it, named by its length and what to correct (`unshownSettingUrl`): the URL parser's error for a
+ *  value it refuses would print the value whole. One that carries a user or a password is refused
+ *  too, named by its fixed phrase (`urlForText`): the fetch of Playwright's Node refuses such a URL
+ *  with an error that prints it whole, and every call carries a credential of the client's own. */
 export function baseUrlOf(env: NodeJS.ProcessEnv = process.env): string {
-  return env.PLAYWRIGHT_BASE_URL || `http://127.0.0.1:${harnessPorts(env).dispatch.port}`;
+  const named = env.PLAYWRIGHT_BASE_URL;
+  if (!named) return `http://127.0.0.1:${harnessPorts(env).dispatch.port}`;
+  if (shownSettingUrl(named) === undefined) {
+    throw new Error(
+      `PLAYWRIGHT_BASE_URL must be an http or https URL: ${unshownSettingUrl(named)}`
+    );
+  }
+  const { username, password } = new URL(named);
+  if (username !== "" || password !== "") {
+    throw new Error(
+      `${urlForText(named, "PLAYWRIGHT_BASE_URL")} must carry no user and no password: the fetch of Playwright's Node refuses a URL that carries them, printing it whole, and the e2e client sends a credential of its own`
+    );
+  }
+  return named;
 }
 
 export const baseUrl = baseUrlOf();
@@ -155,7 +181,9 @@ const sessionCookies = new Map<string, CachedSession>();
  *  `resetLogins` alone (it calls `forgetSessions`), and a browser context's Sign out as the same
  *  login advances it. With `target` set the sign-in is pinned to that process, so every request
  *  a pinned call makes, its sign-in included, is served by the process it names. A sign-in that
- *  fails, by its answer or by the request itself, is not kept, so the next call asks again. */
+ *  fails, by its answer or by the request itself, is not kept, so the next call asks again. Any
+ *  3xx but the 302 that sets the cookie, a 302 that sets none included, is a refusal naming where
+ *  it points, read from its status before any of its body, as `request` refuses one. */
 export function sessionCookie(login: string, target?: DispatchProcess): Promise<Cookie> {
   const key = `${target ?? ""} ${login}`;
   const cached = sessionCookies.get(key);
@@ -171,6 +199,12 @@ export function sessionCookie(login: string, target?: DispatchProcess): Promise<
     }).then(async (response) => {
       const cookie = sessionCookieOf(response, mint);
       if (response.status !== 302 || cookie === undefined) {
+        const redirected = redirectTarget(response, mint.href);
+        if (redirected !== undefined) {
+          throw new Error(
+            `dev sign-in as ${login} failed: ${response.status}, ${redirectedTo(redirected)}, with no session cookie, and the e2e client follows no redirect: ${redirectFix(redirected)}`
+          );
+        }
         throw devSignInError(login, response.status, await response.text());
       }
       // The cookie's value is `2.<base64url email>.<generation>.<expiry>.<mac>`
@@ -240,6 +274,23 @@ export async function userHeaders(
   return { Cookie: `${cookie.name}=${cookie.value}`, Origin: dashboardOrigin };
 }
 
+/** What a refusal of a redirect from Dispatch's address says to correct. For another path of
+ *  that address, what to check: the client builds every path it asks itself, whatever path the
+ *  URL holds, so no setting chose the other one. For any other target, the setting that names
+ *  Dispatch. */
+function redirectFix(target: RedirectTarget): string {
+  return target.kind === "the same origin"
+    ? OWN_PATH_CHECK
+    : "PLAYWRIGHT_BASE_URL, or DISPATCH_E2E_PORT where it is unset, must name Dispatch's own address";
+}
+
+/** One call to Dispatch, as the agent bearer or as `options.login`'s session cookie: its JSON
+ *  answer, or nothing for a 204; a refusal names the route and Dispatch's answer. It follows no
+ *  redirect, since fetch would send the call's body, and the proof or key it can hold, on to the
+ *  origin a 307's or 308's `Location` names, and take that origin's answer as Dispatch's: a 3xx is
+ *  a refusal naming where it points (`packages/envoy-client/src/redirect.ts`, which a relative
+ *  path reaches, since Playwright's Node takes no package's `bun` entry), read from its status
+ *  before any of its body. */
 async function request<T>(
   path: string,
   method: string,
@@ -265,12 +316,20 @@ async function request<T>(
   }
   if (options.process !== undefined) Object.assign(headers, pinnedTo(options.process));
 
-  const response = await fetch(new URL(path, options.baseUrl ?? baseUrl), {
+  const url = new URL(path, options.baseUrl ?? baseUrl);
+  const response = await fetch(url, {
     body: payload === undefined ? undefined : JSON.stringify(payload),
     headers,
     method,
+    redirect: "manual",
   });
 
+  const target = redirectTarget(response, url.href);
+  if (target !== undefined) {
+    throw new Error(
+      `${method} ${path} failed: ${response.status}, ${redirectedTo(target)}, and the e2e client follows no redirect, since it carries ${as === "agent" ? "the agent bearer" : "the session cookie"}: ${redirectFix(target)}`
+    );
+  }
   if (!response.ok) {
     throw new Error(`${method} ${path} failed: ${response.status} ${await response.text()}`);
   }

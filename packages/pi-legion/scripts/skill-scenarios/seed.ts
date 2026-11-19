@@ -87,6 +87,7 @@ import type {
   Handoff,
   HandoffSummary,
 } from "@legion/contracts";
+import { OWN_PATH_CHECK, redirectedTo, redirectTarget } from "@legion/envoy-client/redirect";
 import { z } from "zod";
 import {
   answerAsk,
@@ -214,16 +215,7 @@ function sourceEntries(file: string): { kind: string; at: bigint; body: string }
  * opened one for every block: the spec's blocks of type `ask` (`GET …/blocks`, as the agent bearer),
  * then the issue's asks, read again until each such block has its ask. */
 async function specBlockAsks(issue: string, spec: string): Promise<Ask[]> {
-  const response = await fetch(
-    new URL(`/api/v1/artifacts/${encodeURIComponent(spec)}/blocks`, baseUrl),
-    {
-      headers: { Authorization: `Bearer ${e2eAgentToken}` },
-    }
-  );
-  if (!response.ok)
-    throw new Error(
-      `GET the blocks of ${spec} failed: ${response.status} ${await response.text()}`
-    );
+  const response = await agentFetch("GET", `/api/v1/artifacts/${encodeURIComponent(spec)}/blocks`);
   const blocks = ((await response.json()) as ArtifactBlock[]).filter(
     (block) => block.type === "ask"
   );
@@ -639,7 +631,7 @@ export async function implementHandoff(
   if (typeof body !== "object" || body === null || Array.isArray(body))
     throw new Error(`${bodyFile} holds no JSON object, which a handoff body is`);
   const recorded = await createHandoff(issue, "implement", body, IMPLEMENTER);
-  await agentPost(`/api/v1/issues/${encodeURIComponent(issue)}/results`, {
+  await agentFetch("POST", `/api/v1/issues/${encodeURIComponent(issue)}/results`, {
     check: "k1",
     role: "implementer",
     verdict: "pass",
@@ -658,29 +650,39 @@ export async function implementHandoff(
   console.log(`seeded ${issue}'s implement handoff, version ${recorded.version} (${recorded.id})`);
 }
 
-/** `GET route` as the agent bearer, its JSON answer; a refusal names the route and Dispatch's answer. */
-async function agentGet<T>(route: string): Promise<T> {
-  const response = await fetch(new URL(route, baseUrl), {
-    headers: { Authorization: `Bearer ${e2eAgentToken}` },
-  });
-  if (!response.ok)
-    throw new Error(`GET ${route} failed: ${response.status} ${await response.text()}`);
-  return (await response.json()) as T;
-}
-
-/** `POST route` as the agent bearer, with `input` as its JSON body; a refusal names the route and
- * Dispatch's answer. */
-async function agentPost(route: string, input: unknown): Promise<void> {
-  const response = await fetch(new URL(route, baseUrl), {
-    method: "POST",
+/** `method route` as the agent bearer, with `input` as its JSON body when given: Dispatch's
+ * answer once it accepted the request; a refusal names the route and Dispatch's answer. It
+ * follows no redirect, since fetch would send a 307's or 308's body on to the origin it names, and
+ * take that origin's answer as the scratch Dispatch's: a 3xx is a refusal naming where it points
+ * (`@legion/envoy-client/redirect`), read from its status before any of its body. seed.ts's other
+ * calls go through e2e/api.ts, whose `request` refuses a redirect as this does. */
+async function agentFetch(
+  method: "GET" | "POST",
+  route: string,
+  input?: unknown
+): Promise<Response> {
+  const url = new URL(route, baseUrl);
+  const response = await fetch(url, {
+    method,
+    redirect: "manual",
     headers: {
       Authorization: `Bearer ${e2eAgentToken}`,
-      "Content-Type": "application/json",
+      ...(input === undefined ? {} : { "Content-Type": "application/json" }),
     },
-    body: JSON.stringify(input),
+    ...(input === undefined ? {} : { body: JSON.stringify(input) }),
   });
-  if (!response.ok)
-    throw new Error(`POST ${route} failed: ${response.status} ${await response.text()}`);
+  const target = redirectTarget(response, url.href);
+  if (target !== undefined) {
+    const fix =
+      target.kind === "the same origin"
+        ? OWN_PATH_CHECK
+        : "DISPATCH_E2E_PORT must name the port of rig.sh's scratch Dispatch itself";
+    throw new Error(
+      `${method} ${route} failed: ${response.status}, ${redirectedTo(target)}, and seed.ts follows no redirect, since it carries the agent bearer: ${fix}`
+    );
+  }
+  if (response.ok) return response;
+  throw new Error(`${method} ${route} failed: ${response.status} ${await response.text()}`);
 }
 
 /** `capture-handoffs <file> <run dir>`: every handoff record of the run's issue, the seeded
@@ -688,12 +690,14 @@ async function agentPost(route: string, input: unknown): Promise<void> {
  * (`GET /api/v1/handoffs/{id}`) for its body. */
 export async function captureHandoffs(file: string, runDir: string): Promise<void> {
   const { issue } = TesterFixture.parse(JSON.parse(readFileSync(file, "utf8")));
-  const summaries = await agentGet<HandoffSummary[]>(
-    `/api/v1/issues/${encodeURIComponent(issue)}/handoffs`
-  );
+  const summaries = (await (
+    await agentFetch("GET", `/api/v1/issues/${encodeURIComponent(issue)}/handoffs`)
+  ).json()) as HandoffSummary[];
   const records: Handoff[] = [];
-  for (const summary of summaries)
-    records.push(await agentGet<Handoff>(`/api/v1/handoffs/${encodeURIComponent(summary.id)}`));
+  for (const summary of summaries) {
+    const record = await agentFetch("GET", `/api/v1/handoffs/${encodeURIComponent(summary.id)}`);
+    records.push((await record.json()) as Handoff);
+  }
   writeFileSync(path.join(runDir, "handoffs.json"), `${JSON.stringify(records)}\n`);
   console.log(`captured ${issue}: ${records.length} handoff records`);
 }

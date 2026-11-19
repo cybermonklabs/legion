@@ -9,6 +9,8 @@
  */
 
 import { BlockList, isIP } from "node:net";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
+import { type RedirectTarget, redirectedTo, redirectTarget, SAME_ADDRESS_CAUSE } from "./redirect";
 
 /** The broker's agent secret holding the Legion Slack app's bot token (`xoxb-…`). */
 export const SLACK_BOT_TOKEN_SECRET = "LEGION_SLACK_BOT_TOKEN";
@@ -102,10 +104,17 @@ const SLACK_ERROR_CODES = [
  * and prints one JSON line and nothing else, to stdout alone: `{ts, channel}` for a posted reply,
  * each shaped as Slack's ids are; `{refused}` with one of Slack's own error codes, or `{refused:
  * null}` for any other; `{unanswered: true}` when Slack did not answer (the reply may have been
- * posted); `{invalid}`, a fixed description, for an answer that is not Slack's. No part of a
- * response body crosses, and the line has the token cut out of it before it is written. */
+ * posted); `{invalid}`, a fixed description, for an answer that is not Slack's; `{redirected,
+ * target}` for a 3xx, read from its status before any of its body, which it does not follow,
+ * since fetch would send the reply on to the origin its `Location` names and take that origin's
+ * answer as Slack's: its status, and where it pointed as `redirectTarget` reads it, whose source
+ * the poster runs as its own, except that another origin is `{kind: "another host"}` unless it is
+ * on the API URL's own host (a host the answer chose, lower-cased by the URL parser, could carry
+ * the token past the cut below). No part of a response body crosses, and the line has the token
+ * cut out of it before it is written. */
 const POSTER = `
 const codes = ${JSON.stringify(Object.fromEntries(SLACK_ERROR_CODES.map((code) => [code, true])))};
+const redirectTarget = ${String(redirectTarget)};
 const token = process.env.LEGION_SLACK_BOT_TOKEN || "";
 const out = (value) => {
   let line = JSON.stringify(value);
@@ -126,11 +135,19 @@ try {
     sent = true;
     const response = await fetch(base + "/chat.postMessage", {
       method: "POST",
+      redirect: "manual",
       headers: { Authorization: "Bearer " + token, "Content-Type": "application/json; charset=utf-8" },
       body: JSON.stringify({ channel: input.channel, thread_ts: input.thread_ts, text: input.text }),
       signal: AbortSignal.timeout(10000),
     });
     status = response.status;
+    const target = redirectTarget(response, base + "/chat.postMessage");
+    if (target !== undefined) {
+      const onApiHost =
+        target.kind !== "another origin" || new URL(target.origin).hostname === new URL(base).hostname;
+      out({ redirected: status, target: onApiHost ? target : { kind: "another host" } });
+      process.exit(0);
+    }
     raw = await response.text();
   } catch {
     out({ unanswered: true });
@@ -177,6 +194,8 @@ interface PosterLine {
   readonly refused?: string | null;
   readonly unanswered?: true;
   readonly invalid?: string;
+  readonly redirected?: number;
+  readonly target?: unknown;
 }
 
 const MAY_HAVE_POSTED =
@@ -315,9 +334,11 @@ export async function postSlackReply(
   }
   const override = env[SLACK_POST_API_URL_VARIABLE];
   if (override !== undefined && override !== "" && !allowedAPIURL(override)) {
-    // Its value is not quoted: a URL can carry user info or a token in its query.
+    // Its value is not quoted: a URL can carry user info or a token in its query. One that
+    // `shownSettingUrl` does not read is named by its length and what to correct.
+    const unread = shownSettingUrl(override) === undefined;
     throw new Error(
-      `${SLACK_POST_API_URL_VARIABLE} must be an https URL, or http on a loopback host; nothing was posted`
+      `${SLACK_POST_API_URL_VARIABLE} must be an https URL, or http on a loopback host${unread ? `: ${unshownSettingUrl(override)}` : ""}; nothing was posted`
     );
   }
   const { PATH: searchPath = "" } = env;
@@ -386,6 +407,18 @@ export async function postSlackReply(
       `slack_post's poster exited ${code} without an answer${detail}: ${MAY_HAVE_POSTED}`
     );
   }
+  if (line.redirected !== undefined) {
+    const target = posterTarget(line.target);
+    const where =
+      target.kind === "another host" ? "redirecting to another host" : redirectedTo(target);
+    const fix =
+      target.kind === "the same origin"
+        ? `correct the path of ${SLACK_POST_API_URL_VARIABLE}, or unset it for Slack's; ${SAME_ADDRESS_CAUSE}`
+        : `${SLACK_POST_API_URL_VARIABLE} must name the Web API's own address, or be unset for Slack's`;
+    throw new Error(
+      `chat.postMessage answered HTTP ${Number(line.redirected)}, ${where}, and slack_post follows no redirect, since the post carries the bot token: nothing was sent there; ${fix}`
+    );
+  }
   if (line.refused === null) {
     throw new Error(
       "Slack refused chat.postMessage with an error code slack_post does not pass on"
@@ -414,14 +447,25 @@ function posterLine(stdout: string): PosterLine | undefined {
   }
 }
 
-/** https anywhere, or http on a loopback host, which a stand-in on this machine is. */
-function allowedAPIURL(value: string): boolean {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    return false;
+/** Where the poster's `{redirected}` line says the redirect pointed: one of `redirectTarget`'s
+ * kinds, or another host; any other value names no target. */
+function posterTarget(value: unknown): RedirectTarget | { readonly kind: "another host" } {
+  if (typeof value !== "object" || value === null || !("kind" in value))
+    return { kind: "no target" };
+  if (value.kind === "another host" || value.kind === "the same origin")
+    return { kind: value.kind };
+  if (value.kind === "another origin" && "origin" in value && typeof value.origin === "string") {
+    return { kind: "another origin", origin: value.origin };
   }
+  return { kind: "no target" };
+}
+
+/** https anywhere, or http on a loopback host, which a stand-in on this machine is; and in both a
+ * URL `shownSettingUrl` shows, since one that still holds a raw `@` once its user part is taken
+ * out can name a host taken from a token. */
+function allowedAPIURL(value: string): boolean {
+  if (shownSettingUrl(value) === undefined) return false;
+  const url = new URL(value);
   if (url.protocol === "https:") return true;
   return url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
 }

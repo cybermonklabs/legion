@@ -1,6 +1,8 @@
 package sandbox
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -10,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 )
 
 const (
@@ -165,6 +168,53 @@ func TestANamedAddressShowsOnlyItsSchemeHostAndPort(t *testing.T) {
 	}
 	if got := namedNATSURLs(nil); got != "(unset)" {
 		t.Errorf("namedNATSURLs(nil) = %q, want (unset)", got)
+	}
+}
+
+// namedURL names an endpoint by the host net/url reads, so a value whose user part net/url reads
+// apart would be named by a piece of its credential: `https://tok/en@host` as `https://tok`. No
+// such value reaches it, since every address a daemon hands this runtime is a setting the loader
+// read, and the loader refuses each address setting so at start, by its length, naming the setting
+// and no part of the value (config's validURL). The control: a user and a password net/url reads
+// whole still load, and namedURL masks them. The token is made for this test.
+func TestNamedURLIsHandedNoValueWhoseUserPartTheLoaderReadsApart(t *testing.T) {
+	const token, rest = "not-a-secret-tok71e4", "not-a-secret-0c9b"
+	misread := "https://" + token + "/" + rest + "@envoy.internal.example"
+	// What this test guards against: namedURL of such a value names the token's head.
+	if got := namedURL(misread); got != "https://"+token {
+		t.Fatalf("namedURL(%q) = %q, want the piece of the token net/url reads as the host", misread, got)
+	}
+	load := func(extra string) (config.Config, error) {
+		path := filepath.Join(t.TempDir(), "legion.yaml")
+		body := "project: demo\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\n" + extra
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return config.LoadForValidation(path, func(string) string { return "" })
+	}
+	for _, key := range []string{"envoy_url", "daemon_url", "dispatch_url"} {
+		_, err := load(key + ": " + misread + "\n")
+		if err == nil {
+			t.Fatalf("%s %q loaded; its user part reads apart, and namedURL would name %q", key, misread, namedURL(misread))
+		}
+		if !strings.HasPrefix(err.Error(), key+", a value of ") {
+			t.Errorf("the refusal of %s, %q, does not name the setting and the value's length", key, err)
+		}
+		if strings.Contains(err.Error(), token) || strings.Contains(err.Error(), rest) {
+			t.Errorf("the refusal of %s, %q, holds a piece of the token", key, err)
+		}
+	}
+	if _, err := load(`nats_urls: ["nats://` + token + "/" + rest + `@nats.internal.example:4222"]` + "\n"); err == nil ||
+		strings.Contains(err.Error(), token) || !strings.HasPrefix(err.Error(), "nats_urls entry 1, a value of ") {
+		t.Errorf("a nats_urls entry whose user part reads apart was not refused by its place and length: %v", err)
+	}
+	whole := "https://made-up-user:" + rest + "@envoy.internal.example:9020"
+	cfg, err := load("envoy_url: " + whole + "\n")
+	if err != nil {
+		t.Fatalf("envoy_url with a user and a password net/url reads whole was refused: %v", err)
+	}
+	if got, want := namedURL(cfg.EnvoyURL), "https://xxxxx@envoy.internal.example:9020"; got != want {
+		t.Errorf("namedURL(%q) = %q, want %q", cfg.EnvoyURL, got, want)
 	}
 }
 

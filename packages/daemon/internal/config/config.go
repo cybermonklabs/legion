@@ -34,6 +34,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/sjawhar/envoy/urlsetting"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -76,9 +77,12 @@ type Config struct {
 	// address on its own.
 	AdvertiseHost string
 	PostgresDSN   string
-	StateDir      string
-	Runtime       Runtime
-	AdmissionCap  int
+	// PostgresDSNSetting is the setting PostgresDSN was read from, as a refusal of it names it:
+	// `postgres_dsn`, the file's key, or LEGION_POSTGRES_DSN when the file names none.
+	PostgresDSNSetting string
+	StateDir           string
+	Runtime            Runtime
+	AdmissionCap       int
 
 	// DaemonURL is the API address every pane is told (`LEGION_DAEMON_URL`), with no trailing
 	// slash; the loopback address on Port unless the file names another.
@@ -675,16 +679,17 @@ func namesKey(value *yaml.Node, name string) bool {
 	return false
 }
 
-// readNatsURLs is `nats_urls`: valid URLs, in order, each once.
+// readNatsURLs is `nats_urls`: valid URLs, in order, each once. A refused entry is named by its
+// place in the list, never by its value, which may carry a NATS credential.
 func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 	read, err := readStrings(value, key)
 	if err != nil || read == nil {
 		return read, err
 	}
 	urls := make([]string, 0, len(read))
-	for _, raw := range read {
+	for index, raw := range read {
 		if _, err := endpointURL(raw, key); err != nil {
-			return nil, fmt.Errorf("%s entry %q%s", key, raw, strings.TrimPrefix(err.Error(), key))
+			return nil, fmt.Errorf("%s entry %d%s", key, index+1, strings.TrimPrefix(err.Error(), key))
 		}
 		if !slices.Contains(urls, raw) {
 			urls = append(urls, raw)
@@ -916,8 +921,15 @@ func readUnit(value *yaml.Node, key string, unit time.Duration, most int) (*time
 }
 
 // validURL is the shipped `validateUrl` (config.ts) for the URLs this daemon dials or
-// hands out: a scheme and a host, or the key is refused.
+// hands out: a scheme and a host, or the key is refused. A value whose user part net/url reads
+// apart is refused first, by its length and the cause (urlsetting.Refuse): net/url ends a user
+// part at its last @ and the authority at the first /, ? or #, so a token holding one of those
+// reads in part as the host, which the daemon would dial and every line naming the URL print
+// (`https://tok/en@host` reads the host `tok`).
 func validURL(value, key string) (*url.URL, error) {
+	if err := urlsetting.Refuse(key, value); err != nil {
+		return nil, err
+	}
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return nil, fmt.Errorf("%s must be a valid URL", key)
@@ -1006,9 +1018,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	}
 	cfg.StateDir = underConfig(*file.StateDir, configDir)
 
-	cfg.PostgresDSN = env("LEGION_POSTGRES_DSN")
+	cfg.PostgresDSN, cfg.PostgresDSNSetting = env("LEGION_POSTGRES_DSN"), "LEGION_POSTGRES_DSN"
 	if file.PostgresDSN != nil {
-		cfg.PostgresDSN = *file.PostgresDSN
+		cfg.PostgresDSN, cfg.PostgresDSNSetting = *file.PostgresDSN, "postgres_dsn"
 	}
 	if strings.TrimSpace(cfg.PostgresDSN) == "" {
 		return Config{}, errors.New("postgres_dsn is required (or set LEGION_POSTGRES_DSN)")

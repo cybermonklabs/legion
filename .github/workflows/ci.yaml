@@ -239,6 +239,7 @@ env:
       "tool-fallback": "tool_fallback",
       "tool-fallback-arm": "tool_fallback",
       "proof-sdk-offline": "proof_sdk_offline",
+      "prototype-go": "prototype_go",
       "worker-image": "worker_image",
       "browser-image": "browser_image"
     }
@@ -453,6 +454,7 @@ jobs:
       # and so reads the same files.
       tool_fallback: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.tool_fallback }}
       proof_sdk_offline: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.proof_sdk_offline }}
+      prototype_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.prototype_go }}
       # The paths filter's own verdict for every filter, before the `full-ci` term above rewrites
       # the eight outputs the nine slow suites run behind. On a pull request without that
       # label each of those eight is `false` whether its paths matched or not, so a reader of the
@@ -684,6 +686,9 @@ jobs:
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
+              # How every opener of a Postgres connection string reads it: the daemon's store
+              # and the session database's connect refuse a misread one through it.
+              - 'packages/envoy/pgsetting/*'
               # The reasons the listener refuses a publish to a role no session holds, which the
               # daemon's notify path reads as notify.ErrNoHolder.
               - 'packages/envoy/roleholder/*'
@@ -701,6 +706,9 @@ jobs:
               # The daemon reads a step record's words and the form of its agent text through
               # this one public package, for the same reason.
               - 'packages/envoy/steprecord/*'
+              # The daemon's config refuses a URL setting whose user part net/url reads apart
+              # through this one public package, for the same reason.
+              - 'packages/envoy/urlsetting/*'
             # The Dispatch server, `go list -deps ./cmd/dispatch` in packages/envoy (its embedded
             # migrations and pmdoc schema included): what the daemon's outbox test builds
             # (internal/testbuild/testbuild.go:112, called from
@@ -804,6 +812,9 @@ jobs:
               - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
+              # How every opener of a Postgres connection string reads it (store.Open, the
+              # census, the boot's DATABASE_URL refusal).
+              - 'packages/envoy/pgsetting/*'
               - 'packages/envoy/roleholder/*'
               # internal/bus refuses a nats-server below the floor this package holds.
               - 'packages/envoy/natsversion/*'
@@ -909,6 +920,9 @@ jobs:
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
               # migrations are held to, in the envoy module so both sets keep one rule.
               - 'packages/envoy/migrationid/*'
+              # How every opener of a Postgres connection string reads it: the daemon's store
+              # and the session database's connect refuse a misread one through it.
+              - 'packages/envoy/pgsetting/*'
               # packages/envoy/roleholder names the reasons the listener refuses a role publish
               # with, which internal/notify reads as notify.ErrNoHolder.
               - 'packages/envoy/roleholder/*'
@@ -922,6 +936,9 @@ jobs:
               - 'packages/envoy/natsversion/*'
               # The door onto a step record's words and the form of its agent text, for the same reason.
               - 'packages/envoy/steprecord/*'
+              # The door onto the refusal of a URL setting whose user part net/url reads apart,
+              # which the daemon's config takes, for the same reason.
+              - 'packages/envoy/urlsetting/*'
             # The listener's packages, `go list -deps ./cmd/listener` in packages/envoy.
             listener_command: &listener_command
               - 'packages/envoy/cmd/listener/*'
@@ -955,6 +972,7 @@ jobs:
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/*'
               - 'packages/envoy/internal/ratelimit/*'
+              - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/roles/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
@@ -1129,6 +1147,7 @@ jobs:
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
               - 'packages/envoy/steprecord/*'
+              - 'packages/envoy/urlsetting/*'
               - 'packages/envoy/testnatsimages/*'
               - 'packages/contracts/**'
               - 'packages/envoy-client/**'
@@ -2157,6 +2176,9 @@ jobs:
               - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
+              # How every opener of a Postgres connection string reads it (store.Open, the
+              # census, the boot's DATABASE_URL refusal).
+              - 'packages/envoy/pgsetting/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/natsversion/*'
             listener_command: &listener_command
@@ -2187,6 +2209,7 @@ jobs:
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/*'
               - 'packages/envoy/internal/ratelimit/*'
+              - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/roles/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
@@ -2442,13 +2465,19 @@ jobs:
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/fold/*'
+              # The daemon's store reads its DSN through pgsetting, which names a refusal
+              # through redact.
+              - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/migrationid/*'
+              - 'packages/envoy/pgsetting/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/sessiontiming/*'
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
               - 'packages/envoy/steprecord/*'
+              # The daemon's config refuses a misread URL setting through urlsetting.
+              - 'packages/envoy/urlsetting/*'
               - *go_workspace
               # The guides and docs the skills guard sweeps (src/skills-guard.test.ts:143-148).
               - 'AGENTS.md'
@@ -2458,6 +2487,11 @@ jobs:
               - 'deploy/kubernetes/daemon/controller.yaml.example'
               # scripts/skill-scenarios/rig.test.ts:13,129,1009 and rig.sh:215.
               - 'scripts/e2e/lib/**'
+              # The redirect check its step runs, whose rows are this package's, pi-shared's,
+              # envoy-client's, claude-envoy's and dispatch's e2e client's tests, which the patterns
+              # above select, and the check's own test, which the step before it runs.
+              - 'scripts/checks/redirect-refusals.ts'
+              - 'scripts/checks/redirect-refusals.test.ts'
               - *omp_install
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
@@ -2518,6 +2552,7 @@ jobs:
               - 'packages/contracts/src/log-text.ts'
               - 'packages/contracts/src/related-forms.ts'
               - 'packages/contracts/src/repo.ts'
+              - 'packages/contracts/src/setting-url.ts'
               - 'packages/contracts/src/sha256.ts'
               - 'packages/contracts/src/slack.ts'
               - 'packages/contracts/src/subject-project.ts'
@@ -2634,6 +2669,7 @@ jobs:
               - 'packages/contracts/src/log-text.ts'
               - 'packages/contracts/src/related-forms.ts'
               - 'packages/contracts/src/repo.ts'
+              - 'packages/contracts/src/setting-url.ts'
               - 'packages/contracts/src/sha256.ts'
               - 'packages/contracts/src/slack.ts'
               - 'packages/contracts/src/subject-project.ts'
@@ -2824,6 +2860,7 @@ jobs:
               - '!packages/envoy/natscred/**/*_test.go'
               - '!packages/envoy/natsgrant/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
+              - '!packages/envoy/pgsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # The text checks of the three Go modules, the Dispatch API's eight static source
@@ -2929,6 +2966,7 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
+              - 'packages/envoy/pgsetting/*'
               # The step takes the memory tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
               - '.github/scripts/pg-connection-ceiling.sh'
@@ -2954,6 +2992,7 @@ jobs:
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natscred/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
+              - '!packages/envoy/pgsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # `go test -tags multiprocess ./cmd/dispatch`, the same closure as dispatch_memory.
@@ -2966,6 +3005,7 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
+              - 'packages/envoy/pgsetting/*'
               # The step takes the multiprocess tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
               - '.github/scripts/pg-connection-ceiling.sh'
@@ -2992,6 +3032,7 @@ jobs:
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natscred/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
+              - '!packages/envoy/pgsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # The two-build job's Go step alone, behind a gate of its own (dispatch_two_builds_go):
@@ -3011,6 +3052,7 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
+              - 'packages/envoy/pgsetting/*'
               - '.github/scripts/go-tagged-tests.sh'
               - 'packages/envoy/scripts/build-dispatch-build.sh'
               - '.github/scripts/pg-connection-ceiling.sh'
@@ -3060,6 +3102,7 @@ jobs:
               - 'packages/contracts/src/log-text.ts'
               - 'packages/contracts/src/related-forms.ts'
               - 'packages/contracts/src/repo.ts'
+              - 'packages/contracts/src/setting-url.ts'
               - 'packages/contracts/src/sha256.ts'
               - 'packages/contracts/src/slack.ts'
               - 'packages/contracts/src/subject-project.ts'
@@ -3091,6 +3134,7 @@ jobs:
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natscred/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
+              - '!packages/envoy/pgsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # The two-build job: its Go step's reads above, named again so the job runs for the
@@ -3111,6 +3155,7 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
+              - 'packages/envoy/pgsetting/*'
               - '.github/scripts/go-tagged-tests.sh'
               - 'packages/envoy/scripts/build-dispatch-build.sh'
               - 'packages/envoy-client/**'
@@ -3158,6 +3203,7 @@ jobs:
               - 'packages/contracts/src/log-text.ts'
               - 'packages/contracts/src/related-forms.ts'
               - 'packages/contracts/src/repo.ts'
+              - 'packages/contracts/src/setting-url.ts'
               - 'packages/contracts/src/sha256.ts'
               - 'packages/contracts/src/slack.ts'
               - 'packages/contracts/src/subject-project.ts'
@@ -3194,6 +3240,7 @@ jobs:
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natscred/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
+              - '!packages/envoy/pgsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # The server-change soak (listener-server-change): `go test -tags serverchange
@@ -3295,6 +3342,7 @@ jobs:
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
+              - 'packages/envoy/pgsetting/*'
               # cmd/listener/api_test.go:176,421,465, which the soak's run compiles too.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               # cmd/listener/api_test.go:4605, which the soak's run compiles too.
@@ -3311,6 +3359,7 @@ jobs:
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natscred/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
+              - '!packages/envoy/pgsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # The local acceptance run drives the Go listener and renders every frame with the
@@ -3901,8 +3950,10 @@ jobs:
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natsgrant/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
+              - '!packages/envoy/pgsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               - '!packages/envoy/steprecord/**/*_test.go'
+              - '!packages/envoy/urlsetting/**/*_test.go'
               # END generated
             # The API race job. Not packages/envoy/**, as envoy_go_race has: that root was here
             # because internal/dispatch/api's lock_level_test.go, event_insert_guard_test.go and
@@ -4052,6 +4103,7 @@ jobs:
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/migrationid/*'
+              - 'packages/envoy/pgsetting/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/natsversion/*'
               # The relayed shapes routes_shapes.go names, which this job's own package compiles.
@@ -4148,6 +4200,7 @@ jobs:
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natscred/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
+              - '!packages/envoy/pgsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # The document service's own race job. Not packages/envoy/**, as envoy_go_race has:
@@ -4216,10 +4269,12 @@ jobs:
               - 'packages/envoy/internal/oidc/*'
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
+              - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/stacktest/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/migrationid/*'
+              - 'packages/envoy/pgsetting/*'
               # internal/dispatch/docs/approval_carry_test.go:26.
               - 'packages/contracts/fixtures/decision-blocks/**'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
@@ -4247,9 +4302,11 @@ jobs:
               - '!packages/envoy/internal/oidc/**/*_test.go'
               - '!packages/envoy/internal/pglisten/**/*_test.go'
               - '!packages/envoy/internal/pgmigrate/**/*_test.go'
+              - '!packages/envoy/internal/redact/**/*_test.go'
               - '!packages/envoy/internal/stacktest/**/*_test.go'
               - '!packages/envoy/listenerwire/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/pgsetting/**/*_test.go'
               # END generated
             # The daemon's `legion` command, `go list -deps ./cmd/legion` in packages/daemon (its
             # embedded probes, turnscope.yml and role prompts included, and the envoy package it
@@ -4353,6 +4410,9 @@ jobs:
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
               # migrations are held to, in the envoy module so both sets keep one rule.
               - 'packages/envoy/migrationid/*'
+              # How every opener of a Postgres connection string reads it: the daemon's store
+              # and the session database's connect refuse a misread one through it.
+              - 'packages/envoy/pgsetting/*'
               # packages/envoy/roleholder names the reasons the listener refuses a role publish
               # with, which internal/notify reads as notify.ErrNoHolder.
               - 'packages/envoy/roleholder/*'
@@ -4366,6 +4426,9 @@ jobs:
               - 'packages/envoy/natsversion/*'
               # The door onto a step record's words and the form of its agent text, for the same reason.
               - 'packages/envoy/steprecord/*'
+              # The door onto the refusal of a URL setting whose user part net/url reads apart,
+              # which the daemon's config takes, for the same reason.
+              - 'packages/envoy/urlsetting/*'
             # The private-name port harness, in a job of its own: it builds the `legion` binary
             # of this head (.github/scripts/check-private-names-port.test.sh:70) and holds the
             # rules that binary carries to the frozen shell script's verdicts, case for case.
@@ -4483,6 +4546,7 @@ jobs:
               - 'packages/envoy/internal/weborigin/*'
               - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/migrationid/*'
+              - 'packages/envoy/pgsetting/*'
               # The step takes the multiprocess tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
@@ -4496,6 +4560,7 @@ jobs:
               - '!packages/envoy/natscred/**/*_test.go'
               - '!packages/envoy/natsgrant/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
+              - '!packages/envoy/pgsetting/**/*_test.go'
               # END generated
             # The Lean model of the airlock and the Go code it covers (airlock-lean): `lake build`
             # and the axiom print read the model's own project, and the two fuzz runs compile the
@@ -4654,8 +4719,10 @@ jobs:
               - '!packages/envoy/natscred/**/*_test.go'
               - '!packages/envoy/natsgrant/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
+              - '!packages/envoy/pgsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               - '!packages/envoy/steprecord/**/*_test.go'
+              - '!packages/envoy/urlsetting/**/*_test.go'
               # END generated
             # Every file packages/daemon/docker/worker.Dockerfile builds from, for the worker-image
             # job (.github/workflows/worker-image.yaml, which the build reads too): the root
@@ -4717,6 +4784,7 @@ jobs:
               - 'packages/envoy/migrationid/**'
               - 'packages/envoy/natscred/**'
               - 'packages/envoy/natsgrant/**'
+              - 'packages/envoy/pgsetting/**'
               - 'packages/envoy/roleholder/**'
               - 'packages/envoy/scripts/**'
               - 'packages/envoy/sessiontiming/**'
@@ -4862,6 +4930,13 @@ jobs:
               # crane the action installs, so a guide written under one of those directories
               # would start it for nothing.
               - '!**/*.md'
+            # ci.yaml's prototype-go job: `go test ./...` of the research prototype's module,
+            # outside the repository's go.work, so with GOWORK=off: every file of the module, its
+            # own go.mod and go.sum among them, and the two files that hold the job.
+            prototype_go:
+              - 'docs/research/temporal-evaluation-2026-11/prototype/**'
+              - *ci_router
+              - '.github/workflows/ci-job-prototype-go.yaml'
 
       # filter_verdicts above is one object over the three steps, the shape .github/scripts/ci-ok.jq
       # reads. A GitHub expression can build no object from three, so jq merges them here. A
@@ -5895,6 +5970,20 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
+  # The research prototype's own tests (docs/research/temporal-evaluation-2026-11/prototype): its
+  # module is outside the repository's go.work, so no other Go job compiles it. Its tests open no
+  # database.
+  prototype-go:
+    needs: changes
+    if: needs.changes.outputs.prototype_go == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-prototype-go.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
   # The worker image's pull-request build: worker-image.yaml builds the head and publishes its
   # sha- tag only. Main's image builds are release.yaml's call of the same workflow.
   worker-image:
@@ -6184,6 +6273,7 @@ jobs:
       - envoy-session-stall
       - ci-filters
       - proof-sdk-offline
+      - prototype-go
       - worker-image
       - browser-image
     if: ${{ always() }}

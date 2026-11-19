@@ -564,3 +564,32 @@ func stringConstants(node any, found *[]string) {
 		}
 	}
 }
+
+// The lock watch's failed connect names no user and no database of the migrated connection's
+// configuration, whose user may be a token written where the user stands. The control is pgx's own
+// error for the same configuration, which names both in front of what failed. The user and the
+// database are made for this test.
+func TestALockWatchThatCannotConnectNamesNoUserAndNoDatabase(t *testing.T) {
+	const (
+		user     = "made-up-user-8a4f"
+		database = "made-up-db-8a4f"
+	)
+	config, err := pgx.ParseConfig("postgres://" + user + "@127.0.0.1:1/" + database + "?connect_timeout=3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := pgx.ConnectConfig(ctx, config); err == nil || !strings.Contains(err.Error(), user) {
+		t.Fatalf("UNKNOWN: pgx's own failed connect names no user, so this row saw nothing: %v", err)
+	}
+	_, err = watchDialer(config, nil)(ctx)
+	if err == nil || !strings.HasPrefix(err.Error(), "connect the lock watch: failed to connect: ") {
+		t.Fatalf("%v, want a failed connect of the lock watch", err)
+	}
+	for _, part := range []string{user, database} {
+		if strings.Contains(err.Error(), part) {
+			t.Errorf("the lock watch's failed connect names %q: %q", part, err)
+		}
+	}
+}

@@ -59,11 +59,12 @@ func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
 	}})
-	// The failure the client notes is "<METHOD> <target>: status <n>: <body>" (githubapp's
-	// failedAnswer). The body is padded so that a three-byte character starts at byte 1,023 of
-	// that text, and is three-byte characters from there on, so one straddles byte 1,024 and one
-	// straddles the cut inside it, wherever the marker's length puts the cut.
-	prefix := "GET " + github.URL + "/app/hook/deliveries?per_page=100: status 503: "
+	// The failure the client notes is "<METHOD> <path>: status <n>: <body>" (githubapp's
+	// failedAnswer), the request named by its path after the API base. The body is padded so that
+	// a three-byte character starts at byte 1,023 of that text, and is three-byte characters from
+	// there on, so one straddles byte 1,024 and one straddles the cut inside it, wherever the
+	// marker's length puts the cut.
+	prefix := "GET /app/hook/deliveries?per_page=100: status 503: "
 	pad := strings.Repeat("x", (1023-len(prefix))%3)
 	body := pad + strings.Repeat("€", (4096-len(pad))/3)
 	if uncut := prefix + body; utf8.RuneStart(uncut[1024]) {
@@ -124,6 +125,49 @@ func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 	t.Logf("/healthz of the process with no GitHub App: %d %s", answer.status, answer.body)
 	if answer.status != http.StatusOK || !answer.OK || string(answer.GitHub) != "null" {
 		t.Fatalf("/healthz of a process with no GitHub App = %d %s, want 200 with ok true and github null", answer.status, answer.body)
+	}
+}
+
+// DISPATCH_GITHUB_API_BASE may carry a user and a password, and the failure a GitHub read notes
+// for /healthz names its request by the path after that base, never by the base. The real binary,
+// with a base whose user part is made up for this test and a loopback GitHub that answers the
+// sweep's listing 503: the sweep's cause in /healthz starts with the request's path and status, and
+// neither /healthz's answer nor the process's own output holds a part of the user part. The path
+// is the control: a note that named nothing of its request would hold no user part either.
+func TestHealthzNamesAFailedGitHubReadWithNoPartOfTheAPIBasesUserPart(t *testing.T) {
+	const (
+		user     = "made-up-user-6b1d"
+		password = "not-a-secret-e93a07"
+	)
+	database := storetest.Open(t)
+	_, natsURL := testnats.Start(t)
+	github := githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, `{"message":"Service Unavailable"}`)
+	}})
+	base := "http://" + user + ":" + password + "@" + strings.TrimPrefix(github.URL, "http://")
+	env := githubAppEnv(t, base)
+	env["DISPATCH_TEST_HOOKS"] = "1"
+	env["DISPATCH_TEST_REDELIVERY_INTERVAL"] = "1s"
+	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
+		NATSURL: natsURL, SigningKey: gitHubReadsSigningKey, Env: env,
+	})
+	process.waitHealthy(t)
+
+	failed := process.waitForGitHubReads(t, func(answer healthzAnswer) string {
+		return failedOn503(answer, githubreads.WebhookRedelivery)
+	})
+	t.Logf("/healthz with the sweep failed: %d %s", failed.status, failed.body)
+	const path = "GET /app/hook/deliveries?per_page=100: status 503"
+	if cause := *failed.reads[string(githubreads.WebhookRedelivery)].Cause; !strings.HasPrefix(cause, path) {
+		t.Errorf("the sweep's cause is %q, want one starting %q: the request named by its path", cause, path)
+	}
+	for name, text := range map[string]string{"/healthz's answer": failed.body, "the process's output": process.Output.String()} {
+		for _, part := range []string{user, password} {
+			if strings.Contains(text, part) {
+				t.Errorf("%s holds %q, a part of DISPATCH_GITHUB_API_BASE's user part: %s", name, part, text)
+			}
+		}
 	}
 }
 

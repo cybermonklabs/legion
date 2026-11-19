@@ -10,6 +10,8 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import type { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
+import { urlForText } from "@legion/contracts/log-text";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 import type { Ask, InboxRow } from "../web/src/api/types";
 
 export class Interrupted extends Error {}
@@ -166,6 +168,7 @@ export class Supervisor {
 }
 
 const loopbackHosts = ["127.0.0.1", "localhost", "[::1]", "::1"];
+const POSTGRES_SCHEMES = ["postgres:", "postgresql:"];
 
 /** Why `raw` may not be the database this command truncates, or undefined when it names this
  *  machine: every host libpq would connect to is a loopback name or address or a Unix socket
@@ -192,10 +195,15 @@ export function databaseUrlRefusal(raw: string): string | undefined {
     .filter((host) => host !== "" && !host.startsWith("/"))
     .filter((host) => !loopbackHosts.includes(host.toLowerCase()));
   if (remote.length === 0) return undefined;
-  return (
-    "DATABASE_URL must name a loopback Postgres (127.0.0.1, localhost or [::1]) or a Unix " +
-    `socket, not ${remote.join(", ")}: this command truncates it`
-  );
+  // A user part that holds a `/` leaves a raw `@` once the user part the URL parser found is taken
+  // out, and the host it read is then a part of the user part: such a value is named by its
+  // length (`shownSettingUrl`, of the Postgres schemes), not by its hosts.
+  const misread = raw.includes("@") && shownSettingUrl(raw, POSTGRES_SCHEMES) === undefined;
+  return misread
+    ? "DATABASE_URL must name a loopback Postgres (127.0.0.1, localhost or [::1]) or a Unix " +
+        `socket: ${unshownSettingUrl(raw, POSTGRES_SCHEMES)}; this command truncates it`
+    : "DATABASE_URL must name a loopback Postgres (127.0.0.1, localhost or [::1]) or a Unix " +
+        `socket, not ${remote.join(", ")}: this command truncates it`;
 }
 
 /** `value` as one shell word, safe to paste whatever it holds. The same rule as `quote` in
@@ -203,6 +211,96 @@ export function databaseUrlRefusal(raw: string): string | undefined {
  *  packages/envoy/scripts/fixtures/shell-quote.json. */
 export function shellQuote(value: string): string {
   return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+/** What the banner of `bun run dispatch:local` names, once its instance is up. */
+export interface InstanceBanner {
+  readonly baseUrl: string;
+  readonly broadcastId: string;
+  readonly plannerSession: string;
+  /** The fake Envoy's origin. */
+  readonly fakeEnvoy: string;
+  /** The database the instance truncates and seeds. */
+  readonly databaseUrl: string;
+  /** Whether DATABASE_URL named it, a setting of the person's; else it is the repository's dev
+   *  container's URL, which the source holds. */
+  readonly databaseGiven: boolean;
+  /** Each port the harness reported, by its variable. */
+  readonly ports: Readonly<Record<string, string>>;
+  /** The environment this command runs in, for the broker switch it hands on. */
+  readonly env: Readonly<Record<string, string | undefined>>;
+}
+
+/** The broker switches (e2e/harness-broker.ts) the shell of this command set. */
+function brokerSwitches(banner: InstanceBanner): string[] {
+  return ["DISPATCH_E2E_AGENT_SECRETS_URL", "DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"].filter(
+    (variable) => banner.env[variable] !== undefined
+  );
+}
+
+/** The variables the command reads from the shell that runs it, never writing their values: a
+ *  DATABASE_URL the person set, and each broker switch the shell set. Either may carry a password
+ *  (the broker's URL may carry a user part). */
+function fromShell(banner: InstanceBanner): string[] {
+  return [...(banner.databaseGiven ? ["DATABASE_URL"] : []), ...brokerSwitches(banner)];
+}
+
+/** The harness inputs a command needs to reach this instance, as a shell prefix: the database,
+ *  each port the harness reported, and the broker switch this shell set, each variable of
+ *  `fromShell` written as its own name read from the shell. A broker switch is handed on through
+ *  `env` and only when the shell that runs the command sets it (`${NAME+"NAME=$NAME"}`): the
+ *  harness reads an empty switch as "no broker" and an unset one as "the fake broker", so a shell
+ *  without it must leave it unset. */
+function harnessEnvironment(banner: InstanceBanner): string {
+  const switches = brokerSwitches(banner);
+  return [
+    banner.databaseGiven
+      ? 'DATABASE_URL="$DATABASE_URL"'
+      : `DATABASE_URL=${shellQuote(banner.databaseUrl)}`,
+    ...Object.entries(banner.ports).map(([variable, port]) => `${variable}=${port}`),
+    ...(switches.length === 0 ? [] : ["env"]),
+    ...switches.map((variable) => `\${${variable}+"${variable}=$${variable}"}`),
+  ].join(" ");
+}
+
+/** The banner's line that says which variables the command reads from the shell, or nothing. */
+function fromShellLine(banner: InstanceBanner): string {
+  const names = fromShell(banner);
+  if (names.length === 0) return "";
+  const listed =
+    names.length === 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+  const them = names.length === 1 ? "it" : "them";
+  return `  The command reads ${listed} as the shell that runs it sets ${them}: set ${them} there as you set ${them} here.\n`;
+}
+
+/** The banner `bun run dispatch:local` prints once its instance is up: where to open it, the
+ *  seeded rows, the database, the fake Envoy, and a command that runs a spec against it. A
+ *  DATABASE_URL the person set is named as `urlForText` names a Postgres URL, with no user part
+ *  and no query, or by its fixed phrase; the dev container's URL is named as the source holds it. */
+export function instanceBanner(banner: InstanceBanner): string {
+  const { baseUrl, databaseUrl, fakeEnvoy } = banner;
+  const database = banner.databaseGiven
+    ? urlForText(databaseUrl, "the DATABASE_URL you set")
+    : databaseUrl;
+  return (
+    "\nDispatch local instance is up.\n" +
+    `  Open (signed in as alice): ${baseUrl}/auth/_dev/signin?login=alice&next=/\n` +
+    `  Sign in as bob:            ${baseUrl}/auth/_dev/signin?login=bob&next=/\n` +
+    `  Seeded broadcast:          ${baseUrl}/agents/broadcasts/${banner.broadcastId}\n` +
+    `  Planner's live view:       ${baseUrl}/agents/${banner.plannerSession}/live\n` +
+    `  Agent bearer:              e2e-token (for a local Oh My Pi session: DISPATCH_URL=${baseUrl} ` +
+    "DISPATCH_TOKEN=e2e-token, with DISPATCH_TOKEN_FILE unset since it wins)\n" +
+    `  Database (truncated and reseeded on every start): ${database}\n` +
+    `  Fake Envoy: live sessions GET ${fakeEnvoy}/v1/sessions; ` +
+    `reseed them with PUT ${fakeEnvoy}/__fixture/sessions\n` +
+    "  Run a spec against it from packages/dispatch (this empties the instance; restart it to " +
+    "reseed):\n" +
+    `    DISPATCH_E2E_REUSE_SERVERS=1 ${harnessEnvironment(banner)} bunx ` +
+    "playwright test --config e2e/playwright.config.ts --project=chromium e2e/broadcast.e2e.ts\n" +
+    fromShellLine(banner) +
+    "Open exactly that origin: 'localhost' is another Host and the server refuses it (421).\n" +
+    "Press Ctrl-C to stop."
+  );
 }
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;

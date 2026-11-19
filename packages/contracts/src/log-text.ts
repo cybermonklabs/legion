@@ -4,18 +4,22 @@
 // session hook, and the broker client's trades. One rule, so no client names more of a setting
 // than another, and the rule of the Go clients (`packages/envoy/internal/redact`):
 //  - a configured URL prints only when it is provably a plain http(s) URL with no place a
-//    credential can sit (`isCleanUrl`); any other value, one that does not parse as a URL
-//    included, prints as a fixed phrase naming its setting, and no part of it is ever printed;
+//    credential can sit (`isCleanUrl`); a Postgres URL prints as its scheme, host, port and
+//    database alone, where its host passes the same host rule; any other value, one that does not
+//    parse as a URL included, prints as a fixed phrase naming its setting, and no part of it is
+//    ever printed;
 //  - a request URL a client built from such a URL prints only when its base is clean, and then
 //    with the path and query the client wrote (`requestForText`);
 //  - an error a library or the runtime threw is named by its class alone (`errorClass`), since
 //    its text can repeat the value it was handed;
 //  - the error a text leaves out is not kept as its cause, or it is printed with the text.
 //
-// No part of a URL that fails the check is printed, not even with its user info taken out: the
-// URL parser can split it otherwise than its writer meant. `https://user:p@ssw0rd` names no host,
-// and the parser reads `ssw0rd` as one; `https://tok?en@broker.example` is a host `tok` and a
-// query. Either would print part of a credential.
+// No part of an http(s) URL that fails the check is printed, not even with its user info taken
+// out: the URL parser can split it otherwise than its writer meant. `https://user:p@ssw0rd` names
+// no host, and the parser reads `ssw0rd` as one; `https://tok?en@broker.example` is a host `tok`
+// and a query. Either would print part of a credential. A Postgres URL is the one form printed
+// with its user info taken out (`postgresForText`), and only where it reads one way to every
+// parser.
 
 /** What stands in for a URL `urlForText` and `requestForText` will not print, after its setting. */
 export const URL_NOT_PRINTED =
@@ -83,12 +87,36 @@ function isDnsName(name: string): boolean {
 
 /**
  * `url`, a configured URL, as a text names it: an error, a log line, a notice. It is `url` as
- * written where `isCleanUrl` passes it, and otherwise `<setting> (not printed: …)`, `setting`
- * being the setting `url` was read from or what names it. Requests still go to the URL as
- * configured.
+ * written where `isCleanUrl` passes it; a Postgres URL as `postgresForText` names it; and otherwise
+ * `<setting> (not printed: …)`, `setting` being the setting `url` was read from or what names it.
+ * Requests still go to the URL as configured.
  */
 export function urlForText(url: string, setting: string): string {
-  return isCleanUrl(url) ? url : `${setting} ${URL_NOT_PRINTED}`;
+  if (isCleanUrl(url)) return url;
+  return postgresForText(url) ?? `${setting} ${URL_NOT_PRINTED}`;
+}
+
+/**
+ * A `postgres://` or `postgresql://` URL as `<scheme>//<host>[:port]/<database>`, with no user, no
+ * password and no query, or undefined. It is answered only where the value reads one way to every
+ * parser: printable ASCII with no `\`, the scheme in lower case (pgx reads any other case as
+ * `key=value` text), at most one `@` and that one before the first `/`, `?` or `#`, a host that
+ * passes `isHostPort`, a database of letters, digits, `.`, `_`, `~` and `-`, and a query with no
+ * `@` and no fragment. A password holding a raw `/`, `?` or `#`, or a second `@` (Go's parser
+ * splits at the last `@` and libpq's at the first), fails one of these, so no part of it is
+ * printed. A password whose raw `@` is its only one reads to both parsers as a password's head
+ * and a host, and that host is printed: it is the host the client dials.
+ */
+function postgresForText(url: string): string | undefined {
+  for (let at = 0; at < url.length; at += 1) {
+    const code = url.charCodeAt(at);
+    if (code <= 0x20 || code >= 0x7f || url[at] === "\\") return undefined;
+  }
+  const parts =
+    /^(postgres(?:ql)?:)\/\/(?:[^@/?#]*@)?([^@/?#]*)(\/[A-Za-z0-9._~-]*)?(?:\?[^@#]*)?$/.exec(url);
+  const [, scheme, hostPort, database = ""] = parts ?? [];
+  if (scheme === undefined || hostPort === undefined || !isHostPort(hostPort)) return undefined;
+  return `${scheme}//${hostPort}${database}`;
 }
 
 /**

@@ -1,4 +1,5 @@
 import { SESSION_HEARTBEAT_MS } from "@legion/contracts";
+import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { bearerCredential, bearerSource, fileBearer, type RequestCredential } from "./bearer";
 import {
@@ -404,7 +405,7 @@ export function envoySettings(
     );
   }
   if (namedUrl !== undefined && httpUrl(namedUrl) === undefined) {
-    return offWithError("ENVOY_URL must be an http or https URL");
+    return offWithError(`ENVOY_URL must be an http or https URL: ${unshownSettingUrl(namedUrl)}`);
   }
   const listener = section.url ?? DEFAULT_ENVOY_URL;
   const url = namedUrl ?? listener;

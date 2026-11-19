@@ -16,7 +16,6 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -27,6 +26,8 @@ import (
 	// while importing jackc/pgx here would add a third direct dependency, which
 	// INFRA-1546 pins against.
 	_ "github.com/cschleiden/go-workflows/backend/postgres"
+
+	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/pgdsn"
 )
 
 // EvalDatabase is the database the library experiments run in. The pod's PostgreSQL
@@ -44,7 +45,7 @@ const connectTimeout = 15 * time.Second
 // given, pointed at EvalDatabase instead of whatever database it named, and with the
 // given schema as the connection's search path when one is named.
 func DatabaseURL(dsn, schema string) (string, error) {
-	u, err := parseDSN(dsn)
+	u, err := pgdsn.Parse(dsn)
 	if err != nil {
 		return "", err
 	}
@@ -55,21 +56,6 @@ func DatabaseURL(dsn, schema string) (string, error) {
 		u.RawQuery = q.Encode()
 	}
 	return u.String(), nil
-}
-
-// parseDSN checks that a DSN is a PostgreSQL URL this package can point elsewhere.
-func parseDSN(dsn string) (*url.URL, error) {
-	if strings.TrimSpace(dsn) == "" {
-		return nil, fmt.Errorf("-postgres-dsn is empty")
-	}
-	u, err := url.Parse(dsn)
-	if err != nil {
-		return nil, fmt.Errorf("-postgres-dsn %q is not a URL: %w", dsn, err)
-	}
-	if u.Scheme != "postgres" && u.Scheme != "postgresql" {
-		return nil, fmt.Errorf("-postgres-dsn %q must be a postgres:// URL, not %q", dsn, u.Scheme)
-	}
-	return u, nil
 }
 
 // SchemaName is a schema name no other run of this prototype uses.
@@ -88,7 +74,7 @@ func Logger() *slog.Logger {
 // the database the DSN itself names. It is safe to call from several runs at once: a
 // concurrent creation is reported by PostgreSQL and treated as success.
 func EnsureDatabase(ctx context.Context, dsn string) error {
-	u, err := parseDSN(dsn)
+	u, err := pgdsn.Parse(dsn)
 	if err != nil {
 		return err
 	}
@@ -135,7 +121,7 @@ func open(ctx context.Context, databaseURL string) (*sql.DB, error) {
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("reach PostgreSQL: %w", err)
+		return nil, fmt.Errorf("reach PostgreSQL: %w", pgdsn.ConnectFailure(err))
 	}
 	return db, nil
 }

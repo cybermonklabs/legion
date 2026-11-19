@@ -1064,6 +1064,12 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			want: "dispatch_url http://127.0.0.1:8080 names a loopback host, which in a pod is the pod itself; name the host pods reach it at when runtime is kubernetes",
 		},
 		{
+			// The refusal names the address by its scheme and host, never its user part.
+			name: "an envoy_url with a user and a password on loopback",
+			body: kubernetesWith("envoy_url: http://envoy-listener.internal.example:9020", "envoy_url: http://made-up-user:not-a-secret-5e1f@127.0.0.1:9020"),
+			want: "envoy_url http://127.0.0.1:9020 names a loopback host, which in a pod is the pod itself; name the host pods reach it at when runtime is kubernetes",
+		},
+		{
 			name: "daemon_url unspecified",
 			body: kubernetesWith("daemon_url: http://10.0.0.5:13370", "daemon_url: http://0.0.0.0:13370"),
 			want: "daemon_url http://0.0.0.0:13370 names the unspecified address, which is no host a pod can dial; name the host pods reach it at when runtime is kubernetes",
@@ -1924,6 +1930,10 @@ func TestPluginsBlockRefusals(t *testing.T) {
 			"runtime.kubernetes.plugins.pi_legion names no host bun can fetch a tarball from"},
 		"an http URL with a single slash and no host": {"    plugins:\n      pi_legion: http:/cache/x.tgz\n      pi_envoy: 9.6.1\n",
 			"runtime.kubernetes.plugins.pi_legion names no host bun can fetch a tarball from"},
+		"an https URL with a user part and no host, named by its length": {"    plugins:\n      pi_legion: https://made-up-user:not-a-secret-a2c4@/x.tgz\n      pi_envoy: 9.6.1\n",
+			"runtime.kubernetes.plugins.pi_legion names no host bun can fetch a tarball from: a value of 45 characters"},
+		"a URL whose user part net/url reads apart, named by its length": {"    plugins:\n      pi_legion: https://not-a-secret-tok/a2c4@cache/x.tgz\n      pi_envoy: 9.6.1\n",
+			"runtime.kubernetes.plugins.pi_legion, a value of 41 characters, has an @ outside its user part"},
 		"not a mapping": {"    plugins: yes\n", "runtime.kubernetes.plugins must be a mapping"},
 	} {
 		t.Run(name, func(t *testing.T) {

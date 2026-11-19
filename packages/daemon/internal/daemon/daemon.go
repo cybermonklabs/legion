@@ -320,7 +320,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		}
 	}
 
-	st, err := store.Open(boot, cfg.PostgresDSN)
+	st, err := store.OpenSetting(boot, cfg.PostgresDSNSetting, cfg.PostgresDSN)
 	if err != nil {
 		return err
 	}

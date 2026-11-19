@@ -565,7 +565,7 @@ func (rr *replayRun) queryEndState(ctx context.Context, logged []string) ([]repl
 	if rr.pg == "" {
 		return nil, nil, errors.New("no Postgres URL")
 	}
-	conn, err := pgx.Connect(ctx, rr.pg)
+	conn, err := connectPG(ctx, rr.pg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("postgres: %w", err)
 	}

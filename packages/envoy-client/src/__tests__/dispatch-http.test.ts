@@ -781,7 +781,7 @@ describe("DispatchClient", () => {
     expect(error).toBeInstanceOf(DispatchGatewayError);
     expect(error.message).toStartWith(
       "GET http://dispatch.test/api/v1/issues/DSP-1/events?after=4&limit=10 answered 302 Found " +
-        "(a redirect to https://elsewhere.test:8443, which this client does not follow) with a body " +
+        "(redirecting to https://elsewhere.test:8443, which this client does not follow) with a body " +
         `that is not Dispatch's error JSON ("Moved")`
     );
     expect(error.message).not.toContain("user:");

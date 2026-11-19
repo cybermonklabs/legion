@@ -3,6 +3,7 @@ package gcp_test
 import (
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -269,7 +270,7 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 		{"allowed hosts on a listener that requires a credential", func(a *A) { ownListener(a).AllowedHosts = []string{"envoy.example.com"} }, "listener.allowedHosts",
 			[]string{"listener.allowedHosts is given on a listener that requires a credential", "reads no ENVOY_ALLOWED_HOSTS"}},
 		{"an http issuer", func(a *A) { ownListener(a).OidcIssuer = "http://issuer.example.com" }, "listener.oidcIssuer",
-			[]string{`listener.oidcIssuer "http://issuer.example.com" must be an https URL`}},
+			[]string{"listener.oidcIssuer, a value of 25 characters, must be an https URL"}},
 		{"an issuer with a query", func(a *A) { ownListener(a).OidcIssuer = clusteredListenerIssuer + "?x=1" }, "listener.oidcIssuer",
 			[]string{"must be an https URL with a host and no user, query or fragment"}},
 		// An empty query or fragment, which url.Parse reads as none, is refused too, as
@@ -281,7 +282,7 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 			l.ClientNamespaces = []string{"legion"}
 			l.OidcIssuer = clusteredListenerIssuer + "#"
 		}, "tailnet.listener.oidcIssuer",
-			[]string{`tailnet.listener.oidcIssuer "` + clusteredListenerIssuer + `#" must be an https URL with a host and no user, query or fragment`}},
+			[]string{"tailnet.listener.oidcIssuer, a value of " + strconv.Itoa(len(clusteredListenerIssuer)+1) + " characters, must be an https URL with a host and no user, query or fragment"}},
 		{"an issuer with no host", func(a *A) { ownListener(a).OidcIssuer = "https:///v1" }, "listener.oidcIssuer", []string{"must be an https URL with a host"}},
 		{"an audience with a space", func(a *A) { ownListener(a).OidcAudience = "envoy hub" }, "listener.oidcAudience",
 			[]string{`listener.oidcAudience "envoy hub" holds whitespace or a control character`}},
@@ -300,6 +301,25 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 		{"a session user with no nkey", func(a *A) { a.SessionUser.NKey = "" }, "sessionUser", []string{"sessionUser.nkey is required"}},
 		{"a session user named as a user", func(a *A) { a.SessionUser.Name = "example-host-a" }, "sessionUser", []string{"name repeats users[0]"}},
 	})
+}
+
+// A listener's oidcIssuer refused for its user part is named by its length, never quoted, since
+// the user part holds a password. The control is the same listener with the issuer alone, which
+// resolves. The user part's values are made up for this test.
+func TestClusteredNatsHubNamesARefusedListenerIssuerByItsLength(t *testing.T) {
+	const user, phrase = "made-up-user-2c9e", "not-a-secret-71ad"
+	args := clusteredArgs()
+	issuer := "https://" + user + ":" + phrase + "@" + strings.TrimPrefix(clusteredListenerIssuer, "https://")
+	ownListener(args).OidcIssuer = issuer
+	_, err := gcp.ResolveClusteredNatsHub(args)
+	require.ErrorContains(t, err, "listener.oidcIssuer, a value of "+strconv.Itoa(len(issuer))+" characters, must be an https URL with a host and no user")
+	require.NotContains(t, err.Error(), user)
+	require.NotContains(t, err.Error(), phrase)
+
+	control := clusteredArgs()
+	ownListener(control)
+	_, err = gcp.ResolveClusteredNatsHub(control)
+	require.NoError(t, err)
 }
 
 // clusteredSeedRow is one string input holding a seed: edit puts it there, and input is the path

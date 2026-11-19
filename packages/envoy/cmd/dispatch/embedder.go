@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 const (
@@ -165,7 +166,7 @@ func resolveAzureEmbedder(env settingValues) (embedderConfig, error) {
 	}
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || strings.ContainsAny(endpoint, "?#") {
-		return embedderConfig{}, fmt.Errorf("DISPATCH_AZURE_EMBED_ENDPOINT=%q (expected an absolute https URL with a host and no query or fragment, the base URL the embeddings route is appended to)", endpoint)
+		return embedderConfig{}, fmt.Errorf("DISPATCH_AZURE_EMBED_ENDPOINT=%q (expected an absolute https URL with a host and no query or fragment, the base URL the embeddings route is appended to)", redact.URL(endpoint))
 	}
 	cfg.AzureEndpoint = endpoint
 	cfg.AzureDeployment = cmp.Or(strings.TrimSpace(env.get("DISPATCH_AZURE_EMBED_DEPLOYMENT")), defaultAzureDeployment)

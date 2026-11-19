@@ -1,11 +1,15 @@
 import { afterAll, expect, test } from "bun:test"
 import { mkdirSync, writeFileSync } from "node:fs"
+import { createServer, type Server } from "node:net"
 import { join, resolve } from "node:path"
 import { signedIn, stubIssuer, writeSignIn } from "@legion/broker-client/test/sign-ins"
 import { SignInEndedError } from "@legion/broker-client/token-errors"
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text"
+import { unshownSettingUrl } from "@legion/contracts/setting-url"
 import type { RequestCredential } from "@legion/envoy-client/bearer"
 import { EnvoySendUnconfirmedError } from "@legion/envoy-client/transport"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { REDIRECT_CODES, redirectServers } from "@legion/test-fixtures/redirect-servers"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { sendEnvoyMessage } from "../src/envoy-client"
 
@@ -686,3 +690,193 @@ test("envoy-send with no Envoy configured refuses, saying why, and sends nothing
   )
   expect(requests).toEqual([])
 })
+
+// The transport every client sends through follows no redirect (`EnvoyRedirectError`,
+// `@legion/envoy-client/transport`): fetch would send the listener's bearer or the broker's DPoP
+// proof, and the message, on to the origin a 3xx names. Through the command a person runs, a 3xx
+// fails the send naming the status and where it pointed, exits 1 and prints no `Sent`, at each
+// code, and is not sent again. Before, the send followed it and printed `Sent` on the other
+// origin's answer.
+test("envoy-send answered with a redirect exits 1 naming it, sends nothing to the other origin, and prints no Sent", async () => {
+  let asked = 0
+  const servers = redirectServers({
+    redirects: () => {
+      asked += 1
+      return true
+    },
+    atElsewhere: () => new Response(null, { status: 202 }),
+  })
+  const file = join(scratch, "redirected-envoy.json")
+  writeFileSync(
+    file,
+    JSON.stringify({
+      envoy: { enabled: true, url: servers.origin, token: fixtureSecret("bearer") },
+    }),
+  )
+  try {
+    for (const code of REDIRECT_CODES) {
+      servers.code = code
+      asked = 0
+      const {
+        code: exitCode,
+        stdout,
+        stderr,
+      } = await runEnvoySend(["ses_receiver", "redirected"], {
+        env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ENVOY_CONFIG_FILE: file },
+      })
+      const sent = { exitCode, stdout, stderr }
+      expect(servers.received, `the other origin after a ${code}`).toEqual([])
+      expect({ ...sent, asked }).toEqual({
+        exitCode: 1,
+        stdout: "",
+        stderr: `Claude Envoy send failed: POST ${servers.origin}/v1/messages/send answered ${code}, redirecting to ${servers.elsewhere}, and the Envoy client follows no redirect: set the Envoy URL (ENVOY_URL, or envoy.json's envoy.url) to the listener's own address\n`,
+        asked: 1,
+      })
+    }
+  } finally {
+    servers.stop()
+  }
+}, 30_000)
+
+// A listener URL may carry a user and a password, which the send keeps; no line it prints does:
+// the transport names each request on such a URL by the setting's fixed phrase alone
+// (`requestForText`). The password is made for this run, so no line of the test holds a
+// credential.
+test("envoy-send prints no user and no password of its Envoy URL, whatever the listener answers", async () => {
+  const password = crypto.randomUUID()
+  const answering = (status: number) =>
+    Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("no", { status }) })
+  const servers = [401, 403, 404, 500].map((status) => ({ status, server: answering(status) }))
+  // A listener that drops each connection unanswered, and a port nothing listens on.
+  const listen = async (server: Server) => {
+    const listening = Promise.withResolvers<void>()
+    server.listen(0, "127.0.0.1", listening.resolve)
+    await listening.promise
+    const address = server.address()
+    if (address === null || typeof address === "string") throw new Error("no port")
+    return address.port
+  }
+  const dropping = createServer((socket) => socket.destroy())
+  const dropped = await listen(dropping)
+  const closed = createServer()
+  const refused = await listen(closed)
+  closed.close()
+  try {
+    const printed: Record<string, { exit: number; holdsUserinfo: boolean; line: unknown }> = {}
+    const want: typeof printed = {}
+    const request = `POST the configured Envoy URL ${URL_NOT_PRINTED}`
+    for (const [answer, port, exit, wanted] of [
+      ...servers.map(
+        ({ status, server }) =>
+          [
+            String(status),
+            server.port,
+            // A 500 is tried again, and a send whose last answer is a 500 is not confirmed
+            // delivered (exit 75): its line holds the refusal's own line.
+            status === 500 ? 75 : 1,
+            status === 500
+              ? expect.stringContaining(
+                  `(${request} failed with 500: a body that is not the listener's error JSON ("no"))`,
+                )
+              : `Claude Envoy send failed: ${request} failed with ${status}: a body that is not the listener's error JSON ("no")\n`,
+          ] as const,
+      ),
+      // A connection dropped after the request went out may have been read, so the send is not
+      // confirmed; one nothing took sent nothing. Each failure is named by its class.
+      [
+        "a dropped connection",
+        dropped,
+        75,
+        expect.stringMatching(/^Claude Envoy send not confirmed: /),
+      ] as const,
+      [
+        "a refused connection",
+        refused,
+        1,
+        `Claude Envoy send failed: ${request} got no answer: ECONNREFUSED\n`,
+      ] as const,
+    ]) {
+      const file = join(scratch, `userinfo-envoy-${answer}.json`)
+      const url = `http://made-up-user:${password}@127.0.0.1:${port}`
+      writeFileSync(
+        file,
+        JSON.stringify({ envoy: { enabled: true, url, token: fixtureSecret("bearer") } }),
+      )
+      const {
+        code: exitCode,
+        stdout,
+        stderr,
+      } = await runEnvoySend(["ses_receiver", "userinfo"], {
+        env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ENVOY_CONFIG_FILE: file },
+      })
+      const output = `${stdout}${stderr}`
+      printed[answer] = {
+        exit: exitCode,
+        holdsUserinfo: output.includes(password) || output.includes("made-up-user"),
+        line: output.replaceAll(password, "<the password>"),
+      }
+      want[answer] = { exit, holdsUserinfo: false, line: wanted }
+    }
+    expect(printed).toEqual(want)
+  } finally {
+    for (const { server } of servers) server.stop(true)
+    dropping.close()
+  }
+}, 30_000)
+
+// The Envoy URL may carry a user and a password. One the URL parser does not read as an http or
+// https URL with a host turns Envoy off before any client is built, named by its length and the
+// cause the one function found: the parser's own error would hold the value whole. Among them, a
+// user part that holds a `/` or a `#` (a base64 token can) makes the parser read a host taken from
+// it, here a listener of the test's own, which gets no request; and a value with a line ending at
+// its end, as a file leaves it, is refused naming the line ending. The password is made for this
+// run.
+test("envoy-send whose Envoy URL is no http or https URL with a host, or holds an @ that no user part ends, sends nothing and names its length and cause", async () => {
+  const password = crypto.randomUUID()
+  let asked = 0
+  const listener = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () => {
+      asked += 1
+      return Response.json({ ok: true })
+    },
+  })
+  try {
+    const values = [
+      `made-up-user:${password}@127.0.0.1:1`,
+      `mailto:made-up-user:${password}@127.0.0.1`,
+      `//made-up-user:${password}@127.0.0.1:1`,
+      `http://made-up-user:${password}/x@127.0.0.1:1`,
+      `http://127.0.0.1:${listener.port}/${password}@envoy.example`,
+      `http://127.0.0.1:${listener.port}#${password}@envoy.example`,
+      `http://127.0.0.1:${listener.port}\n`,
+    ]
+    const said: { readonly exit: number; readonly line: string }[] = []
+    const file = envoyConfig(fixtureSecret("listener"))
+    for (const value of values) {
+      const {
+        code: exitCode,
+        stdout,
+        stderr,
+      } = await runEnvoySend(["ses_receiver", "never sent"], {
+        env: {
+          PATH: process.env["PATH"] ?? "",
+          HOME: scratch,
+          ENVOY_CONFIG_FILE: file,
+          ENVOY_URL: value,
+        },
+      })
+      said.push({ exit: exitCode, line: `${stdout}${stderr}` })
+    }
+    expect({ said, asked }).toEqual({
+      said: values.map((value) => ({
+        exit: 1,
+        line: `Claude Envoy send failed: Envoy is off: ENVOY_URL must be an http or https URL: ${unshownSettingUrl(value)}\n`,
+      })),
+      asked: 0,
+    })
+  } finally {
+    listener.stop(true)
+  }
+}, 30_000)

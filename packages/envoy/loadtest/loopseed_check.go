@@ -240,7 +240,7 @@ func runLoopSeedCheck(args []string) error {
 		return err
 	}
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, f.pg)
+	conn, err := connectPG(ctx, f.pg)
 	if err != nil {
 		return err
 	}

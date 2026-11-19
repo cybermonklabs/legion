@@ -7,6 +7,7 @@
 
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, requestForText, urlForText } from "@legion/contracts/log-text";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 import { messageOf } from "./error-text";
 import type { SubjectToken, TokenSource } from "./source";
 import {
@@ -165,6 +166,13 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
   const mintEndpoint = `${iamCredentials}/v1/projects/-/serviceAccounts/${account}:generateIdToken`;
   const securityTokenServiceShown = urlForText(securityTokenService, STS_SETTING);
   const mintEndpointShown = requestForText(iamCredentials, mintEndpoint, IAM_SETTING);
+  // Either URL may carry a user and a password. One that `shownSettingUrl` would not show, which
+  // the URL parser may read apart so that a request would go to a host taken from the user part,
+  // fails the call before it is asked anything, named by its length and what to correct
+  // (`unshownSettingUrl`). The setting is judged, not the URL made from it: the account in the
+  // mint's path is an email address, whose `@` is no user part.
+  const securityTokenServiceUnread = shownSettingUrl(securityTokenService) === undefined;
+  const iamCredentialsUnread = shownSettingUrl(iamCredentials) === undefined;
 
   /**
    * Posts `body` to `endpoint` as JSON, with `bearer` on the `Authorization` header where it is
@@ -223,6 +231,11 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
   /** The security token service's half: the external credential for a federated access token
    *  that acts as the pool's own principal (Go's `federate`). */
   const federate = async (subject: SubjectToken, signal: AbortSignal | undefined) => {
+    if (securityTokenServiceUnread) {
+      throw new Error(
+        `the security token service URL must be an http or https URL: ${unshownSettingUrl(securityTokenService)}`
+      );
+    }
     let federated: string;
     try {
       federated = await call(
@@ -257,6 +270,11 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
   /** IAM Credentials' half: the federated access token spent on one `generateIdToken` for the
    *  managed identity, with `includeEmail` set (Go's `generateIDToken`). */
   const generateIdToken = async (federated: string, signal: AbortSignal | undefined) => {
+    if (iamCredentialsUnread) {
+      throw new Error(
+        `the IAM Credentials URL must be an http or https URL: ${unshownSettingUrl(iamCredentials)}`
+      );
+    }
     let token: string;
     try {
       token = await call(

@@ -10,12 +10,27 @@
 // runs, a summary line follows, and the exit status is 1 when any case failed. A step outside the
 // cases that fails (the sign-in, the project, the fake listener's seed) exits 2 naming it.
 import { connect, StringCodec } from "nats";
+import { shownSettingUrl, unshownSettingUrl } from "../../packages/contracts/src/setting-url";
 
 const [dispatchUrl, natsUrl, envoyUrl] = process.argv.slice(2);
 const agentToken = process.env.CLAIMANT_E2E_AGENT_TOKEN ?? "";
 if (dispatchUrl === undefined || natsUrl === undefined || envoyUrl === undefined || !agentToken) {
   process.stderr.write(
     "usage: CLAIMANT_E2E_AGENT_TOKEN=<token> bun dispatch-claimant-delivery.ts <dispatch-url> <nats-url> <fake-envoy-url>\n"
+  );
+  process.exit(2);
+}
+// The URLs may carry a user and a password: one that `shownSettingUrl` would not show is refused
+// before anything parses it, named by its length and what to correct (`unshownSettingUrl`).
+if (shownSettingUrl(dispatchUrl) === undefined) {
+  process.stderr.write(
+    `<dispatch-url> must be an http or https URL: ${unshownSettingUrl(dispatchUrl)}\n`
+  );
+  process.exit(2);
+}
+if (shownSettingUrl(envoyUrl) === undefined) {
+  process.stderr.write(
+    `<fake-envoy-url> must be an http or https URL: ${unshownSettingUrl(envoyUrl)}\n`
   );
   process.exit(2);
 }

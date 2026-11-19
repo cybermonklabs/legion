@@ -40,7 +40,8 @@ import { masked, rowLimit, runBounded } from "./bounded-subprocess";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const driverPath = join(dispatchPackage, "e2e/acceptance/replace-blocks.sh");
-const localInstancePath = join(dispatchPackage, "e2e/local-instance.ts");
+/** The file that writes the hand-over message: `instanceBanner`, which e2e/local-instance.ts prints. */
+const bannerPath = join(dispatchPackage, "e2e/local-instance-support.ts");
 
 /** LEGION_TEST_PG_DSN as this run has it, quotes and all, which `drive` hands the driver
  *  unchanged, so the guard reads it through the driver's own strip of its quotes. */
@@ -77,9 +78,9 @@ if (!live) {
   );
 }
 
-/** The first line of the hand-over message e2e/local-instance.ts prints once the instance is up,
- *  the message that holds DATABASE_URL whole. The fixture log below is built from it, and a row
- *  ties it to the line the instance writes and to the line the driver's cut names. */
+/** The first line of the hand-over message e2e/local-instance.ts prints once the instance is up
+ *  (`instanceBanner`, in e2e/local-instance-support.ts). The fixture log below is built from it,
+ *  and a row ties it to the line the banner writes and to the line the driver's cut names. */
 const handOverHeading = "Dispatch local instance is up.";
 
 /** The user and the host of a postgres:// URL, which `withPassword` puts around a password. */
@@ -389,18 +390,18 @@ function stoppedInstanceLog(databaseUrl: string): { log: string; handOver: strin
 }
 
 test("the hand-over heading is the line the instance writes and the line the driver cuts at", () => {
-  const source = readFileSync(localInstancePath, "utf8");
+  const source = readFileSync(bannerPath, "utf8");
   const written = JSON.stringify(`\n${handOverHeading}\n`);
   expect(
     source.split(written).length - 1,
-    `e2e/local-instance.ts does not write ${written} once, as a line of its own. The driver ` +
+    `e2e/local-instance-support.ts does not write ${written} once, as a line of its own. The driver ` +
       "cuts the instance's log at that line, and this file's fixture log is built from it."
   ).toBe(1);
   const cut = `sed '/^${handOverHeading.replaceAll(".", "\\.")}/,$d'`;
   expect(
     readFileSync(driverPath, "utf8"),
     `replace-blocks.sh does not cut the instance's log at ${handOverHeading}: its cut no ` +
-      "longer names the line local-instance.ts writes, so a failed start prints the hand-over."
+      "longer names the line the banner writes, so a failed start prints the hand-over."
   ).toContain(cut);
 });
 

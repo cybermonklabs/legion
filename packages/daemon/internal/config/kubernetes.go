@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/validation"
 
+	"github.com/sjawhar/envoy/urlsetting"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -554,12 +555,19 @@ func readPluginSource(value *yaml.Node, key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	noHost := fmt.Errorf("%s names no host bun can fetch a tarball from: got %q", key, source)
+	// Named by its length, never quoted: a tarball URL can carry a credential in its user part or
+	// in a pre-signed query.
+	noHost := fmt.Errorf("%s names no host bun can fetch a tarball from: a value of %d characters", key, len(source))
 	if strings.HasPrefix(source, "//") {
 		return "", noHost
 	}
 	if path.IsAbs(source) {
 		return source, nil
+	}
+	// A URL whose user part net/url reads apart is refused by its length and the cause, as every
+	// URL the loader reads is (validURL): the host read from it is a piece of the credential.
+	if err := urlsetting.Refuse(key, source); err != nil {
+		return "", err
 	}
 	if u, err := url.Parse(source); err == nil && u.IsAbs() && (u.Scheme == "http" || u.Scheme == "https") {
 		if u.Host == "" {
@@ -2250,7 +2258,9 @@ func checkPodReachable(cfg Config) error {
 		default:
 			continue
 		}
-		return fmt.Errorf("%s %s %s; name the host pods reach it at when runtime is kubernetes", address.key, address.value, why)
+		// Named by its scheme and host alone (as runtime/sandbox's namedURL names an endpoint): the
+		// value may carry a user and a password, which validURL admitted once net/url read them whole.
+		return fmt.Errorf("%s %s://%s %s; name the host pods reach it at when runtime is kubernetes", address.key, parsed.Scheme, parsed.Host, why)
 	}
 	return nil
 }

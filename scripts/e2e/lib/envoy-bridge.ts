@@ -7,6 +7,7 @@
 // (docs/solutions/legion).
 import { type ConnectionOptions, connect, type NatsConnection, type Subscription } from "nats";
 import { EnvelopeSchema } from "../../../packages/contracts/src/envelope";
+import { shownSettingUrl, unshownSettingUrl } from "../../../packages/contracts/src/setting-url";
 import { githubSubject } from "../../../packages/contracts/src/subject";
 import { LoggableError, natsFailureReason } from "../../../packages/envoy-client/src/errors";
 import { natsAuthOptions } from "../../../packages/envoy-client/src/nats-auth";
@@ -16,6 +17,9 @@ import {
   natsServersForLog,
 } from "../../../packages/envoy-client/src/nats-connection";
 import { operatorNatsSeed } from "./operator-nats-seed";
+
+/** The schemes of a NATS server's URL that the rig's NATS may be written with. */
+const NATS_SCHEMES = ["nats:", "tls:"];
 
 const requiredEnvelopeFields = [
   "event_id",
@@ -72,6 +76,13 @@ export function bridgeConfigFromEnvironment(
   }
   const downstreamUrl = environment.SMOKE_RIG_NATS?.trim() ?? "";
   if (!downstreamUrl) throw new Error("SMOKE_RIG_NATS is required");
+  // It may carry a user and a password, or a token as its user: one that the one function would
+  // not show is refused before anything is dialed, named by its length and what to correct.
+  if (shownSettingUrl(downstreamUrl, NATS_SCHEMES) === undefined) {
+    throw new Error(
+      `SMOKE_RIG_NATS must be a nats:// or tls:// URL with a host: ${unshownSettingUrl(downstreamUrl, NATS_SCHEMES)}`
+    );
+  }
   const upstreamUrl = environment.SMOKE_UPSTREAM_NATS?.trim() ?? "";
   if (!upstreamUrl) throw new Error("SMOKE_UPSTREAM_NATS is required");
   if (!upstreamNatsUrl.test(upstreamUrl) || !dialsCheckedHost(upstreamUrl)) {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 const (
@@ -95,7 +96,7 @@ func chatEndpoint(env settingValues, name, place string) (string, error) {
 	}
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || strings.ContainsAny(endpoint, "?#") {
-		return "", fmt.Errorf("%s=%q (expected an absolute https URL with a host and no query or fragment, the base URL the chat completions route is appended to)", name, endpoint)
+		return "", fmt.Errorf("%s=%q (expected an absolute https URL with a host and no query or fragment, the base URL the chat completions route is appended to)", name, redact.URL(endpoint))
 	}
 	return endpoint, nil
 }

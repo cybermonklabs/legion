@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/loadtest/listenerclient"
 )
@@ -119,18 +120,28 @@ func (f loopSessionFlags) check(loopSeed bool) ([]string, error) {
 	return eps, nil
 }
 
+// notAnEndpointURL is what the refusal of a -loop-listeners endpoint that is no URL with a scheme
+// and a host names after its length (redact.Refusal), since the value may hold a token.
+const notAnEndpointURL redact.Misreading = "is not a URL with a scheme and a host"
+
 // parseLoopListeners reads -loop-listeners: the listener endpoints, comma separated, the unit
 // sessions over all but the last and the driver session on the last. Fewer than two is refused,
-// since then one endpoint would carry both.
+// since then one endpoint would carry both. An endpoint that is not a URL with a scheme and a
+// host, or whose user part net/url reads apart (endpointMisread), is refused by its place in the
+// list and its length, since it may hold a token.
 func parseLoopListeners(v string) ([]string, error) {
 	if strings.TrimSpace(v) == "" {
 		return nil, nil
 	}
 	var out []string
-	for _, ep := range strings.Split(v, ",") {
+	for i, ep := range strings.Split(v, ",") {
 		ep = strings.TrimSpace(ep)
 		if !isEndpointURL("-loop-listeners", ep) {
-			return nil, fmt.Errorf("-loop-listeners %q is not a URL with a scheme and a host", ep)
+			why := endpointMisread("-loop-listeners", ep)
+			if why == "" {
+				why = notAnEndpointURL
+			}
+			return nil, redact.Refusal(fmt.Sprintf("-loop-listeners' endpoint %d", i+1), ep, why)
 		}
 		out = append(out, strings.TrimSuffix(ep, "/"))
 	}

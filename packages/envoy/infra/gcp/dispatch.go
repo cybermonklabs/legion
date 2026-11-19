@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/internal/providers"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/weborigin"
 )
 
@@ -1427,9 +1428,10 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	}
 	// The issuer is the URL Dispatch discovers keys from and compares every token's iss to, so it is
 	// held to the shape the hub listener's is: an empty query or fragment, which url.Parse reads as
-	// none, is not the issuer a token names.
+	// none, is not the issuer a token names. The refusal names the issuer by its length, since one
+	// refused for its user part holds a password (notAnIssuerURL).
 	if args.OidcIssuer != "" && !issuerURL(args.OidcIssuer) {
-		return dispatchSettings{}, fmt.Errorf("oidcIssuer %q must be an https URL with a host and no user, query or fragment, such as https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>", args.OidcIssuer)
+		return dispatchSettings{}, redact.Refusal("oidcIssuer", args.OidcIssuer, notAnIssuerURL)
 	}
 	var appSet, appMissing []string
 	for _, in := range []struct{ input, value string }{

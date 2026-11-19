@@ -2044,8 +2044,8 @@ describe("DispatchClient's writes", () => {
 
     expect(error).toBeInstanceOf(DispatchGatewayError);
     expect(error.message).toStartWith(
-      "POST http://dispatch.test/api/v1/issues/DSP-1/comments answered 301 Moved Permanently (a " +
-        "redirect to https://elsewhere.test:8443, which this client does not follow) with a body"
+      "POST http://dispatch.test/api/v1/issues/DSP-1/comments answered 301 Moved Permanently " +
+        "(redirecting to https://elsewhere.test:8443, which this client does not follow) with a body"
     );
     expect(error.message).not.toContain("secret");
     expect(error.message).not.toContain("token=abc");

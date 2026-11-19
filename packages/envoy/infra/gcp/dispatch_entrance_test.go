@@ -2,6 +2,8 @@ package gcp_test
 
 import (
 	"encoding/json"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -148,12 +150,12 @@ func TestDispatchRefusesAnEntranceItHasNoOriginFor(t *testing.T) {
 			a := dispatchEntranceArgs()
 			a.OidcAudience, a.OidcIssuer = dispatchOidcAudience, dispatchOidcIssuer+"?"
 			return a
-		}, `oidcIssuer "` + dispatchOidcIssuer + `?" must be an https URL with a host and no user, query or fragment`},
+		}, "oidcIssuer, a value of " + strconv.Itoa(len(dispatchOidcIssuer)+1) + " characters, must be an https URL with a host and no user, query or fragment"},
 		{"an issuer with an empty fragment", func() *gcp.DispatchArgs {
 			a := dispatchEntranceArgs()
 			a.OidcAudience, a.OidcIssuer = dispatchOidcAudience, dispatchOidcIssuer+"#"
 			return a
-		}, `oidcIssuer "` + dispatchOidcIssuer + `#" must be an https URL with a host and no user, query or fragment`},
+		}, "oidcIssuer, a value of " + strconv.Itoa(len(dispatchOidcIssuer)+1) + " characters, must be an https URL with a host and no user, query or fragment"},
 		{"a group name with an uppercase letter", func() *gcp.DispatchArgs {
 			a := dispatchEntranceArgs()
 			a.NetworkEndpointGroupName = "Example-neg"
@@ -170,6 +172,18 @@ func TestDispatchRefusesAnEntranceItHasNoOriginFor(t *testing.T) {
 			require.ErrorContains(t, err, row.want)
 		})
 	}
+	// An issuer refused for its user part is named by its length, never quoted, since the user
+	// part holds a password. The user part's values are made up for this test.
+	t.Run("an issuer with a user part", func(t *testing.T) {
+		const user, phrase = "made-up-user-8e3b", "not-a-secret-0a5d"
+		a := dispatchEntranceArgs()
+		a.OidcAudience = dispatchOidcAudience
+		a.OidcIssuer = "https://" + user + ":" + phrase + "@" + strings.TrimPrefix(dispatchOidcIssuer, "https://")
+		_, err := gcp.ResolveDispatch(a)
+		require.ErrorContains(t, err, "oidcIssuer, a value of "+strconv.Itoa(len(a.OidcIssuer))+" characters, must be an https URL with a host and no user")
+		require.NotContains(t, err.Error(), user)
+		require.NotContains(t, err.Error(), phrase)
+	})
 	withIssuer := dispatchEntranceArgs()
 	withIssuer.OidcAudience, withIssuer.OidcIssuer = dispatchOidcAudience, dispatchOidcIssuer
 	withIssuer.LoadBalancerSourceRanges = []string{"35.191.0.0/16", "2600:2d00:1:b029::/64", "203.0.113.7/32"}

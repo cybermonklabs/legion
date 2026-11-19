@@ -73,6 +73,81 @@ func URL(raw string) string {
 // Clean reports whether raw is not empty and URL prints it unchanged.
 func Clean(raw string) bool { return raw != "" && clean(raw) }
 
+// A Misreading is what a check of a setting's URL found that makes a reader take a piece of its
+// user part for another part, or makes the value unreadable, in words that hold no part of the
+// value and say what to write instead. Refusal puts them after the value's length. The empty
+// Misreading is none.
+type Misreading string
+
+// The misreadings Misread finds. A check of a URL that other readers read (a Postgres URL, whose
+// two readers end its user part apart) declares the ones it finds beside it.
+const (
+	// ControlCharacter: net/url refuses a control character, and a line that showed the value
+	// would carry it; a line ending left from a file is the usual one.
+	ControlCharacter Misreading = "holds a control character (a line ending or a tab, often one left from a file); remove it"
+	// NoScheme: the value does not start with a scheme and "://" (a "://" later, in its path or
+	// query, is no scheme's). net/url reads the text before its first colon as the scheme and the
+	// rest as an opaque path, so the @ that ends a user part is left over, or the value does not
+	// parse; the cause is the missing scheme, which the TypeScript check names too.
+	NoScheme Misreading = "does not start with http:// or https://, so its user part is read as a scheme and a path; write the scheme first"
+	// Unparsed: net/url cannot parse a value that holds an @, whose error quotes it whole, and a
+	// user part that holds a /, ?, # or \ is the usual cause (its password then reads as a port).
+	Unparsed Misreading = "does not parse as a URL; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part"
+	// AtOutsideUserPart: an @ is left once net/url takes out the user part it found. net/url ends
+	// a user part at its last @ and the authority at the first /, ?, # or \, so a user part that
+	// holds one of those (a token in base64 does) is read in part as the host or the path.
+	AtOutsideUserPart Misreading = "has an @ outside its user part (in its path, query or fragment); if its user part holds a /, ?, # or \\, write each of them in it percent-encoded (/ as %2F, ? as %3F, # as %23, \\ as %5C), else write that @ as %40"
+)
+
+// Misread is what net/url's reading of raw, a value that holds an @, finds that makes a host read
+// from it a possible piece of its user part: ControlCharacter, NoScheme, Unparsed or
+// AtOutsideUserPart, in that order. A value with no @ has no user part, and Misread finds nothing
+// in it.
+func Misread(raw string) Misreading {
+	if !strings.Contains(raw, "@") {
+		return ""
+	}
+	if strings.ContainsFunc(raw, func(r rune) bool { return r < ' ' || r == 0x7f }) {
+		return ControlCharacter
+	}
+	if !startsWithScheme(raw) {
+		return NoScheme
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return Unparsed
+	}
+	parsed.User = nil
+	if strings.Contains(parsed.String(), "@") {
+		return AtOutsideUserPart
+	}
+	return ""
+}
+
+// startsWithScheme reports whether raw starts with a scheme as RFC 3986 writes one (a letter, then
+// letters, digits, +, - and .) and "://".
+func startsWithScheme(raw string) bool {
+	scheme, _, found := strings.Cut(raw, "://")
+	if !found || scheme == "" {
+		return false
+	}
+	for i, c := range scheme {
+		letter := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+		if !letter && (i == 0 || !(c >= '0' && c <= '9' || c == '+' || c == '-' || c == '.')) {
+			return false
+		}
+	}
+	return true
+}
+
+// Refusal is the refusal of raw, the value of the setting named, for what its check found (why).
+// It names raw by its length alone, since any piece of a value a reader may misread can be its
+// password. Every refusal of a setting by its length is made here, a misread URL's and a value of
+// the wrong form's (a metadata host, a sign-in domain, a NATS list) alike, so each says the same.
+func Refusal(setting, raw string, why Misreading) error {
+	return fmt.Errorf("%s, a value of %d characters, %s", setting, len(raw), why)
+}
+
 // clean reports whether raw passes URL's allow-list.
 func clean(raw string) bool {
 	for i := range len(raw) {
@@ -219,6 +294,18 @@ func Error(err error, raw string) error {
 		return err
 	}
 	return &classified{text, err}
+}
+
+// RequestError is err, the error of a request a client built from base, a URL a person
+// configured, as a message may print it: err itself when URL prints base whole, since the request
+// URL net/http names in it is then base and the path and query the client wrote, with no user part;
+// Error's class otherwise. Each client of a setting's URL wraps the errors of its requests with it,
+// so an honest URL's error, its deadline or its refused connection, reads as net/http wrote it.
+func RequestError(err error, base string) error {
+	if URL(base) == base {
+		return err
+	}
+	return Error(err, base)
 }
 
 // Cause is Error without the *url.Error's own wrapper, for a message that names the call itself:

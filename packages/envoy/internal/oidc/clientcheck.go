@@ -7,6 +7,8 @@ import (
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // ClientCheck is what one check of a code flow's client at its issuer found. The three words are
@@ -62,12 +64,12 @@ func CheckClient(ctx context.Context, issuer, clientID, clientSecret string) (Cl
 		// plainly accepted the client, which is the one question this asks.
 		return ClientCheckReady, nil
 	case !errors.As(err, &retrieve):
-		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: check the client at %s: %w", issuer, err)
+		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: check the client at %s: %w", redact.URL(issuer), redact.RequestError(err, issuer))
 	case retrieve.ErrorCode == "invalid_grant":
 		return ClientCheckReady, nil
 	case retrieve.ErrorCode == "invalid_client":
-		return ClientCheckRejected, fmt.Errorf("oidc: issuer %s refused the client %s: %s", issuer, clientID, retrieve.ErrorCode)
+		return ClientCheckRejected, fmt.Errorf("oidc: issuer %s refused the client %s: %s", redact.URL(issuer), clientID, retrieve.ErrorCode)
 	}
 	return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s answered the client check with the OAuth error %q, which says nothing about the client: %w",
-		issuer, retrieve.ErrorCode, err)
+		redact.URL(issuer), retrieve.ErrorCode, redact.RequestError(err, issuer))
 }

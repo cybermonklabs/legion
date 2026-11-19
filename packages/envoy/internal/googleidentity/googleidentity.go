@@ -32,6 +32,8 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 const (
@@ -55,8 +57,12 @@ const (
 var client = &http.Client{Transport: &http.Transport{DialContext: (&net.Dialer{Timeout: ProbeTimeout}).DialContext}}
 
 // tokenURL is the identity-token URL for audience, honouring MetadataHostVar.
-func tokenURL(audience string) string {
-	return metadataURL(identityPath) + "?audience=" + url.QueryEscape(audience) + "&format=full"
+func tokenURL(audience string) (string, error) {
+	base, err := metadataURL(identityPath)
+	if err != nil {
+		return "", err
+	}
+	return base + "?audience=" + url.QueryEscape(audience) + "&format=full", nil
 }
 
 // Token asks the metadata server for this machine's identity token for audience. format=full is
@@ -64,7 +70,10 @@ func tokenURL(audience string) string {
 // no project, zone or instance, so an exchange entry pinned to either refuses it. Every error
 // names the URL it asked and never the token.
 func Token(ctx context.Context, audience string) (string, error) {
-	callURL := tokenURL(audience)
+	callURL, err := tokenURL(audience)
+	if err != nil {
+		return "", err
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, callURL, nil)
@@ -111,13 +120,23 @@ const (
 	tokenPath = "/computeMetadata/v1/instance/service-accounts/default/token"
 )
 
-// metadataURL is path on the metadata server, honouring MetadataHostVar.
-func metadataURL(path string) string {
+// notAHost is what a refusal of MetadataHostVar names, after the value's length (redact.Refusal).
+const notAHost redact.Misreading = "is not a host with an optional port"
+
+// metadataURL is path on the metadata server, honouring MetadataHostVar. The variable names a
+// host, with an optional port, and nothing else: any other value, a user part among them, is
+// refused by its length, so no URL this package asks, and so no error that names one or that
+// net/http makes of one, holds a part of it.
+func metadataURL(path string) (string, error) {
 	host := os.Getenv(MetadataHostVar)
 	if host == "" {
 		host = defaultMetadataHost
 	}
-	return "http://" + host + path
+	base := "http://" + host
+	if parsed, err := url.Parse(base); err != nil || parsed.Path != "" || !redact.Clean(base) {
+		return "", redact.Refusal(MetadataHostVar, host, notAHost)
+	}
+	return base + path, nil
 }
 
 // Probe asks the metadata server which service account this machine runs as, within
@@ -127,7 +146,10 @@ func metadataURL(path string) string {
 // every answer of Google's carries. A Google metadata server that answers anything but a success,
 // or an empty email, is a fault, and its error is not ErrNoMetadataServer.
 func Probe(ctx context.Context) (string, error) {
-	callURL := metadataURL(emailPath)
+	callURL, err := metadataURL(emailPath)
+	if err != nil {
+		return "", err
+	}
 	probeCtx, cancel := context.WithTimeout(ctx, ProbeTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, callURL, nil)
@@ -176,7 +198,10 @@ func AccessTokenSource() oauth2.TokenSource { return metadataTokenSource{} }
 type metadataTokenSource struct{}
 
 func (metadataTokenSource) Token() (*oauth2.Token, error) {
-	callURL := metadataURL(tokenPath)
+	callURL, err := metadataURL(tokenPath)
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, callURL, nil)

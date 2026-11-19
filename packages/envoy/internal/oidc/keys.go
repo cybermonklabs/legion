@@ -13,6 +13,8 @@ import (
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	jose "github.com/go-jose/go-jose/v4"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // The class of every Key failure. A key the issuer does not publish and an issuer that cannot be
@@ -96,16 +98,16 @@ type keysFetch struct {
 func NewKeys(ctx context.Context, issuer string) (*Keys, error) {
 	provider, err := gooidc.NewProvider(ctx, issuer)
 	if err != nil {
-		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", issuer, err)
+		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", redact.URL(issuer), redact.RequestError(err, issuer))
 	}
 	var discovery struct {
 		JWKSURI string `json:"jwks_uri"`
 	}
 	if err := provider.Claims(&discovery); err != nil {
-		return nil, fmt.Errorf("oidc: reading issuer %s discovery document: %w", issuer, err)
+		return nil, fmt.Errorf("oidc: reading issuer %s discovery document: %w", redact.URL(issuer), redact.RequestError(err, issuer))
 	}
 	if discovery.JWKSURI == "" {
-		return nil, fmt.Errorf("oidc: issuer %s names no jwks_uri in its discovery document", issuer)
+		return nil, fmt.Errorf("oidc: issuer %s names no jwks_uri in its discovery document", redact.URL(issuer))
 	}
 	return NewKeysAt(discovery.JWKSURI), nil
 }
@@ -222,24 +224,28 @@ func (k *Keys) fetch(ctx context.Context) ([]jose.JSONWebKey, error) {
 }
 
 // read fetches and parses the issuer's key set once, under FetchTimeout and the caller's context.
+// The key set's URL is the one the issuer's discovery document names, which repeats the issuer's
+// user part when the issuer's own configuration holds one, so each error names it through
+// redact.URL and wraps a request's error with redact.RequestError.
 func (k *Keys) read(ctx context.Context) ([]jose.JSONWebKey, error) {
 	ctx, cancel := context.WithTimeout(ctx, k.FetchTimeout)
 	defer cancel()
+	shown := redact.URL(k.jwksURI)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, k.jwksURI, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: requesting %s: %w", ErrKeySet, k.jwksURI, err)
+		return nil, fmt.Errorf("%w: requesting %s: %w", ErrKeySet, shown, redact.RequestError(err, k.jwksURI))
 	}
 	resp, err := k.HTTPClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: reading %s: %w", ErrKeySet, k.jwksURI, err)
+		return nil, fmt.Errorf("%w: reading %s: %w", ErrKeySet, shown, redact.RequestError(err, k.jwksURI))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: %s answered %s", ErrKeySet, k.jwksURI, resp.Status)
+		return nil, fmt.Errorf("%w: %s answered %s", ErrKeySet, shown, resp.Status)
 	}
 	var set jose.JSONWebKeySet
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxKeySetBytes)).Decode(&set); err != nil {
-		return nil, fmt.Errorf("%w: parsing %s: %w", ErrKeySet, k.jwksURI, err)
+		return nil, fmt.Errorf("%w: parsing %s: %w", ErrKeySet, shown, err)
 	}
 	return set.Keys, nil
 }

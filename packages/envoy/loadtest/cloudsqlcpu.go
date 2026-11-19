@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // cloudsqlCPUMetric is Cloud Monitoring's metric for a Cloud SQL instance's CPU: the fraction of
@@ -48,6 +50,12 @@ const cloudsqlMonitoringBase = "https://monitoring.googleapis.com"
 // holds through workload identity. The read carries the Metadata-Flavor: Google header the
 // metadata server requires.
 const cloudsqlTokenURL = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+
+// notAPlainEndpoint is what the refusal of an -api or -token-url value that redact.URL would not
+// print whole names after its length (redact.Refusal): a request's error names its URL whole, so a
+// value with a user part, or one whose user part net/url reads apart (http://<a>/<b>@host, whose
+// <a> is read as the host and looked up), would print its token there.
+const notAPlainEndpoint redact.Misreading = "is not a plain http(s) URL with no user part, query or fragment, which this command's request errors name whole"
 
 // cloudsqlDefaultVCPUs is the vCPU count a utilization fraction is turned into cores with:
 // production's tier is db-custom-16-61440, 16 vCPUs.
@@ -360,6 +368,10 @@ func runCloudSQLCPU(args []string) error {
 		return errors.New("-api is required: Cloud Monitoring's base URL")
 	case *tokenURL == "":
 		return errors.New("-token-url is required: where the access token is read")
+	case !redact.Clean(*api):
+		return redact.Refusal("-api", *api, notAPlainEndpoint)
+	case !redact.Clean(*tokenURL):
+		return redact.Refusal("-token-url", *tokenURL, notAPlainEndpoint)
 	}
 	if *out == "" {
 		*out = filepath.Join(*step, "cloudsql-cpu.json")

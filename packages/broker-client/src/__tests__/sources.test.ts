@@ -10,6 +10,7 @@ import { afterAll, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { inspect } from "node:util";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { METADATA_HOST_VAR, metadataIdentity } from "../metadata-identity";
@@ -138,7 +139,8 @@ test("a metadata server that refuses is an error naming the variable that names 
 });
 
 // GCE_METADATA_HOST is a host, like a NATS server's setting, and a host's text cannot be told from
-// a secret pasted there, so a text names the server by the variable and the failure by its class.
+// a secret pasted there, so a text names the server by the variable and the failure by its class;
+// a value that is no host and port alone is refused by its length before anything is asked.
 test.each([
   `${randomBytes(9).toString("hex")}.invalid`,
   `operator:${randomBytes(9).toString("hex")}@127.0.0.1:1`,
@@ -152,10 +154,71 @@ test.each([
   );
   if (!(refusal instanceof Error)) throw new Error("the metadata server answered");
   expect(refusal.message).toStartWith(
-    `the metadata server ${METADATA_HOST_VAR} names could not be reached: `
+    pasted.includes("@")
+      ? `${METADATA_HOST_VAR} must name the metadata server's host, with an optional port and nothing else: its value is ${pasted.length} characters long`
+      : `the metadata server ${METADATA_HOST_VAR} names could not be reached: `
   );
   expect(Bun.inspect(refusal)).not.toContain(pasted);
   expect(Bun.inspect(refusal).toLowerCase()).not.toContain(pasted.split(/[.@]/)[0]?.toLowerCase());
+});
+
+// GCE_METADATA_HOST names a host: a host name or an IP address, with an optional port, and nothing
+// else. Any other value is refused naming its length alone, with nothing asked: a user part, a
+// URL written in its place (the source builds `http://<host>/computeMetadata/…`, and the URL
+// parser would read `http://http://user:password@host/…` with the host `http` and the password in
+// the path), a path, or a space. No member of the error, nor of a cause under it, holds the
+// password. The password is made for this run.
+test("a metadata host is a host and a port alone, and any other value is refused by its length", async () => {
+  const password = crypto.randomUUID();
+  let asked = 0;
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () => {
+      asked += 1;
+      return new Response("no identity here", { status: 403 });
+    },
+  });
+  servers.push(server);
+  const refused = [
+    `made-up-user:${password}@127.0.0.1:${server.port}`,
+    `http://made-up-user:${password}@127.0.0.1:${server.port}`,
+    `http://127.0.0.1:${server.port}`,
+    `127.0.0.1:${server.port}/elsewhere`,
+    `made-up-user:${password}@bad host`,
+    `127.0.0.1:${server.port}?x=${password}`,
+    "127.0.0.1:99999",
+  ];
+  const said: { readonly message: string; readonly holds: boolean }[] = [];
+  for (const host of [`127.0.0.1:${server.port}`, `LOCALHOST:${server.port}`, ...refused]) {
+    const error = await metadataIdentity("example-audience", {
+      [METADATA_HOST_VAR]: host,
+    } as NodeJS.ProcessEnv)
+      .read()
+      .then(
+        () => undefined,
+        (thrown: unknown) => thrown
+      );
+    said.push({
+      message: error instanceof Error ? error.message : String(error),
+      holds: inspect(error, { depth: Number.POSITIVE_INFINITY, showHidden: true }).includes(
+        password
+      ),
+    });
+  }
+  expect({ said, asked }).toEqual({
+    said: [
+      // Each host that is one is asked, and named by its variable (`serverNamed`).
+      { message: `the metadata server ${METADATA_HOST_VAR} names answered HTTP 403`, holds: false },
+      { message: `the metadata server ${METADATA_HOST_VAR} names answered HTTP 403`, holds: false },
+      ...refused.map((host) => ({
+        message: `${METADATA_HOST_VAR} must name the metadata server's host, with an optional port and nothing else: its value is ${host.length} characters long`,
+        holds: false,
+      })),
+    ],
+    // The two hosts were asked; no refused value was.
+    asked: 2,
+  });
 });
 
 test("no proxy variable can take the identity token", async () => {

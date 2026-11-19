@@ -8,7 +8,9 @@
 // dead. The loop's whole table of answers is `retry-loop.test.ts`.
 
 import { expect, test } from "bun:test";
+import { inspect } from "node:util";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { signedIn, stubIssuer } from "../../test/sign-ins";
 import { newDpopKey } from "../dpop";
@@ -76,6 +78,26 @@ async function told(call: Promise<unknown>): Promise<unknown> {
 /** How long a row's caller waits on the retry loop before it is told what the loop's last trade
  *  came to: long enough for one trade against a stand-in on this machine. */
 const DEADLINE_MS = 1_000;
+
+// The broker's URL may carry a user and a password. One whose user part the URL parser reads
+// apart (a raw `/` in it), so that a trade would go to a host taken from that part, is refused when
+// the client is made, naming its length and the cause the one function found, and nothing is
+// traded: no trade the retry loop made again would cure it. No member of the error, nor of a cause
+// under it, holds the password. The password is made for this run.
+test("a broker URL the URL parser reads apart is refused when the client is made, by its length and cause", async () => {
+  const password = crypto.randomUUID();
+  const source = countingSource();
+  const unreadable = `http://made-up-user:4242/${password}@127.0.0.1:1`;
+  const refusal = await told(clientAt(unreadable, { now: Date.now() }, source));
+  if (!(refusal instanceof Error)) throw new Error("the client was made");
+  expect(refusal.message).toBe(
+    `broker client: the broker URL must be an http or https URL: ${unshownSettingUrl(unreadable)}`
+  );
+  expect(inspect(refusal, { depth: Number.POSITIVE_INFINITY, showHidden: true })).not.toContain(
+    password
+  );
+  expect(source.tokens).toEqual([]);
+});
 
 test("the token in hand is reused until the renewal window, then traded again", async () => {
   const broker = stubBroker((_trade, count) => ({ body: accepted(`token-${count}`, 600) }));

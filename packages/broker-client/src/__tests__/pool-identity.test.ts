@@ -13,7 +13,9 @@ import { afterEach, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { inspect } from "node:util";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { signedIn, stubIssuer } from "../../test/sign-ins";
@@ -289,6 +291,42 @@ test("the security token service and IAM Credentials are named only where their 
     `generateIdToken at iamCredentialsUrl ${URL_NOT_PRINTED} answered no token`,
   ]);
   for (const refusal of refusals) expect(Bun.inspect(refusal)).not.toContain(password);
+});
+
+// A service URL that is no http or https URL with a host is refused naming its length and the
+// cause the one function found, before it is asked anything: the URL parser reads such a value
+// apart, so a request would go to a host taken from its user part. No member of the error, nor of
+// a cause under it, holds the password. The password is made for this run.
+test("a pool URL that is no http or https URL with a host is refused by its length and cause", async () => {
+  const password = crypto.randomUUID();
+  const sts = stubService(federating);
+  const iam = stubService(minting);
+  const unreadable = `made-up-user:${password}@127.0.0.1:1`;
+  const said: { readonly message: string; readonly holds: boolean }[] = [];
+  for (const [stsUrl, iamUrl] of [
+    [unreadable, iam.url],
+    [sts.url, unreadable],
+  ] as const) {
+    const error = await refusalOf(async () => (await poolAt(stsUrl, iamUrl)).read());
+    said.push({
+      message: error?.message ?? "no error",
+      holds: inspect(error, { depth: Number.POSITIVE_INFINITY, showHidden: true }).includes(
+        password
+      ),
+    });
+  }
+  // Each refusal names its URL in the one function's words (setting-url.test.ts holds a row per
+  // cause of them).
+  expect(said).toEqual([
+    {
+      message: `the security token service URL must be an http or https URL: ${unshownSettingUrl(`${unreadable}/v1/token`)}`,
+      holds: false,
+    },
+    {
+      message: `the IAM Credentials URL must be an http or https URL: ${unshownSettingUrl(unreadable)}`,
+      holds: false,
+    },
+  ]);
 });
 
 // A request that got no answer is named by its error's class, since the runtime's message repeats

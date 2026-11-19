@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -36,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -169,15 +171,42 @@ func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
 		naming    string
 	}{
 		{map[string]string{"DISPATCH_SIGNIN_DOMAIN": ""}, "DISPATCH_IDENTITY=iap needs DISPATCH_SIGNIN_DOMAIN"},
-		{map[string]string{"DISPATCH_SIGNIN_DOMAIN": "Example.com"}, "DISPATCH_SIGNIN_DOMAIN must be a lowercase domain name"},
+		{map[string]string{"DISPATCH_SIGNIN_DOMAIN": "Example.com"}, "DISPATCH_SIGNIN_DOMAIN, a value of 11 characters, is not a lowercase domain name such as example.com"},
 		{map[string]string{"DISPATCH_IAP_AUDIENCE": ""}, "DISPATCH_IAP_AUDIENCE required"},
-		{map[string]string{"DISPATCH_IAP_AUDIENCE": "123456789012-client.apps.googleusercontent.com"}, "DISPATCH_IAP_AUDIENCE=\"123456789012-client.apps.googleusercontent.com\" must be the audience IAP signs"},
+		{map[string]string{"DISPATCH_IAP_AUDIENCE": "123456789012-client.apps.googleusercontent.com"}, "DISPATCH_IAP_AUDIENCE, a value of 46 characters, is not the audience IAP signs"},
 		{map[string]string{"DISPATCH_IAP_AUDIENCE": "/projects/example-project/global/backendServices/1"}, "begins /projects/<project number>/"},
 	} {
 		if _, err := resolveBootConfig(envGetter(iapIdentityEnvironment(tc.overrides))); err == nil || !strings.Contains(err.Error(), tc.naming) {
 			t.Errorf("IAP identity with %v: err = %v, want a refusal naming %q", tc.overrides, err, tc.naming)
 		}
 	}
+	// A value of another shape may be a URL pasted into the wrong variable, at the start or after
+	// /projects/<project number>/: it is named by its length, and no part of its user part prints,
+	// so the boot line that logs the audience never holds one. The control is each form IAP signs
+	// for, which boots with the audience whole.
+	for _, pasted := range []string{
+		"https://made-up-user-5b1e:not-a-secret-7d2a@iap.example/projects/1/x",
+		"/projects/123456789012/https://made-up-user-5b1e:not-a-secret-7d2a@iap.example/x",
+		"/projects/123456789012/global/backendServices/not-a-secret-7d2a@iap.example",
+		"/projects/123456789012/global/backendServices/made-up-user-5b1e:not-a-secret-7d2a",
+	} {
+		_, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_IAP_AUDIENCE": pasted})))
+		if want := "DISPATCH_IAP_AUDIENCE, a value of " + strconv.Itoa(len(pasted)) + " characters, is not the audience IAP signs"; err == nil ||
+			!strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "made-up-user") || strings.Contains(err.Error(), "not-a-secret") {
+			t.Errorf("IAP identity with a URL in its audience, %d characters: err = %v, want %q and no part of its user part", len(pasted), err, want)
+		}
+	}
+	for _, audience := range []string{
+		testIAPAudience,
+		"/projects/123456789012/apps/made-up-project",
+		"/projects/123456789012/locations/us-central1/services/dispatch",
+		"/projects/123456789012/regions/us-central1/backendServices/9876543210",
+	} {
+		if boot, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_IAP_AUDIENCE": audience}))); err != nil || boot.IAPAudience != audience {
+			t.Errorf("IAP identity with the audience %q: IAPAudience %q, err = %v, want it admitted whole", audience, boot.IAPAudience, err)
+		}
+	}
+	var err error
 	for name, environment := range map[string]map[string]string{
 		"cookie identity": signInEnvironment(map[string]string{"DISPATCH_IAP_AUDIENCE": testIAPAudience}),
 		"header identity": headerIdentityEnvironment(map[string]string{"DISPATCH_IAP_AUDIENCE": testIAPAudience}),
@@ -186,7 +215,7 @@ func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
 			t.Errorf("%s with DISPATCH_IAP_AUDIENCE: err = %v, want a refusal naming it", name, err)
 		}
 	}
-	_, err := resolveBootConfig(devSignInEnvironment(map[string]string{
+	_, err = resolveBootConfig(devSignInEnvironment(map[string]string{
 		"DISPATCH_IDENTITY": "iap", "DISPATCH_IAP_AUDIENCE": testIAPAudience, "DISPATCH_SIGNIN_DOMAIN": "example.com",
 	}))
 	if err == nil || !strings.Contains(err.Error(), "DISPATCH_IDENTITY must be cookie") {
@@ -287,8 +316,10 @@ func TestResolveBootConfigRefusesSignInSettingsItCannotUse(t *testing.T) {
 			lead + "DISPATCH_SIGNIN_ISSUER, DISPATCH_SIGNIN_CLIENT_ID set, DISPATCH_SIGNIN_CLIENT_SECRET, DISPATCH_SIGNIN_GROUP or DISPATCH_SIGNIN_DOMAIN missing"},
 		{"a domain under a Cognito pool", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/pool"}),
 			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is https://issuer.example/pool"},
+		// A schemeless value is one redact.URL cannot prove clean, so the refusal names it as
+		// redact.NotPrinted: user:password@host would read as no user at all.
 		{"a domain under Google's schemeless issuer", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "accounts.google.com"}),
-			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is accounts.google.com"},
+			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is " + redact.NotPrinted},
 		{"a malformed domain under another issuer", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/pool", "DISPATCH_SIGNIN_DOMAIN": "Example.com"}),
 			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is https://issuer.example/pool"},
 		{"a group under Google's issuer", signInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com"}),
@@ -302,7 +333,7 @@ func TestResolveBootConfigRefusesSignInSettingsItCannotUse(t *testing.T) {
 	}
 	for _, domain := range []string{"Example.com", "example", "exa_mple.com", "https://example.com", "alice@example.com", "-example.com", "example-.com", "example..com", ".example.com", "example.com.", "ex ample.com", strings.Repeat("a", 64) + ".com", strings.Repeat(strings.Repeat("a", 63)+".", 4) + "com"} {
 		_, err := resolveBootConfig(envGetter(googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_DOMAIN": domain})))
-		if want := "DISPATCH_SIGNIN_DOMAIN must be a lowercase domain name such as example.com; got a value of " + strconv.Itoa(len(domain)) + " characters"; err == nil || err.Error() != want {
+		if want := "DISPATCH_SIGNIN_DOMAIN, a value of " + strconv.Itoa(len(domain)) + " characters, is not a lowercase domain name such as example.com"; err == nil || err.Error() != want {
 			t.Errorf("DISPATCH_SIGNIN_DOMAIN=%q: err = %v, want %q", domain, err, want)
 		}
 	}
@@ -510,7 +541,8 @@ func TestResolveBootConfigRejectsAgentSecretsURLWithPathOrBadScheme(t *testing.T
 
 // Both DISPATCH_AGENT_SECRETS_URL refusals - a shape refusal (a path, or a value that does not
 // parse) and the dev sign-in's refusal of a remote broker - name a clean URL as it is and any
-// other value as redact.NotPrinted: user info, a query, escapes, a control byte.
+// other value as redact.NotPrinted: user info, a query, escapes, a control byte. A value with an @
+// left once net/url takes out its user part is refused before either, named by its length.
 func TestResolveBootConfigRefusesAgentSecretsURLWithoutNamingItsCredential(t *testing.T) {
 	shape := func(brokerURL string) settingValues {
 		return envGetter(map[string]string{
@@ -536,9 +568,9 @@ func TestResolveBootConfigRefusesAgentSecretsURLWithoutNamingItsCredential(t *te
 		"a clean remote broker":            {remote("https://broker.example.com"), `DISPATCH_AGENT_SECRETS_URL="https://broker.example.com"`},
 		"a path":                           {shape("https://tokuser9f3:hunter2pw@broker.example.com/v1?token=qtok77"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
 		"a remote broker":                  {remote("https://tokuser9f3:hunter2pw@broker.example.com?token=qtok77"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
-		"an '@' in a query value":          {shape("https://broker.example.com/?password=hunter@2pwSECRET"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
-		"a remote broker, '@' in a query":  {remote("https://broker.example.com?a=1&token=qtok@77SECRET&b=2"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
-		"a literal '@' and an escaped one": {shape("https://ada@corp.example:hunter2pw%40127.0.0.1:1"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
+		"an '@' in a query value":          {shape("https://broker.example.com/?password=hunter@2pwSECRET"), "DISPATCH_AGENT_SECRETS_URL, a value of 53 characters,"},
+		"a remote broker, '@' in a query":  {remote("https://broker.example.com?a=1&token=qtok@77SECRET&b=2"), "DISPATCH_AGENT_SECRETS_URL, a value of 54 characters,"},
+		"a literal '@' and an escaped one": {shape("https://ada@corp.example:hunter2pw%40127.0.0.1:1"), "DISPATCH_AGENT_SECRETS_URL, a value of 48 characters,"},
 		"a double-escaped '@'":             {shape("https://tokuser9f3:hunter2pw%2540broker.example.com"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
 		"a newline forging a line":         {shape("https://broker.example.com\nFORGED"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
 	} {
@@ -1774,10 +1806,11 @@ const devSignInOrigin = "http://127.0.0.1:8799"
 func TestDevSignInRefusesAnAppKeyThatReachesGitHub(t *testing.T) {
 	withKey := &auth.AppConfig{ClientID: "Iv1.app", PEM: "app private key"}
 	fromEnv := appCredentialSource{}
-	// Unset, the App calls https://api.github.com.
+	// Unset, the App calls https://api.github.com. The refusal names the base through redact.URL,
+	// so the one whose user part is 127.0.0.1 is named as redact.NotPrinted.
 	for _, base := range []string{"", "https://api.github.com", "http://10.0.0.5:9022", "http://127.0.0.1@api.github.com"} {
 		err := devSignInLoadedFence(devSignInBoot(t, map[string]string{"DISPATCH_GITHUB_API_BASE": base}), devSignInOrigin, withKey, fromEnv)
-		if err == nil || !strings.Contains(err.Error(), "DISPATCH_GITHUB_API_BASE="+strconv.Quote(base)) || !strings.Contains(err.Error(), "DISPATCH_APP_PEM_B64") {
+		if err == nil || !strings.Contains(err.Error(), "DISPATCH_GITHUB_API_BASE="+strconv.Quote(redact.URL(base))) || !strings.Contains(err.Error(), "DISPATCH_APP_PEM_B64") {
 			t.Errorf("DISPATCH_GITHUB_API_BASE=%q: err = %v, want a refusal naming DISPATCH_GITHUB_API_BASE and DISPATCH_APP_PEM_B64", base, err)
 		}
 	}
@@ -1807,6 +1840,49 @@ func TestDevSignInLoadedFenceRefusesAPublicOrigin(t *testing.T) {
 	}
 	if err := devSignInLoadedFence(devSignInBoot(t, map[string]string{"DISPATCH_DEV_SIGNIN": ""}), public, nil, appCredentialSource{}); err != nil {
 		t.Errorf("origin %s without the flag: %v, want accepted", public, err)
+	}
+}
+
+// The WARN line that says the dev sign-in route is mounted names the dashboard origin the fence
+// accepted. An origin with a user and a password names its host and port and neither of them. An
+// origin with an @ left once net/url takes out its user part names nothing of it: it cannot be told
+// apart from a user part that holds a /, whose password's first characters net/url reads as the
+// port (http://localhost:4821/<rest>@127.0.0.1:8766). The user and the password are made for this
+// test.
+func TestDevSignInMountedLineNamesTheHostAndNoUserPart(t *testing.T) {
+	const (
+		user     = "made-up-user"
+		password = "not-a-secret-91d2e8"
+	)
+	for _, tc := range []struct {
+		name, origin, host string
+		hidden             []string
+	}{
+		{name: "user and password", origin: "http://" + user + ":" + password + "@127.0.0.1:8766", host: "127.0.0.1:8766", hidden: []string{user, password}},
+		{name: "@ in the path", origin: "http://localhost:8766/a@b", host: redact.NotPrinted, hidden: []string{"localhost:8766"}},
+		{name: "a / in the password, its digits read as the port", origin: "http://localhost:4821/" + password + "@127.0.0.1:8766", host: redact.NotPrinted, hidden: []string{"4821", password}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			boot := devSignInBoot(t, nil)
+			if err := devSignInLoadedFence(boot, tc.origin, nil, appCredentialSource{}); err != nil {
+				t.Fatalf("the fence refused a loopback origin: %v", err)
+			}
+			var logged bytes.Buffer
+			logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
+			logDevSignInMounted(boot, tc.origin)
+			line := logged.String()
+			if !strings.Contains(line, "dev sign-in mounted") {
+				t.Fatalf("logged %q, want the dev sign-in WARN line", line)
+			}
+			for _, part := range tc.hidden {
+				if strings.Contains(line, part) {
+					t.Errorf("the line holds %q: %q", part, line)
+				}
+			}
+			if !strings.Contains(line, tc.host) {
+				t.Errorf("the line %q does not name the host as %s", line, tc.host)
+			}
+		})
 	}
 }
 
@@ -2070,5 +2146,94 @@ func TestExplainMigrateErrorPassesThroughAnUnrelatedMigrationFailure(t *testing.
 	}
 	if explainMigrateError(nil) != nil {
 		t.Error("explainMigrateError(nil) is not nil")
+	}
+}
+
+// A refusal at boot that names a setting whose value can be a URL names it through redact.URL, or
+// by its length, so its user part reaches no log line; main prints each one whole. Each case's
+// control is the same setting with no user part, which is refused too and still named. The user
+// and the password are made for this test.
+func TestBootRefusalsNameNoUserPartOfASettingURL(t *testing.T) {
+	const (
+		user     = "made-up-user"
+		password = "not-a-secret-5e1c07"
+	)
+	for _, tc := range []struct {
+		name, setting string
+		// env is the environment whose setting carries userPart, which the control leaves empty.
+		env func(userPart string) settingValues
+	}{
+		{"ENVOY_URL with no scheme", "ENVOY_URL", func(userPart string) settingValues {
+			return bootEnvironment(map[string]string{"ENVOY_URL": userPart + "envoy.example:9020"})
+		}},
+		{"ENVOY_URL under the dev sign-in", "ENVOY_URL", func(userPart string) settingValues {
+			return devSignInEnvironment(map[string]string{"ENVOY_URL": "http://" + userPart + "envoy.example:9020"})
+		}},
+		{"a DATABASE_URL pgx cannot parse", "DATABASE_URL", func(userPart string) settingValues {
+			return devSignInEnvironment(map[string]string{"DATABASE_URL": "postgres://" + userPart + "127.0.0.1:5432/x?sslmode=bogus"})
+		}},
+		{"a DATABASE_URL whose user part holds a /", "DATABASE_URL", func(userPart string) settingValues {
+			if userPart == "" {
+				return devSignInEnvironment(map[string]string{"DATABASE_URL": "postgres://db.example/x"})
+			}
+			return devSignInEnvironment(map[string]string{"DATABASE_URL": "postgres://" + user + "/" + password + "@db.example/x"})
+		}},
+		{"DISPATCH_AZURE_EMBED_ENDPOINT", "DISPATCH_AZURE_EMBED_ENDPOINT", func(userPart string) settingValues {
+			return envGetter(azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_ENDPOINT": "https://" + userPart + "embed.example/models?x=1"}))
+		}},
+		{"DISPATCH_CHAT_ENDPOINT", "DISPATCH_CHAT_ENDPOINT", func(userPart string) settingValues {
+			return envGetter(endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_ENDPOINT": "https://" + userPart + "chat.example/v1?x=1"}))
+		}},
+		{"DISPATCH_SIGNIN_ISSUER under a domain", "DISPATCH_SIGNIN_ISSUER", func(userPart string) settingValues {
+			return envGetter(googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://" + userPart + "issuer.example/pool"}))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := resolveBootConfig(tc.env(user + ":" + password + "@"))
+			if err == nil || !strings.Contains(err.Error(), tc.setting) {
+				t.Fatalf("err = %v, want a refusal naming %s", err, tc.setting)
+			}
+			if strings.Contains(err.Error(), password) || strings.Contains(err.Error(), user) {
+				t.Errorf("the refusal holds the user part: %q", err)
+			}
+			if _, err := resolveBootConfig(tc.env("")); err == nil || !strings.Contains(err.Error(), tc.setting) {
+				t.Errorf("the control with no user part: err = %v, want a refusal naming %s", err, tc.setting)
+			}
+		})
+	}
+}
+
+// With the flag, an App key from the environment may sign calls only to a loopback host, and the
+// refusal of another base names it through redact.URL: a base with a user part prints none of it.
+// The control is a base with no user part, which the refusal names. The password is made for this
+// test.
+func TestDevSignInLoadedFenceNamesNoUserPartOfTheGitHubBase(t *testing.T) {
+	const password = "not-a-secret-2b94d0"
+	withKey := &auth.AppConfig{ClientID: "Iv1.app", PEM: "app private key"}
+	err := devSignInLoadedFence(devSignInBoot(t, map[string]string{"DISPATCH_GITHUB_API_BASE": "https://made-up-user:" + password + "@github.example"}), devSignInOrigin, withKey, appCredentialSource{})
+	if err == nil || !strings.Contains(err.Error(), "DISPATCH_GITHUB_API_BASE") || strings.Contains(err.Error(), password) || strings.Contains(err.Error(), "made-up-user") {
+		t.Errorf("err = %v, want a refusal naming DISPATCH_GITHUB_API_BASE and no part of its user part", err)
+	}
+	if err := devSignInLoadedFence(devSignInBoot(t, map[string]string{"DISPATCH_GITHUB_API_BASE": "https://github.example"}), devSignInOrigin, withKey, appCredentialSource{}); err == nil || !strings.Contains(err.Error(), `DISPATCH_GITHUB_API_BASE="https://github.example"`) {
+		t.Errorf("the control with no user part: err = %v, want a refusal naming the base", err)
+	}
+}
+
+// The boot line that says the server verifies service-account tokens names their issuer through
+// redact.URL, so an issuer with a user part prints none of it; one with none is named as written.
+// The password is made for this test.
+func TestServiceTokenLineNamesNoUserPartOfTheIssuer(t *testing.T) {
+	const password = "not-a-secret-7a31f9"
+	for _, tc := range []struct{ issuer, want string }{
+		{"https://made-up-user:" + password + "@issuer.example", redact.NotPrinted},
+		{"https://issuer.example", "https://issuer.example"},
+	} {
+		var logged bytes.Buffer
+		logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
+		logServiceTokens(bootConfig{OIDCIssuer: tc.issuer, OIDCAudience: "dispatch"})
+		line := logged.String()
+		if strings.Contains(line, password) || strings.Contains(line, "made-up-user") || !strings.Contains(line, tc.want) {
+			t.Errorf("issuer %q: logged %q, want the issuer named as %q", tc.issuer, line, tc.want)
+		}
 	}
 }

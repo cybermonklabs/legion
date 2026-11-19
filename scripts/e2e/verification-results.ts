@@ -43,6 +43,7 @@ import { connect, StringCodec } from "nats";
 // By path: the root package does not depend on @legion/contracts, so bun resolves no value from
 // it here. The type import above is erased before the driver runs.
 import { MAX_ISSUE_PAGE_LIMIT } from "../../packages/contracts/src/dispatch-api-limits";
+import { shownSettingUrl, unshownSettingUrl } from "../../packages/contracts/src/setting-url";
 
 const [dispatchUrl, natsUrl, githubUrl] = process.argv.slice(2);
 const agentToken = process.env.VERIFICATION_RESULTS_E2E_AGENT_TOKEN ?? "";
@@ -56,6 +57,20 @@ if (
 ) {
   process.stderr.write(
     "usage: VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> bun verification-results.ts <dispatch-url> <nats-url> <fake-github-url>\n"
+  );
+  process.exit(2);
+}
+// The URLs may carry a user and a password: one that `shownSettingUrl` would not show is refused
+// before anything parses it, named by its length and what to correct (`unshownSettingUrl`).
+if (shownSettingUrl(dispatchUrl) === undefined) {
+  process.stderr.write(
+    `<dispatch-url> must be an http or https URL: ${unshownSettingUrl(dispatchUrl)}\n`
+  );
+  process.exit(2);
+}
+if (shownSettingUrl(githubUrl) === undefined) {
+  process.stderr.write(
+    `<fake-github-url> must be an http or https URL: ${unshownSettingUrl(githubUrl)}\n`
   );
   process.exit(2);
 }

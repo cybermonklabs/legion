@@ -121,30 +121,6 @@ export function bodyForText(text: string, tokens: Tokens, notWhat: string): stri
   return `a body of ${size} bytes and no readable text${within}`;
 }
 
-/**
- * The origin a 3xx answer's `Location` names, read against `url`, the request it answers: scheme,
- * host and port, never a path, a query or user info, through `excerpt` so nothing of `tokens` is
- * printed. Undefined for any other status, and for a `Location` that is absent or does not parse.
- */
-export function redirectOrigin(
-  response: Response,
-  url: string,
-  tokens: Tokens
-): string | undefined {
-  if (response.status < 300 || response.status > 399) return undefined;
-  const location = response.headers.get("Location");
-  if (location === null || location.trim() === "") return undefined;
-  let origin: string;
-  try {
-    origin = new URL(location, url).origin;
-  } catch {
-    return undefined;
-  }
-  if (origin === "null") return undefined;
-  const shown = excerpt(origin, tokens);
-  return shown === "" ? undefined : shown;
-}
-
 /** How many of the tokens a client presented `SentTokens` keeps. A token renews long after it is
  *  minted, so a request's answer meets at most one renewal; four leaves room for several. */
 const SENT_TOKENS_KEPT = 4;

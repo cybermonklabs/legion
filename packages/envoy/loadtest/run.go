@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/bus"
 )
@@ -1713,7 +1712,7 @@ func readDispatchBuild(root string) (dispatchBuild, bool) {
 
 // postgresVersion reads select version() on the Postgres at url.
 func postgresVersion(ctx context.Context, url string) (string, error) {
-	conn, err := pgx.Connect(ctx, url)
+	conn, err := connectPG(ctx, url)
 	if err != nil {
 		return "", err
 	}

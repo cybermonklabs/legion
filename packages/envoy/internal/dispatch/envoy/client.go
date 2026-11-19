@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -388,13 +389,13 @@ func (c *Client) Unsubscribe(ctx context.Context, sessionID string, topics []str
 		ctx, http.MethodPost, c.baseURL+"/v1/interests/unsubscribe", bytes.NewReader(body),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("%w: build POST /v1/interests/unsubscribe request: %v", ErrUnavailable, err)
+		return nil, fmt.Errorf("%w: build POST /v1/interests/unsubscribe request: %v", ErrUnavailable, redact.RequestError(err, c.baseURL))
 	}
 	request.Header.Set("Content-Type", "application/json")
 	c.authorize(request)
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return nil, unreachable(fmt.Errorf("%w: POST /v1/interests/unsubscribe: %v", ErrUnavailable, err))
+		return nil, unreachable(fmt.Errorf("%w: POST /v1/interests/unsubscribe: %v", ErrUnavailable, redact.RequestError(err, c.baseURL)))
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
@@ -617,16 +618,18 @@ func (c *Client) legionAgents(ctx context.Context, route, query string) ([]liste
 // get makes one authorized GET of route+query, the one shape every read of the listener takes.
 // route names the read in each error this returns, without query's selector, so the same read
 // reads alike however it was asked. A transport failure is ErrUnavailable and ErrUnreachable
-// both: no listener answered it (unreachable).
+// both: no listener answered it (unreachable). Every error of a request names the listener's URL
+// (ENVOY_URL, which may carry a user and a password) through redact.RequestError: a parse error
+// and net/http's transport error quote the request's URL, and net/http keeps its user.
 func (c *Client) get(ctx context.Context, route, query string) (*http.Response, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+route+query, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: build GET %s request: %v", ErrUnavailable, route, err)
+		return nil, fmt.Errorf("%w: build GET %s request: %v", ErrUnavailable, route, redact.RequestError(err, c.baseURL))
 	}
 	c.authorize(request)
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return nil, unreachable(fmt.Errorf("%w: GET %s: %v", ErrUnavailable, route, err))
+		return nil, unreachable(fmt.Errorf("%w: GET %s: %v", ErrUnavailable, route, redact.RequestError(err, c.baseURL)))
 	}
 	return response, nil
 }
@@ -707,13 +710,13 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 		ctx, http.MethodPost, c.baseURL+"/v1/messages/send", bytes.NewReader(body),
 	)
 	if err != nil {
-		return SendResult{}, fmt.Errorf("%w: build POST /v1/messages/send request: %v", ErrUnavailable, err)
+		return SendResult{}, fmt.Errorf("%w: build POST /v1/messages/send request: %v", ErrUnavailable, redact.RequestError(err, c.baseURL))
 	}
 	request.Header.Set("Content-Type", "application/json")
 	c.authorize(request)
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return SendResult{}, sendTransportError(err, written.Load())
+		return SendResult{}, sendTransportError(redact.RequestError(err, c.baseURL), written.Load())
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {

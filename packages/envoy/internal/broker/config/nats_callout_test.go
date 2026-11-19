@@ -2,6 +2,7 @@ package config
 
 import (
 	"crypto/rand"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/nats-io/nkeys"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // natsSeeds writes a user, an account and a curve seed to files of the test's own and returns
@@ -123,28 +126,48 @@ func TestNATSCalloutSettings(t *testing.T) {
 	// not use, and the broker writes the URLs into its start line and the service's connect error.
 	// nats.go dials an entry with no scheme as nats://<entry> (nats.go, parseServerURL), so such an
 	// entry is read the same way, and an entry that does not parse as a URL, whose parse error
-	// would quote it whole, is refused too. Each URL is built from a random secret of this run, so
-	// no credential-shaped URL is written in the source, and the refusal must hold none of it.
+	// would quote it whole, is refused too. A token as the user that holds a /, which net/url reads
+	// as the host and a path with the @ in it, so that the entry carries no user info as net/url
+	// reads it, is refused by its length: the start line would write it whole. Each URL is built
+	// from a random secret of this run, so no credential-shaped URL is written in the source, and
+	// the refusal must hold neither half of it.
 	secret := rand.Text()
+	halves := []string{secret[:len(secret)/2], secret[len(secret)/2:]}
 	userAndPassword := (&url.URL{Scheme: "nats", User: url.UserPassword("svc", secret), Host: "hub-b:4222"}).String()
+	slashedToken := "nats://" + halves[0] + "/" + halves[1] + "@hub-b:4222"
 	for _, row := range []struct{ name, urls, names string }{
 		{"a user and password", "nats://hub-a:4222, " + userAndPassword, "BROKER_NATS_URLS entry 2"},
 		{"a token as the user", (&url.URL{Scheme: "nats", User: url.User(secret), Host: "hub-a:4222"}).String(), "BROKER_NATS_URLS entry 1"},
 		{"user info with no scheme", strings.TrimPrefix(userAndPassword, "nats://"), "BROKER_NATS_URLS entry 1"},
 		{"no URL at all", strings.Replace(userAndPassword, secret, secret+"%zz", 1), "BROKER_NATS_URLS entry 1"},
+		{"a token holding a / as the user", "nats://hub-a:4222, " + slashedToken,
+			fmt.Sprintf("BROKER_NATS_URLS entry 2, a value of %d characters, %s", len(slashedToken), redact.AtOutsideUserPart)},
+		{"a token holding a / as the user, with no scheme", strings.TrimPrefix(slashedToken, "nats://"),
+			fmt.Sprintf("BROKER_NATS_URLS entry 1, a value of %d characters, %s", len(slashedToken)-len("nats://"), redact.AtOutsideUserPart)},
 	} {
 		t.Run("a hub URL with "+row.name, func(t *testing.T) {
 			e := full()
 			e["BROKER_NATS_URLS"] = row.urls
-			_, err := Load(env(e))
+			cfg, err := Load(env(e))
 			if err == nil || !strings.Contains(err.Error(), row.names) {
-				t.Fatalf("want a refusal naming %s, got %v", row.names, err)
+				t.Fatalf("want a refusal naming %s, got %v; the broker's start line would name the servers %q", row.names, err, strings.Join(cfg.NATS.URLs, ","))
 			}
-			if strings.Contains(err.Error(), secret) {
-				t.Fatalf("the refusal prints the URL's user info: %v", err)
+			for _, half := range halves {
+				if strings.Contains(err.Error(), half) {
+					t.Fatalf("the refusal prints a piece of the URL's user info: %v", err)
+				}
 			}
 		})
 	}
+	// The control: hub URLs that carry no user info are admitted as written, and these are what
+	// the start line writes.
+	t.Run("hub URLs with no user info", func(t *testing.T) {
+		e := full()
+		e["BROKER_NATS_URLS"] = "nats://hub-a:4222, hub-b:4222"
+		if cfg, err := Load(env(e)); err != nil || strings.Join(cfg.NATS.URLs, ",") != "nats://hub-a:4222,hub-b:4222" {
+			t.Fatalf("hub URLs with no user info: %v, %q; want both admitted as written", err, cfg.NATS.URLs)
+		}
+	})
 	t.Run("an Envoy URL and its account token file", func(t *testing.T) {
 		e := validEnv()
 		e["BROKER_ENVOY_URL"] = "https://listener.example"

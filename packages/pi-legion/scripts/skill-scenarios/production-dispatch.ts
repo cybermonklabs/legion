@@ -24,6 +24,7 @@ import { credentialDeadline, type RequestCredential } from "@legion/envoy-client
 import { type DispatchEnvironment, dispatchSettings } from "@legion/envoy-client/dispatch-config";
 import { envoyConfigPath, readEnvoyConfig } from "@legion/envoy-client/envoy-config";
 import { messageFor } from "@legion/envoy-client/errors";
+import { redirectedTo, redirectTarget, SAME_ADDRESS_CAUSE } from "@legion/envoy-client/redirect";
 
 /** The HTTP call this module and the tools make. The global `fetch` is one. */
 export type Fetch = (url: string, init: RequestInit) => Promise<Response>;
@@ -166,7 +167,10 @@ export class ProductionDispatch {
 
   /** One GET, tried again after a 429, a 5xx or a failed connection, the body's arrival included:
    * a connection that fails after the headers is a failed connection too. Its errors name the
-   * path and the query, never the server or the token. */
+   * path and the query, never the server or the token. It follows no redirect, since fetch would
+   * send a broker credential's DPoP proof on to the origin it names: a 3xx is a refusal naming
+   * that origin (`@legion/envoy-client/redirect`), read from its status before any of its body,
+   * which a redirect need never finish, and it is not tried again. */
   async #get<T>(segments: readonly string[], query?: Record<string, string>): Promise<T> {
     const shown = describe(segments, query);
     const url = new URL(`${this.#base}${shown}`);
@@ -174,15 +178,15 @@ export class ProductionDispatch {
     for (let attempt = 1; attempt <= READ_TRIES; attempt++) {
       if (attempt > 1) await this.#sleep(backoffMs(attempt - 1));
       let response: Response;
-      let text: string;
       try {
-        // One deadline for the credential and the read, 60 s, the credential waiting on all of
-        // it but the read's 1 s reserve (`credentialDeadline`): a broker credential waiting on a
-        // pod's missing registration stops there, and one that hands over its live token leaves
-        // the read that reserve.
+        // One deadline for the credential and the read, its body included, 60 s, the credential
+        // waiting on all of it but the read's 1 s reserve (`credentialDeadline`): a broker
+        // credential waiting on a pod's missing registration stops there, and one that hands over
+        // its live token leaves the read that reserve.
         const deadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
         response = await this.#fetch(url.toString(), {
           method: "GET",
+          redirect: "manual",
           headers: {
             Accept: "application/json",
             ...(await this.#credential.headers(
@@ -194,6 +198,22 @@ export class ProductionDispatch {
           },
           signal: deadline,
         });
+      } catch (error) {
+        last = `failed: ${messageFor(error)}`;
+        continue;
+      }
+      const target = redirectTarget(response, url.toString());
+      if (target !== undefined) {
+        const fix =
+          target.kind === "the same origin"
+            ? `correct the path of the Dispatch URL (DISPATCH_URL, or envoy.json's dispatch.serverUrl); ${SAME_ADDRESS_CAUSE}`
+            : "set the Dispatch URL (DISPATCH_URL, or envoy.json's dispatch.serverUrl) to Dispatch's own address";
+        throw new Error(
+          `GET ${shown} answered ${response.status}, ${redirectedTo(target)}, and a read follows no redirect, since it carries the Dispatch credential: ${fix}`
+        );
+      }
+      let text: string;
+      try {
         text = await response.text();
       } catch (error) {
         last = `failed: ${messageFor(error)}`;

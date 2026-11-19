@@ -28,6 +28,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/pgsetting"
 )
 
 // replayIDsDDL is the logged-to-local id map a seed writes as it goes and a resumed seed reads,
@@ -110,7 +113,7 @@ func runReplaySeed(args []string) error {
 	if err := checkStack(ctx, ep); err != nil {
 		return err
 	}
-	pool, err := pgxpool.New(ctx, pgURL)
+	pool, err := newPGPool(ctx, pgURL)
 	if err != nil {
 		return err
 	}
@@ -134,11 +137,18 @@ func runReplaySeed(args []string) error {
 	return s.run(ctx, plans)
 }
 
-// withDatabase is the Postgres URL with its database replaced.
+// withDatabase is the Postgres URL with its database replaced. It rewrites the URL with net/url, so
+// it first refuses a value whose user part net/url reads apart from pgx (a ?, # or \ before the @
+// that ends it, pgsetting.URLParserReadsApart), which net/url would rewrite with a piece of the
+// user part as the host; and a value net/url cannot parse is named by its length, since its error
+// quotes the value whole.
 func withDatabase(pgURL, db string) (string, error) {
+	if pgsetting.URLParserReadsApart(pgURL) {
+		return "", redact.Refusal("-pg", pgURL, pgsetting.EndBeforeAt)
+	}
 	u, err := url.Parse(pgURL)
 	if err != nil {
-		return "", fmt.Errorf("postgres url: %w", err)
+		return "", redact.Refusal("-pg", pgURL, redact.Unparsed)
 	}
 	u.Path = "/" + db
 	return u.String(), nil

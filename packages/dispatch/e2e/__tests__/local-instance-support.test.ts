@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
-import { closeSync, constants, openSync, writeSync } from "node:fs";
+import { closeSync, constants, openSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import {
   type FakeDispatchServer,
@@ -420,6 +420,23 @@ describe("databaseUrlRefusal", () => {
     ["host=db.example.com dbname=d", "a single postgres:// URL"],
   ])("refuses %s, saying %s", (url, said) => {
     expect(databaseUrlRefusal(url)).toContain(said);
+  });
+
+  // A user part that holds a `/` (a password or a token can) makes the URL parser read a host
+  // taken from the user part, and the rest as the path, so the hosts it reads are not named: the
+  // refusal names the value by its length and says that cause and how to write a user part. The
+  // password is made for this run.
+  test("a DATABASE_URL whose user part holds a / is refused naming no part of it", () => {
+    const password = crypto.randomUUID();
+    for (const url of [
+      `postgres://made-up-user:4821/${password}@db.example.com/x`,
+      `postgres://MadeUpTok3n/${password}@db.example.com/x`,
+    ]) {
+      const said = databaseUrlRefusal(url) ?? "accepted";
+      expect(said).toBe(
+        `DATABASE_URL must name a loopback Postgres (127.0.0.1, localhost or [::1]) or a Unix socket: its value is ${url.length} characters long; it holds an @ outside its user part (in its path, query or fragment); if its user part holds a /, ?, # or \\, write each of them in it percent-encoded (/ as %2F, ? as %3F, # as %23, \\ as %5C), else write that @ as %40; this command truncates it`
+      );
+    }
   });
 });
 

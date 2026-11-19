@@ -6,6 +6,7 @@ import (
 	"unicode"
 
 	"github.com/sjawhar/envoy/infra/core"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // clusteredHubListener is the resolved session listener the hub runs as a workload of its own,
@@ -218,7 +219,7 @@ func clusteredHubListenerCredentialFor(args *ClusteredNatsHubArgs, l *ClusteredH
 		return strings.ContainsFunc(value, unicode.IsSpace) || strings.ContainsFunc(value, unicode.IsControl)
 	}
 	if blank(l.OidcIssuer) || !issuerURL(l.OidcIssuer) {
-		return nil, core.InputErrorf(path+".oidcIssuer", "%s.oidcIssuer %q must be an https URL with a host and no user, query or fragment, such as https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>", path, l.OidcIssuer)
+		return nil, core.InputErrorf(path+".oidcIssuer", "%w", redact.Refusal(path+".oidcIssuer", l.OidcIssuer, notAnIssuerURL))
 	}
 	if blank(l.OidcAudience) {
 		return nil, core.InputErrorf(path+".oidcAudience", "%s.oidcAudience %q holds whitespace or a control character", path, l.OidcAudience)
@@ -245,3 +246,8 @@ func issuerURL(raw string) bool {
 	issuer, err := url.Parse(raw)
 	return err == nil && issuer.Scheme == "https" && issuer.Host != "" && !urlCarriesExtras(raw, issuer)
 }
+
+// notAnIssuerURL is what the refusal of an oidcIssuer issuerURL refuses names after the issuer's
+// length (redact.Refusal), never the issuer: a value refused for its user part, or one that does
+// not parse, may hold a password, which a quoted issuer would print whole.
+const notAnIssuerURL redact.Misreading = "must be an https URL with a host and no user, query or fragment, such as https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>"

@@ -13,6 +13,8 @@ import (
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // tokenTimeout bounds one call to the issuer's token endpoint, a code exchange or a refresh, and
@@ -98,17 +100,17 @@ func NewCodeFlow(issuer, clientID, clientSecret, hostedDomain string) *CodeFlow 
 func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string) (*codeFlowIssuer, error) {
 	provider, err := gooidc.NewProvider(ctx, issuer)
 	if err != nil {
-		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", issuer, err)
+		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", redact.URL(issuer), redact.RequestError(err, issuer))
 	}
 	endpoint := provider.Endpoint()
 	if endpoint.AuthURL == "" || endpoint.TokenURL == "" {
-		return nil, fmt.Errorf("oidc: issuer %s names no authorization_endpoint or token_endpoint in its discovery document, so it offers no sign-in", issuer)
+		return nil, fmt.Errorf("oidc: issuer %s names no authorization_endpoint or token_endpoint in its discovery document, so it offers no sign-in", redact.URL(issuer))
 	}
 	var revocation struct {
 		Endpoint string `json:"revocation_endpoint"`
 	}
 	if err := provider.Claims(&revocation); err != nil {
-		return nil, fmt.Errorf("oidc: read issuer %s's revocation_endpoint: %w", issuer, err)
+		return nil, fmt.Errorf("oidc: read issuer %s's revocation_endpoint: %w", redact.URL(issuer), redact.RequestError(err, issuer))
 	}
 	return &codeFlowIssuer{
 		verifier: newVerifier(provider, issuer, clientID),
@@ -310,16 +312,18 @@ func (f *CodeFlow) Revoke(ctx context.Context, refreshToken string) error {
 	if issuer.revocationURL == "" {
 		return errors.New("oidc: revoke: the issuer names no revocation_endpoint in its discovery document")
 	}
+	// The revocation endpoint is the one the issuer's discovery document names, which repeats the
+	// issuer's user part when the issuer's own configuration holds one: redact.RequestError.
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, issuer.revocationURL, strings.NewReader(url.Values{"token": {refreshToken}}.Encode()))
 	if err != nil {
-		return fmt.Errorf("oidc: revoke: %w", err)
+		return fmt.Errorf("oidc: revoke: %w", redact.RequestError(err, issuer.revocationURL))
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	// The token endpoint's encoding (oauth2's AuthStyleInHeader): RFC 6749 section 2.3.1.
 	request.SetBasicAuth(url.QueryEscape(issuer.config.ClientID), url.QueryEscape(issuer.config.ClientSecret))
 	response, err := f.http.Do(request)
 	if err != nil {
-		return fmt.Errorf("oidc: revoke: %w", err)
+		return fmt.Errorf("oidc: revoke: %w", redact.RequestError(err, issuer.revocationURL))
 	}
 	defer response.Body.Close()
 	if response.StatusCode >= 200 && response.StatusCode < 300 {

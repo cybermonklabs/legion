@@ -38,9 +38,22 @@ const MAX_ANSWER_BYTES = 1 << 20;
  */
 const agent = new Agent({ keepAlive: false });
 
-/** The identity-token URL for `audience`, honouring {@link METADATA_HOST_VAR}. */
-function tokenUrl(audience: string, env: NodeJS.ProcessEnv): string {
+/** A host name, an IPv4 address or a bracketed IPv6 address, with an optional port, and nothing
+ *  else: no scheme, user part, path, query or space. */
+const HOST_AND_PORT =
+  /^(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*|\[[0-9A-Fa-f:.]+\])(?::(\d{1,5}))?$/;
+
+/** The identity-token URL for `audience`, honouring {@link METADATA_HOST_VAR}; undefined when
+ *  its value is no host and port alone, which a line names by its length only: a URL made from a
+ *  value written as a URL, `http://http://user:password@host/…`, would read with the host `http`
+ *  and the password in its path. */
+function tokenUrl(audience: string, env: NodeJS.ProcessEnv): string | undefined {
   const host = (env[METADATA_HOST_VAR] ?? "").trim() || DEFAULT_METADATA_HOST;
+  const matched = HOST_AND_PORT.exec(host);
+  const port = matched?.[1];
+  if (matched === null || (port !== undefined && (Number(port) < 1 || Number(port) > 65535))) {
+    return undefined;
+  }
   return `http://${host}${IDENTITY_PATH}?audience=${encodeURIComponent(audience)}&format=full`;
 }
 
@@ -113,6 +126,14 @@ export function metadataIdentity(
   return {
     async read(signal?: AbortSignal): Promise<SubjectToken> {
       const url = tokenUrl(audience, env);
+      // The host is judged as a host before anything is asked: any other value fails the read
+      // naming its length alone.
+      if (url === undefined) {
+        const host = (env[METADATA_HOST_VAR] ?? "").trim();
+        throw new Error(
+          `${METADATA_HOST_VAR} must name the metadata server's host, with an optional port and nothing else: its value is ${host.length} characters long`
+        );
+      }
       const named = `the metadata server ${serverNamed(env)}`;
       let answer: { status: number; body: string };
       try {

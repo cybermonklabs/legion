@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,8 +16,9 @@ import (
 	"time"
 )
 
-// isolatePG keeps a test's -pg values from the environment: pgconn.ParseConfig, which the guard
-// and meta.json read -pg with, takes defaults from the PG* variables and from files under $HOME.
+// isolatePG keeps a test's -pg values from the environment: pgx's parse (pgsetting.ParseConfig),
+// which the guard and meta.json read -pg with, takes defaults from the PG* variables and from files
+// under $HOME.
 func isolatePG(t *testing.T) {
 	t.Helper()
 	for _, name := range []string{
@@ -276,6 +278,69 @@ func TestGuardPrintsNoURLPassword(t *testing.T) {
 		if err == nil || strings.Contains(err.Error(), password) || strings.Contains(err.Error(), "loadgen") || !strings.Contains(err.Error(), host) {
 			t.Errorf("guard check against %+v: error %v, want one naming the endpoint's host without its userinfo", e, err)
 		}
+	}
+}
+
+// TestAnEndpointWhoseUserPartNetURLReadsApartIsRefusedByItsLength: an -url, -listener, -nats-mon
+// or -pprof value, or a -nats server, whose user part is a token with a raw / in it
+// (http://<a>/<b>@host) is read by net/url, and by net/http and nats.go after it, with <a> as the
+// host and the rest as the path, so it would be taken, recorded and printed whole, and <a> looked
+// up. Each is refused naming the flag, the value's length and the cause, with no part of the
+// token, and is recorded redacted; so is such a -loop-listeners endpoint. The control is the same
+// value with the / written %2F, which is taken and recorded without its user part. The token's
+// halves are made up for this test.
+func TestAnEndpointWhoseUserPartNetURLReadsApartIsRefusedByItsLength(t *testing.T) {
+	isolatePG(t)
+	const first, second = "MadeUpTok7q2", "not-a-secret-7q2"
+	const cause = "has an @ outside its user part"
+	shown := strings.NewReplacer(first, "<T1>", second, "<T2>")
+	setters := map[string]func(*endpointFlags, string){
+		"-url":      func(f *endpointFlags, v string) { f.url = v },
+		"-listener": func(f *endpointFlags, v string) { f.listener = v },
+		"-nats":     func(f *endpointFlags, v string) { f.nats = v },
+		"-nats-mon": func(f *endpointFlags, v string) { f.natsMon = v },
+		"-pprof":    func(f *endpointFlags, v string) { f.pprof = v },
+	}
+	for name, set := range setters {
+		scheme := "http://"
+		if name == "-nats" {
+			scheme = "nats://"
+		}
+		misread := scheme + first + "/" + second + "@127.0.0.1:1"
+		values := []string{misread}
+		if name == "-nats" {
+			values = append(values, "nats://127.0.0.1:2,"+misread)
+		}
+		for _, value := range values {
+			flags := foreignFlags()
+			set(&flags, value)
+			_, err := resolveEndpoints(flags, testStack())
+			want := fmt.Sprintf("%s, a value of %d characters, %s", name, len(value), cause)
+			if err == nil || !strings.HasPrefix(err.Error(), want) || strings.Contains(err.Error(), first) || strings.Contains(err.Error(), second) {
+				t.Errorf("%s %q: refusal %v, want one that begins %q and holds no part of the token", name, shown.Replace(value), err, want)
+			}
+			if got := redactEndpoint(name, value); strings.Contains(got, first) || strings.Contains(got, second) {
+				t.Errorf("%s %q recorded as %q, which holds a part of the token", name, shown.Replace(value), shown.Replace(got))
+			}
+		}
+		encoded := scheme + "u:" + first + "%2F" + second + "@127.0.0.1:1"
+		flags := foreignFlags()
+		set(&flags, encoded)
+		if _, err := resolveEndpoints(flags, testStack()); err != nil {
+			t.Errorf("%s with the / of its user part written %%2F: refused %v, want it taken", name, err)
+		}
+		if got := redactEndpoint(name, encoded); got != scheme+"127.0.0.1:1" {
+			t.Errorf("%s with the / of its user part written %%2F: recorded as %q, want %q", name, shown.Replace(got), scheme+"127.0.0.1:1")
+		}
+	}
+	listeners := "http://127.0.0.1:1, http://" + first + "/" + second + "@127.0.0.1:2"
+	_, err := parseLoopListeners(listeners)
+	want := fmt.Sprintf("-loop-listeners' endpoint 2, a value of %d characters, %s", len("http://"+first+"/"+second+"@127.0.0.1:2"), cause)
+	if err == nil || !strings.HasPrefix(err.Error(), want) || strings.Contains(err.Error(), first) || strings.Contains(err.Error(), second) {
+		t.Errorf("-loop-listeners with a misread endpoint: refusal %v, want one that begins %q and holds no part of the token", err, want)
+	}
+	if eps, err := parseLoopListeners("http://127.0.0.1:1, http://u:" + first + "%2F" + second + "@127.0.0.1:2"); err != nil || len(eps) != 2 {
+		t.Errorf("-loop-listeners with the / written %%2F: %v, %v, want both endpoints taken", len(eps), err)
 	}
 }
 

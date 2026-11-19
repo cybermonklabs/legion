@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { connect, nkeys } from "nats";
+import { unshownSettingUrl } from "../../../packages/contracts/src/setting-url";
 import { LoggableError } from "../../../packages/envoy-client/src/errors";
 import { natsDialFailure } from "../../../packages/envoy-client/src/nats-connection";
 import {
@@ -73,6 +74,55 @@ describe("bridgeConfigFromEnvironment", () => {
     expect(() =>
       bridgeConfigFromEnvironment({ SMOKE_REPO: "a/b", SMOKE_UPSTREAM_NATS: "nats://y.example:1" })
     ).toThrow(/SMOKE_RIG_NATS/);
+  });
+
+  // SMOKE_RIG_NATS may carry a user and a password, or a token as its user: the ready line names
+  // the rig's NATS by its variable alone. One that the one function would not show, since it still
+  // holds a raw `@` once its user part is taken out or is no nats:// or tls:// URL with a host, is
+  // refused before anything is dialed, named by its length. The password is made for this run.
+  test("names the rig's NATS by its variable, and refuses one it cannot read", () => {
+    const password = crypto.randomUUID();
+    const said: string[] = [];
+    for (const rig of [
+      `nats://made-up-user:${password}@127.0.0.1:4222`,
+      `nats://${password}@127.0.0.1:4222`,
+    ]) {
+      said.push(
+        bridgeReadyLine(
+          bridgeConfigFromEnvironment({
+            SMOKE_REPO: "a/b",
+            SMOKE_RIG_NATS: rig,
+            SMOKE_UPSTREAM_NATS: "nats://y.example:1",
+          })
+        )
+      );
+    }
+    const refused = [
+      `nats://MadeUpTok3n/${password}@127.0.0.1:4222`,
+      `made-up-user:${password}@x:1`,
+    ];
+    for (const rig of refused) {
+      try {
+        bridgeConfigFromEnvironment({
+          SMOKE_REPO: "a/b",
+          SMOKE_RIG_NATS: rig,
+          SMOKE_UPSTREAM_NATS: "nats://y.example:1",
+        });
+        said.push("accepted");
+      } catch (error) {
+        said.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    const ready =
+      "BRIDGE READY subjects=notifications.github.a.b.> upstream=SMOKE_UPSTREAM_NATS downstream=SMOKE_RIG_NATS";
+    expect(said).toEqual([
+      ready,
+      ready,
+      ...refused.map(
+        (rig) =>
+          `SMOKE_RIG_NATS must be a nats:// or tls:// URL with a host: ${unshownSettingUrl(rig, ["nats:", "tls:"])}`
+      ),
+    ]);
   });
 
   test("requires SMOKE_UPSTREAM_NATS: the operator names the production NATS, it has no default", () => {
@@ -202,12 +252,30 @@ describe("the bridge's output lines", () => {
   ] as const)(
     "%s: the failure line carries none of it",
     async (_, which, server, secret) => {
-      const config = bridgeConfigFromEnvironment({
+      const environment = {
         SMOKE_REPO: "a/b",
         SMOKE_RIG_NATS: which === "rig" ? server : "nats://172.30.0.1:31000",
         SMOKE_UPSTREAM_NATS:
           which === "upstream" ? server : "nats://envoy-nats.tailnet.example:4222",
-      });
+      };
+      // A rig server the URL parser cannot read, or reads apart, is refused before anything is
+      // dialed, named by its length (`unshownSettingUrl`), so no failure line is made for it: the
+      // refusal carries none of it either.
+      const refusal = (() => {
+        try {
+          bridgeConfigFromEnvironment(environment);
+          return undefined;
+        } catch (error) {
+          return String(error);
+        }
+      })();
+      if (refusal !== undefined) {
+        expect(which).toBe("rig");
+        expect(refusal).toStartWith("Error: SMOKE_RIG_NATS must be a nats:// or tls:// URL");
+        expect(refusal.toLowerCase()).not.toContain(secret.toLowerCase());
+        return;
+      }
+      const config = bridgeConfigFromEnvironment(environment);
       const error = await realFailure(server);
       expect(carried(error)).toContain(secret.toLowerCase());
       const lines = [bridgeReadyLine(config), bridgeFailureLine(error, config)].join("\n");

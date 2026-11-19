@@ -3,6 +3,8 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -55,6 +57,9 @@ type ProberOptions struct {
 // other, so the daemon keeps no staleness window of its own to drift from it.
 type Prober struct {
 	lookup string
+	// path is the lookup as each line names it: its path after envoy_url, never the URL, which
+	// may carry a user and a password (the loader takes Envoy credentials in its userinfo).
+	path   string
 	token  string
 	log    *slog.Logger
 	client *http.Client
@@ -62,8 +67,10 @@ type Prober struct {
 
 // NewProber is a Prober over opts.
 func NewProber(opts ProberOptions) *Prober {
+	path := "/v1/roles/" + url.PathEscape(string(claim.ControllerToken(opts.Project)))
 	p := &Prober{
-		lookup: strings.TrimRight(opts.EnvoyURL, "/") + "/v1/roles/" + url.PathEscape(string(claim.ControllerToken(opts.Project))),
+		lookup: strings.TrimRight(opts.EnvoyURL, "/") + path,
+		path:   path,
 		token:  opts.EnvoyToken,
 		log:    opts.Log,
 		client: &http.Client{Timeout: probeTimeout},
@@ -85,12 +92,12 @@ func NewProber(opts ProberOptions) *Prober {
 // never a death verdict.
 
 // Probe says whether session — the one registered with the current controller capability — is
-// alive: Gone and Unknown each log why, naming the listener and, where the listener named them,
-// both sessions or the holder's state.
+// alive: Gone and Unknown each log why, naming the lookup by its path after envoy_url and, where
+// the listener named them, both sessions or the holder's state.
 func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.lookup, nil)
 	if err != nil {
-		p.log.Warn("controller liveness: build the role lookup", "url", p.lookup, "error", err)
+		p.log.Warn("controller liveness: build the role lookup", "lookup", p.path, "error", withoutURL(err))
 		return Unknown
 	}
 	if p.token != "" {
@@ -98,7 +105,7 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		p.log.Warn("controller liveness: the Envoy listener is unreachable", "url", p.lookup, "error", err)
+		p.log.Warn("controller liveness: the Envoy listener is unreachable", "lookup", p.path, "error", withoutURL(err))
 		return Unknown
 	}
 	defer response.Body.Close()
@@ -109,18 +116,18 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 		// controller is gone.
 		if readErr != nil {
 			p.log.Warn("controller liveness: the Envoy listener's 404 to the controller role lookup could not be read to its end",
-				"url", p.lookup, "session", session, "error", readErr)
+				"lookup", p.path, "session", session, "error", withoutURL(readErr))
 			return Unknown
 		}
 		var refusal listenerwire.RoleRefusal
 		_ = json.Unmarshal(body, &refusal)
 		if refusal.HolderState == notify.StateUnresponsive {
 			p.log.Info("controller liveness: the controller role's holder is unresponsive, not gone; the controller is left as it is",
-				"url", p.lookup, "session", session, "reason", refusal.Reason, "lastSeen", refusal.LastSeen)
+				"lookup", p.path, "session", session, "reason", refusal.Reason, "lastSeen", refusal.LastSeen)
 			return Unknown
 		}
 		p.log.Info("controller liveness: the controller role has no live holder; the controller is gone",
-			"url", p.lookup, "session", session, "reason", refusal.Reason, "holderState", refusal.HolderState)
+			"lookup", p.path, "session", session, "reason", refusal.Reason, "holderState", refusal.HolderState)
 		return Gone
 	}
 	if response.StatusCode != http.StatusOK {
@@ -128,12 +135,12 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 		if p.token == "" {
 			reason += " with no bearer token sent"
 		}
-		p.log.Warn("controller liveness: "+reason, "url", p.lookup, "status", response.StatusCode)
+		p.log.Warn("controller liveness: "+reason, "lookup", p.path, "status", response.StatusCode)
 		return Unknown
 	}
 	var answer listenerwire.RoleHolder
 	if readErr != nil || json.Unmarshal(body, &answer) != nil || answer.Holder == "" || answer.LastSeen == nil {
-		p.log.Warn("controller liveness: the Envoy listener answered the controller role lookup with an unreadable body", "url", p.lookup)
+		p.log.Warn("controller liveness: the Envoy listener answered the controller role lookup with an unreadable body", "lookup", p.path)
 		return Unknown
 	}
 	if answer.Holder != session {
@@ -142,4 +149,15 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 		return Gone
 	}
 	return Live
+}
+
+// withoutURL is err as a line names it. net/http's *url.Error names the request's URL with its
+// user, and url.Parse's the value whole, password included, so a line names only what failed (the
+// error's Op) and why (its Err), which name no part of the URL's user part.
+func withoutURL(err error) error {
+	var failed *url.Error
+	if errors.As(err, &failed) {
+		return fmt.Errorf("%s: %w", failed.Op, failed.Err)
+	}
+	return err
 }

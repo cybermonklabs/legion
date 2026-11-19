@@ -1,8 +1,17 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { inspect } from "node:util";
 import { LegionReadyRequest } from "@legion/contracts/legion-api";
+import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import {
+  REDIRECT_CODES,
+  type RedirectServers,
+  redirectCase,
+  redirectServers,
+  UNNAMED_TARGETS,
+} from "@legion/test-fixtures/redirect-servers";
 import {
   createLegionDaemonClient,
   daemonUnreachable,
@@ -679,4 +688,223 @@ test("a 502 refusal keeps its stable code through a key no schema names, and is 
   expect(retried).toMatchObject({ status: 502, code: "DISPATCH_FAILED" });
   expect(attempts).toBe(1);
   expect(waits).toEqual([]);
+});
+
+// A refusal after an attempt that lost its connection is told that the lost one may have been
+// applied. The retry did not make that refusal, so it writes nothing to it: it throws an error of
+// its own, with the same method, path, status and code, the longer words, and the refusal,
+// unchanged, as its cause.
+test("a refusal after a dropped attempt comes back as a new error saying the dropped one may have been applied, with the refusal unchanged as its cause", async () => {
+  const refusal = new LegionDaemonApiError(
+    "POST",
+    "/legion/v1/handoff/complete",
+    409,
+    "HANDOFF_ALREADY_RECORDED",
+    "a made-up refusal"
+  );
+  const before = refusal.message;
+  let attempts = 0;
+  const thrown = await retryWhileDaemonRestarts(
+    "handoff_complete",
+    async () => {
+      attempts += 1;
+      if (attempts === 1) throw Object.assign(new Error("socket closed"), { code: "ECONNRESET" });
+      throw refusal;
+    },
+    { sleep: async () => {} }
+  ).catch((error: unknown) => error);
+  expect(attempts).toBe(2);
+  expect(refusal.message).toBe(before);
+  if (!(thrown instanceof LegionDaemonApiError)) throw new Error(`the retry threw ${thrown}`);
+  expect(thrown).not.toBe(refusal);
+  expect(thrown.cause).toBe(refusal);
+  expect(thrown).toMatchObject({
+    method: "POST",
+    path: "/legion/v1/handoff/complete",
+    status: 409,
+    code: "HANDOFF_ALREADY_RECORDED",
+    detail:
+      "a made-up refusal (an earlier attempt of handoff_complete lost its connection before the daemon answered, and may have been applied: read the record before calling again)",
+  });
+  expect(thrown.message).toBe(
+    `${before} (an earlier attempt of handoff_complete lost its connection before the daemon answered, and may have been applied: read the record before calling again)`
+  );
+});
+
+// LEGION_DAEMON_URL may carry a user and a password. One the URL parser does not read as an http
+// or https URL with a host fails each call naming its length and the cause the one function found,
+// and nothing is sent: fetch would try a host it reads out of the value, and its error would hold
+// the value whole. The password is made for this run.
+test("a daemon URL that is no http or https URL with a host fails each call naming its length and cause, sending nothing", async () => {
+  const password = crypto.randomUUID();
+  const values = [
+    `made-up-user:${password}@127.0.0.1:1`,
+    `mailto:made-up-user:${password}@127.0.0.1`,
+    `//made-up-user:${password}@127.0.0.1:1`,
+    "   ",
+    `http://made-up-user:${password}/x@127.0.0.1:1`,
+  ];
+  const sent: string[] = [];
+  const said: { readonly message: string; readonly holds: boolean }[] = [];
+  for (const value of values) {
+    const client = createLegionDaemonClient(value, (async (input: string | URL | Request) => {
+      sent.push(String(input));
+      return new Response(null, { status: 204 });
+    }) as typeof fetch);
+    const error = await client.state().catch((thrown: unknown) => thrown);
+    said.push({
+      message: error instanceof Error ? error.message : String(error),
+      holds: inspect(error, { depth: Number.POSITIVE_INFINITY, showHidden: true }).includes(
+        password
+      ),
+    });
+  }
+  // Each refused value is named in the one function's words.
+  expect(sent).toEqual([]);
+  expect(said).toEqual(
+    values.map((value) => ({
+      message: `LEGION_DAEMON_URL must be an http or https URL: ${unshownSettingUrl(value)}`,
+      holds: false,
+    }))
+  );
+});
+
+/** The two calls whose bodies carry a credential, each to the daemon at `origin` through
+ * `fetchFn`, with random credentials (`fixtureSecret`): the registration's boot token, and the
+ * exit's claim token and secret. */
+function credentialedCalls(origin: string, fetchFn: typeof fetch = fetch) {
+  const client = createLegionDaemonClient(origin, fetchFn);
+  return [
+    [
+      "/legion/v1/claims/register",
+      () => client.register({ ...registration, bootToken: fixtureSecret("boot") }),
+    ],
+    [
+      "/legion/v1/claims/exit",
+      () =>
+        client.exit({
+          claimToken: fixtureSecret("claimtok"),
+          sessionId: "ses_architect_208",
+          secret: fixtureSecret("claimsec"),
+          generation: 1,
+          reason: "a made-up exit",
+        }),
+    ],
+  ] as const;
+}
+
+/** The two servers, with an answer at the other origin a client that followed would take as the
+ * daemon's. */
+function daemonRedirects(): RedirectServers {
+  return redirectServers({
+    atElsewhere: (request) =>
+      new URL(request.url).pathname === "/legion/v1/claims/register"
+        ? Response.json(daemonFixture("register.json"))
+        : new Response(null, { status: 204 }),
+  });
+}
+
+/** What the call refused with, or undefined when it answered. */
+async function refusalOf(call: () => Promise<unknown>): Promise<unknown> {
+  return await call().then(
+    () => undefined,
+    (error: unknown) => error
+  );
+}
+
+const FIX = "LEGION_DAEMON_URL must name the daemon's own address";
+
+// fetch would send a 307's or 308's body on to the origin a redirect names, and the body of a
+// registration carries the pane's boot token, the body of an exit the claim's token and secret. So
+// no call follows a redirect: the 3xx is the answer, a refusal naming it, which is never retried,
+// and the call fails rather than taking the other origin's answer as the daemon's. One case for
+// each code, so a client that follows again fails at each.
+for (const code of REDIRECT_CODES) {
+  test(redirectCase(code), async () => {
+    const servers = daemonRedirects();
+    servers.code = code;
+    try {
+      for (const [route, call] of credentialedCalls(servers.origin)) {
+        const refusal = await refusalOf(call);
+        expect(servers.received, `the other origin after a ${code} of ${route}`).toEqual([]);
+        expect(refusal, `${route} after a ${code}`).toBeInstanceOf(LegionDaemonApiError);
+        expect((refusal as LegionDaemonApiError).message).toBe(
+          `POST ${route} failed with ${code}: redirecting to ${servers.elsewhere}, and a call to the daemon follows no redirect: ${FIX}`
+        );
+        expect(daemonUnreachable(refusal)).toBeUndefined();
+      }
+    } finally {
+      servers.stop();
+    }
+  });
+}
+
+// A call that read a redirect's body before its status would wait on a body that never ends, and
+// refuse nothing; the test's limit is that wait's bound.
+test("a redirect whose body never ends is refused naming its status, before any of its body is read", async () => {
+  const servers = daemonRedirects();
+  servers.endlessBody = true;
+  try {
+    const refused: unknown[] = [];
+    for (const [, call] of credentialedCalls(servers.origin)) {
+      refused.push(((await refusalOf(call)) as Error).message);
+    }
+    expect(refused).toEqual(
+      credentialedCalls(servers.origin).map(
+        ([route]) =>
+          `POST ${route} failed with 307: redirecting to ${servers.elsewhere}, and a call to the daemon follows no redirect: ${FIX}`
+      )
+    );
+  } finally {
+    servers.stop();
+  }
+}, 10_000);
+
+// The client lives as long as its pane, so a refusal that left a redirect's endless body open
+// would hold one connection to the server for each refusal. Each refusal cancels that body, even
+// while its answer is still held, as by the fetch here, which keeps each answer it hands on
+// (Bun cancels the body of an answer nothing holds by itself, a second later); the first server
+// sees each cancel. The limit is a hang guard over the wait for the two cancels, which a client
+// that leaves the bodies open never meets.
+test("a refused redirect's body is cancelled, so a body that never ends holds no connection", async () => {
+  const servers = daemonRedirects();
+  servers.endlessBody = true;
+  const held: Response[] = [];
+  const holding = (async (input, init) => {
+    const response = await fetch(input, init);
+    held.push(response);
+    return response;
+  }) as typeof fetch;
+  try {
+    for (const [route, call] of credentialedCalls(servers.origin, holding)) {
+      expect(await refusalOf(call), route).toBeInstanceOf(LegionDaemonApiError);
+    }
+    await servers.until(() => servers.cancelledBodies === 2);
+    expect(held.map(({ status }) => status)).toEqual([307, 307]);
+  } finally {
+    servers.stop();
+  }
+}, 10_000);
+
+// A redirect within the daemon's own address says to correct the path of the URL, which the
+// client puts before each route; one that names nowhere is not named as the daemon's own address;
+// a host longer than any host name is never printed.
+test("a redirect to another path of the same address, to no target, or to an overlong host is refused saying so", async () => {
+  const servers = daemonRedirects();
+  try {
+    const said: string[] = [];
+    for (const { location } of UNNAMED_TARGETS) {
+      servers.location = location;
+      const [[, register]] = credentialedCalls(servers.origin);
+      said.push(((await refusalOf(register)) as Error).message);
+    }
+    expect(said).toEqual(
+      UNNAMED_TARGETS.map(
+        ({ where, sameAddress }) =>
+          `POST /legion/v1/claims/register failed with 307: ${where}, and a call to the daemon follows no redirect: ${sameAddress ? 'correct the path of LEGION_DAEMON_URL; a missing or an extra "/" is the usual cause' : FIX}`
+      )
+    );
+  } finally {
+    servers.stop();
+  }
 });

@@ -11,6 +11,7 @@ import {
   createEnvoyClient,
   type DeliveryAnswer,
   EnvoyApiError,
+  EnvoyRedirectError,
   EnvoySendUnconfirmedError,
   mayActOnRoleRecord,
   newClientInstanceID,
@@ -1616,15 +1617,15 @@ describe("EnvoyClient", () => {
     expect(followed).toBe(0);
     expect(sent).toBe(1);
     expect(error).not.toBeInstanceOf(EnvoySendUnconfirmedError);
-    expect(error).toBeInstanceOf(EnvoyApiError);
-    expect((error as EnvoyApiError).details.status).toBe(status);
+    expect(error).toBeInstanceOf(EnvoyRedirectError);
+    expect((error as EnvoyRedirectError).details.status).toBe(status);
   });
 
   // F6 (the review of 81d860a8f7): whatever answered a redirect in the listener's place chose its
-  // body, and a misconfigured proxy echoes the request back, the bearer with it. The error prints
-  // that body as the Dispatch client prints a gateway's page, one line with the bearer redacted, and
-  // names the origin the redirect pointed at; never the body whole.
-  test("a send a redirect answers prints its body as one redacted line, with the redirect's origin", async () => {
+  // body, and a misconfigured proxy echoes the request back, the bearer with it. The client reads
+  // none of that body (`redirectTarget` cancels it): the error names the origin the redirect
+  // pointed at, with no user part, path or query of the `Location`, and no part of the body.
+  test("a send a redirect answers names the redirect's origin and none of its body", async () => {
     const listenerToken = fixtureSecret("listener");
     const echoed = `<html><body><h1>Moved</h1>\n<p>Authorization: Bearer ${listenerToken}</p>\n${"<p>filler</p>\n".repeat(400)}</body></html>`;
     const client = createEnvoyClient({
@@ -1642,17 +1643,17 @@ describe("EnvoyClient", () => {
     const error = await client
       .send({ sourceSessionID: "ses_source", targetSessionID: "ses_target", message: "hello" })
       .catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(EnvoyApiError);
-    const message = (error as EnvoyApiError).message;
-    expect(message).toStartWith(
-      "POST http://listener/v1/messages/send failed with 308 (a redirect to https://elsewhere.test, " +
-        "which this client does not follow): a body that is not the listener's error JSON " +
-        '("Moved Authorization: Bearer [redacted]'
+    expect(error).toBeInstanceOf(EnvoyRedirectError);
+    const message = (error as EnvoyRedirectError).message;
+    expect(message).toBe(
+      "POST http://listener/v1/messages/send answered 308, redirecting to https://elsewhere.test, " +
+        "and the Envoy client follows no redirect: set the Envoy URL (ENVOY_URL, or envoy.json's " +
+        "envoy.url) to the listener's own address"
     );
     expect(message).not.toContain(listenerToken);
-    expect(message).not.toContain("\n");
+    expect(message).not.toContain("Moved");
     expect(message).not.toContain("pass@");
-    expect(message.length).toBeLessThan(400);
+    expect(message).not.toContain("token=abc");
   });
 
   // F6's class (the coordinator's ruling on the review of 81d860a8f7): any answer whose body is not

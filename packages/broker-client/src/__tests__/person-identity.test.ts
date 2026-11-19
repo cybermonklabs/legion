@@ -5,7 +5,9 @@
 // honours it.
 
 import { afterEach, expect, test } from "bun:test";
+import { inspect } from "node:util";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { type IssuerAnswer, signedIn, stubIssuer } from "../../test/sign-ins";
 import { personIdentity } from "../person-identity";
@@ -123,7 +125,8 @@ test("an issuer's refusal prints its status and code, never the text that echoes
 });
 
 // The issuer is named as every client names a URL (`urlForText`): one that carries user info by
-// its variable's fixed phrase alone, no part of it. No error keeps the library's as its cause:
+// its variable's fixed phrase alone, no part of it. The read refuses such an issuer before its
+// discovery, since an issuer's identifier holds no user info, and no error keeps a cause:
 // openid-client's error for an issuer that is not the one asked for holds the issuer as it was
 // configured, its user info included.
 test("an issuer with user info is named by its variable alone, in its text and its cause", async () => {
@@ -133,8 +136,8 @@ test("an issuer with user info is named by its variable alone, in its text and i
   const refusal = await refusalOf(async () =>
     personIdentity(await signedIn(PERSON), flowAt(withUser)).read()
   );
-  expect(refusal?.message).toStartWith(
-    `read the sign-in issuer AGENT_SECRETS_SIGNIN_ISSUER ${URL_NOT_PRINTED}: `
+  expect(refusal?.message).toBe(
+    `AGENT_SECRETS_SIGNIN_ISSUER ${URL_NOT_PRINTED} must carry no user and no password: an issuer's identifier holds neither, so its discovery cannot pass with them`
   );
   expect(refusal?.cause).toBeUndefined();
   expect(Bun.inspect(refusal)).not.toContain(password);
@@ -192,4 +195,79 @@ test("a record made with another sign-in client is refused before any request", 
   // A record that names no client is renewed with the one this machine has, as Go's is.
   const unnamed = personIdentity(await signedIn(PERSON, { client_id: "" }), flowAt(issuer.url));
   expect((await unnamed.read()).tokenType).toBe(SUBJECT_TOKEN_TYPE_PERSON);
+});
+
+// AGENT_SECRETS_SIGNIN_ISSUER may carry a user and a password, which an issuer's identifier never
+// holds, so its discovery cannot pass with one: the read refuses such an issuer before anything is
+// asked, naming it by its variable's phrase alone (`urlForText`). An issuer that is no http or
+// https URL with a host is refused naming its length and the cause the one function found. No
+// member of the error, nor of a cause under it, holds the password. The password is made for this
+// run.
+test("an issuer with a user part is refused by its variable's phrase, and one that is no http or https URL with a host by its length and cause", async () => {
+  const password = crypto.randomUUID();
+  const issuer = await issuerFor();
+  const withUser = issuer.url.replace("http://", `http://made-up-user:${password}@`);
+  let calls = 0;
+  const refused = (async () => {
+    calls += 1;
+    throw new Error("connection refused");
+  }) as unknown as typeof fetch;
+  const record = await signedIn(PERSON);
+  const said: { readonly message: string; readonly holds: boolean }[] = [];
+  const unreadable = [
+    `made-up-user:${password}@issuer.example`,
+    `http://made-up-user:${password}@[bad`,
+  ];
+  for (const named of [withUser, ...unreadable]) {
+    const error = await refusalOf(() =>
+      personIdentity(record, flowAt(named), { fetch: refused }).read()
+    );
+    said.push({
+      message: error instanceof Error ? error.message : String(error),
+      holds: inspect(error, { depth: Number.POSITIVE_INFINITY, showHidden: true }).includes(
+        password
+      ),
+    });
+  }
+  expect(said).toEqual([
+    {
+      message: `AGENT_SECRETS_SIGNIN_ISSUER ${URL_NOT_PRINTED} must carry no user and no password: an issuer's identifier holds neither, so its discovery cannot pass with them`,
+      holds: false,
+    },
+    ...unreadable.map((value) => ({
+      message: `AGENT_SECRETS_SIGNIN_ISSUER must name an http or https URL: ${unshownSettingUrl(value)}`,
+      holds: false,
+    })),
+  ]);
+  // None of the three was asked anything.
+  expect(calls).toBe(0);
+});
+
+// With a real fetch against a stub issuer, an issuer with a user part would reach discovery, and
+// the library's error for the issuer its metadata names keeps the expected issuer, password
+// included, deep in its cause chain. The read refuses it before discovery: the issuer is asked
+// nothing, and no member of the error, nor of any cause under it, nor `inspect` of the whole
+// error, holds the password. The password is made for this run.
+test("an issuer with a user part asks the real issuer nothing and holds its password nowhere in the error", async () => {
+  const password = crypto.randomUUID();
+  const issuer = await issuerFor();
+  const withUser = issuer.url.replace("http://", `http://made-up-user:${password}@`);
+  const record = await signedIn(PERSON);
+  const error = await refusalOf(() => personIdentity(record, flowAt(withUser)).read());
+  const holding: string[] = [];
+  let depth = 0;
+  for (let at: unknown = error; at instanceof Error; at = at.cause, depth += 1) {
+    for (const key of Object.getOwnPropertyNames(at)) {
+      if (inspect(Reflect.get(at, key), { depth: Number.POSITIVE_INFINITY }).includes(password)) {
+        holding.push(`${"cause.".repeat(depth)}${key}`);
+      }
+    }
+  }
+  expect({
+    holding,
+    inspected: inspect(error, { depth: Number.POSITIVE_INFINITY, showHidden: true }).includes(
+      password
+    ),
+    asked: issuer.requests.map((request) => request.path),
+  }).toEqual({ holding: [], inspected: false, asked: [] });
 });

@@ -203,6 +203,7 @@ var settingsEmitted = map[string]string{
 // deployment's own repositories, or a derived value that is no setting.
 var settingsExcluded = map[string]string{
 	"Config.PostgresDSN":              "a credential: a DSN carries its password",
+	"Config.PostgresDSNSetting":       "where the DSN, a credential, was read from; no setting of its own",
 	"GitHubApp.PrivateKey":            "a credential: Config holds the PEM resolved whatever the file's source",
 	"GitHubApp.PrivateKeyCommand":     "the source of a credential",
 	"GitHubApp.PrivateKeySecret":      "the source of a credential",

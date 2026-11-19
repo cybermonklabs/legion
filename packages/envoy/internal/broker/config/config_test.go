@@ -2,6 +2,7 @@
 package config
 
 import (
+	"fmt"
 	"maps"
 	"net/netip"
 	"os"
@@ -224,6 +225,42 @@ func TestLoadRefusesAURLWithoutPrintingItsCredential(t *testing.T) {
 			if strings.Contains(err.Error(), secret) {
 				t.Errorf("Load(%s=%q) = %v, names %q", row.name, row.value, err, secret)
 			}
+		}
+	}
+}
+
+// A BROKER_DATABASE_URL whose user part pgx reads apart is refused by Load, before the RDS IAM
+// check reads it, by its length and the cause pgsetting found: an @ in the password before the
+// first /, and a token with a / written as the whole user part. The refusal holds no part of the
+// user part. The control is the same value with that @ or / percent-encoded, which loads. The user,
+// the passwords and the token are made for this test.
+func TestLoadRefusesADatabaseURLWhoseUserPartPgxReadsApart(t *testing.T) {
+	const (
+		user   = "made-up-user-1b6f"
+		first  = "not-a-secret-pw1b6f"
+		second = "not-a-secret-pw2c7a"
+		token  = "not-a-secret-tok3d8b"
+	)
+	for _, row := range []struct{ value, encoded, cause string }{
+		{"postgres://" + user + ":" + first + "@" + second + "@db.example:5432/broker", "postgres://" + user + ":" + first + "%40" + second + "@db.example:5432/broker", "has more than one @ before its first /"},
+		{"postgres://" + token + "/" + first + "@db.example:5432/broker", "postgres://" + token + "%2F" + first + "@db.example:5432/broker", "has an @ after its first / and none before it"},
+	} {
+		e := validEnv()
+		e["BROKER_DATABASE_URL"] = row.value
+		_, err := Load(env(e))
+		want := fmt.Sprintf("BROKER_DATABASE_URL, a value of %d characters, %s", len(row.value), row.cause)
+		if err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("%d characters: %v, want a refusal that begins %q", len(row.value), err, want)
+			continue
+		}
+		for _, part := range []string{user, first, second, token} {
+			if strings.Contains(err.Error(), part) {
+				t.Errorf("the refusal holds a part of the user part: %q", err)
+			}
+		}
+		e["BROKER_DATABASE_URL"] = row.encoded
+		if _, err := Load(env(e)); err != nil {
+			t.Errorf("the control, %d characters: %v, want it loaded", len(row.encoded), err)
 		}
 	}
 }
@@ -1754,7 +1791,9 @@ func TestLoadRefusesPGSSLROOTCERTSystemForAnIAMURL(t *testing.T) {
 // 15 minutes, never goes over a link that has not verified the server: an IAM-form URL that pgx
 // would not read as one host with sslmode=verify-full and a root certificate pool from
 // sslrootcert refuses to start, naming the host and not the URL. sslmode=require encrypts and
-// verifies nothing, and a repeated sslmode takes its last value, as libpq does.
+// verifies nothing, and a repeated sslmode takes its last value, as libpq does. A user pgx cannot
+// decode (a %00 net/url takes), which pgx's own error quotes and which can be a token written
+// where the user stands, is named by none of its text: the refusal says the settings do not parse.
 func TestLoadRefusesAnIAMURLThatDoesNotVerifyTheServer(t *testing.T) {
 	isolatePostgresDefaults(t)
 	base := "postgres://agent_secrets_broker@" + rdsHost + ":5432/agent_secrets"
@@ -1771,6 +1810,7 @@ func TestLoadRefusesAnIAMURLThatDoesNotVerifyTheServer(t *testing.T) {
 		"an sslrootcert that holds no certificate": {base + "?sslmode=verify-full&sslrootcert=config_test.go", "unable to add CA to cert pool"},
 		"sslrootcert=system":                       {base + "?sslmode=verify-full&sslrootcert=system", "sslrootcert=system"},
 		"sslrootcert=system under sslmode=require": {base + "?sslmode=require&sslrootcert=system", "sslrootcert=system"},
+		"a user pgx cannot decode":                 {"postgres://not-a-secret-tok5e1%00x@" + rdsHost + ":5432/agent_secrets?sslmode=verify-full&sslrootcert=" + rdsBundle, "its connection settings do not parse"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := validEnv()
@@ -1784,8 +1824,8 @@ func TestLoadRefusesAnIAMURLThatDoesNotVerifyTheServer(t *testing.T) {
 					t.Errorf("refusal %q does not say %q", err, want)
 				}
 			}
-			if strings.Contains(err.Error(), "postgres://") {
-				t.Errorf("refusal %q quotes the URL; it should name the host alone", err)
+			if strings.Contains(err.Error(), "postgres://") || strings.Contains(err.Error(), "not-a-secret-tok5e1") {
+				t.Errorf("refusal %q quotes the URL or its user; it should name the host alone", err)
 			}
 		})
 	}

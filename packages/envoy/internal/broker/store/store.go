@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/pgsetting"
 )
 
 // Every file in migrations, so pgmigrate.Load judges each one; pgmigratetest.CheckEmbedsEveryFile
@@ -67,11 +68,14 @@ func WithTokenMinter(mint TokenMinter) Option {
 	}
 }
 
-// Open opens the pool databaseURL names, configured by opts, and pings it.
+// Open opens the pool databaseURL (BROKER_DATABASE_URL) names, configured by opts, and pings it.
+// It reads the URL through pgsetting: one whose user part pgx may read apart is refused, and one
+// pgx cannot parse, each named by its length, and a failed ping names no user, since pgx's errors
+// would print a piece of the user part, or the user, which can be a token.
 func Open(ctx context.Context, databaseURL string, opts ...Option) (*Store, error) {
-	config, err := pgxpool.ParseConfig(databaseURL)
+	config, err := pgsetting.ParsePoolConfig("BROKER_DATABASE_URL", databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("open Postgres pool: %w", err)
+		return nil, err
 	}
 	for _, opt := range opts {
 		opt(config)
@@ -82,7 +86,7 @@ func Open(ctx context.Context, databaseURL string, opts ...Option) (*Store, erro
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("ping Postgres: %w", err)
+		return nil, fmt.Errorf("ping Postgres: %w", pgsetting.ConnectFailure(err))
 	}
 	return &Store{Pool: pool}, nil
 }

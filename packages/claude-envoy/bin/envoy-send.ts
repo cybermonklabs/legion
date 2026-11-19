@@ -89,6 +89,8 @@ try {
     nats: false,
     ...(session === undefined ? {} : { session }),
   })
+  // An Envoy URL that `shownSettingUrl` would not show turns Envoy off here, named by its length
+  // (`httpUrl`, envoy.json's `httpUrlSchema`), so no client is built for it and nothing is sent.
   if (!envoy.enabled) throw new Error(`Envoy is off: ${envoy.error ?? envoy.notice}`)
   // What chose this send's listener and credential, which a resend carries so it goes where this
   // send went from any shell: the envoy.json read (a set ENVOY_CONFIG_FILE wins over every other

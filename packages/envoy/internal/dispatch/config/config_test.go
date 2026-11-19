@@ -192,6 +192,36 @@ func TestLoadRejectsInvalidEnvironmentOverrides(t *testing.T) {
 	}
 }
 
+// A refused DISPATCH_SERVER_URL or NATS_URLS may carry a user and a password; the refusal, which
+// the Dispatch server logs at boot, names the variable and holds no part of the user part. Each
+// case's control is the same value with no user part, which is refused too. The password is made
+// for this test.
+func TestLoadRefusalsOfAnOverrideNameNoUserPart(t *testing.T) {
+	const (
+		user     = "made-up-user"
+		password = "not-a-secret-9d40c2"
+	)
+	for _, tc := range []struct {
+		variable string
+		value    func(userPart string) string
+	}{
+		{"DISPATCH_SERVER_URL", func(userPart string) string { return "https://" + userPart + "dispatch.example/auth/callback" }},
+		{"NATS_URLS", func(userPart string) string { return "nats://" + userPart + "one.example:4222, " }},
+	} {
+		t.Run(tc.variable, func(t *testing.T) {
+			for _, userPart := range []string{user + ":" + password + "@", ""} {
+				_, err := Load(environment(map[string]string{tc.variable: tc.value(userPart)}), LoadOptions{CWD: t.TempDir(), HomeDir: t.TempDir()})
+				if err == nil || !strings.Contains(err.Error(), tc.variable) {
+					t.Fatalf("user part %q: err = %v, want a refusal naming %s", userPart, err, tc.variable)
+				}
+				if strings.Contains(err.Error(), password) || strings.Contains(err.Error(), user) {
+					t.Errorf("the refusal holds the user part: %q", err)
+				}
+			}
+		})
+	}
+}
+
 // The NATS URLs live in the envoy section now, so a file that still carries the top-level key is
 // refused, in either file: the user file's naming where they go, the checkout's saying it holds
 // only Dispatch.

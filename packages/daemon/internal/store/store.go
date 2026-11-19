@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/pgsetting"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
 
@@ -79,10 +80,23 @@ type Store struct {
 // not see it. Such a DSN gets the daemon's value set beside it in the startup packet, and the
 // startup parameter is what the server ends up running with (measured on PostgreSQL 18.6,
 // 2026-11-12). A deployment that wants another value writes it as its own DSN key.
+//
+// A refusal of dsn names it as LEGION_POSTGRES_DSN; OpenSetting names the setting it is given.
 func Open(ctx context.Context, dsn string) (*Store, error) {
-	config, err := pgxpool.ParseConfig(dsn)
+	return OpenSetting(ctx, "LEGION_POSTGRES_DSN", dsn)
+}
+
+// OpenSetting is Open of dsn, the value of the setting named, which a refusal of dsn names: the
+// daemon reads its DSN from the config file's postgres_dsn or from LEGION_POSTGRES_DSN
+// (config.Config.PostgresDSNSetting).
+func OpenSetting(ctx context.Context, setting, dsn string) (*Store, error) {
+	// The DSN is read through pgsetting, as every opener of a Postgres connection string reads it:
+	// one whose user part pgx and net/url read apart, or that pgx cannot parse, is refused by its
+	// length and cause, since the address ConnectError names would be a piece of that user part
+	// and pgx's parse error quotes the user, which can be a token written where the user stands.
+	config, err := pgsetting.ParsePoolConfig(setting, dsn)
 	if err != nil {
-		return nil, ConnectError(dsn, err)
+		return nil, err
 	}
 	if _, named := config.ConnConfig.RuntimeParams[idleBoundParam]; !named {
 		// Milliseconds with no unit, which is the unit this setting counts in: the one spelling
@@ -428,7 +442,10 @@ func schemaVersionExists(ctx context.Context, db queryRower) (bool, error) {
 
 // connectError says where the daemon could not reach Postgres without saying
 // how it would have got in: an operator reads this in a boot refusal, and a
-// DSN's password has no business in a log line.
+// DSN's password has no business in a log line. A failed connect is written
+// without the user and the database pgx names in front of it
+// (pgsetting.ConnectFailure), since a DSN's user can be a token written where
+// the user stands.
 type connectError struct {
 	address  string
 	password string
@@ -436,7 +453,7 @@ type connectError struct {
 }
 
 func (e *connectError) Error() string {
-	return fmt.Sprintf("connect to Postgres at %s: %s", e.address, redactPassword(e.err.Error(), e.password))
+	return fmt.Sprintf("connect to Postgres at %s: %s", e.address, redactPassword(pgsetting.ConnectFailure(e.err).Error(), e.password))
 }
 
 // redactPassword hides a password where a driver would print one: after the

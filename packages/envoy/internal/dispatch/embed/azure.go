@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
@@ -74,6 +75,9 @@ type AzureConfig struct {
 // AzureClient calls Cohere Embed v4 deployed on Azure AI Foundry, over plain net/http: one POST
 // per batch does not need the Azure SDK.
 type AzureClient struct {
+	// endpoint is the endpoint as configured, which redact.RequestError judges; url is the
+	// request's, the route and the api-version query after it.
+	endpoint   string
 	url        string
 	identity   string
 	deployment string
@@ -89,7 +93,7 @@ type AzureClient struct {
 func NewAzure(cfg AzureConfig) (*AzureClient, error) {
 	endpoint, err := url.Parse(cfg.Endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("embed: azure endpoint: %w", err)
+		return nil, fmt.Errorf("embed: azure endpoint: %w", redact.Error(err, cfg.Endpoint))
 	}
 	if !endpoint.IsAbs() || endpoint.Host == "" {
 		return nil, errors.New("embed: azure endpoint must be an absolute URL with a host")
@@ -112,6 +116,7 @@ func NewAzure(cfg AzureConfig) (*AzureClient, error) {
 	target.RawPath = ""
 	target.RawQuery = url.Values{"api-version": {azureAPIVersion}}.Encode()
 	return &AzureClient{
+		endpoint:   cfg.Endpoint,
 		url:        target.String(),
 		identity:   azureIdentityPrefix + strings.ToLower(endpoint.Host) + "/" + cfg.Deployment,
 		deployment: cfg.Deployment,
@@ -200,7 +205,10 @@ func (c *AzureClient) Embed(ctx context.Context, texts []string, inputType Input
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("embed: azure build request: %w", err)
+		// The endpoint is a setting that may carry a user and a password, and a parse error or
+		// net/http's transport error quotes the URL (net/http keeps the user, and a token written
+		// as the whole user part): redact.RequestError prints only the failure's class then.
+		return nil, fmt.Errorf("embed: azure build request: %w", redact.RequestError(err, c.endpoint))
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
@@ -215,7 +223,7 @@ func (c *AzureClient) Embed(ctx context.Context, texts []string, inputType Input
 	}
 	response, err := c.http.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("embed: azure embeddings: %w", err)
+		return nil, fmt.Errorf("embed: azure embeddings: %w", redact.RequestError(err, c.endpoint))
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode > 299 {

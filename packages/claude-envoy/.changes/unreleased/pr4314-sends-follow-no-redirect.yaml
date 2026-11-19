@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  `envoy-send` and the Legion daemon client follow no redirect. A 3xx is a refusal, read from its
+  status before any of its body, which is cancelled, that names the status, says where it points
+  (another origin by its scheme and host, another path of the same address, or no target) and says
+  what to correct, and `envoy-send` exits 1. Before, the send followed it with the broker's DPoP
+  proof and the message and printed `Sent`, and a daemon call sent a 307's or 308's body, with the
+  boot token or the claim's secret, on to the other origin. `envoy-send` sends through the Envoy
+  client, which refuses the 3xx (`EnvoyRedirectError`), and names its Envoy URL with no user and no
+  password on every line it fails with. A `LEGION_DAEMON_URL` that is no http or https URL with a
+  host, or that still holds a raw `@` once its user part is taken out, fails each daemon call,
+  naming its length alone and how to write a user part, and nothing is sent. A daemon refusal after
+  an attempt that lost its connection is a new error that says the lost attempt may have been
+  applied, with the refusal unchanged as its cause.

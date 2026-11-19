@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // azureChatEnvironment is a boot environment (signInEnvironment's) whose answerer is a chat
@@ -92,14 +93,16 @@ func TestResolveBootConfigRefusesEveryAnswererShapeItCannotUse(t *testing.T) {
 			[]string{"DISPATCH_AZURE_CHAT_ENDPOINT is required when DISPATCH_ANSWERER is azure"}},
 		{"a plain-http azure endpoint", azureEndpoint("http://chat.example/models"),
 			[]string{`DISPATCH_AZURE_CHAT_ENDPOINT="http://chat.example/models" ` + endpointShape}},
+		// A value redact.URL cannot prove clean is named as redact.NotPrinted: it may carry a user
+		// part (a relative value's user:password@host reads as no user at all).
 		{"a relative azure endpoint", azureEndpoint("chat.example/models"),
-			[]string{`DISPATCH_AZURE_CHAT_ENDPOINT="chat.example/models" ` + endpointShape}},
+			[]string{`DISPATCH_AZURE_CHAT_ENDPOINT="` + redact.NotPrinted + `" ` + endpointShape}},
 		{"an azure endpoint with no host", azureEndpoint("https:///models"),
-			[]string{`DISPATCH_AZURE_CHAT_ENDPOINT="https:///models" ` + endpointShape}},
+			[]string{`DISPATCH_AZURE_CHAT_ENDPOINT="` + redact.NotPrinted + `" ` + endpointShape}},
 		{"an azure endpoint with a query", azureEndpoint("https://chat.example/models?api-version=2024-05-01-preview"),
 			[]string{"DISPATCH_AZURE_CHAT_ENDPOINT=", endpointShape}},
 		{"an azure endpoint with a fragment", azureEndpoint("https://chat.example/models#chat"),
-			[]string{`DISPATCH_AZURE_CHAT_ENDPOINT="https://chat.example/models#chat" ` + endpointShape}},
+			[]string{`DISPATCH_AZURE_CHAT_ENDPOINT="` + redact.NotPrinted + `" ` + endpointShape}},
 		{"azure without a deployment", azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_DEPLOYMENT": ""}),
 			[]string{"DISPATCH_AZURE_CHAT_DEPLOYMENT is required when DISPATCH_ANSWERER is azure"}},
 		{"azure without a quota", quota(""),
@@ -120,7 +123,7 @@ func TestResolveBootConfigRefusesEveryAnswererShapeItCannotUse(t *testing.T) {
 		{"a plain-http endpoint", chatEndpoint("http://chat.example/v1"),
 			[]string{`DISPATCH_CHAT_ENDPOINT="http://chat.example/v1" ` + endpointShape}},
 		{"a relative endpoint", chatEndpoint("chat.example/v1"),
-			[]string{`DISPATCH_CHAT_ENDPOINT="chat.example/v1" ` + endpointShape}},
+			[]string{`DISPATCH_CHAT_ENDPOINT="` + redact.NotPrinted + `" ` + endpointShape}},
 		{"an endpoint with a query", chatEndpoint("https://chat.example/v1?model=chat-model"),
 			[]string{"DISPATCH_CHAT_ENDPOINT=", endpointShape}},
 		{"endpoint without a token file", endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_TOKEN_FILE": ""}),

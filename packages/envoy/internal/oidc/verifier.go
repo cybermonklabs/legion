@@ -16,6 +16,8 @@ import (
 	"unicode"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // The class of every Verify failure. A caller logs the class and answers 401;
@@ -293,7 +295,7 @@ func (v *Verifier) classify(ctx context.Context, raw string, err, keySetErr erro
 	case decodeErr != nil:
 		return fmt.Errorf("%w: %v", ErrMalformed, decodeErr)
 	case !v.namesIssuer(claims.Issuer):
-		return fmt.Errorf("%w: %q, want %q", ErrIssuer, claims.Issuer, v.issuer)
+		return fmt.Errorf("%w: %q, want %q", ErrIssuer, claims.Issuer, redact.URL(v.issuer))
 	case !slices.Contains(claims.Audience, v.audience):
 		return fmt.Errorf("%w: %q, want %q", ErrAudience, []string(claims.Audience), v.audience)
 	case !v.skipExpiry && claims.Expiry != 0 && time.Unix(int64(claims.Expiry), 0).Before(time.Now()):

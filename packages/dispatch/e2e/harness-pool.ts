@@ -27,6 +27,8 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { urlForText } from "@legion/contracts/log-text";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 
 import {
   pgBinVariable,
@@ -251,6 +253,21 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
   const env = options.env ?? process.env;
   watchSignals();
   try {
+    // The file store's endpoint may carry a user and a password. One that `shownSettingUrl` does
+    // not read is refused, named by its length and what to correct (`unshownSettingUrl`), and one
+    // that carries a user part by its fixed phrase (`urlForText`), since the fetch of Playwright's
+    // Node refuses such a URL printing it whole; both before a Postgres or a server starts.
+    const endpoint = (env.DISPATCH_E2E_FILE_STORE_ENDPOINT ?? "").trim();
+    if (endpoint !== "" && shownSettingUrl(endpoint) === undefined) {
+      throw new Error(
+        `DISPATCH_E2E_FILE_STORE_ENDPOINT must be an http or https URL: ${unshownSettingUrl(endpoint)}`
+      );
+    }
+    if (endpoint !== "" && /^[^:]+:\/\/[^/?#]*@/.test(endpoint)) {
+      throw new Error(
+        `${urlForText(endpoint, "DISPATCH_E2E_FILE_STORE_ENDPOINT")} must carry no user and no password: the fetch of Playwright's Node refuses a URL that carries them, printing it whole`
+      );
+    }
     const given = (env.DATABASE_URL ?? "").trim();
     runDir = mkdtempSync(join(tmpdir(), "dispatch-e2e-run-"));
     // A run of one stack against the database the caller named starts no Postgres, which is what

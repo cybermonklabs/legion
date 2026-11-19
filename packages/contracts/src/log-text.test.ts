@@ -54,6 +54,47 @@ describe("urlForText", () => {
   });
 });
 
+// A Postgres URL prints as its scheme, host, port and database, with no user, password or query,
+// where it reads one way to every parser and its host passes the http(s) host rule; otherwise as
+// its setting's phrase. The password is made for this run.
+describe("urlForText of a Postgres URL", () => {
+  const password = `pw${crypto.randomUUID()}`;
+  test.each([
+    [
+      `postgres://made-up-user:${password}@127.0.0.1:5432/acme_local?sslmode=disable`,
+      "postgres://127.0.0.1:5432/acme_local",
+    ],
+    ["postgresql://made-up-user@db.internal/app", "postgresql://db.internal/app"],
+    ["postgres://127.0.0.1:5432/acme_local", "postgres://127.0.0.1:5432/acme_local"],
+    [`postgres://made-up-user:${password}@[::1]:5432`, "postgres://[::1]:5432"],
+  ])("%p prints as %p", (url, shown) => {
+    expect(isCleanUrl(url)).toBe(false);
+    expect(urlForText(url, "DATABASE_URL")).toBe(shown);
+  });
+
+  // Each is a value whose host fails the host rule, or one a parser can split otherwise than its
+  // writer meant.
+  test.each([
+    [`postgres://made-up-user:${TAIL}@${TAIL}_x.example/db`, "a host that is no DNS name"],
+    [`postgres://made-up-user:p@ss${TAIL}@127.0.0.1/db`, "a second '@'"],
+    [`postgres://made-up-user:p/x${TAIL}@127.0.0.1/db`, "a '/' in a password"],
+    [`postgres://made-up-user:p?x${TAIL}@127.0.0.1/db`, "a '?' in a password"],
+    [`postgres://made-up-user:p#x${TAIL}@127.0.0.1/db`, "a '#' in a password"],
+    [`postgres://made-up-user:p\\x${TAIL}@127.0.0.1/db`, "a backslash in a password"],
+    [`POSTGRES://made-up-user:${TAIL}@127.0.0.1/db`, "an upper-case scheme"],
+    [` postgres://made-up-user:${TAIL}@127.0.0.1/db`, "a leading space"],
+    [`postgres://made-up-user:${TAIL}@h1:5432,h2:5432/db`, "two hosts"],
+    [`postgres://made-up-user:${TAIL}@127.0.0.1:99999${TAIL}/db`, "a port past five digits"],
+    [`postgres://127.0.0.1/db%2F${TAIL}`, "an escape in the database"],
+    [`postgres://127.0.0.1/db?user=x@${TAIL}`, "an '@' in the query"],
+    [`postgres:///db?host=/run/${TAIL}`, "no host"],
+  ])("%p (%s) prints as its setting's phrase alone", (url) => {
+    const shown = urlForText(url, "DATABASE_URL");
+    expect(shown).toBe(phrase("DATABASE_URL"));
+    expect(shown.toLowerCase()).not.toContain(TAIL.toLowerCase());
+  });
+});
+
 // A request URL a client built from a clean base prints with the path and query the client wrote;
 // from any other base, as the base's phrase.
 describe("requestForText", () => {

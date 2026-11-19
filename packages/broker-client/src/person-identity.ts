@@ -7,6 +7,7 @@
 
 import { holdSecret, holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, urlForText } from "@legion/contracts/log-text";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 import {
   allowInsecureRequests,
   ClientSecretPost,
@@ -111,6 +112,14 @@ export function personIdentity(
     (url, init) =>
       send(url, requestInit(init, signal, init.headers));
 
+  // The issuer may carry a user and a password. One that `shownSettingUrl` would not show, which
+  // the URL parser may read apart so that discovery would ask a host taken from the user part,
+  // fails the read before anything is asked, named by its length and what to correct
+  // (`unshownSettingUrl`). One with a user part fails it too, named as `issuer` names it: an
+  // issuer's identifier holds no user part, so discovery cannot pass with one, and the library's
+  // error for the issuer it then reads would keep the password in its cause chain.
+  const issuerUnread = shownSettingUrl(flow.issuer) === undefined;
+
   /** The issuer's metadata, as one discovery request reads it. */
   const discover = async (signal: AbortSignal | undefined): Promise<ServerMetadata> => {
     try {
@@ -129,6 +138,17 @@ export function personIdentity(
 
   return {
     async read(signal?: AbortSignal): Promise<SubjectToken> {
+      if (issuerUnread) {
+        throw new Error(
+          `${SIGNIN_ISSUER_VAR} must name an http or https URL: ${unshownSettingUrl(flow.issuer)}`
+        );
+      }
+      const { username, password } = new URL(flow.issuer);
+      if (username !== "" || password !== "") {
+        throw new Error(
+          `${issuer} must carry no user and no password: an issuer's identifier holds neither, so its discovery cannot pass with them`
+        );
+      }
       discovered ??= discover(signal);
       const discovering = discovered;
       let metadata: ServerMetadata;

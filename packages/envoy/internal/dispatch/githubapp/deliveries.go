@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
@@ -62,7 +63,7 @@ func (c *Client) Deliveries(ctx context.Context, since time.Time, before func() 
 			return nil, limited
 		}
 		if status != http.StatusOK {
-			return nil, fmt.Errorf("GET %s: %s", target, StatusText(status, body))
+			return nil, fmt.Errorf("GET %s: %s", c.shownTarget(target), StatusText(status, body))
 		}
 		next, err := nextLink(header.Get("Link"), c.base)
 		if err != nil {
@@ -108,10 +109,10 @@ func (c *Client) Redeliver(ctx context.Context, deliveryID int64) error {
 		return limited
 	}
 	if status == http.StatusNotFound {
-		return fmt.Errorf("POST %s: status %d: %w", target, status, ErrNoDelivery)
+		return fmt.Errorf("POST %s: status %d: %w", c.shownTarget(target), status, ErrNoDelivery)
 	}
 	if status != http.StatusAccepted {
-		return fmt.Errorf("POST %s: %s", target, StatusText(status, body))
+		return fmt.Errorf("POST %s: %s", c.shownTarget(target), StatusText(status, body))
 	}
 	return nil
 }
@@ -522,10 +523,11 @@ func nextLink(header, base string) (string, error) {
 		}
 		origin, err := url.Parse(base)
 		if err != nil {
-			return "", fmt.Errorf("parse API base %q: %w", base, err)
+			// The base is DISPATCH_GITHUB_API_BASE, which may carry a user and a password.
+			return "", fmt.Errorf("parse API base %q: %w", redact.URL(base), redact.Error(err, base))
 		}
 		if parsed.Scheme != origin.Scheme || parsed.Host != origin.Host {
-			return "", fmt.Errorf("next page link %q leaves the API origin %s", target, base)
+			return "", fmt.Errorf("next page link %q leaves the API origin %s", target, redact.URL(base))
 		}
 		return target, nil
 	}

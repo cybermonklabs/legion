@@ -7,6 +7,8 @@ import { join } from "node:path";
 import tls from "node:tls";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { URL_NOT_PRINTED } from "../../../packages/contracts/src/log-text";
+import { unshownSettingUrl } from "../../../packages/contracts/src/setting-url";
 
 // The probe runs as an operator runs it, a process of its own, against a local TLS server that
 // does or does not advertise SETTINGS_ENABLE_CONNECT_PROTOCOL. The certificate is made per run by
@@ -196,4 +198,45 @@ test("anything but one https URL is a usage error, exit 2", async () => {
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain("usage: bun scripts/e2e/lib/h2-settings.ts <https-url>");
   }
+});
+
+// The URL may carry a user and a password: a line names it by its fixed phrase (`urlForText`), and
+// a value that is no http or https URL with a host is named by its length and the cause the one
+// function found. So is one with a `/` in its user part, which the URL parser reads as a host taken
+// from the user part. The password is made for this run.
+test("a URL with a user part is named by its phrase, and one that is no http or https URL by its length and cause", async () => {
+  const password = crypto.randomUUID();
+  const unreadable = [
+    `made-up-user:${password}@dispatch.example`,
+    `https://made-up-user:${password}@[bad`,
+    `https://MadeUpTok3n/${password}@dispatch.example`,
+  ];
+  const said: { readonly code: number; readonly stderr: string }[] = [];
+  for (const value of [`http://made-up-user:${password}@localhost:1`, ...unreadable]) {
+    const result = await run([value]);
+    said.push({ code: result.code, stderr: result.stderr + result.stdout });
+  }
+  expect(said).toEqual([
+    {
+      code: 2,
+      stderr: `h2-settings: not an https URL: the URL ${URL_NOT_PRINTED}\nusage: bun scripts/e2e/lib/h2-settings.ts <https-url>\n`,
+    },
+    ...unreadable.map((value) => ({
+      code: 2,
+      stderr: `h2-settings: not an https URL: ${unshownSettingUrl(value)}\nusage: bun scripts/e2e/lib/h2-settings.ts <https-url>\n`,
+    })),
+  ]);
+});
+
+test.skipIf(skip)("the answer names a URL with a user part by its phrase alone", async () => {
+  const password = crypto.randomUUID();
+  const port = await listen(http2.createSecureServer({ ...tlsFiles, settings: {} }));
+  const result = await run([`https://made-up-user:${password}@127.0.0.1:${port}`]);
+  expect(result.code).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(JSON.parse(result.stdout)).toMatchObject({
+    alpn: "h2",
+    url: `the URL ${URL_NOT_PRINTED}`,
+  });
+  expect(result.stdout).not.toContain(password);
 });

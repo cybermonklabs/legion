@@ -7,12 +7,12 @@ import (
 	"regexp"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // plainRefreshTokenRetireTimeout bounds the boot's retirement of the refresh tokens people holds
@@ -31,10 +31,23 @@ var domainShape = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.
 // maxDomainLength is the longest DNS name, in its dotted text form.
 const maxDomainLength = 253
 
-// iapAudienceShape is the start every audience Identity-Aware Proxy signs for shares,
-// /projects/<project number>/ (https://cloud.google.com/iap/docs/signed-headers-howto): a load
-// balancer's backend service, an App Engine app or a Cloud Run service follows it.
-var iapAudienceShape = regexp.MustCompile(`^/projects/[0-9]+/\S+$`)
+// notALowercaseDomain is what a refusal of DISPATCH_SIGNIN_DOMAIN names, after the value's length
+// (redact.Refusal): the value is never echoed, so a secret pasted into the wrong variable stays out
+// of the boot log.
+const notALowercaseDomain redact.Misreading = "is not a lowercase domain name such as example.com"
+
+// iapAudienceShape is the shape of every audience Identity-Aware Proxy signs for,
+// /projects/<project number>/ (https://cloud.google.com/iap/docs/signed-headers-howto) and then a
+// load balancer's backend service, an App Engine app or a Cloud Run service, named in letters,
+// digits, '.', '_', '-' and '/'. Nothing after the project number may hold an @ or a :, so a URL
+// with a user part written after it (/projects/<n>/https://<user>:<password>@host) is refused like
+// one pasted at the start, and the boot line, which logs the audience, never holds a user part.
+var iapAudienceShape = regexp.MustCompile(`^/projects/[0-9]+/[A-Za-z0-9._/-]+$`)
+
+// notAnIAPAudience is what a refusal of DISPATCH_IAP_AUDIENCE names, after the value's length
+// (redact.Refusal): a value of another shape may be a URL pasted into the wrong variable, user part
+// and all, so it is never echoed.
+const notAnIAPAudience redact.Misreading = "is not the audience IAP signs its assertions for, which begins /projects/<project number>/ and holds only letters, digits, ., _, - and / after it, such as /projects/<project number>/global/backendServices/<backend service id>"
 
 // signInClientSettings are the three settings every Google sign-in takes, each with boot's value:
 // the issuer and Dispatch's confidential client there.
@@ -113,7 +126,7 @@ func checkSignInSettings(boot bootConfig, identityMode string) error {
 	}
 	if boot.SignInDomain != "" {
 		if boot.SignInIssuer != googleIssuer {
-			return fmt.Errorf("DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER %s, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is %s", googleIssuer, boot.SignInIssuer)
+			return fmt.Errorf("DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER %s, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is %s", googleIssuer, redact.URL(boot.SignInIssuer))
 		}
 		if err := checkDomainShape(boot.SignInDomain); err != nil {
 			return err
@@ -146,10 +159,10 @@ func checkIAPSignInSettings(boot bootConfig) error {
 }
 
 // checkDomainShape refuses a DISPATCH_SIGNIN_DOMAIN that is not a lowercase DNS name, naming its
-// length and never its value.
+// length and never its value (redact.Refusal).
 func checkDomainShape(domain string) error {
 	if len(domain) > maxDomainLength || !domainShape.MatchString(domain) {
-		return fmt.Errorf("DISPATCH_SIGNIN_DOMAIN must be a lowercase domain name such as example.com; got a value of %d characters", utf8.RuneCountInString(domain))
+		return redact.Refusal("DISPATCH_SIGNIN_DOMAIN", domain, notALowercaseDomain)
 	}
 	return nil
 }

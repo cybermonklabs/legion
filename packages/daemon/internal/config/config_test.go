@@ -204,6 +204,7 @@ func defaultsFor(port int) Config {
 		Port:                                    port,
 		Bind:                                    "127.0.0.1",
 		PostgresDSN:                             "postgres://legion@127.0.0.1:5432/legion",
+		PostgresDSNSetting:                      "postgres_dsn",
 		StateDir:                                "/var/lib/legion",
 		Runtime:                                 Runtime{Name: "tmux"},
 		AdmissionCap:                            4,
@@ -1095,13 +1096,14 @@ func TestLoadRefuses(t *testing.T) {
 			name: "nats_urls entry with a query string",
 			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
 				`nats_urls: ["nats://127.0.0.1:4222?token=token"]`+"\n", 1),
-			want: `nats_urls entry "nats://127.0.0.1:4222?token=token" must not include a query string or fragment; use URL userinfo or a secret for credentials`,
+			// Named by its place, never its value: the query holds the token.
+			want: `nats_urls entry 1 must not include a query string or fragment; use URL userinfo or a secret for credentials`,
 		},
 		{
 			name: "nats_urls entry with a fragment",
 			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
 				`nats_urls: ["nats://127.0.0.1:4222#fragment"]`+"\n", 1),
-			want: `nats_urls entry "nats://127.0.0.1:4222#fragment" must not include a query string or fragment; use URL userinfo or a secret for credentials`,
+			want: `nats_urls entry 1 must not include a query string or fragment; use URL userinfo or a secret for credentials`,
 		},
 		{
 			name: "envoy_url with a query string",
@@ -1239,7 +1241,7 @@ func TestLoadRefuses(t *testing.T) {
 		{
 			name: "nats_urls holding something that is not a URL",
 			body: minimalFile + "nats_urls: [nats://127.0.0.1:4222, nats-host]\n",
-			want: `nats_urls entry "nats-host" must be a valid URL`,
+			want: `nats_urls entry 2 must be a valid URL`,
 		},
 		{
 			name: "envoy_token_file blank",
@@ -1599,6 +1601,9 @@ func TestLoadRefuses(t *testing.T) {
 	}
 }
 
+// The DSN is read from the file's postgres_dsn when the file names one, and from
+// LEGION_POSTGRES_DSN otherwise, and the config records which, so a refusal of it names the
+// setting the operator wrote.
 func TestLoadReadsPostgresDSNFromTheEnvironment(t *testing.T) {
 	env := envMap(map[string]string{"LEGION_POSTGRES_DSN": "postgres://legion@db:5432/legion"})
 
@@ -1606,16 +1611,16 @@ func TestLoadReadsPostgresDSNFromTheEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if fromEnv.PostgresDSN != "postgres://legion@db:5432/legion" {
-		t.Errorf("PostgresDSN = %q, want the environment's value", fromEnv.PostgresDSN)
+	if fromEnv.PostgresDSN != "postgres://legion@db:5432/legion" || fromEnv.PostgresDSNSetting != "LEGION_POSTGRES_DSN" {
+		t.Errorf("PostgresDSN = %q from %q, want the environment's value from LEGION_POSTGRES_DSN", fromEnv.PostgresDSN, fromEnv.PostgresDSNSetting)
 	}
 
 	fileWins, err := Load(writeConfigFile(t, minimalFile), env)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if fileWins.PostgresDSN != "postgres://legion@127.0.0.1:5432/legion" {
-		t.Errorf("PostgresDSN = %q, want the file's value", fileWins.PostgresDSN)
+	if fileWins.PostgresDSN != "postgres://legion@127.0.0.1:5432/legion" || fileWins.PostgresDSNSetting != "postgres_dsn" {
+		t.Errorf("PostgresDSN = %q from %q, want the file's value from postgres_dsn", fileWins.PostgresDSN, fileWins.PostgresDSNSetting)
 	}
 }
 
@@ -1993,5 +1998,46 @@ func TestLoadReadsCapabilityDecisions(t *testing.T) {
 				t.Fatalf("Load error = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// Every URL setting the loader reads refuses a value whose user part net/url reads apart, at
+// start, by its length and the cause, naming the setting and no part of the value: net/url reads
+// `https://tok/en@host` with the host `tok`, a piece of the token, which the daemon would dial and
+// each line that names the URL print. A nats_urls entry is named by its place in the list. The
+// control: a user and a password net/url reads whole still load as written. The token is made for
+// this test.
+func TestAURLSettingWhoseUserPartNetURLReadsApartIsRefusedAtLoad(t *testing.T) {
+	const token, rest = "not-a-secret-tok2d9e", "not-a-secret-4b8a"
+	misread := "https://" + token + "/" + rest + "@envoy.example"
+	natsMisread := "nats://" + token + "/" + rest + "@nats.example:4222"
+	why := fmt.Sprintf(", a value of %d characters, has an @ outside its user part", len(misread))
+	for _, tc := range []struct{ name, body, want string }{
+		{"envoy_url", minimalFile + "envoy_url: " + misread + "\n", "envoy_url" + why},
+		{"daemon_url", minimalFile + "daemon_url: " + misread + "\n", "daemon_url" + why},
+		{"dispatch_url", strings.Replace(minimalFile, "dispatch_url: http://127.0.0.1:8080", "dispatch_url: "+misread, 1), "dispatch_url" + why},
+		{"a nats_urls entry", strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]", `nats_urls: [nats://127.0.0.1:4222, "`+natsMisread+`"]`, 1),
+			fmt.Sprintf("nats_urls entry 2, a value of %d characters, has an @ outside its user part", len(natsMisread))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(writeConfigFile(t, tc.body), noEnv)
+			if err == nil {
+				t.Fatalf("the file loaded; want the refusal %q", tc.want)
+			}
+			if !strings.HasPrefix(err.Error(), tc.want) {
+				t.Errorf("Load error = %q, want it to start %q", err, tc.want)
+			}
+			if strings.Contains(err.Error(), token) || strings.Contains(err.Error(), rest) {
+				t.Errorf("the refusal %q holds a piece of the token", err)
+			}
+		})
+	}
+	whole := "https://made-up-user:" + rest + "@envoy.example:9020"
+	cfg, err := Load(writeConfigFile(t, minimalFile+"envoy_url: "+whole+"\n"), noEnv)
+	if err != nil {
+		t.Fatalf("an envoy_url with a user and a password net/url reads whole was refused: %v", err)
+	}
+	if cfg.EnvoyURL != whole {
+		t.Errorf("envoy_url loaded as %q, want %q as written", cfg.EnvoyURL, whole)
 	}
 }

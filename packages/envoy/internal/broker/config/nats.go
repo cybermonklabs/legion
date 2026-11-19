@@ -8,13 +8,15 @@ import (
 	"strings"
 
 	"github.com/nats-io/nkeys"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // loadNATSCallout reads the NATS auth service's settings (Config.NATS): none set is no service;
 // any set needs BROKER_NATS_URLS and the three seed files, each holding a seed of its own kind;
 // BROKER_NATS_K8S_AUDIENCE needs k8sIssuer, BROKER_K8S_OIDC_ISSUER. A hub URL carrying user info,
-// or one that is no URL, is refused by its place in the list (hubURLRefusal). No refusal carries
-// a seed or a URL.
+// one that net/url reads apart, or one that is no URL, is refused by its place in the list
+// (hubURLRefusal). No refusal carries a seed or a URL.
 func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout, error) {
 	settings := NATSCallout{
 		SeedFile:       strings.TrimSpace(getenv("BROKER_NATS_SEED_FILE")),
@@ -29,8 +31,8 @@ func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout,
 		if entry == "" {
 			continue
 		}
-		if refusal := hubURLRefusal(entry); refusal != "" {
-			return NATSCallout{}, fmt.Errorf("BROKER_NATS_URLS entry %d %s", index+1, refusal)
+		if refusal := hubURLRefusal(index, entry); refusal != nil {
+			return NATSCallout{}, refusal
 		}
 		settings.URLs = append(settings.URLs, entry)
 	}
@@ -59,24 +61,32 @@ func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout,
 	return settings, nil
 }
 
-// hubURLRefusal is why entry, one of BROKER_NATS_URLS, cannot name the hub, or "" when it can. The
-// service connects as the user its seed names, so user info in a URL is a credential it never
-// uses, and the broker writes the URLs into its start line and the service's connect error. An
-// entry with no scheme is read as nats.go dials it, as nats://<entry> (nats.go, parseServerURL),
-// and one that does not parse is refused too: nats.go could not dial it, and the parse error
-// quotes it whole. The reason names neither the entry nor its user info.
-func hubURLRefusal(entry string) string {
-	if !strings.Contains(entry, "://") {
-		entry = "nats://" + entry
+// hubURLRefusal is the refusal of entry, the one at index of BROKER_NATS_URLS, when it cannot name
+// the hub, or nil when it can. The service connects as the user its seed names, so user info in a
+// URL is a credential it never uses, and the broker writes the URLs into its start line and the
+// service's connect error, so an entry it admits holds no @ at all. An entry with no scheme is
+// read as nats.go dials it, as nats://<entry> (nats.go, parseServerURL). One that holds an @
+// net/url reads apart (redact.Misread), as a token with a / in it leaves its tail and the @ in the
+// path, is refused by its length, since any piece of it may be the token; one that does not parse
+// is refused too, since nats.go could not dial it and the parse error quotes it whole. No refusal
+// names the entry or its user info.
+func hubURLRefusal(index int, entry string) error {
+	setting := fmt.Sprintf("BROKER_NATS_URLS entry %d", index+1)
+	withScheme := entry
+	if !strings.Contains(withScheme, "://") {
+		withScheme = "nats://" + withScheme
 	}
-	parsed, err := url.Parse(entry)
+	if why := redact.Misread(withScheme); why != "" {
+		return redact.Refusal(setting, entry, why)
+	}
+	parsed, err := url.Parse(withScheme)
 	switch {
 	case err != nil:
-		return "is not a URL nats.go can dial"
+		return fmt.Errorf("%s is not a URL nats.go can dial", setting)
 	case parsed.User != nil:
-		return "carries user info: the NATS auth service connects as the user BROKER_NATS_SEED_FILE names, so name the hub by its address alone"
+		return fmt.Errorf("%s carries user info: the NATS auth service connects as the user BROKER_NATS_SEED_FILE names, so name the hub by its address alone", setting)
 	}
-	return ""
+	return nil
 }
 
 // ReadSeedFile is the key pair the nkey seed in the file at path makes, refused, naming setting

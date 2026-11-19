@@ -1,5 +1,6 @@
 import { parseArgs } from "node:util";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "../../../packages/contracts/src/dispatch-api";
+import { shownSettingUrl, unshownSettingUrl } from "../../../packages/contracts/src/setting-url";
 import { bodyForText } from "../../../packages/envoy-client/src/excerpt";
 
 const USAGE =
@@ -117,16 +118,15 @@ async function optionsFrom(argv: readonly string[]): Promise<Options> {
     throw new UsageError("--subscribe-after waits after whoami's answer; it needs --from-whoami");
   }
 
-  let url: URL;
   const rawURL = required(values.url, "--url");
-  try {
-    url = new URL(rawURL);
-  } catch {
-    throw new UsageError(`--url is not a URL: ${rawURL}`);
+  // --url may carry a user and a password: one that `shownSettingUrl` would not show is named by
+  // its length and what to correct (`unshownSettingUrl`).
+  if (shownSettingUrl(rawURL) === undefined) {
+    throw new UsageError(
+      `--url must be Dispatch's http or https address: ${unshownSettingUrl(rawURL)}`
+    );
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new UsageError(`--url is Dispatch's http or https address, not ${rawURL}`);
-  }
+  const url = new URL(rawURL);
 
   const rawTimeout = values.timeout ?? "60";
   const timeoutSeconds = Number(rawTimeout);

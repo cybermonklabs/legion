@@ -37,7 +37,7 @@ type pgClockReading struct {
 func readPGClock(ctx context.Context, url string) pgClockReading {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	conn, err := pgx.Connect(ctx, url)
+	conn, err := connectPG(ctx, url)
 	if err != nil {
 		return pgClockReading{Error: fmt.Sprintf("connect: %v", err)}
 	}

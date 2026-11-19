@@ -32,7 +32,7 @@ func (c *Client) readRepositoryJSON(ctx context.Context, token, path, repoFull s
 	if err != nil {
 		return nil, status, err
 	}
-	if err := CheckRepositoryResponse(status, header, body, repoFull, c.base+path, handled...); err != nil {
+	if err := CheckRepositoryResponse(status, header, body, repoFull, path, handled...); err != nil {
 		return nil, status, err
 	}
 	return body, status, nil
@@ -63,7 +63,7 @@ func (c *Client) readConditionalRepositoryJSON(ctx context.Context, token, path,
 	if err != nil {
 		return nil, status, "", err
 	}
-	if err := CheckRepositoryResponse(status, header, body, repoFull, c.base+path, http.StatusNotModified); err != nil {
+	if err := CheckRepositoryResponse(status, header, body, repoFull, path, http.StatusNotModified); err != nil {
 		return nil, status, "", err
 	}
 	// GitHub repeats the ETag on a 304; when it does not, the empty value travels to the caller,
@@ -76,7 +76,8 @@ func (c *Client) readConditionalRepositoryJSON(ctx context.Context, token, path,
 // installation may not read this resource, or cannot see the repository at all — which the
 // results read takes as unknown, never as a commit it placed elsewhere. A rate limit behind
 // either status is the *RateLimitError instead. Any other status is the error CheckResponse
-// makes, named by the target. repoFull is the `owner/repo` the error names.
+// makes, named by the target, which a caller passes as a path or as Client.shownTarget names it:
+// the API base may carry a user and a password. repoFull is the `owner/repo` the error names.
 func CheckRepositoryResponse(status int, header http.Header, body []byte, repoFull, target string, handled ...int) error {
 	if status == http.StatusOK || slices.Contains(handled, status) {
 		return nil
@@ -162,7 +163,7 @@ func (c *Client) HasCommit(ctx context.Context, token, owner, repo, sha string) 
 	if status == http.StatusUnprocessableEntity && noCommitForSHA(body) {
 		return false, nil
 	}
-	if err := CheckRepositoryResponse(status, header, body, owner+"/"+repo, target); err != nil {
+	if err := CheckRepositoryResponse(status, header, body, owner+"/"+repo, c.shownTarget(target)); err != nil {
 		return false, err
 	}
 	return true, nil

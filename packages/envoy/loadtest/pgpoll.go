@@ -39,7 +39,7 @@ func (e *readErrors) done() int {
 // up to and including to (poll). It returns the failed reads: a failed connect counts as one and
 // is logged, prefixed with name.
 func pollPG(ctx context.Context, url string, from, to time.Time, every time.Duration, name string, lg *log.Logger, sample func(context.Context, *pgx.Conn) error) int {
-	conn, err := pgx.Connect(ctx, url)
+	conn, err := connectPG(ctx, url)
 	if err != nil {
 		lg.Printf("%s: %v", name, err)
 		return 1

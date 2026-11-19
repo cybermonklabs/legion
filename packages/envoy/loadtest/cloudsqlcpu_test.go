@@ -417,7 +417,11 @@ func TestCloudSQLCPURefusesAMetadataServerWithNoToken(t *testing.T) {
 	}
 }
 
-// TestCloudSQLCPURefusesBadFlags: the flags are checked before any connection.
+// TestCloudSQLCPURefusesBadFlags: the flags are checked before any connection. An -api or
+// -token-url value that redact.URL would not print whole (a user part, or a token with a raw / as
+// the whole user part, which net/url reads with its first half as the host) is refused by its
+// length, since a request's error names its URL whole; the plain URLs of the test servers the
+// tests above run it against are taken.
 func TestCloudSQLCPURefusesBadFlags(t *testing.T) {
 	dir := cloudsqlStepDir(t)
 	for _, tc := range []struct {
@@ -431,6 +435,15 @@ func TestCloudSQLCPURefusesBadFlags(t *testing.T) {
 	} {
 		if err := runCloudSQLCPU(tc.args); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("runCloudSQLCPU(%v): want an error naming %q, got %v", tc.args, tc.want, err)
+		}
+	}
+	for _, name := range []string{"-api", "-token-url"} {
+		for _, value := range []string{"http://not-a-secret-tok-c5a1/x@127.0.0.1:1", "http://made-up-user-c5a1:not-a-secret-c5a1@127.0.0.1:1"} {
+			err := runCloudSQLCPU([]string{"-step", dir, "-project", cloudsqlTestProject, "-instance", cloudsqlTestInstance, name, value})
+			want := fmt.Sprintf("%s, a value of %d characters, is not a plain http(s) URL", name, len(value))
+			if err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "c5a1") {
+				t.Errorf("%s with a user part, %d characters: err = %v, want %q and no part of the value", name, len(value), err, want)
+			}
 		}
 	}
 }

@@ -124,6 +124,21 @@ func TestAForeignRunsMetaHoldsNoTokenOrPassword(t *testing.T) {
 			want: []string{"-allow-foreign=true", "-listener-token-file=" + listenerFile, "-nats=nats://127.0.0.1:3", "-token-file=" + agentFile},
 		},
 		{
+			// A token with a raw / as the whole user part, which net/url reads with its first
+			// half as the host and the rest as the path: each endpoint is recorded redacted whole.
+			args: []string{
+				"-allow-foreign", "-token-file", agentFile, "-listener-token-file", listenerFile,
+				"-url", "http://MadeUpTok8r3/not-a-secret-8r3@127.0.0.1:1", "-listener", "http://MadeUpTok8r3/not-a-secret-8r3@127.0.0.1:2",
+				"-nats", "nats://MadeUpTok8r3/not-a-secret-8r3@127.0.0.1:3", "-nats-mon", "http://MadeUpTok8r3/not-a-secret-8r3@127.0.0.1:4",
+				"-pprof", "http://MadeUpTok8r3/not-a-secret-8r3@127.0.0.1:5",
+			},
+			want: []string{
+				"-allow-foreign=true", "-listener=" + redacted, "-listener-token-file=" + listenerFile, "-nats=" + redacted,
+				"-nats-mon=" + redacted, "-pprof=" + redacted, "-token-file=" + agentFile, "-url=" + redacted,
+			},
+			secrets: []string{"MadeUpTok8r3", "not-a-secret-8r3"},
+		},
+		{
 			// A -nats server list and a -pg host list, credentials in more than the first element.
 			args: []string{
 				"-allow-foreign", "-token-file", agentFile, "-listener-token-file", listenerFile,
@@ -172,6 +187,18 @@ func TestAForeignRunsMetaHoldsNoTokenOrPassword(t *testing.T) {
 			secrets: []string{"74120596338", "vr4-mq7"},
 		},
 		{
+			// A token written as the whole user part, with a ? or # in it: pgx reads it as the
+			// user, where net/url would read a piece of it as the host.
+			args:    foreignPG("postgres://tok-3qv9k?mw8-tz4@h/db"),
+			want:    recordedPG("postgres://h:5432/db"),
+			secrets: []string{"tok-3qv9k", "mw8-tz4"},
+		},
+		{
+			args:    foreignPG("postgres://tok-7hd2x#qp5-rn6@h/db"),
+			want:    recordedPG("postgres://h:5432/db"),
+			secrets: []string{"tok-7hd2x", "qp5-rn6"},
+		},
+		{
 			// pgx splits the query at & alone and reads no fragment, so ; and # stay in the
 			// password parameter; sslpassword is a secret too.
 			args:    foreignPG("postgres://h/db?sslmode=disable&password=ws4-kd9;jt6-pb"),
@@ -187,6 +214,36 @@ func TestAForeignRunsMetaHoldsNoTokenOrPassword(t *testing.T) {
 			args:    foreignPG("postgres://h/db?sslpassword=keypass-m4vq"),
 			want:    recordedPG("postgres://h:5432/db"),
 			secrets: []string{"keypass-m4vq"},
+		},
+		{
+			// A user part pgx reads apart (pgsetting.Refuse): pgx would read a piece of the
+			// password as the host, which the meta records, so parsePG refuses the value and it is
+			// recorded redacted whole: an @ in the password ends pgx's user part early, and a /
+			// in a token written as the whole user part ends the host.
+			args:    foreignPG("postgres://loader:not-a-secret-pw-7a2e@not-a-secret-host-7a2e@db.example:5432/dispatch"),
+			want:    recordedPG(redacted),
+			secrets: []string{"not-a-secret-pw-7a2e", "not-a-secret-host-7a2e"},
+		},
+		{
+			args:    foreignPG("postgres://not-a-secret-tok-4f9b/x@db.example:5432/dispatch"),
+			want:    recordedPG(redacted),
+			secrets: []string{"not-a-secret-tok-4f9b"},
+		},
+		{
+			// An @ before the first / and another in the database name: the host pgx reads may be
+			// a piece of a password that holds a raw @ and then a raw /, so parsePG refuses it too
+			// and it is recorded redacted whole.
+			args:    foreignPG("postgres://loader:not-a-secret-pw-2c8d@not-a-secret-piece-2c8d/x@db.example:5432/dispatch?connect_timeout=3"),
+			want:    recordedPG(redacted),
+			secrets: []string{"not-a-secret-pw-2c8d", "not-a-secret-piece-2c8d"},
+		},
+		{
+			// An @ before the first / and another in the query: the host pgx reads may be a piece
+			// of a password that holds a raw @, /, ? and =, so parsePG refuses it too and it is
+			// recorded redacted whole.
+			args:    foreignPG("postgres://loader:not-a-secret-pw-3d9e@not-a-secret-piece-3d9e/x?connect_timeout=3&a=b@db.example:5432/dispatch"),
+			want:    recordedPG(redacted),
+			secrets: []string{"not-a-secret-pw-3d9e", "not-a-secret-piece-3d9e"},
 		},
 	} {
 		fs := flag.NewFlagSet("run", flag.ContinueOnError)

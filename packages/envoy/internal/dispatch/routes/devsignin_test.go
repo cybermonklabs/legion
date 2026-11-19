@@ -385,3 +385,22 @@ func TestBuildAppContextDevSignInRefusesAPublicOrigin(t *testing.T) {
 		}
 	}
 }
+
+// The dashboard origin may carry a user and a password, or a token whose `/` the URL parser ends
+// the user part at. The refusal names it through redact.URL, which prints no part of such a value.
+// The password is made for this test.
+func TestDevSignInOriginRefusalPrintsNoUserPart(t *testing.T) {
+	password := "made-up-pw-4c7e19"
+	for _, serverURL := range []string{
+		"https://made-up-user:" + password + "@dispatch.example.com",
+		"https://MadeUpTok3n/" + password + "@dispatch.example.com",
+	} {
+		_, err := DevSignInOrigin(serverURL)
+		if err == nil || !strings.Contains(err.Error(), "DISPATCH_SERVER_URL") {
+			t.Fatalf("DevSignInOrigin(<made-up>) = %v, want a refusal naming DISPATCH_SERVER_URL", err)
+		}
+		if strings.Contains(err.Error(), password) || strings.Contains(err.Error(), "made-up-user") {
+			t.Errorf("the refusal holds the user part: %v", err)
+		}
+	}
+}

@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/pgsetting"
 )
 
 // DefaultGoogleOIDCIssuer is the issuer of every Google identity token, the one a machine's
@@ -628,7 +629,8 @@ type Config struct {
 	// connection its configuration lists no static user for, and which answers each with a NATS
 	// user of that connection's own. BROKER_NATS_URLS is the hub's servers, comma separated, each
 	// refused at start, by its place in the list and never its text, when it carries user info or
-	// is no URL: the service connects as its seed's user, and the URLs are written to its log;
+	// is no URL, and by its length too when it holds an @ net/url reads apart: the service
+	// connects as its seed's user, and the URLs are written to its log;
 	// BROKER_NATS_SEED_FILE the service's own NATS user seed, a user the hub lists as an auth
 	// user; BROKER_NATS_ISSUER_SEED_FILE the account seed the hub names as its auth_callout
 	// issuer, which signs every user the service admits; BROKER_NATS_XKEY_SEED_FILE the curve
@@ -1552,6 +1554,12 @@ const rdsHostSuffix = ".rds.amazonaws.com"
 // system trust store, which holds no RDS CA, so every sign-in would fail. Every other URL
 // connects as given.
 func databaseIAM(databaseURL string) (bool, error) {
+	// net/url ends the host at a ?, # or \ in the user part, which pgx keeps in it, so the host
+	// net/url reads from such a value is a piece of the user part: the check decides nothing of
+	// it and names no host, and pgx connects as given, as it did when net/url could not parse it.
+	if pgsetting.URLParserReadsApart(databaseURL) {
+		return false, nil
+	}
 	parsed, err := url.Parse(databaseURL)
 	if err != nil || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") {
 		return false, nil
@@ -1582,14 +1590,18 @@ func databaseIAM(databaseURL string) (bool, error) {
 	}
 	conn, err := pgconn.ParseConfig(databaseURL)
 	if err != nil {
-		// A ParseConfigError's own text quotes the URL; what it wraps says what was wrong.
-		var parseErr *pgconn.ParseConfigError
-		if errors.As(err, &parseErr) && errors.Unwrap(parseErr) != nil {
-			err = errors.Unwrap(parseErr)
-		} else {
-			err = errors.New("its connection settings do not parse")
+		// A ParseConfigError's own text quotes the URL, and what it wraps can quote the user part
+		// (pgx's decode of a user it cannot read, which can be a token written where the user
+		// stands), so only the sslrootcert file's failures, which name that file and no part of
+		// the user, are told; any other says that the settings do not parse.
+		var file *os.PathError
+		switch {
+		case errors.As(err, &file):
+			return refuse("pgx cannot read it: unable to read CA file: " + file.Error())
+		case errors.Unwrap(err) != nil && errors.Unwrap(err).Error() == "unable to add CA to cert pool":
+			return refuse("pgx cannot read it: unable to add CA to cert pool")
 		}
-		return refuse("pgx cannot read it: " + err.Error())
+		return refuse("pgx cannot read it: its connection settings do not parse")
 	}
 	// pgx signs in with the password it reads, which net/url can miss: a query pair holding a ';'
 	// (net/url drops it), PGPASSWORD, or a passfile entry. A connection that has one signs in with
@@ -1735,6 +1747,11 @@ func Load(getenv func(string) string) (Config, error) {
 		if strings.TrimSpace(req.value) == "" {
 			return Config{}, fmt.Errorf("%s is required", req.name)
 		}
+	}
+	// A user part pgx and net/url read apart is refused first, named by its length: the IAM
+	// check below names the host net/url read, which would then be a piece of the user part.
+	if err := pgsetting.Refuse("BROKER_DATABASE_URL", cfg.DatabaseURL); err != nil {
+		return Config{}, err
 	}
 	if cfg.DatabaseIAM, err = databaseIAM(cfg.DatabaseURL); err != nil {
 		return Config{}, err

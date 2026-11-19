@@ -1,0 +1,21 @@
+kind: Added
+custom:
+  Issue: pr4314
+body: |-
+  A new subpath, `@legion/contracts/setting-url`, exports `shownSettingUrl`, which decides whether
+  a client admits a setting whose value names an http or https URL, before any request: it answers
+  the value with no user and no password when the URL parser reads it as an http or https URL with
+  a host and no raw `@` is left once the user part it found is taken out, and nothing for any other
+  value. The parser ends a user part at the first `/`, `?`, `#` or `\`, so a token that holds one
+  reads as a host taken from the token; a caller refuses such a value before any request, where it
+  was admitted before. No line prints what it answers, since what is left can still name a host the
+  parser took from a password (`https://user:p@ssword` reads with the host `ssword`): a line names
+  a setting's URL through `urlForText` or `requestForText` of `@legion/contracts/log-text`. The
+  subpath also exports `unshownSettingUrl`, the words a refusal names such a value by: its length,
+  and, when it holds an `@`, how to write a user part.
+
+  `urlForText` prints a `postgres://` or `postgresql://` URL as `<scheme>//<host>[:port]/<database>`,
+  with no user, no password and no query, where its host passes the same host rule as an http(s)
+  URL's and the value reads one way to every parser (one `@` at most, before the first `/`, `?` or
+  `#`); any other such value prints as its setting's phrase. `bun run dispatch:local`'s banner names
+  a DATABASE_URL the person set so.

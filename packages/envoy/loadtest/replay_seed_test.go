@@ -110,6 +110,44 @@ func TestWithDatabase(t *testing.T) {
 	}
 }
 
+// withDatabase rewrites a -pg value with net/url, which ends the host at a ?, # or \ in the user
+// part that pgx keeps in it, and whose parse error quotes the value whole: each such value is
+// refused naming no part of its user part, rather than rewritten with a piece of it as the host
+// or printed in net/url's error. The control is a value with no user part net/url misreads, which
+// is rewritten. The user, the password and the token are made for this test.
+func TestWithDatabaseNamesNoPartOfAUserPartNetURLReadsApart(t *testing.T) {
+	const (
+		user     = "made-up-user-4e7a"
+		password = "not-a-secret-3f6b"
+		token    = "not-a-secret-tok2a9"
+	)
+	for _, userPart := range []string{
+		user + ":" + password + "?w",
+		user + ":" + password + "#w",
+		token + "?w",
+		token + "#w",
+		user + ":" + password + "[w",
+	} {
+		raw := "postgres://" + userPart + "@127.0.0.1:15432/dispatch"
+		got, err := withDatabase(raw, "dispatch_replay_build")
+		text := got
+		if err != nil {
+			text = err.Error()
+		}
+		if err == nil {
+			t.Errorf("%d characters: rewritten to %d characters, want a refusal", len(raw), len(got))
+		}
+		for _, part := range []string{user, password, token} {
+			if strings.Contains(text, part) {
+				t.Errorf("%d characters: %q holds a part of the user part", len(raw), text)
+			}
+		}
+	}
+	if got, err := withDatabase("postgres://u@127.0.0.1:15432/dispatch?application_name=a@b", "x"); err != nil || got != "postgres://u@127.0.0.1:15432/x?application_name=a@b" {
+		t.Errorf("the control: withDatabase = %q, %v, want it rewritten", got, err)
+	}
+}
+
 // TestHistoryPadsFromStoredSizes walks a document's history as history does, against a fake
 // Dispatch that stores every version shift bytes off what was sent (a base it canonicalises to
 // other bytes) and an answer drift bytes off production's change: version 1 lands off its plan,

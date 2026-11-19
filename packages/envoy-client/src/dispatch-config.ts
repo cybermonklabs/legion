@@ -1,4 +1,5 @@
 import { isCleanUrl } from "@legion/contracts/log-text";
+import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
   type BearerSource,
@@ -221,7 +222,9 @@ export function dispatchSettings(
   const publicUrl = nonEmpty(env.DISPATCH_PUBLIC_URL);
   const publicParsed = publicUrl === undefined ? undefined : httpUrl(publicUrl);
   if (publicUrl !== undefined && (publicParsed === undefined || publicParsed.port === "0")) {
-    return offWithError("DISPATCH_PUBLIC_URL must be an http or https URL");
+    return offWithError(
+      `DISPATCH_PUBLIC_URL must be an http or https URL: ${unshownSettingUrl(publicUrl)}`
+    );
   }
   const base = publicUrl === undefined ? url : withoutTrailingSlashes(publicUrl);
   const linkNotice = linkNoticeFor(
@@ -316,7 +319,9 @@ function dispatchTarget(
     );
   }
   if (explicitUrl !== undefined && httpUrl(explicitUrl) === undefined) {
-    return offWithError("DISPATCH_URL must be an http or https URL");
+    return offWithError(
+      `DISPATCH_URL must be an http or https URL: ${unshownSettingUrl(explicitUrl)}`
+    );
   }
 
   // Forced, no bearer is resolved at all: not a variable, not the chosen file's `dispatch.token`,

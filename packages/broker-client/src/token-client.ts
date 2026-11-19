@@ -28,6 +28,7 @@
 
 import { holdSecret, holdUrlUserinfo, scrub } from "@legion/contracts/held-secrets";
 import { errorClass, isHttpUrl, urlForText } from "@legion/contracts/log-text";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
   allowInsecureRequests,
@@ -324,6 +325,14 @@ export class BrokerTokenClient {
     // Not quoted: a value that is no URL may be a token pasted where the URL goes.
     if (!isHttpUrl(brokerUrl))
       throw new Error("broker client: the broker URL is not an http or https URL");
+    // One that `shownSettingUrl` would not show is refused by its length and what to correct
+    // (`unshownSettingUrl`): the URL parser may read it apart, so a trade would go to a host taken
+    // from its user part. Refused here, once, since no trade the retry loop makes again cures it.
+    if (shownSettingUrl(brokerUrl) === undefined) {
+      throw new Error(
+        `broker client: the broker URL must be an http or https URL: ${unshownSettingUrl(brokerUrl)}`
+      );
+    }
     // Its user info held: Bun sends it as `Authorization: Basic` on the token request, which
     // carries no header of its own (`holdUrlUserinfo`).
     this.#brokerUrl = holdUrlUserinfo(brokerUrl);

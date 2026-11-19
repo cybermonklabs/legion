@@ -29,6 +29,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // The outcomes a caller has to tell apart. None of them carries the token presented.
@@ -284,10 +285,10 @@ func New(options Options) (*Verifier, error) {
 	}
 	origin, err := url.Parse(options.Origin)
 	if err != nil {
-		return nil, fmt.Errorf("brokertoken: the origin %q does not parse: %w", options.Origin, err)
+		return nil, fmt.Errorf("brokertoken: the origin %q does not parse", redact.URL(options.Origin))
 	}
 	if (origin.Scheme != "http" && origin.Scheme != "https") || origin.Host == "" || origin.Path != "" {
-		return nil, fmt.Errorf("brokertoken: the origin %q must be an absolute http(s) URL with no path", options.Origin)
+		return nil, fmt.Errorf("brokertoken: the origin %q must be an absolute http(s) URL with no path", redact.URL(options.Origin))
 	}
 	limit := options.AddressLimit
 	if limit == (ratelimit.Limit{}) {

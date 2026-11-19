@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  The daemon reads its Postgres DSN and the session database's URL through `pgsetting`: a value
+  with a raw `@` after its first `@`, whose user part pgx and Go's URL parser read apart, or one
+  pgx cannot parse, is refused at boot by its length and the cause, with the words to write that
+  `@` as `%40`, and a failed connect names no user and no database. Before, the parse error and
+  the connect refusal could print a piece of the password or a token written as the user.
+
+  The refusal of the daemon's DSN names the setting the value was read from: `postgres_dsn`, the
+  config file's key, or `LEGION_POSTGRES_DSN` when the file names none.
+time: 2026-11-19T13:14:55Z
+custom:
+    Issue: pr4314

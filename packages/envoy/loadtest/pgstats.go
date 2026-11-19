@@ -201,7 +201,7 @@ type pgStatsDB interface {
 // openPGStats connects to the step's database. It is a variable so a test runs the whole command
 // against a fake server.
 var openPGStats = func(ctx context.Context, url string) (pgStatsDB, error) {
-	conn, err := pgx.Connect(ctx, url)
+	conn, err := connectPG(ctx, url)
 	if err != nil {
 		return nil, err
 	}

@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 )
 
 // writeRec is one write the event generator sent. Times are wall-clock Unix nanoseconds.
@@ -631,7 +629,7 @@ func readCommits(ctx context.Context, pgURL string, nonce int64, markers []int64
 	if len(markers) == 0 {
 		return nil, nil
 	}
-	conn, err := pgx.Connect(ctx, pgURL)
+	conn, err := connectPG(ctx, pgURL)
 	if err != nil {
 		return nil, fmt.Errorf("read public.loadtest_event_commits: %w", err)
 	}

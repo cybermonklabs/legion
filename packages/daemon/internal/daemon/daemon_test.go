@@ -83,6 +83,13 @@ func shortTempDir(t *testing.T) string {
 // Every limit and timeout is the shipped default.
 func testConfig(t *testing.T) config.Config {
 	t.Helper()
+	return testConfigFor(t, testDSN(t))
+}
+
+// testConfigFor is testConfig with its DSN given, for a test whose daemon is refused before it
+// reaches a database.
+func testConfigFor(t *testing.T, dsn string) config.Config {
+	t.Helper()
 	stateDir := shortTempDir(t)
 	tokenFile := filepath.Join(t.TempDir(), "operator-token")
 	if err := os.WriteFile(tokenFile, []byte(testOperatorToken+"\n"), 0o600); err != nil {
@@ -99,7 +106,8 @@ func testConfig(t *testing.T) config.Config {
 		Project:                                 "TEST" + randomSuffix(t),
 		Port:                                    port,
 		Bind:                                    "127.0.0.1",
-		PostgresDSN:                             testDSN(t),
+		PostgresDSN:                             dsn,
+		PostgresDSNSetting:                      "LEGION_POSTGRES_DSN",
 		StateDir:                                stateDir,
 		Runtime:                                 config.Runtime{Name: "tmux"},
 		AdmissionCap:                            4,
@@ -395,6 +403,29 @@ func TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("run did not refuse an unreachable Postgres within one second")
+	}
+}
+
+// A DSN the daemon refuses at boot is named by the setting it was read from: the config file's
+// postgres_dsn or LEGION_POSTGRES_DSN, each by the value's length and the cause, before any
+// connect. The user, the password and its piece are made for this test.
+func TestRunRefusesAMisreadDSNNamingTheSettingItWasReadFrom(t *testing.T) {
+	const dsn = "postgres://made-up-user-4b2e:not-a-secret-pw4b2e@not-a-secret-piece-4b2e/x@127.0.0.1:1/legion"
+	for _, setting := range []string{"postgres_dsn", "LEGION_POSTGRES_DSN"} {
+		t.Run(setting, func(t *testing.T) {
+			cfg := testConfigFor(t, dsn)
+			cfg.PostgresDSNSetting = setting
+			err := run(context.Background(), cfg, quietLogger(), fakeRuntime(fake.NewRuntime(), &built{}))
+			want := fmt.Sprintf("%s, a value of %d characters, has an @ before its first / and another in its database name", setting, len(dsn))
+			if err == nil || !strings.HasPrefix(err.Error(), want) {
+				t.Fatalf("run = %v, want a refusal that begins %q", err, want)
+			}
+			for _, part := range []string{"made-up-user-4b2e", "not-a-secret-pw4b2e", "not-a-secret-piece-4b2e"} {
+				if strings.Contains(err.Error(), part) {
+					t.Errorf("the refusal names %q of the DSN: %q", part, err)
+				}
+			}
+		})
 	}
 }
 

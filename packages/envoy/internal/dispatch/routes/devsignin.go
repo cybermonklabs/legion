@@ -14,15 +14,18 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // DevSignInOrigin returns the host:port of serverURL, the dashboard origin, when it names this
 // machine, and refuses it otherwise: a deployment's origin is its public one, so the dev sign-in
-// route cannot take effect there. The host must be "localhost" or a loopback IP literal.
+// route cannot take effect there. The host must be "localhost" or a loopback IP literal. The
+// refusal names serverURL through redact.URL, since the setting may carry a user and a password.
 func DevSignInOrigin(serverURL string) (string, error) {
 	parsed, ok := parseLoopbackURL(serverURL)
 	if !ok {
-		return "", fmt.Errorf("DISPATCH_DEV_SIGNIN=1 is for a loopback origin only: the dashboard origin %q (DISPATCH_SERVER_URL, or dispatch.serverUrl in envoy.json) must name 127.0.0.1, [::1] or localhost", serverURL)
+		return "", fmt.Errorf("DISPATCH_DEV_SIGNIN=1 is for a loopback origin only: the dashboard origin %q (DISPATCH_SERVER_URL, or dispatch.serverUrl in envoy.json) must name 127.0.0.1, [::1] or localhost", redact.URL(serverURL))
 	}
 	return parsed.Host, nil
 }

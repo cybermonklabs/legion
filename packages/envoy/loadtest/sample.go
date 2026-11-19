@@ -448,7 +448,7 @@ func (s *sampler) loop(ctx context.Context, winStart, winEnd time.Time, lg *log.
 		sm.SysBusy, sm.SysTotal = sysCPU()
 		var err error
 		if pg == nil {
-			pg, err = pgx.Connect(ctx, s.pgURL)
+			pg, err = connectPG(ctx, s.pgURL)
 		}
 		if err == nil {
 			var conns map[string]int
@@ -737,7 +737,7 @@ func xidRate(ctx context.Context, url string, from, to time.Time, lg *log.Logger
 }
 
 func readXIDRate(ctx context.Context, url string, from, to time.Time) (float64, error) {
-	conn, err := pgx.Connect(ctx, url)
+	conn, err := connectPG(ctx, url)
 	if err != nil {
 		return 0, err
 	}

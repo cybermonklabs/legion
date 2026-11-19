@@ -11,12 +11,14 @@ import {
 } from "@legion/contracts";
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, requestForText } from "@legion/contracts/log-text";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
 import { credentialDeadline, type RequestCredential } from "./bearer";
 import { messageFor, reachedNothing } from "./errors";
-import { bodyForText, redirectOrigin, SentTokens, type Tokens } from "./excerpt";
+import { bodyForText, SentTokens, type Tokens } from "./excerpt";
 import { machineID } from "./machine";
+import { type RedirectTarget, redirectedTo, redirectTarget, SAME_ADDRESS_CAUSE } from "./redirect";
 import { streamDeliversNothing } from "./stream-topics";
 import type { TmuxPlace } from "./tmux-place";
 
@@ -258,6 +260,8 @@ const PublishResponseSchema = EnvelopeResponseSchema.extend({
   kept_until: z.number().int().optional(),
 });
 
+/** The fetch a client sends through. It is given `redirect: "manual"` on every call and must keep
+ *  it: a 3xx is the client's answer, which it refuses (`EnvoyRedirectError`). */
 export type EnvoyFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 export type EnvoyClientConfig = {
@@ -727,6 +731,53 @@ function refusalStateText(parsed: z.infer<typeof ErrorWireSchema>): string {
   return ` ${sentences.join(" ")}`;
 }
 
+/**
+ * A call refused before any request because the Envoy URL is one `shownSettingUrl` does not show:
+ * its user part may be read in part as the host, and fetch's own error would name that host. The
+ * URL is named by its length and the cause `unshownSettingUrl` gives, and nothing is sent, so a
+ * send that meets it is no unconfirmed send. The settings turn Envoy off for such a URL before any
+ * client is built; this holds for a client built from any other value.
+ */
+export class EnvoyUrlError extends Error {
+  readonly name = "EnvoyUrlError";
+
+  constructor(baseUrl: string) {
+    super(
+      `the Envoy URL (ENVOY_URL, or envoy.json's envoy.url) must be an http or https URL: ${unshownSettingUrl(baseUrl)}; nothing was sent`
+    );
+  }
+}
+
+/**
+ * A call the listener's address answered with a 3xx, which the client refuses rather than follow:
+ * fetch would send the credential's headers and a 307's or 308's body on to the origin it names.
+ * It is never sent again, and it names the status, where the redirect points (`redirectedTo`) and
+ * what to correct: the Envoy URL, which the client puts before each of its routes, so a redirect
+ * within the same address means that URL's path is wrong.
+ */
+export class EnvoyRedirectError extends Error {
+  readonly name = "EnvoyRedirectError";
+
+  constructor(
+    readonly details: {
+      readonly method: string;
+      /** The request's URL as text names it (`requestForText`): as built on a plain base, and the
+       *  base's fixed phrase otherwise. */
+      readonly url: string;
+      readonly status: number;
+      readonly target: RedirectTarget;
+    }
+  ) {
+    const fix =
+      details.target.kind === "the same origin"
+        ? `correct the path of the Envoy URL (ENVOY_URL, or envoy.json's envoy.url), which the client puts before its own; ${SAME_ADDRESS_CAUSE}`
+        : "set the Envoy URL (ENVOY_URL, or envoy.json's envoy.url) to the listener's own address";
+    super(
+      `${details.method} ${details.url} answered ${details.status}, ${redirectedTo(details.target)}, and the Envoy client follows no redirect: ${fix}`
+    );
+  }
+}
+
 export class EnvoyApiError extends Error {
   readonly name = "EnvoyApiError";
   readonly expected: readonly string[] | undefined;
@@ -763,8 +814,8 @@ export class EnvoyApiError extends Error {
    * it is the listener's error JSON; any other body was written by something in the listener's
    * place, which can echo the request back, so the message names it through `bodyForText`: one
    * line with `shown.tokens` (the credential's secret, and the tokens the client presented lately)
-   * and any `Authorization`, `Bearer` or `DPoP` value redacted, and the origin a redirect pointed
-   * at (`shown.redirectTo`). Neither is kept.
+   * and any `Authorization`, `Bearer` or `DPoP` value redacted, which it does not keep. A 3xx is no
+   * `EnvoyApiError`: the client refuses it before reading its body (`EnvoyRedirectError`).
    */
   constructor(
     readonly details: {
@@ -775,7 +826,7 @@ export class EnvoyApiError extends Error {
       readonly status: number;
       readonly responseBody: string;
     },
-    shown: { readonly tokens?: Tokens; readonly redirectTo?: string | undefined } = {}
+    shown: { readonly tokens?: Tokens } = {}
   ) {
     let parsed: z.infer<typeof ErrorWireSchema> | undefined;
     try {
@@ -784,15 +835,11 @@ export class EnvoyApiError extends Error {
     } catch {
       // A body that is not JSON is no error of the listener's: the message names it below.
     }
-    const redirected =
-      shown.redirectTo === undefined
-        ? ""
-        : ` (a redirect to ${shown.redirectTo}, which this client does not follow)`;
     // The reason joins the message: a refused registration must fail with the listener's own
     // machine-readable why in what the session is shown, not only in the client's field.
     super(
       parsed === undefined
-        ? `${details.method} ${details.url} failed with ${details.status}${redirected}: ${bodyForText(details.responseBody, shown.tokens ?? "", "the listener's error JSON")}`
+        ? `${details.method} ${details.url} failed with ${details.status}: ${bodyForText(details.responseBody, shown.tokens ?? "", "the listener's error JSON")}`
         : `${parsed.error}${parsed.reason === undefined ? "" : ` (reason: ${parsed.reason})`}${parsed.expected === undefined ? "" : ` (expected: ${parsed.expected.join(", ")})`}${refusalStateText(parsed)}`
     );
     this.expected = parsed?.expected;
@@ -918,10 +965,11 @@ type RequestOptions = {
   readonly actingSession?: string;
 };
 
-/** One attempt's outcome: the listener's status and body; no answer, and why; or nothing that
- *  reached a route of the listener, and why (`RequestOptions.onNotSent`). */
+/** One attempt's outcome: the listener's status and body; a 3xx and where it points; no answer,
+ *  and why; or nothing that reached a route of the listener, and why (`RequestOptions.onNotSent`). */
 type AttemptOutcome =
   | { readonly response: Response; readonly body: string }
+  | { readonly redirected: RedirectTarget; readonly status: number }
   | { readonly unanswered: unknown }
   | { readonly notSent: unknown };
 
@@ -1015,9 +1063,10 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       if (unminted !== undefined && deadline.aborted) return { notSent: unminted };
       sent.note(presented);
       for (const [name, value] of Object.entries(presented ?? {})) headers.set(name, value);
-      // No call follows a redirect: the listener answers none, so a 3xx is something in its
-      // place, and followed it would turn a POST into a GET (301, 302, 303) or send it again to
-      // another origin (307, 308). The 3xx is the call's answer, which reached no listener.
+      // No call follows a redirect: fetch would send the credential's headers (a DPoP proof
+      // among them) and a 307's or 308's body on to the origin the `Location` names, and Bun
+      // drops only `Authorization` and `Cookie` on the way; and the listener answers none, so a
+      // 3xx is something in its place. The 3xx is the call's answer, refused below.
       response = await config.fetch(url, {
         ...init,
         headers,
@@ -1030,6 +1079,10 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       const failed = noAnswer(init.method, url, error);
       return reachedNothing(error) ? { notSent: failed } : { unanswered: failed };
     }
+    // Read from the status before any of the body, which `redirectTarget` cancels, so a 3xx whose
+    // body never ends holds no connection.
+    const target = redirectTarget(response, url);
+    if (target !== undefined) return { redirected: target, status: response.status };
     if (unminted !== undefined && response.status === 401) {
       // The listener wanted the credential this machine could not mint: a listener that requires
       // one answers a request without it 401 and nothing else, at its auth gate before any route
@@ -1062,6 +1115,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     init: RequestInit,
     options: RequestOptions = {}
   ): Promise<string> => {
+    if (shownSettingUrl(baseUrl) === undefined) throw new EnvoyUrlError(baseUrl);
     const url = `${baseUrl}${path}`;
     const tries = options.retry === false ? 1 : attempts;
     for (let attempt = 0; attempt < tries; attempt += 1) {
@@ -1080,6 +1134,16 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         }
         throw outcome.unanswered;
       }
+      if ("redirected" in outcome) {
+        // A 3xx is a refusal, never sent again: the listener did not answer it, and an attempt
+        // more meets the same answer.
+        throw new EnvoyRedirectError({
+          method: init.method ?? "GET",
+          url: shown(url),
+          status: outcome.status,
+          target: outcome.redirected,
+        });
+      }
       if ("notSent" in outcome) {
         if (attempt + 1 < tries) {
           await waitForRetry(retryDelayMs);
@@ -1093,9 +1157,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
 
       // A body that is not the listener's error JSON was written by something in its place, which
       // can echo the request back: the error names it in one redacted line with the tokens this
-      // client presents, and a redirect, which is never followed (`attemptOnce`), by the origin it
-      // pointed at (`EnvoyApiError`).
-      const redacted = tokens();
+      // client presents. A 3xx never reaches here: it is refused above (`EnvoyRedirectError`).
       const error = new EnvoyApiError(
         {
           method: init.method ?? "GET",
@@ -1103,7 +1165,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
           status: response.status,
           responseBody: body,
         },
-        { tokens: redacted, redirectTo: redirectOrigin(response, url, redacted) }
+        { tokens: tokens() }
       );
       // Only a 5xx is sent again. A 4xx is the listener's answer to this message, and so is a 429
       // `sender_rate_limited`: the agent reads its sentence and decides when to send it again.
@@ -1243,7 +1305,14 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         // A 2xx whose body does not parse is the listener's word that cannot be read.
         response = EnvelopeResponseSchema.parse(answerJson(answer, "POST", "/v1/messages/send"));
       } catch (error) {
-        const refused = notSent || (error instanceof EnvoyApiError && error.details.status < 500);
+        // A refusal the listener answered, a last attempt that reached no route of the listener, a
+        // redirect the client refused, which no listener read, and an Envoy URL refused before
+        // any request each leave the message unsent, unless an earlier attempt may have stored it.
+        const refused =
+          notSent ||
+          (error instanceof EnvoyApiError && error.details.status < 500) ||
+          error instanceof EnvoyRedirectError ||
+          error instanceof EnvoyUrlError;
         if (refused && !unanswered) throw error;
         throw new EnvoySendUnconfirmedError(input.targetSessionID, idempotencyKey, made, error);
       }

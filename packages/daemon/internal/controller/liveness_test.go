@@ -209,3 +209,44 @@ func TestProbeIsUnknown(t *testing.T) {
 		}
 	})
 }
+
+// envoy_url may carry a user and a password (the loader takes Envoy credentials in its userinfo),
+// and the daemon's log is written as it is: every line the probe logs names the lookup by its path
+// after envoy_url, and a failed request by what failed, with no part of the user part. One case
+// for each line that names the lookup: a refusal, an unreadable body, a 404 cut off, a lapsed
+// holder in each state, and a listener that is unreachable. The password is made for this run.
+func TestProbeLogsNoPartOfTheEnvoyURLsUserPart(t *testing.T) {
+	const user = "made-up-user-c41d"
+	password := "not-a-secret-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	userinfo := "http://" + user + ":" + password + "@"
+	withUser := func(base string) string {
+		return strings.Replace(base, "http://", userinfo, 1)
+	}
+	closed := httptest.NewServer(http.NotFoundHandler())
+	unreachable := closed.URL
+	closed.Close()
+	for _, tc := range []struct{ name, base string }{
+		{"a refusal", (&listener{status: http.StatusInternalServerError, body: `{"error":"kv"}`}).serve(t)},
+		{"an unreadable body", (&listener{status: http.StatusOK, body: "<html>"}).serve(t)},
+		{"a 404 cut off", cutAnswer(t, http.StatusNotFound, lapsed("unresponsive"))},
+		{"an unresponsive holder", (&listener{status: http.StatusNotFound, body: lapsed("unresponsive")}).serve(t)},
+		{"a gone holder", (&listener{status: http.StatusNotFound, body: lapsed("gone")}).serve(t)},
+		{"an unreachable listener", unreachable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var log bytes.Buffer
+			newTestProber(withUser(tc.base), "envoy-bearer", &log).Probe(context.Background(), "ses_ctl")
+			if log.Len() == 0 {
+				t.Fatal("the probe logged nothing, so this case reads no line")
+			}
+			for _, piece := range []string{user, password} {
+				if strings.Contains(log.String(), piece) {
+					t.Errorf("the log holds %q of envoy_url's user part: %s", piece, log.String())
+				}
+			}
+			if !strings.Contains(log.String(), "lookup=/v1/roles/") {
+				t.Errorf("the log does not name the lookup by its path: %s", log.String())
+			}
+		})
+	}
+}

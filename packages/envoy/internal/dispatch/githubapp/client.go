@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // Typed access-check failures. Handlers surface these verbatim to the human
@@ -472,7 +473,7 @@ func (c *Client) installation(ctx context.Context, owner, repo string) (Installa
 		return Installation{}, limited
 	}
 	if status != http.StatusOK {
-		return Installation{}, fmt.Errorf("GET %s: %s", target, StatusText(status, body))
+		return Installation{}, fmt.Errorf("GET %s: %s", c.shownTarget(target), StatusText(status, body))
 	}
 	var payload installationPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -745,7 +746,7 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 	}
 	if c.limits == nil {
 		if limited := RateLimit(status, header, body); limited != nil {
-			noteFailure(ctx, limitNoted(http.MethodPost, target, limited))
+			noteFailure(ctx, limitNoted(http.MethodPost, c.shownTarget(target), limited))
 		}
 		return body, status, header, nil
 	}
@@ -756,7 +757,7 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 	c.recordGraphQLLimit(ctx, installation, limited, secondary)
 	// Noted once recorded, so the cause carries the wait every process now holds, which a strike
 	// can make longer than GitHub's own.
-	noteFailure(ctx, limitNoted(http.MethodPost, target, limited))
+	noteFailure(ctx, limitNoted(http.MethodPost, c.shownTarget(target), limited))
 	return body, status, header, limited
 }
 
@@ -831,7 +832,7 @@ func (c *Client) token(ctx context.Context, installationID int64) (cachedToken, 
 		return cachedToken{}, limited
 	}
 	if status != http.StatusCreated {
-		return cachedToken{}, fmt.Errorf("POST %s: %s", target, StatusText(status, body))
+		return cachedToken{}, fmt.Errorf("POST %s: %s", c.shownTarget(target), StatusText(status, body))
 	}
 	var payload struct {
 		Token       string        `json:"token"`
@@ -880,7 +881,7 @@ func (c *Client) CheckSource(ctx context.Context, owner, repo string) (Source, e
 		return Source{}, fmt.Errorf("%w: its token cannot read %s/%s", ErrNoInstallation, owner, repo)
 	}
 	if status != http.StatusOK {
-		return Source{}, fmt.Errorf("GET %s: %s", target, StatusText(status, body))
+		return Source{}, fmt.Errorf("GET %s: %s", c.shownTarget(target), StatusText(status, body))
 	}
 	return Source{InstallationID: installation.ID, AppSlug: installation.AppSlug}, nil
 }
@@ -926,7 +927,7 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 	if limited == nil {
 		return responseBody, status, header, nil
 	}
-	noteFailure(ctx, limitNoted(method, target, limited))
+	noteFailure(ctx, limitNoted(method, c.shownTarget(target), limited))
 	if c.limits != nil && scope != "" {
 		// Recorded past the caller's own end: see limitRecordContext.
 		record, cancel := limitRecordContext(ctx)
@@ -970,7 +971,7 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 	defer cancel()
 	request, err := http.NewRequestWithContext(bounded, method, target, body)
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("build %s %s: %w", method, target, err)
+		return nil, 0, nil, fmt.Errorf("build %s %s: %w", method, c.shownTarget(target), redact.RequestError(err, c.base))
 	}
 	request.Header.Set("Authorization", authorization)
 	request.Header.Set("Accept", accept)
@@ -983,19 +984,19 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 	githubreads.NoteSent(ctx)
 	response, err := c.http.Do(request)
 	if err != nil {
-		err = fmt.Errorf("%s %s: %w", method, target, err)
+		err = fmt.Errorf("%s %s: %w", method, c.shownTarget(target), redact.RequestError(err, c.base))
 		noteFailure(ctx, err)
 		return nil, 0, nil, err
 	}
 	defer response.Body.Close()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		err = fmt.Errorf("read %s %s response: %w", method, target, err)
+		err = fmt.Errorf("read %s %s response: %w", method, c.shownTarget(target), err)
 		noteFailure(ctx, err)
 		return nil, 0, nil, err
 	}
 	if int64(len(responseBody)) > limit {
-		err := fmt.Errorf("%s %s: %w", method, target, &ResponseTooLargeError{Limit: limit})
+		err := fmt.Errorf("%s %s: %w", method, c.shownTarget(target), &ResponseTooLargeError{Limit: limit})
 		noteFailure(ctx, err)
 		return nil, 0, nil, err
 	}
@@ -1004,9 +1005,21 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 	// point and a failure at another (a 404 is a deleted repository to one caller and a wrong
 	// workflow path to the next), and only the caller can tell the two apart.
 	if status := response.StatusCode; status/100 == 5 || status == http.StatusUnauthorized {
-		noteFailure(ctx, &failedAnswer[[]byte]{method: method, target: target, status: status, detail: responseBody})
+		noteFailure(ctx, &failedAnswer[[]byte]{method: method, target: c.shownTarget(target), status: status, detail: responseBody})
 	}
 	return responseBody, response.StatusCode, response.Header, nil
+}
+
+// shownTarget is target, a URL of a request to the API, as an error names it: its path and query
+// after the API base, which DISPATCH_GITHUB_API_BASE sets and which may carry a user and a
+// password, so no part of the base is printed; a target on no path of the base is named through
+// redact.URL. The errors of a request name the base through redact.Error, since a parse error and
+// net/http's transport error quote the request's URL (net/http keeps its user).
+func (c *Client) shownTarget(target string) string {
+	if rest, ok := strings.CutPrefix(target, c.base); ok && (rest == "" || strings.HasPrefix(rest, "/") || strings.HasPrefix(rest, "?")) {
+		return rest
+	}
+	return redact.URL(target)
 }
 
 // noteFailure notes err on the attempt ctx carries (githubreads) while ctx, the caller's own
@@ -1025,7 +1038,8 @@ func noteFailure(ctx context.Context, err error) {
 // limit GitHub answered (limitNoted, RateLimitError), each ending at its head where there is no
 // body (withBody). Its text is made only where the note can still become a cause
 // (githubreads.NoteFailure), so a request outside the leased passes formats nothing. The target
-// carries no token: every token travels in the Authorization header.
+// is the one Client.shownTarget names, with no part of the API base, which may carry a user and a
+// password; it carries no token, since every token travels in the Authorization header.
 //
 // Its text carries a body only as StatusText and RateLimitError word one, never at a 2xx status:
 // for a 5xx or a 401 detail, the body send read, kept as the bytes it read, and for a limit its
@@ -1087,7 +1101,7 @@ func (c *Client) Ref(ctx context.Context, token, owner, repo, branch string) (st
 		return "", fmt.Errorf("%w: %s on %s/%s", ErrNoBranch, branch, owner, repo)
 	}
 	if status != http.StatusOK {
-		return "", fmt.Errorf("GET %s: %s", target, StatusText(status, body))
+		return "", fmt.Errorf("GET %s: %s", c.shownTarget(target), StatusText(status, body))
 	}
 	sha := strings.TrimSpace(string(body))
 	if !commitSHA.MatchString(sha) {
@@ -1121,7 +1135,7 @@ func (c *Client) Branch(ctx context.Context, token, owner, repo, branch string) 
 	case http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity:
 		return "", noBranch
 	default:
-		return "", fmt.Errorf("GET %s: %s", target, StatusText(status, body))
+		return "", fmt.Errorf("GET %s: %s", c.shownTarget(target), StatusText(status, body))
 	}
 	var ref struct {
 		Ref    string `json:"ref"`
@@ -1182,7 +1196,7 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 		return Dir{}, nil
 	}
 	if status != http.StatusOK {
-		return Dir{}, fmt.Errorf("GET %s: %s", target, StatusText(status, body))
+		return Dir{}, fmt.Errorf("GET %s: %s", c.shownTarget(target), StatusText(status, body))
 	}
 	var tree struct {
 		SHA       string `json:"sha"`
@@ -1249,7 +1263,7 @@ func (c *Client) blob(ctx context.Context, token, repoBase, path, sha string) ([
 		return nil, err
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("GET %s (%s): %s", target, path, StatusText(status, body))
+		return nil, fmt.Errorf("GET %s (%s): %s", c.shownTarget(target), path, StatusText(status, body))
 	}
 	var payload struct {
 		Content  string `json:"content"`

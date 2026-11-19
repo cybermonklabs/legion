@@ -143,7 +143,7 @@ func (h *eventHead) read(ctx context.Context) (int64, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.conn == nil {
-		c, err := pgx.Connect(ctx, h.url)
+		c, err := connectPG(ctx, h.url)
 		if err != nil {
 			return 0, err
 		}
@@ -170,7 +170,7 @@ func (h *eventHead) close() {
 // checkStaleBacklog refuses -live-stale on an event log that does not hold the staleBacklog rows a
 // stale socket goes back over.
 func checkStaleBacklog(ctx context.Context, pgURL string) error {
-	conn, err := pgx.Connect(ctx, pgURL)
+	conn, err := connectPG(ctx, pgURL)
 	if err != nil {
 		return fmt.Errorf("-live-stale: count the event log: %w", err)
 	}

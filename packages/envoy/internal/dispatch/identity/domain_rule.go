@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // DomainRule signs in the people of Domain, a Google Workspace domain.
@@ -53,7 +54,7 @@ func (r DomainRule) Subject(claims oidc.Claims) string {
 
 // BootLog logs the issuer, client and Workspace domain boot is signing people in under.
 func (r DomainRule) BootLog(issuer, clientID string) {
-	slog.Info("dispatch: signing people in with Google for a Workspace domain", "issuer", issuer, "client_id", clientID, "domain", r.Domain)
+	slog.Info("dispatch: signing people in with Google for a Workspace domain", "issuer", redact.URL(issuer), "client_id", clientID, "domain", r.Domain)
 }
 
 // CanRefresh is true only while stored, the account the address's row recorded, is set: a row

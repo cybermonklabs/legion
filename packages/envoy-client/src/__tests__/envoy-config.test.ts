@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
@@ -588,6 +589,11 @@ describe("readEnvoyConfig", () => {
     );
   });
 
+  // An address that is not an http or https URL is refused with the words the Dispatch server's
+  // own reading of the file says too. One that the URL parser reads as such a URL, but that still
+  // holds a raw `@` once the user part it found is taken out (a token with a `/` or a `#` in it
+  // reads as a host taken from the token), is refused too, named by its length and the cause the
+  // one function found.
   test("refuses an address that is not an http or https URL", () => {
     for (const [section, key] of [
       ["dispatch", "serverUrl"],
@@ -599,6 +605,17 @@ describe("readEnvoyConfig", () => {
         });
         expect(errorOf(readEnvoyConfig(file, { HOME: tempDir() }, { cwd: tempDir() }))).toBe(
           `${file}: ${section}.${key}: must be an http or https URL`
+        );
+      }
+      for (const address of [
+        "https://MadeUpTok3n/Zx9@dispatch.example",
+        "http://made-up-user:4821#Zx9-not-a-secret@127.0.0.1:9020",
+      ]) {
+        const file = writeFile(path.join(tempDir(), "envoy.json"), {
+          [section]: { [key]: address },
+        });
+        expect(errorOf(readEnvoyConfig(file, { HOME: tempDir() }, { cwd: tempDir() }))).toBe(
+          `${file}: ${section}.${key}: must be an http or https URL: ${unshownSettingUrl(address)}`
         );
       }
     }

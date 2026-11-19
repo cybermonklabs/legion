@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/pgsetting"
 )
 
 // lockWait is one ungranted heavyweight lock in pg_locks: what the waiter runs and what its
@@ -125,7 +127,7 @@ func (p *lockSampler) resolveRelations(url string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	for db, names := range byDB {
-		cfg, err := pgx.ParseConfig(url)
+		cfg, err := pgsetting.ParseConfig("-pg", url)
 		if err != nil {
 			continue
 		}

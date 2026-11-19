@@ -20,6 +20,7 @@ import {
   LegionCapabilityReport,
   type LegionCapabilityReportBody,
 } from "@legion/contracts/legion-api";
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
@@ -6485,6 +6486,26 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(natsConnections.flatMap((connection) => connection.subjects)).not.toContain(
       "notifications.legion.demo.controller"
     );
+  });
+
+  // LEGION_DAEMON_URL may carry a user and a password: the refusal names the daemon by
+  // LEGION_DAEMON_URL's fixed phrase (`urlForText`), with neither. The password is made for this run.
+  test("names the daemon with no user and no password when LEGION_PROJECT is not the daemon's project", async () => {
+    const password = crypto.randomUUID();
+    const controller = await launchedController({ sessionId: "ses_controller_daemon_userinfo" });
+    process.env.LEGION_PROJECT = "demo";
+    process.env.LEGION_DAEMON_URL = `http://made-up-user:${password}@daemon.test`;
+
+    const { notices } = await startRefusedController(
+      controller,
+      controller.context("ses_controller_daemon_userinfo")
+    );
+    expect(notices).toEqual([
+      claimRefused(
+        `LEGION_PROJECT demo names controller role legion-demo-controller, but the daemon at LEGION_DAEMON_URL ${URL_NOT_PRINTED} serves project OMP, whose controller role is legion-omp-controller`
+      ),
+    ]);
+    expect(JSON.stringify(notices)).not.toContain(password);
   });
 
   test("refuses before claiming the role when the registration names another controller role", async () => {

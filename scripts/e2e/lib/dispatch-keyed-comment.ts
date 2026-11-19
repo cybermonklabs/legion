@@ -21,6 +21,7 @@ import {
   IDEMPOTENCY_KEY_HEADER,
   IDEMPOTENCY_REPLAYED_HEADER,
 } from "../../../packages/contracts/src/dispatch-api";
+import { shownSettingUrl, unshownSettingUrl } from "../../../packages/contracts/src/setting-url";
 
 const USAGE =
   "usage: bun scripts/e2e/lib/dispatch-keyed-comment.ts --url <dispatch> --bearer-file <file> --issue <KEY> [--session <id>] [--cli]";
@@ -79,15 +80,14 @@ async function optionsFrom(argv: readonly string[]): Promise<Options> {
   if (bearerFile === undefined || bearerFile === "") {
     throw new UsageError("--bearer-file is required");
   }
-  let url: URL;
-  try {
-    url = new URL(rawURL);
-  } catch {
-    throw new UsageError(`--url is not a URL: ${rawURL}`);
+  // --url may carry a user and a password: one that `shownSettingUrl` would not show is named by
+  // its length and what to correct (`unshownSettingUrl`).
+  if (shownSettingUrl(rawURL) === undefined) {
+    throw new UsageError(
+      `--url must be Dispatch's http or https address: ${unshownSettingUrl(rawURL)}`
+    );
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new UsageError(`--url is Dispatch's http or https address, not ${rawURL}`);
-  }
+  const url = new URL(rawURL);
   let bearer: string;
   try {
     bearer = (await Bun.file(bearerFile).text()).trim();
@@ -172,20 +172,23 @@ async function postTwice(options: Options, key: string, body: string): Promise<v
   }
 }
 
-/** Runs this checkout's `dispatch comment` through a proxy that loses the first comment POST's
- *  answer, and checks the command asked again under that POST's key and was answered the replay. */
-async function postThroughCli(options: Options, body: string): Promise<void> {
-  const comments = `/api/v1/issues/${encodeURIComponent(options.issue)}/comments`;
-  const posts: { key: string | null; replayed: string | null; status: number }[] = [];
-  const proxy = Bun.serve({
+/** A proxy on 127.0.0.1 that forwards each request it is asked to `url`'s own origin, the
+ *  request's path and query written after it, and gives the asker what `answer` makes of the
+ *  answer. Written after the origin, a path that begins `//` names no other host and `url`'s user
+ *  part is not sent on; parsed against `url` as a base, the same path would name another host, or
+ *  fail to parse with an error that prints `url` whole. */
+export function forwardingProxy(
+  url: URL,
+  answer: (request: Request, incoming: URL, response: Response) => Promise<Response>
+) {
+  return Bun.serve({
     async fetch(request) {
       const incoming = new URL(request.url);
-      const target = new URL(incoming.pathname + incoming.search, options.url);
       const headers = new Headers(request.headers);
       headers.delete("host");
       // Asked unencoded, so the answer passes on as it came, with no encoding to undo twice.
       headers.delete("accept-encoding");
-      const response = await fetch(target, {
+      const response = await fetch(`${url.origin}${incoming.pathname}${incoming.search}`, {
         body:
           request.method === "GET" || request.method === "HEAD"
             ? undefined
@@ -194,32 +197,42 @@ async function postThroughCli(options: Options, body: string): Promise<void> {
         method: request.method,
         redirect: "manual",
       });
-      const line = { method: request.method, path: incoming.pathname, status: response.status };
-      if (request.method !== "POST" || incoming.pathname !== comments) {
-        write({ proxy: line });
-        return response;
-      }
-      const post = {
-        key: request.headers.get(IDEMPOTENCY_KEY_HEADER),
-        replayed: response.headers.get(IDEMPOTENCY_REPLAYED_HEADER),
-        status: response.status,
-      };
-      posts.push(post);
-      if (posts.length > 1) {
-        write({ proxy: { ...line, ...post } });
-        return response;
-      }
-      // Dispatch made the comment; the command is handed a gateway's page in place of its
-      // answer, with no key echo, as a load balancer that lost the answer hands one.
-      await response.arrayBuffer();
-      write({ proxy: { ...line, ...post, answered: 502 } });
-      return new Response("<html><body><h1>502 Bad Gateway</h1></body></html>", {
-        headers: { "Content-Type": "text/html" },
-        status: 502,
-      });
+      return answer(request, incoming, response);
     },
     hostname: "127.0.0.1",
     port: 0,
+  });
+}
+
+/** Runs this checkout's `dispatch comment` through a proxy that loses the first comment POST's
+ *  answer, and checks the command asked again under that POST's key and was answered the replay. */
+async function postThroughCli(options: Options, body: string): Promise<void> {
+  const comments = `/api/v1/issues/${encodeURIComponent(options.issue)}/comments`;
+  const posts: { key: string | null; replayed: string | null; status: number }[] = [];
+  const proxy = forwardingProxy(options.url, async (request, incoming, response) => {
+    const line = { method: request.method, path: incoming.pathname, status: response.status };
+    if (request.method !== "POST" || incoming.pathname !== comments) {
+      write({ proxy: line });
+      return response;
+    }
+    const post = {
+      key: request.headers.get(IDEMPOTENCY_KEY_HEADER),
+      replayed: response.headers.get(IDEMPOTENCY_REPLAYED_HEADER),
+      status: response.status,
+    };
+    posts.push(post);
+    if (posts.length > 1) {
+      write({ proxy: { ...line, ...post } });
+      return response;
+    }
+    // Dispatch made the comment; the command is handed a gateway's page in place of its
+    // answer, with no key echo, as a load balancer that lost the answer hands one.
+    await response.arrayBuffer();
+    write({ proxy: { ...line, ...post, answered: 502 } });
+    return new Response("<html><body><h1>502 Bad Gateway</h1></body></html>", {
+      headers: { "Content-Type": "text/html" },
+      status: 502,
+    });
   });
   const home = mkdtempSync(join(tmpdir(), "dispatch-keyed-comment-"));
   try {
@@ -312,4 +325,4 @@ async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
-process.exit(await main(Bun.argv.slice(2)));
+if (import.meta.main) process.exit(await main(Bun.argv.slice(2)));

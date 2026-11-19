@@ -52,7 +52,7 @@ func (f *dbFlags) connect(ctx context.Context) (*pgx.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return pgx.Connect(ctx, u)
+	return connectPG(ctx, u)
 }
 
 // --- replay-check-seed ---------------------------------------------------------------------------

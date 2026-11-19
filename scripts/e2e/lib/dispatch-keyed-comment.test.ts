@@ -1,7 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { forwardingProxy } from "./dispatch-keyed-comment";
 
 const check = join(import.meta.dir, "dispatch-keyed-comment.ts");
 const servers: Server<undefined>[] = [];
@@ -37,6 +39,35 @@ async function run(...args: string[]): Promise<{ code: number; stderr: string; l
     stderr,
   };
 }
+
+// --url may carry a user and a password: one that is no http or https URL with a host is a usage
+// error naming its length and the cause the one function found. The password is made for this run.
+test("a --url that is no http or https URL with a host is a usage error naming its length and cause", async () => {
+  const password = crypto.randomUUID();
+  const said: { code: number; holds: boolean; named: boolean }[] = [];
+  const values = [
+    `made-up-user:${password}@127.0.0.1:1`,
+    `ftp://made-up-user:${password}@host.example`,
+  ];
+  for (const url of values) {
+    const { code, stderr } = await run(
+      "--url",
+      url,
+      "--bearer-file",
+      tokenFile(),
+      "--issue",
+      "CORE-1"
+    );
+    said.push({
+      code,
+      holds: stderr.includes(password),
+      named: stderr.includes(
+        `--url must be Dispatch's http or https address: its value is ${url.length} characters long`
+      ),
+    });
+  }
+  expect(said).toEqual(values.map(() => ({ code: 2, holds: false, named: true })));
+});
 
 interface StandIn {
   readonly url: string;
@@ -228,4 +259,58 @@ test("a check with no issue is a usage error", async () => {
   const { code, stderr } = await run("--url", "http://127.0.0.1:1", "--bearer-file", tokenFile());
   expect(code).toBe(2);
   expect(stderr).toContain("--issue is required");
+});
+
+// The proxy the --cli check runs the command through sends each request to --url's own origin,
+// with the request's path and query written after it: a request whose path begins `//` reaches
+// --url's own server under that path, and --url's user part is not sent on. The request is written
+// on a socket, since Bun's fetch would send the path with one slash. The control is the same path
+// read against --url as a base, which names the other host. The password is made for this test.
+test("the proxy forwards a path that begins // to --url's own origin", async () => {
+  const seen: { path: string; authorization: string | null }[] = [];
+  const dispatch = Bun.serve({
+    fetch(request) {
+      const asked = new URL(request.url);
+      seen.push({
+        authorization: request.headers.get("authorization"),
+        path: asked.pathname + asked.search,
+      });
+      return new Response("dispatch");
+    },
+    hostname: "127.0.0.1",
+    port: 0,
+  });
+  servers.push(dispatch);
+  const url = new URL(`http://made-up-user:not-a-secret-pw-6c1d@127.0.0.1:${dispatch.port}/`);
+  const path = "//another.example/api/v1/issues?project=X";
+  expect(new URL(path, url).host).toBe("another.example");
+  const asked: string[] = [];
+  const proxy = forwardingProxy(url, async (_request, incoming, response) => {
+    asked.push(incoming.pathname + incoming.search);
+    return response;
+  });
+  servers.push(proxy);
+  const { promise, resolve, reject } = Promise.withResolvers<string>();
+  const socket = connect(proxy.port, "127.0.0.1", () =>
+    socket.write(`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n`)
+  );
+  let answer = "";
+  socket.on("data", (chunk) => {
+    answer += chunk;
+  });
+  socket.on("end", () => resolve(answer));
+  socket.on("error", reject);
+  const written = await promise;
+  expect({
+    answered: written.split("\r\n")[0],
+    asked,
+    body: written.split("\r\n\r\n")[1],
+    // Bun's fetch, which the proxy forwards with, sends a leading `//` as one slash.
+    seen: seen.map((one) => ({ ...one, path: one.path.replace(/^\/+/, "/") })),
+  }).toEqual({
+    answered: "HTTP/1.1 200 OK",
+    asked: [path],
+    body: "dispatch",
+    seen: [{ authorization: null, path: "/another.example/api/v1/issues?project=X" }],
+  });
 });

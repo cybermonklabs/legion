@@ -1,0 +1,23 @@
+kind: Fixed
+body: |-
+  `slack_post` follows no redirect. A 3xx from the Web API URL is a refusal, read from its status
+  before any of its body, that names the status and says where it points: the origin when it is on
+  the API URL's own host and `another host` otherwise, another path of the same address, or no
+  target. The reply is not sent on. The refusal of a `SLACK_POST_API_URL` that is no https or
+  loopback URL names it with no user and no password, and one that is no http or https URL with a
+  host by its length alone. The secrets broker client names the broker (`AGENT_SECRETS_URL`), the
+  sign-in issuer (`AGENT_SECRETS_SIGNIN_ISSUER`) and the workload identity pool's two services with
+  no user and no password, and one that is no http or https URL with a host by its length alone,
+  before it is asked anything. A sign-in issuer with a user part is refused before discovery,
+  named without it, and `GCE_METADATA_HOST` must be a host with an optional port and nothing else.
+  `@legion/envoy-client/errors` no longer exports `withoutUserinfo`: each line that names a
+  Dispatch or Envoy URL asks `shownSettingUrl`, of `@legion/contracts/setting-url`. The config's
+  check of `DISPATCH_URL`, `DISPATCH_PUBLIC_URL`, `ENVOY_URL` and envoy.json's `dispatch.serverUrl`
+  and `envoy.url` asks it too: a URL that still holds a raw `@` once its user part is taken out
+  (a token with a `/` in its user part reads as a host taken from the token) is now refused, where
+  it was admitted before, and so is such a `SLACK_POST_API_URL`. Each refusal names the value by
+  its length and says how to write a user part.
+  `@legion/envoy-client/redirect` exports `redirectTarget`, which reads where a 3xx points and
+  cancels its body, `redirectedTo`, the words a refusal says it with, which name no origin longer
+  than a host name can make, and `OWN_PATH_CHECK`, what to check when a client that builds its own
+  path is redirected within the same address.

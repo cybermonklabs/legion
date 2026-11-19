@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/pgsetting"
 )
 
 // Store is the shared Dispatch database handle.
@@ -44,7 +45,10 @@ const poolSizeParam = "pool_max_conns"
 // Open connects to databaseURL and verifies the database is reachable. The pool's size is
 // sharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
 // string that names its database. Every connection it opens scans timestamptz in UTC
-// (scanTimestampsInUTC), as do the pools Pool.separate copies from its configuration.
+// (scanTimestampsInUTC), as do the pools Pool.separate copies from its configuration. It reads
+// DATABASE_URL through pgsetting, as each opener of it does: a URL whose user part pgx may read
+// apart from the rest of it is refused first, and one pgx cannot parse, each named by its length,
+// since pgx would print a piece of that part, or the user, in its errors.
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	declared, err := declaresPoolSize(databaseURL)
 	if err != nil {
@@ -55,9 +59,9 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 			"DATABASE_URL sets %s, which Dispatch does not honour: the pool is fixed at %d in code (store.sharedPoolSize). Remove the parameter",
 			poolSizeParam, sharedPoolSize)
 	}
-	config, err := pgxpool.ParseConfig(databaseURL)
+	config, err := pgsetting.ParsePoolConfig("DATABASE_URL", databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse Postgres URL: %w", err)
+		return nil, err
 	}
 	config.MaxConns = sharedPoolSize
 	config.AfterConnect = scanTimestampsInUTC
@@ -67,7 +71,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("ping Postgres: %w", err)
+		return nil, fmt.Errorf("ping Postgres: %w", pgsetting.ConnectFailure(err))
 	}
 	return &Store{Pool: NewPool(pool)}, nil
 }
@@ -105,18 +109,18 @@ func scanTimestampsInUTC(_ context.Context, conn *pgx.Conn) error {
 	return nil
 }
 
-// declaresPoolSize reports whether databaseURL carries poolSizeParam. It asks pgx.ParseConfig
-// rather than pgxpool.ParseConfig or the raw string. pgxpool is the layer that consumes the
-// parameter - it folds it into MaxConns and deletes it from RuntimeParams - so its parse
-// cannot answer the question, while the layer underneath it leaves the parameter there.
+// declaresPoolSize reports whether databaseURL carries poolSizeParam. It asks pgx.ParseConfig,
+// through pgsetting, rather than pgxpool.ParseConfig or the raw string. pgxpool is the layer that
+// consumes the parameter - it folds it into MaxConns and deletes it from RuntimeParams - so its
+// parse cannot answer the question, while the layer underneath it leaves the parameter there.
 // Scanning the string instead would answer a different question: keyword/value values may be
 // quoted or backslash-escaped and may contain the parameter's own name, and a keyword may be
 // separated from its "=" by whitespace, so a scanner refuses valid passwords and misses
-// "pool_max_conns = 4", which pgx honours.
+// "pool_max_conns = 4", which pgx honours. A value pgsetting refuses is refused here, first.
 func declaresPoolSize(databaseURL string) (bool, error) {
-	config, err := pgx.ParseConfig(databaseURL)
+	config, err := pgsetting.ParseConfig("DATABASE_URL", databaseURL)
 	if err != nil {
-		return false, fmt.Errorf("parse Postgres URL: %w", err)
+		return false, err
 	}
 	_, declared := config.RuntimeParams[poolSizeParam]
 	return declared, nil

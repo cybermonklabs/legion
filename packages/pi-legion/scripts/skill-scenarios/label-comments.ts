@@ -25,7 +25,8 @@
  * again. The key goes in the `x-api-key` header. --key-file is a 0600 file that holds an Anthropic
  * key, read again for each call, and the call goes to https://api.anthropic.com. --key-command is a
  * program that prints the gateway key, run again for each call, and the call goes to
- * <gateway>/v1/messages. A 429 or 5xx answer is tried again after a wait.
+ * <gateway>/v1/messages. A 429 or 5xx answer is tried again after a wait. A 3xx is never followed,
+ * since the call carries the key: the comment gets no label, and the line names where it points.
  *
  * It writes <out>/labels.jsonl: one row for each comment, oldest first. Stdout gets the counts.
  * Stdout names no person and quotes no comment, so a pull request can carry it as printed. The
@@ -37,7 +38,10 @@
 import { mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Comment } from "@legion/contracts";
+import { urlForText } from "@legion/contracts/log-text";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 import { messageFor } from "@legion/envoy-client/errors";
+import { redirectedTo, redirectTarget, SAME_ADDRESS_CAUSE } from "@legion/envoy-client/redirect";
 import {
   backoffMs,
   byCreatedAt,
@@ -191,10 +195,13 @@ function stateMessage(issue: string, comment: Comment): string {
 const USAGE =
   "usage: label-comments.ts --since <RFC 3339> --until <RFC 3339> --out <dir> (--gateway <url> --key-command <file> | --key-file <file>)";
 
-/** Where the model calls go, and how each call gets its key. */
+/** Where the model calls go, the same address as a line names it (`urlForText`), how each call
+ * gets its key, and whether a person named the URL with --gateway. */
 interface ModelRoute {
   readonly url: string;
+  readonly shown: string;
   readonly key: () => Promise<string>;
+  readonly gateway: boolean;
 }
 
 /** One comment of the set. */
@@ -276,10 +283,10 @@ async function label(
     if (attempt > 1) await sleep(Math.max(wait, backoffMs(attempt - 1)));
     wait = 0;
     let response: Response;
-    let text: string;
     try {
       response = await fetchImpl(`${route.url}/v1/messages`, {
         method: "POST",
+        redirect: "manual",
         headers: {
           "x-api-key": await route.key(),
           "anthropic-version": ANTHROPIC_VERSION,
@@ -288,6 +295,29 @@ async function label(
         body,
         signal: AbortSignal.timeout(MODEL_TIMEOUT_MS),
       });
+    } catch (error) {
+      last = `the model call failed: ${messageFor(error)}`;
+      continue;
+    }
+    // No model call follows a redirect, since fetch would send the key's `x-api-key` header, and a
+    // 307's or 308's comment, on to the origin it names: a 3xx is the answer, a refusal naming
+    // where it points (`@legion/envoy-client/redirect`), read from its status before any of its
+    // body, which a redirect need never finish, and it is not asked again.
+    const target = redirectTarget(response, `${route.url}/v1/messages`);
+    if (target !== undefined) {
+      // The --key-file route's address is Anthropic's own, which no setting names: the line says
+      // what to check instead.
+      const fix = !route.gateway
+        ? "the --key-file route goes to Anthropic's own address, which no setting changes: check for a proxy between this machine and Anthropic"
+        : target.kind === "the same origin"
+          ? `correct the path of --gateway; ${SAME_ADDRESS_CAUSE}`
+          : "give --gateway the gateway's own address";
+      throw new Error(
+        `the model at ${route.shown} answered ${response.status}, ${redirectedTo(target)}, and a model call follows no redirect, since it carries the key: ${fix}`
+      );
+    }
+    let text: string;
+    try {
       // A connection that fails while the body arrives is a failed call, as one before the headers.
       text = await response.text();
     } catch (error) {
@@ -466,19 +496,27 @@ function modelRoute(args: Arguments): ModelRoute | string {
     if ((mode & 0o077) !== 0) {
       return `--key-file ${keyFile} can be read by its group or by others. Make it 0600.`;
     }
-    return { url: ANTHROPIC_URL, key: () => readKeyFile(keyFile) };
+    return {
+      url: ANTHROPIC_URL,
+      shown: ANTHROPIC_URL,
+      key: () => readKeyFile(keyFile),
+      gateway: false,
+    };
   }
   if (gateway === undefined || keyCommand === undefined) return refusal;
-  let url: URL;
-  try {
-    url = new URL(gateway);
-  } catch {
-    return `--gateway ${gateway} is not a URL`;
+  // The URL may carry a user and a password. One that `shownSettingUrl` does not read is refused
+  // by its length and what to correct (`unshownSettingUrl`), and a line names the URL as
+  // `urlForText` does: whole where it is plain, by its fixed phrase otherwise.
+  if (shownSettingUrl(gateway) === undefined) {
+    return `--gateway must be an http or https URL: ${unshownSettingUrl(gateway)}`;
   }
-  if (url.protocol !== "https:" && url.protocol !== "http:") {
-    return `--gateway ${gateway} is not an http or https URL`;
-  }
-  return { url: gateway.replace(/\/+$/, ""), key: () => runKeyCommand(keyCommand) };
+  const url = gateway.replace(/\/+$/, "");
+  return {
+    url,
+    shown: urlForText(url, "--gateway"),
+    key: () => runKeyCommand(keyCommand),
+    gateway: true,
+  };
 }
 
 /** The whole run. Returns the exit status: 0, 1 (a read or a label failed) or 2 (refused). */
