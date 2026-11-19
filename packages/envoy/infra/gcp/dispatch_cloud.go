@@ -360,10 +360,11 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 		return nil, err
 	}
 	// The instance the proxy connects to: the one existingDatabaseInstance names, for which the
-	// component registers no DatabaseInstance, Database or User, and which nothing waits for, since
-	// it exists before the component runs and the component never restarts it; or else the
-	// component's own, DatabaseInstance <hostname>, with its database and its login
-	// (newDispatchOwnInstance).
+	// component registers no DatabaseInstance, Database or User, since that instance holds the
+	// database dispatch and the login dispatch already, as a promoted replica of the component's
+	// own instance does, and which nothing waits for, since it exists before the component runs
+	// and the component never restarts it; or else the component's own, DatabaseInstance
+	// <hostname>, with its database and its login (newDispatchOwnInstance).
 	var (
 		connectionName pulumi.StringOutput
 		waitFor        []pulumi.Resource
@@ -452,8 +453,8 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 // existingDatabaseInstance replaces: DatabaseInstance <hostname> in region, which takes its
 // private IP on network through connection, the private services peering, and on it Database and
 // User <hostname>, the database dispatch and the login dispatch with password. It answers with the
-// instance's connection name and the resources that wait for its in-place restart
-// (dispatchDatabase.waitFor), the DatabaseInstance alone.
+// instance's connection name and the resources that must come before anything that waits out its
+// in-place restart (dispatchDatabase.waitFor): the DatabaseInstance alone.
 func newDispatchOwnInstance(ctx *pulumi.Context, dispatch string, args *DispatchArgs, s dispatchSettings, child pulumi.ResourceOption, network *compute.Network, connection *servicenetworking.Connection, password *random.RandomPassword) (pulumi.StringOutput, []pulumi.Resource, error) {
 	// databaseWaitsFor names a value of a resource the consumer wants the instance's update to
 	// follow, its own step before the restart (deleting the old tailnet device, say). The value
@@ -483,9 +484,6 @@ func newDispatchOwnInstance(ctx *pulumi.Context, dispatch string, args *Dispatch
 	if err != nil {
 		return pulumi.StringOutput{}, nil, err
 	}
-	// The component's own instance holds the database dispatch and the login dispatch, with the
-	// generated password. An instance existingDatabaseInstance names holds both already, as a
-	// promoted replica of the component's own instance does, so neither is registered for it.
 	// deletionProtection also keeps the database itself: PREVENT refuses its delete, which an
 	// instance replacement would otherwise make first.
 	databasePolicy := "DELETE"

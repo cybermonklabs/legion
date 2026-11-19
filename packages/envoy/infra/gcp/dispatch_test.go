@@ -3044,7 +3044,7 @@ func TestDispatchRegistersNoBudgetOrPriorityClassUnset(t *testing.T) {
 }
 
 // requireKubernetesChild asserts that r is a child of the component on its own Kubernetes
-// provider, waiting on the cluster, as AGENTS.md has every Kubernetes child do.
+// provider, waiting on the component's own Cluster (dispatchCluster.waitFor).
 func requireKubernetesChild(t *testing.T, r pulumitest.Registration) {
 	t.Helper()
 	require.Equal(t, "urn:pulumi:s::p::"+dispatchType+"::example-dispatch", r.RPC.GetParent())
