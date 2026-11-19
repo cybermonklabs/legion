@@ -84,22 +84,26 @@ func TestPodOperatorsRefusesAnEntryItCannotRead(t *testing.T) {
 	}
 }
 
-// TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole: Load refuses a mapped account in
-// each case below, and the refusal names the account and both settings. Each row first loads its
-// environment with BROKER_POD_OPERATORS unset and asserts the state that makes the refusal
-// reachable, so the refusal is the mapping's and not a fault of the other settings.
-func TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole(t *testing.T) {
+// mappedAccountRefusalCase is one row of mappedAccountRefusalCases.
+type mappedAccountRefusalCase struct {
+	name string
+	env  func() map[string]string
+	// reachable says what the environment holds with BROKER_POD_OPERATORS unset, and
+	// whether it holds.
+	reachable func(cfg Config) (string, bool)
+	// names is what the refusal must say besides the account and BROKER_POD_OPERATORS: the
+	// other setting, in the words of the one refusal the row is for.
+	names []string
+}
+
+// mappedAccountRefusalCases are the rows of
+// TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole, one or more for each setting
+// mappedAccountRefusal checks. TestEveryBrokerSettingLoadReadsIsMarked reads their names, beside
+// which its table marks each setting that gives a Kubernetes account a role, and loads their
+// environments.
+func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 	natsUser, natsIssuer, natsCurve, _ := natsSeeds(t)
-	for _, tc := range []struct {
-		name string
-		env  func() map[string]string
-		// reachable says what the environment holds with BROKER_POD_OPERATORS unset, and
-		// whether it holds.
-		reachable func(cfg Config) (string, bool)
-		// names is what the refusal must say besides the account and BROKER_POD_OPERATORS: the
-		// other setting, in the words of the one refusal the row is for.
-		names []string
-	}{
+	return []mappedAccountRefusalCase{
 		{
 			name: "BROKER_SERVICE_LOGINS does not name it",
 			env: func() map[string]string {
@@ -263,7 +267,16 @@ func TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole(t *testing.T)
 			},
 			names: []string{"the BROKER_SESSION_ACCOUNT_PAIRS pair " + strconv.Quote(adaWorker+"="+adaAccount) + " names it"},
 		},
-	} {
+	}
+}
+
+// TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole: Load refuses a mapped account in
+// each case of mappedAccountRefusalCases, and the refusal names the account and both settings.
+// Each row first loads its environment with BROKER_POD_OPERATORS unset and asserts the state that
+// makes the refusal reachable, so the refusal is the mapping's and not a fault of the other
+// settings.
+func TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole(t *testing.T) {
+	for _, tc := range mappedAccountRefusalCases(t) {
 		t.Run(tc.name, func(t *testing.T) {
 			unmapped, err := Load(env(tc.env()))
 			if err != nil {

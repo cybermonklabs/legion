@@ -76,9 +76,9 @@ func TestEnrollingUnderANameAnotherPrincipalHoldsIs403SessionHeld(t *testing.T) 
 // the paired arm reads.
 //
 // No route withholds from a pod: only the revoke of a grant's enrollment's operator withholds
-// (requests.Machine.RevokeByApprover), and a pod's enrollment has no operator. So the test writes
-// what that revoke writes for the automatic grant, the grant ended and its name withheld from the
-// enrollment, as enroll's own carry tests write the withheld row.
+// (requests.Machine.RevokeByApprover), and a service's pod enrollment has no operator. So the test
+// writes what that revoke writes for the automatic grant, the grant ended and its name withheld
+// from the enrollment, as enroll's own carry tests write the withheld row.
 func TestAPairedAccountsEnrollmentTakesTheNameAndWhatItCarries(t *testing.T) {
 	const session = "implementer-session-1"
 	// replaced is one arm's server and what its replaced pod left dormant for the session: the

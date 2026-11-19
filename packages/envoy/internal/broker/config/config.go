@@ -1444,10 +1444,10 @@ func parsePodOperators(setting, value string) (map[string]string, error) {
 // names, since a mapped account acts for its person and for nothing else. The settings it checks
 // are BROKER_SERVICE_LOGINS, BROKER_SERVICES, BROKER_VM_SERVICES, BROKER_EXCHANGE_ACCOUNTS,
 // BROKER_POD_REGISTRARS, BROKER_EXCHANGE_READ_ACCOUNTS, BROKER_API_ACCOUNTS, BROKER_NATS_SERVICES
-// and BROKER_SESSION_ACCOUNT_PAIRS, in the order it checks them. A setting added later that gives a
-// Kubernetes account a role joins this list, with its refusal here and its row in
-// TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole. That is a convention: no test
-// lists the settings, so nothing finds a setting this function does not check.
+// and BROKER_SESSION_ACCOUNT_PAIRS, in the order it checks them. A setting added later fails
+// TestEveryBrokerSettingLoadReadsIsMarked until its author marks it, as giving a Kubernetes account
+// a role, beside its refusal here and its row in
+// TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole, or as giving none.
 //
 // It refuses a mapped account that BROKER_SERVICE_LOGINS does not name, because a mapped account
 // logs in with its own token. It refuses a mapped account whose login service a BROKER_SERVICES
@@ -1463,23 +1463,24 @@ func parsePodOperators(setting, value string) (map[string]string, error) {
 // the registrar's account for good (oauthstore.Store.RegisterPodSession), so the person's pod would
 // choose the session names other pods exchange under. The registration routes refuse a mapped
 // account already (api's serviceCaller, 403 PERSON_ACCOUNT), so such an entry could register
-// nothing. A mapped account on the pod side of an entry is not refused: the exchange admits its pod
-// only under a BROKER_EXCHANGE_ACCOUNTS entry for the same person that fixes no session, so the pod
-// acts for that person alone. It refuses a mapped account that a BROKER_EXCHANGE_READ_ACCOUNTS
-// entry names (cfg.ExchangeReadAccounts), because the exchange would then mint the person's pod a
-// read-only token that names that entry's service and no person. It refuses a mapped account that a
-// BROKER_API_ACCOUNTS entry names (cfg.APIAccounts), because the named-caller routes it reaches act
-// on the caller's word: the approval relays take the deciding person's name from the caller, so the
-// person's pod could decide any request in any person's name. It refuses a mapped account that a
-// BROKER_NATS_SERVICES entry names, because the NATS auth service (internal/broker/natscallout)
-// would then answer a connection of the person's pod with that entry's service grant. It reads each
-// entry's account with CutNATSServiceEntry, the reading natscallout.ParseServices makes too, which
-// holds the account to ParseAccount's form at the boot. It refuses a mapped account that either
-// side of a BROKER_SESSION_ACCOUNT_PAIRS pair names (cfg.SessionAccountPairs), because a pair lets
-// one account take the session names the other holds. A person's pod login enrols under no session
-// name (enroll.Service.podUnderTokenLogin), so a pair moves no enrollment of it, but the session
-// names the token exchange binds for the account would cross: the other account could take the
-// person's, and the person's pod the other account's.
+// nothing. A mapped account on the pod side of an entry is not refused: a registration of its pod
+// is admitted only under a BROKER_EXCHANGE_ACCOUNTS entry that fixes no session (the pod-session
+// policy's 409 SESSION_FIXED), and every BROKER_EXCHANGE_ACCOUNTS entry for the account names the
+// same person (the refusal above), so the pod acts for that person alone. It refuses a mapped
+// account that a BROKER_EXCHANGE_READ_ACCOUNTS entry names (cfg.ExchangeReadAccounts), because the
+// exchange would then mint the person's pod a read-only token that names that entry's service and
+// no person. It refuses a mapped account that a BROKER_API_ACCOUNTS entry names (cfg.APIAccounts),
+// because the named-caller routes it reaches act on the caller's word: the approval relays take the
+// deciding person's name from the caller, so the person's pod could decide any request in any
+// person's name. It refuses a mapped account that a BROKER_NATS_SERVICES entry names, because the
+// NATS auth service (internal/broker/natscallout) would then answer a connection of the person's
+// pod with that entry's service grant. It reads each entry's account with CutNATSServiceEntry, the
+// reading natscallout.ParseServices makes too, which holds the account to ParseAccount's form at
+// the boot. It refuses a mapped account that either side of a BROKER_SESSION_ACCOUNT_PAIRS pair
+// names (cfg.SessionAccountPairs), because a pair lets one account take the session names the other
+// holds. A person's pod login enrols under no session name (enroll.Service.podUnderTokenLogin), so
+// a pair moves no enrollment of it, but the session names the token exchange binds for the account
+// would cross: the other account could take the person's, and the person's pod the other account's.
 func mappedAccountRefusal(cfg *Config) error {
 	const setting = "BROKER_POD_OPERATORS"
 	if len(cfg.PodOperators) == 0 {

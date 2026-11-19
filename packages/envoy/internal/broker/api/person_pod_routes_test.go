@@ -217,12 +217,14 @@ func requirePersonPodLoginRefused(t *testing.T, rig *brokertest.Rig, key *ecdsa.
 	box.requireLive(t, rig, when+", after the pod's login called each operator route")
 }
 
-// TestAPersonPodAccountIsRefusedThePodSessionRoute: the pod-session route is a service's route,
-// and an account that BROKER_POD_OPERATORS maps is a person's account. So the route refuses a
-// token of that account, 403 PERSON_ACCOUNT, and the refusal names the account. It refuses a token
-// bound to the account's pod and a token bound to no pod, and neither writes a registration. The
-// daemon's account then registers the same pod under the same name. That shows the body is sound
-// and the route refused the caller alone.
+// TestAPersonPodAccountIsRefusedThePodSessionRoute: the pod-session routes are a service's
+// routes, and an account that BROKER_POD_OPERATORS maps is a person's account. So the
+// registration route and the release route each refuse a token of that account, 403
+// PERSON_ACCOUNT, and the refusal names the account. Each refuses a token bound to the account's
+// pod and a token bound to no pod. A refused registration writes no row. The daemon's account
+// then registers the same pod under the same name, which shows the body is sound and the route
+// refused the caller alone, and the mapped account's release of that name leaves the daemon's
+// registration unreleased.
 func TestAPersonPodAccountIsRefusedThePodSessionRoute(t *testing.T) {
 	rig := newPersonPodRig(t)
 	const session, pod = "implementer-g1", "pod-uid-roles"
@@ -232,10 +234,28 @@ func TestAPersonPodAccountIsRefusedThePodSessionRoute(t *testing.T) {
 		return rig.Req(t, http.MethodPost, "/v1/oauth/exchange/pod-sessions", map[string]string{"Authorization": "Bearer " + bearer},
 			map[string]any{"pod_token": podToken, "session": session})
 	}
-	for _, c := range []struct{ name, bearer string }{
+	release := func(bearer string) (int, []byte) {
+		t.Helper()
+		return rig.Req(t, http.MethodPost, "/v1/oauth/exchange/pod-sessions/release", map[string]string{"Authorization": "Bearer " + bearer},
+			map[string]any{"sessions": []string{session}})
+	}
+	mapped := []struct{ name, bearer string }{
 		{"a token bound to the mapped account's pod", rig.MintAccountPodToken(t, personPodAccount, personPodUID, 20*time.Minute)},
 		{"a token of the mapped account bound to no pod", rig.MintAccountToken(t, personPodAccount, 20*time.Minute)},
-	} {
+	}
+	// requireReleaseRefused fails t unless the release route refuses each mapped token 403
+	// PERSON_ACCOUNT naming the account; when says what the registrations are at the call.
+	requireReleaseRefused := func(when string) {
+		t.Helper()
+		for _, c := range mapped {
+			status, body := release(c.bearer)
+			if status != http.StatusForbidden || decode[wireError](t, body).Code != "PERSON_ACCOUNT" || !strings.Contains(string(body), personPodAccount) {
+				t.Errorf("%s, %s releases %s = %d %s; want 403 PERSON_ACCOUNT naming %s: admitted, a person's account ends a registration a daemon wrote",
+					when, c.name, session, status, body, personPodAccount)
+			}
+		}
+	}
+	for _, c := range mapped {
 		status, body := register(c.bearer)
 		if status != http.StatusForbidden || decode[wireError](t, body).Code != "PERSON_ACCOUNT" || !strings.Contains(string(body), personPodAccount) {
 			t.Errorf("%s registers %s under %s = %d %s; want 403 PERSON_ACCOUNT naming %s: admitted, a person's account chooses the session that pod %s writes under",
@@ -254,6 +274,10 @@ func TestAPersonPodAccountIsRefusedThePodSessionRoute(t *testing.T) {
 	}
 	if rows := rigColumn(t, rig, `select pod_uid || ' ' || session from oauth_pod_sessions`); !slices.Equal(rows, []string{pod + " " + session}) {
 		t.Fatalf("registrations after the daemon's = %v; want only %s under %s", rows, pod, session)
+	}
+	requireReleaseRefused("with the daemon's registration live")
+	if rows := rigColumn(t, rig, `select pod_uid || ' ' || session from oauth_pod_sessions where released_at is null`); !slices.Equal(rows, []string{pod + " " + session}) {
+		t.Fatalf("unreleased registrations after the mapped account's releases = %v; want the daemon's %s under %s", rows, pod, session)
 	}
 }
 
