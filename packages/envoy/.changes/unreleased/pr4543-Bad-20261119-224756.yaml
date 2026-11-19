@@ -1,0 +1,5 @@
+kind: Changd
+body: a kind no package config names
+time: 2026-11-19T22:47:56Z
+custom:
+    Issue: pr4543
