@@ -6,7 +6,7 @@ body: |-
 
   `CreateIssueInput.project` is required, also on a create that names `external`. The `dispatch_issue` tool refuses an empty `project` before it sends a request.
 
-  A Legion daemon that still reads the repository mapping (`GET /api/v1/settings/repo-projects`) sees the rows as this release's migration left them. It sees no default that is set after the migration, and no new row. The next release removes that read route. Before you deploy that release, run the Legion daemon release that reads no repository mapping, or a later one.
+  Move each Legion daemon to the release that reads no repository mapping, or a later one, before you deploy this Dispatch release. Until then, no repository or default repository that you set after the deploy reaches that daemon: a Legion daemon that still reads the repository mapping (`GET /api/v1/settings/repo-projects`) sees the rows as this release's migration left them, and sees no default that is set after the migration and no new row. The next release removes that read route.
 time: 2026-11-19T05:16:38.000000000Z
 custom:
   Issue: pr4457

@@ -12,7 +12,7 @@ body: |-
 
   The CI reconcile pass covers every project's default repository and every repository an issue names as its own. Its `ci reconcile pass` line counts `defaults_skipped` in place of `mappings_skipped`.
 
-  A Legion daemon that still reads the mapping (`GET /api/v1/settings/repo-projects`) sees the rows as this release's migration left them. It sees no default that is set after the migration, and no new row. The next release removes that read route. Before you deploy that release, run the Legion daemon release that reads no repository mapping, or a later one.
+  Move each Legion daemon to the release that reads no repository mapping, or a later one, before you deploy this release. Until then, no repository or default repository that you set after the deploy reaches that daemon: a Legion daemon that still reads the mapping (`GET /api/v1/settings/repo-projects`) sees the rows as this release's migration left them, and sees no default that is set after the migration and no new row. The next release removes that read route.
 
   In a deployment that runs more than one replica, edit no repository mapping while this release rolls. A server of the earlier release can still take such a write, and this release does not read it.
 time: 2026-11-19T05:16:37.000000000Z
