@@ -10,7 +10,11 @@ body: |-
     its launcher serves the pod-local metadata endpoint from the token mounted at
     `/var/run/legion/workload-identity`. A change of `type` moves the controller's pod at its next
     launch that installs nothing, and `legion claims suspend` then `legion claims resume` of its
-    claim moves it at once. Where the type is `gvisor`, the controller's pod is the pod it was.
-    Repository cache pods and the image probe stay in gVisor. Daemon API contract 171.
+    claim moves it at once where the resume installs nothing. Where the type is `gvisor`, the
+    controller's pod is the pod it was.
+    Repository cache pods and the image probe stay in gVisor. The daemon now refuses at boot, in
+    every deployment, an operator `runtime.kubernetes.pod.volume_mounts` path at or under
+    `/var/run/legion/workload-identity`, and `legion config check` shows the refusal. Daemon API
+    contract 171.
 custom:
     Issue: pr4485

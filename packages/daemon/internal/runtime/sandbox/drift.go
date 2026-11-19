@@ -97,8 +97,9 @@ type podShapeRecord struct {
 // shape as it always was. A change of the microVM block's storage class or metadata endpoint opens
 // a round over each microVM issue pod and no other, and a change of an issue's sandbox one over
 // that issue's pod, from null to a microVM or back; a change of the block's metadata endpoint or
-// compute class, or of the project's type, has the controller's next launch replace its pod, and
-// a change of the block's storage class alone does not (relaunch, roundCovers).
+// compute class, or of the project's type, has the controller's next launch that installs nothing
+// replace its pod, and a change of the block's storage class alone does not (relaunch,
+// roundCovers).
 type sandboxShape struct {
 	RuntimeClass string                `json:"runtime_class"`
 	ComputeClass string                `json:"compute_class"`
@@ -186,23 +187,20 @@ func (l launch) shapeKey() podShapeKey {
 	return podShapeKey{kind: l.kind, sandbox: SandboxGVisor}
 }
 
-// storedShapeKey is the key of the shape the pod of the stored Sandbox u, a pod of kind, is
-// compared with now: an issue pod's in the sandbox the configuration now gives the issue the
-// Sandbox is labelled with (labelIssue, SandboxConfig.Of), the issue a launch decides its pod's
-// sandbox from (prepare), and the controller's pod's in the sandbox the project's type now gives
-// it (SandboxConfig.Controller), as its launch decides it. The label holds an issue key as
-// labelValue writes it, which past a label value's 63 characters is a hashed form, so the canary
-// list is matched through that same form and a key of any length reads as its launch decides it.
-func (r *Runtime) storedShapeKey(kind podKind, u *unstructured.Unstructured) podShapeKey {
-	if _, issue := kind.(issuePod); !issue {
-		return podShapeKey{kind: kind, sandbox: r.sandboxConfig.Controller()}
-	}
+// storedShapeKey is the key of the shape the issue pod of the stored Sandbox u is compared with
+// now: the issue pod's in the sandbox the configuration now gives the issue the Sandbox is labelled
+// with (labelIssue, SandboxConfig.Of), the issue a launch decides its pod's sandbox from (prepare).
+// PodDrift, its one caller, asks it only of a pod a round covers (roundCovers), an issue pod. The
+// label holds an issue key as labelValue writes it, which past a label value's 63 characters is a
+// hashed form, so the canary list is matched through that same form and a key of any length reads
+// as its launch decides it.
+func (r *Runtime) storedShapeKey(u *unstructured.Unstructured) podShapeKey {
 	label, _, _ := unstructured.NestedString(u.Object, "metadata", "labels", labelIssue)
 	issue := label
 	if i := slices.IndexFunc(r.sandboxConfig.CanaryIssues, func(key string) bool { return labelValue(key) == label }); i >= 0 {
 		issue = r.sandboxConfig.CanaryIssues[i]
 	}
-	return podShapeKey{kind: kind, sandbox: r.sandboxConfig.Of(issue)}
+	return podShapeKey{kind: issuePod{}, sandbox: r.sandboxConfig.Of(issue)}
 }
 
 // podShapeDrift names what the pod of the Sandbox read as s was built from that the runtime would
@@ -385,10 +383,10 @@ func podImageDrift(s *sandbox, want string) bool {
 // The sweep asks this of every claim of the deployment at every tick, so the steady state — a
 // Sandbox running and a pod built from the configuration the runtime still has — costs one read
 // of the operating mode, one of the issue the Sandbox is labelled with and one of the annotation
-// the stored template records, against the shape the runtime holds for that kind in that issue's
-// sandbox (r.podShapes, storedShapeKey), all strings of the object this call already holds. The
-// Sandbox itself is decoded only where the two shapes differ, which is the pod a round is about to
-// be opened over.
+// the stored template records, against the shape the runtime holds for an issue pod in that
+// issue's sandbox (r.podShapes, storedShapeKey), all strings of the object this call already
+// holds. The Sandbox itself is decoded only where the two shapes differ, which is the pod a round
+// is about to be opened over.
 func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error) {
 	if err := k.Validate(); err != nil {
 		return nil, fmt.Errorf("sandbox runtime: pod drift: %w", err)
@@ -426,7 +424,7 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 		return nil, nil
 	}
 	var drifted []string
-	shape := r.storedShapeKey(kind, u)
+	shape := r.storedShapeKey(u)
 	if held, _, _ := unstructured.NestedString(u.Object, "spec", "podTemplate", "metadata", "annotations", podShapeAnnotation); held != r.podShapes[shape] {
 		// Only a template whose recorded shape differs is decoded, which is the pod a round is
 		// about to be opened over; shapeDrift reads that same recorded shape against that same

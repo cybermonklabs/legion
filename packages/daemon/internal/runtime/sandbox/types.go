@@ -413,12 +413,14 @@ type Options struct {
 	// daemon sets this field, and drops it; it never closes the connection on it, since the
 	// launcher would redial a second later and send its waiting reports into the same refusal.
 	MemoryGuardKilled runtime.MemoryGuardKilled
-	// ControllerMemoryGuardKilled takes one process the controller pod's memory guard ended, as
-	// that pod's launcher reported it on the controller's connection
-	// (runtime.ControllerMemoryGuardKilled): the daemon turns it into the notice that tells the
-	// project's controller which of its programs ended and why. A runtime given none drops such a
-	// report as MemoryGuardKilled's absence drops an issue pod's: it logs a warning naming where
-	// the daemon sets this field, and keeps the connection open.
+	// ControllerMemoryGuardKilled takes one process the memory guard of a gVisor controller pod
+	// ended, or one that a microVM controller pod's own kernel stopped (the report's Cause,
+	// shimwire.MemoryKillCauseKernel, or shimwire.MemoryKillCauseKernelProtected for a process
+	// that runs the controller's session), as that pod's launcher reported it on the controller's
+	// connection (runtime.ControllerMemoryGuardKilled): the daemon turns it into the notice that
+	// tells the project's controller which of its programs ended and why. A runtime given none
+	// drops such a report as MemoryGuardKilled's absence drops an issue pod's: it logs a warning
+	// naming where the daemon sets this field, and keeps the connection open.
 	ControllerMemoryGuardKilled runtime.ControllerMemoryGuardKilled
 	// VolumeReported takes one sweep of an issue pod's volume as that pod's launcher reported it
 	// (runtime.VolumeReported): the daemon turns it into the fact that tells the issue's

@@ -2471,7 +2471,8 @@ package api
 // for the recorded shape's `sandbox` member or for the pod's image, and 167's launch that installs
 // its plugin pair does so too where the pod is on another image (podImageDrift). The rollback:
 // docs/kubernetes.md, "Rolling back" in "Pods in microVMs", says the controller returns to gVisor
-// at that launch, and that suspending and resuming its claim does it at once.
+// at that launch, and that suspending and resuming its claim does it at once where the launch at
+// the resume installs nothing.
 // (This change took 167 against the base's 155, and 169 at the forward merge of 2026-11-19 that
 // brought legion/INFRA-3531 in at 4d6665d5d593, whose number was 168. It takes 171 at the forward
 // merge of 2026-11-19 that brings legion/INFRA-3531 in at 41d4f45b156d, whose 167,

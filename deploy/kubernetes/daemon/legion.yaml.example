@@ -397,8 +397,9 @@ runtime:
     #                                  # While an issue pod runs in a microVM, scheduling must not
     #                                  # name sandbox.gke.io/runtime: the RuntimeClass places the pod.
     #                                  # A change of type moves the controller's pod at its next
-    #                                  # launch, and legion claims suspend, then legion claims
-    #                                  # resume, of its claim moves it at once.
+    #                                  # launch that installs nothing, and legion claims suspend,
+    #                                  # then legion claims resume, of its claim moves it at once
+    #                                  # where the resume installs nothing.
     # repository_cache:                # each mapped repository's cache pod, which every issue pod's feed is
     #   volume: 20Gi                   # filled from before GitHub is asked for the rest: the cache's own volume,
     #   refresh_minutes: 10            # holding a bare clone; how often it fetches GitHub; how long it outlives

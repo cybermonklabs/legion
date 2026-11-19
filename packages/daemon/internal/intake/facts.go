@@ -1148,17 +1148,22 @@ type MemoryGuardKill struct {
 
 func (f MemoryGuardKill) namedIssue() (string, bool) { return f.Issue, true }
 
-// ControllerMemoryGuardKill is one process the controller pod's memory guard ended with SIGKILL
-// because the pod was near its memory limit, as that pod's launcher reported it on the
-// controller's connection (shimwire.LauncherMemoryKill). It is never decoded from an event: the
-// launcher's frame reaches the runtime, and the daemon's Kubernetes wiring applies one fact per
-// report under the id MemoryGuardKill's are applied under, `memory-guard-kill:<guard>:<sequence>`,
-// which names the kill once, so a report the launcher sent twice is applied once.
+// ControllerMemoryGuardKill is one process the memory guard of a gVisor controller pod ended with
+// SIGKILL because the pod was near its memory limit, or one that a microVM controller pod's own
+// kernel stopped because the pod ran out of memory (the report's Cause,
+// shimwire.MemoryKillCauseKernel, or shimwire.MemoryKillCauseKernelProtected for a process that
+// runs the controller's session), as that pod's launcher reported it on the controller's
+// connection (shimwire.LauncherMemoryKill). It is never decoded from an event: the launcher's
+// frame reaches the runtime, and the daemon's Kubernetes wiring applies one fact per report under
+// the id MemoryGuardKill's are applied under, `memory-guard-kill:<guard>:<sequence>`, which names
+// the kill once, so a report the launcher sent twice is applied once. For the kernel's kill,
+// <guard> is the id of the launcher's guest watch (memoryguard.Guest).
 //
 // Token and PodUID are the launcher session's own (the claim the connection authenticated for and
 // its pod), never anything the report says. The controller's pod is of no issue, so the fact names
 // none. The workflow tells the project's controller, in a controller notice of its own for each
-// kill, which of its programs was ended and why (workflow's controllerMemoryGuardKill).
+// kill, which of its programs was ended and why, in the note the report's Cause chooses
+// (workflow's controllerMemoryGuardKill).
 type ControllerMemoryGuardKill struct {
 	Token  claim.Token
 	PodUID string

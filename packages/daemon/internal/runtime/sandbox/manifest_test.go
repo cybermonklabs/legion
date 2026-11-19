@@ -2803,16 +2803,12 @@ func TestTheControllerPodRunsInTheProjectsSandbox(t *testing.T) {
 			}
 			for _, pod := range pods {
 				spec := pod.template.Spec
-				runtimeClass := "(none)"
-				if spec.RuntimeClassName != nil {
-					runtimeClass = *spec.RuntimeClassName
-				}
 				var tolerations []string
 				for _, toleration := range spec.Tolerations {
 					tolerations = append(tolerations, toleration.Key+"="+toleration.Value+":"+string(toleration.Effect))
 				}
 				t.Logf("sandbox-pod config=%s pod=%s runtimeClassName=%s nodeSelector=%s tolerations=%s labels=%s launcher=%s",
-					tc.config, pod.kind, runtimeClass, sortedPairs(spec.NodeSelector), strings.Join(tolerations, ","),
+					tc.config, pod.kind, runtimeClassText(spec.RuntimeClassName), sortedPairs(spec.NodeSelector), strings.Join(tolerations, ","),
 					sortedPairs(pod.template.Metadata.Labels), sandboxFlags(spec.Containers[0].Command))
 			}
 			templates := s.Spec.VolumeClaimTemplates

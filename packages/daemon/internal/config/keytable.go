@@ -850,7 +850,7 @@ var nestedKeys = []memberGroup{
 	}},
 	{Path: kubernetesKey + ".sandbox", Members: []member{
 		{Name: "type", Default: "`gvisor`", RequiredBy: "no",
-			Description: "The sandbox of every issue pod of the project and of its controller's pod: `gvisor` or `microvm`; a change moves the controller's pod at its next launch, and a suspend and resume of its claim moves it at once."},
+			Description: "The sandbox of every issue pod of the project and of its controller's pod: `gvisor` or `microvm`; a change moves the controller's pod at its next launch that installs nothing, and a suspend and resume of its claim moves it at once where the resume installs nothing."},
 		{Name: "canary_issues", Default: "`[]`", RequiredBy: "no",
 			Description: "The issue keys, each exact and named once, whose pods run in the sandbox `type` does not name: in a microVM on a gVisor project, in gVisor on a microVM project; the list never moves the controller's pod."},
 		{Name: "microvm", Default: "none: a block that an issue pod in a microVM needs and the file leaves out is refused", RequiredBy: "when `type` is `microvm` or `canary_issues` names an issue",

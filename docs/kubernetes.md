@@ -3798,25 +3798,34 @@ So a change of an issue's sandbox, through `canary_issues` or `type`, opens an u
 The round names the drift `sandbox null, now {…}` for a pod that moves into a microVM, and `sandbox {…}, now null` for one that moves back.
 A change of `microvm.compute_class`, `microvm.storage_class` or `microvm.metadata` opens a round on each microVM issue pod alone.
 With `microvm.storage_class` left out, the microVM issue pods take `storage_class`, so a change of `storage_class` opens a round on each microVM issue pod, and still on no gVisor pod.
-The controller's pod is in no round, and the daemon compares it with the shape of the sandbox `type` now gives it (`storedShapeKey`).
+The controller's pod is in no round: its launch compares the pod's recorded shape with the shape that launch would build (`launch.shapeKey` and `relaunch`, `relaunch.go`).
 A daemon boot re-adopts a running controller pod and replaces nothing, whatever its shape.
 A launch that installs nothing replaces a live controller pod whose shape differs, so the controller moves into a microVM, or back into gVisor, at its first such launch after a change of `type`: when its process ends, or when the operator suspends and resumes its claim (below).
 A launch that installs a stale-plugin pair replaces it only where its image differs (`podImageDrift`, [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), and the fresh pod is built in the sandbox `type` names.
-A change of `microvm.compute_class` or `microvm.metadata` moves a microVM controller pod at its next launch, and a change of `microvm.storage_class` alone moves no controller pod.
+A change of `microvm.compute_class` or `microvm.metadata` moves a microVM controller pod at its next launch that installs nothing, and a change of `microvm.storage_class` alone moves no controller pod.
 Neither `canary_issues` nor a `microvm` block on a gVisor project moves it.
 To move the controller at once, suspend its claim and resume it: `legion claims suspend --operator-token-file <file> --claim legion-<project>-controller`, then `legion claims resume --operator-token-file <file> --claim legion-<project>-controller`.
-The launch at the resume finds the Sandbox suspended and builds a new pod in the sandbox the configuration gives the controller, and it keeps the controller's Sandbox and its disk.
+`legion claims suspend` ends only the controller's process and never suspends its Sandbox (`Runtime.Suspend`, `sandbox.go`), so the launch at the resume finds the pod live.
+Where that launch installs nothing, the pod's recorded shape differs from the shape the launch would build, so it builds a new pod in the sandbox the configuration gives the controller, and it keeps the controller's Sandbox and its disk.
+Where the launch at the resume installs a stale-plugin pair into a pod already on the configured image, it keeps the pod in its old sandbox, since such a launch replaces the pod only where the image differs (`podImageDrift`).
+The controller then moves at its next launch that installs nothing.
 A role launched into a pod that its round keeps starts as that pod was built:
 the launcher's `--microvm` and metadata flags and the projected token are fixed when the pod is created, and nothing the daemon sends a generation depends on the sandbox.
 So a role of a gVisor pod whose issue joins `canary_issues` starts in gVisor until the round replaces that pod.
 
 **Upgrading.**
-This release refuses one volume name that the release before it took: `workload-identity-token` as a `runtime.kubernetes.pod.volumes[].name`.
+The release that adds the block, daemon API contract 151, refuses one volume name that the release before it took: `workload-identity-token` as a `runtime.kubernetes.pod.volumes[].name`.
 The name is now the daemon's own, for the projected token volume of the metadata endpoint ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
 The loader refuses it in every deployment, one that runs only gVisor pods and sets no `sandbox` block included:
 `runtime.kubernetes.pod.volumes[<i>].name workload-identity-token is a volume Legion puts in every pod`, where `<i>` is the volume's place in the list, from 0 (`CheckPod`, `packages/daemon/internal/runtime/sandbox/operatorpod.go`).
-A daemon of this release does not start on a file it refuses, so run this release's `legion config check` on the file before the rollout.
+A daemon of that release does not start on a file it refuses, so run that release's `legion config check` on the file before the rollout.
 Where the check refuses the name, give that volume another name, in `volumes` and in each `volume_mounts` entry whose `volume` names it.
+The release that runs the controller's pod in the project's sandbox, daemon API contract 171 (the entry for `dispatch://INFRA-4567`), refuses one mount path that the release before it took: a `runtime.kubernetes.pod.volume_mounts[].mount_path` at or under `/var/run/legion/workload-identity`.
+The path is now the daemon's own, where a microVM controller pod mounts the metadata endpoint's token (`ControllerWorkloadIdentityDir`, `names.go`).
+The loader reserves it in every deployment, one that runs only gVisor pods included (`legionMountPaths`, `manifest.go`), and refuses such a mount at boot:
+`runtime.kubernetes.pod.volume_mounts[<i>].mount_path <path> overlaps /var/run/legion/workload-identity, which Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's`, where `<i>` is the mount's place in the list, from 0, and `<path>` is its `mount_path` (`CheckPod`, `operatorpod.go`).
+`legion config check` of that release shows the refusal, so run it on the file before the rollout.
+Where the check refuses the path, mount that volume at another path.
 
 **Rolling back.**
 The release that adds the block is daemon API contract 151, whose entry in `packages/daemon/internal/api/version.go` is for `dispatch://INFRA-3729`.
@@ -3834,7 +3843,7 @@ The launcher then drops each report of a process the pod's kernel stopped, with 
 That daemon compares the controller's pod with its gVisor shape alone, so the controller returns to gVisor at the first launch that replaces its pod.
 That is the daemon's next launch that installs nothing.
 Under a daemon of the release that guards the controller's pod's memory, the launch that installs its plugin pair replaces the pod too where it runs another image, and a rollback that pins the earlier image has such a launch: the relaunch onto that daemon's plugins after its boot ([Contract discipline](#contract-discipline)).
-Suspending and resuming the controller's claim returns it to gVisor at once ("Drift", above).
+Suspending and resuming the controller's claim returns it to gVisor at once where the launch at the resume installs nothing ("Drift", above).
 
 #### The pod-local metadata endpoint
 
