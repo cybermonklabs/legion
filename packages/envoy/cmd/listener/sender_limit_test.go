@@ -1166,7 +1166,8 @@ func TestSenderLimitCost(t *testing.T) {
 
 // TestSenderLimitSenders is check a-senders: the limit counts the session a secrets-broker token
 // proves, else the request's source_session, and only for a message whose source is agent or
-// absent. A message with no sender, or from Dispatch or Envoy itself, takes nothing.
+// absent. A message with no sender, or from Dispatch, a person (source human) or Envoy itself,
+// takes nothing.
 func TestSenderLimitSenders(t *testing.T) {
 	t.Run("a sender a secrets-broker token proves is counted and named in the field sender", func(t *testing.T) {
 		rig := newBrokerRig(t)
@@ -1230,7 +1231,7 @@ func TestSenderLimitSenders(t *testing.T) {
 		requireUncounted(t, "notice", notices)
 	})
 
-	for _, source := range []string{"dispatch", "envoy"} {
+	for _, source := range []string{"dispatch", "envoy", "human"} {
 		t.Run("source "+source+" with a source_session is not counted", func(t *testing.T) {
 			rig.limit(4, 1)
 			sender := "ses_senders_" + source
