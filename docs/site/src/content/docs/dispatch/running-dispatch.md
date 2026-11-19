@@ -539,9 +539,11 @@ is. Dispatch judges every recorded migration again before each one it applies, s
 finds such a row only then, because another server recorded it meanwhile, stops before that
 migration and keeps the ones it applied. A database that ran another branch's or an earlier
 commit's migration, or an edit of one, such as a test or preview database, is reset: drop it,
-create it empty, and start Dispatch, which migrates it from the first file. A migration edited or
-renamed on purpose takes the `-- replaces: <name> sha256:<hex>` line the refusal gives, after the
-replaces lines it has, and the next start accepts the recorded row as it is. A release cannot
+create it empty, and start Dispatch, which migrates it from the first file. This includes a fresh
+preview or development database that a newer build created and an older build then starts on:
+the older build refuses it, and you reset it. A migration edited or renamed on purpose takes the
+`-- replaces: <name> sha256:<hex>` line the refusal gives, after the replaces lines it has, and
+the next start accepts the recorded row as it is. A release cannot
 accept a text it has never seen, so the release before an edit refuses a database that a release
 with the edit created from empty; the production database, created once, still rolls back. To see
 what a start would do, without changing the database, run

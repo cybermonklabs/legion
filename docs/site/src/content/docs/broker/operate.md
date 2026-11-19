@@ -1696,8 +1696,9 @@ What you do depends on how the database came to hold another file:
 - **It ran another branch's or an earlier commit's migration, or an edit of one** (a development,
   test or preview database): its schema is not the one this image's files make. Reset it: drop
   the database, create it empty, and start the broker, which migrates it from the first file.
-  Never reset the production database this way; a refusal there is a release to stop and
-  investigate.
+  This includes a fresh preview or development database that a newer image created and an older
+  image then starts on: the older image refuses it, and you reset it. Never reset the production
+  database this way; a refusal there is a release to stop and investigate.
 - **The file was edited or renamed on purpose**, and the database already holds the schema it
   means: add the line the refusal names, alone on a line of its own and outside every quoted
   string or function body, to the file, after the replaces lines it has, and ship it. The next
