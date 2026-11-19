@@ -239,11 +239,9 @@ func clusteredHubListenerCredentialFor(args *ClusteredNatsHubArgs, l *ClusteredH
 }
 
 // issuerURL is whether raw is an OIDC issuer a verifier can discover: an https URL with a host and
-// no user, no query and no fragment, an empty one of either included (`https://host?`,
-// `https://host#`), which url.Parse reads as none but which is not the issuer a token names, as
-// agentSecretsUrl's check refuses them.
+// none of the extras urlCarriesExtras names, an empty query or fragment included, which url.Parse
+// reads as none but which is not the issuer a token names.
 func issuerURL(raw string) bool {
 	issuer, err := url.Parse(raw)
-	return err == nil && issuer.Scheme == "https" && issuer.Host != "" && issuer.User == nil &&
-		issuer.RawQuery == "" && !issuer.ForceQuery && issuer.Fragment == "" && !strings.Contains(raw, "#")
+	return err == nil && issuer.Scheme == "https" && issuer.Host != "" && !urlCarriesExtras(raw, issuer)
 }
