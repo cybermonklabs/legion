@@ -122,22 +122,37 @@ function silentHub(): { url: string; pings(): number } {
   return { url: `nats://127.0.0.1:${server.port}`, pings: () => pings }
 }
 
+/** How long after the mute hub first sees the server a stop must have ended it. nats.js 2.29.3
+ *  gives a dial 20,000 ms (`this.options.timeout || 20000`, `dial` in
+ *  lib/nats-base-client/protocol.js), a timer it starts just before it connects, and
+ *  `natsConnectionOptions` sets no `timeout`. So a stop that leaves the dial's wait alone ends when
+ *  that timer does, about 20 s after the hub saw the connection; this margin stays 5 s short of it,
+ *  and a correct stop has all the rest. */
+const DIAL_STOP_MARGIN_MS = 15_000
+
 /** A NATS server that takes the connection and never sends its INFO, so a client's dial waits on
- *  it until nats.js's own dial timeout. `connections()` counts the clients that reached it. */
-function muteHub(): { url: string; connections(): number } {
+ *  it until nats.js's own dial timeout. `connections()` counts the clients that reached it, and
+ *  `firstConnection()` is when the first did, on `performance.now()`'s clock. */
+function muteHub(): { url: string; connections(): number; firstConnection(): number | undefined } {
   let connections = 0
+  let first: number | undefined
   const server = Bun.listen({
     hostname: "127.0.0.1",
     port: 0,
     socket: {
       open() {
         connections += 1
+        first ??= performance.now()
       },
       data() {},
     },
   })
   cleanups.push(() => server.stop(true))
-  return { url: `nats://127.0.0.1:${server.port}`, connections: () => connections }
+  return {
+    url: `nats://127.0.0.1:${server.port}`,
+    connections: () => connections,
+    firstConnection: () => first,
+  }
 }
 
 interface Started {
@@ -293,9 +308,18 @@ test("a stop asked for while the dial waits on a mute hub exits 0, its socket re
     "the hub's connection and its mod socket",
   )
   started.server.kill("SIGTERM")
-  // Well inside nats.js's dial timeout: the stop, not the timeout, ends the wait.
-  const code = await exitWithin(started.server, 1_500)
-  expect(code, `still running after SIGTERM: ${started.stderr()}`).toBe(0)
+  // The stop, not nats.js's dial timeout, ends the wait: the server exits before that timeout
+  // could have ended the dial (`DIAL_STOP_MARGIN_MS`), counted from the hub's first connection.
+  const connected = hub.firstConnection()
+  if (connected === undefined) throw new Error("the hub counted a connection it never timed")
+  const code = await exitWithin(
+    started.server,
+    Math.max(0, connected + DIAL_STOP_MARGIN_MS - performance.now()),
+  )
+  expect(
+    code,
+    `still running ${DIAL_STOP_MARGIN_MS} ms after the hub's connection: ${started.stderr()}`,
+  ).toBe(0)
   expect(started.stderr()).not.toContain("channel server failed")
   expect(existsSync(started.socketPath)).toBe(false)
 }, 30_000)
