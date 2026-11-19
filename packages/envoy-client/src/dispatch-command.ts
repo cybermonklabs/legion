@@ -527,7 +527,7 @@ export function parseCommand(
         ) {
           bareDashes.add(flag);
           problems.push(
-            `${flag} - sends the one ASCII character "-". ${flag}-file <path> reads ${flag} from a file, and ${flag}-file - reads it from stdin. One flag of a call may read stdin.`
+            `${flag} - sends the one character "-". ${flag}-file <path> reads ${flag} from a file, and ${flag}-file - reads it from stdin. One flag of a call may read stdin.`
           );
         }
         break;

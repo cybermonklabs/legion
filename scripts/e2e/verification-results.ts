@@ -1663,24 +1663,23 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
 
 /** The first text of R1 of dispatch://INFRA-2618/spec, which `dispatch result` prints for the
  *  reported call. Its example is the command's own help example, not a value of this run. It is
- *  written out here and not built with the code it checks. Its problem lines name the character
- *  ASCII, which R1's text does not. */
+ *  written out here and not built with the code it checks. */
 const reportedCallRefusal = `dispatch result was not called: 3 problems
-- --run - sends the one ASCII character "-". --run-file <path> reads --run from a file, and --run-file - reads it from stdin. One flag of a call may read stdin.
-- --observed - sends the one ASCII character "-". --observed-file <path> reads --observed from a file, and --observed-file - reads it from stdin. One flag of a call may read stdin.
-- --negative-control - sends the one ASCII character "-". --negative-control-file <path> reads --negative-control from a file, and --negative-control-file - reads it from stdin. One flag of a call may read stdin.
+- --run - sends the one character "-". --run-file <path> reads --run from a file, and --run-file - reads it from stdin. One flag of a call may read stdin.
+- --observed - sends the one character "-". --observed-file <path> reads --observed from a file, and --observed-file - reads it from stdin. One flag of a call may read stdin.
+- --negative-control - sends the one character "-". --negative-control-file <path> reads --negative-control from a file, and --negative-control-file - reads it from stdin. One flag of a call may read stdin.
 - Example: dispatch result --issue DSP-1 --check k1 --role implementer --verdict pass --commit 1111111111111111111111111111111111111111`;
 
 /** The second text of that requirement, which `dispatch issue --title -` prints, written out the
  *  same way. */
 const titleRefusal = `dispatch issue was not called: 1 problem
-- --title - sends the one ASCII character "-". --title-file <path> reads --title from a file, and --title-file - reads it from stdin. One flag of a call may read stdin.
+- --title - sends the one character "-". --title-file <path> reads --title from a file, and --title-file - reads it from stdin. One flag of a call may read stdin.
 - Example: dispatch issue --project DSP --title 'Native workspace'`;
 
 /** The problem line that requirement gives for a bare `-` on the text flag `flag`, as a refusal
  *  lists it. */
 function dashLine(flag: string): string {
-  return `- ${flag} - sends the one ASCII character "-". ${flag}-file <path> reads ${flag} from a file, and ${flag}-file - reads it from stdin. One flag of a call may read stdin.`;
+  return `- ${flag} - sends the one character "-". ${flag}-file <path> reads ${flag} from a file, and ${flag}-file - reads it from stdin. One flag of a call may read stdin.`;
 }
 
 /** The lines a refusal the command printed lists between its `was not called` line and its
