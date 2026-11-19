@@ -4,7 +4,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
-import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { stopTheLateWrite, untilAttempted } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { api, NetworkError, type WriteBounds } from "../../api/client";
 import type { AnswerAskInput, Ask, AskRead, Comment } from "../../api/types";
@@ -424,6 +424,7 @@ test("a stopped upload's Retry after the card moves to another ask adds the file
     // user-event's paste carries text, never the file this field uploads.
     fireEvent.paste(screen.getByLabelText("Your answer"), { clipboardData: { files: [shot] } });
     await tick(1_000);
+    await untilAttempted(uploadArtifact, 1);
     await stopTheLateWrite(queryClient);
     const stoppedKey = uploadArtifact.mock.calls[0]?.[2].key;
     const stopped = uploadArtifact.mock.calls.length;
@@ -431,6 +432,8 @@ test("a stopped upload's Retry after the card moves to another ask adds the file
     rerender(<AskCard ask={next} initialThread={thread(next, [])} />);
     uploadArtifact.mockResolvedValue(SHOT_STORED);
     await retryTheRefusal();
+    await untilAttempted(uploadArtifact, stopped + 1);
+    await tick(1_000);
 
     expect(uploadArtifact).toHaveBeenCalledTimes(stopped + 1);
     const again = uploadArtifact.mock.calls.at(-1);
@@ -463,6 +466,7 @@ test("a stopped upload's Retry after the card moves to another ask adds the file
       clipboardData: { files: [shot] },
     });
     await tick(1_000);
+    await untilAttempted(uploadArtifact, 1);
     await stopTheLateWrite(queryClient);
     const stoppedKey = uploadArtifact.mock.calls[0]?.[2].key;
     const stopped = uploadArtifact.mock.calls.length;
@@ -470,6 +474,8 @@ test("a stopped upload's Retry after the card moves to another ask adds the file
     rerender(<AskCard ask={next} initialThread={thread(next)} />);
     uploadArtifact.mockResolvedValue(SHOT_STORED);
     await retryTheRefusal();
+    await untilAttempted(uploadArtifact, stopped + 1);
+    await tick(1_000);
 
     expect(uploadArtifact).toHaveBeenCalledTimes(stopped + 1);
     const again = uploadArtifact.mock.calls.at(-1);

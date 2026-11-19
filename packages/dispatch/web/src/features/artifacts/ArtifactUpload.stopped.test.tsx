@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
-import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { stopTheLateWrite, untilAttempted } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { SEND_DEADLINE_MS, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
@@ -39,29 +39,6 @@ function DraftHarness(): ReactNode {
       <DraftUploadStatus upload={upload} />
     </>
   );
-}
-
-/**
- * Lets the real event loop turn until `uploadArtifact` has been called `calls` times: until the
- * press's file is kept and its attempt is out. An upload's attempt, and its send deadline with
- * it, start only once its file is kept (`Writes.#start`), and kept files live in
- * `fake-indexeddb` (`__tests__/setup.ts`), which runs its work on the real `setImmediate`: Bun's
- * fake clock holds `setTimeout` and not that, so `tick` moves the clock and not the keep, and a
- * case that moves the clock past the deadline before the keep is done finds its write still
- * `sending`, with no deadline started. A keep is done here within a few of these turns; one not
- * done after a thousand will not be, and the case fails on what it expects next.
- */
-async function untilAttempted(
-  uploadArtifact: Mock<typeof api.uploadArtifact>,
-  calls: number
-): Promise<void> {
-  for (let turn = 0; turn < 1_000 && uploadArtifact.mock.calls.length < calls; turn += 1) {
-    await act(() => {
-      const { promise, resolve } = Promise.withResolvers<void>();
-      setImmediate(resolve);
-      return promise;
-    });
-  }
 }
 
 // One press is one key, and Dispatch digests the whole body under that key, the `precondition`

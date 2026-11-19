@@ -24,6 +24,31 @@ export async function stopTheLateWrite(queryClient: QueryClient): Promise<void> 
   await tick(60_000);
 }
 
+/**
+ * Lets the real event loop turn until `upload` has been called `calls` times: until the press's
+ * file is kept and its attempt is out. An upload's attempt, and its send deadline with it, start
+ * only once its file is kept (`Writes.#start`), and kept files live in `fake-indexeddb`
+ * (`__tests__/setup.ts`), which runs its work on the real `setImmediate`: Bun's fake clock holds
+ * `setTimeout` and not that, so `tick` moves the clock and not the keep, and a case that moves the
+ * clock past the deadline before the keep is done finds its write still `sending`, with no
+ * deadline started. How long the keep takes on the real loop depends on what else is queued
+ * there, the previous case's leftovers among them, so a case that does not wait here passes or
+ * fails by the order the cases run in. A keep is done here within a few of these turns; one not
+ * done after a thousand will not be, and the case fails on what it expects next.
+ */
+export async function untilAttempted(
+  upload: { readonly mock: { readonly calls: readonly unknown[] } },
+  calls: number
+): Promise<void> {
+  for (let turn = 0; turn < 1_000 && upload.mock.calls.length < calls; turn += 1) {
+    await act(() => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setImmediate(resolve);
+      return promise;
+    });
+  }
+}
+
 /** How each held draft is named in a row's title: typed and never sent, refused by Dispatch, or
  *  stopped by the reader. */
 export const heldDraftWords = {
