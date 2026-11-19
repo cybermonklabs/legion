@@ -197,7 +197,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// it.
 	replace := !live || (accountDrifted && !covered) || migrate ||
 		slices.ContainsFunc(l.roles, func(role claim.Role) bool { return len(r.movedInPod(pod, role)) > 0 }) ||
-		(!installing && !covered && len(r.shapeDrift(s, l.shapeKey())) > 0)
+		(!installing && !covered && (len(r.shapeDrift(s, l.shapeKey())) > 0 || len(r.leakCheckDrift(s.Spec.PodTemplate.Metadata.Annotations)) > 0))
 	if !replace {
 		bound, err := r.launcherBound(bounded, s, pod, &l)
 		if err != nil {
@@ -303,6 +303,15 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err := r.recordAddresses(starting, s, spec.Role, spec.Generation, l.enrolls(r)); err != nil {
 		return fail("record the addresses its generation is handed", err)
 	}
+	// A kept pod that records no leak check digest, whose launcher held no install before this
+	// connection, is about to be pushed the check of the setting this daemon runs (serveLeakCheck),
+	// so its role is told that setting's digest: its shim and guard then hash the check pushed.
+	// One whose launcher held an install from before keeps none (keptPod.checker).
+	if l.kept != nil && !l.kept.recorded && r.leakCheck.Configured() {
+		if held, connected := r.launchers.heldLeakCheck(spec.Claim, string(pod.UID)); connected && !held {
+			l.kept.checker = r.leakCheck.ManifestSHA256
+		}
+	}
 	// The start sent carries what this launch learned from the cluster since prepare measured it,
 	// so it is measured again here: a frame no launcher reads is refused as the prompt it is, which
 	// supervise charges nothing, rather than failing in the writer as a charged launch failure.
@@ -322,8 +331,9 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 // it: the enrollment decision for that role in that pod (enrollsIn, which reads the broker's
 // volumes the pod carries), which of the role's own overlays and of every declared variant's
 // overlays
-// its container holds (heldRoleOverlays), and the session store it was built under
-// (heldSessionStore, the URL file its generation is pointed at). A launch that keeps such a pod
+// its container holds (heldRoleOverlays), the session store it was built under
+// (heldSessionStore, the URL file its generation is pointed at), and the leak check checker its
+// template recorded (leakCheckerAnnotation, the one its install hashes to). A launch that keeps such a pod
 // builds its start command from these rather than from the configuration as it now reads, so the
 // role is started as its pod was built (launcherCommand, roleOperatorEnv, mainEnvironment) and
 // runs degraded until the update round replaces the pod — able to push its work and answer that
@@ -345,7 +355,9 @@ func (r *Runtime) keptBy(s *sandbox, l launch) (keptPod, bool) {
 		return keptPod{}, false
 	}
 	kind, _, _ := heldSessionStore(spec)
-	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), trades: r.tradesIn(&spec, l.spec.Role), overlays: overlays, variantFiles: variantFiles, store: kind}, true
+	checker, recorded := s.Spec.PodTemplate.Metadata.Annotations[leakCheckerAnnotation]
+	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), trades: r.tradesIn(&spec, l.spec.Role), overlays: overlays, variantFiles: variantFiles, store: kind,
+		checker: checker, recorded: recorded}, true
 }
 
 // stopIssuedChild stops generation of token's launcher in podUID after its Start returned startErr,

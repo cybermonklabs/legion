@@ -11,7 +11,6 @@ import (
 	"io/fs"
 	"maps"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 )
@@ -50,10 +49,19 @@ type GhRequest struct {
 	// the whole guard.
 	WritesNothing bool
 	// ProvenCheck is the sha256, in hex, of the shared check's public_leak_check.py that the
-	// caller's rule for WritesNothing was proven against. WritesNothing is honoured only where
-	// the public_leak_check.py beside the resolved check hashes to it (provenCheck), so a check
-	// of another version, or one edited under the same tag, gets the whole guard.
+	// caller's rule for WritesNothing was proven against. `legion gh` hands the digest compiled
+	// into it (cmd/legion's ghReadsProvenCheck) for every call, whatever checker its role is told
+	// (CheckerVar). WritesNothing is honoured only where the public_leak_check.py beside the
+	// resolved check hashes to it (provenCheck), so a check of another version, or one edited
+	// under the same tag, gets the whole guard, and so does every call where it is empty.
 	ProvenCheck string
+	// StdinSent is a call that sends its standard input to GitHub as content: a file option
+	// given `-`, or a field given `@-`. A caller that parsed the command (Files not nil) says so;
+	// for a bare argv the guard reads it from the argv (ghFileArgs). It is read only where no
+	// shared check runs (sharedCheck). The check's own handshake buffers standard input for every
+	// call that reads it (askAgain), and without the check the guard buffers it itself for such a
+	// call, so the private-name pass reads the body the call publishes.
+	StdinSent bool
 }
 
 // GhAnswer is what GhCall cleared a call with: the standard input it read, for the caller to hand
@@ -77,20 +85,26 @@ func provenCheck(check, proven string) bool {
 	if proven == "" {
 		return false
 	}
-	dir := filepath.Dir(check)
-	if followed, err := filepath.EvalSymlinks(check); err == nil {
-		dir = filepath.Dir(followed)
-	}
-	program, err := os.Open(filepath.Join(dir, checkProgram))
+	held, err := programSHA256(check)
+	return err == nil && strings.EqualFold(held, proven)
+}
+
+// programSHA256 is the sha256, in lowercase hex, of the public_leak_check.py beside the check that
+// runs at check (runningCheckDir), read without following a link or waiting on a fifo
+// (readManifestFile). `legion gh` reads it alone (provenCheck): the read rule was proven against
+// that program. The deployment's pin is the manifest digest of every file the check runs from
+// (manifestSHA256), not this.
+func programSHA256(check string) (string, error) {
+	dir, err := runningCheckDir(check)
 	if err != nil {
-		return false
+		return "", err
 	}
-	defer program.Close()
-	sum := sha256.New()
-	if _, err := io.Copy(sum, program); err != nil {
-		return false
+	program, err := readManifestFile(dir, checkProgram)
+	if err != nil {
+		return "", err
 	}
-	return strings.EqualFold(hex.EncodeToString(sum.Sum(nil)), proven)
+	sum := sha256.Sum256(program)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // whatGhCall is what a refusal and a setup failure of this shape call the write. Both halves of
@@ -115,33 +129,36 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 }
 
 // ghCall is GhCall's work: the standard input it read, whether the shared check was the whole of
-// the guard, and the refusal or setup failure, if any.
+// the guard, and the refusal or setup failure, if any. Under a deployment that runs no shared
+// check (sharedCheck) the visibility read and the private-name pass are the whole of it, the
+// standard input a call sends as content read by the guard itself (StdinSent).
 func (g *Guard) ghCall(ctx context.Context, req GhRequest) ([]byte, bool, error) {
-	check, err := g.Resolve()
+	check, err := g.sharedCheck(whatGhCall)
 	if err != nil {
-		return nil, false, &SetupFailure{What: whatGhCall, Why: whyNoCheck, Err: err}
+		return nil, false, err
 	}
-	argv := append([]string{check, "gh-guard"}, req.Args...)
-	status, printed, err := g.run(ctx, child{argv: argv})
-	if err != nil {
-		return nil, false, sharedNotRun(whatGhCall, err, printed)
+	files, stdinSent := req.Files, req.StdinSent
+	if files == nil {
+		files, stdinSent = ghFileArgs(req.Args)
 	}
 	var buffered []byte
-	if status == checkWantsStdin {
-		buffered, status, printed, err = g.askAgain(ctx, argv, req)
-		if err != nil {
+	switch {
+	case check != "":
+		if buffered, err = g.ghGuard(ctx, check, req); err != nil {
 			return buffered, false, err
 		}
-	}
-	if err := readStatus(whatGhCall, status, printed); err != nil {
-		return buffered, false, err
-	}
-	if req.WritesNothing && provenCheck(check, req.ProvenCheck) {
-		// A read leaves no text in any repository, so neither the destination's visibility nor
-		// the private-name pass is read for it: the check above, which refuses a credential in a
-		// call it reads as a read, is all it needs. Under a check its caller's rule was not
-		// proven against, the check may read the call as a write, so the guard goes on whole.
-		return buffered, true, nil
+		if req.WritesNothing && provenCheck(check, req.ProvenCheck) {
+			// A read leaves no text in any repository, so neither the destination's visibility
+			// nor the private-name pass is read for it: the check above, which refuses a
+			// credential in a call it reads as a read, is all it needs. Under a check its
+			// caller's rule was not proven against, the check may read the call as a write, so
+			// the guard goes on whole.
+			return buffered, true, nil
+		}
+	case stdinSent:
+		if buffered, err = readStdin(req); err != nil {
+			return nil, false, err
+		}
 	}
 	public, err := g.scanThrough(ctx, whatGhCall, req.Repo)
 	if err != nil {
@@ -157,15 +174,13 @@ func (g *Guard) ghCall(ctx context.Context, req GhRequest) ([]byte, bool, error)
 	// The text of each file the call would send, read here and not before the visibility answer:
 	// a private or internal destination runs no rule pass, and reading its files would cost the
 	// opens for nothing.
-	files := req.Files
-	if files == nil {
+	if req.Files == nil {
 		if upload, found := ghUnreadUploadArg(req.Args); found {
 			return buffered, false, &SetupFailure{
 				What: whatGhCall,
 				Why:  upload + " uploads the file it names, which this guard does not read, so the call sends nothing; write the text in --body or --body-file, which it reads",
 			}
 		}
-		files = ghFileArgs(req.Args)
 	}
 	for _, named := range files {
 		text, err := readGhFile(named)
@@ -180,6 +195,24 @@ func (g *Guard) ghCall(ctx context.Context, req GhRequest) ([]byte, bool, error)
 		records = append(records, record)
 	}
 	return buffered, false, g.rules(ctx, whatGhCall, records)
+}
+
+// ghGuard runs the shared check at check in its gh-guard shape over req, and answers the standard
+// input it buffered for the check's second go (askAgain), nil where the check asked for none, and
+// the refusal or setup failure of the check's answer, if any (readStatus).
+func (g *Guard) ghGuard(ctx context.Context, check string, req GhRequest) ([]byte, error) {
+	argv := append([]string{check, "gh-guard"}, req.Args...)
+	status, printed, err := g.run(ctx, child{argv: argv})
+	if err != nil {
+		return nil, sharedNotRun(whatGhCall, err, printed)
+	}
+	var buffered []byte
+	if status == checkWantsStdin {
+		if buffered, status, printed, err = g.askAgain(ctx, argv, req); err != nil {
+			return buffered, err
+		}
+	}
+	return buffered, readStatus(whatGhCall, status, printed)
 }
 
 // jsonAlso is record and, where its text is a JSON document, a second record of the strings
@@ -306,7 +339,8 @@ func ghUnreadUploadArg(args []string) (string, bool) {
 }
 
 // ghFileArgs are the files args would have gh send to GitHub as content, each named once and in
-// the order the argv writes them. A gh call carries its text in a file as readily as in an
+// the order the argv writes them, and whether args send gh's standard input as content as well.
+// A gh call carries its text in a file as readily as in an
 // argument — `gh api --method PATCH repos/<owner>/<repo>/pulls/<n> -F body=@body.md` is how a
 // Legion role writes a pull request's body — so each file's text is a record of its own beside
 // the record of the argv, which holds the file's name and never its text.
@@ -339,9 +373,10 @@ func ghUnreadUploadArg(args []string) (string, bool) {
 // in: the other way round is `gh release create -F notes.md`, the documented short spelling,
 // going to GitHub unread.
 //
-// A value of `-`, and an `@-`, is standard input rather than a file. The shared check's exit-4
-// handshake buffers that input and GhCall records it already (askAgain), so there is nothing
-// here to open.
+// A value of `-`, and an `@-`, is standard input rather than a file, which is answered apart:
+// the shared check's exit-4 handshake buffers that input and GhCall records it already
+// (askAgain), and under no shared check GhCall buffers it itself (GhRequest.StdinSent), so there
+// is nothing here to open.
 //
 // Four things are deliberately left out:
 //
@@ -370,8 +405,7 @@ func ghUnreadUploadArg(args []string) (string, bool) {
 //
 // Arguments past a bare `--` are read as nothing: gh's parser takes no option after one, so a
 // `--body-file` there is a word of some other program's and names no file gh would send.
-func ghFileArgs(args []string) []GhFile {
-	var files []GhFile
+func ghFileArgs(args []string) (files []GhFile, stdin bool) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
@@ -408,7 +442,11 @@ func ghFileArgs(args []string) []GhFile {
 		}
 		// A path of "-" is standard input, and a file named twice is read once: a second record
 		// of one file is a second open and a second line of the same report.
-		if path == "" || path == "-" {
+		if path == "-" {
+			stdin = true
+			continue
+		}
+		if path == "" {
 			continue
 		}
 		if slices.ContainsFunc(files, func(file GhFile) bool { return file.Path == path }) {
@@ -416,7 +454,7 @@ func ghFileArgs(args []string) []GhFile {
 		}
 		files = append(files, GhFile{Option: option, Path: path})
 	}
-	return files
+	return files, stdin
 }
 
 // readGhFile is the text of one file a gh call would send. A file that cannot be opened, cannot
@@ -457,31 +495,40 @@ func readGhFile(named GhFile) (string, error) {
 	return string(text), nil
 }
 
-// askAgain buffers the caller's standard input to a regular file and asks the check again, with
-// that file as a descriptor of the child's and PUBLIC_LEAK_CHECK_STDIN naming it. The file is the
-// test's and the pod's own temporary directory's, and it is gone before this returns: the bytes
-// go back to the caller in memory, which is where they came from.
+// readStdin is the caller's standard input, read whole, and the empty buffer where the caller
+// hands none.
 //
 // The read is bounded as a named file's is, by maxGhFile and for the same reasons: the bytes are
 // held in memory and scanned there, and no body GitHub would take comes near a mebibyte. Input
 // past the bound is a setup failure, which refuses the call — the guard has not read what it
 // would publish — and never a truncated buffer handed on as if it were the whole.
+func readStdin(req GhRequest) ([]byte, error) {
+	if req.Stdin == nil {
+		return []byte{}, nil
+	}
+	// One byte past the bound, so input at the bound is read whole and longer input is known to
+	// be longer without reading it.
+	read, err := io.ReadAll(io.LimitReader(req.Stdin, maxGhFile+1))
+	if err != nil {
+		return nil, &SetupFailure{What: whatGhCall, Why: "the call's standard input could not be read", Err: err}
+	}
+	if len(read) > maxGhFile {
+		return nil, &SetupFailure{
+			What: whatGhCall,
+			Why:  fmt.Sprintf("the call's standard input is longer than %d bytes, which is more text than GitHub takes through it", maxGhFile),
+		}
+	}
+	return read, nil
+}
+
+// askAgain buffers the caller's standard input to a regular file (readStdin) and asks the check
+// again, with that file as a descriptor of the child's and PUBLIC_LEAK_CHECK_STDIN naming it. The
+// file is the test's and the pod's own temporary directory's, and it is gone before this returns:
+// the bytes go back to the caller in memory, which is where they came from.
 func (g *Guard) askAgain(ctx context.Context, argv []string, req GhRequest) ([]byte, int, string, error) {
-	buffered := []byte{}
-	if req.Stdin != nil {
-		// One byte past the bound, so input at the bound is read whole and longer input is known
-		// to be longer without reading it.
-		read, err := io.ReadAll(io.LimitReader(req.Stdin, maxGhFile+1))
-		if err != nil {
-			return nil, 0, "", &SetupFailure{What: whatGhCall, Why: "the call's standard input could not be read", Err: err}
-		}
-		if len(read) > maxGhFile {
-			return nil, 0, "", &SetupFailure{
-				What: whatGhCall,
-				Why:  fmt.Sprintf("the call's standard input is longer than %d bytes, which is more text than GitHub takes through it", maxGhFile),
-			}
-		}
-		buffered = read
+	buffered, err := readStdin(req)
+	if err != nil {
+		return nil, 0, "", err
 	}
 	file, err := os.CreateTemp("", "leakguard-stdin-")
 	if err != nil {

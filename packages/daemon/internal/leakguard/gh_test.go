@@ -250,12 +250,15 @@ func TestAGhCallsCleanBodyFileIsCleared(t *testing.T) {
 
 // The option table itself: which arguments name a file gh would send as content, in both
 // spellings of each, and which name no file at all. The entries that answer nothing are the
-// table's boundary, and each is a call that must not be refused over a file nobody named.
+// table's boundary, and each is a call that must not be refused over a file nobody named. A file
+// option given `-` and a field given `@-` name no file but standard input, which the table
+// answers apart (stdin), for a guard with no shared check to buffer (GhRequest.StdinSent).
 func TestTheFilesAGhCallWouldSend(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		args []string
-		want []GhFile
+		name  string
+		args  []string
+		want  []GhFile
+		stdin bool
 	}{
 		{
 			name: "a separate --body-file",
@@ -310,8 +313,9 @@ func TestTheFilesAGhCallWouldSend(t *testing.T) {
 		{name: "a field whose value is a literal", args: []string{"api", "x", "-F", "body=text"}},
 		{name: "a raw field, which sends its value literally", args: []string{"api", "x", "-f", "body=@body.md"}},
 		{name: "a --field naming a project's field", args: []string{"project", "field-list", "1", "--field", "Status"}},
-		{name: "a body option whose value is standard input", args: []string{"pr", "comment", "1", "--body-file", "-"}},
-		{name: "a field read from standard input", args: []string{"api", "x", "-F", "body=@-"}},
+		{name: "a body option whose value is standard input", args: []string{"pr", "comment", "1", "--body-file", "-"}, stdin: true},
+		{name: "a field read from standard input", args: []string{"api", "x", "-F", "body=@-"}, stdin: true},
+		{name: "an attached --input of standard input", args: []string{"api", "x", "--input=-"}, stdin: true},
 		{name: "a secret's env file", args: []string{"secret", "set", "NAME", "--env-file", "secrets.env"}},
 		{name: "a template of the repository", args: []string{"pr", "create", "--template", "pull_request_template.md"}},
 		{name: "a gist's positional files", args: []string{"gist", "create", "note.md"}},
@@ -327,8 +331,8 @@ func TestTheFilesAGhCallWouldSend(t *testing.T) {
 		{name: "an option with no value at all", args: []string{"pr", "comment", "1", "--body-file"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ghFileArgs(tc.args); !slices.Equal(got, tc.want) {
-				t.Fatalf("ghFileArgs(%q) = %v, want %v", tc.args, got, tc.want)
+			if got, stdin := ghFileArgs(tc.args); !slices.Equal(got, tc.want) || stdin != tc.stdin {
+				t.Fatalf("ghFileArgs(%q) = %v, stdin %t; want %v, stdin %t", tc.args, got, stdin, tc.want, tc.stdin)
 			}
 		})
 	}

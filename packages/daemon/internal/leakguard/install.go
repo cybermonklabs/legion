@@ -53,17 +53,12 @@ const tagFile = ".installed-tag"
 // package holds no second copy of it.
 const TagVariable = "LEGION_LEAK_CHECK_TAG"
 
-// Where the shared check is published: a tag of a private repository, whose `leak-check` directory
-// holds the launcher (checkName), the python file the launcher runs from beside itself, and the
-// fixtures its own self-test reads. The whole directory is what the daemon packs and the launcher
-// installs for that reason — a launcher without its neighbours is a check that cannot start.
-const (
-	checkOwner = "theorem-labs"
-	checkRepo  = "agent-infra"
-	// CheckSlug is the check's repository, which the daemon reads with a token of its own.
-	CheckSlug      = checkOwner + "/" + checkRepo
-	checkDirectory = "leak-check"
-)
+// Where the shared check is published: a tag of the repository the deployment names
+// (Setting.Repository), whose `leak-check` directory holds the launcher (checkName), the python
+// file the launcher runs from beside itself, and the fixtures its own self-test reads. The whole
+// directory is what the daemon packs and the launcher installs for that reason — a launcher
+// without its neighbours is a check that cannot start.
+const checkDirectory = "leak-check"
 
 // installWhat is what a failed read of the install is reported as, in the words a
 // *SetupFailure's What takes.
@@ -96,7 +91,7 @@ var errOverLimit = errors.New("over the read limit")
 // whose path does not stay inside it, a tarball with no such directory, one whose directory holds
 // no regular file, a tarball over maxTarballBytes and a directory that packs over
 // maxPackedBytes. Each error is a predicate of the tarball, written to follow
-// `the tarball of <CheckSlug> at <tag> ` in the cause sentence the daemon builds of it (Cause).
+// `the tarball of <the repository> at <tag> ` in the cause sentence the daemon builds of it (Cause).
 func PackTarball(r io.Reader) ([]byte, error) {
 	in := &io.LimitedReader{R: r, N: maxTarballBytes + 1}
 	out := &cappedBuffer{left: maxPackedBytes}
@@ -434,16 +429,24 @@ func firstLine(printed string) string {
 // pane's shim is started by the same command but from a machine's own environment, which carries
 // no LEGION_LEAK_CHECK_TAG, and an operator's machine carries the check through the check's own
 // installer rather than through a copy Legion puts into a developer's home. Where such a machine
-// carries none, every entry point of this package refuses with a setup failure naming the
-// missing check, which is the right answer on a machine that writes to public repositories with
-// no check.
+// carries none under a deployment that names a check (CheckerVar), every entry point of this
+// package refuses with a setup failure naming the missing check, which is the right answer on a
+// machine that writes to public repositories with no check.
 //
-// With a pin it answers a *SetupFailure, naming the pin and what the install holds, where the
-// check is absent, where its tag file cannot be read (naming why), where the install records no
-// tag, and where it records another tag: a role whose check is not the pin's runs no agent.
+// With a pin but no CheckerVar in env it reads nothing either, answers "" and succeeds: the
+// worker image carries its pin whatever the deployment runs, and a deployment that names no
+// shared leak check (Setting.Configured) has the daemon push none to the pod's launcher and tells
+// its roles no CheckerVar, so the role starts without one.
+//
+// With a pin and CheckerVar it answers a *SetupFailure, naming the pin and what the install holds,
+// where the check is absent, where its tag file cannot be read (naming why), where the install
+// records no tag, where it records another tag, and where the install's manifest digest
+// (manifestSHA256: the launcher script, the program, the must-pass lines and the README) is not
+// the deployment's or cannot be read: a role whose check is not the pin's, or not the one the
+// deployment named by its manifest digest (Setting.ManifestSHA256), runs no agent.
 func Installed(env []string, dir string) (string, error) {
 	pin := value(env, TagVariable)
-	if pin == "" {
+	if pin == "" || !configured(env) {
 		return "", nil
 	}
 	if dir == "" {
@@ -464,6 +467,16 @@ func Installed(env []string, dir string) (string, error) {
 	case tag != pin:
 		return "", &SetupFailure{What: installWhat,
 			Why: fmt.Sprintf("%s=%s, and the install at %s is of %s", TagVariable, pin, dir, tag)}
+	}
+	checker := value(env, CheckerVar)
+	held, err := manifestSHA256(check)
+	switch {
+	case err != nil:
+		return "", &SetupFailure{What: installWhat,
+			Why: fmt.Sprintf("%s=%s, and the manifest of the install at %s cannot be read to compare with %s=%s: %v", TagVariable, pin, dir, CheckerVar, checker, err)}
+	case !strings.EqualFold(held, checker):
+		return "", &SetupFailure{What: installWhat,
+			Why: fmt.Sprintf("%s=%s, and the install at %s has the manifest digest %s, not the deployment's %s=%s", TagVariable, pin, dir, held, CheckerVar, checker)}
 	}
 	return check, nil
 }

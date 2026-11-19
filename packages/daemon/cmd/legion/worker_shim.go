@@ -49,12 +49,14 @@ const workerShimUsage = "legion worker-shim --connect <unix:///path|tcp://host:p
 //
 // Before the wrapped process is started, and before any frame the daemon sends is read, the shim
 // reads the pod's shared public leak check where its own environment carries the pin the worker
-// image sets (leakguard.Installed, shim's spawnOnce). The daemon reads the check and pushes it to
-// the pod's launcher, which installs it once for the pod before any role starts; the shim installs
+// image sets and the deployment's checker the runtime tells a role of a deployment that runs one
+// (leakguard.Installed, shim's spawnOnce). The daemon reads the check and pushes it to the pod's
+// launcher, which installs it once for the pod before any role starts; the shim installs
 // nothing. The runtime tells every role of the pod that installed check as PUBLIC_LEAK_CHECK, and
 // where the environment names none the shim names the install itself. A role whose install is
 // absent or of another tag fails its launch rather than running an agent whose every write path
-// would refuse. On a tmux pane there is no pin and nothing is read.
+// would refuse. On a tmux pane there is no pin, and under a deployment that runs no shared leak
+// check no checker, and nothing is read.
 func newWorkerShimCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:    "worker-shim [flags] -- <omp argv…>",

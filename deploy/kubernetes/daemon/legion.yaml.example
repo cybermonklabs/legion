@@ -152,6 +152,20 @@ projects:
   #                                    # does not mount
   #         - name: control            # the arm that names no file at all is the control the others
   #                                    # are measured against
+# leak_check:                          # optional: the deployment's shared public leak check, which
+#   repository: example-org/deployment # the daemon reads at the worker image's pin
+#   manifest_sha256: <64 hex digits>   # (LEGION_LEAK_CHECK_TAG) and pushes to every pod: the
+#                                      # repository it is published from, and the check's
+#                                      # manifest digest at that tag, which
+#                                      # `(cd leak-check && sha256sum public-leak-check.sh
+#                                      # public_leak_check.py README.md must-pass-lines.txt) |
+#                                      # sha256sum` prints. Set both or neither;
+#                                      # LEGION_LEAK_CHECK_REPOSITORY and
+#                                      # LEGION_LEAK_CHECK_MANIFEST_SHA256 in the daemon's
+#                                      # environment are the same two values, which these
+#                                      # override one by one. With neither, the daemon logs once
+#                                      # at boot that no check is configured, role pods start
+#                                      # without one, and no write is refused for its absence
 # repository_renames:                  # optional: a repository that moved, which the daemon then
 #   - from: acme/widgets-legacy        # treats as one repository wherever it compares a name —
 #     to: acme/widgets                 # GitHub's events name the new repository while every tree

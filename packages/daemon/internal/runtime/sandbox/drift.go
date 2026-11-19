@@ -292,7 +292,8 @@ func (r *Runtime) shapeDrift(s *sandbox, key podShapeKey) []string {
 //
 // It is the configuration a running pod cannot be changed to carry: what its template was built
 // from (podShapeDrift — the image, the kind's reservation, the operator's volumes and mounts, the
-// disk, and the sandbox its issue's pod runs in), the ServiceAccount the pod runs as
+// disk, and the sandbox its issue's pod runs in — and leakCheckDrift, the leak check digest its
+// install is held to), the ServiceAccount the pod runs as
 // (accountDrift), and what driftedInPod reads of the pod itself whose worker can be asked to push
 // first — the operator's volume and mount holding its role's overlays, the secrets broker's
 // enrollment, the session store, and the GitHub owners its
@@ -376,6 +377,11 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 		}
 		drifted = r.shapeDrift(s, shape)
 	}
+	// The leak check digest the pod was built under, read from the same stored template's
+	// annotations (leakCheckDrift): a pod that records another digest than the setting's is
+	// replaced by its round, and its workers are told the digest it records while they push.
+	annotations, _, _ := unstructured.NestedStringMap(u.Object, "spec", "podTemplate", "metadata", "annotations")
+	drifted = append(drifted, r.leakCheckDrift(annotations)...)
 	// The account the pod runs as is read from the live pod this call already holds, and both
 	// sides go through serviceAccountOr, so a configured account left unset matches a pod on
 	// `default` rather than reading every pod of the deployment as drifted (accountDrift). The
