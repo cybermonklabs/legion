@@ -13,59 +13,23 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-// registeredPatterns is every pattern NewServer registers on its mux, as it registers them.
-// `net/http` can list no mux's patterns, so this list is kept by hand, which is the thing this
-// change forbids for the shape of an answer and is unavoidable here.
+// registeredPatterns is every pattern NewServer registers on its mux, as it registers them, read
+// from the server's routes() table, the one table NewServer registers.
 //
 // It is not what makes the header ride on every answer, and a case below says so by reading the
 // server's own Handler: the mux is wrapped in statingContract, which sets the header before any
-// route of the mux runs, so a route that misses it cannot exist — one added tomorrow and left
-// out of this list carries the header all the same. What the list buys is that each pattern
-// named here is a live route of the server and is answered with the header in fact, the
-// catch-all's refusal and the 204 answers among them.
-//
-// It is read by one test more, which holds every route of the answer table to it
-// (TestEveryRouteOfTheAnswerTableIsARegisteredRoute). The two read one list, so neither can
-// drift from the routes the other holds.
-var registeredPatterns = []string{
-	"GET /legion/v1/state",
-	"GET /legion/v1/issues/{key}/record",
-	"GET /healthz",
-	"GET /readyz",
-	"POST /legion/v1/claims/register",
-	"POST /legion/v1/claims/ready",
-	"POST /legion/v1/claims/ready-for-update",
-	"POST /legion/v1/claims/exit",
-	"POST /legion/v1/claims/activity",
-	"POST /legion/v1/claims/turn-outcome",
-	"POST /legion/v1/claims/release-records",
-	"POST /legion/v1/grants",
-	"POST /legion/v1/controller/secret",
-	"POST /legion/v1/controller/github-credential",
-	"POST /legion/v1/handoff/complete",
-	"POST /legion/v1/issues/status",
-	"POST /legion/v1/claims/fresh-session",
-	"POST /legion/v1/claims/compact",
-	"POST /legion/v1/gates/register",
-	"POST /legion/v1/waves/release",
-	"POST /legion/v1/phase/backward",
-	"POST /legion/v1/phase/retry",
-	"POST /legion/v1/signoff",
-	"POST /legion/v1/roots/close",
-	"POST /legion/v1/children/park",
-	"POST /legion/v1/children/rerun",
-	"POST /legion/v1/operator/claims",
-	"GET /legion/v1/operator/claims",
-	"POST /legion/v1/operator/claims/{token}/deliver",
-	"POST /legion/v1/operator/claims/{token}/suspend",
-	"POST /legion/v1/operator/claims/{token}/resume",
-	"POST /legion/v1/operator/claims/{token}/stop",
-	"POST /legion/v1/operator/claims/{token}/retry",
-	"POST /legion/v1/operator/claims/{token}/compact",
-	"POST /legion/v1/operator/claims/{token}/forget-session",
-	"POST /legion/v1/operator/claims/{token}/release-names",
-	"POST /legion/v1/operator/claims/{token}/close",
-	"/",
+// route of the mux runs, so a route that misses it cannot exist.
+func registeredPatterns(t *testing.T) []string {
+	t.Helper()
+	served := (&server{}).routes()
+	if len(served) == 0 {
+		t.Fatal("the server's table holds no route: the test read nothing")
+	}
+	patterns := make([]string, 0, len(served))
+	for _, route := range served {
+		patterns = append(patterns, route.pattern)
+	}
+	return patterns
 }
 
 // Every route an answer of the table names is a route this server registers. An answer's Routes
@@ -80,11 +44,12 @@ var registeredPatterns = []string{
 // (`POST /legion/v1/operator/claims/{token}/compact`) wrote AnswerCompact, whose one route is
 // the controller's door, and the census is what names that.
 //
-// The patterns come from registeredPatterns, and the case above holds that list to the live
-// routes of the server, so a route held to it is held to a route this daemon answers.
+// The patterns come from the server's routes() table, so a route held to them is held to a route
+// this daemon answers.
 func TestEveryRouteOfTheAnswerTableIsARegisteredRoute(t *testing.T) {
-	registered := make(map[string]bool, len(registeredPatterns))
-	for _, pattern := range registeredPatterns {
+	patterns := registeredPatterns(t)
+	registered := make(map[string]bool, len(patterns))
+	for _, pattern := range patterns {
 		registered[pattern] = true
 	}
 
@@ -182,7 +147,7 @@ func TestEveryAnswerStatesTheDaemonsContract(t *testing.T) {
 		t.Fatalf("the server's handler is %T, want the mux wrapped in statingContract: the wrapper, and not the list below, is what makes a route that misses the header impossible", server.Handler)
 	}
 
-	for _, pattern := range registeredPatterns {
+	for _, pattern := range registeredPatterns(t) {
 		t.Run(pattern, func(t *testing.T) {
 			method, target := askedPattern(pattern)
 			recorder := httptest.NewRecorder()
@@ -191,14 +156,6 @@ func TestEveryAnswerStatesTheDaemonsContract(t *testing.T) {
 
 			if got := recorder.Header().Get(daemonContractHeader); got != want {
 				t.Errorf("%s answered %d with %s %q, want %q", pattern, recorder.Code, daemonContractHeader, got, want)
-			}
-			if pattern == "/" {
-				return
-			}
-			// A pattern of the list that is no route of the server any more is answered by the
-			// catch-all, which says so in its body: the list names live routes.
-			if strings.Contains(recorder.Body.String(), `"no route"`) {
-				t.Errorf("%s is answered by the catch-all (%d %s): the list names a pattern NewServer no longer registers", pattern, recorder.Code, recorder.Body)
 			}
 		})
 	}

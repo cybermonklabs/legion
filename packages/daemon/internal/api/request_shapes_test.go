@@ -444,7 +444,7 @@ func TestTheRequestGateCatchesAReadFieldItsRecordDoesNotHold(t *testing.T) {
 // route added tomorrow that reads a plugin's body is red here until its type is recorded.
 func TestEveryPostRouteIsARequestRowOrSaysWhyNot(t *testing.T) {
 	registered := map[string]bool{}
-	for _, pattern := range registeredPatterns {
+	for _, pattern := range registeredPatterns(t) {
 		registered[pattern] = true
 		if !strings.HasPrefix(pattern, "POST ") {
 			continue
