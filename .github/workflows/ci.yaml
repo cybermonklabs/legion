@@ -371,6 +371,9 @@ jobs:
       check_release_credentials_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_release_credentials_test }}
       repo_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.repo_paths_test }}
       go_fetch_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_fetch_test }}
+      # The test job's step that runs @legion/test-fixtures/go-command's own rows against the real
+      # go, which a test-fixtures job without Go no longer runs.
+      go_command_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_command_test }}
       select_e2e_proofs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.select_e2e_proofs_test }}
       go_tagged_tests_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_tagged_tests_test }}
       ci_ok_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_test }}
@@ -1547,6 +1550,19 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/repo-paths.test.sh'
               - '.github/scripts/repo-paths.sh'
+            # The test job's run of @legion/test-fixtures/go-command's own rows (`bun run test:go`
+            # in packages/test-fixtures): the test, the helper it tests, the two fixtures it
+            # imports, the manifest whose script the step runs, and the Go setup-go installs for it
+            # from the daemon's go.mod.
+            go_command_test: &go_command_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - 'packages/test-fixtures/src/go-command.test.ts'
+              - 'packages/test-fixtures/src/go-command.ts'
+              - 'packages/test-fixtures/src/host-tools.ts'
+              - 'packages/test-fixtures/src/temporary-directories.ts'
+              - 'packages/test-fixtures/package.json'
+              - 'packages/daemon/go.mod'
             go_fetch_test: &go_fetch_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1775,6 +1791,7 @@ jobs:
               - *check_release_credentials_test
               - *repo_paths_test
               - *go_fetch_test
+              - *go_command_test
               - *select_e2e_proofs_test
               - *go_tagged_tests_test
               - *ci_ok_test
@@ -2247,14 +2264,13 @@ jobs:
               - 'packages/envoy/infra/gcp/testdata/dispatch-pod.golden'
             # The shared test fixtures every other Bun package's tests import: its own sources and
             # tests (it imports nothing outside itself), and the Bun install, the Bun it runs and
-            # Biome, whose root config packages/test-fixtures/biome.json extends. And the Go its
-            # go-command test runs, which setup-go installs from the daemon's go.mod.
+            # Biome, whose root config packages/test-fixtures/biome.json extends. No Go: the one
+            # suite of it that runs go is the test job's (go_command_test above).
             test_fixtures:
               - *ci_router
               - '.github/workflows/ci-job-test-fixtures.yaml'
               - *bun_install
               - 'packages/test-fixtures/**'
-              - 'packages/daemon/go.mod'
             # The conflict measurement script's lint, typecheck and tests: its own directory (tests
             # and fixtures included; it imports nothing outside it), the Bun install and Bun it runs
             # (the root manifest and lockfile pin its TypeScript and Bun types), and Biome.
@@ -5006,6 +5022,7 @@ jobs:
       check_release_credentials_test: ${{ needs.changes.outputs.check_release_credentials_test }}
       repo_paths_test: ${{ needs.changes.outputs.repo_paths_test }}
       go_fetch_test: ${{ needs.changes.outputs.go_fetch_test }}
+      go_command_test: ${{ needs.changes.outputs.go_command_test }}
       select_e2e_proofs_test: ${{ needs.changes.outputs.select_e2e_proofs_test }}
       go_tagged_tests_test: ${{ needs.changes.outputs.go_tagged_tests_test }}
       ci_ok_test: ${{ needs.changes.outputs.ci_ok_test }}

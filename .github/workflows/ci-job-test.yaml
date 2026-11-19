@@ -176,6 +176,12 @@ on:
         description: "ci.yaml's needs.changes.outputs.go_fetch_test: go-fetch.test.sh and what it tests."
         type: string
         required: true
+      go_command_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.go_command_test: @legion/test-fixtures/go-command, its
+          test and what that test imports.
+        type: string
+        required: true
       select_e2e_proofs_test:
         description: "ci.yaml's needs.changes.outputs.select_e2e_proofs_test: select-e2e-proofs.test.sh and what it tests."
         type: string
@@ -588,6 +594,19 @@ jobs:
       # After the fetch: held-port.test.ts builds the real envoy-listener and hands it a held socket.
       - name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
         run: bun test scripts/e2e/lib
+
+      # @legion/test-fixtures/go-command's own rows (packages/test-fixtures/src/go-command.test.ts),
+      # after setup-go: they run the real go against a module proxy on disk they write themselves,
+      # each over a module cache of its own, so they fetch nothing from the network and read nothing
+      # the fetch above fetched. This is the one step that runs them: the package's `bun run test`
+      # in the test-fixtures job leaves them out, since that job sets up no Go, and on GitHub
+      # Actions the file fails rather than skips where go is not on PATH. A gate of its own
+      # (go_command_test), so a change to the helper runs these rows, and a change to the job's
+      # other reads does not.
+      - name: Test the shared go command helper against the real go
+        if: inputs.changes-result != 'success' || inputs.go_command_test == 'true'
+        run: bun run test:go
+        working-directory: packages/test-fixtures
 
       # After setup-go: its fixtures run go list over a scratch module.
       - name: Test the CI filter check

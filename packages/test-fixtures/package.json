@@ -36,7 +36,8 @@
   },
   "scripts": {
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --path-ignore-patterns=src/go-command.test.ts",
+    "test:go": "bun test ./src/go-command.test.ts",
     "lint": "bunx biome check src/"
   },
   "devDependencies": {

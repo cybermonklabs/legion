@@ -255,6 +255,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   The root has no `test` script, so a bare `bun test` there is no command this repository keeps green: it would run every package's files in one process.
   CI runs this in each of these, in the job of ci.yaml that owns the package:
   packages/broker-client, claude-envoy, contracts, dispatch, envoy-client, pi-envoy, pi-legion, pi-shared, proof-editor and test-fixtures.
+  packages/test-fixtures' recipe leaves out `src/go-command.test.ts`, the one file of it that runs the real go, and `bun run test:go` there runs that file: ci.yaml's `test` job runs it after its setup-go, since the `test-fixtures` job sets up no Go, and on GitHub Actions the file fails rather than skips without a `go` on PATH.
   packages/dispatch's recipe builds `@legion/contracts` before it runs a test, as its `e2e` recipe does:
   rows of `e2e/__tests__` list a Playwright configuration, and Playwright evaluates it under Node, which reads that package's build output rather than its sources.
 

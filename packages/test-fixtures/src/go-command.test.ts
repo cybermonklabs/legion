@@ -2,13 +2,27 @@ import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { goCommand, goCommandSync, goFetchCommand } from "./go-command";
-import { skipWithout } from "./host-tools";
+import { hostTool, skipWithout } from "./host-tools";
 import { temporaryDirectories } from "./temporary-directories";
 
 // Every row runs the real go command against a module proxy on disk that serves one small module,
 // so no row reaches the network: GOPROXY=file://<dir> stands for the proxy a test must not fetch
 // from, and the control row proves the same build does fetch from it when GOPROXY=off is not set.
-const withoutGo = skipWithout("go");
+//
+// A host without go skips the rows with a line naming it, except on GitHub Actions: the one step
+// that runs this file there (`bun run test:go`, in ci.yaml's test job, after its setup-go) is the
+// only run of the rows, so a go missing there fails the file instead of skipping it. The package's
+// own `bun run test` leaves this file out, so the test-fixtures job, which sets up no Go, neither
+// runs it on whatever go the runner image carries nor skips it. GITHUB_ACTIONS, not CI: agent
+// harnesses on the devbox export CI=true.
+const onActions = process.env["GITHUB_ACTIONS"] === "true";
+if (onActions && hostTool("go") === null) {
+  throw new Error(
+    "go is not on PATH on GitHub Actions, so the go command rows of this file would not run: " +
+      "the step that runs them sets Go up first (ci.yaml's test job, actions/setup-go)"
+  );
+}
+const withoutGo = !onActions && skipWithout("go");
 const makeDirectory = temporaryDirectories("test-fixtures-go-command");
 // A row compiles and links real programs, which on a cold build cache or a loaded machine takes
 // longer than bun's 5 s default; a minute each.

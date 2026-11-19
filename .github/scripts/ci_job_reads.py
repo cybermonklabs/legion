@@ -2266,6 +2266,20 @@ GUIDE_LAYOUT_READS = reads(
     ("packages/envoy/cmd/dispatch/README.md", "scripts/semantic-line-breaks.guides.test.ts:24-27 runs the checker over it"),
 )
 
+# The test job's run of @legion/test-fixtures/go-command's own rows against the real go, which
+# moved there from the test-fixtures job: that job sets up no Go, and the package's `bun run test`
+# it runs leaves the file out (packages/test-fixtures/package.json's test script). Declared once,
+# as the guide-layout reads above are: the step gate below is them, and the test job's gate
+# carries them too, for the same reason.
+GO_COMMAND_STEP = "Test the shared go command helper against the real go"
+GO_COMMAND_READS = reads(
+    ("packages/test-fixtures/package.json", f"{at('test', GO_COMMAND_STEP)} runs its test:go script (:40)"),
+    ("packages/test-fixtures/src/go-command.test.ts", "packages/test-fixtures/package.json:40 test:go runs it"),
+    ("packages/test-fixtures/src/go-command.ts", "packages/test-fixtures/src/go-command.test.ts:4 imports it"),
+    ("packages/test-fixtures/src/host-tools.ts", "packages/test-fixtures/src/go-command.test.ts:5 imports it"),
+    ("packages/test-fixtures/src/temporary-directories.ts", "packages/test-fixtures/src/go-command.test.ts:6 imports it"),
+) + setup_go("test", f"{DAEMON}/go.mod")
+
 # docs-pages.yaml builds and publishes main's site in a workflow of its own (its header says why),
 # so its on.push.paths stands in for the docs filter on main.
 PUSH_WORKFLOWS = {"docs": ".github/workflows/docs-pages.yaml"}
@@ -2408,7 +2422,7 @@ GATES = [
                    at("test", "bun test scripts/e2e/lib"), ENVOY, ["./cmd/listener"], mode="build"),
         script_run("scripts/e2e/lib/nats-image.test.ts", 'packages: ["./natsversion/cmd/natsfloor"],',
                    at("test", "bun test scripts/e2e/lib"), ENVOY, ["./natsversion/cmd/natsfloor"], mode="build"),
-    ], reads=CLAUDE_ENVOY_BUILD + SCRIPT_TEST_READS + GUIDE_LAYOUT_READS + reads(
+    ], reads=CLAUDE_ENVOY_BUILD + SCRIPT_TEST_READS + GUIDE_LAYOUT_READS + GO_COMMAND_READS + reads(
         ("scripts/third-party-notices.test.ts", at("test", "Test third-party notices")),
         ("packages/dispatch/web/src/fonts/inter/**", "scripts/third-party-notices.test.ts:102-105 resolves the font "
                                                      "file's path, lists that directory and reads the package.json and "
@@ -2478,6 +2492,11 @@ GATES = [
     # may test one changes output only, so without them a guide-only change selected no job and
     # this step - the one check that change is about - ran nowhere.
     gate("guide_layout", "test", step=GUIDES_STEP, reads=GUIDE_LAYOUT_READS),
+
+    # The test job's step of @legion/test-fixtures/go-command's own rows, gated on what that step
+    # reads (GO_COMMAND_READS above, in the test gate's reads too): a change to the helper runs
+    # them, and a change to one of the job's other reads does not.
+    gate("go_command_test", "test", step=GO_COMMAND_STEP, reads=GO_COMMAND_READS),
 
 
     # The job ci.yaml gates is docs, and the steps it runs are docs-site.yaml's (at_docs), under
@@ -2554,7 +2573,7 @@ GATES = [
         ("packages/test-fixtures/**", f"{at('test-fixtures', 'Typecheck the shared test fixtures')} and test in "
                                       "packages/test-fixtures (its own biome.json among them); its modules import only "
                                       "one another, node: and bun:"),
-    ) + setup_go("test-fixtures", f"{DAEMON}/go.mod") + bun_job("test-fixtures")),
+    ) + bun_job("test-fixtures")),
 
     gate("conflicts_script", "conflicts-script", reads=reads(
         ("scripts/conflicts/**", f"{at('conflicts-script', 'Lint the conflict measurement script')}, typecheck (tsc -p scripts/conflicts) "
