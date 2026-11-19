@@ -192,7 +192,7 @@ func TestSeedReplyPlansInheritTheirOwnersAndAskThreads(t *testing.T) {
 //
 // Each case reads schema_migrations before and after, whole and in order. A database with no
 // Dispatch schema carries no such table, so "it did not change" is "it is still not there": a
-// migrate-first run creates schema_migrations before it applies anything (store.createVersionTable),
+// migrate-first run creates schema_migrations before it applies anything (store.prepareVersionTable),
 // so it shows there whichever migration it then fails on.
 func TestSeedRefusesAFilledDatabaseWithoutMigratingIt(t *testing.T) {
 	t.Run("a database that is not Dispatch's", func(t *testing.T) {

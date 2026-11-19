@@ -474,7 +474,9 @@ func main() {
 	// things that name a session: the token exchange, at every token it mints, and an
 	// enrollment, at every session it enrols (enroll.Service.Sessions). So a name a session
 	// writes its Dispatch tokens under and the name its grant follows have one holder, and a
-	// name another principal holds is refused either way.
+	// name another principal holds is refused either way, unless that principal is an account
+	// BROKER_SESSION_ACCOUNT_PAIRS pairs with the claimant's, which takes it either way but for a
+	// name the configuration fixes (below).
 	enr.Sessions = oauthStore
 	// On serving, not ctx, for the same reason the policy's own loads are: this runs after the
 	// bind above, so a SIGTERM arriving here finds a pod the load balancer may already be sending
@@ -537,6 +539,27 @@ func main() {
 	} else {
 		slog.Info("token exchange", "state", "on", "kubernetes", cfg.ExchangeK8sAudience != "", "github", cfg.ExchangeGitHubIssuer != "",
 			"accounts", len(cfg.ExchangeAccounts), "read_accounts", len(cfg.ExchangeReadAccounts), "workflows", len(cfg.ExchangeWorkflows), "machines", len(cfg.ExchangeGoogleAccounts))
+	}
+	// Every claim on a session name, the exchange's and an enrollment's alike, is BindSession's,
+	// and it reads two things off the store: the pairs of BROKER_SESSION_ACCOUNT_PAIRS, either of
+	// whose accounts takes a name the other holds, set here, and the names the exchange's entries
+	// fix, which no pair takes, set by oauth.New below from the policy it is composed with. Both
+	// are set before srv.Serve below hands the store its first request, and nothing writes them
+	// after, so the handlers read them with no lock.
+	paired := make([][2]string, len(cfg.SessionAccountPairs))
+	for i, pair := range cfg.SessionAccountPairs {
+		paired[i] = [2]string{exchange.AccountPrincipal(pair[0]), exchange.AccountPrincipal(pair[1])}
+	}
+	oauthStore.SetSessionPairs(paired)
+	if len(cfg.SessionAccountPairs) == 0 {
+		slog.Info("session account pairs", "state", "off",
+			"detail", "BROKER_SESSION_ACCOUNT_PAIRS is unset, so an account is refused a session name another account holds")
+	} else {
+		written := make([]string, len(cfg.SessionAccountPairs))
+		for i, pair := range cfg.SessionAccountPairs {
+			written[i] = pair[0] + "=" + pair[1]
+		}
+		slog.Info("session account pairs", "state", "on", "pairs", strings.Join(written, " "))
 	}
 	// verification_uri is Dispatch's machine-login page, where the person types the code. With
 	// no page (BROKER_MACHINE_LOGIN_URL unset) the provider composes no device grant at all:
@@ -884,8 +907,8 @@ func fatal(err error) {
 // minted from that configuration, so it is loaded before the database is opened; awsAlso asks for
 // it where the database does not, for the Secrets Manager and KMS clients of the AWS store, and
 // with neither the answer is the zero aws.Config. It migrates nothing: the server migrates after
-// this, and the end-sessions subcommand must not. Both of them open the store here, so the
-// subcommand reaches the same database and signs in to it the same way as the server.
+// this, and the end-sessions and versions subcommands must not. All three open the store here, so
+// each subcommand reaches the same database and signs in to it the same way as the server.
 func openStore(ctx context.Context, cfg config.Config, awsAlso bool) (*store.Store, aws.Config, error) {
 	var awsCfg aws.Config
 	var err error
@@ -1550,14 +1573,17 @@ func checkSignInClient(ctx context.Context, signIn approval.SignIn, st *store.St
 	}
 }
 
-// endSessionsCommand is one of the two arguments the broker takes in place of serving; the other
-// is airlockCheckCommand (airlockcheck.go).
-const endSessionsCommand = "end-sessions"
+// endSessionsCommand and versionsCommand are two of the three arguments the broker takes in place
+// of serving; the third is airlockCheckCommand (airlockcheck.go).
+const (
+	endSessionsCommand = "end-sessions"
+	versionsCommand    = "versions"
+)
 
 // runSubcommand runs the subcommand args name and answers its exit code. It is every argument
 // this binary takes: an unknown name, a missing or malformed argument to a name it knows, is
-// refused with 2 and a usage line, never a fall-through to serving. There are two names, so a
-// switch still reads as one thing (cmd/dispatch/subcommands.go keeps a table for its nine).
+// refused with 2 and a usage line, never a fall-through to serving. There are three names, so a
+// switch still reads as one thing (cmd/dispatch/subcommands.go keeps a table for its eleven).
 func runSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case endSessionsCommand:
@@ -1566,18 +1592,57 @@ func runSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 			return 2
 		}
 		return endSessions(ctx, strings.TrimSpace(args[1]), stdout, stderr)
+	case versionsCommand:
+		if len(args) != 1 {
+			fmt.Fprintf(stderr, "broker: usage: broker %s, with no argument\n", versionsCommand)
+			return 2
+		}
+		return versions(ctx, stdout, stderr)
 	case airlockCheckCommand:
 		return airlockCheck(args[1:], stdout, stderr)
 	}
-	fmt.Fprintf(stderr, "broker: unknown subcommand %q; the subcommands are %s <login> and %s <file> [--against <old file>], and broker with no argument serves\n",
-		args[0], endSessionsCommand, airlockCheckCommand)
+	fmt.Fprintf(stderr, "broker: unknown subcommand %q; the subcommands are %s <login>, %s and %s <file> [--against <old file>], and broker with no argument serves\n",
+		args[0], endSessionsCommand, versionsCommand, airlockCheckCommand)
 	return 2
+}
+
+// versions prints what broker_schema_migrations records of each version against the migrations
+// this image embeds, and what this image's next boot would do with each row (store.CheckVersions):
+// the check to take, read-only, before an image with a different set rolls out. It reads the same
+// configuration the server does and signs in to the database the same way, the RDS IAM token
+// minter included (openStore), binds no listener and migrates nothing. It exits 0 when every
+// recorded version has a file of this image and the next boot refuses none, 1 when one has no file,
+// a row would be refused or the table records nothing, and 2 when the check could not be taken.
+func versions(ctx context.Context, stdout, stderr io.Writer) int {
+	cfg, err := config.Load(os.Getenv)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", versionsCommand, err)
+		return 2
+	}
+	st, _, err := openStore(ctx, cfg, false)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", versionsCommand, err)
+		return 2
+	}
+	defer st.Close()
+	check, err := st.CheckVersions(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", versionsCommand, err)
+		return 2
+	}
+	check.Write(stdout)
+	if !check.OK() {
+		return 1
+	}
+	return 0
 }
 
 // endSessions deletes every session login is signed in to the approval page with, wherever and
 // whenever it was made, and prints how many it deleted: the operator's way to end one person's
-// sign-ins everywhere at once, run in a broker pod by whoever holds pods/exec in the broker's
-// namespace.
+// sign-ins everywhere at once. It runs in any one-off process of the image that has the serving
+// broker's settings and a way to its database: an exec into a broker pod where the deployment
+// admits one, or a one-off pod, job or container of the image, with BROKER_SIGNIN=off in place of
+// the sign-in settings (docs/site/src/content/docs/broker/operate.md, "Running a subcommand").
 //
 // It reads the same configuration the server does and opens the database the same way, the RDS
 // IAM token minter included (openStore), and it binds no listener. It does not migrate: an image

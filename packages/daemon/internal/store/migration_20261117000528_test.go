@@ -14,6 +14,19 @@ import (
 // through everything before it whatever lands beside it.
 const stepRecordKindVersion = 20261117000528
 
+// stepRecordReleaseKinds is every kind the outbox's check names at stepRecordKindVersion, which is
+// the list that migration writes whole: what the release that records each step queues, and what a
+// rollback to it must still be able to queue. The one migration above it that writes the list,
+// 20261117023932, rewrites it with its own kind added (migration_20261117023932_test.go), and the
+// way back of the release that writes that migration is held to it (plan_ratings_way_back_test.go).
+var stepRecordReleaseKinds = []string{
+	"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",
+	"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
+	"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
+	"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
+	"merge_queue_read", "merge_queue_removal", "role_holders_publish", "step_record",
+}
+
 // A step record is the row that writes one step of an issue onto Dispatch (record.StepRecord). The
 // outbox refuses a kind its constraint does not name, so the row could not be queued before this
 // migration, and the transaction that started or ended the step would fail with it: the negative
@@ -60,13 +73,7 @@ func TestTheOutboxCheckTakesTheStepRecord(t *testing.T) {
 	if after := rowsAsText(t, store, pendingRows); !reflect.DeepEqual(after, before) {
 		t.Fatalf("the pending rows after the migration = %+v, want the release before's rows whole: %+v", after, before)
 	}
-	for _, kind := range []string{
-		"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",
-		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
-		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
-		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
-		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "step_record",
-	} {
+	for _, kind := range stepRecordReleaseKinds {
 		if err := queue(kind); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)
 		}

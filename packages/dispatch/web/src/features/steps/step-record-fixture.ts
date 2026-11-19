@@ -12,6 +12,8 @@ export function stepRecord(fields: Partial<StepRecord> & Pick<StepRecord, "id">)
     issue: "CORE-1",
     kind: "step",
     model: "anthropic/claude-opus-5",
+    rating: null,
+    rating_reason: null,
     report: null,
     result: "passed",
     returned_to: null,

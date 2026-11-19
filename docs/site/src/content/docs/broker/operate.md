@@ -211,6 +211,32 @@ account, such as `legion-worker`, set it as the pods' `serviceAccountName`, and 
 While a secret's owner tag names a service the list leaves out, the broker refuses the secret as
 `owner-tag-malformed` ([Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret)).
 
+A deployment that moves a service's pods from one Kubernetes service account to another pairs the
+two accounts in `BROKER_SESSION_ACCOUNT_PAIRS`, whitespace-separated `<account>=<account>` entries,
+for example
+`BROKER_SESSION_ACCOUNT_PAIRS=system:serviceaccount:legion:legion-worker=system:serviceaccount:legion:<project>-worker`.
+A session name belongs to the principal that claimed it, and a pod's principal is the account its
+projected token proves, so without the pair each role's next pod, on the new account, is refused
+its own session name (`403 SESSION_HELD`), and the session's grants, pending requests and withheld
+names stay behind. Either account of a pair takes a session name the other holds, by an enrollment
+or by a token exchange, and an enrollment under that name takes what the other account's
+enrollments of it hold that a login of the same account enrolled, so move the pods' account and
+keep the launcher's login account ([Concepts](/legion/broker/concepts/#requests-and-grants)). A
+pair works both ways, so moving the pods back needs no change here, and it does not chain: with
+`A=B` and `B=C`, `C` does not take a name `A` holds. No pair takes a name an entry of
+`BROKER_EXCHANGE_ACCOUNTS`, `BROKER_EXCHANGE_READ_ACCOUNTS`, `BROKER_EXCHANGE_WORKFLOWS` or
+`BROKER_VM_EXCHANGE_ACCOUNTS` fixes. The broker refuses to start, naming the entry, on an entry
+not of that form, a namespace's `default` account, an account paired with itself, and a pair given
+twice, in either order. Set the pairs, bind the new account in `BROKER_SERVICES` beside the old
+one, and, where the pods trade their projected tokens at the exchange, list the new account in
+`BROKER_EXCHANGE_ACCOUNTS`, before the deployment moves its pods: a pair added after a role's
+enrollment was refused takes effect at that role's next enrollment, and the grants and pending
+requests of the old enrollment come across only while the broker still keeps them,
+`BROKER_SESSION_CARRY_SECONDS` after that enrollment ended. While a pair stands, a pod of either
+account can claim any session name the other holds, not only its own role's, so remove the pairs
+with the old account once no live pod runs as it. The start line `session account pairs` names
+the pairs the broker read ([Health and logs](#health-and-logs)).
+
 A service's launcher, such as the Legion daemon, logs in with its own projected ServiceAccount
 token, and no person approves it. `BROKER_SERVICE_LOGINS` lists which ServiceAccounts may log in
 as which service, whitespace-separated `<service>=<service account>` entries, for example
@@ -636,20 +662,48 @@ deployment whose sign-in broke. What an operator reads from each field:
 A broker session lasts `BROKER_SIGNIN_SESSION_SECONDS` from the moment it was made and is never
 extended, so a person whose Workspace account is suspended can still approve until it expires. To
 end every browser session one login holds, wherever and whenever it was made, run the subcommand
-in a broker pod:
+`end-sessions` with that login ([Running a subcommand](#running-a-subcommand) says where):
 
-```sh
-kubectl exec deploy/broker -- envoy-broker end-sessions ada@example.com
+```text
 end-sessions: ended 2 sessions of ada@example.com
 ```
 
-It reads the same configuration the serving process does, so it reaches the same database and
-signs in to it the same way, binds no listener and applies no migration: an image older than the
-servers cannot migrate the database behind them on its way to ending a session. The person's next
-visit to a request's page signs them in again, if the provider still lets them; to stop that, take
-them out of the Workspace or out of `BROKER_SIGNIN_DOMAIN` first. It is the only subcommand the
-broker takes: anything else is refused with a usage line, and `envoy-broker` with no argument
-serves.
+It writes: it deletes that login's rows of `browser_sessions`, and nothing else. It reads the same
+settings the serving process does, so it reaches the same database and signs in to it with the
+same login, binds no listener and applies no migration: an image older than the servers cannot
+migrate the database behind them on its way to ending a session. The person's next visit to a
+request's page signs them in again, if the provider still lets them; to stop that, take them out
+of the Workspace or out of `BROKER_SIGNIN_DOMAIN` first.
+
+### Running a subcommand
+
+The broker takes three subcommands, `end-sessions`, `versions` ([A migration recorded under
+another file](#a-migration-recorded-under-another-file)) and `airlock-check`; anything else is
+refused with a usage line, and `envoy-broker` with no argument serves. `end-sessions` and
+`versions` read the broker's settings and sign in to its database as the server does, and bind no
+listener, so either runs in any one-off process of the image that has what the serving broker has:
+
+- a route to the broker's database, such as any proxy the broker's pods reach it through, and the
+  serving broker's `BROKER_DATABASE_URL`, with whatever else it signs in to the database with:
+  where that URL is an RDS IAM one, the AWS identity the broker mints its tokens from, through the
+  AWS SDK's default credential chain; where it signs in by password and the URL holds none, the
+  password from `PGPASSWORD` or a passfile;
+- `BROKER_PUBLIC_URL` and the secret store's settings, as the serving broker has them
+  (`BROKER_SECRETS_STORE`, `BROKER_SECRETS_PREFIX` and that store's key setting), which every
+  process of the image requires;
+- `BROKER_SIGNIN=off`, in place of the serving broker's sign-in: neither subcommand signs anyone
+  in. `BROKER_SIGNIN=off` refuses to start beside any sign-in or judge setting, so leave unset the
+  four of the sign-in client, `BROKER_SIGNIN_SESSION_SECONDS` and `BROKER_SIGNIN_DEVICE_AUDIENCE`,
+  and the judge's six (`BROKER_JUDGE_MODEL_URL`, `BROKER_JUDGE_MODEL`,
+  `BROKER_JUDGE_MODEL_PROTOCOL`, `BROKER_JUDGE_MODEL_AUDIENCE`, `BROKER_JUDGE_DISPATCH_URL` and
+  `BROKER_JUDGE_DISPATCH_TOKEN_FILE`), since a broker that signs no one in runs no judge.
+
+Take those from wherever your deployment keeps them, and run the subcommand wherever it lets you
+run a one-off process of the image: an exec into a broker pod,
+`kubectl -n <namespace> exec <broker pod> -- envoy-broker end-sessions ada@example.com`, or a
+one-off pod, job or container of the image with those settings in its environment. `end-sessions`
+writes through that login; `versions` writes nothing. Run `end-sessions` with the image that
+serves now, and `versions` with the image you mean to roll out.
 
 ### A broker that signs nobody in
 
@@ -1083,6 +1137,7 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `approval sign-in: reach the provider issuer=<issuer> error=…` | At ERROR: the provider's discovery document could not be read at a sign-in, and the page answered `503` naming the issuer. |
 | `broker listening addr=<host:port>` | Startup finished: configuration, migrations and the first read of the namespace all succeeded, and every port is bound: the API's, at this address; the airlock's proxy port, where the deployment has one (`airlock proxy listening addr=<host:port>`, just after); and the metrics port (the line below). |
 | `broker metrics listening addr=<host:port>` | After `broker listening`, and after `airlock proxy listening` where the deployment has an airlock: the metrics port is bound at this address ([Metrics](#metrics)). A pod that cannot bind it does not start, and logs `broker: fatal` naming the address. |
+| `session account pairs state=on pairs=<pairs>` / `session account pairs state=off detail=…` | At INFO, at startup, after `broker metrics listening` and before the broker serves its first request: `state=on` names each pair `BROKER_SESSION_ACCOUNT_PAIRS` gives, as `<account>=<account>` in the setting's order, joined by one space, and `state=off` says the setting is unset, so an account is refused a session name another account holds. |
 | `broker: fatal error=…` | Startup refused; the error names the variable or dependency. The process exits 1. |
 | `agent secret policy refused name=<secret's name in the store> reason=<reason> owner=<owner tag> first_load=<true or false>` | At ERROR, when a secret becomes one the broker refuses to serve, and when it is refused for another reason than before, with `was=<the reason before>`: one line at the change, not one for each read of the store. A pod's first load writes one for each secret it refuses, each with `first_load=true`. A load or a reread that finds a secret refused for the reason it had writes nothing, and `broker_unservable_secrets` ([Metrics](#metrics)) holds every secret refused now. `name` is the secret's whole name in the store, such as `production/agent-secrets/deel-api-key`. `owner` is its owner tag, and empty for `owner-tag-missing` and `owner-tag-malformed`. Reasons include `owner-tag-missing`, `owner-tag-malformed`, `tier-tag-missing`, `tier-tag-malformed`, `name-malformed`, `service-owner-human-tier`, `not-on-agent-secrets-key`, `no-current-value`, `type-unknown`, `github-owners-missing`, `github-owners-malformed`, `requesters-malformed` (a `requesters` list holding a comma, naming nobody, carrying an email with a capital letter, or naming a service the deployment does not register), `max-grant-required` (an `admin` secret, or a `google-service-account` one, with no `max-grant` or one longer than an hour), `requesters-not-owner` (a `google-service-account` secret whose `requesters` are not its one person owner, or that lists a service it may not: any service at agent tier, and any service at all on a secret `BROKER_SERVICE_ACCOUNT_SECRETS` binds to a `dev-<name>` account), `admin-malformed` (an `admin` tag set to anything but `true`), `admin-tier` (an `admin` secret that is not human tier), `admin-requesters` (an `admin` secret with no `requesters` list), `scopes-malformed` (a `scopes` list holding a comma, naming no scope, naming one twice, or holding an entry that is no scope name, a whole `https://www.googleapis.com/auth/…` URL among them), `scopes-type` (a `scopes` tag on a secret that is not a `google-service-account` one), `max-grant-malformed`, `default-grant-malformed` and `value-malformed` (a `github-app`, `google-login`, `google-service-account` or `azure-login` secret whose stored value that type's minter could not mint from: [the value read](#the-value-read)). |
 | `agent secret policy no longer refused name=<secret's name in the store> reason=<the reason it had> owner=<owner tag> now=<servable, pending or absent>` | At INFO, when a secret the broker refused is refused no longer: `now=servable` when the broker serves it, `now=pending` when it is a new secret of that name waiting for its value (the line below), and `now=absent` when the store no longer holds it (deleted, or scheduled for deletion). |
@@ -1108,6 +1163,8 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `broker: a pending request's record is signed for another broker address; it is ended, and its session's new request replaces it request=… record_id=… new_request=… enrollment=…` | At INFO, once for each pending request the broker ended because its record is signed for another broker address: its session asked a broker at another `BROKER_PUBLIC_URL` that shares this database, or this broker before its public URL changed, and then asked this broker again for one of its names, where no person and no judge could decide the request it left waiting. The broker cancelled that request, recording itself as the one who decided it, with a detail that says the broker moved, and wrote the `broker: grant log` line of its `request.cancelled` row beside this one. `request` is the ended request, `record_id` its record, `new_request` the request the session is referred to now (the one its ask made, pending, granted or denied; the pending request of this broker the ask joined or was refused `REQUEST_PENDING` for; or the request of the live grant the ask was answered with), and `enrollment` the enrollment that asked. The line is written once the end has committed, so an ask whose transaction failed writes none; each value is an id, and the line holds no secret value, no token and no request object. It needs no action: the broker cleared a request its session left behind when it moved. |
 | `broker: a grant's approval chain does not verify; it releases nothing grant=… record_id=… enrollment=… at=<values, airlock or reuse> reason=…` | At WARN, each time a release finds that a grant's whole approval chain no longer verifies. `at` says where: `values`, the session's own release, answered `403 GRANT_CHAIN_INVALID`; `airlock`, the airlock proxy's read of the values it swaps in, which the proxy answers the same; or `reuse`, the broker's check of a live grant it would hand back to a new request for the same names, which passes that grant over for the next newest and, with none left, asks afresh. `grant` is the grant, `record_id` the record its chain rests on, `enrollment` the enrollment that holds it, and `reason` the refusal's text, which names the link that failed. Most often that is `aud does not match`: the grant's record was signed for another `BROKER_PUBLIC_URL`, by a broker at another address that shares this database or by this broker before its public URL changed, and the grant's session, which asks here now, still holds it. A database failure during the check writes no such line, and the line holds no secret value, no token and no request object. |
 | `broker: released a grant grant=… request=… enrollment=… names=[<NAME> …] reason=<reason> call_reason=<reason> command=[<argument> …] github_app=…` | At INFO, once for each release of a grant, after its `grant.used` audit row is written: what each grant was spent on, and why. `reason` is the reason the grant's request gave. A session's release adds `call_reason`, the `--reason` its own call gave, where that differs from the grant's: a session that asks again for secrets it holds a live grant of gets that grant back, and its new reason is in no request. The broker drops the characters a request's reason may not hold and cuts it to 400 characters. A session's release also adds `command`, the argument vector the `agent-secrets NAME -- <command>` form said the release starts: its first 32 arguments, each cut to 256 bytes, and `github_app`, the narrowing of its GitHub App tokens the release applied, where it applied one. In the cut command the broker replaces with `[redacted]` each secret it can name: each value of eight bytes or more that the release handed out, each string of eight bytes or more inside a stored JSON value, each token inside a document a minter made, each placeholder of a name the airlock holds back, and every GitHub token, AWS access key id, Google OAuth access token, Slack token of any `xox` prefix and PEM private key, wherever it came from; an argument the cut ended loses any end that starts one of them. **A secret of no such kind — a value from another store, a password typed in, a value shorter than eight bytes — is logged as the session typed it, so pass secrets in the command's environment, as the exec form does, and never on its command line.** `call_reason` and `command` are the session's own word, which the broker records and does not check, and a client from before the fields names neither, which logs an empty `command`. The airlock proxy's release of a grant writes `airlock=true` in their place, since it starts no command. The `grant.used` row's `detail` holds the same fields, and `GET /v1/grant-log` answers that detail to every account with the power to read the grant log. While a client of this version meets a broker from before these fields, that broker refuses each release once with `400 INVALID_NARROWING` naming the unknown field, and the client sends it again without them: the older broker writes a `broker: answer refused … code=INVALID_NARROWING` line and counts `broker_answers_total{outcome="refused",code="INVALID_NARROWING"}` for each, which is expected until the broker is rolled. |
+| `broker: an enrollment took a session name from the account paired with its own session=<session> from=<principal> to=<principal> enrollment=<id>` | At WARN, once the enrollment has committed: a pod of an account `BROKER_SESSION_ACCOUNT_PAIRS` pairs with the name's holder enrolled under that name while the holder's claim on it had not run out (90 days past its last lease or token), and took the name. `from` is the holder and `to` the enrolling pod's account, each a principal, `account:` and the service account. Where a login of the same account enrolled both pods, the enrollment also took what the holder's enrollments of that name held: their grants, pending requests and withheld names ([Concepts](/legion/broker/concepts/#requests-and-grants)). The line alone does not say that anything moved: where another daemon's login enrolled the new pod, the line is written and nothing moves, and the old enrollment keeps what it holds, dormant, until `BROKER_SESSION_CARRY_SECONDS` runs out or a pod its own daemon's login enrols takes it. It is expected while a deployment moves its pods to another account; outside such a move it is a pod of one account of a pair taking a session of the other's. |
+| `broker: the token exchange took a session name from the account paired with its own session=<session> from=<principal> to=<principal>` | At WARN, once the exchange has committed: the same take, made by a pod's token exchange rather than its enrollment. The pod's next enrollment under the name takes what the holder's enrollments of it hold that a login of the same account enrolled, and nothing where another daemon's login enrols it. |
 | `broker: the assignee of a Legion pod's issue could not be read; its request is listed for everyone issue=… enrollment=… error=… bound_reached=…` | At WARN, once for a Legion worker pod's request for a shared secret whose issue's assignee the broker could not read: Dispatch refused the read or answered nothing it could decode, the read ran past its three seconds (`bound_reached=true`), or the broker could not read the pod's own requester first. `issue` is the issue the pod's claim names and `enrollment` the pod's enrollment. The request is listed in every person's Inbox, as when the issue has no assignee, which logs nothing ([Concepts](/legion/broker/concepts/#approvals)). A line on every such request means that step is off: check the token file `BROKER_JUDGE_DISPATCH_TOKEN_FILE` names and that `BROKER_JUDGE_DISPATCH_URL` answers. The error names no token. |
 | `broker sweeper: ended an enrollment whose lease lapsed enrollment_id=… kind=… runtime_id=… slot=… lease_expired_at=… grants_revoked=… requests_cancelled=… left_dormant=… handed_to=…` | A session stopped renewing (a pod that is gone, a box whose `agent-secrets renew` stopped) while a broker was serving; the sweep ended it, revoking its grants and cancelling its pending requests. `left_dormant=true` says it left them for the session's next enrollment instead, and a non-empty `handed_to` that it handed them to that enrollment, a running pod of the same Legion claim ([Concepts](/legion/broker/concepts/#requests-and-grants)). A lease that ran out while no broker was serving is not ended ([when no broker is serving](/legion/broker/concepts/#when-no-broker-is-serving)). |
 | `broker sweeper: end lapsed enrollments sweep=lapsed-enrollments error=…`, and the failure lines of the six other sweeps | At WARN, when one of the seven sweeps the sweeper runs every `BROKER_SWEEP_SECONDS` fails after its run before did not. That sweep logs nothing more until it succeeds, which writes `broker sweeper: a sweep that failed succeeded again`, so a database that stays away for an hour is two lines for each sweep and not one for each run. Each sweep's line has its own message and `sweep`: `broker sweeper: end lapsed enrollments` (`lapsed-enrollments`), `broker sweeper: end dormant enrollments` (`dormant-enrollments`), `broker sweeper: expire or deny pending requests` (`pending-requests`: the expiry of overdue requests and, with `BROKER_SIGNIN=off`, the denial of the rest), `broker sweeper: expire pending machine logins` (`pending-machine-logins`), `broker sweeper: delete spent OAuth state` (`spent-oauth-state`), `broker sweeper: delete expired browser sessions` (`expired-browser-sessions`) and `broker sweeper: delete the placeholders of grants that have ended` (`ended-grant-placeholders`). A sweep the broker's shutdown cuts short logs nothing. |
@@ -1759,6 +1816,89 @@ trade and every call of that machine, the copy's included, is refused. Find and 
 the token before you put the machine back: the latest `token_expires_at` above says when the last
 copied token ends, at most an hour after it was minted. Rotate any secret the copy may have read;
 the broker cannot take back a value it released.
+
+## A migration recorded under another file
+
+The broker records each migration it applies in `broker_schema_migrations`: its version, the
+name and sha256 of the file the version first shipped with (the file itself, or for one that
+declares `-- replaces:` lines, the one its first line names), and the sha256 of the text it
+applied. At every start, before it applies anything, it compares each recorded version with the
+file of that version in its own image:
+
+- A version recorded with no name, as every one a broker before this check wrote, takes the
+  identity the broker records of the file, and the broker logs
+  `pgmigrate: recorded the identity of a migration applied before the runners recorded identities`
+  for each. It is never refused. The first start of the release that brings the check writes one
+  such line for each migration, and refuses none.
+- A version recorded under a name and sha256 that is neither the file's own nor one its
+  `-- replaces: <name> sha256:<hex>` lines name stops the start.
+- A version whose applied text is neither the file's own text nor one its replaces lines name
+  stops the start too: the database ran an edit of the file this image does not hold, such as
+  another branch's.
+- A version no file of the image has is left as it is, as an image rolled back finds them.
+- Any other version passes and is left as it is, so a pod of the release that recorded it still
+  starts beside this one and after a rollback.
+
+A start that stops applies nothing, logs `broker: fatal` and exits 1. On a database a broker
+before this check created, the start first adds the identity columns in a transaction of its own,
+and that catalog change stands even when the rows are then refused: the columns are nullable and
+the release before ignores them.
+
+The refusal names the version, what the database records and what the image's file is:
+
+```text
+migrations refused, none applied: version 32 is recorded as 0032_another_branch.up.sql sha256:<recorded>, and this build's file of version 32 is 0032_oauth_pod_sessions_binding.up.sql sha256:<file>: if this database ran another branch's or an earlier commit's migration, reset it (drop it, create it empty and let the server migrate it); if the edit is intended, add this line to 0032_oauth_pod_sessions_binding.up.sql, after the replaces lines it has (its first replaces line names the identity version 32 first shipped with): -- replaces: 0032_another_branch.up.sql sha256:<recorded>
+```
+
+A refusal of the applied text says so instead (`the text applied under it has sha256 …`), and
+offers the lines that would accept that text. A lock timeout, or a failed read or write of the
+table, reads `read or record what broker_schema_migrations records, none applied: …`, and is no
+reason to reset anything.
+
+What you do depends on how the database came to hold another file:
+
+- **It ran another branch's or an earlier commit's migration, or an edit of one** (a development,
+  test or preview database): its schema is not the one this image's files make. Reset it: drop
+  the database, create it empty, and start the broker, which migrates it from the first file.
+  This includes a fresh preview or development database that a newer image created and an older
+  image then starts on: the older image refuses it, and you reset it. It includes too a
+  development or preview database whose rows recorded no name when a branch's image first started
+  on it under this check, where that branch edits a migration in place and its file does not yet
+  declare the main branch's identity of it in a replaces line: that start recorded the branch's
+  own identity, not the main branch's, and the main branch's image refuses it. A branch whose
+  edited file already declares the main branch's identity, as the pre-merge check requires,
+  records that identity, and the main branch's image starts on it. Never reset the production
+  database this way; a refusal there is a release to stop and investigate.
+- **The file was edited or renamed on purpose**, and the database already holds the schema it
+  means: add the line the refusal names, alone on a line of its own and outside every quoted
+  string or function body, to the file, after the replaces lines it has, and ship it. The next
+  start accepts the row as it is. The first replaces line names the identity the version first
+  shipped with; a later edit of the same file keeps it first and adds one naming the edit before
+  it. The line names a file of the same version and 64 lower-case hex digits; a line that begins
+  `-- replaces:` and is written any other way, or that sits inside a quoted string or a function
+  body, stops every start, naming the file and the line. A pull request that edits a migration
+  main already holds without such lines fails CI's `envoy-go-checks` job before it merges.
+
+An image cannot accept a text it has never seen, so it refuses a database whose migration a later
+image applied from an edited text: one that an image with the edit created from empty, and a
+production database rolled back by hand to an image it never ran, one older than the image that
+first applied a migration it holds. Roll back only to an image the database ran, as a Deployment
+rollout undo to the revision that was serving does. An image starts on a database a later image
+only filled, and an edited text a database ran before this check is not detected: the first start
+records its own file.
+
+A start fills the rows that record no name as it judges them. `envoy-broker versions` makes the
+same judgment without changing the database, against the files of the image it runs: it reads the
+broker's settings, signs in to the database with the broker's login, and reads the version table
+in a read-only transaction. Run the image you are about to roll out, before you roll it out, in a
+one-off process of that image with the serving broker's settings
+([Running a subcommand](#running-a-subcommand)). An exec into a broker pod,
+`kubectl -n <namespace> exec <broker pod> -- envoy-broker versions`, judges the image already
+serving.
+
+It prints what the next start would do with each version, and exits 1 when a version would be
+refused or has no file in that release, or when the table records nothing, which it prints as
+`NOTHING CHECKED`: a check of the wrong database must not read as a clean one.
 
 ## The audit record
 
