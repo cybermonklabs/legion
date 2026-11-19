@@ -1297,6 +1297,61 @@ test("a row in view whose words arrive after it is drawn cut before the page is 
   }
 });
 
+// Decision 261: a row in view keeps its length unless it draws other words. A new comment on the
+// issue adds an address to the names read, which then reads under a key of its own, so every
+// block row drawn from that read takes a new reading of the same words (`tree-drafts.ts`'s
+// `treeOf`). A row measured whole, whose words then run past the cut, as a narrower width runs
+// them, is held whole in view by the batch that measures it again; a new reading of the same
+// words draws nothing new, so the row stays whole, with no animation frame run.
+test("a row held whole in view stays whole when a later read draws the same words anew", async () => {
+  const text = Array.from({ length: 3000 }, (_unused, at) => `word${at + 1}`).join(" ");
+  // Five lines of 24 px where the row is first measured, which six lines hold whole.
+  let run = 120;
+  const restore = layOut(9600, () => run);
+  const near = installIntersectionObserver();
+  try {
+    const statement = { id: "spec#b-r1", text, type: "requirement" } as const;
+    // The server reads one text into one tree (`pmdoc.DisplayJSON`), where the page's own parse
+    // gives each block a new id, so the later read's answer is a copy of the first.
+    const reading = displayTree(text);
+    const row = renderRow(node({ ...statement, tree: reading }), { body: false });
+    try {
+      await measureNearWords(near);
+      // The words now run 400 lines, and the batch holds the row in view at its length.
+      run = 9600;
+      await measureNearWords(near);
+      expect(
+        row.container.querySelector("[data-node-more]"),
+        "the batch cut a row in view"
+      ).toBeNull();
+      const frames: FrameRequestCallback[] = [];
+      const frame = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+        frames.push(callback);
+        return frames.length;
+      });
+      try {
+        await act(async () => {
+          row.redraw(node({ ...statement, tree: structuredClone(reading) }));
+        });
+        expect(
+          row.container.querySelector("[data-node-more]"),
+          "a new reading of the same words cut the row held whole in view"
+        ).toBeNull();
+        expect(row.container.querySelector<HTMLElement>("[data-node-words]")?.style.maxHeight).toBe(
+          ""
+        );
+      } finally {
+        frame.mockRestore();
+      }
+    } finally {
+      row.unmount();
+    }
+  } finally {
+    near.restore();
+    restore();
+  }
+});
+
 // R16: an open question's options are the choices of its answer. A press on one leaves the
 // focus where it is - a row that took the focus on mousedown would open its body, whose
 // options' own words push every option below one that has them down, and the press would end on
