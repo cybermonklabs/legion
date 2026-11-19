@@ -112,7 +112,7 @@ func storeHistory(t *testing.T, service *Service, artifactID string, state []byt
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	head, err := lockedHead(ctx, tx, artifactID)
+	head, err := headUnderDocumentLock(ctx, tx, artifactID)
 	if err != nil {
 		t.Fatal(err)
 	}

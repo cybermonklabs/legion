@@ -150,9 +150,9 @@ const RoleHeldWireSchema = z.object({
  * A listener's error body. Beyond the message and its `code`, a refusal that names a session
  * names that session's state and its last registration, and a role's 404 names its holder too:
  * a send's `no live session <id>` carries `state` and `last_seen`
- * (`cmd/listener/api.go`'s `noLiveSessionRefusal`), and a role lookup's or a role publish's
+ * (`listenerwire.NoLiveSessionRefusal`), and a role lookup's or a role publish's
  * `holder lapsed` carries `holder`, `holder_state`, `last_seen` and `claim_released`
- * (`cmd/listener/role_holder.go`'s `roleHolderError`). Those two are the only refusals that name
+ * (`listenerwire.RoleRefusal`). Those two are the only refusals that name
  * a session. The listener's own text names neither the state nor the last registration, so
  * `EnvoyApiError` says them itself (`refusalStateText`): an agent told its peer did not answer
  * must be told whether that peer is unresponsive — still holding its role and its claims — or
@@ -190,7 +190,7 @@ const ErrorWireSchema = z.object({
  * not know never reaches a caller.
  *
  * `recipient`, `recipient_state`, `state`, `last_seen` and `duplicate` are a send's
- * (`cmd/listener/api.go`'s `sendResponse`). `recipient_state` is the target's registry state and
+ * (`listenerwire.SendResponse`). `recipient_state` is the target's registry state and
  * stays the strict three-value enum every deployed plugin parses. `state` is what the listener's
  * connection check found: `connected`, or `stopped` when no plugin of the target holds its relay
  * subject, so the message waits on the session's topic. It is read as a string rather than a
@@ -201,8 +201,8 @@ const ErrorWireSchema = z.object({
  * as an older listener's answer does.
  *
  * `holder` and `holder_state` are a role publish's, under the two names every role answer uses
- * (`publishResponse`). A publish to a topic the stream captures stores one copy that each
- * subscribed session's own consumer delivers, so there is no per-recipient send to report; its
+ * (`listenerwire.PublishResponse`). A publish to a topic the stream captures stores one copy that
+ * each subscribed session's own consumer delivers, so there is no per-recipient send to report; its
  * answer counts instead: `recipients` is every session other than the sender the topic is for,
  * and `recipients_connected` how many of those are running now. Both are absent from a role
  * topic's answer and from a listener whose copy of the known-session or interest bucket cannot be

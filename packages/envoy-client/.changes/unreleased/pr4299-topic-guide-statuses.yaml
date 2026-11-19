@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+    The subscribe tool's guide to the checks topic says that a settlement names the commit statuses
+    of the head in its `statuses` field, each with its state and GitHub's `created_at`, that a
+    consumer keeps, for each context, the entry with the later `created_at`, and that a head
+    settles again when a status is new or changes state.
+time: 2026-11-17T12:46:33Z
+custom:
+    Issue: pr4299

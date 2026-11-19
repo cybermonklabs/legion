@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -853,8 +854,8 @@ func TestAJoinedWriteWhoseTransactionChangesNothingAppendsNoUpdateAndKeepsItsSet
 			var answered error
 			if err := joinedWrite(service, func(ctx context.Context) error {
 				tx, _ := txFromContext(ctx)
-				// The issue route holds the issue's row before it writes any document.
-				if _, err := tx.Exec(ctx, `select 1 from issues where key = 'DOC-1' for no key update`); err != nil {
+				// The issue route holds the issue's owner lock before it writes any document.
+				if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
 					return fmt.Errorf("lock the issue: %w", err)
 				}
 				if answered = unchanged.write(ctx); answered != nil && !errors.Is(answered, ygws.ErrNoChanges) {
