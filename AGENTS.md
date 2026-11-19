@@ -515,7 +515,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
     — `workspace-init fetch --repo <owner>/<repo> --feed <dir> [--cache-url http://<cache>:8418]` fills the pod's feed on the pod's own disk:
     a fresh feed from the repository's cache alone (`--cache-url`, which defaults to LEGION_REPOSITORY_CACHE_URL, presenting the token LEGION_REPOSITORY_CACHE_TOKEN_FILE holds with its request for the tar alone;
     the runtime sets both on every issue pod, once the cache's Service is the cache's own), waiting for the cache to be ready, refusing one that names another repository or streams a pack, or a pack index, whose checksums do not hold or a history that is not whole (it takes the index the cache streams with each pack rather than building it again, which costs minutes of a pod's CPU per gigabyte), then fetching from GitHub, by exact name, the default branch GitHub names and the one the daemon recorded for the issue (LEGION_DEFAULT_BRANCH, while GitHub has it), and `refs/heads/legion/*`, after deleting every other branch of the feed that is not exactly GitHub's tip, so every branch it holds is GitHub's or absent, and a feed the disk already holds
-    — which only a retry of the init container in the same pod can find, and only after an attempt that filled the feed whole, since a fresh feed is renamed into place last;
+    — which a retry of the init container in the same pod can find, and so can a later pod of the issue on a microVM pod's kept volume (`runtime.kubernetes.sandbox.microvm.keep_volume`), each only after an attempt that filled the feed whole, since a fresh feed is renamed into place last;
     the daemon replaces a pod whose init container failed within seconds
     — by that fetch alone, after removing the git locks and partial packs a killed fetch left
 
@@ -526,8 +526,10 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
     — one clone per issue pod, under no lock and waiting on no other pod, since no other pod mounts the disk, after removing every stale git lock file (`<file>.lock`) in the clone's git directory and the issue's own worktree entry, each logged with its age, since the pod's launcher container has not started either and a retry of the container works on the disk its killed first attempt left (docs/kubernetes.md "Anatomy of a Sandbox pod")
     — and records when it created the issue's workspace (`.jj/legion-created`, which the role launcher compares with a resumed session's last write, so an agent resumed into a workspace younger than its session starts with LEGION_WORKSPACE_RECREATED=true and its plugin tells it so)
 
-  - it expects nothing of the disk, which is created with the pod and deleted with it, so every provision is the issue's first, from the issue's pushed branch, while the session continues from the session database `runtime.kubernetes.session_store` names, which must be a store that keeps sessions in a database (`postgres` or `cloudsql-iam`;
-    docs/kubernetes.md "The disk dies with its pod" and "Selecting the store")
+  - it expects nothing of the disk, which is created with the pod and deleted with it, so every provision is the issue's first, from the issue's pushed branch,
+    except on a kept volume, which the issue's Sandbox owns and the issue's next pod mounts, where a later provision keeps the clone and the workspace that an earlier pod left,
+    while the session continues from the session database `runtime.kubernetes.session_store` names, which must be a store that keeps sessions in a database (`postgres` or `cloudsql-iam`;
+    docs/kubernetes.md "The disk dies with its pod", "A kept volume on a microVM pod" and "Selecting the store")
 
   - `workspace-init cache --repo <owner>/<repo> --root <dir> [--listen :8418] [--refresh 10m]` is a repository cache pod's one process, a bare clone on the cache's own volume fetched from GitHub every `--refresh` and served to its repository's issue pods as `GET /tar` (its refs, its packs and each pack's index), with `GET /readyz` its readiness and `GET /healthz` its health, `/tar` answering only the bearer token LEGION_REPOSITORY_CACHE_TOKEN_FILE holds and `/healthz`, which holds nothing secret, any request (docs/kubernetes.md "The repository cache")
 

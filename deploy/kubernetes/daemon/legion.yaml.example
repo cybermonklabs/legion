@@ -378,6 +378,8 @@ runtime:
     #                                  # issue.
     #     storage_class: example-microvm-disk # the class of a microVM pod's workspace volume.
     #                                  # The default is storage_class above.
+    #     keep_volume: false           # true: a microVM issue pod's volume outlives the pod.
+    #                                  # docs/kubernetes.md, A kept volume on a microVM pod.
     #     metadata:                    # optional: a microVM pod's launcher serves the metadata
     #                                  # server's paths inside the pod. The pod then gets its
     #                                  # Google credential without the node's own address.

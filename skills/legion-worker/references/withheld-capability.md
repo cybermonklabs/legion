@@ -119,7 +119,9 @@ every one of those variables but
 abstract socket name is one name across every role of the pod, which share its network. It is not
 private: every role of the issue can write it, as it can every path above — though it does not
 outlive the pod: the issue's disk is the pod's own and is deleted with it, so a later pod of the
-issue starts without it. Under
+issue starts without it. The exception is a microVM pod whose deployment sets `keep_volume`: its
+volume is a claim that the issue's Sandbox owns, so a later pod of the issue finds what you put
+there, until a reset or the issue's close deletes the volume. Under
 `$HOME` — `/home/legion`, which no volume is mounted on — it is your role's own home, an overlay
 over the image's whose writes land on the pod's disk (an `emptyDir` every role's home and `/tmp`
 share): one copy per role, per pod, kept across the role's relaunches in that pod and gone when

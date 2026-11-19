@@ -1169,9 +1169,12 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   Nothing is registered before a refusal, so every later attempt in that pod refuses the same way.
   A pod whose `workspace-init` refuses runs no `roles` container, so there is no shell in which to
   run the commands it names; the remedy is letting the pod be replaced, and the issue's next launch
-  provisions a fresh clone and workspace from its pushed branch on a disk of its own. Run no `jj`,
-  `git` or `omp` in a running issue pod either: any role can plant configuration in its clone or
-  workspace that starts a program with every role's credentials in reach (`docs/kubernetes.md` in
+  provisions a fresh clone and workspace from its pushed branch on a disk of its own. On a kept
+  volume (`runtime.kubernetes.sandbox.microvm.keep_volume`), the launch first gives the issue a new,
+  empty volume when the container exited with a code other than 2 or 3 and did not end as
+  `OOMKilled`, because such a failure can come from the volume itself. Run no `jj`, `git` or `omp`
+  in a running issue pod either: any role can plant configuration in its clone or workspace that
+  starts a program with every role's credentials in reach (`docs/kubernetes.md` in
   the repository, "A shell on an issue's disk").
 - **An issue's work is gone after its pod was replaced.** That is the shape of the runtime, not a
   failure: an issue's disk is its pod's own and is deleted with the pod, so a stop, a close, a
@@ -1179,6 +1182,11 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   was pushed to `legion/<issue>` and each role's conversation, which lives in the session
   database; the next pod provisions the workspace from that branch, and the agent is told its
   workspace is newer than its conversation before its next turn.
+  A microVM issue pod under `runtime.kubernetes.sandbox.microvm.keep_volume` is the exception: its
+  volume stays through a node loss and a replacement of the pod, and the next pod finds the
+  workspace as the last pod left it. That volume goes when the issue leaves the workflow, when its
+  disk's shape changes, or when the daemon resets it after a failed init container
+  (`docs/kubernetes.md` in the repository, "A kept volume on a microVM pod").
 - **`worker-stream: rejected hello (stale worker generation)`** in the daemon's log is the fence
   working: a pod from an older generation of a claim tried to connect after a newer one replaced it.
   Nothing to do.
