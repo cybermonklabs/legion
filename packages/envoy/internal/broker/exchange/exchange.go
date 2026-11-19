@@ -1155,12 +1155,14 @@ func (s *Set) Machine(credential, approver, session string, projects []string) (
 //
 // Three of them are exported because a broker grant follows a session name under one principal
 // too: enroll.Service.Create writes one of these into enrollments.carry_principal, and the next
-// enrollment of that name under that principal, or under an account the broker pairs with it
-// (enroll.SessionBinder.PairedWith), takes what the last one held. The name a session writes its
-// Dispatch tokens under and the name its grant follows are one name, so one holder has to spell
-// the same either way, which it does only while there is one definition of each spelling. A pod's
-// enrollment is the one exception, whose grant follows a pair rather than its account alone
-// (PodLaunchPrincipal), while its name is held under the account.
+// enrollment of that name under that principal takes what the last one held. The name a session
+// writes its Dispatch tokens under and the name its grant follows are one name, so one holder has
+// to spell the same either way, which it does only while there is one definition of each
+// spelling. A pod's enrollment is the one exception, whose grant follows a pair rather than its
+// account alone (PodLaunchPrincipal), while its name is held under the account. A pod of an
+// account the broker pairs with that account (enroll.SessionBinder.PairedWith) takes what the
+// other account's pods of the name hold only under the same login account, the pair LaunchedBy
+// spells from the paired account's principal.
 
 // AccountPrincipal is a Kubernetes ServiceAccount's spelling: the account a pod's own projected
 // token proves.

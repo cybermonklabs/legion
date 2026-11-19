@@ -172,8 +172,9 @@ type Enrollment struct {
 	carry *string
 	name  *string
 	// launcher is the account the token login enrolling a pod proved (Credential.Subject), nil off
-	// a pod and for a login that proved none: adopt reads it to take the same daemon's rows an
-	// older broker wrote under the account alone.
+	// a pod and for a login that proved none. adopt reads it twice: to spell each paired account's
+	// pair under the same login account (exchange.LaunchedBy), and to take the same daemon's rows
+	// an older broker wrote under the account alone.
 	launcher *string
 	// owner is the principal a request this enrollment makes belongs to, as enrollments.owner
 	// records it (ownerKey): Create works it out from what the caller proved and from the claim a
@@ -207,8 +208,8 @@ type SessionBinder interface {
 	// which writes each pair both ways): each takes a session name principal holds, and principal
 	// takes one any of them holds. Pairs are of name principals (namePrincipal), so adopt's session
 	// rule matches each paired account's enrollments of the same name beside the enrollment's own,
-	// a pod's under the same launcher alone (pairedCarries). It is nil for a principal in no pair,
-	// and the caller does not write to the slice.
+	// a pod's under the same login account alone (adopt, exchange.LaunchedBy). It is nil for a
+	// principal in no pair, and the caller does not write to the slice.
 	PairedWith(principal string) []string
 }
 
