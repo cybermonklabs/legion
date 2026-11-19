@@ -66,8 +66,9 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // and read no help at all.
 //
 // Before gh is handed anything, the leak guard reads the call (leakguard.GhCall): a call it
-// refuses, and one whose checks could not be made to run, are refused here, exit 2, with the
-// guard's own message, and gh never runs. A call that writes nothing, by the rule ghWritesNothing
+// refuses, one whose checks could not be made to run, and one whose destination GitHub answers
+// 404 for, are refused here, exit 2, with the guard's own message, and gh never runs. A call that
+// writes nothing, by the rule ghWritesNothing
 // holds and under the shared check that rule was proven against (ghReadsProvenCheck), is read by
 // that check alone and gets no read of a repository's visibility and no private-name pass. Three
 // calls pass unchecked: `legion gh auth git-credential`, which answers above before any of this,

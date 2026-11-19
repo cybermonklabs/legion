@@ -44,7 +44,9 @@ import (
 // its GH_CONFIG_DIR, and which its gh (the image's `legion gh`) and the clone's `legion
 // git-credential` helper read the token that answers for the repository a command names from —
 // the owner's own directory, or, for a repository one of those renames moved, the directory of
-// the owner it moved to. The kubelet rewrites a whole-volume
+// the owner it moved to, or, for a fork whose owner has no directory, the directory of its
+// parent's or its source's owner, which the helper reads from GitHub with GH_CONFIG_DIR's token.
+// The kubelet rewrites a whole-volume
 // Secret projection in place when the Secret changes, and a bind of it sees the rewrite, so the
 // refresher's Secret update is what the next gh runs with. CacheRoot is where a repository cache's
 // pod mounts its own volume. The

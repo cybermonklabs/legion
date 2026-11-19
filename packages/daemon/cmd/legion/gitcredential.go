@@ -31,7 +31,8 @@ var gitCredentialStdin io.Reader = os.Stdin
 // https://github.com with the installation-token username and the token of the gh directory that
 // answers for the repository the request's path names (credential.useHttpPath, which every
 // shared clone sets): its first two segments are that repository, and the directory is the one
-// the bundle under LEGION_GH_OWNERS_DIR holds for it (ghConfigDirFor) and nothing else. A role's
+// the bundle under LEGION_GH_OWNERS_DIR holds for it (ghConfigDirFor), or, for a fork of a
+// served repository, the one below; it is never a directory outside the bundle. A role's
 // bundle holds one directory per owner the role's App is installed on, and the lease in it
 // reaches every repository that installation holds, so the owner's own directory answers for
 // every repository of that owner but one a configured rename moved to another owner: that one is

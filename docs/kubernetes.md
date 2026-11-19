@@ -101,11 +101,11 @@ It carries:
   A tag of that repository is not protected, so a tag that is force-moved is served from the daemon's earlier copy until the daemon restarts.
   A tmux pane installs nothing, because no pin is set there and such a machine carries the check through the check's own installer.
   The daemon resolves that machine's check once per launch and tells the pane where it is (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
-  What a role sees when a write is refused is a command that wrote nothing and one of three lines on standard error:
+  A refused write writes nothing and prints one of three lines on standard error:
   `LEAK CHECK: refusing <the write>`, with a line under it naming the record and the class and never the text that matched, which is a name in the write;
-  `<the write>: GitHub answers 404 for <owner>/<name>, so the repository does not exist or this credential cannot read it`, where the guard's read of the destination's visibility got a 404, which is a wrong name or a credential that cannot see the repository, and neither a name in the write nor a broken pod;
+  `<the write>: GitHub answers 404 for <repo>, …`, a wrong name or a credential that cannot see it;
   or `LEAK CHECK SETUP ERROR: <the write>: <what could not be made to run>`, which is a broken pod and not a name in the write at all.
-  `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused, and 2 for a check it could not make run or a destination GitHub answers 404 for — the shared check's own statuses — and 128 plus the signal when a SIGINT, SIGTERM or SIGHUP reaches it before it reports the guard's answer, whatever that answer was, and git stops the push on any of them but the first.
+  `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for either of the other two — the shared check's own statuses — and 128 plus the signal when a SIGINT, SIGTERM or SIGHUP reaches it before it reports the guard's answer, whatever that answer was, and git stops the push on any of them but the first.
   `scripts/e2e/leak-guard-image-job.sh` drives all of this on a published digest, as one Job of this section's own shape ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
 
 - `mise` at `/usr/local/bin/mise`, the binary the Dockerfile's `tools` stage checks against `ARG MISE_SHA256` and resolves the Oh My Pi pin with:
