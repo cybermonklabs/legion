@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+    The tool spec `dispatch_attribution`, the thirty-sixth Dispatch spec, reads
+    `GET /api/v1/delivery/attribution`: what the attribution of the stored pull requests still
+    waits on (`AttributionCounts`). It takes no arguments and writes nothing. The results contract
+    adds `CheckBlock.heads_not_read` (each with `refused_as` and `refused_since`),
+    `CheckBlock.issues_not_known`, `ResultCommitStands.possible_head`, and the reasons
+    `head_not_read` and `issue_not_known` of `compared_nothing`, `commit_stands` and a check CI
+    proves. The delivery timeline's pull request adds `issue_not_known`. An older client ignores
+    the new fields, and `dispatch results` of an older release prints a new reason as `undefined`.
+time: 2026-11-19T06:14:52.000000000Z
+custom:
+    Issue: pr4209

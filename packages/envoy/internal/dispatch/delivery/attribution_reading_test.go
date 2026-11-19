@@ -79,12 +79,12 @@ type readingInput struct {
 }
 
 // readingCorpusInputs is every case of the corpus, in the order of the file. It holds each text of
-// the tests of the Go reading (citedIssues, uniqueKeys and attributionInputsFrom), as each test
-// spelled it, and the texts the reading's own cases add: the two runes Go upper-cases to ASCII,
-// keys a letter or a digit runs into, hosts that are and are not github.com, references a # runs
-// into, two spellings of one issue, a repository whose name lower() folds by locale, and seven
-// texts holding NULs. A text two tests share is one case. Each case keeps the name of the test
-// that held its text, also where that test is gone. The timing bodies of
+// the tests of the Go reading, as each test spelled it, and the texts the reading's own cases
+// add: the two runes Go upper-cases to ASCII, keys a letter or a digit runs into, hosts that are
+// and are not github.com, references a # runs into, two spellings of one issue, a repository
+// whose name lower() folds by locale, and seven texts holding NULs. A text two tests share is one
+// case. Each case keeps the name of the test that held its text, also where that test is gone.
+// The timing bodies of
 // TestTheReadingCostsNoMoreThanTheBodyIsLong and TestTheReadingCostsNoMoreForACitationFarFromASpace
 // (1 MiB and two of 72 KiB) are not in it: they measure time, and the answer test of each of their
 // shapes is here.

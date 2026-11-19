@@ -4,10 +4,11 @@ package delivery
 // in pull_request_reads_owed until a read of GitHub answers for it. GitHub's answer is the only
 // source of a head, so an event whose read of GitHub failed
 // would otherwise leave its pull request with no head for good: the reconcile reads only rows
-// that exist, a merged or closed row is never read again, and the read-through runs only for a
-// result's commit. The row holds which pull request changed, why its read is owed, how often the
-// reconcile has read it, when it was last owed and its revision, and nothing an envelope says: no
-// head, no state, no issue.
+// that exist, reads no closed row again, and reads a merged row only while its texts do not
+// describe its head or its commit messages are not read (Reconcile.readFactsLine); and the
+// read-through runs only for a result's commit. The row holds which pull request changed, why
+// its read is owed, how often the reconcile has read it, when it was last owed and its revision,
+// and nothing an envelope says: no head, no state, no issue.
 //
 // Three writers record one. Intake.deliver records a failure at the delivery of an envelope whose
 // head write failed, and acknowledges the envelope once that record is written; a later read that
@@ -23,8 +24,9 @@ package delivery
 // and pull_request_heads_unread_write, for a write of the release before that changes a fact of a
 // row a read of GitHub wrote. An insert of the release before, and its update of a row no read
 // marked, owe nothing: the reconcile's open arm reads such an open row, its facts line a merged
-// one while it has no facts, and a closed one stays closed, which is no basis. An envelope leaves the intake with
-// no record of its pull request only where it names no pull request GitHub can have
+// one while its texts do not describe its head, and a closed one stays closed, which is no basis.
+// An envelope leaves the intake with no record of its pull request only where it names no pull
+// request GitHub can have
 // (Intake.deliver), which is checked before anything is read or written (pullRequestNamed). Where
 // its repository's canonical name is no name GitHub can have, the read is owed under the name the
 // envelope gave (owePullRequestRead); a GitHub answer that holds a value no head row holds is a
@@ -69,16 +71,18 @@ package delivery
 // it, so a flood that continues can hold it back with no fixed bound. Its next event reads GitHub
 // at once regardless.
 //
-// The readers of a head read this table, and they read pull_request_heads, pull_request_texts and
-// delivery_pull_requests through one statement (attributedTerms). While a read is owed, Dispatch
-// does not know that the stored head is the head. So each reader by issue reads the owed row of
-// each pull request that it answers, through the renaming rule (owedReadJoin): HeadsAttributedTo
-// answers the pull request with HeadKnown false, HeadAttributedTo answers false for its stored
-// head, and NewestPullRequestHead answers ReadOwed true. An owed read is never a head, a basis or
-// a merge. BaseBranchMergedFor does not read it: GitHub never changes the state or the base branch
-// of a merged pull request. A refusal row names how GitHub refuses the read (refused_as) and since
-// when (refused_since), so a reader can name the state and its way out. A release before this one
-// neither reads nor writes the two columns.
+// The readers of a head read pull_request_heads, pull_request_texts and delivery_pull_requests
+// through one statement (attributedTerms). While a read is owed, Dispatch does not know that the
+// stored head is the head. So three readers by issue read the owed row of each pull request that
+// they answer, through the renaming rule (owedReadJoin): HeadsAttributedTo answers the pull
+// request with HeadKnown false, HeadAttributedTo answers false for its stored head, and
+// NewestPullRequestHead answers ReadOwed true. So the stored head of a pull request owed a read is
+// no basis, and no check run is read at it. BaseBranchMergedFor does not read this table: GitHub
+// never changes the state or the base branch of a merged pull request, so a merged row answers
+// its base branch also while a read is owed for it. The readers by key and by repository
+// (PullRequestIssues, PullRequestsNotKnown) do not read it either. A refusal row names how GitHub
+// refuses the read (refused_as) and since when (refused_since), so a reader can name the state
+// and its way out. A release before this one neither reads nor writes the two columns.
 
 import (
 	"context"

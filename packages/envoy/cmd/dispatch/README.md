@@ -395,7 +395,7 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
 - A pass reads a repository's open heads in batches, over GraphQL: one query answers twenty open pull requests with every check suite and every check run of each one's head commit (`cireconcile.headsQuery`), and the pass asks for the next twenty with the cursor that answer carries until GitHub says there is no next page.
   The query asks for the runs of every check type (`filterBy: {checkType: ALL}`), as the REST listing is read with `filter=all`: GitHub's default answers the latest run of each name alone and drops every earlier attempt — on one measured head, 29 of its 32 runs — and an earlier attempt whose completion webhook never arrived is exactly what this pass exists to recover.
   It orders the pull requests by creation, which is their number order, since a repository hands out numbers as pull requests are opened: that order is what the cursor is a place in.
-  Reading the same heads over REST took 1,720 requests and 26 minutes 25 seconds for 833 heads of 16 repositories; the same read in queries is about 53 of them, about 318 points of the App's GraphQL budget and about 178 seconds of GitHub's own processing time.
+  Reading the same heads over REST took 1,720 requests and 26 minutes 25 seconds for 833 heads of 16 repositories; the same read in queries is about 53 of them, about 318 points of GraphQL budget, which GitHub keeps for each installation apart, and about 178 seconds of GitHub's own processing time.
 
 - What a query cannot answer whole is read over REST exactly as every head was read before: the commit's check runs (`filter=all`) and its check suites, page by page and conditional on the ETags the pass kept.
   Four things fall back that way: a head with more than 30 check suites, a head one of whose suites has more than 60 check runs, a head whose Checks fields GitHub refuses or answers null, and every head of a page GitHub refuses, gives up on, or answers past the 1 MiB response limit.
@@ -432,9 +432,10 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   The cursor is this process's own memory and is written nowhere: a restart deliberately begins a new cycle at the first page, which costs one cycle its fairness and nothing else.
 
 - The shared GitHub rate limits in `github_rate_limits` are read before the pass, before each repository, before each query and before each head, and the first limit — one this process read, or one GitHub answered with — ends the pass where it stands.
-  REST reads are held under the App's scope and the installation's; queries are held under `githubapp.GraphQLScope` (`graphql`) as well, which is the App's GraphQL budget and no installation's.
+  REST reads are held under the App's scope and the installation's; a query is held under the GraphQL scope of its own installation as well (`githubapp.GraphQLInstallationScope`, for example `graphql:installation:7`), which is that installation's GraphQL budget and no other installation's.
+  `githubapp.GraphQLScope` (`graphql`) holds only a query made with a token the App client did not mint, since nothing names the installation such a token spends.
   A GraphQL limit does not look like a REST one: GitHub answers it with HTTP 200 or 403 carrying an `errors` entry of type `RATE_LIMITED`, `x-ratelimit-remaining: 0`, a `retry-after`, or its wording about a secondary rate limit — in an `errors` entry, and at 403 in the REST-shaped body whose top-level `message` carries it — and all of them are read as the limit (`githubapp.GraphQLRateLimit`), from GitHub's own envelope and headers and never from the data a query answered: a check run named for the limit is a repository's data, not GitHub speaking.
-  Which of the two limits it is says the scope it is recorded under: the App's GraphQL points spent — the `RATE_LIMITED` entry, or no requests remaining — is recorded under the GraphQL scope, so every process's REST reads go on while the queries wait it out, and a secondary limit — a `retry-after`, or GitHub's own wording wherever the answer carries it — is recorded under the installation's scope, which GitHub shares between that installation's REST calls and its queries, with the doubling backoff a strike writes (`ratelimit.Store.Strike`), whose count starts again after an hour with no strike of that scope and is not held open by the ordinary REST limits recorded there meanwhile.
+  Which of the two limits it is says the scope it is recorded under: the installation's GraphQL points spent — the `RATE_LIMITED` entry, or no requests remaining — is recorded under that installation's GraphQL scope, so every process's REST reads, and the queries of every other installation, go on while that installation's queries wait it out, and a secondary limit — a `retry-after`, or GitHub's own wording wherever the answer carries it — is recorded under the installation's scope, which GitHub shares between that installation's REST calls and its queries, with the doubling backoff a strike writes (`ratelimit.Store.Strike`), whose count starts again after an hour with no strike of that scope and is not held open by the ordinary REST limits recorded there meanwhile.
   A rate-limited answer is never a page to read another way: it stops the pass, where a refused page, and a page holding a pull request GitHub answered with no node or no head commit, send that page's heads to the REST fallback.
   The pass records no limit of its own beyond that: the App client records GitHub's own answer, as every process's App call does.
 
@@ -797,6 +798,16 @@ Run the commands from a checkout of this repository with `bun install` run, each
    After 30 seconds the send's row reads `Still sending to 2 agents — Dispatch has not confirmed it
    yet. It keeps trying, and the broadcast is made once.` with **Stop trying**.
    Set the browser online: the page opens the broadcast, which lists each agent once with one delivery.
+
+9. After the deploy of the release that stores a pull request's texts (`20261117111040`, Database migrations below), run `dispatch attribution` after each reconcile pass, until its first count is 0.
+   `dispatch attribution` gives the count of pull requests that wait for their facts.
+   It also gives the count of pull requests that a pass still reads.
+   Each such pull request with no current texts keeps the issue that its results row stores, or its timeline row where it has no results row.
+   Results and the timeline name that issue.
+   A pull request whose texts are current and whose commit messages are not read is not known until a pass reads them, and the results route reads it as `issue_not_known` (Routes below).
+   Each pass reads at most 500 of them for each installation, so the count falls by up to 500 an installation a pass.
+   Each pass logs `msg="dispatch delivery: pull request attribution"`, with `facts_left` and `reads_left`, and `msg="dispatch delivery: reconcile pass"`, with `took`, the time of the whole pass.
+   The count of keys that wait to be read again falls to 0 at the first remake after a change of the reading; a remake that fails logs the `WARN` line `dispatch delivery: remake the keys of another reading`, and the next check 30 seconds later tries again.
 
 ## Running more than one process
 
@@ -1406,6 +1417,11 @@ A process that finds it held tries again
   A reconcile pass re-reads the pull request heads first, whether or not the deployment has delivery settings and outside the deploy repository's permission check (`Reconcile.runOnce`), since every deployment compares a recorded result with those heads;
   every other step of the pass is gated on the settings and on that check, so a deployment with no settings runs the head pass and nothing else.
 
+- The key remake (`delivery.KeyRemakeLoop`, every `delivery.KeyRemakeEvery`, 30 seconds) runs in every process from its start, after `delivery.PrepareAttribution`, with no lease, no App key and no delivery settings.
+  Each check asks whether any `pull_request_texts` row holds keys of another reading, two probes of one index, and remakes them where one does (How to change the reading, Database migrations below).
+  Nothing announces a change of the reading's identity, which a migration or a major version of PostgreSQL makes, so a timer finds it.
+  `DISPATCH_TEST_KEY_REMAKE_INTERVAL` replaces the 30 seconds and `DISPATCH_TEST_KEY_REMAKE_OFF` starts no loop, each for a test, and a deployment sets neither.
+
 - The CI reconcile pass (`cireconcile.Interval`, lease `ci-reconcile`) runs every 5 minutes through `duty.RunLeased`, its first pass one interval after the start, and reads each open pull request's head of every repository `repo_projects` maps, recording every completed check run and completed check suite Envoy's listener record of that head lacks.
   A webhook GitHub never delivered leaves a head short of a check, and a head short of a check never settles, which no notification announces either.
   It needs NATS, whose `envoy_ci_state` bucket it binds and never creates, and the App private key; without either it is off and says so at start.
@@ -1433,10 +1449,14 @@ Postgres does not replay a notification sent while nothing listened, so the hub 
 
 **The GitHub intake** (`delivery.Intake`) binds its durable whether or not `delivery_settings` holds a row, since a `pull_request` envelope's first write is the pull request's head row, which every `before_merge` check result is compared with in every deployment:
 with no settings it writes that row and nothing else, and only a merge of the delivery population and a workflow run wait for the settings (`Intake.Run`, `route`).
-So a pull request whose branch, title and body name no issue, and which reaches its issue only through a link the issue holds, is compared with its head with no settings too, once the link is made and the first reconcile pass that reaches the marked row, or the pull request's next event, reads it (`TestAKeyFreePullRequestLinkedOnItsIssueIsListedAtItsPushedHeadWithNoDeliverySettings`, `api.TestALinkWrittenToAMergedPullRequestIsFollowedByTheNextPass`, Links and ties below); a deployment that stored no head row compared such a pull request's checks with nothing.
+So a pull request whose branch, title and body name no issue, and which reaches its issue only through a link the issue holds, is compared with its head with no settings too, from the first read after the link is made (`TestAKeyFreePullRequestLinkedOnItsIssueIsListedAtItsPushedHeadWithNoDeliverySettings`, Links and ties below); a deployment that stored no head row compared such a pull request's checks with nothing.
 The envelope says only which pull request changed.
-The intake reads that pull request from GitHub (`GET /repos/{owner}/{repo}/pulls/{number}`) and writes the head, the state, the branch and the body GitHub answers, attributed as the reconcile attributes a row (`recordPullRequestHead`).
+The intake reads that pull request from GitHub (`GET /repos/{owner}/{repo}/pulls/{number}`) and writes the head, the state and the branch GitHub answers, with the texts the pull request's issue is read from: the head repository, the base, the title and the body (`recordPullRequestHead`, `storePullRequestFacts`).
 So a `labeled` or `edited` event of a closed pull request leaves it closed, and an envelope GitHub never sent, which any Envoy `/v1` bearer can publish on a `notifications.github.` subject, moves no head.
+The intake stores no issue: one statement gives the pull request's issue at each read, from those facts (Links and ties below).
+Every writer of a head row, the intake, the read-through of a result's commit and the reconcile, writes the row and its texts in one transaction through one function, under the repository's canonical name (`upsertHeadUnderCanonicalName`).
+A title, a body and each commit message store each NUL byte, and each byte that is not UTF-8, as U+FFFD (`freeText`), so no such text fails a write; the reading of keys reads U+FFFD as it reads a space.
+The reading keeps no key and no cited URL above 1,024 bytes (`20261117122117_attribution_reading`, Database migrations below).
 A read is spared when the stored row already holds GitHub's answer for the event: the row is GitHub's answer to a read (`github_read_at`), and GitHub's own `updated_at` on it is a later second than the event's (`headReadCovers`).
 An answer of the event's own second spares no read: GitHub's `updated_at` is whole seconds, so that answer may be one GitHub gave before the event.
 So the events of one pull request that waited together cost one read of it, and one more for its events of the second GitHub's answer holds:
@@ -1449,29 +1469,30 @@ The durable is created with `DeliverAll`, so its first bind in a deployment whos
 That replay costs one read of each pull request it names, and a second one where events of the second GitHub's answer holds come after the first read; a read also reads the pull request's commits where its title, body, branch and links name no issue held to its repository, at most 4 at a time (`intakeMaxAckPending`).
 
 **Links and ties.**
-A head row stores the issue its pull request's attribution gave at the row's last read, and some of the attribution's inputs change with no event of the pull request.
-A write of an issue's links (`PATCH /api/v1/issues/{key}` with `external_links`) marks the stored head row of each pull request whose own URL it adds or removes, in its own transaction (`delivery.MarkHeadsLinked`), and the first reconcile pass that reaches a marked row reads it from GitHub and attributes it with the links as they stand, where GitHub answers each read of that attribution.
-A pass whose read of the pull request's commit messages fails stamps the marked row read with the issue it held, so that link is not followed.
-The mark exists because a merged row is read by no pass once the current rule has judged it, so a link written after the merge was otherwise never followed.
-The mark owes no read and the write asks GitHub nothing: until that pass, the results route compares the issue's checks with the row as it was.
-Each marked row costs one read of its pull request at that pass.
-A pass reads at most 200 stored rows (`PullRequestHeadBatch`): first the unread ones, a marked row among them, by repository and number, then the open rows that are due, the one read longest ago first.
-So a marked row with k unread rows before it is read by the ⌈(k + 1) / 200⌉th pass after the mark, the first pass where fewer than 200 rows stand before it, as long as no new unread row comes before it (`TestAMarkedMergedRowIsReadByThePassThatReachesItInTheListsOrder`).
-Where the row is stored before the link is written, a head write in flight does not undo the mark: each write reads the row's count of marks (`link_mark`) before its attribution reads the links, and leaves the row unread where the count has moved since (`upsertHeadRow`, `TestALinkWrittenWhileAHeadWriteIsInFlightIsFollowedByTheNextPass`).
-A link written while the pull request's first head row is written, or while its row moves from a repository's old name to the canonical one, marks no row: that write inserts the row stamped read with the issue it judged from the links before, and the link is not followed.
-A link to a URL that is no stored pull request's marks nothing.
-The other ties a head row stores nothing of — a link to a GitHub issue the pull request's body cites, an issue its branch or title names made later, a new parent, a changed repository mapping — reach a row three ways: the reconcile reads an open row again and attributes it as Dispatch stands then, the pull request's next event reads it, and the results read reads GitHub for each result's commit (below).
-An open row is due 5 minutes after its last read (`PullRequestHeadStaleAfter`), and the first pass that reaches it reads it: after the unread rows, a pass takes the due open rows, the one read longest ago first, so a due open row with k rows before it is read by the ⌈(k + 1) / 200⌉th pass from the first pass that finds it due.
-A pass starts 5 minutes and up to a tenth more after the last one ended (`delivery.ReconcileInterval`, `duty.Jittered`), so while at most 200 rows are due, each open row is read at every pass; where more are due, the rows read longest ago go first and the others wait for a later pass (with 207 open rows due, a pass leaves 7, which the next pass reads first).
-A tie reaches a row with current texts at the first read all the same (`TestATieMadeAfterAnOpenRowsLastEventIsFollowedByThePassThatReachesIt`).
-The read-through exists because no write of those ties can find the rows it changes, and a merged row has no next pass and often no next event.
-It also reads a commit that an open or merged row of any issue heads.
-GitHub can name a second pull request at that head, whose own event never arrived (`api.TestAResultsReadStoresEveryPullRequestGitHubNamesAtAResultsCommit`).
+One statement gives a pull request's issue at each read, from the facts Dispatch stores, and no reader takes an issue that a write stored (`delivery.attributedTerms`; `20261117111040_pull_request_texts` and `20261117122117_attribution_reading`, Database migrations below).
+The facts are the results row, the timeline row and the texts of the last read of GitHub: the head, the branch, the head repository, the base, the title, the body, and the commit messages where a read stored them.
+The statement reads Dispatch's links, issues, parents and repository mappings at the same read.
+So a tie made with no event of the pull request reaches every stored pull request at its next read, with no read of GitHub and no walk of the table.
+Such a tie is a link to the pull request's own URL, a link to a GitHub issue its body cites, an issue its branch, title or body names made later, a new parent, or a changed repository mapping (`TestATieMadeAfterAnOpenRowsLastEventIsFollowedByThePassThatReachesIt`, `api.TestATieMadeAfterAMergeIsFollowedAtTheResultsRead`).
+A write of an issue's links (`PATCH /api/v1/issues/{key}` with `external_links`) marks no row: the next read of the results or of the timeline reads the link (`api.TestALinkAfterAMergedRowComparesInTheNextReadWithNoAsk`).
+A head write in flight while the link is written cannot hide it, because no write of a head row reads a link (`TestALinkWrittenWhileAHeadWriteIsInFlightIsFollowedByTheNextPass`).
+A link outranks a branch name: a link on another issue takes its pull request, within the bounds of the repository and of a fork's head (`attributionHeld`, `headInOwnRepository`).
+The link check compares a URL in every letter case: a write that adds a URL that another issue holds in another letter case is refused with `409 EXTERNAL_LINK_TAKEN` (`api/issue_patch.go`).
+The check compares with other issues only, and never refuses a URL that the issue held before the write.
+A closed issue that sends its own link in another letter case still gets `409 ISSUE_CLOSED`, because the closed issue's test compares the exact text, as before this rule.
+A read by `owner/repo#n` (`GET /api/v1/issues/resolve`) finds a link in any letter case, and answers `AMBIGUOUS_ISSUE_REF` where two issues hold the URL (`resolveIssueRef`).
+Two issues can hold one URL in two letter cases from an earlier release: the rule then gives the pull request to the lesser key in byte order, and `dispatch attribution` counts such URLs (`links_in_two_cases`, Routes below).
+A pull request with no current texts keeps the issue its results row stores, or its timeline row's issue where it has no results row, until a pass reads its facts (the facts line, Database migrations below).
+Until then the results and the timeline name that one issue (`api.TestALinkWrittenToAMergedPullRequestIsFollowedByTheNextPass`).
+Such a pull request is one whose row a release before this one stored, a timeline row with no results row, or one whose head moved after its texts were read.
+A pull request whose texts are current, whose commit messages are not read, and whose other facts name no held issue is not known: no reader lists it under an issue, and the results route reads it as `issue_not_known` where it can decide a check (Routes below).
+That state ends at the first pass that reads its commit messages.
+The read-through of a result's commit reads GitHub for each result's commit, also for a commit that a stored row of any issue heads, because GitHub can name a second pull request at that head whose own event never arrived (`api.TestAResultsReadStoresEveryPullRequestGitHubNamesAtAResultsCommit`).
 So it reads a result at a basis of its check, and a child's result at the head of the child's own row (`api.TestAMergedHeadOfTheChecksOwnIssueIsReadThroughOnceAWindow`).
 It costs one GitHub call per repository and commit every 5 minutes for each result's commit, while the results are read (`delivery.CommitPullReadStaleAfter`, its claim; `api.TestAChildsMergedHeadOnTheParentsTabIsReadThroughOnceAWindow`).
-The limit: a tie made after a merged pull request's last read is not followed for a head no result is recorded at, until a result at that head is read through or the pull request's next event reads it.
-A link to the pull request's own URL is followed where the mark covers its order, and not in the three orders above that it misses: the row's first write in flight, its move from a repository's old name, and a pass whose read of the commit messages failed.
-The tasks of the attribution rule, which judge a pull request's issue from its stored facts at each read so that no row stores an issue, replace the mark and the read-through.
+An open row is due 5 minutes after its last read (`PullRequestHeadStaleAfter`), and each pass reads up to 200 due open rows, the one read longest ago first (`ListStalePullRequestHeads`), so a head move whose event never came reaches the row.
+A pass starts 5 minutes and up to a tenth more after the last one ended (`delivery.ReconcileInterval`, `duty.Jittered`), so while at most 200 rows are due, each open row is read at every pass; where more are due, the rows read longest ago go first and the others wait for a later pass (with 207 open rows due, a pass leaves 7, which the next pass reads first).
+A tie reaches an open row with current texts at its next read all the same, since the statement needs no read of the row.
 
 The intake checks each message's subject before it decodes anything:
 only `notifications.github.<owner>.<repo>.pr.<n>`, with nothing after the number, and `notifications.github.<owner>.<repo>.workflow.<file>.<action>` can carry a kind it handles, and every other subject
@@ -1511,7 +1532,8 @@ The reconcile reads each such owed read under the target every pass, which GitHu
 While the target stands, one pull request can be owed under two names, the old one and the name GitHub's events now carry, until an operator corrects the target.
 An operator corrects it with a new rename through the route: `PUT /api/v1/settings/repo-projects/{owner}/{repo}` with `renamed_to` the name GitHub gives the repository today, or `""` where it was never renamed.
 The reconcile's next passes then read each pull request whose event came while the target stood and write its head under the corrected name (`TestAnEventWhileAStoredRenameTargetBreaksTheNameRuleIsReadOnceTheTargetIsCorrected`): every `failure` in the first pass where fewer than 200 failures stand before it, and the `refusal` rows 50 a pass, so more than 50 of them take more than one pass.
-A GitHub answer that holds a value no head row holds — text that is not UTF-8 or holds a NUL byte, a state other than open, closed or merged, a head commit, base branch or merge commit over 1,024 bytes (the values an index holds; the head branch is not bounded) — is no such envelope: it is refused where the row is built (`errNoRowHolds`, `checkHeadRow`), before any statement, and is a head row not stored, so the delivery owes the pull request a read of kind `failure` and is acknowledged once that is written, with the `WARN` line `the read it is owed is recorded` naming the refused value in `error`.
+A GitHub answer that holds a value no head row holds — a value of identity (the head commit, the head branch, the base branch, the merge commit, the URL or the head repository) that is not UTF-8 or holds a NUL byte, a state other than open, closed or merged, a head commit, base branch, merge commit or URL over 1,024 bytes (the values an index holds; the head branch is not bounded) — is no such envelope: it is refused where the row is built (`errNoRowHolds`, `checkHeadRow`), before any statement, and is a head row not stored, so the delivery owes the pull request a read of kind `failure` and is acknowledged once that is written, with the `WARN` line `the read it is owed is recorded` naming the refused value in `error`.
+A title, a body or a commit message is no such value: each NUL byte and each byte that is not UTF-8 in it is stored as U+FFFD (`freeText`, The GitHub intake above).
 No failure of a statement is sorted by its SQLSTATE: after those checks, a failure of the owed record's insert is the database not taking the record now, whatever its code — a unique violation of the upsert, for one, which PostgreSQL raises while a unique index of the table is built or rebuilt concurrently — and the envelope is handed back as above, since acknowledging it would lose a real head while the fault lasts.
 Each row says why its read is owed: `failure` where GitHub did not answer (a 5xx, a timeout, a rate limit, a head write that failed, an answer no head row holds), and `refusal` where GitHub answered that it cannot give the pull request (a 404 or 410, or a repository the App cannot read).
 A write of GitHub's answer that replaces a newer row no read of GitHub wrote also owes a `failure` (the trigger `pull_request_heads_older_read`, `20261116182209`): during a roll the release before stores GitHub's newer answer from an envelope, and a slower read of this build can land an older answer after it.
@@ -1521,9 +1543,9 @@ A read whose place cannot be taken does not start: at the intake it is a head no
 GitHub's `updated_at` is whole seconds, so the order the answers arrive in says nothing of which is the newer, and a read that began first and was answered slowly landed its older head over the newer one, where a pass at the older head stood until the next pass.
 No order decides two answers of one second for certain: a read that took the later place can still be answered with the older state where its request reached GitHub first, and a read that GitHub answers only after a retry (a timeout, a 502 or a 504, up to 3 tries in about 63 s, `readGitHubPage`) keeps the place of its first try, so a write of the same second with other facts of GitHub's (the head, its branch, the base, the state, the title or the URL) owes a `failure` whichever of the two answers the row keeps, and the next read writes what GitHub holds then.
 Until that read, the results route compares with the stored head, which can be the older answer of that second.
-A change of the attribution alone, by a write of GitHub's answer, owes nothing: it is Dispatch's own judgement of those facts, which a later rule changes at the same second.
-A write of the release before that changes a fact (the head, its branch, the base, the state, the title, the URL, the time or the attribution) of a row a read of GitHub wrote owes a `failure` too, in the statement that takes the row's mark away (`pull_request_heads_unread_write`, as `20261116182209` replaces it), whatever the row's state and time: the reconcile reads no closed row, so a close that release wrote from an envelope off GitHub's own second would otherwise stand until the next event.
-A write that owes nothing: an insert of the release before, which no read of this release has marked, and an update of a row no read marked; such a row is read by the open arm, or once by the merged arm, and a closed one stays as written until its next event, in the safe direction, since a closed row is no basis.
+A write of a row's issue alone, which each pass makes from the statement's answer (`SyncAttributions`), owes nothing and keeps the row's mark: the issue is Dispatch's own answer from those facts, and no fact of GitHub's (`pull_request_heads_unread_write`, as `20261117111040` replaces it).
+A write of the release before that changes a fact (the head, its branch, the base, the state, the title, the URL or the time) of a row a read of GitHub wrote owes a `failure` too, in the statement that takes the row's mark away (`pull_request_heads_unread_write`, as `20261117111040` replaces it), whatever the row's state and time: the reconcile reads no closed row, so a close that release wrote from an envelope off GitHub's own second would otherwise stand until the next event.
+A write that owes nothing: an insert of the release before, which no read of this release has marked, and an update of a row no read marked; such an open row is read by the open arm, a merged one by the facts line while its texts are not current, and a closed one stays as written until its next event, in the safe direction, since a closed row is no basis.
 The reconcile's head pass reads the owed pull requests from GitHub before the stored rows: every `failure` first, at most 200 a pass, and then the `refusal` rows, at most 50 a pass (`delivery.RefusedReadsPerPass`).
 Inside each kind the row the reconcile has read the fewest times goes first, and then the one owed longest, so every row has its first read before any row has its second.
 Both lists are taken before either is read, and a read that answers the other way moves its row to the other kind.
@@ -1538,7 +1560,10 @@ No memory of a pass ends a read: each refusal is asked about at its own read, so
 The intake takes the events of every repository (`notifications.github.>`), so no repository leaves the intake's rule and ends a read either.
 So a pull request GitHub still answers 404 for at the reconcile's first read, in a repository the App reads, has no head until its next event.
 A pass looks the installation of each repository up once (`passInstallations`): a repository the App is not installed on costs the pass one lookup however many of its rows the pass reads, and its rows stay owed, since an installation that comes back has the pull request again.
-No reader of a head reads that table, so an owed read is never a head, a basis or a merge.
+A row of that table is never a head, a basis or a merge, and while a read is owed Dispatch does not know that the stored head is the head.
+So three readers of a head by issue read that table too (`HeadsAttributedTo`, `HeadAttributedTo`, `NewestPullRequestHead`; `owedReadJoin`, `20261118215934_pull_request_reads_owed_refusal`): the stored head of a pull request owed a read is no basis, no check run is read at it, and the results route names the pull request in `heads_not_read` (Routes below).
+`BaseBranchMergedFor` does not read that table, since GitHub never changes the base branch of a merged pull request.
+A refusal row names how GitHub refuses the read (`refused_as`) and since when (`refused_since`).
 With no forged envelopes, the reconcile writes the heads of the pull requests an outage left owed, up to 200 a pass, from the first pass after GitHub answers again, and each further 200 wait one more pass.
 A pass comes within one period, 5 minutes and up to a tenth more (`delivery.ReconcileInterval`, `duty.Jittered`).
 A rate limit ends no read of a pass: the pass reads every row it listed, the limited installation's at no call once the client holds the limit (only the reads already in flight, at most 8, are sent), and fails with the limit at its end, so a limit on one installation holds back no other installation's heads.
@@ -1548,7 +1573,7 @@ Each such row then becomes a `failure` with fewer reads than the real failure, s
 After the outage, each 200 such rows can delay the real head by one more pass.
 With 10,000 refusals owed before the outage and no pass during it, the first pass after GitHub answers again makes 51 reads of a pull request for the owed rows, the failure and 50 refusals, and asks GraphQL about each of the 50 refusals (`TestTenThousandOwedRefusalsTakeNoReadFromAnOwedFailure`).
 Any bearer of Envoy's `/v1` publish route can name a pull request GitHub never had, and each such envelope owes a `refusal`; a refusal of the forged envelopes themselves belongs to the route that publishes them, not to the intake.
-Outside an outage, such envelopes cost at most 50 reads of a pull request a pass, one GraphQL request, one point of the App's GraphQL budget, for each of those that GitHub answers 404, and one installation lookup for each repository the App is not installed on.
+Outside an outage, such envelopes cost at most 50 reads of a pull request a pass, one GraphQL request, one point of the installation's GraphQL budget, for each of those that GitHub answers 404, and one installation lookup for each repository the App is not installed on.
 The bound of 50 questions holds for the refusals alone: a pass asks the same question for each failure it reads that GitHub now answers 404, up to 200 more, so a pass asks up to 250.
 10,000 of them that name numbers a repository the App reads does not have cost 10,000 reads of the intake, and then 50 reads and 50 GraphQL points a pass, up to 600 of each an hour; each ends at its first read, so they are gone after 200 passes, about 17 to 18 hours, and no row is read twice.
 10,000 of them that name a repository the App is not installed on cost the intake up to 10,000 installation lookups, signed by the App, since the client keeps no refusal, and then the reconcile one lookup a pass, up to 12 an hour, and no read of a pull request or of GraphQL; they stay, each read at most once a pass, the fewest reads first, every row once in 200 passes.
@@ -1680,9 +1705,9 @@ So no later migration meets the setting.
 With `standard_conforming_strings` off, a backslash before a quote in a plain literal escapes that quote, so a text that the census reads as one statement can hold a second statement for Postgres.
 With `client_encoding` at `SJIS`, the last byte of a UTF-8 character and a backslash after it can be one character, so that backslash escapes nothing.
 With `backslash_quote` off, Postgres refuses a `\'` in an `E'…'` literal, which the census reads as an escaped quote.
-The runner needs a database whose encoding holds every character of the migrations it applies: `UTF8`, or `SQL_ASCII`.
+The runner needs a database whose encoding is `UTF8`: migration `20261117111040_pull_request_texts` refuses every other encoding, `SQL_ASCII` included, with the line `dispatch: database <name> has encoding <encoding>, and the attribution of a pull request needs UTF8` (`attribution_database_refusal`, Database migrations below).
 With `client_encoding` at `UTF8`, Postgres converts the text of each migration to the database's encoding, and it stops at the first character that this encoding does not have.
-On PostgreSQL 18.6, `select 1 -- em dash —` fails on a `LATIN1` database with `character with byte sequence 0xe2 0x80 0x94 in encoding "UTF8" has no equivalent in encoding "LATIN1"`, and it runs on a `SQL_ASCII` database.
+On PostgreSQL 18.6, `select 1 -- em dash —` fails on a `LATIN1` database with `character with byte sequence 0xe2 0x80 0x94 in encoding "UTF8" has no equivalent in encoding "LATIN1"`; a `SQL_ASCII` database runs it, and the guard of `20261117111040` refuses that database all the same.
 
 At the start of each migration the runner also gives `session_authorization`, `role` and `search_path`, in that order, the values that `reset` gives them (`resetSettings` in `internal/pgmigrate/lock.go`): transaction-local in `pgmigrate.Exec`, or session-local and restored on return in `pgmigrate.ExecNonTransactional`.
 Postgres resolves a name that a migration writes without its schema by these three settings.
@@ -2457,28 +2482,93 @@ Migration `20261102122300_pull_request_heads` creates `pull_request_heads`, the 
 This is not `delivery_pull_requests`, which keeps the merged pull requests of the delivery population and no head commit:
 this table holds open ones too, by any author and in any repository, one row per pull request.
 A row names the `repo` and `number`, the repository under the canonical name it is called today (`refs.CanonicalRepo`), so one repository stored under two names keeps one row and one attribution (`20261105075455_repo_projects_renamed_to`, below);
-then the `head_sha` (on a merge, the final head of the merged work), the `head_ref` and `base_ref`, the `state` (`open`, `closed` or `merged`), the `issue_key` Dispatch's attribution picks and which of its five sources named it, the title and URL, the pull request's `updated_at` as GitHub answered it, when the reconcile or a read-through last read it through the App, the reader's clock as the read of GitHub whose answer the row holds began, null where no read of GitHub wrote it (`github_read_at`, `20261116163242_pull_request_heads_github_read`; the moment the read began from `20261117114124_pull_request_heads_read_start`), that read's place in the order of reads (`github_read_order`, `20261117172917_pull_request_heads_read_order`), and how many writes of a link to the pull request have marked the row unread (`link_mark`, the same migration).
-That key is the first issue the five sources name that resolves to the repository the pull request is in, not the first key they name (`attributionCandidates`, `attributionHeld` in `delivery/attribution.go`):
-a pull request titled after another repository's issue therefore keeps its own, and one no candidate of which resolves to its repository is attributed to nobody, with the source `none`, as is one whose head branch is in another repository (`headInOwnRepository`).
-The hold is the server's own repository-resolution rule spliced into the statement that reads the candidates (`refs.IssueRepoTerms`, `attributionCandidatesQuery`), so the attribution and the issue page cannot disagree, and a pull request's best 25 candidates are the ones read (`attributionCandidateBound`).
-One rule picks both attributions: this row's `issue_key` (`headAttribution`) and the issue of a `delivery_pull_requests` row, which the reconcile resolves again from the database alone (`AttributePullRequests`).
+then the `head_sha` (on a merge, the final head of the merged work), the `head_ref` and `base_ref`, the `state` (`open`, `closed` or `merged`), the `issue_key` and `attribution_source`, which each reconcile pass writes from the statement's answer for the release before this one to read (`SyncAttributions`), the title and URL, the pull request's `updated_at` as GitHub answered it, when the reconcile or a read-through last read it through the App, the reader's clock as the read of GitHub whose answer the row holds began, null where no read of GitHub wrote it (`github_read_at`, `20261116163242_pull_request_heads_github_read`; the moment the read began from `20261117114124_pull_request_heads_read_start`), and that read's place in the order of reads (`github_read_order`, `20261117172917_pull_request_heads_read_order`).
+No reader of this build takes that `issue_key` as the pull request's issue, but for a pull request with no current texts (Links and ties above).
+The issue is the first one the five sources name that resolves to the repository the pull request is in, not the first key they name (`attributedTerms`, `attributionHeld` in `delivery/attribution.go`):
+a pull request titled after another repository's issue therefore keeps its own, and one no candidate of which resolves to its repository is credited to nobody, with the source `none`, as is one whose head branch is in another repository (`headInOwnRepository`).
+The hold is the server's own repository-resolution rule spliced into the statement (`refs.IssueRepoTerms`), so the attribution and the issue page cannot disagree, and a pull request's best 25 candidates are the ones read (`attributionCandidateBound`).
+Two links of one URL in two letter cases tie, and the lesser key in byte order takes the pull request.
+One statement answers for this row and for the pull request's `delivery_pull_requests` row, so the results and the timeline name one issue (`attributedIssues`).
 An older answer arriving after a newer one leaves the row as it is, and so does an answer of the stored second whose read took an earlier place than the stored row's read (The GitHub intake above); the reconcile reads an open row again at the first pass that reaches it once it was last read five minutes before (Links and ties above).
 The rule trusts only a row a read of GitHub wrote: GitHub's answer applies over a row with no `github_read_at` whatever time it holds, but for an answer of the row's own second over a row the release before wrote over (below), and only a marked row spares the intake's read of an event (`upsertHeadRow`, `headReadCovers`).
-Every row stored before `20261116163242` holds none, since a release before it wrote rows from an envelope's fields, and so does a row that release changes while it serves beside this one (the trigger `pull_request_heads_unread_write`, which in the same statement owes the pull request a read, so the first reconcile pass that reaches that owed read reads it again whatever its state; an open row and an unread merged row have arms of their own, and a closed row has none).
+Every row stored before `20261116163242` holds none, since a release before it wrote rows from an envelope's fields, and so does a row that release changes while it serves beside this one (the trigger `pull_request_heads_unread_write`, which in the same statement owes the pull request a read, so the first reconcile pass that reaches that owed read reads it again whatever its state; an open row also has the open arm, a merged row the facts line while its texts are not current, and a closed row has neither).
 That write clears `github_read_at` and leaves `github_read_order`, which the release before names nowhere, so an answer of GitHub of the same second whose read took an earlier place than the one the row keeps is refused over it; the write owed a read, so the first reconcile pass that reaches that owed read writes GitHub's head.
 The head pass first reads the pull requests owed a read (`pull_request_reads_owed`, `20261116163445_pull_request_reads_owed`, The GitHub intake above), every `failure` before any `refusal`, creating each one's row where none exists.
 That head pass runs whether or not the deployment has delivery settings, and before the deploy repository's permission check (`Reconcile.runOnce`):
 a recorded result is compared with those heads in every deployment, and behind the settings the pass never ran in one that had none, so a result recorded at a head a later push replaced went on standing at it for ever.
 A failed head pass is logged, and named in `delivery_settings.last_error` beside the other steps' failures when the pass reached them.
-The head pass also takes every merged row that no read of GitHub has reached since it was written or marked (`checked_at` null: credited to nobody, written by a read that could not read every source, or marked by a write of a link to it, Links and ties above), and every merged row an older rule judged, once per rule version (`delivery.AttributionRuleVersion`, `20261105070440_pull_request_heads_attribution_rule` below):
-a pull request merged under an older rule keeps whatever that rule concluded, and nothing else ever looks at a merged row again, so without that arm a result at such a merged head would stand at no basis for good.
+Then the head pass reads the due open rows (the open arm, Links and ties above), and then the facts line: each open or merged results row whose texts are not current or whose commit messages are not read, and each timeline row that is not unfetchable and has no results row under any name (`Reconcile.readFactsLine`).
+The line reads the open rows first, then the pull requests whose answer is not known, then the rows no read of GitHub wrote, then the rows whose stored issue differs from the answer of their title and branch alone, then the rest, then the rows whose messages are not read though a higher source decides, and last the rows whose last read was refused, the oldest refusal first.
+One GraphQL query reads the facts of at most 20 pull requests of one installation (`FactsBatchSize`), and a pass sends at most 25 such queries for each installation (`FactsQueriesPerPass`), which the open arm and the facts line share: at most 500 pull requests of each installation a pass.
+A refused read stays in the line, after every other, and only GitHub's proof that no such pull request exists ends it (`pullRequestAbsent`, `attribution_absent_at`); a rate limit of one installation ends no read of another.
+Then the pass writes the statement's answer to `issue_key` of every stored row, with no cap and no read of GitHub, so the release before reads the answer this build gives (`SyncAttributions`).
+A results row whose issue changes queues one move (`pull_request_attribution_moves`, below), and the pass appends the `issue.pull_request_attribution_changed` events of at most 500 moves, the oldest first: one on the issue the pull request left and one on the issue it reached (`AppendAttributionEvents`, `AttributionMovesPerPass`).
+So n changes of attribution need ceil(n / 500) passes for their events.
+Every reader's answer is right at its first read all the same, since no reader waits for the write or the events.
+The pass logs one line, `msg="dispatch delivery: pull request attribution"`, with `facts_left_before`, `facts_left`, `reads_left`, `facts_refused`, `changes`, `events` and `moves_queued`, and `rate_limit_scope` where a limit ended a read.
+`runOnce` logs `msg="dispatch delivery: reconcile pass"` with `took`, the time of the whole pass, once at the end of each pass.
 The row is written outside the reconcile by the `pull_request` envelope's handler, which takes from the envelope only which pull request changed and writes GitHub's answer about it (`GET /repos/{owner}/{repo}/pulls/{number}`), and by the read-through made for a result's commit (`delivery.ReadThroughCommitPulls`):
 a recorded result makes one, and so does the read of an issue's results for each `before_merge` result's commit, which spends at most one such read per repository and commit every `delivery.CommitPullReadStaleAfter` (`GET /api/v1/issues/{key}/results`, Routes below).
-`pull_request_heads_issue_head` answers the heads one issue's checks are compared with, `pull_request_heads_open_stale` the reconcile's open batch, `pull_request_heads_merged_unread` and `pull_request_heads_merged_rule` its merged arm
-— the first partial on `state = 'merged' and checked_at is null` (`20261117172917`), the second on `state = 'merged'` and keyed by `attribution_rule` (`20261111060005_pull_request_heads_merged_rule`)
-— and `pull_request_heads_repo_head` (`20261105112616`, below) the question the release before this one asks before it reads GitHub:
+`pull_request_heads_issue_head` serves the readers' arm of the results rows that store an issue, `pull_request_heads_open_stale` the reconcile's open batch, and `pull_request_heads_url_lower` and `pull_request_heads_number` the statement's arms by link and by number (`20261117111040`, below).
+`pull_request_heads_merged_unread` and `pull_request_heads_merged_rule`, partial on merged rows (`20261111060005_pull_request_heads_merged_rule`), serve the merged arm of the release before this one, and `pull_request_heads_repo_head` (`20261105112616`, below) the question that release asks before it reads GitHub:
 whether an open or merged stored pull request has this commit of this repository as its head.
+No query of this build reads those three, and the contracting migration of the next release drops them.
 A new table, as above; its census answers `0`.
+
+Migration `20261117111040_pull_request_texts` creates `pull_request_texts`, the texts a pull request's issue is read from: one row for each `pull_request_heads` row, keyed `(repo, number)` as that row is, which it follows on a rename and goes with on a delete.
+A row holds what one read of GitHub answered: the head, the branch, the head repository (`''` where GitHub names none, a deleted fork), the base, the title, the body, GitHub's `updated_at`, and the commit messages, null where the read did not read them.
+The trigger of `20261117122117` below writes its four key columns and `reading`, and no writer does.
+The statement takes a texts row as the pull request's facts only where it describes the results row's head: the same head, base, branch, title and update time (`texts_current`).
+The migration adds `pull_request_heads.attribution_refused_at` and `attribution_absent_at`, when a read of the facts was last refused and when GitHub proved that no such pull request exists, and `delivery_pull_requests.facts_refused_at`, the same refusal for a timeline row with no results row.
+It replaces `pull_request_heads_unread_write` with the facts of the head alone in its tuples: a write of `issue_key` or `attribution_source` alone neither takes the row's mark away nor owes a read, so the pass's write of the statement's answer costs no read.
+It adds `facts_refused_at` to the columns `delivery_pull_requests_changed` ignores, so a stamp of a refusal logs no change.
+Its indexes serve the statement: `pull_request_heads_number` and `delivery_pull_requests_number` the joins through the renaming rule, `pull_request_heads_url_lower` the arm by link, `delivery_pull_requests_issue` the timeline rows by issue, and `pull_request_texts_keys` and `pull_request_texts_reading` the keys and the reading.
+`pull_request_heads_url_lower` is partial on URLs of at most 1,024 bytes, so it holds no longer URL: a release before `20261116163242` stored an envelope's URL with no check, and a failed index build fails the whole migration.
+A stored row with a longer URL is no pull request of GitHub's, and no link matches it; the first pass that reaches it reads it from GitHub.
+
+**The guard on the database.**
+The migration first creates `attribution_database_refusal()` and raises its line where it answers one, so a refused database stores nothing of the migration.
+It refuses a database whose encoding is not `UTF8`, and one whose `lower()` or `upper()` folds an ASCII letter in another way than the collation `"C"` does.
+The reading of keys runs under `"C"`, and every reader compares repository names and links with `lower()` under the database's own collation, so the two answer alike only in such a database.
+The line names the encoding, or the collation with its provider, ctype and locale: `dispatch: database <name> has encoding <encoding>, and the attribution of a pull request needs UTF8`.
+Its census file answers 1 for each of the two conditions the database meets, so a refused database stops the deploy before the serving release stops (Pre-deploy census below).
+Each start of Dispatch asks the same function (`delivery.PrepareAttribution`), because a logical restore brings `schema_migrations` with it and runs neither the migration nor its census.
+So a database restored into another encoding or collation stops the process with that line before it listens.
+No stored row can fail a statement of the migration: each added column is nullable with no default, the table is new, and a replaced function reads no row.
+It holds `pull_request_heads` and `delivery_pull_requests` `ACCESS EXCLUSIVE` from their `alter table` to the commit, each index reads its table once under that lock, and the census holds both tables to its 1 GiB limit.
+The release before names neither the table nor the new columns, and its writes of a results row run the narrowed trigger, so it serves beside this one.
+
+Migration `20261117122117_attribution_reading` creates the reading, `attribution_keys(repo, head_ref, title, body, messages)`: the issue keys the title and the body name, the GitHub issues the body cites, the keys of the head branch and the keys of the commit messages, each in text order (the five sources, `delivery/attribution.go`).
+Every pattern of it runs under the collation `"C"`, so each database the guard admits gives the same keys, and each list keeps only entries of at most 1,024 bytes, so the reading keeps no key and no cited URL above that.
+The trigger `pull_request_texts_keys` sets a texts row's four key columns from its own new texts, and `reading` to `attribution_reading()`, at each insert and update, so a writer cannot store keys.
+`attribution_reading()` is the identity of the reading: an md5 of the body of `attribution_keys` as the catalog stores it, its settings, the source and settings of the trigger function, and the major version of PostgreSQL.
+A reader takes a row's stored keys only where its `reading` is the identity that runs now, and reads the keys from the row's texts where it is not.
+It writes the catalog alone and creates the trigger under `SHARE ROW EXCLUSIVE` on `pull_request_texts`; the release before names neither function nor the trigger, and writes no texts row; its census answers `0`.
+
+**How to change the reading.**
+A change of the reading is one migration of a later release, with two statements: `lock table pull_request_texts in share row exclusive mode;`, then `create or replace function attribution_keys(…)`.
+The lock keeps a write of texts from spanning the change, and the census admits both statements as catalog writes.
+A change by hand is the same two statements in one transaction.
+A change of a comment or of white space in the body changes the identity too, which costs one remake of the keys and gives no wrong key.
+No migration remakes the keys, because one update of every row would hold each row's lock for the whole statement.
+After a change of the key reading, reads by issue are slow until the keys are made again.
+Each Dispatch process checks every 30 seconds and makes them again, with no App key and no restart (`delivery.KeyRemakeLoop`, `KeyRemakeEvery`, `RemakeKeys`), and logs `msg="dispatch delivery: keys remade"` with `rows` and `took`.
+The measured remake took 2.1 s at 5,000 pull requests and 25.6 s at 50,000.
+In that time a read by issue took 1.5 s at 5,000 and 16.9 s at 50,000.
+A minor update of PostgreSQL causes no such window.
+`dispatch attribution` prints the count of texts rows whose keys wait to be read again (Routes below).
+
+Migration `20261118164016_pull_request_attribution_moves` creates `pull_request_attribution_moves`, the changes of a pull request's issue that wait for their events.
+It holds one row for each pull request whose results row took another issue, keyed by the canonical name and the number: `from_key`, the issue it held before the first move not yet appended, `to_key`, the issue it holds now, and the `source` of that answer.
+A second move before the events keeps `from_key`, so a move and the move back append nothing.
+`SyncAttributions` queues the rows, and `AppendAttributionEvents` takes at most 500 of them a pass, the oldest first, and deletes them in the transaction that appends their events (the head pass above).
+A new table; the release before names it nowhere; its census answers `0`.
+
+Migration `20261118215934_pull_request_reads_owed_refusal` adds `pull_request_reads_owed.refused_as`, the word of the last refusal of an owed read (`app_not_installed`, `repository_unreadable` or `pull_request_not_found`), and `refused_since`, the time of the first refusal of that owed read.
+Both are null for a failure, and on each row a release before this one wrote; the results route names both in `heads_not_read` (Routes below).
+It creates `pull_request_reads_owed_repo_number` on `(lower(repo), number)`, partial on names of at most 1,024 bytes, for each reader of a head by issue and the read-through's read of the owed reads of its repository.
+It creates `pull_request_texts_messages_not_read` on `pull_request_texts (lower(repo))` where `commit_messages is null`, for the read of the pull requests of one repository whose answer is not known (`delivery.PullRequestsNotKnown`).
+Each column is nullable with no default, and each index reads its table once; the release before names neither column; its census answers `0`.
 
 Migration `20261102122400_default_branch_commits` creates `default_branch_commits`, what Dispatch's GitHub App answered about one commit of one repository: whether the repository's default branch carries it.
 It cached the answer the results read asked for while that one question decided an `after_merge` and a `default_branch` check alike, a yes kept for good and a no re-read after five minutes.
@@ -2538,15 +2628,18 @@ It refuses and rewrites no row; its census answers `0`.
 Rolling Dispatch back past it is an image rollback alone;
 `20261105014808_comments_answers.down.sql` is the by-hand script that also drops the column, which loses which comment each reply answered.
 
-Migration `20261105070440_pull_request_heads_attribution_rule` gives `pull_request_heads` a not-null `attribution_rule` defaulted `0`, the rule that last judged that row's `issue_key` and `attribution_source`, as `delivery.AttributionRuleVersion` numbers it.
+Migration `20261105070440_pull_request_heads_attribution_rule` gives `pull_request_heads` a not-null `attribution_rule` defaulted `0`, the version of the rule that last judged that row's `issue_key` and `attribution_source`, as the release before this one numbers it.
 `0` is what every row written before the column has:
 the rule that took the first candidate the five sources named outright, whatever repository that issue resolved to.
 A merged row is the one row nothing revisits:
 an open row comes round every five minutes, but the merged arm took a merged row only while no read of GitHub had reached it, a merge envelope that names a head repository stamps `checked_at` as such a read, and a read-through runs only for a commit that heads no pull request Dispatch knows.
 So a pull request merged under an older rule kept for good whatever that rule concluded, and one that rule credited to nobody left every `before_merge` result at its merged head standing at no basis for ever.
-The column bounds the repair: the reconcile's merged arm takes a merged row credited to nobody that this build's rule has not judged, and the read stamps the row at that rule whether or not it could attribute it, so every such row stored before the deploy is judged once more and then left alone, and a later change to the attribution reaches the merged rows already stored by raising that constant by one.
-The migration replaces `pull_request_heads_merged_unread` to follow the arm it serves:
-`20261102122300` made it partial on `state = 'merged' and issue_key is null and checked_at is null`, and this one leaves it partial on the first two of those alone, since its arm takes such a row whatever its `checked_at` says.
+The column bounded the repair in the releases that had the merged arm: the arm took a merged row credited to nobody that the release's rule had not judged, and the read stamped the row at that rule whether or not it could attribute it, so every such row was judged once more and then left alone, and a later change to the attribution reached the merged rows already stored by raising that version by one.
+This build has no merged arm: the statement gives a merged row's issue from its facts at each read, and the facts line reads a merged row that has no facts (`20261102122300` above).
+So `attribution_rule` is unread by this build: only the trigger `pull_request_heads_unread_write` still sets it to `0`, for the release before, which reads it while both serve.
+The contracting migration of the next release drops it, with `pull_request_heads_merged_unread` and `pull_request_heads_merged_rule`, once no release still serving reads them.
+The migration replaced `pull_request_heads_merged_unread` to follow the arm it served:
+`20261102122300` made it partial on `state = 'merged' and issue_key is null and checked_at is null`, and this one leaves it partial on the first two of those alone, since its arm took such a row whatever its `checked_at` said; no query of this build reads the index.
 `20261111060005_pull_request_heads_merged_rule` restores the third once the arm widens again, and gives the merged rows an older rule judged an index of their own.
 The release before this one keeps working across that drop:
 its query is partial on all three columns, so every row that query wants is in the new index, which serves it with the one test on `checked_at` left to the recheck, and an index decides a plan and never an answer, so that release answers the query correctly from a sequential scan too.
@@ -3974,6 +4067,19 @@ Each item below names a path with its method and identity, then its purpose.
   `400 ASSIGNEE_NOT_ALLOWED` for an email nobody has signed in with, `404 NOT_FOUND` for an unknown project.
   It needs the `person` scope too, and no agent moves a default: an agent names a project's first one on `POST /api/v1/projects`.
 
+- `/api/v1/delivery/attribution` (GET; cookie, trusted header, or bearer)
+
+  What the attribution of the stored pull requests still waits on, counted at the request (`delivery.ReadAttributionCounts`), with no delivery settings and no App key:
+  `{facts_left, reads_left, facts_refused, reading, keys_on_another_reading, moves_queued, links_in_two_cases, owed_failures, owed_failures_oldest_at, owed_refusals, owed_refusals_since}`.
+  `reads_left` is the pull requests a pass still reads the facts of (the facts line, Database migrations above), `facts_left` the part of them that has no facts, and `facts_refused` the part whose last read was refused.
+  `reading` is the identity of the reading that runs now, and `keys_on_another_reading` the texts rows whose keys another reading made, which each process makes again within 30 seconds.
+  `moves_queued` is the changes of attribution whose events wait, and `links_in_two_cases` the URLs that more than one issue links in two letter cases.
+  The four counts of owed reads: `owed_failures`, the pull requests whose head is not read while a read GitHub did not answer is owed, and `owed_failures_oldest_at`, the oldest time one was owed;
+  `owed_refusals`, those whose read GitHub refuses, and `owed_refusals_since`, the oldest time one was refused, or owed where a release before this one owed it.
+  Each time is left out where its count is 0.
+  It reads no GitHub, and a pull request GitHub proved absent is in no count.
+  `dispatch attribution` prints it in seven lines, each count in the grouping `en-US` writes, and the tool spec `dispatch_attribution` is the command's.
+
 - `/api/v1/delivery/session-groups` (POST; cookie, trusted header, or bearer)
 
   Create a Delivery session group `{name, sessions}`: its sessions' pull requests take it as their Parent agent, `group:<id>`.
@@ -4092,7 +4198,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/going/catalogue` (GET; cookie, trusted header, or bearer)
 
-  The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-five tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
+  The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-six tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
   The one it leaves out is `dispatch_review`, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations on the graph must never propose one.
   Each action carries `action` (the tool's own name, such as `dispatch_issue`), its `description` (the tool spec's own, whole and unchanged, which is what a model chooses on), the `routes` it writes, each a `method` and a `pattern` of this table, the `relations` its verbs write (each a structural edge kind or a `block[]` attribute of a typed block), its `request` (the tool's own argument schema) and an `example` call that schema accepts.
   Twenty actions is under the count where a model's choice falls apart, so the catalogue is read whole: it takes no query and serves no page.
@@ -4400,21 +4506,41 @@ Each item below names a path with its method and identity, then its purpose.
   - `?at=<40-hex commit>` compares every check of the issue with that one commit and nothing else.
     The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head.
 
-  Each check carries `compared_with`, every commit and branch its results are compared with in the order they are asked about, `compared_nothing` where it has none, and `pass_stands`.
+  Each check carries `compared_with`, every commit and branch its results are compared with in the order they are asked about, `compared_nothing` where it has none, `heads_not_read` and `issues_not_known` where Dispatch does not know a head of it yet (below), and `pass_stands`.
   Each result carries `commit_stands`, where its own commit stands against those, `check_words_moved`, and `retracted` where a retraction stands against it.
 
-  - A `before_merge` check is compared with every head Dispatch holds for the check's own issue: the head of an `open` pull request, and the final head of a `merged` one, attributed to that issue.
+  - A `before_merge` check is compared with every head Dispatch has read of a pull request of the check's own issue: the head of an `open` pull request, and the final head of a `merged` one, whose issue the statement gives as that issue (Links and ties, above).
+
+  - A pull request of that issue whose head Dispatch has not read is no basis, and no pass stands by it: it has only a timeline row and no results row yet, or a read of GitHub is owed for it (`delivery.HeadsAttributedTo`).
+    The check names each such pull request in `heads_not_read`, `[{number, refused_as, refused_since}]`.
+    `refused_as` is how GitHub refuses the owed read, `app_not_installed`, `repository_unreadable` or `pull_request_not_found`, and `refused_since` the time of its first refusal.
+    Both are left out while the owed read is a failure, and `refused_since` is left out for a refusal that a release before this one owed.
+    The reason `head_not_read` says that Dispatch has not read the head of a pull request of this issue yet.
+    A result at no basis of such a check is `{answer: "unknown", reason: "head_not_read"}`, never `other_commit`, since that head can be the one the result stands at, and a check with no basis at all compares with nothing for `head_not_read`.
+    Its `pass_stands` is then `unknown`, and so is the `pass_stands` of a check that has a basis and such a head where no pass stands at a basis.
+
+  - A pull request of the issue's repository whose answer is not known is no basis either: its texts are current, its facts name no issue held to the repository, and its commit messages are not read (Links and ties, above; `delivery.PullRequestsNotKnown`).
+    The reason `issue_not_known` says: "Dispatch does not know yet whether pull request #N is this issue's."
+    A result whose commit is the head of such a pull request is `{answer: "unknown", reason: "issue_not_known", possible_head: {repo, pull_request, commit}}`, with no `basis`, since nothing showed that the pull request is this issue's.
+    An issue that holds no pull request at all, in a repository that holds an open or merged pull request whose answer is not known, compares with nothing for `issue_not_known`, and its `pass_stands` is `unknown`, never `no`: that pull request can be the issue's own.
+    An `after_merge` result is `unknown` for `issue_not_known` where such a pull request merged into another branch than the issue's, unless the default branch carries the result's commit.
+    The check names each such pull request that its answer turns on in `issues_not_known`, `[{number}]`, and `heads_not_read` never names one.
+    The state ends at the first pass that reads the pull request's commit messages.
+
+  - Both reasons change an answer only where the issue resolves to a repository, the deployment holds an App key and the App reads the repository (`comparisonReader.decides`).
+    Elsewhere each field answers as it did before Dispatch named either: a repository Dispatch cannot read is unknown already, and an issue with no repository holds every head it will ever hold.
 
   - An `after_merge` check is compared with the branch the check's issue's pull request merged into — the `base_ref` of the newest merged pull request attributed to that issue — and with that repository's default branch, which answers alone where Dispatch holds no merge of the issue or the merged row names no base branch.
 
   - A `default_branch` check is compared with that repository's default branch alone, whatever branch the pull request merged into.
 
   - A check compared with nothing says why in `compared_nothing`:
-    `no_pull_request_or_branch` where the issue resolves to no repository, and where a `before_merge` check's issue holds no pull request at all;
+    `no_pull_request_or_branch` where the issue resolves to no repository, and where a `before_merge` check's issue holds no pull request at all and its repository holds no pull request whose answer is not known;
+    `head_not_read` and `issue_not_known` where a `before_merge` check has no basis for the reasons above;
     `repository_unreadable` where the App cannot read that repository and Dispatch can name no branch of it to ask a stored answer about;
     `read_failed` where a read of Dispatch's own did not answer.
 
-  - `commit_stands` is `{answer: "at_basis", basis}` where one of those commits is the result's own, or one of those branches carries it, `{answer: "other_commit"}` where none of them does, and `{answer: "unknown", reason}` where Dispatch cannot say.
+  - `commit_stands` is `{answer: "at_basis", basis}` where one of those commits is the result's own, or one of those branches carries it, `{answer: "other_commit"}` where none of them does, and `{answer: "unknown", reason}` where Dispatch cannot say, the reason being `repository_unreadable`, `read_failed`, `head_not_read` or `issue_not_known` (with `possible_head` where the commit heads such a pull request).
     A commit of a repository the App cannot read is unknown wherever nothing places it, whatever the check's `when`, and so is one left by a read of Dispatch's own that failed:
     a commit there may head a pull request Dispatch was never able to learn.
     A branch check still places a commit a stored `branch_commits` yes carries, since that answer is keyed by a branch and stands for good.
@@ -4426,7 +4552,7 @@ Each item below names a path with its method and identity, then its purpose.
     It is a second fact and a second field: a result at a compared commit whose check has been reworded since is both, and one word for both would hide which.
 
   - `pass_stands` is `{answer, roles}` for the check as a whole: `yes`, with the roles of the passes that stand, while a result of it passed, stands at one of the compared commits, kept the check's words and carries no retraction;
-    `unknown` where the repository is unreadable, for a check CI proves whose check runs GitHub could not be read (`ci.state` `unread`), or where such a pass is held up only by a commit Dispatch could not place;
+    `unknown` where the repository is unreadable, where the check compared with nothing for `head_not_read` or `issue_not_known`, for a check CI proves whose check runs Dispatch did not read (`ci.state` `unread`), or where such a pass is held up only by a commit Dispatch could not place or by a head Dispatch has not read;
     `no` otherwise, which a check compared with nothing for `no_pull_request_or_branch` answers, since there is nothing for a pass to stand at.
 
   - `currency` is a compatibility field for `dispatch` clients older than pi-envoy 17.1.0, which print it beside each result and read none of the fields above (`api/results_currency.go`).
@@ -4459,7 +4585,11 @@ Each item below names a path with its method and identity, then its purpose.
     `state` is `pass`, `fail`, `no_result` or `unread`.
     `case` is the conclusion that decided it — `success` passes, and `failure`, `timed_out`, `action_required`, `startup_failure`, `stale` and a conclusion this list does not name, as GitHub wrote it, fail — or one of the cases of no result:
     `neutral`, `skipped`, `cancelled`, `not_completed`, `absent` (no run of that name at the head) and `no_head` (Dispatch holds no open or merged pull request head of the issue), each `no_result`, and `github_unreadable` (`unread`: no App key, a token GitHub would not mint, an HTTP error, a rate limit or the deadline).
+    Beside `github_unreadable`, two cases are `unread` before any check run is read, each only where the App reads the repository (`ciHeadNotKnown`):
+    `issue_not_known` where a pull request of the issue's repository whose answer is not known comes before the issue's newest head (open before merged, then the higher number), or the issue has no head, since it can be the issue's newest head;
+    and `head_not_read` where a read of GitHub is owed for the newest head, since Dispatch does not know that the stored head is the head, so it reads no check run at it.
     `detail` is one sentence naming the case, at most 2,000 runes; for `github_unreadable` it names GitHub's own answer, a refusal by its status and the `message` of its JSON body, never the body itself and never a token.
+    For `issue_not_known` it is `Dispatch does not know yet whether pull request #<n> is <issue>'s: its commit messages are not read.`, and for `head_not_read` `Dispatch has not read the head of pull request #<n> of <repo> yet: a read of GitHub is owed for it.`
     `line` is the pull-request body line for the check: `- Check <id> (before_merge): <verdict> at <sha>, from CI run <name>. <the check's words>` for a pass or a fail, and `- Check <id> (before_merge): CI run <name> has no result (<case>)` for every other state; the check's words are cut as a recorded line's reading is, at a word, to at most 80 runes, with `…` where they were cut.
 
   - For a pass or a fail its `results` hold the one result derived from that run, and nothing else:

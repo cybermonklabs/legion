@@ -37,7 +37,9 @@ import (
 // issue — someone branched for it, someone linked it — while a key in a title or a body is a
 // mention, which a pull request that reverts, follows or merely cites another issue's work
 // carries as readily as one that does that work. The commit messages stay last: they are the
-// weakest mention of all, and the only source that costs a GitHub call to read (storePullRequestFacts).
+// weakest mention of all, and the only source that can cost a GitHub call of its own. A REST
+// read pages them only where no higher source decides (storePullRequestFacts); the batched
+// query reads the first 100 with the other facts (readFactsBatch).
 //
 // The holding to the repository is the server's one repository-resolution rule, spliced into the
 // same statement as the candidates (refs.IssueRepoTerms, attributionHeld), so what an
@@ -48,6 +50,11 @@ import (
 // every source reads whether the issue it names exists, and the holding reads where that issue
 // sits. So a new link, a reparent or a new repository mapping reaches every stored pull request
 // at its next read, with no read of GitHub and no walk of the table.
+//
+// The rule answers only for a pull request whose texts describe its stored head (texts_current).
+// A head branch in another repository, a fork's, names nobody (own_head). Where the commit
+// messages are not read and no higher source decides, the answer is not known. Where no texts
+// describe the stored head, the answer is the issue that the stored rows hold (attributedTerms).
 
 // attributionSource names the source a pull request's issue came from.
 type attributionSource string
@@ -862,7 +869,8 @@ var factsLineSelect = `
 // titleAndBranchTexts is a texts relation that holds, for each results row, the facts of its
 // head row alone: its head, branch, base, title and time, no body, and messages read and empty.
 // Its reading is never the one that runs now, so the statement reads its keys from
-// attribution_keys(repo, head_ref, title, ”, '{}'), the keys of the title and the branch alone.
+// attribution_keys with an empty body and an empty list of commit messages: the keys of the
+// title and the branch alone.
 const titleAndBranchTexts = `(select g.repo, g.number, g.head_sha, g.head_ref, g.repo as head_repo, g.base_ref, g.title,
 		''::text as body, '{}'::text[] as commit_messages, g.event_at as updated_at, ''::text as reading,
 		'{}'::text[] as title_keys, '{}'::text[] as cited_issues, '{}'::text[] as branch_keys, '{}'::text[] as commit_keys

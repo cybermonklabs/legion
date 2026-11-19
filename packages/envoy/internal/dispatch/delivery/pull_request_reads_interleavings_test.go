@@ -83,10 +83,20 @@ type interleavings struct {
 	// pool, which no writer's tracer stops.
 	behind int
 	pool   *store.Pool
+	// fired counts how often each stop point stopped a writer, so a stop whose statement no
+	// writer runs any more fails the test (stopPoints).
+	fired map[string]int
 }
+
+// stopPoints is every point where a writer stops. Each must stop a writer in the run, or the
+// interleavings test none of the orders that point stands for.
+var stopPoints = []string{"github", "write", "owe", "settle"}
 
 // stop waits at point until the scheduler lets w go on, or the test ends.
 func (s *interleavings) stop(w *interleavingWriter, point string) {
+	s.mu.Lock()
+	s.fired[point]++
+	s.mu.Unlock()
 	select {
 	case s.stops <- interleavingStop{writer: w, point: point}:
 	case <-s.over:
@@ -99,19 +109,16 @@ func (s *interleavings) stop(w *interleavingWriter, point string) {
 }
 
 // TraceQueryStart stops a writer where another writer can come between two of its steps: the
-// first statement of a head write's transaction (headIssueBefore), a head write outside a
-// transaction, and each owe and each delete of an owed read. No stop holds a lock: that first
-// statement is the one that takes the row's, and the attribution events' lock of their issues
-// later in the transaction is no stop.
+// write of the head row, which is the first statement of the transaction that writes the head
+// row and its texts (upsertHead), and each owe and each delete of an owed read. No stop holds a
+// lock: that first statement is the one that takes the row's.
 func (s *interleavings) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	w, _ := ctx.Value(interleavingWriterKey{}).(*interleavingWriter)
 	if w == nil {
 		return ctx
 	}
 	switch {
-	case strings.Contains(data.SQL, "select issue_key from pull_request_heads"):
-		s.stop(w, "transaction")
-	case strings.Contains(data.SQL, "insert into pull_request_heads") && conn.PgConn().TxStatus() == 'I':
+	case strings.Contains(data.SQL, "insert into pull_request_heads"):
 		s.stop(w, "write")
 	case strings.Contains(data.SQL, "delete from pull_request_reads_owed"):
 		s.mu.Lock()
@@ -198,7 +205,7 @@ func TestNoInterleavingOfTheWritersLeavesAnOlderHeadThanGitHubsLastAnswer(t *tes
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	fake := newFakeGitHub(t)
-	s := &interleavings{t: t, stops: make(chan interleavingStop), github: map[int]ghPull{}, over: make(chan struct{}), pool: pool}
+	s := &interleavings{t: t, stops: make(chan interleavingStop), github: map[int]ghPull{}, over: make(chan struct{}), pool: pool, fired: map[string]int{}}
 	s.serve(fake)
 	client := fake.newTestClient()
 	// After the stand-in's own cleanup is registered, so it runs first: the server's Close waits
@@ -434,8 +441,13 @@ func TestNoInterleavingOfTheWritersLeavesAnOlderHeadThanGitHubsLastAnswer(t *tes
 			}
 		}
 	}
-	t.Logf("sequences=%d ops=%v violations=%d", sequences, ops, violations)
+	t.Logf("sequences=%d ops=%v violations=%d stops=%v", sequences, ops, violations, s.fired)
 	if violations > 0 {
 		t.Errorf("%d of %d sequences end at a head or a state older than GitHub's last answer, or still owed a read", violations, sequences)
+	}
+	for _, point := range stopPoints {
+		if s.fired[point] == 0 {
+			t.Errorf("no writer stopped at %q in %d sequences: no statement of a writer matches that stop, so no interleaving there was tested", point, sequences)
+		}
 	}
 }

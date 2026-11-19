@@ -44,8 +44,8 @@ body: |-
     the revision it read before it read GitHub, so an owe made during the read stays. A stored
     answer spares the read of
     an event only where its `updated_at` is a later second than the event's.
-    `delivery.AttributionRuleVersion` is 3, so the reconcile reads every stored merged row from
-    GitHub once more.
+    A stored pull request that has no texts of a read of GitHub is read again by the reconcile,
+    which then gives its issue from its facts.
 
     An envelope that names no pull request GitHub can have (a number outside 1 to 2147483647, or a
     repository that is not `owner/name` with GitHub's own characters and lengths: an owner of at

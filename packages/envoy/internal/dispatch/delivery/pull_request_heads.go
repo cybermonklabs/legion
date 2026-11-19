@@ -22,11 +22,14 @@ import (
 // every pull request Dispatch has seen an event for, in any repository and by any author — not
 // the merged population delivery_pull_requests keeps. pull_request_texts holds the facts GitHub
 // answered with that head: the head repository, the base, the title, the body, and the commit
-// messages where a read stored them. No write stores an issue. One statement gives the issue at
-// each read, from those facts (attributedTerms): the first issue its ranked sources name that
-// resolves to the repository the pull request is in, and only where the head branch is in that
-// same repository, never a fork's. A child's pull request is attributed to the child, so it
-// answers for the child's own checks alone and never for a check of an issue above it.
+// messages where a read stored them. No writer of those facts decides an issue. One statement
+// gives the issue at each read, from those facts (attributedTerms): the first issue its ranked
+// sources name that resolves to the repository the pull request is in, and only where the head
+// branch is in that same repository, never a fork's. Where the commit messages are not read and
+// no higher source decides, the issue is not known. Where no texts describe the stored head, the
+// issue is the one the results row stores (R4's fallback). A child's pull request is attributed
+// to the child, so it answers for the child's own checks alone and never for a check of an issue
+// above it.
 //
 // Three writers keep it, and each writes what GitHub itself answers about the pull request: the
 // `pull_request` envelope's handler (intake.go, every action), which takes from the envelope only
@@ -35,9 +38,12 @@ import (
 // the read of an issue's results for each `before_merge` result's commit, at most once every
 // CommitPullReadStaleAfter — and the reconcile's five-minute pass (reconcile.go),
 // which reads the pull requests owed a read (pull_request_reads_owed.go), every failure before any
-// refusal, creating each one's row where none exists, then reads every open row read longer than
-// five minutes ago (ListStalePullRequestHeads), and then reads the facts of every pull request
-// that has none, the facts line (Reconcile.readFactsLine).
+// refusal, creating each one's row where none exists, then reads the open rows read longer than
+// five minutes ago (ListStalePullRequestHeads), and then reads the facts line
+// (Reconcile.readFactsLine): each open or merged results row whose texts do not describe its head
+// or whose commit messages are not read, and each timeline row with no results row. Those two
+// arms read GitHub by one batched GraphQL query (readFactsBatch). Every writer writes a row
+// through one function (upsertHeadUnderCanonicalName).
 //
 // A row a read of GitHub wrote is marked (github_read_at), and only a marked row's time stops a
 // read of GitHub or wins against GitHub's answer (headReadCovers, upsertHeadRow): a release
@@ -56,8 +62,11 @@ type PullRequestHead struct {
 	Title   string
 	URL     string
 	EventAt *time.Time
-	// CheckedAt is when a read of GitHub last read every source of the pull request's issue that
-	// it needs. A write with none keeps the stored value.
+	// CheckedAt is when a read of GitHub last read the pull request. A read of the intake or of
+	// the read-through sets it only where it read every source of the issue that it needs. A read
+	// of the reconcile sets it at each read, because the reconcile's read comes again
+	// (storePullRequestFacts, readFactsBatch), and a refused read of the reconcile stamps it too
+	// (MarkPullRequestHeadChecked). A write with none keeps the stored value.
 	CheckedAt *time.Time
 	// GitHubReadAt is the reader's clock as the read of GitHub whose answer HeadSHA, State and
 	// EventAt are began, taken before its request went out, with EventAt GitHub's updated_at; nil
@@ -131,11 +140,12 @@ func PullRequestHeadState(state string, merged bool) string {
 //
 // It marks every failure on the way to that write that a later attempt may get past, because
 // they all end the same way: a read of Postgres (the repository's canonical name, the stored row
-// recordPullRequestHead compares the event with, and the attribution's read of the issues its
-// candidates name), a read of GitHub that failed (a 5xx, a network failure, a rate limit), and a
-// GitHub answer that holds a value no head row holds (errNoRowHolds). GitHub's refusals are not
-// marked: a pull request it does not know and a repository the App cannot read write no row, are
-// owed a read the reconcile makes, and are acknowledged (recordPullRequestHead).
+// recordPullRequestHead compares the event with, and the stored commit messages and the
+// statement's answer that storePullRequestFacts reads), a read of GitHub that failed (a 5xx, a
+// network failure, a rate limit), and a GitHub answer that holds a value no head row holds
+// (errNoRowHolds). GitHub's refusals are not marked: a pull request it does not know and a
+// repository the App cannot read write no row, are owed a read the reconcile makes, and are
+// acknowledged (recordPullRequestHead).
 var ErrHeadNotStored = errors.New("the pull request's head row was not stored")
 
 // markHeadNotStored marks err as ErrHeadNotStored, keeping err itself inside the mark.
@@ -502,9 +512,10 @@ func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (b
 // upsertHeadUnderCanonicalName is the one writer of a head row and its texts. It writes head,
 // which every caller has already keyed by the canonical name of its repository
 // (refs.CanonicalRepo), and drops the row the same pull request is stored under as storedUnder
-// when that is another name. A row keyed under a repository's old name can be read at all only
-// under the canonical one — the App answers 404 for the old name's installation, so nothing can
-// refresh it and no issue is ever held to it (attributionHeld) — so one pull request keeps one row.
+// when that is another name. GitHub answers a read only under the canonical name — the App
+// answers 404 for the old name's installation — so no read can refresh a row keyed under an old
+// name, and every reader reads such a row under the canonical name (refs.CanonicalRepoSQL). So
+// one pull request keeps one row.
 //
 // Where both rows exist, because the pull request arrived under both names, the canonical row
 // wins and the old row goes: the write above lands on the canonical row and its own event-time
@@ -701,11 +712,12 @@ var newestPullRequestHeadSelect = `
 // The read is keyed by the issue and not by the result's commit because Legion merges with
 // squash: the commit that lands on the base branch is the one the squash makes, which is no
 // pull request's head and so no row's head_sha, and HeadAttributedTo — which asks whether a
-// commit is such a head — can never answer for it. Keying by the issue costs nothing in
-// honesty, since a pull request goes to an issue only where its head is a branch of the
-// repository that issue resolves to: by the statement (own_head, attributionHeld), or, for a pull
-// request with no facts, by the writer that stored its row (headAttribution). So the branch this
-// answers is one the issue's own work merged into.
+// commit is such a head — can never answer for it. Keying by the issue rests on the rule of the
+// statement (own_head, attributionHeld). The rule gives a pull request to an issue only where its
+// head is a branch of the repository that issue resolves to. So the branch this answers is one
+// the issue's own work merged into. A pull request whose texts do not describe its stored head
+// keeps the issue its results row stores (R4's fallback): an earlier answer of the statement
+// (SyncAttributions), or what a writer of the release before stored.
 //
 // An empty answer is "no branch to measure against", which a merged row carrying no base_ref
 // gives as much as no merged row at all. The column is declared not null with the empty string
@@ -738,7 +750,8 @@ const baseBranchMergedForSelect = `
 	limit 1`
 
 // PullRequestHeadStaleAfter is how long an open pull request's row may go unread before the
-// reconcile reads it again, and PullRequestHeadBatch how many it reads in one pass.
+// reconcile reads it again. PullRequestHeadBatch is the most such rows, and the most reads owed
+// for a failure, that one pass reads (Reconcile.readOpenHeads, Reconcile.readOwedPullRequests).
 const (
 	PullRequestHeadStaleAfter = 5 * time.Minute
 	PullRequestHeadBatch      = 200
@@ -747,9 +760,11 @@ const (
 // ListStalePullRequestHeads is at most limit open rows for the reconcile to read again, the
 // longest unread first: every open row whose checked_at is older than PullRequestHeadStaleAfter,
 // a row never read first. An open row comes round every five minutes, so a head that an event
-// never brought moves within one pass of its staleness. A merged row is read by the facts line
-// while it has no facts (Reconcile.readFactsLine), and no pass reads a merged row with facts
-// again: the statement gives its issue from those facts at each read.
+// never brought moves within one pass of its staleness, where fewer than limit open rows are due
+// before it. A merged row is read by the facts line while its texts do not describe its head or
+// its commit messages are not read (Reconcile.readFactsLine). After that the head pass reads it
+// again only where a read is owed for it (Reconcile.readOwedPullRequests): the statement gives
+// its issue from the stored facts at each read.
 //
 // Each ref names the pull request under the canonical name of its repository
 // (refs.CanonicalRepoSQL), the name a read of GitHub answers under, and StoredUnder names the row
@@ -884,8 +899,11 @@ type FetchedFacts struct {
 
 // storePullRequestFacts stores what GitHub answered about one pull request in payload: its
 // results row under canonical, its texts row, and its commit messages where they decide. Every
-// reader of GitHub stores a pull request through it, and it writes through the one writer
-// (upsertHeadUnderCanonicalName). It takes four steps:
+// REST reader of GitHub stores a pull request through it: the intake (recordPullRequestHead), the
+// read-through (ReadThroughCommitPulls) and the refresh (RefreshPullRequestHead). It writes
+// through the one writer (upsertHeadUnderCanonicalName). The batched query reads the commit
+// messages with the other facts, and its caller writes each answer through that writer too
+// (readFactsBatch, Reconcile.readFactsOf). It takes four steps:
 //
 //  1. It builds the texts from the payload. A fork's head reads no messages, since a fork's pull
 //     request is nobody's whatever its commits say: they are read and empty. Else it reuses the
@@ -1031,9 +1049,12 @@ func stampHeadRead(ctx context.Context, pool *store.Pool, head PullRequestHead, 
 }
 
 // RefreshPullRequestHead reads one pull request through the App and stores its facts
-// (storePullRequestFacts): the reconcile's per-row step. It answers what it fetched and stored,
-// nil where GitHub refused the read, and GitHub's refusal to give the pull request, nil where GitHub
-// answered it, which the reconcile's read of a pull request an event owes a read of needs
+// (storePullRequestFacts): the reconcile's read of one pull request over REST. The reconcile
+// makes it for each pull request owed a read (Reconcile.readOwedPullRequests), for each partial
+// timeline row (Reconcile.completePartialPullRequest), and for each pull request whose batched
+// answer is too large (readFactsBatch). It answers what it fetched and stored, nil where GitHub
+// refused the read, and GitHub's refusal to give the pull request, nil where GitHub answered it,
+// which the reconcile's read of a pull request an event owes a read of needs
 // (readOwedPullRequests): only an answer, or a refusal that pullRequestAbsent proves final,
 // settles such a read; the pass over the stored rows reads no refusal. A pull request GitHub
 // cannot find (ErrPullRequestNotFound), and a repository the App cannot read (no installation,
@@ -1045,13 +1066,14 @@ func stampHeadRead(ctx context.Context, pool *store.Pool, head PullRequestHead, 
 // messages could not be read: this pass is itself the retry, so the next one reads it again in
 // PullRequestHeadStaleAfter rather than holding the front of every batch.
 //
-// repoFull is the key ListStalePullRequestHeads read off the row, which may be a name the
-// repository has been renamed away from, and every step here but the stamp works on the
-// canonical name instead (refs.CanonicalRepo): the token is minted for it, since GitHub answers
-// 404 for the installation of a name no longer in use; and the row is written under it, with the
-// row under the old key dropped in the same step (upsertHeadUnderCanonicalName). The stamp stays
-// on the key the batch handed over, since that is the row the batch must stop offering: a
-// canonical repository the App cannot read teaches this row nothing under either name.
+// repoFull is the name the caller holds the pull request under (an owed read's, a timeline row's,
+// or a batched ref's StoredUnder), which may be a name the repository has been renamed away from,
+// and every step here but the stamp works on the canonical name instead (refs.CanonicalRepo): the
+// token is minted for it, since GitHub answers 404 for the installation of a name no longer in
+// use; and the row is written under it, with the row under the old key dropped in the same step
+// (upsertHeadUnderCanonicalName). The stamp stays on the key the caller handed over, since that is
+// the row a later batch must stop offering: a canonical repository the App cannot read teaches
+// this row nothing under either name.
 //
 // installations is the pass's lookups of the installation of each repository
 // (passInstallations), nil for a caller that has no pass.
@@ -1129,7 +1151,7 @@ func repositoryUnreadable(err error) bool {
 // nothing of it on their own: the row of a pull request whose head has moved on is written at
 // the head it has now, not at the commit that was asked about.
 //
-// Each pull request of the list is stored as every reader of GitHub stores one
+// Each pull request of the list is stored as every REST reader of GitHub stores one
 // (storePullRequestFacts), from the list's own answer: the one list read is the only read of
 // GitHub's pull requests it makes, and it pages a pull request's commit messages only where no
 // higher source names a held issue. A row whose commit messages could not be read keeps the stamp
@@ -1222,14 +1244,14 @@ func pullRequestHeld(ctx context.Context, pool *store.Pool, canonical string, nu
 // recordPullRequestHead writes the head row of the pull request one `pull_request` envelope
 // names, whatever its action, author or repository, from GitHub's own answer about that pull
 // request, and answers what it read of GitHub on the way (headRead): the pull request, the token
-// it was read with and the commit messages the attribution paged, or GitHub's lasting refusal,
-// all empty where the read was spared. It runs before the merge-only guard in
+// it was read with and the commit messages the write stored for its head, or GitHub's lasting
+// refusal, all empty where the read was spared. It runs before the merge-only guard in
 // handlePullRequestEnvelope, so an `opened`, `synchronize`, `reopened` or `edited` event — which
 // the delivery timeline ignores — still moves the head a check result is measured against.
 //
 // The envelope says which pull request changed, and nothing it carries is written: the head,
 // the state, the branch, the title and the body all come from `GET
-// /repos/{owner}/{repo}/pulls/{number}` (fetchPullRequestPayload), stored as the reconcile
+// /repos/{owner}/{repo}/pulls/{number}` (fetchPullRequestPayload), stored as every REST reader
 // stores a read (storePullRequestFacts). Two reasons, each
 // enough alone. An envelope carries no state, only the action, and GitHub sends `labeled`,
 // `edited` and `assigned` for a closed pull request too, so a state read from the action stored

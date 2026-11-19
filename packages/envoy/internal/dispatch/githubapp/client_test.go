@@ -556,7 +556,7 @@ func TestAGraphQLLimitOfOneInstallationHoldsNoOther(t *testing.T) {
 		t.Errorf("github_rate_limits under %s: %+v, found %v, %v; want GitHub's own wait still in force", want, recorded, found, err)
 	}
 	if _, found, err := limits.Get(ctx, GraphQLScope); err != nil || found {
-		t.Errorf("a limit of installation 7 was recorded under %s, the scope of the whole App: %v, %v", GraphQLScope, found, err)
+		t.Errorf("a limit of installation 7 was recorded under %s, the scope of a token this client did not mint: %v, %v", GraphQLScope, found, err)
 	}
 }
 

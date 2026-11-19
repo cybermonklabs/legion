@@ -2832,7 +2832,7 @@ func TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed(t *testing.T) {
 	// inside this row now and then. A pass reads pull requests through the very call that
 	// counts a handling here (delivery.FetchPullRequest), so a pass that re-read one of the
 	// row's own merges would read as a second handling of a message; the merges published here
-	// are complete reads, which the reconcile's merged arm never offers again
+	// are complete reads, which no arm of the reconcile's head pass reads again
 	// (publishMergedPullRequests), and running it throughout is what makes every run of the row
 	// show that rather than most runs missing it.
 	envFor := func(process string) map[string]string {
@@ -3112,12 +3112,13 @@ func (f *mergedPullRequestFake) handled() map[int][]pullRequestHandling {
 // a server a harness may keep between runs.
 //
 // The payload carries what Envoy's normalizer puts in a `pull_request` envelope
-// (contracts/normalize.go), head_repo above all: a merge whose head is named is a complete read
-// of the pull request's attribution, so the head row it writes is stamped read and judged by
-// this build's rule, and the delivery reconcile's merged arm never offers it again
-// (delivery.ListStalePullRequestHeads). A reconcile pass that did read one of these pull
-// requests again would read it through the very call that counts a handling here, and the row
-// would see it as a second handling of a message.
+// (contracts/normalize.go). This tree writes the head row from the fake's answer, with texts that
+// describe its head and the commit messages that the write pages. So no arm of the delivery
+// reconcile's head pass reads it again: no read is owed for it, the open arm reads only open rows
+// (delivery.ListStalePullRequestHeads), and the facts line reads only rows whose texts or commit
+// messages it still lacks. A reconcile pass that did read one of these pull requests again would
+// read it through the very call that counts a handling here, and the row would see it as a second
+// handling of a message.
 func publishMergedPullRequests(t *testing.T, js natsgo.JetStreamContext, run string, first, count int, every time.Duration) []int {
 	t.Helper()
 	numbers := make([]int, 0, count)

@@ -1,0 +1,41 @@
+kind: Fixed
+body: |-
+    A pull request's issue is the answer of one statement over the facts Dispatch stores, given
+    at each read, and no write stores it. A read of GitHub stores the pull request's texts in the
+    new table `pull_request_texts`: the head, the branch, the head repository, the base, the
+    title, the body, and the commit messages where the read read them. The database reads the
+    keys from those texts (`attribution_keys`, migration `20261117122117_attribution_reading`).
+    The results route, the delivery timeline and `issue.deployed` read the same statement, so they
+    name one issue. A new link, a moved issue, a new issue, a new parent or a changed repository
+    mapping reaches every stored pull request at its next read, with no read of GitHub. A stored
+    issue said what the rule gave at a row's last read, so such a tie reached a merged pull
+    request late or never.
+
+    A pull request whose texts are current, whose commit messages are not read, and whose other
+    facts name no issue held to its repository is not known. The results route then answers
+    `unknown` with the new reason `issue_not_known` where that pull request can decide a check,
+    and names it in the check's new `issues_not_known`, with `possible_head` on a result at its
+    head. The timeline shows such a pull request as "Not known yet". A pull request of the issue
+    whose head Dispatch has not read, with no results row or with a read of GitHub owed, is no
+    basis: the check names it in the new `heads_not_read`, with `refused_as` and `refused_since`
+    where GitHub refuses the read. A result it can decide is `unknown` with `head_not_read`, and
+    never another commit. A check CI proves reads `unread` with the case `issue_not_known` or
+    `head_not_read` there. Both change an answer only where the App reads the repository.
+
+    Each reconcile pass reads the facts of the pull requests that lack them, with one GraphQL
+    query for at most 20 pull requests of one installation and at most 25 queries for each
+    installation a pass. It then writes the statement's answer to every stored row, for the
+    release before, and appends the events of at most 500 changes of attribution. A primary
+    GraphQL rate limit now holds the queries of one installation, and no longer those of every
+    installation of the App. The new command `dispatch attribution` (the tool `dispatch_attribution`
+    and the route `GET /api/v1/delivery/attribution`) prints what the attribution still waits on:
+    the pull requests that wait for their facts, those a pass still reads, the keys that wait to be
+    read again, the changes whose events wait, the key reading, the links that two issues hold in
+    two letter cases, and the pull requests owed a read. A link that another issue holds in
+    another letter case is refused with `409 EXTERNAL_LINK_TAKEN`, and a read by `owner/repo#n`
+    finds a link in any letter case. Migration `20261117111040_pull_request_texts`, and each start
+    of Dispatch after it, refuse a database that is not `UTF8` or whose collation folds an ASCII
+    letter in another way than `"C"`.
+time: 2026-11-19T06:13:34.000000000Z
+custom:
+    Issue: pr4209

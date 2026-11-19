@@ -237,9 +237,10 @@ func seedPullRequestSettings(t *testing.T, builds *twoBuilds) {
 // that handling it once settles the pull request's head row for good in either build: a build
 // before this change writes the row from this envelope, and this tree from the fake's
 // answer. A reconcile pass would still read some of these pull requests again, through the call
-// this row counts as a handling: this tree's merged arm offers every merged row an older rule
-// judged once (delivery.AttributionRuleVersion), which is every row the previous build writes. So
-// the row runs neither build's delivery reconcile inside it (holdTheDeliveryReconcile).
+// this row counts as a handling: this tree's head pass reads each pull request owed a read through
+// it (delivery.RefreshPullRequestHead), and a write of the previous build that changes a fact of a
+// row this tree read owes one (the trigger pull_request_heads_unread_write). So the row runs
+// neither build's delivery reconcile inside it (holdTheDeliveryReconcile).
 func publishMergedPullRequest(t *testing.T, js natsgo.JetStreamContext, number int, delivery string) uint64 {
 	t.Helper()
 	payload, err := json.Marshal(map[string]string{

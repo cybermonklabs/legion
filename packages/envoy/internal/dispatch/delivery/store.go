@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -451,16 +452,21 @@ func DeletePullRequest(ctx context.Context, pool *store.Pool, repo string, numbe
 // (readFactsLine), and the completion of a partial row marks that row
 // (completePartialPullRequest). ListPartialPullRequests and the facts line stop reading the row
 // until a later successful UpsertPullRequest clears it (a webhook retry, or a reconcile pass once
-// the pull request becomes reachable again). Conditioned on the row still needing a read
-// (partial, or its attribution inputs never read, which no writer of this release stores): a
-// concurrent write (a live webhook, or another goroutine of this same reconcile pass racing a
-// retried fetch) can complete the row between this caller's own failed fetch and this UPDATE
-// running, and marking it unfetchable after that would silently throw the completion away.
+// the pull request becomes reachable again). Conditioned on the row still needing a read: it is
+// partial, or no results row of the pull request exists under any name of its repository, which
+// is the timeline row the facts line reads (factsLineJudged). A concurrent write (a live webhook,
+// a read-through, or another goroutine of this same reconcile pass racing a retried fetch) can
+// complete the row, or store its results row, between this caller's own failed fetch and this
+// UPDATE running, and marking it unfetchable after that would throw GitHub's answer away. The
+// condition names no attribution_* column: the contracting migration of the next release drops
+// them, and this build reads none of them.
 func MarkPullRequestUnfetchable(ctx context.Context, pool *store.Pool, repo string, number int, reason string) error {
 	_, err := pool.Exec(ctx, `
-		update delivery_pull_requests
+		update delivery_pull_requests d
 		set unfetchable_at = now(), unfetchable_reason = $3
-		where repo = $1 and number = $2 and (partial or attribution_title_keys is null)
+		where d.repo = $1 and d.number = $2 and (d.partial or not exists (
+			select 1 from pull_request_heads x
+			where x.number = d.number and lower(`+refs.CanonicalRepoSQL("x.repo")+`) = lower(`+refs.CanonicalRepoSQL("d.repo")+`)))
 	`, repo, number, reason)
 	return err
 }

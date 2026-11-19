@@ -372,7 +372,7 @@ Each item below names a task and where its code is, then notes on it.
   A later decision of that claim, such as a second stop, makes that write again only while the claim still holds a pending task that the decision retires, such as the task of a turn that is over, because the retirement writes the claim with it; otherwise the session stays listed until another write of that claim lands, and the daemon's next start takes the claim up from its row as live.
   Such ends include a suspension, a stop or a failure whose claim write the database refused, and a stop whose retirement of its round's ask failed.
 
-- **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/results_currency.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`
+- **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_comparison.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/results_currency.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`
 
   `POST /api/v1/issues/{key}/results` records one result against a `check` block of the issue's Verification document or of an ancestor's, as `check_results`, keeping the block's `changed_version` and `text_sha256` with it, and answers the pull-request body line it implies;
   `GET` lists each check of the issue's Verification document with every result recorded against it.
@@ -382,22 +382,49 @@ Each item below names a task and where its code is, then notes on it.
 
   - a `before_merge` check is compared with every head Dispatch holds for the check's own issue — the head of an `open` pull request, or the final head of a `merged` one (`pull_request_heads`, which the GitHub intake and the reconcile keep);
     the issue a result was recorded on counts for nothing here, so a child's pull request is never a basis for a check above it;
+    a pull request of the issue whose head Dispatch has not read is no basis, whether it has no results row yet or a read of GitHub is owed for it (`pull_request_reads_owed`).
+    The check lists each such pull request in `heads_not_read`, `[{number, refused_as?, refused_since?}]` (`model.HeadNotRead`), whatever Dispatch can read.
+    `refused_as` is how GitHub refuses the owed read (`app_not_installed`, `repository_unreadable` or `pull_request_not_found`), and `refused_since` is the time of its first refusal;
+    a failure has neither, and a refusal an older release owed has no `refused_since`;
 
   - an `after_merge` check with the branch the check's issue's pull request merged into and with the repository's default branch — that default branch alone where Dispatch holds no merge of it;
 
   - a `default_branch` check with the repository's default branch, whatever branch it merged into (`branch_commits`, the App's answer cached: a yes for good, a no for five minutes);
 
-  - a check whose issue resolves to no repository, and a `before_merge` check of an issue that holds no pull request, compare with nothing for `no_pull_request_or_branch`:
+  - a check whose issue resolves to no repository, and a `before_merge` check of an issue that holds no pull request, compare with nothing for `no_pull_request_or_branch`, unless `head_not_read` or `issue_not_known` (below) answers instead:
     their results stand at no basis and no pass of them stands, since Dispatch holds every head such an issue will ever have.
     A `before_merge` check whose repository the App cannot read compares with nothing for `repository_unreadable`, and each of its results and its own `pass_stands` answer `unknown`.
     A branch check of such a repository still compares with every branch Dispatch can name — the branch its issue merged into, read from the database, and the default branch this process last resolved — because a `branch_commits` yes is keyed by a branch and stands for good, so a stored answer still places the commit (`branchBases`);
     a commit no stored row places there answers `unknown` for `repository_unreadable`, as it does for `read_failed` wherever a read failed instead, and a branch check of a repository Dispatch can name no branch of compares with nothing.
     A read GitHub refused on an `after_merge` check's base branch is the one exception (a 403 or 404, which a branch it no longer holds answers with), and says the commit is not on that branch, leaving the default branch to decide.
 
+  - two reasons say what Dispatch does not know yet, and each changes an answer only where Dispatch can read the issue's repository (`comparisonReader.decides`):
+    the issue resolves to a repository, the deployment holds an App key, and the App reads that repository.
+    Elsewhere each field answers as it did before the two reasons.
+    `head_not_read` means that Dispatch has not read the head of a pull request of this issue yet.
+    A `before_merge` check with no basis and such a head compares with nothing for `head_not_read`, and its `pass_stands` is `unknown`, never `no`.
+    A result at no basis of a check with such a head answers `commit_stands` `{answer: "unknown", reason: "head_not_read"}`, never `other_commit`.
+    A check with a basis and such a head answers `pass_stands` `unknown` too, where no pass stands at a basis (`passStandsOf`).
+    `issue_not_known` means "Dispatch does not know yet whether pull request #N is this issue's".
+    Such a pull request is open or merged and in the issue's repository, its facts name no held issue, and Dispatch has not read its commit messages (`delivery.PullRequestsNotKnown`; "The issue of a pull request", below).
+    The check lists each such pull request that its answer turns on in `issues_not_known`, `[{number}]` (`model.IssueNotKnown`), and `heads_not_read` never names one.
+    A `before_merge` result at the head of such a pull request answers `{answer: "unknown", reason: "issue_not_known", possible_head: {repo, pull_request, commit}}` with no `basis` (`comparisonReader.atNoBasis`):
+    nothing showed that the pull request is the issue's, so its head is no basis.
+    A `before_merge` check of an issue with no pull request at all, beside such a pull request of its repository, compares with nothing for `issue_not_known`.
+    Its `pass_stands` is then `unknown`, and a result at the head of none of them stays `other_commit`.
+    An `after_merge` result answers `unknown` for `issue_not_known` where such a pull request merged into another branch than the issue's (`mergedElsewhere`), unless the walk places it on the default branch;
+    a `default_branch` check does not change.
+
   - a check CI proves - its `ci_check` names a GitHub check run, its `when` is `before_merge`, it carries no `run`, it names a `negative_control` and no result is recorded against it (`validCICheck`, `docs.CICheckRuleIn`) - takes no recorded result:
     `POST` refuses one with `409 CHECK_PROVED_BY_CI` for every role, right after `resolveCheck` and again inside its transaction (`refuseCheckProvedByCI`).
     `GET` reads its one result on every read instead, and stores nothing (`api/results_ci.go`, `deriveCIResults`):
     at the head of the issue's open pull request of the highest number, else of its merged one of the highest number (`delivery.NewestPullRequestHead`), one paged read of that commit's check runs under one 10-second deadline (`ciReadDeadline`), made only when the issue holds such a check, decides each such check by the run of its name with the highest id.
+    Where Dispatch can read the repository (`comparisonReader.decides`), two heads it does not know stop that read, so it reads no check run and `pass_stands` is `unknown` (`ciHeadNotKnown`).
+    `ci.state` is `unread` with the case `issue_not_known` where the issue has no head, or where a pull request whose answer is not known comes before its newest head (open before merged, then the higher number);
+    the detail is `Dispatch does not know yet whether pull request #N is <issue>'s: its commit messages are not read.`
+    Else `ci.state` is `unread` with the case `head_not_read` where a read of GitHub is owed for the newest head (`delivery.NewestHead.ReadOwed`);
+    the detail is `Dispatch has not read the head of pull request #N of <repo> yet: a read of GitHub is owed for it.`
+    Both sit beside the case `github_unreadable`, which has the same state where GitHub did not answer the read of the check runs.
     The check carries `ci`, `{run, state, case, detail, line}` (`model.CheckCI`), and for a pass or a fail one derived result, `ci-run:<run id>` by role `ci` and actor kind `github_app`, which `comparisonReader` judges as it judges a recorded result.
     `?at=` leaves that read in place, so a derived result stands at the named commit only where that commit is the head.
     A check carrying a `ci_check` that breaks a rule, or one that holds a recorded result, reads as an ordinary check.
@@ -406,17 +433,31 @@ Each item below names a task and where its code is, then notes on it.
     `current` at a basis under the check's words now with no retraction, `older` at another commit or at a basis under words that moved, and left out otherwise, so those clients print "unknown".
     It is derived from `commit_stands`, `check_words_moved` and `retracted` after the comparison answered them, with no read of its own, and is removed once no client older than pi-envoy 17.1.0 is in use.
 
-  A pull request is attributed to the first issue its five ranked sources name that resolves to the pull request's own repository, not to the first key they name (`attributionCandidates`, `attributionHeld` in `delivery/attribution.go`):
-  a title naming another repository's issue first therefore does not cost the pull request its own, and a pull request no candidate of which resolves to its repository is attributed to nobody, as is one whose head branch is in another repository (`headInOwnRepository`).
-  The hold is the server's own repository-resolution rule spliced into the statement that reads the candidates (`refs.IssueRepoTerms` through `attributionCandidatesQuery`), so an attribution can never disagree with the issue page;
-  one pull request's best 25 candidates are the ones read (`attributionCandidateBound`).
-  Two names of one repository are one repository: six sites go through the canonical name the repository is called today (`refs.CanonicalRepo`, `refs.CanonicalRepoSQL`), which is the `renamed_to` of the old name's `repo_projects` row — both sides of that hold, the repository the results read asks GitHub about, the key every writer of a `pull_request_heads` row uses, the settings route's refusal of a target that is itself renamed, and the CI reconcile, which reads every mapping under the name its repository has now (`internal/dispatch/cireconcile`, `Reconciler.mapped`), so no pass asks GitHub about a name it cannot read;
-  an operator declares that pair through `PUT /api/v1/settings/repo-projects/{owner}/{repo}`, and Dispatch never reads it from GitHub, which answers 404 for the installation of a name a repository was renamed away from.
   The read of an issue's results also teaches Dispatch a pull request nothing ever told it of:
   each `before_merge` result's commit, a commit a stored row heads included, sends one `GET /repos/{owner}/{repo}/commits/{sha}/pulls` of its own and writes the heads GitHub names (`delivery.ReadThroughCommitPulls`, `comparisonReader.readThroughHead`), at most once per repository and commit every `delivery.CommitPullReadStaleAfter` (five minutes), so a result recorded before its own pull request opened stands at that head once the pull request opens at its commit, and a second pull request at the same head gets its row.
   `GET /api/v1/issues/{key}/coverage` answers what each `requirement` block of the issue's spec lacks, counting the `check` and `plan_task` blocks of the issue and of its descendants;
   the same lines end `dispatch read --issue` and the answer to an approval request.
-  Shapes: `IssueCheckResults`, `CheckCI`, `RecordCheckResultInput`, `IssueCoverage` in `packages/contracts/src/dispatch-api.ts`
+  Shapes: `IssueCheckResults`, `CheckCI`, `HeadNotRead`, `IssueNotKnown`, `PossibleHead`, `RecordCheckResultInput`, `IssueCoverage` in `packages/contracts/src/dispatch-api.ts`
+
+- **The issue of a pull request**: `internal/dispatch/delivery/attribution.go`, `store/migrations/20261117111040_pull_request_texts.up.sql`, `store/migrations/20261117122117_attribution_reading.up.sql`
+
+  No write stores a pull request's issue: one statement gives it at each read, from the pull request's stored facts (`attributedTerms`).
+  The facts are its results row (`pull_request_heads`), its timeline row (`delivery_pull_requests`) and the texts of one read of GitHub (`pull_request_texts`).
+  `delivery.PrepareAttribution` builds the statement once at start, and every reader by key and by issue runs it, `HeadsAttributedTo` and `NewestPullRequestHead` among them.
+  So a new link, a moved issue or a new issue reaches every stored pull request at its next read, with no read of GitHub.
+  The statement gives one of three answers.
+  The rule below answers where the texts are current (`texts_current`: their head, base, branch, title and update time are the results row's) and the commit messages are read or a higher source decides (`has_facts`).
+  The answer is not known, with no issue and `known` false, where the texts are current, the messages are not read and no held candidate decides.
+  Such a pull request belongs to no issue, so no reader by issue lists it, and the results route reads it by its repository (`delivery.PullRequestsNotKnown`).
+  Where the texts are not current, the answer is the issue the results row stores, or the timeline row's issue where no results row exists.
+  The rule's issue is the first that its five ranked sources name and that resolves to the pull request's own repository, not the first key they name (`attributionHeld`).
+  A title naming another repository's issue first therefore does not cost the pull request its own, and a pull request no candidate of which resolves to its repository is attributed to nobody, as is one whose head branch is in another repository (`own_head`, `headInOwnRepository`).
+  The sources, in rank order, are an issue whose link is the pull request's own URL, an issue that links a GitHub issue URL the body cites (or a bare `#N` of the pull request's repository), and a key in the head branch, in the title or body, and in the commit messages.
+  A tie of rank and place, such as two links of one URL in two letter cases, goes to the lesser key in byte order (`collate "C"`).
+  The hold is the server's own repository-resolution rule spliced into the same statement (`refs.IssueRepoTerms`), so an attribution can never disagree with the issue page;
+  only one pull request's first 25 candidates in rank order are held to its repository (`attributionCandidateBound`).
+  Two names of one repository are one repository: six sites go through the canonical name the repository is called today (`refs.CanonicalRepo`, `refs.CanonicalRepoSQL`), which is the `renamed_to` of the old name's `repo_projects` row — both sides of that hold, the repository the results read asks GitHub about, the key every writer of a `pull_request_heads` row uses, the settings route's refusal of a target that is itself renamed, and the CI reconcile, which reads every mapping under the name its repository has now (`internal/dispatch/cireconcile`, `Reconciler.mapped`), so no pass asks GitHub about a name it cannot read;
+  an operator declares that pair through `PUT /api/v1/settings/repo-projects/{owner}/{repo}`, and Dispatch never reads it from GitHub, which answers 404 for the installation of a name a repository was renamed away from.
 
 - **Load test**: `loadtest/`
 
@@ -2729,7 +2770,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   a chain still going at the cap (a loop, or one a direct database write or an earlier release's API built) fails the read (500) rather than answer with the default, and a paged listing walks its own page alone, so such a chain fails the page it is on and no other.
   `refs.IssueRepository` runs those same terms over a `subjects` term of one key, which the results route reads for the issue of a check, so it starts from the repository the issue page shows;
   the route then takes that repository's canonical name before it asks GitHub anything (`refs.CanonicalRepo`, `comparisonReader.repositoryOf`), so an issue recorded under a name its repository was renamed away from is read under the name GitHub answers for.
-  Delivery's pull-request attribution splices those terms over one pull request's candidate keys instead (`attributionCandidatesQuery`), holding a candidate only where the walk finished and `refs.IssueRepoResolved` is the repository the pull request is in, each side put through that same renaming rule first (`attributionHeld`, `refs.IssueRepoTooDeep`, `refs.CanonicalRepoSQL`), so one walk resolves every candidate and that attribution parts from the page only where an operator has recorded that two names are one repository.
+  Delivery's pull-request attribution splices those terms into the one statement that gives a pull request's issue at each read (`attributedTerms`), over the first 25 candidate keys of each pull request the read judges (`attributionCandidateBound`).
+  It holds a candidate only where the walk finished and `refs.IssueRepoResolved` is the repository the pull request is in, each side put through that same renaming rule first (`attributionHeld`, `refs.IssueRepoTooDeep`, `refs.CanonicalRepoSQL`), so one walk resolves every candidate and that attribution parts from the page only where an operator has recorded that two names are one repository.
 
 - An earlier release's API could build a chain of any depth, so migration `0113` refuses to apply while any issue sits more than 32 links below its root or in a parent loop:
   its census counts them for the pre-deploy gate, and the migration, holding `repo_projects` and `issues` in ACCESS EXCLUSIVE from before its count to its commit so no earlier release's write commits in between, names up to 20 and the repair (`PATCH` an ancestor with `{"parent": null}` on the release still running).

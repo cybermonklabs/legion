@@ -1688,9 +1688,9 @@ func TestALinkAfterAMergedRowComparesInTheNextReadWithNoAsk(t *testing.T) {
 }
 
 // The same case at the surface a reviewer reads: a pull request of acme/gadgets whose title
-// names acme/widgets' issue before its own. The attribution walks every candidate the five
-// sources name (delivery's attributionCandidates) and takes the first one held to the pull
-// request's own repository (attributionHeld), so the head the read-through learns is
+// names acme/widgets' issue before its own. The statement of a pull request's issue ranks every
+// candidate the five sources name (delivery's attributedTerms) and takes the first one held to
+// the pull request's own repository (attributionHeld), so the head the read-through learns is
 // attributed to the check's own issue and the result stands at it, although the title names
 // another repository's issue first. Judged through the route, which is where a reviewer's
 // approval condition is actually read.

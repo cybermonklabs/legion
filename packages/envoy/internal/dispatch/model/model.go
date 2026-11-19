@@ -1278,8 +1278,9 @@ type ArtifactReviewEventPayload struct {
 }
 
 // CheckBasisNamed, CheckBasisPullRequest and CheckBasisBranch are the kinds of thing a check's
-// results are compared with: the one commit a reader named in `at`, the head of a pull request
-// Dispatch holds for the check's issue, and a branch of the check's issue's repository.
+// results are compared with: the one commit a reader named in `at`, the head of a pull request of
+// the check's issue that Dispatch has read, and a branch of the check's issue's repository. A pull
+// request whose head Dispatch has not read is no basis (CheckBlock.HeadsNotRead).
 const (
 	CheckBasisNamed       = "named"
 	CheckBasisPullRequest = "pull_request"

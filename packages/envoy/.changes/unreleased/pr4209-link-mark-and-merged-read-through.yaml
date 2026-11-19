@@ -1,23 +1,17 @@
 kind: Fixed
 body: |-
-    A write of an issue's links (`PATCH /api/v1/issues/{key}` with `external_links`) marks the stored
-    head row of each pull request whose own URL it adds or removes, in its own transaction, and the
-    first reconcile pass that reaches the marked row reads it from GitHub and attributes it with the
-    links as they stand, a merged row included, where GitHub answers each read of that attribution.
-    A merged row was read by no pass once the current rule had judged it, so a link written after
-    the merge was never followed. A head write in flight while the link is written leaves a stored
-    row marked (the new column `pull_request_heads.link_mark`), and the head write takes the issue
-    rows it moves the row between before the head row, in the order the link write takes them, so
-    neither waits on the other in a cycle. The mark misses three orders: a link written while the
-    pull request's first row is written, or while its row moves from a repository's old name, marks
-    no row, and a pass whose read of the commit messages fails stamps the marked row read with the
-    issue it held.
+    A write of an issue's links (`PATCH /api/v1/issues/{key}` with `external_links`) is followed
+    at the next read of the issue's results and of the delivery timeline, a merged pull request's
+    included, with no read of GitHub and no reconcile pass. One statement gives a pull request's
+    issue at each read from the facts Dispatch stores, and no write of a head row reads a link, so
+    a head write in flight while the link is written cannot hide it. A merged row was read by no
+    pass once a rule had judged it, so a link written after the merge was never followed. A pull
+    request whose facts Dispatch has not stored, such as a row an earlier release wrote, keeps the
+    issue its row stores until a reconcile pass reads its facts.
 
-    The read of an issue's results reads GitHub for each result's commit, a commit that a stored
-    pull request heads included, at most once a commit every 5 minutes, so a tie made after the
-    merge (a link to a GitHub issue the pull request's body cites, a new parent, a changed
-    repository mapping, a link moved to the issue) is followed there, as it was while no head row
-    was stored for such a commit.
+    A tie made after a merge (a link to a GitHub issue the pull request's body cites, a new parent,
+    a changed repository mapping, a link moved to the issue) is followed at the next read of the
+    results, from the texts Dispatch stored for the merged pull request, with no read of GitHub.
 
     The intake's settle of a read owed before its read, its head write and its read's place in the
     order of reads (a value of the owed reads' revision sequence) wait on a lock at most 5 s, as the

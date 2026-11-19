@@ -16,9 +16,9 @@ import (
 // (any Envoy /v1 bearer can publish one). This build has read the pull request: open, marked. The
 // release before then writes "closed" from an envelope. The trigger pull_request_heads_unread_write
 // takes the mark away, and cmd/dispatch/README.md says of such a row "so the reconcile reads it
-// again". The open arm of the reconcile reads open rows and its merged arm merged rows, so a closed
-// row is read by neither: it stays closed, against GitHub's open, until the pull request's next
-// event. R2: "The head and the state of a pull request come from a read of GitHub."
+// again". The open arm of the reconcile reads open rows and its facts line open and merged rows,
+// so a closed row is read by neither: it stays closed, against GitHub's open, until the pull
+// request's next event. R2: "The head and the state of a pull request come from a read of GitHub."
 //
 // The first case is the control: the release before's close carries the second GitHub's answer
 // holds, so the trigger pull_request_heads_older_read owes a read and the pass repairs the row.

@@ -20,7 +20,7 @@ import (
 
 // seedHeadIssue records one issue the attribution can name, in the project that owns
 // acme/widgets (seedDeliveryProject): a head row is attributed only to an issue that resolves
-// to the pull request's own repository (headAttribution), so an issue of no repository is
+// to the pull request's own repository (attributionHeld), so an issue of no repository is
 // attributed to nobody. The key is HEAD-<n>, which is what a failure names; the number is n in
 // this fixture's band of the shared project.
 func seedHeadIssue(t *testing.T, ctx context.Context, pool *store.Pool, number int) string {
@@ -381,8 +381,8 @@ func TestAPullRequestNamingAnIssueOfAnotherRepositoryAttributesNobody(t *testing
 }
 
 // A title that names another repository's issue before this repository's own does not cost the
-// pull request its attribution: the attribution walks every candidate the five sources name
-// (attributionCandidates) and takes the first one that resolves to the pull request's own
+// pull request its attribution: the statement ranks every candidate the five sources name
+// (attributedTerms) and takes the first one that resolves to the pull request's own
 // repository (attributionHeld), so the other repository's issue is passed over and the one that
 // belongs here is kept. An attributed head is exactly the basis a `before_merge` result at that
 // head stands at (HeadAttributedTo, the question api/results_comparison.go asks). Both writers
