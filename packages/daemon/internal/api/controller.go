@@ -10,12 +10,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/controller"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -157,15 +160,30 @@ func (s *server) controllerSecret(w http.ResponseWriter, r *http.Request) {
 	secret := rand.Text()
 	s.controllerMu.Lock()
 	defer s.controllerMu.Unlock()
-	generation, err := s.controller.MintController(context.WithoutCancel(r.Context()), s.project, capabilityHash(secret))
-	if err != nil {
+	// The revocation of the grants the mint replaces is the commit's hook, fenced by the
+	// generation it confirms: a mint whose reply is lost and that the store says committed still
+	// revokes them once it says so, and a confirmation that arrives after a newer mint revokes
+	// nothing of that mint's (credential.Grants.RevokeControllersBelow).
+	if err := store.Transact(context.WithoutCancel(r.Context()), s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		generation, err := s.controller.MintController(ctx, s.project, capabilityHash(secret))
+		if err != nil {
+			return err
+		}
+		store.OnCommit(ctx, func() { s.revokeReplacedControllers(generation) })
+		return nil
+	}); err != nil {
 		s.log.Error("api: mint a controller capability", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorBody("controller secret failed: the daemon could not record it"))
 		return
 	}
-	s.grants.RevokeControllers()
-	s.log.Info("api: minted a controller capability; the previous controller's registration and grants are revoked", "generation", generation)
 	writeJSON(w, http.StatusOK, ControllerSecretResponse{Secret: secret, DesignGateSteps: s.steps})
+}
+
+// revokeReplacedControllers is a controller mint's commit hook: it ends every controller grant of
+// a generation below the one the mint committed, and says so.
+func (s *server) revokeReplacedControllers(generation uint64) {
+	s.grants.RevokeControllersBelow(generation)
+	s.log.Info("api: minted a controller capability; the previous controller's registration and grants are revoked", "generation", generation)
 }
 
 // controllerGitHubCredential is `legion controller start`'s refresh call: proving the current
@@ -360,13 +378,20 @@ func (s *server) registerLaunchedController(w http.ResponseWriter, r *http.Reque
 		s.claimFailure(w, "register", launch.Claim, err)
 		return
 	}
-	generation, err := s.controller.MintController(ctx, s.project, controller.UnheldCapability())
-	if err != nil {
+	var generation uint64
+	if err := store.Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		if generation, err = s.controller.MintController(ctx, s.project, controller.UnheldCapability()); err != nil {
+			return err
+		}
+		minted := generation
+		store.OnCommit(ctx, func() { s.revokeReplacedControllers(minted) })
+		return nil
+	}); err != nil {
 		s.logFailure("api: record the launched controller's capability", "claim", launch.Claim, "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorBody("register failed: the daemon could not record its controller"))
 		return
 	}
-	s.grants.RevokeControllers()
 	registered, err := s.controller.RegisterController(ctx, s.project, generation, req.SessionID, capabilityHash(secret), time.Now().UTC(), req.PluginContract)
 	if err != nil || !registered {
 		s.logFailure("api: record the launched controller's registration", "claim", launch.Claim, "registered", registered, "error", err)
@@ -402,7 +427,7 @@ func (s *server) controllerSessionGrant(w http.ResponseWriter, r *http.Request, 
 	if s.refuseIfStaleController(w, r, stored) {
 		return
 	}
-	s.mintControllerGrant(w)
+	s.mintControllerGrant(w, stored.Generation)
 }
 
 // controllerSessionRegistered is the one authentication of a controller session against its
@@ -459,9 +484,11 @@ func (s *server) refuseIfStaleControllerSession(w http.ResponseWriter, r *http.R
 	return s.refuseIfStaleController(w, r, record)
 }
 
-// mintControllerGrant answers a controller grant for a caller its route has authorised.
-func (s *server) mintControllerGrant(w http.ResponseWriter) {
-	grant, err := s.grants.MintController()
+// mintControllerGrant answers a controller grant for a caller its route has authorised, recorded
+// under generation, the controller capability it holds: 0 for the operator's bearer
+// (credential.Grants.MintController).
+func (s *server) mintControllerGrant(w http.ResponseWriter, generation uint64) {
+	grant, err := s.grants.MintController(generation)
 	if err != nil {
 		s.log.Error("api: mint controller grant", "error", err)
 		writeFailure(w, http.StatusInternalServerError, "GRANT_MINT_FAILED", "could not mint grant")

@@ -42,6 +42,9 @@ type Grant struct {
 	Controller bool
 
 	capabilityHash []byte
+	// generation is the controller capability a controller grant is recorded under
+	// (MintController), which RevokeControllersBelow compares.
+	generation uint64
 }
 
 // Grants holds process-local grants. A daemon restart invalidates them by design.
@@ -50,6 +53,9 @@ type Grants struct {
 
 	mu     sync.Mutex
 	issued map[string]Grant
+	// confirmed is the highest controller generation a confirmed mint has named
+	// (RevokeControllersBelow).
+	confirmed uint64
 }
 
 // New constructs a grant service. A nil clock is the wall clock.
@@ -85,26 +91,35 @@ func (g *Grants) Mint(c supervise.Claim) (Grant, error) {
 	return grant, nil
 }
 
-// MintController records a sixty-second controller grant: for the operator's bearer, or for the
-// session registered with the current controller capability. Authorization happens at the route:
-// the service keeps no bearer and cannot accidentally copy one into a grant record.
-func (g *Grants) MintController() (Grant, error) {
+// MintController records a sixty-second controller grant under the controller capability of
+// generation, or under the highest generation a confirmed mint has named, when that is higher. The
+// operator's bearer form passes 0, so its grant is recorded under the confirmed generation; a
+// session's grant passes the generation of the registration it holds. Authorization happens at
+// the route: the service keeps no bearer and cannot accidentally copy one into a grant record.
+func (g *Grants) MintController(generation uint64) (Grant, error) {
 	id, err := grantID()
 	if err != nil {
 		return Grant{}, err
 	}
 	grant := Grant{ID: id, ExpiresAt: g.now().Add(ttl), Controller: true}
-	g.record(grant)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	grant.generation = max(generation, g.confirmed)
+	g.recordLocked(grant)
 	return grant, nil
 }
 
-// RevokeControllers ends every controller grant, so none minted under a controller capability
-// outlives the capability a new mint replaces. A revoked id is unavailable, like one never minted.
-func (g *Grants) RevokeControllers() {
+// RevokeControllersBelow is a confirmed mint of generation: it raises the confirmed generation to
+// generation, and ends every controller grant recorded under a lower one, so none outlives the
+// capability the mint replaced. A grant of generation or above stands, so a confirmation that
+// arrives late — a mint whose commit's outcome the store said only later — revokes nothing of a
+// newer mint. A revoked id is unavailable, like one never minted.
+func (g *Grants) RevokeControllersBelow(generation uint64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.confirmed = max(g.confirmed, generation)
 	for id, held := range g.issued {
-		if held.Controller {
+		if held.Controller && held.generation < generation {
 			delete(g.issued, id)
 		}
 	}
@@ -113,9 +128,14 @@ func (g *Grants) RevokeControllers() {
 // record stores a freshly minted grant and prunes every record past its retention, so the
 // process-local map holds only the last hour's grants however many commands never redeem theirs.
 func (g *Grants) record(grant Grant) {
-	cutoff := g.now().Add(-expiredRetention)
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.recordLocked(grant)
+}
+
+// recordLocked is record for a caller that holds mu.
+func (g *Grants) recordLocked(grant Grant) {
+	cutoff := g.now().Add(-expiredRetention)
 	for id, held := range g.issued {
 		if held.ExpiresAt.Before(cutoff) {
 			delete(g.issued, id)

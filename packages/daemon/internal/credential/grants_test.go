@@ -52,14 +52,14 @@ func TestGrantServesEveryRedemptionUntilItExpires(t *testing.T) {
 	// An expired record is kept for an hour, so a command that outran its grant hears it expired;
 	// the first mint after that hour prunes it.
 	now = issued.ExpiresAt.Add(time.Hour)
-	if _, err := grants.MintController(); err != nil {
+	if _, err := grants.MintController(0); err != nil {
 		t.Fatalf("MintController: %v", err)
 	}
 	if _, err := grants.Redeem(issued.ID); !errors.Is(err, ErrExpired) {
 		t.Fatalf("Redeem an hour after expiry = %v, want ErrExpired", err)
 	}
 	now = issued.ExpiresAt.Add(time.Hour + time.Second)
-	if _, err := grants.MintController(); err != nil {
+	if _, err := grants.MintController(0); err != nil {
 		t.Fatalf("MintController: %v", err)
 	}
 	if _, err := grants.Redeem(issued.ID); !errors.Is(err, ErrUnavailable) {
@@ -95,15 +95,27 @@ func TestGrantStillMatchesTheClaimThatMintedIt(t *testing.T) {
 	}
 }
 
-// A new controller capability ends every controller grant the previous one minted, and no claim's
-// grant: the incumbent controller's in-flight command loses its credential the moment it is
-// replaced, while the phase workers' commands run on.
-func TestRevokeControllersEndsOnlyControllerGrants(t *testing.T) {
+// A confirmed controller mint ends every controller grant of a lower generation and no other: the
+// incumbent controller's in-flight command loses its credential once the mint that replaced it is
+// confirmed, a newer mint's grants stand when an older mint's confirmation comes late, and the
+// phase workers' commands run on.
+func TestARevocationEndsOnlyGrantsOfLowerGenerations(t *testing.T) {
 	grants := New(nil)
-	controller, err := grants.MintController()
-	if err != nil {
-		t.Fatalf("MintController: %v", err)
+	mint := func(generation uint64) Grant {
+		t.Helper()
+		grant, err := grants.MintController(generation)
+		if err != nil {
+			t.Fatalf("MintController(%d): %v", generation, err)
+		}
+		return grant
 	}
+	redeems := func(grant Grant, want error) {
+		t.Helper()
+		if _, err := grants.Redeem(grant.ID); !errors.Is(err, want) {
+			t.Fatalf("Redeem of the grant of generation %d = %v, want %v", grant.generation, err, want)
+		}
+	}
+	first, second := mint(1), mint(2)
 	worker, err := grants.Mint(supervise.Claim{
 		Token: "legion-legion-legion-208-tester", Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208",
 		Role: claim.RoleTester, CapabilityHash: []byte("tester-capability"),
@@ -112,12 +124,17 @@ func TestRevokeControllersEndsOnlyControllerGrants(t *testing.T) {
 		t.Fatalf("Mint: %v", err)
 	}
 
-	grants.RevokeControllers()
+	grants.RevokeControllersBelow(2)
+	redeems(first, ErrUnavailable)
+	redeems(second, nil)
 
-	if _, err := grants.Redeem(controller.ID); !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("Redeem of a revoked controller grant = %v, want ErrUnavailable", err)
+	operator := mint(0)
+	if operator.generation != 2 {
+		t.Fatalf("the operator's grant is recorded under generation %d, want the confirmed 2", operator.generation)
 	}
-	if _, err := grants.Redeem(worker.ID); err != nil {
-		t.Fatalf("Redeem of a claim grant after the controllers were revoked = %v, want it still served", err)
-	}
+
+	grants.RevokeControllersBelow(1)
+	redeems(second, nil)
+	redeems(operator, nil)
+	redeems(worker, nil)
 }

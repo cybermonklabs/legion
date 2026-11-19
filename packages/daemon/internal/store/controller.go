@@ -19,11 +19,13 @@ const controllerSelect = `select generation, capability_hash, session, secret_ha
 // replaces is no longer registered.
 func (s *Store) MintController(ctx context.Context, project string, capabilityHash []byte) (uint64, error) {
 	var generation uint64
-	err := s.pool.QueryRow(ctx, `insert into controllers (project, capability_hash, generation)
-		values ($1, $2, 1)
-		on conflict (project) do update set capability_hash = excluded.capability_hash,
-			generation = controllers.generation + 1, session = '', secret_hash = null, registered_at = null
-		returning generation`, project, capabilityHash).Scan(&generation)
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `insert into controllers (project, capability_hash, generation)
+			values ($1, $2, 1)
+			on conflict (project) do update set capability_hash = excluded.capability_hash,
+				generation = controllers.generation + 1, session = '', secret_hash = null, registered_at = null
+			returning generation`, project, capabilityHash).Scan(&generation)
+	})
 	if err != nil {
 		return 0, fmt.Errorf("record the controller capability for %s: %w", project, err)
 	}
@@ -32,7 +34,14 @@ func (s *Store) MintController(ctx context.Context, project string, capabilityHa
 
 // Controller is project's controller record, and false when no capability has been minted for it.
 func (s *Store) Controller(ctx context.Context, project string) (controller.Record, bool, error) {
-	return scanController(s.pool.QueryRow(ctx, controllerSelect, project), project)
+	var record controller.Record
+	var found bool
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		record, found, err = scanController(tx.QueryRow(ctx, controllerSelect, project), project)
+		return err
+	})
+	return record, found, err
 }
 
 // ControllerTx is Controller inside tx, for the state route's one snapshot.
@@ -45,14 +54,18 @@ func (s *Store) ControllerTx(ctx context.Context, tx pgx.Tx, project string) (co
 // It is fenced on the generation: when a mint has moved past it, nothing is written and the answer
 // is false.
 func (s *Store) RegisterController(ctx context.Context, project string, generation uint64, session string, secretHash []byte, at time.Time, pluginContract int) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `update controllers set session = $3, secret_hash = $4, registered_at = $5, plugin_contract = $6
-		where project = $1 and generation = $2`, project, generation, session, secretHash, at, pluginContract)
+	var registered bool
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `update controllers set session = $3, secret_hash = $4, registered_at = $5, plugin_contract = $6
+			where project = $1 and generation = $2`, project, generation, session, secretHash, at, pluginContract)
+		registered = tag.RowsAffected() == 1
+		return err
+	})
 	if err != nil {
 		return false, fmt.Errorf("record the controller registration for %s: %w", project, err)
 	}
-	return tag.RowsAffected() == 1, nil
+	return registered, nil
 }
-
 func scanController(row pgx.Row, project string) (controller.Record, bool, error) {
 	var record controller.Record
 	var registeredAt *time.Time
