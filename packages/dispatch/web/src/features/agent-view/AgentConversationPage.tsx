@@ -97,27 +97,6 @@ const STATUS: Record<Presence, PresenceView> = {
  *  the list's word until the list says otherwise. */
 type ListFact = "gone" | "unresponsive";
 
-/** Why the view takes the session to be silent: the relay hears nobody on its control subject
- *  (`responding === false`), or the registry's last list holds the session as unresponsive, or no
- *  longer holds it (`ListFact`). */
-type Silence = "relay" | ListFact;
-
-/**
- * Whether the session is silent, and by whose word. The relay and the registry each see a session
- * fall silent in their own time - the relay when nobody answers its control subject, the registry
- * on its poll - so either is enough, and a session that stops while its view is open reads as
- * silent once the first of them notices. The relay's word comes first: it is the one that says
- * nothing streams. This reads the relay's last answer, not the socket, which a reconnect leaves in
- * place until the relay answers again, so a lost socket takes back no text the view showed; and
- * the registry's last list (`ListFact`), so a failed read of it takes back none either.
- */
-function silenceOf(
-  responding: boolean | undefined,
-  listFact: ListFact | undefined
-): Silence | undefined {
-  return responding === false ? "relay" : listFact;
-}
-
 /**
  * What the header's presence says, or undefined for none. The stream's status stands as it is
  * wherever the view's connection does not: a refusal and a lost socket are the view's own
@@ -146,41 +125,77 @@ function livePresence(
 const NOT_ANSWERING_WHY =
   "This session is not answering the live view: its plugin does not stream its conversation, or the session is no longer running.";
 
-/** What an empty transcript says while the relay hears nobody from the session (`SILENCE_TEXT`). */
+/** What an empty transcript says while the relay hears nobody from the session: alone, or before
+ *  the registry's sentence where its last list says the session is silent too (`silenceTexts`). */
 export const NOT_ANSWERING_EMPTY_TEXT = `${NOT_ANSWERING_WHY} Nothing appears here until it answers.`;
 
 /** The line above a transcript that holds turns while the relay hears nobody from the session:
- *  what shows is what Dispatch keeps, and nothing the session streams arrives until it answers. */
+ *  what shows is what Dispatch keeps, and nothing the session streams arrives until it answers.
+ *  Alone, or before the registry's sentence where its last list says the session is silent too
+ *  (`silenceTexts`). */
 export const NOT_ANSWERING_NOTICE = `${NOT_ANSWERING_WHY} Only the messages Dispatch keeps show here until it answers.`;
 
 /** What the transcript says, in its empty slot and above its turns alike, while the registry's
- *  last list holds the session as unresponsive and the relay has not said it is silent: why the
- *  list says so, and that the session has not ended - it keeps its roles and claims
- *  (`AgentUnresponsiveNote`). It says nothing of the stream, which the list does not show: turns
- *  may still arrive under it, and a refused view gets none. No frame ends the list's word, so the
- *  line stays true above turns that arrive under it. */
+ *  last list holds the session as unresponsive - alone, or after the relay's text where the relay
+ *  says the session is silent too (`silenceTexts`): why the list says so, and that the session has
+ *  not ended - it keeps its roles and claims (`AgentUnresponsiveNote`). It says nothing of the
+ *  stream, which the list does not show: turns may still arrive under it, and a refused view gets
+ *  none. No frame ends the list's word, so the line stays true above turns that arrive under it. */
 export const MISSED_HEARTBEATS_TEXT =
   "This session has missed its heartbeats, so the live session list marks it unresponsive. It has not ended.";
 
 /** What the transcript says, in its empty slot and above its turns alike, once the registry's
- *  last list no longer holds a session this view saw it hold and the relay has not said it is
- *  silent: what the list shows, and neither that the session ended nor anything of its stream,
- *  which the list does not say. No frame ends the list's word, so the line stays true above turns
- *  that arrive under it. */
+ *  last list no longer holds a session this view saw it hold - alone, or after the relay's text
+ *  where the relay says the session is silent too (`silenceTexts`): what the list shows, and
+ *  neither that the session ended nor anything of its stream, which the list does not say. No
+ *  frame ends the list's word, so the line stays true above turns that arrive under it. */
 export const LEFT_LIST_TEXT = `${LEFT_LIST_WORDS}.`;
 
 /** What an empty transcript says of a session that answers the view, or has not said yet. */
 export const NOTHING_YET_TEXT = "Nothing yet. This session's next turn appears here as it happens.";
 
-/** What each silence says in the empty slot, and in the line above a transcript that holds turns.
- *  The relay's two differ in what they say shows until the session answers: nothing, or what
- *  Dispatch keeps. A list fact has one text for both, since it promises nothing about the
- *  transcript. */
-const SILENCE_TEXT: Record<Silence, { readonly empty: string; readonly notice: string }> = {
-  gone: { empty: LEFT_LIST_TEXT, notice: LEFT_LIST_TEXT },
-  relay: { empty: NOT_ANSWERING_EMPTY_TEXT, notice: NOT_ANSWERING_NOTICE },
-  unresponsive: { empty: MISSED_HEARTBEATS_TEXT, notice: MISSED_HEARTBEATS_TEXT },
+/** What the transcript says of a silent session: in its empty slot, and in the line above a
+ *  transcript that holds turns. */
+interface SilenceTexts {
+  readonly empty: string;
+  readonly notice: string;
+}
+
+/** The registry's sentence for each of its facts. A list fact says the same in the empty slot and
+ *  above turns, since it promises nothing about the transcript. */
+const LIST_FACT_TEXT: Record<ListFact, string> = {
+  gone: LEFT_LIST_TEXT,
+  unresponsive: MISSED_HEARTBEATS_TEXT,
 };
+
+/**
+ * What the transcript says of the session's silence, each source in its own words, or undefined
+ * while neither says the session is silent. The relay and the registry each see a session fall
+ * silent in their own time - the relay when nobody answers its control subject (`relaySilent`),
+ * the registry on its poll (`listFact`) - so either is enough, and a session that stops while its
+ * view is open reads as silent once the first of them notices. Where both hold, the texts name
+ * each, the relay's reason first, since it is the one that says nothing streams, and then the
+ * registry's sentence: each source's words are its own, so neither is folded into the other's
+ * and neither hides it. The relay's two texts differ in what they say shows until the session
+ * answers: nothing, or what Dispatch keeps. `relaySilent` is the relay's last answer, not the
+ * socket, which a reconnect leaves in place until the relay answers again, so a lost socket takes
+ * back no text the view showed; and `listFact` is the registry's last list, so a failed read of it
+ * takes back none either.
+ */
+function silenceTexts(
+  relaySilent: boolean,
+  listFact: ListFact | undefined
+): SilenceTexts | undefined {
+  const listed = listFact === undefined ? undefined : LIST_FACT_TEXT[listFact];
+  if (!relaySilent) return listed === undefined ? undefined : { empty: listed, notice: listed };
+  if (listed === undefined) {
+    return { empty: NOT_ANSWERING_EMPTY_TEXT, notice: NOT_ANSWERING_NOTICE };
+  }
+  return {
+    empty: `${NOT_ANSWERING_EMPTY_TEXT} ${listed}`,
+    notice: `${NOT_ANSWERING_NOTICE} ${listed}`,
+  };
+}
 
 /** Where each mode stands in the composer. Send comes first wherever the session takes it, since
  *  that is Enter at its terminal, and Aside next, so a session that advertises Aside and no Send
@@ -242,11 +257,10 @@ export function AgentConversationPage({
       : agent === undefined && seenListed === sessionId
         ? "gone"
         : undefined;
-  // Whether the session is silent, and by whose word: the relay's, or the registry's last list.
-  const silence = silenceOf(responding, listFact);
   const shown = livePresence(status, listFact);
-  // What the transcript says in its empty slot and in the line above its turns: the silence's
-  // texts, or, for a session that answers the view or has not said yet, `NOTHING_YET_TEXT` in
+  // What the transcript says in its empty slot and in the line above its turns: the words of
+  // whichever of the relay and the registry's last list says the session is silent, or of both,
+  // or, for a session that answers the view or has not said yet, `NOTHING_YET_TEXT` in
   // the slot and no line. Saying "the next turn appears here" to a viewer of a silent session
   // was a promise the page could not keep. A session the relay hears nobody from is not always
   // one with a newer plugin to install - it may have been started without its plugin, or have
@@ -256,7 +270,7 @@ export function AgentConversationPage({
   // around without a reload, and the wording stays neutral until either says it is silent. A
   // resumed session answers with the conversation since its process started, so the empty
   // slot's text is also what a reader sees until such a session takes its next turn.
-  const texts = silence === undefined ? undefined : SILENCE_TEXT[silence];
+  const texts = silenceTexts(responding === false, listFact);
   // The model and thinking level the session runs now (INFRA-195), next to its title: what its
   // newest `settings` frame reports, or, for a session that reports none, the most recent
   // assistant turn's own model (LEGION-548), nothing guessed for a client that never sends one.
