@@ -35,8 +35,9 @@ name: CI caches
 # arm64 leg runs typecheck's vet and leaves the test and race builds to the x86_64 leg.
 # go-notices carries the architecture before the OS (go-notices-<arch>-<os>-go<version>) and the
 # other four after it: the go-notices entry holds go-licenses, a program lint's notices step
-# runs, and a branch cut before the architecture joined the keys restores by go-notices-<os>-,
-# which an <os>-<arch> key starts with (ci-job-lint.yaml's restore step says what that did). One
+# runs, and a run of a workflow file older than the architecture in the key restores by
+# go-notices-<os>-, which an <os>-<arch> key starts with (ci-job-lint.yaml's restore step says what
+# that did). One
 # Go setup per leg, since the key carries the version that module's go.mod names: the daemon's
 # go.mod for go-daemon and for go-notices, which lint installs the daemon's Go for; the envoy
 # module's for go-envoy and go-envoy-test; the infra module's for go-envoy-infra. Each family is
@@ -185,8 +186,8 @@ jobs:
   # family belongs to. It keys on packages/daemon/go.mod's Go, which lint installs, though that
   # step also builds the envoy and infra modules' commands, and on the runner's architecture
   # before the OS, as lint's restore does: the entry holds the go-licenses that step runs, and an
-  # <os>-<arch> key would start with the go-notices-<os>- prefix of a branch older than the
-  # architecture in the key, which then restores this arm64 program on x86_64.
+  # <os>-<arch> key would start with the go-notices-<os>- prefix of a run of a workflow file older
+  # than the architecture in the key, which then restores this arm64 program on x86_64.
   notices:
     runs-on: ubuntu-24.04-arm
     # The notices build is the long one: it writes the notices of, and cross-compiles, every

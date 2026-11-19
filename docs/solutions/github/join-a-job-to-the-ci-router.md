@@ -389,13 +389,25 @@ the fills live in workflows that run there.
 - `go-notices` is the one family keyed with the architecture before the OS
   (`key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}`,
   `restore-keys: ${{ format('go-notices-{0}-{1}-', runner.arch, runner.os) }}`). Its entry holds
-  go-licenses, a program the notices step runs. A branch cut before the architecture joined the
-  keys restores by `go-notices-Linux-` on `ubuntu-24.04`, and `go-notices-Linux-ARM64-go1.27.3`
-  starts with that prefix: such a branch restored main's arm64 go-licenses on x86_64 and failed
-  with `Exec format error` (run 44437023306). When a family whose entry holds a program a job runs
-  changes its key, put the new part before the point where an older branch's `key` or
-  `restore-keys` ends, or rename the family: GitHub matches both as prefixes, so no older `key` or
-  `restore-keys` may be a prefix of a new key.
+  go-licenses, a program the notices step runs, so an entry one CPU built is of no use to a reader
+  on another. A run of a workflow file older than the architecture in the key restores by
+  `go-notices-Linux-` on `ubuntu-24.04`, and `go-notices-Linux-ARM64-go1.27.3` starts with that
+  prefix: such a run restored main's arm64 go-licenses on x86_64 and failed with `Exec format
+  error` (run 44437023306). When the key of a family whose entry holds a program gains a part that
+  separates readers who cannot run each other's program (the CPU, the OS), put that part before
+  the end of the shortest `key` or `restore-keys` an older reader has, or rename the family:
+  GitHub matches both as prefixes, so no `key` or `restore-keys` of an older reader that cannot
+  run the new entries may be a prefix of their key. A part that readers can share, such as the Go
+  version, may follow the shared prefix: go-licenses sits in a directory that names its own
+  version and Go, so a restore of the last Go's entry still gives the modules, and the tool is
+  built again at the new Go's path rather than the old one run. Entries saved under the old shape
+  still match the older prefixes, and none is deleted by hand: GitHub removes an entry after 7
+  days with no read, or earlier, oldest read first, once the repository's caches reach their size
+  limit, and each older reader's restore is a read. An older reader that cannot run the entry,
+  on the entry's Go and tool versions, then fails on every run until its runs come from a commit
+  that carries the new key (a re-run keeps its old commit), or until a program deletes the entry
+  the way ci-caches.yaml's `envoy-infra-superseded` job deletes the `go-envoy-infra` entries a
+  fill superseded.
 - Add no `actions/cache/save` step here, and no `if:` that tests `github.event_name == 'push'` or
   compares `github.ref` with a branch ref: the workflow runs on no push, so such a condition gates
   its step on what no run ever is, and `check-ci-filters.sh` refuses it. A family a new job

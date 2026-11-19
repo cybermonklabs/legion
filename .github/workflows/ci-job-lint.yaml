@@ -188,14 +188,19 @@ jobs:
       #
       # The runner's architecture comes before the OS in this family's key, where the other Go
       # families put it after: the entry holds go-licenses, a program of the runner that built it,
-      # which the notices step runs. A branch cut before lint moved to ubuntu-24.04-arm restores
-      # on ubuntu-24.04 by the prefix go-notices-Linux-, and an entry keyed
-      # go-notices-Linux-ARM64-go<version> starts with that prefix: such a branch restored main's
-      # arm64 go-licenses on x86_64 and failed on it with "Exec format error" (run 44437023306).
-      # Before this shape, every go-notices key and restore-keys began with go-notices-Linux-,
-      # which no key of this shape begins with, so a branch that still carries one misses this
-      # family and builds go-licenses for its own runner. A branch that takes this shape names its
-      # own runner's architecture first, so it can match only an entry of that architecture.
+      # which the notices step runs. A run of a workflow file older than the architecture in the
+      # key (a pull request into a branch cut before it, a dispatch on such a branch, or a re-run of
+      # a run made before it) restores on ubuntu-24.04 by the prefix go-notices-Linux-, and an entry
+      # keyed go-notices-Linux-ARM64-go<version> starts with that prefix: such a run restored main's
+      # arm64 go-licenses on x86_64 and failed on it with "Exec format error" (run 44437023306). No
+      # key of this shape starts with go-notices-Linux-, so no older prefix matches an entry of this
+      # shape, and a run of this shape names its own runner's architecture first, so it matches only
+      # an entry of that architecture. An entry saved under the old shape still matches the older
+      # prefixes, and no one deletes it by hand: GitHub removes an entry after 7 days with no read,
+      # or earlier, oldest read first, once the repository's caches reach their size limit, and
+      # each such run's restore is a read. So an x86_64 run of an older workflow file on the entry's
+      # Go and go-licenses versions restores it and fails, and only a run of a commit that carries
+      # this key stops reading it.
       - if: inputs.changes-result != 'success' || inputs.go_notices == 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
