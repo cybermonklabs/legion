@@ -760,7 +760,8 @@ func checkedResult(argv []string, result Result, err error) (Result, error) {
 // answered is nil when a run's status is an answer to read, and otherwise the error naming the
 // command: a run that could not start or that a signal ended (runFailure), and one its budget
 // ended (commandFailure). A read whose non-zero exit can mean something calls this first, since
-// the -1 such a run leaves is no answer, then reads its answer.
+// the exit such a run leaves (0 for a run that erred, -1 for one its budget killed) is no answer,
+// then reads its answer.
 func answered(argv []string, result Result, err error) error {
 	if err != nil {
 		return runFailure(argv, result, err)
