@@ -540,7 +540,7 @@ type memberDraft struct {
 // (newsRecorded.change) is named by none.
 func (m memberDraft) told(recorded newsRecorded) workflow.NewsMember {
 	member := workflow.NewsMember{Issue: m.issue.Key, Phase: m.issue.Phase, State: m.state, Architect: m.architect}
-	if settlement, _ := settlementOf(m.owed, recorded, m.openingOwed); len(m.owed) > 0 && settlement == settleRaise {
+	if len(m.owed) > 0 && settlementOf(m.owed, recorded, m.openingOwed) == settleRaise {
 		member.State = workflow.NewsWorkUnchanged
 		return member
 	}
@@ -584,7 +584,7 @@ func readTreeMembers(ctx context.Context, tx pgx.Tx, records record.Store, steps
 	}
 	// The facts read every member of the tree in this transaction, so the claims that name each
 	// member's holder take them from here rather than read the tree's issues a second time.
-	claims.seed(facts.Members)
+	claims.seed(&facts)
 	members := facts.Members
 	slices.SortStableFunc(members, func(a, b record.Issue) int {
 		return boolOrder(claim.IsTreeRoot(b.Key, b.Tree)) - boolOrder(claim.IsTreeRoot(a.Key, a.Tree))

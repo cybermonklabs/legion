@@ -3404,9 +3404,10 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // with the process too (cutTurnOf), and so do the marks of the sentences a prompt to it carried
 // (carried): the next process has been sent nothing yet. So does the copy of the news of the
 // approved design that a prompt to it carried, on a task no turn confirmed (Delivery.Carried,
-// uncredit): no turn of that prompt can start any more, so a turn of the next process's own, after
-// a restart, is never taken for it (unsentNews). The copy goes in memory here and reaches the store
-// at the next write of the delivery, which settle makes before the next decision (unsaved).
+// copyTurnNews, which writes none once no prompt is outstanding): no turn of that prompt can start
+// any more, so a turn of the next process's own, after a restart, is never taken for it
+// (unsentNews). The copy goes in memory here and, where it changed, reaches the store at the next
+// write of the delivery, which settle makes before the next decision (unsaved).
 func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.recordEnd(ctx, cause)
 	m.disarmAll()
@@ -3414,8 +3415,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.wake = nil
 	m.forgetSend()
 	m.forgetOutstanding()
-	if p := m.claim.Pending; p != nil && p.ConfirmedAt.IsZero() && len(p.Carried) > 0 {
-		p.uncredit()
+	if p := m.claim.Pending; p != nil && m.copyTurnNews(p) {
 		m.unsaved = true
 	}
 	m.held = nil

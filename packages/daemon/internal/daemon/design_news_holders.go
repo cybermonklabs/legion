@@ -48,15 +48,16 @@ func phaseHolder(project string, member record.Issue) (newsHolder, bool) {
 
 // newsClaims names the holder of each member of one tree (holderOf). project is the tree's project
 // token, read from its root's record as notice routing reads it (readNoticeRoute), "" where that
-// project names none. members is the tree's issues by key: those its caller read in its own
-// transaction, which a caller that hands any over hands over whole (record.TreeNewsFacts), and
-// those member read from the record on a miss. Every reader takes a member's issue from the
-// record, through member or, at a send, through records.Issue (readNewsAtSend), which skips a key
-// the record holds no issue of. So none mistakes such a key for an issue in no phase. runs is the
-// outbox's live view of whether an architect's claim holds its role, which the outbox's start
-// weighs the owner walk by (withLiveView), nil for a reader that weighs the claims the store
-// records. owner is that walk, built the first time an owner is asked (owningIssue), and nil until
-// then.
+// project names none. members is the tree's issues by key, none of them or every one: a caller
+// hands over the facts it read of the tree in its own transaction, whole (record.NewsFacts:
+// newNewsClaims, seed), and member reads the tree whole on a miss. So the owner walk, which climbs
+// through a member's parents, reads every issue of the tree (owningIssue). Every reader takes a
+// member's issue from the record, through member or, at a send, through records.Issue
+// (readNewsAtSend), which skips a key the record holds no issue of. So none mistakes such a key
+// for an issue in no phase. runs is the outbox's live view of whether an architect's claim holds
+// its role, which the outbox's start weighs the owner walk by (withLiveView), nil for a reader
+// that weighs the claims the store records. owner is that walk, built the first time an owner is
+// asked (owningIssue), and nil until then.
 type newsClaims struct {
 	project string
 	root    record.Issue
@@ -65,32 +66,41 @@ type newsClaims struct {
 	owner   func(record.Issue) string
 }
 
-// newNewsClaims names the holders of root's tree, whose issues members are, as the caller read them
-// in its transaction (record.TreeNewsFacts). A caller that read none passes none, and member reads
-// them the first time it is asked, or a later reader of the facts hands them over (seed).
-func newNewsClaims(root record.Issue, members []record.Issue) *newsClaims {
-	claims := &newsClaims{root: root, members: make(map[string]record.Issue, len(members))}
+// newNewsClaims names the holders of root's tree. facts is what the caller read of the tree in its
+// transaction (record.TreeNewsFacts), every issue of the tree among it, or nil for a caller that
+// read none: member then reads the tree's issues the first time it is asked, or a later reader of
+// the facts hands them over (seed). It takes the facts, never a list of issues, so c holds every
+// issue of the tree or none.
+func newNewsClaims(root record.Issue, facts *record.NewsFacts) *newsClaims {
+	claims := &newsClaims{root: root}
 	claims.project, _ = claim.ProjectToken(root.Project)
-	claims.seed(members)
+	if facts == nil {
+		claims.members = map[string]record.Issue{}
+		return claims
+	}
+	claims.members = make(map[string]record.Issue, len(facts.Members))
+	claims.seed(facts)
 	return claims
 }
 
-// seed holds each of members, as its caller read them in its transaction, under its key where c
-// holds no issue of that key yet, so member reads the tree's issues again only for a key none of
-// its callers read. An issue c already holds was read in the same transaction, and is kept.
-func (c *newsClaims) seed(members []record.Issue) {
-	for _, member := range members {
+// seed holds each issue of the tree, as facts its caller read in its transaction name it, under
+// its key where c holds no issue of that key yet, so member reads the tree's issues again only for
+// a key of no issue of the tree. An issue c already holds was read in the same transaction, and is
+// kept.
+func (c *newsClaims) seed(facts *record.NewsFacts) {
+	for _, member := range facts.Members {
 		if _, held := c.members[member.Key]; !held {
 			c.members[member.Key] = member
 		}
 	}
 }
 
-// member is the issue of c's tree whose key is key. A key c holds no issue of is read again with
-// the rest of the tree (record.Store.TreeIssues), in the caller's transaction, so a member its
-// caller did not pass is still named by its real phase. A key the record holds no issue of in the
-// tree is an error: the zero issue stands in no phase, names no holder, and would read as told at
-// its next start.
+// member is the issue of c's tree whose key is key. Where c holds no issue of key, it holds none
+// of the tree's (newsClaims) or key is of no issue of the tree, and the tree's issues are read
+// again, whole (record.Store.TreeIssues), in the caller's transaction, so a member no caller
+// handed over is still named by its real phase. A key the record holds no issue of in the tree is
+// an error: the zero issue stands in no phase, names no holder, and would read as told at its next
+// start.
 func (c *newsClaims) member(ctx context.Context, tx pgx.Tx, records record.Store, key string) (record.Issue, error) {
 	if issue, held := c.members[key]; held {
 		return issue, nil
@@ -149,11 +159,11 @@ func (c *newsClaims) holderOf(ctx context.Context, tx pgx.Tx, records record.Sto
 
 // owningIssue is the key of the issue whose architect owns member now: the owner walk from the
 // member itself (record.OwningIssue), built once for c's tree in the caller's transaction. The walk
-// climbs through the member's parents, so it reads every issue of the tree: those c holds, which a
-// caller that hands any over hands over whole (record.TreeNewsFacts), and otherwise those member
-// reads, once, with the root's key, which c always holds after. A reader in a transaction weighs
-// the architect claims the store records (record.ArchitectRuns); the outbox's start weighs the
-// machine's live view (runs, withLiveView), as the outbox routes a notice (noticeArchitect).
+// climbs through the member's parents, so it reads every issue of the tree: c holds every one or
+// none (newsClaims), and where it holds none, member reads them, once, with the root's key. A
+// reader in a transaction weighs the architect claims the store records (record.ArchitectRuns);
+// the outbox's start weighs the machine's live view (runs, withLiveView), as the outbox routes a
+// notice (noticeArchitect).
 func (c *newsClaims) owningIssue(ctx context.Context, tx pgx.Tx, records record.Store, member record.Issue) (string, error) {
 	if c.owner != nil {
 		return c.owner(member), nil

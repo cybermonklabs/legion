@@ -2050,24 +2050,32 @@ func (m *Machine) markUnread(ctx context.Context) error {
 // copyTurnNews writes, on a task no turn has confirmed, the copy of the news its next turn would
 // credit: the news of the first prompt of it still outstanding, whose turn is the session's next,
 // none where no prompt is (turnNews). A confirmed task keeps the copy its confirmation fixed. It is
-// the one writer of an unconfirmed copy, for an acknowledgement (acked) and for a prompt that came
-// to nothing (clearReadMark).
-func (m *Machine) copyTurnNews(p *Delivery) {
-	if p.ConfirmedAt.IsZero() {
-		p.credit(m.turnNews())
+// the one writer of the pending task's unconfirmed copy: for an acknowledgement (acked), a prompt
+// that came to nothing (clearReadMark), a confirmation taken back (takeBackConfirmation) and a
+// let-go (letGo). It answers whether the copy changed, so a caller that leaves the write of the
+// delivery to settle marks it unsaved (letGo). A let-go's take-back of a confirmation (interrupted)
+// writes no copy of the pending task: it drops the copy of the task that takes that task's place
+// once its write lands (uncredit).
+func (m *Machine) copyTurnNews(p *Delivery) bool {
+	if !p.ConfirmedAt.IsZero() {
+		return false
 	}
+	news := m.turnNews()
+	changed := !bytes.Equal(p.Carried, news)
+	p.credit(news)
+	return changed
 }
 
 // credit writes news as the delivery's copy (Carried), not yet final (Ran). It is how every writer
-// of the copy writes it — a confirmation (confirmCarrying) and an acknowledgement (copyTurnNews) —
-// so no copy is ever written beside a stale mark that it is final.
+// of the copy writes it — a confirmation (confirmCarrying), the writer of an unconfirmed copy
+// (copyTurnNews) and a let-go's take-back of a confirmation (interrupted, uncredit) — so no copy is
+// ever written beside a stale mark that it is final.
 func (d *Delivery) credit(news []byte) {
 	d.Carried, d.Ran = news, false
 }
 
-// uncredit drops the delivery's copy, and with it the credit a confirmation held: a take-back of
-// the confirmation (takeBackConfirmation, interrupted) and a let-go of a prompt no turn can start
-// any more (letGo).
+// uncredit drops the delivery's copy, and with it the credit a confirmation held: a let-go's
+// take-back of the confirmation (interrupted), on the delivery that take-back writes.
 func (d *Delivery) uncredit() {
 	d.credit(nil)
 }
@@ -2228,13 +2236,13 @@ func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 //
 // Both callers take a confirmation back with no prompt of the task outstanding (takeBackPending,
 // refused), so no turn of a prompt that carried news of the approved design can start any more,
-// and the copy of that news goes with the confirmation (Delivery.Carried): the write that records
-// the take-back ends the credit the copy held, and no other (the claim store's
-// design_news_told_in).
+// and the copy of that news goes with the confirmation (Delivery.Carried, copyTurnNews, which
+// writes none with no prompt outstanding): the write that records the take-back ends the credit
+// the copy held, and no other (the claim store's design_news_told_in).
 func (m *Machine) takeBackConfirmation(p *Delivery) bool {
 	handshake, moved := m.claim.Handshake.unconfirmed(*p)
 	p.ConfirmedAt = time.Time{}
-	p.uncredit()
+	m.copyTurnNews(p)
 	if !moved {
 		return false
 	}

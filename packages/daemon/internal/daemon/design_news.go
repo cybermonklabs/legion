@@ -315,8 +315,8 @@ const (
 )
 
 // settlementOf is what the reconcile does for one told row owed items, given what is recorded:
-// settleLater while the record cannot yet tell some item (newsRecorded.change); settleRaise, with
-// the items to raise past, when no pair changed anything of the work
+// settleLater while the record cannot yet tell some item (newsRecorded.change); settleRaise, which
+// raises the row past items, when no pair changed anything of the work
 // (record.DesignChanges.WorkUnchanged: decision blocks alone, or nothing at all) and the row owes
 // no opening; and settleSend otherwise. An item whose review history could not be read is sent,
 // never raised: nothing says what changed since the version its holder took. A pair that changed
@@ -324,19 +324,19 @@ const (
 // was told it closed, and a person approved it later, so the holder is owed the opening as a task,
 // with the words that nothing its issue holds changed and no change list (workflow.RenderNews),
 // since no role message carried that opening.
-func settlementOf(items []record.NewsItem, recorded newsRecorded, openingOwed bool) (newsSettlement, []record.NewsItem) {
+func settlementOf(items []record.NewsItem, recorded newsRecorded, openingOwed bool) newsSettlement {
 	workUnchanged := true
 	for _, item := range items {
 		change, told := recorded.change(item)
 		if !told {
-			return settleLater, nil
+			return settleLater
 		}
 		workUnchanged = workUnchanged && change.HistoryUnread == nil && change.Changes.WorkUnchanged()
 	}
 	if workUnchanged && !openingOwed {
-		return settleRaise, items
+		return settleRaise
 	}
-	return settleSend, nil
+	return settleSend
 }
 
 // newsAsks is what of the record a set of owed items is told from, each once: the pair of versions
@@ -501,12 +501,11 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 		// settled. A row raised or left for later queues no start, so its holder is never read.
 		var sendTo []toldKey
 		for _, news := range owed.Members {
-			settlement, past := settlementOf(news.Items, recorded, record.ToldRow(facts.Told, news.Issue, record.AudienceHolder).OpeningOwed)
-			switch settlement {
+			switch settlementOf(news.Items, recorded, record.ToldRow(facts.Told, news.Issue, record.AudienceHolder).OpeningOwed) {
 			case settleLater:
 				continue
 			case settleRaise:
-				if err := r.records.RaiseTold(ctx, tx, news.Issue, record.AudienceHolder, past, now); err != nil {
+				if err := r.records.RaiseTold(ctx, tx, news.Issue, record.AudienceHolder, news.Items, now); err != nil {
 					return err
 				}
 				raised++
@@ -515,10 +514,9 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 			sendTo = append(sendTo, toldKey{news.Issue, record.AudienceHolder})
 		}
 		if owed.ArchitectOwed() {
-			settlement, past := settlementOf(owed.Architect, recorded, record.ToldRow(facts.Told, root.Key, record.AudienceArchitect).OpeningOwed)
-			switch settlement {
+			switch settlementOf(owed.Architect, recorded, record.ToldRow(facts.Told, root.Key, record.AudienceArchitect).OpeningOwed) {
 			case settleRaise:
-				if err := r.records.RaiseTold(ctx, tx, root.Key, record.AudienceArchitect, past, now); err != nil {
+				if err := r.records.RaiseTold(ctx, tx, root.Key, record.AudienceArchitect, owed.Architect, now); err != nil {
 					return err
 				}
 				raised++
@@ -526,7 +524,7 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 				sendTo = append(sendTo, toldKey{root.Key, record.AudienceArchitect})
 			}
 		}
-		holders, err := readOwedHolders(ctx, tx, r.records, newNewsClaims(*root, facts.Members), sendTo)
+		holders, err := readOwedHolders(ctx, tx, r.records, newNewsClaims(*root, &facts), sendTo)
 		if err != nil {
 			return err
 		}
@@ -671,7 +669,7 @@ func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFa
 		return nil, nil, nil
 	}
 	root := facts.Members[rootAt]
-	claims := newNewsClaims(root, facts.Members).withLiveView(r.holdsItsRole)
+	claims := newNewsClaims(root, &facts).withLiveView(r.holdsItsRole)
 	if holder, held := claims.rootArchitect(); held && holder.token == token && owed.ArchitectOwed() {
 		tell(root.Key, record.AudienceArchitect, owed.Architect)
 	}
@@ -719,8 +717,7 @@ func (r *outbox) mergerNewsUnrecorded(ctx context.Context, issue record.Issue) (
 			if err != nil {
 				return err
 			}
-			settlement, _ := settlementOf(member.Items, recorded, false)
-			unrecorded = settlement == settleLater
+			unrecorded = settlementOf(member.Items, recorded, false) == settleLater
 		}
 		return nil
 	}); err != nil {
