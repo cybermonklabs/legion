@@ -220,6 +220,11 @@ type bootConfig struct {
 	InsecureCookie bool
 	// EnvoyToken is ENVOY_TOKEN, the bearer every Envoy listener call sends.
 	EnvoyToken string
+	// EnvoyAccountTokenFile is ENVOY_ACCOUNT_TOKEN_FILE, the file holding Dispatch's own projected
+	// Kubernetes service-account token for the listener's audience, which every listener call
+	// reads and presents in EnvoyToken's place. The file is read by the listener client on each
+	// call, never here: a projected token rotates.
+	EnvoyAccountTokenFile string
 	// RoleHolderWindows are the session windows a role route's holder is judged by
 	// (ENVOY_SESSION_LIVE_WINDOW and ENVOY_SESSION_GONE_HORIZON, roleHolderWindows): what the
 	// outbox's reader of the role and session buckets carries (roles.NewBuckets).
@@ -1224,6 +1229,8 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		DevSignInSharedKey: env.get("DISPATCH_DEV_SIGNIN_SHARED_KEY"),
 		InsecureCookie:     env.get("DISPATCH_INSECURE_COOKIE") != "",
 		EnvoyToken:         env.get("ENVOY_TOKEN"),
+		// The file is read at every listener call, never here: a projected token rotates.
+		EnvoyAccountTokenFile: strings.TrimSpace(env.get("ENVOY_ACCOUNT_TOKEN_FILE")),
 	}
 	if boot.DatabaseURL == "" {
 		return bootConfig{}, errors.New("DATABASE_URL required")
@@ -1705,6 +1712,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.InsecureCookie = boot.InsecureCookie
 	built.EnvoyURL = boot.EnvoyURL
 	built.EnvoyToken = boot.EnvoyToken
+	built.EnvoyAccountTokenFile = boot.EnvoyAccountTokenFile
 	built.GitHubAPIBase = boot.GitHubAPIBase
 	built.AgentSecretsURL = boot.AgentSecretsURL
 	built.AgentSecretsTokenFile = boot.AgentSecretsTokenFile

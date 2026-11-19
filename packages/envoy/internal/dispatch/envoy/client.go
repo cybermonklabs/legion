@@ -6,13 +6,16 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -228,6 +231,15 @@ type SendInput struct {
 	// every send of a message whose agents-route request asked for it. Unset, the field is left
 	// out of the body.
 	ConnectedOnly bool
+	// Role is the role a send for a route to a role is sent for: the session TargetSession names
+	// held it when Dispatch resolved the route (resolveDeliveryTarget in internal/dispatch/api).
+	// The listener stores it on the envelope (contracts.Envelope.Role), so that a different session
+	// that takes the role receives what the holder did not read, and keeps the message for the
+	// role's next holder when the role's claim names another session than the target when the
+	// send arrives (the 202 Kept reads). It takes the mark from Dispatch's own identity alone, so
+	// the send carries it only from a client that presents that identity (WithAccountTokenFile),
+	// and from any other it is left out of the body, as every send before the mark existed was.
+	Role string
 }
 
 // SendResult identifies the listener envelope emitted for a successful delivery. Duplicate
@@ -239,18 +251,30 @@ type SendInput struct {
 // State is what the target was when the listener stored the message, SendStateConnected or
 // SendStateStopped. A listener that predates the field answers none, which reads as a connected
 // target.
+//
+// Kept is a send for a role (SendInput.Role) that the listener kept on the role's kept lane
+// rather than storing it for the target, because the role's claim named another session than the
+// target, or none, when the send arrived: it answers 202 with kept and kept_until, the end of the
+// kept copy's hour, in Unix milliseconds, as the publish route answers a role message it kept.
+// The message reaches the session that holds the role then, live, through the lane's walk, and
+// EnvelopeID names the copy the lane holds.
 type SendResult struct {
 	EnvelopeID string
 	Recipient  string
 	Duplicate  bool
 	State      string
+	Kept       bool
+	KeptUntil  int64
 }
 
 // Client reads live session metadata from the Envoy listener.
 type Client struct {
-	baseURL    string
-	apiToken   string
-	httpClient *http.Client
+	baseURL  string
+	apiToken string
+	// accountTokenFile is the file holding Dispatch's own projected service-account token for the
+	// listener's audience (WithAccountTokenFile), read at every call; empty presents apiToken.
+	accountTokenFile string
+	httpClient       *http.Client
 }
 
 // defaultTimeout is the window every listener call gets. A send that misses it is
@@ -272,6 +296,18 @@ func WithToken(token string) Option {
 	return func(c *Client) { c.apiToken = token }
 }
 
+// WithAccountTokenFile makes every listener call present Dispatch's own identity (cmd/dispatch:
+// ENVOY_ACCOUNT_TOKEN_FILE): the projected Kubernetes service-account token the kubelet writes into
+// the file at path for the listener's audience and rewrites before it expires. Each call reads the
+// file when it is made, so the call after a rotation presents the new token, and judges the token
+// by its own exp before presenting it, so a token the kubelet did not rewrite in time is never
+// sent to earn a 401 (accountTokenFromFile). It is presented in WithToken's bearer's place, which
+// is then presented only to a listener that refuses the account token (do), and it is what lets a
+// send carry its role mark (SendInput.Role).
+func WithAccountTokenFile(path string) Option {
+	return func(c *Client) { c.accountTokenFile = path }
+}
+
 // New returns a client for an Envoy listener's HTTP control API.
 func New(baseURL string, options ...Option) *Client {
 	client := &Client{
@@ -286,10 +322,126 @@ func New(baseURL string, options ...Option) *Client {
 	return client
 }
 
-func (c *Client) authorize(request *http.Request) {
+// ErrAccountToken is a call this client did not make because the account token it presents
+// (WithAccountTokenFile) cannot be presented: its file cannot be read, holds nothing, or holds a
+// token whose own exp has passed or is about to. Nothing reached the listener. It is
+// ErrUnavailable too, since the listener could not be asked, and never ErrUnreachable: asking
+// again repeats it until the file holds a live token.
+var ErrAccountToken = errors.New("the listener account token cannot be presented")
+
+// accountTokenError marks the failure it wraps as ErrAccountToken and ErrUnavailable.
+type accountTokenError struct{ error }
+
+func (accountTokenError) Is(target error) bool {
+	return target == ErrAccountToken || target == ErrUnavailable
+}
+
+func (e accountTokenError) Unwrap() error { return e.error }
+
+// accountTokenExpiryMargin is how long before its own exp a token read from the account token file
+// is no longer presented: about a call's whole window (defaultTimeout) and a few seconds of clock
+// difference, so a token is never sent to arrive expired. The kubelet rewrites a projected token
+// once it is 80% of the way through its life, which for the hour the deployment projects leaves
+// twelve minutes, so a working kubelet never brings a token this near.
+const accountTokenExpiryMargin = 10 * time.Second
+
+// accountTokenFromFile is the token the account token file holds now, trimmed, when its own exp
+// leaves at least accountTokenExpiryMargin. A token whose payload names no exp, or is not a
+// compact JWT, is presented as it is, for the listener to judge. Every failure is an
+// accountTokenError naming the path and never the token.
+func accountTokenFromFile(path string, now time.Time) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", accountTokenError{fmt.Errorf("%w: read %s: %v", ErrAccountToken, path, err)}
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", accountTokenError{fmt.Errorf("%w: %s holds no token", ErrAccountToken, path)}
+	}
+	if expiry, ok := tokenExpiry(token); ok && !now.Add(accountTokenExpiryMargin).Before(expiry) {
+		return "", accountTokenError{fmt.Errorf("%w: the token in %s expires at %s and the file holds no newer one",
+			ErrAccountToken, path, expiry.UTC().Format(time.RFC3339))}
+	}
+	return token, nil
+}
+
+// tokenExpiry reads the exp claim of a compact JWT's payload, unverified: it decides only whether
+// to present the token, which the listener verifies.
+func tokenExpiry(token string) (time.Time, bool) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return time.Time{}, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return time.Time{}, false
+	}
+	var claims struct {
+		Expiry *float64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil || claims.Expiry == nil {
+		return time.Time{}, false
+	}
+	return time.Unix(int64(*claims.Expiry), 0), true
+}
+
+// presentsIdentity reports whether this client presents Dispatch's own identity, the one
+// credential the listener takes a send's role mark from.
+func (c *Client) presentsIdentity() bool {
+	return c.accountTokenFile != ""
+}
+
+// authorize sets the bearer a call presents: the account token the file holds now, or the shared
+// token, or none; the shared token alone when shared is set (do's fallback). A failure is
+// ErrAccountToken, and the call is not made.
+func (c *Client) authorize(request *http.Request, shared bool) error {
+	if c.accountTokenFile != "" && !shared {
+		token, err := accountTokenFromFile(c.accountTokenFile, time.Now())
+		if err != nil {
+			return err
+		}
+		request.Header.Set("Authorization", "Bearer "+token)
+		return nil
+	}
 	if c.apiToken != "" {
 		request.Header.Set("Authorization", "Bearer "+c.apiToken)
 	}
+	return nil
+}
+
+// do makes one listener call, the request build makes, authorized by authorize. A call on the
+// account token that the listener answers 401 is made once more on the shared token when the
+// client holds one too (WithToken beside WithAccountTokenFile), built with shared set, so a send
+// leaves its role mark out (Send): a listener that does not verify Dispatch's identity yet - one
+// of the release before it, still serving while a deploy rolls the listener and the app at once -
+// refuses the account token and takes the shared one, and would refuse the mark. A 401 is
+// answered before the listener's route runs (cmd/listener, apiAuth), so the first call did
+// nothing and the second is no repeat. The fallback is logged, since a listener that keeps
+// refusing Dispatch's identity past a roll is a deployment fault that costs every role mark. It
+// is no token refresh: the account token is read anew at every call (authorize) and never
+// because of a 401.
+func (c *Client) do(route string, build func(shared bool) (*http.Request, error)) (*http.Response, error) {
+	request, err := build(false)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.authorize(request, false); err != nil {
+		return nil, fmt.Errorf("%s: %w", route, err)
+	}
+	response, err := c.httpClient.Do(request)
+	if err != nil || response.StatusCode != http.StatusUnauthorized || !c.presentsIdentity() || c.apiToken == "" {
+		return response, err
+	}
+	_ = response.Body.Close()
+	slog.Warn("dispatch: the Envoy listener refused Dispatch's account token, so the call is made again on the shared token and carries no role mark",
+		"route", route)
+	if request, err = build(true); err != nil {
+		return nil, err
+	}
+	if err := c.authorize(request, true); err != nil {
+		return nil, fmt.Errorf("%s: %w", route, err)
+	}
+	return c.httpClient.Do(request)
 }
 
 // Sessions returns every session the listener holds a registration for, live and unresponsive
@@ -395,15 +547,19 @@ func (c *Client) Unsubscribe(ctx context.Context, sessionID string, topics []str
 	if err != nil {
 		return nil, fmt.Errorf("encode POST /v1/interests/unsubscribe body: %w", err)
 	}
-	request, err := http.NewRequestWithContext(
-		ctx, http.MethodPost, c.baseURL+"/v1/interests/unsubscribe", bytes.NewReader(body),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("%w: build POST /v1/interests/unsubscribe request: %v", ErrUnavailable, err)
+	response, err := c.do("POST /v1/interests/unsubscribe", func(bool) (*http.Request, error) {
+		request, err := http.NewRequestWithContext(
+			ctx, http.MethodPost, c.baseURL+"/v1/interests/unsubscribe", bytes.NewReader(body),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("%w: build POST /v1/interests/unsubscribe request: %v", ErrUnavailable, err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		return request, nil
+	})
+	if errors.Is(err, ErrAccountToken) || errors.Is(err, ErrUnavailable) {
+		return nil, err
 	}
-	request.Header.Set("Content-Type", "application/json")
-	c.authorize(request)
-	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return nil, unreachable(fmt.Errorf("%w: POST /v1/interests/unsubscribe: %v", ErrUnavailable, err))
 	}
@@ -658,12 +814,16 @@ func (c *Client) legionAgents(ctx context.Context, route, query string) ([]Legio
 // reads alike however it was asked. A transport failure is ErrUnavailable and ErrUnreachable
 // both: no listener answered it (unreachable).
 func (c *Client) get(ctx context.Context, route, query string) (*http.Response, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+route+query, nil)
-	if err != nil {
-		return nil, fmt.Errorf("%w: build GET %s request: %v", ErrUnavailable, route, err)
+	response, err := c.do("GET "+route, func(bool) (*http.Request, error) {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+route+query, nil)
+		if err != nil {
+			return nil, fmt.Errorf("%w: build GET %s request: %v", ErrUnavailable, route, err)
+		}
+		return request, nil
+	})
+	if errors.Is(err, ErrAccountToken) || errors.Is(err, ErrUnavailable) {
+		return nil, err
 	}
-	c.authorize(request)
-	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return nil, unreachable(fmt.Errorf("%w: GET %s: %v", ErrUnavailable, route, err))
 	}
@@ -710,30 +870,39 @@ func (input SendInput) EnvelopeMessage() contracts.Message {
 // session was when the listener stored the message: connected, or stopped and stored for its own
 // consumer (SendResult). A send that set ConnectedOnly and met a stopped session is refused
 // instead, 409 with the listener's reason "the session is stopped", which arrives here as that
-// reason alone (listenerResponseError).
+// reason alone (listenerResponseError). A send for a role (SendInput.Role) that the listener kept
+// for the role's next holder is its 202, read as Kept; a 202 naming no kept copy is no answer a
+// send gets, and is ErrUnavailable.
 func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) {
 	message := input.EnvelopeMessage()
-	body, err := json.Marshal(struct {
-		TargetSession  string                 `json:"target_session"`
-		Source         string                 `json:"source"`
-		Message        string                 `json:"message"`
-		Payload        string                 `json:"payload"`
-		IdempotencyKey string                 `json:"idempotency_key"`
-		Urgency        string                 `json:"urgency,omitempty"`
-		ExpectsReply   contracts.ExpectsReply `json:"expects_reply,omitempty"`
-		ConnectedOnly  bool                   `json:"connected_only,omitempty"`
-	}{
-		TargetSession:  input.TargetSession,
-		Source:         message.Source,
-		Message:        message.Text,
-		Payload:        *message.Payload,
-		IdempotencyKey: input.IdempotencyKey,
-		Urgency:        message.Urgency,
-		ExpectsReply:   message.ExpectsReply,
-		ConnectedOnly:  input.ConnectedOnly,
-	})
-	if err != nil {
-		return SendResult{}, fmt.Errorf("encode POST /v1/messages/send body: %w", err)
+	// body is the send's body; shared is a send made again on the shared token (do), which
+	// carries no role mark, since the listener takes the mark from Dispatch's identity alone.
+	body := func(shared bool) ([]byte, error) {
+		role := ""
+		if c.presentsIdentity() && !shared {
+			role = input.Role
+		}
+		return json.Marshal(struct {
+			TargetSession  string                 `json:"target_session"`
+			Source         string                 `json:"source"`
+			Message        string                 `json:"message"`
+			Payload        string                 `json:"payload"`
+			IdempotencyKey string                 `json:"idempotency_key"`
+			Urgency        string                 `json:"urgency,omitempty"`
+			ExpectsReply   contracts.ExpectsReply `json:"expects_reply,omitempty"`
+			ConnectedOnly  bool                   `json:"connected_only,omitempty"`
+			Role           string                 `json:"role,omitempty"`
+		}{
+			TargetSession:  input.TargetSession,
+			Source:         message.Source,
+			Message:        message.Text,
+			Payload:        *message.Payload,
+			IdempotencyKey: input.IdempotencyKey,
+			Urgency:        message.Urgency,
+			ExpectsReply:   message.ExpectsReply,
+			ConnectedOnly:  input.ConnectedOnly,
+			Role:           role,
+		})
 	}
 	// written records that this client finished putting the request on the wire, which is what
 	// separates a listener that went quiet (the envelope may be published) from a connection
@@ -742,20 +911,30 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
 		WroteRequest: func(info httptrace.WroteRequestInfo) { written.Store(info.Err == nil) },
 	})
-	request, err := http.NewRequestWithContext(
-		ctx, http.MethodPost, c.baseURL+"/v1/messages/send", bytes.NewReader(body),
-	)
-	if err != nil {
-		return SendResult{}, fmt.Errorf("%w: build POST /v1/messages/send request: %v", ErrUnavailable, err)
+	response, err := c.do("POST /v1/messages/send", func(shared bool) (*http.Request, error) {
+		encoded, err := body(shared)
+		if err != nil {
+			return nil, fmt.Errorf("%w: encode POST /v1/messages/send body: %v", ErrUnavailable, err)
+		}
+		request, err := http.NewRequestWithContext(
+			ctx, http.MethodPost, c.baseURL+"/v1/messages/send", bytes.NewReader(encoded),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("%w: build POST /v1/messages/send request: %v", ErrUnavailable, err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		return request, nil
+	})
+	// A build or an authorization failure made no call (ErrUnavailable, ErrAccountToken); every
+	// other failure is the transport's.
+	if errors.Is(err, ErrAccountToken) || errors.Is(err, ErrUnavailable) {
+		return SendResult{}, err
 	}
-	request.Header.Set("Content-Type", "application/json")
-	c.authorize(request)
-	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return SendResult{}, sendTransportError(err, written.Load())
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
+	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusAccepted {
 		return SendResult{}, listenerResponseError(response)
 	}
 	var result struct {
@@ -763,13 +942,18 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 		Recipient  string `json:"recipient"`
 		Duplicate  bool   `json:"duplicate"`
 		State      string `json:"state"`
+		Kept       bool   `json:"kept"`
+		KeptUntil  int64  `json:"kept_until"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 		return SendResult{}, fmt.Errorf("%w: decode POST /v1/messages/send response: %v", ErrUnavailable, err)
 	}
+	if response.StatusCode == http.StatusAccepted && !result.Kept {
+		return SendResult{}, fmt.Errorf("%w: POST /v1/messages/send answered 202 naming no kept copy", ErrUnavailable)
+	}
 	return SendResult{
 		EnvelopeID: result.EnvelopeID, Recipient: result.Recipient, Duplicate: result.Duplicate,
-		State: result.State,
+		State: result.State, Kept: result.Kept, KeptUntil: result.KeptUntil,
 	}, nil
 }
 

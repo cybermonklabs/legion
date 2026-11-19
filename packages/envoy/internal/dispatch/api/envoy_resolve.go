@@ -200,10 +200,15 @@ const listenerAnsweredPrefix = "envoy listener answered: "
 
 // deliveryErrorText is the failure a delivery records for a listener error. Its prefix keeps a
 // take-over's failures (listenerUnreachablePrefix) apart from the listener's own answers
-// (listenerAnsweredPrefix), because retryableDeliveryFailure reads the recorded text.
+// (listenerAnsweredPrefix), because retryableDeliveryFailure reads the recorded text. A call
+// Dispatch did not make because its own account token could not be presented
+// (dispatchenvoy.ErrAccountToken) is neither, and is recorded as it is, naming the token's file:
+// the listener said nothing, and no later try succeeds until that file holds a live token.
 func deliveryErrorText(err error) string {
 	reason := strings.TrimPrefix(err.Error(), "envoy listener unavailable: ")
 	switch {
+	case errors.Is(err, dispatchenvoy.ErrAccountToken):
+		return err.Error()
 	case errors.Is(err, dispatchenvoy.ErrUnreachable):
 		return listenerUnreachablePrefix + reason
 	case errors.Is(err, dispatchenvoy.ErrUnavailable):
