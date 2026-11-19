@@ -280,21 +280,29 @@ function renderAgents({
     session_id: "planner-session",
     state: "sent",
   });
-  const getMyAgentState = spyOn(api, "getMyAgentState").mockResolvedValue(agentState);
+  // Dispatch's store of the viewer's agent state: a read answers it as it stands, and a write
+  // changes it, so a read asked after a write - the one a write's answer asks again for a read it
+  // cancelled (`replaceQueryData`) - answers the write.
+  const served: UserAgentStates = { ...agentState };
+  const getMyAgentState = spyOn(api, "getMyAgentState").mockImplementation(async () => ({
+    ...served,
+  }));
   // Dispatch answers a state write with the session's whole state: the marks the write set over
   // the state it held, with `pinned_at` added by a pin and dropped by an unpin, and nothing left
   // unread. A mark the body leaves out rides as a null the write does not read.
   const putAgentState = answerAgentStates().mockImplementation(async (session, input) => {
     const { cleared_before: cleared, pinned, read_through: read } = input;
-    const { pinned_at: held, ...rest } = agentState[session] ?? {};
+    const { pinned_at: held, ...rest } = served[session] ?? {};
     const pinnedAt = pinned == null ? held : pinned ? ANSWERED_PIN_AT : undefined;
-    return {
+    const state = {
       ...rest,
       ...(cleared == null ? {} : { cleared_before: cleared }),
       ...(read == null ? {} : { read_through: read }),
       ...(pinnedAt === undefined ? {} : { pinned_at: pinnedAt }),
       unread_replies: 0,
     };
+    served[session] = state;
+    return state;
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
