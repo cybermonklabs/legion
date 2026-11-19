@@ -107,25 +107,39 @@ var directoryOpen = Openat
 // open succeeds through the link under the pods' gVisor in 2026-11 and under runsc 20260112;
 // runsc 20261109 refuses it), where O_NOFOLLOW alone answers ELOOP under every one.
 func OpenDirectory(dirfd int, name, path string) (int, error) {
-	fd, err := directoryOpen(dirfd, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
+	fd, op, err := openDirectory(dirfd, name)
 	switch {
-	case errors.Is(err, unix.ELOOP):
+	case err == nil:
+		return fd, nil
+	case op == "":
+		return -1, notDirectory(path)
+	case op == "open" && errors.Is(err, unix.ELOOP):
 		return -1, fmt.Errorf("%s is a symlink", path)
-	case errors.Is(err, unix.ENXIO):
+	case op == "open" && errors.Is(err, unix.ENXIO):
 		return -1, fmt.Errorf("%s is a socket", path)
-	case err != nil:
-		return -1, &fs.PathError{Op: "open", Path: path, Err: err}
+	}
+	return -1, &fs.PathError{Op: op, Path: path, Err: err}
+}
+
+// openDirectory is OpenDirectory's open and its check, with no path to print: it answers the
+// descriptor, or the call that failed ("open" or "fstat") and its own error, or, for what it opened
+// and found no directory, no call and ENOTDIR. removeAt opens each directory of its walk through it
+// and makes words of a refusal only for the one error RemoveTree answers.
+func openDirectory(dirfd int, name string) (int, string, error) {
+	fd, err := directoryOpen(dirfd, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, "open", err
 	}
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil {
 		_ = unix.Close(fd)
-		return -1, &fs.PathError{Op: "fstat", Path: path, Err: err}
+		return -1, "fstat", err
 	}
 	if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
 		_ = unix.Close(fd)
-		return -1, notDirectory(path)
+		return -1, "", unix.ENOTDIR
 	}
-	return fd, nil
+	return fd, "", nil
 }
 
 // notDirectory is OpenDirectory's refusal of what is no directory: its words name the path, and
@@ -136,37 +150,34 @@ func (path notDirectory) Error() string { return string(path) + " is no director
 
 func (notDirectory) Unwrap() error { return unix.ENOTDIR }
 
-// RemoveTree removes path and everything under it, as os.RemoveAll does, and like it answers nil
-// for a path that is not there (unless path's parent is a symlink, which it refuses as it refuses
-// every link it meets), but it follows no link and waits on nothing anywhere it walks. A caller
-// whose parent is the operator's own directory, which may be a symlink, resolves it once before it
-// makes path there (the provisioning credential directory, under the tmux daemon's state directory
-// or a pod's TMPDIR). Every path it is handed is under a directory a role can write, or swap: the
-// shared clone's parent (an incomplete clone and its temporary sibling) and its .git/worktrees, a
-// workspace's own parent (Remove's aside), the provisioning credential directory's resolved
-// parent, the pod's feed and the directory beside it (a foreign git directory, a staging clone
-// and what a failed transfer left), the leak-check install's parent (its staging directory and
-// what it moved aside), a role's private directory (the pod's launcher clearing it before a
-// generation starts, and a generation's directory under it), or the role's homes directory, which
-// role-init clears (its stage, its overlay work directories, its config home and that copy's
-// .partial). os.RemoveAll fails both rules there. When path is no file it can unlink outright, it
-// opens path's parent with a plain open(2) (os/removeall_at.go), and a plain open of a fifo waits
-// for a writer for as long as none comes, under whatever its caller holds. And it opens each
-// directory below path with O_DIRECTORY and O_NOFOLLOW, which a gVisor release can follow a link
-// through (OpenDirectory), so a link a role plants below path, under a directory the removal
-// cannot unlink it from, has PID 1 delete what it points at. So every directory here, path's
-// parent included, is opened as OpenDirectory opens one, the walk goes on only from a descriptor
-// whose fstat says directory, and every entry is removed by unlinkat relative to its directory's
-// descriptor, which removes a link and never what it names. A parent that is no directory, a fifo
-// among them, answers ENOTDIR at once. Opening the parent needs read on it, where os.RemoveAll
-// needs only write and search: a parent its caller cannot read is refused (`open <parent>:
-// permission denied`), even for a path that is not there. Every caller's parent is made 0700 or
-// 0755 by the daemon, workspace-init, a role's shim, the install or role-init, or is a role's
-// private directory, which the pod mounts as drwxrwxrwt, so its owner can read it, and only a role
-// that changed the mode of its own parent meets this; the removal then fails rather than removing.
+// RemoveTree removes path and everything under it, as os.RemoveAll does, but follows no link and
+// waits on nothing anywhere it walks, for a caller that removes what a role can write or swap.
+//
+//   - A link at path or anywhere below it is unlinked, and what it names is never opened.
+//   - path's parent is opened as OpenDirectory opens a directory: a parent that is a link is
+//     refused, and one that is no directory, a fifo among them, answers ENOTDIR at once. A caller
+//     whose parent is an operator's directory that may be a link resolves it first.
+//   - Opening the parent needs read on it: a parent its caller cannot read is refused (`open
+//     <parent>: permission denied`), even for a path that is not there.
+//   - A path that is not there answers nil, and so does "", as os.RemoveAll answers. A path whose
+//     last element is "." or ".." answers EINVAL, and nothing above path is removed.
+//   - What the walk holds grows with a tree's size and not with the square of its depth: each level
+//     holds its own name, and an entry's whole path is built only for the error RemoveTree answers.
+//
+// It is not os.RemoveAll because os.RemoveAll fails both rules where a role writes. When path is
+// no file it can unlink outright, os.RemoveAll opens path's parent with a plain open(2)
+// (os/removeall_at.go), and a plain open of a fifo waits for a writer for as long as none comes,
+// under whatever its caller holds. And it opens each directory below path with O_DIRECTORY and
+// O_NOFOLLOW, which a gVisor release can follow a link through (OpenDirectory), so a link a role
+// plants below path, under a directory the removal cannot unlink it from, has PID 1 delete what it
+// points at. So every directory here is opened as OpenDirectory opens one, the walk goes on only
+// from a descriptor whose fstat says directory, and every entry is removed by unlinkat relative to
+// its directory's descriptor, which removes a link and never what it names.
 func RemoveTree(path string) error {
-	clean := filepath.Clean(path)
-	parentPath, name := filepath.Dir(clean), filepath.Base(clean)
+	if path == "" {
+		return nil
+	}
+	parentPath, name := splitPath(path)
 	if name == "." || name == ".." || name == string(filepath.Separator) {
 		return &fs.PathError{Op: "RemoveTree", Path: path, Err: unix.EINVAL}
 	}
@@ -178,50 +189,111 @@ func RemoveTree(path string) error {
 		return err
 	}
 	defer unix.Close(parent)
-	return removeAt(parent, parentPath, name)
+	if err := removeAt(parent, &node{parent: &node{name: parentPath}, name: name}); err != nil {
+		return &fs.PathError{Op: err.op, Path: err.at.path(), Err: err.err}
+	}
+	return nil
 }
 
-// removeAt removes name under the directory parent, dir being parent as the errors print it, as
-// os/removeall_at.go's removeAllFrom does, with OpenDirectory in place of its openDirAt: name is
-// unlinked outright when it can be, a link or anything else that is no directory among it, and is
-// opened and walked only when that fails and OpenDirectory says it is a directory. Each pass over
-// the directory reads at most a batch of names, removes them, and opens the directory again, since
-// removing entries can make a read already under way skip some. An entry's path is joined only
-// once its unlink fails, the one case that prints it or walks under it.
-func removeAt(parent int, dir, name string) error {
-	unlinkErr := unlinkat(parent, name, 0)
+// splitPath is os/removeall_at.go's splitPath: path's parent, as path writes it, and its last
+// element, read before any cleaning, so that a last element of "." or ".." is seen as one and not
+// cleaned into the name of a directory above path. A path of no separator has the parent ".".
+func splitPath(path string) (parent, name string) {
+	parent = "."
+	for len(path) > 1 && path[0] == filepath.Separator && path[1] == filepath.Separator {
+		path = path[1:]
+	}
+	i := len(path) - 1
+	for ; i > 0 && path[i] == filepath.Separator; i-- {
+		path = path[:i]
+	}
+	name = path
+	for i--; i >= 0; i-- {
+		if path[i] == filepath.Separator {
+			if i == 0 {
+				parent = path[:1]
+			} else {
+				parent = path[:i]
+			}
+			name = path[i+1:]
+			break
+		}
+	}
+	return parent, name
+}
+
+// node is one entry of RemoveTree's walk: its name under its parent's node, the walk's root being
+// path's parent as RemoveTree was handed it. Each level holds its own name and a pointer, so a
+// chain of directories a role nests costs the walk its names and not their whole paths, which
+// grow with the square of the chain's depth.
+type node struct {
+	parent *node
+	name   string
+}
+
+// path is the node's whole path, its ancestors' names joined, built for an error RemoveTree answers.
+func (n *node) path() string {
+	depth := 0
+	for at := n; at != nil; at = at.parent {
+		depth++
+	}
+	names := make([]string, depth)
+	for at := n; at != nil; at = at.parent {
+		depth--
+		names[depth] = at.name
+	}
+	return filepath.Join(names...)
+}
+
+// walkError is a failure of the walk at the node at: the call that failed and its own error. Its
+// path is built only when RemoveTree answers it as an *fs.PathError.
+type walkError struct {
+	op  string
+	at  *node
+	err error
+}
+
+// removeAt removes at under the directory parent as os/removeall_at.go's removeAllFrom does, with
+// openDirectory in place of its openDirAt: at is unlinked outright when it can be, a link or
+// anything else that is no directory among it, and is opened and walked only when that fails and
+// it is a directory. Each pass over the directory reads at most a batch of names, removes them,
+// and opens the directory again, since removing entries can make a read already under way skip
+// some. It answers the first failure it met, which the walk goes on past.
+func removeAt(parent int, at *node) *walkError {
+	unlinkErr := unlinkat(parent, at.name, 0)
 	if unlinkErr == nil || errors.Is(unlinkErr, unix.ENOENT) {
 		return nil
 	}
-	path := filepath.Join(dir, name)
-	// EISDIR: a directory, whose entries go first. EPERM or EACCES: no write to parent, but name
+	// EISDIR: a directory, whose entries go first. EPERM or EACCES: no write to parent, but at
 	// may still be a directory whose entries can go. Anything else is the answer.
 	if !errors.Is(unlinkErr, unix.EISDIR) && !errors.Is(unlinkErr, unix.EPERM) && !errors.Is(unlinkErr, unix.EACCES) {
-		return &fs.PathError{Op: "unlinkat", Path: path, Err: unlinkErr}
+		return &walkError{op: "unlinkat", at: at, err: unlinkErr}
 	}
-	var walkErr error
+	var walkErr *walkError
 	for {
 		const batch = 1024
-		fd, err := OpenDirectory(parent, name, path)
+		fd, op, err := openDirectory(parent, at.name)
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
 		if err != nil {
-			var openErr *fs.PathError
-			if !errors.As(err, &openErr) || errors.Is(err, unix.ENOTDIR) || !isDirectoryAt(parent, name) {
+			if !isDirectoryAt(parent, at.name) {
 				// No directory, a link among them, or a file it may not read (mode 0000): never
 				// walked, and the unlink's own answer stands.
-				return &fs.PathError{Op: "unlinkat", Path: path, Err: unlinkErr}
+				return &walkError{op: "unlinkat", at: at, err: unlinkErr}
 			}
 			// A directory this process cannot open (no read permission on it, no descriptor
 			// left): its entries stay, and as removeAllFrom does, the removal of the directory
 			// itself, which takes an empty one, is still tried, with the open's error kept.
+			if op == "" {
+				op = "open"
+			}
 			if walkErr == nil {
-				walkErr = err
+				walkErr = &walkError{op: op, at: at, err: err}
 			}
 			break
 		}
-		listing := os.NewFile(uintptr(fd), path)
+		listing := os.NewFile(uintptr(fd), at.name)
 		read := 0
 		for {
 			names, readErr := listing.Readdirnames(batch)
@@ -230,12 +302,16 @@ func removeAt(parent int, dir, name string) error {
 				if errors.Is(readErr, fs.ErrNotExist) {
 					return nil
 				}
-				return &fs.PathError{Op: "readdirnames", Path: path, Err: readErr}
+				var named *fs.PathError
+				if errors.As(readErr, &named) {
+					readErr = named.Err
+				}
+				return &walkError{op: "readdirnames", at: at, err: readErr}
 			}
 			read = len(names)
 			failed := 0
 			for _, entry := range names {
-				if err := removeAt(fd, path, entry); err != nil {
+				if err := removeAt(fd, &node{parent: at, name: entry}); err != nil {
 					failed++
 					if walkErr == nil {
 						walkErr = err
@@ -252,14 +328,14 @@ func removeAt(parent int, dir, name string) error {
 			break
 		}
 	}
-	removeErr := unlinkat(parent, name, unix.AT_REMOVEDIR)
+	removeErr := unlinkat(parent, at.name, unix.AT_REMOVEDIR)
 	if removeErr == nil || errors.Is(removeErr, unix.ENOENT) {
 		return nil
 	}
 	if walkErr != nil {
 		return walkErr
 	}
-	return &fs.PathError{Op: "unlinkat", Path: path, Err: removeErr}
+	return &walkError{op: "unlinkat", at: at, err: removeErr}
 }
 
 // unlinkat is unix.Unlinkat, asked again when a signal interrupted it.
@@ -274,7 +350,7 @@ func unlinkat(dirfd int, name string, flags int) error {
 
 // isDirectoryAt is whether name under the directory dirfd is a directory, read without following
 // a link at name. A name it cannot read is taken as no directory. removeAt asks it only once
-// OpenDirectory failed, to tell a directory it may not open from a file it may not read.
+// openDirectory failed, to tell a directory it may not open from a file it may not read.
 func isDirectoryAt(dirfd int, name string) bool {
 	var stat unix.Stat_t
 	if err := unix.Fstatat(dirfd, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {

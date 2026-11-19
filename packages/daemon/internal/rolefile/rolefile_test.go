@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"syscall"
 	"testing"
@@ -57,6 +58,11 @@ func TestReadRefusesAnythingButARegularFileWithinItsBound(t *testing.T) {
 			return path
 		}, "", "is a fifo"},
 		{"a socket", func(t *testing.T) string {
+			if runtime.GOOS != "linux" {
+				// Darwin's open(2) answers a socket with EOPNOTSUPP, not ENXIO: the read is still
+				// refused, as open's own error, and this row's words are Linux's.
+				t.Skip("open(2) answers a socket with ENXIO on Linux alone")
+			}
 			path := filepath.Join(testtmp.Dir(t, "socket"), "socket")
 			listener, err := net.Listen("unix", path)
 			if err != nil {
@@ -332,6 +338,94 @@ func TestRemoveTreeAnswersTheUnlinkForAFileItCanNeitherUnlinkNorRead(t *testing.
 	}
 	if _, err := os.Lstat(file); err != nil {
 		t.Errorf("%s is gone (%v), want it left as it was", file, err)
+	}
+}
+
+// A chain of directories a role nests under a directory PID 1 removes is removed holding each
+// level's name, not its whole path: what the removal allocates grows with the chain's size, where
+// a walk that held each level's joined path allocated about the square of the depth (the review of
+// cybermonklabs/legion#4461 measured 415 MiB of heap at 20,000 levels in an issue pod, where
+// os.RemoveAll took 3 MiB). The bound is on the bytes the removal allocates (TotalAlloc), which
+// bounds the most it can hold at once; a collection before each read keeps the runtime's own
+// garbage out of the count.
+func TestRemoveTreeOfADeepTreeHoldsItsMemoryBound(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and removes 20,000 directories: 12.5 s in an issue pod under gVisor")
+	}
+	const depth = 20000
+	const bound = 32 << 20
+	root := t.TempDir()
+	chain := filepath.Join(root, "a")
+	// Each level is made under the descriptor of the one above, since the chain's path is far past
+	// PATH_MAX.
+	dir, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for level := range depth {
+		if err := unix.Mkdirat(dir, "a", 0o755); err != nil {
+			_ = unix.Close(dir)
+			t.Fatalf("level %d: %v", level, err)
+		}
+		next, err := unix.Openat(dir, "a", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		_ = unix.Close(dir)
+		if err != nil {
+			t.Fatalf("level %d: %v", level, err)
+		}
+		dir = next
+	}
+	_ = unix.Close(dir)
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	start := time.Now()
+	err = RemoveTree(chain)
+	took := time.Since(start)
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatalf("RemoveTree of a chain %d deep: %v", depth, err)
+	}
+	if entries, err := os.ReadDir(root); err != nil || len(entries) != 0 {
+		t.Fatalf("%s holds %v (%v) after the removal, want nothing", root, entries, err)
+	}
+	allocated := after.TotalAlloc - before.TotalAlloc
+	t.Logf("removing a chain %d deep took %s and allocated %d bytes", depth, took, allocated)
+	if allocated > bound {
+		t.Fatalf("removing a chain %d deep allocated %d bytes, want at most %d", depth, allocated, bound)
+	}
+}
+
+// RemoveTree reads path's last element before any cleaning, as os.RemoveAll does: a path ending in
+// "." or ".." answers EINVAL and removes nothing, where cleaning it first would name a directory
+// above path and remove that. An empty path answers nil, as os.RemoveAll answers it.
+func TestRemoveTreeRemovesNothingAbovePath(t *testing.T) {
+	root := t.TempDir()
+	kept := filepath.Join(root, "a", "b")
+	if err := os.MkdirAll(kept, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		filepath.Join(root, "a") + string(filepath.Separator) + ".",
+		kept + string(filepath.Separator) + "..",
+		kept + string(filepath.Separator) + ".." + string(filepath.Separator),
+		string(filepath.Separator),
+	} {
+		if err := RemoveTree(path); !errors.Is(err, unix.EINVAL) {
+			t.Errorf("RemoveTree(%q) = %v, want EINVAL", path, err)
+		}
+		if _, err := os.Lstat(kept); err != nil {
+			t.Fatalf("RemoveTree(%q) removed %s (%v)", path, kept, err)
+		}
+	}
+	if err := RemoveTree(""); err != nil {
+		t.Errorf(`RemoveTree("") = %v, want nil`, err)
+	}
+	if err := RemoveTree(kept + string(filepath.Separator)); err != nil {
+		t.Fatalf("RemoveTree(%q) = %v, want nil", kept+string(filepath.Separator), err)
+	}
+	if _, err := os.Lstat(kept); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("RemoveTree of %s with a trailing separator left it (%v)", kept, err)
 	}
 }
 
