@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  More of `envoy-infra:gcp:Dispatch`'s refusals are now a `core.InputError` naming the input to
+  correct, so a Go caller finds that input with `errors.As`. This covers each refusal under
+  `clusterOnly`; the sandbox's refusals, `natsInCluster`, `frontDoorReplicas` and
+  `frontDoorPdbMinAvailable` among them (also beside `publicOrigin`); the IAP door's refusals;
+  `signInOutside` without the sign-in inputs; and the sign-in group's refusals. Every message is
+  unchanged.
+time: 2026-11-20T21:23:42Z
+custom:
+    Issue: feat-signin-passkey-input

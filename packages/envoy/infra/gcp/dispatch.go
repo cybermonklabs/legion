@@ -1205,11 +1205,11 @@ const dispatchSandboxSignInRefusal = "%s configures browser sign-in, which needs
 func refuseDispatchSandbox(args *DispatchArgs, signInGroup []dispatchInput) error {
 	for _, in := range signInGroup {
 		if in.set {
-			return fmt.Errorf(dispatchSandboxSignInRefusal, in.input, "the sign-in inputs")
+			return core.InputErrorf(in.input, dispatchSandboxSignInRefusal, in.input, "the sign-in inputs")
 		}
 	}
 	if args.SignInOutside {
-		return fmt.Errorf(dispatchSandboxSignInRefusal, "signInOutside", "signInOutside")
+		return core.InputErrorf("signInOutside", dispatchSandboxSignInRefusal, "signInOutside", "signInOutside")
 	}
 	if len(args.SignInWorkspaceDomains) > 0 {
 		return core.InputErrorf("signInWorkspaceDomains", dispatchSandboxSignInRefusal, "signInWorkspaceDomains", "signInWorkspaceDomains")
@@ -1218,13 +1218,13 @@ func refuseDispatchSandbox(args *DispatchArgs, signInGroup []dispatchInput) erro
 		return core.InputErrorf("signInPasskey", "signInPasskey needs outsideOrigin, which needs the tailnet inputs or publicOrigin: without either the component builds the sandbox, whose own origin is an in-cluster http:// address where browser sign-in is refused; unset signInPasskey, or set the tailnet inputs or publicOrigin")
 	}
 	if args.OutsideOrigin != "" {
-		return errors.New("outsideOrigin needs the tailnet inputs or publicOrigin: without either the component builds the sandbox, whose own origin is an in-cluster http:// address where browser sign-in is refused, and outside sign-in is what a second origin is for; unset outsideOrigin, or set the tailnet inputs or publicOrigin")
+		return core.InputErrorf("outsideOrigin", "outsideOrigin needs the tailnet inputs or publicOrigin: without either the component builds the sandbox, whose own origin is an in-cluster http:// address where browser sign-in is refused, and outside sign-in is what a second origin is for; unset outsideOrigin, or set the tailnet inputs or publicOrigin")
 	}
 	if err := refuseDispatchWithoutFrontDoor(args); err != nil {
 		return err
 	}
 	if len(args.AllowedNamespaces) == 0 {
-		return errors.New("allowedNamespaces must name at least one namespace without the tailnet inputs or publicOrigin: with no entrance its rules are the app's only ingress, and a NetworkPolicy with no rule admits nobody, so nothing could reach Dispatch at all")
+		return core.InputErrorf("allowedNamespaces", "allowedNamespaces must name at least one namespace without the tailnet inputs or publicOrigin: with no entrance its rules are the app's only ingress, and a NetworkPolicy with no rule admits nobody, so nothing could reach Dispatch at all")
 	}
 	return nil
 }
@@ -1233,16 +1233,17 @@ func refuseDispatchSandbox(args *DispatchArgs, signInGroup []dispatchInput) erro
 // good, in the sandbox and at publicOrigin alike: the pods reach a NATS hub only inside their own
 // cluster, since no front door runs the SOCKS5 proxy a tailnet hub is reached through, and
 // frontDoorReplicas and frontDoorPdbMinAvailable size and protect a Deployment that does not
-// exist. Each is refused by its own name rather than accepted and quietly dropped.
+// exist. Each is refused by its own name rather than accepted and quietly dropped, as a
+// core.InputError naming it.
 func refuseDispatchWithoutFrontDoor(args *DispatchArgs) error {
 	if args.NatsInCluster == nil || !*args.NatsInCluster {
-		return errors.New("natsInCluster is required without the tailnet inputs: the pods reach a tailnet NATS hub only through the front door's SOCKS5 proxy, and no front door is built, so the hub must run in the cluster")
+		return core.InputErrorf("natsInCluster", "natsInCluster is required without the tailnet inputs: the pods reach a tailnet NATS hub only through the front door's SOCKS5 proxy, and no front door is built, so the hub must run in the cluster")
 	}
 	if args.FrontDoorReplicas != nil {
-		return errors.New("frontDoorReplicas sizes a front door, which is not built without the tailnet inputs: unset it, or set the tailnet inputs")
+		return core.InputErrorf("frontDoorReplicas", "frontDoorReplicas sizes a front door, which is not built without the tailnet inputs: unset it, or set the tailnet inputs")
 	}
 	if args.FrontDoorPdbMinAvailable != nil {
-		return errors.New("frontDoorPdbMinAvailable covers a front door, which is not built without the tailnet inputs: unset it, or set the tailnet inputs")
+		return core.InputErrorf("frontDoorPdbMinAvailable", "frontDoorPdbMinAvailable covers a front door, which is not built without the tailnet inputs: unset it, or set the tailnet inputs")
 	}
 	return nil
 }
@@ -1286,7 +1287,7 @@ func refuseDispatchPublicOrigin(args *DispatchArgs, signInOn bool) (*url.URL, er
 // resource's output, so it is judged once it resolves (dispatchIAPAudience).
 func refuseDispatchIAP(args *DispatchArgs) error {
 	if args.PublicOrigin == "" {
-		return errors.New("iapAudience needs publicOrigin: IAP runs on the deployment's own load balancer, which serves Dispatch at that origin, and no request through the tailnet front door or into the sandbox carries IAP's signed header; set publicOrigin, or unset iapAudience")
+		return core.InputErrorf("iapAudience", "iapAudience needs publicOrigin: IAP runs on the deployment's own load balancer, which serves Dispatch at that origin, and no request through the tailnet front door or into the sandbox carries IAP's signed header; set publicOrigin, or unset iapAudience")
 	}
 	const signIn = "%s configures Google sign-in, which iapAudience replaces: IAP signs a person in and Dispatch names them from IAP's signed header, so it runs no sign-in of its own; unset %s, or unset iapAudience"
 	for _, in := range []dispatchInput{
@@ -1295,7 +1296,7 @@ func refuseDispatchIAP(args *DispatchArgs) error {
 		{"signInOutside", args.SignInOutside},
 	} {
 		if in.set {
-			return fmt.Errorf(signIn, in.input, in.input)
+			return core.InputErrorf(in.input, signIn, in.input, in.input)
 		}
 	}
 	if len(args.SignInWorkspaceDomains) > 0 {
@@ -1305,10 +1306,10 @@ func refuseDispatchIAP(args *DispatchArgs) error {
 		return core.InputErrorf("signInPasskey", "signInPasskey is refused beside iapAudience: IAP signs a person in and Dispatch names them from IAP's signed header, so it runs no passkey sign-in of its own; unset signInPasskey, or unset iapAudience")
 	}
 	if args.OutsideOrigin != "" {
-		return errors.New("outsideOrigin is refused beside iapAudience: a browser reaches Dispatch through IAP alone, at publicOrigin, and a second origin is for outside sign-in, which the IAP door does not run; unset outsideOrigin, or unset iapAudience")
+		return core.InputErrorf("outsideOrigin", "outsideOrigin is refused beside iapAudience: a browser reaches Dispatch through IAP alone, at publicOrigin, and a second origin is for outside sign-in, which the IAP door does not run; unset outsideOrigin, or unset iapAudience")
 	}
 	if !signInDomainRule.MatchString(args.SignInDomain) {
-		return fmt.Errorf("signInDomain %q must be a lowercase DNS name with iapAudience: the Workspace domain whose accounts may use Dispatch, which Dispatch holds IAP's signed header's hd claim to and refuses to boot without", args.SignInDomain)
+		return core.InputErrorf("signInDomain", "signInDomain %q must be a lowercase DNS name with iapAudience: the Workspace domain whose accounts may use Dispatch, which Dispatch holds IAP's signed header's hd claim to and refuses to boot without", args.SignInDomain)
 	}
 	return nil
 }
@@ -1317,16 +1318,16 @@ func refuseDispatchIAP(args *DispatchArgs) error {
 // browser to, the domain whose accounts it admits and that client's secret. It runs only while
 // that group is set, so a deployment that runs no browser sign-in reaches none of these checks,
 // and every refusal trails clause, which names every sign-in input still unset, as the tailnet
-// group's refusals do.
+// group's refusals do. Each is a core.InputError naming the input to correct.
 func refuseDispatchSignInGroup(args *DispatchArgs, clause string) error {
 	if args.SignInClientId == "" {
-		return fmt.Errorf("signInClientId is required%s", clause)
+		return core.InputErrorf("signInClientId", "signInClientId is required%s", clause)
 	}
 	if !signInDomainRule.MatchString(args.SignInDomain) {
-		return fmt.Errorf("signInDomain %q must be a lowercase DNS name%s", args.SignInDomain, clause)
+		return core.InputErrorf("signInDomain", "signInDomain %q must be a lowercase DNS name%s", args.SignInDomain, clause)
 	}
 	if args.SignInClientSecret == nil {
-		return fmt.Errorf("signInClientSecret is required%s", clause)
+		return core.InputErrorf("signInClientSecret", "signInClientSecret is required%s", clause)
 	}
 	return nil
 }
@@ -1627,7 +1628,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 			return dispatchSettings{}, err
 		}
 	} else if args.SignInOutside {
-		return dispatchSettings{}, fmt.Errorf("signInOutside needs browser sign-in: it lets Google accounts outside signInDomain sign in beside the domain's own people%s",
+		return dispatchSettings{}, core.InputErrorf("signInOutside", "signInOutside needs browser sign-in: it lets Google accounts outside signInDomain sign in beside the domain's own people%s",
 			dispatchGroupClause("sign-in", signInGroup))
 	} else if len(args.SignInWorkspaceDomains) > 0 {
 		return dispatchSettings{}, core.InputErrorf("signInWorkspaceDomains", "signInWorkspaceDomains needs browser sign-in: it names the other domains of the Google Workspace that signInDomain names, which Dispatch reads only with Google sign-in; set the sign-in inputs, or unset signInWorkspaceDomains%s",
