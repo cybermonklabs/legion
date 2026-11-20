@@ -82,7 +82,7 @@ func (s *server) listAskFollowers(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	followers, err := asks.Followers(r.Context(), s.deps.Store.Pool, askID)
+	followers, err := asks.Followers(r.Context(), s.deps.Store.Pool, askID, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

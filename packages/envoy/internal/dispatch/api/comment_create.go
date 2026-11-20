@@ -418,14 +418,14 @@ func (s *server) describeAsk(
 // askSessions is what a comment.created in askID's thread says about whose ask it is
 // (model.CommentEventPayload.AskSessions), as the comment's write leaves them: author, the
 // session that wrote the ask when one did (describeAsk's AskAuthorSession), then each other
-// session asks.Followers reads, ordered by since and then session id, then replier, appended
+// session asks.PayloadFollowers reads, ordered by since and then session id, then replier, appended
 // last, when it is a session none of those names, and [] when no session owns the ask. It reads
 // in the route's read phase, where the read holds no transaction id and finds the followers
 // committed before this write, but not the follow the write queues for a session that replies
 // (asks.QueueFollowAuthor), which only Ledger.Commit sends: so the replier is added here rather
 // than read.
 func askSessions(ctx context.Context, tx pgx.Tx, askID string, author *string, replier model.Actor) ([]string, error) {
-	followers, err := asks.Followers(ctx, tx, askID)
+	followers, err := asks.PayloadFollowers(ctx, tx, askID)
 	if err != nil {
 		return nil, err
 	}
