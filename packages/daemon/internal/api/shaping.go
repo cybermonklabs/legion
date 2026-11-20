@@ -106,9 +106,11 @@ func (s *server) contractsFor(r *http.Request, claims []supervise.Claim) placeme
 	// With no claims to read a contract from, no pod reports one: the pair is this daemon's own
 	// whatever pod the caller is in, and reading that pod decides nothing. Under the Sandbox
 	// runtime the reading lists every cached pod and scans it, which every answer written with
-	// no claims would pay for — each refusal, each grant, the catch-all's 404 and `GET /healthz`
-	// (writeAnswer). The two routes that answer from the state's own snapshot hand their claims
-	// in and are placed by their pod as before (writeAnswerFrom).
+	// no claims would pay for — each plain refusal, each grant, the catch-all's 404 and `GET
+	// /healthz` (writeAnswer). The two routes that answer from the state's own snapshot hand their
+	// claims in and are placed by their pod as before, and so are the release records and every
+	// refusal that names a pause, whose writers read the claims for it (writeAnswerFrom,
+	// placingClaims).
 	if len(claims) == 0 {
 		return ownBody
 	}
@@ -231,6 +233,15 @@ func recordedContractAtOrBelow(n int) int {
 // so one function shapes the issue a caller reads on its own and the issue it reads inside the
 // whole body, and the two cannot part company.
 //
+// Two more rows take keys off, below pauseContract, which added keys to two answers beside the
+// state and the record: the release records' row serves every resume without its `pause`
+// (withoutResumePauses), and the refusal's row serves a PauseFailure as its Failure alone, with
+// no `setting`, `pause` or `lastPause`. Both follow strip, as every band of stateNarrowings
+// does, and the writers of both hand in the claims that place a caller by its pod
+// (placingClaims), so a band here reaches the caller of a pod as the state's do. A plain
+// refusal, a claim.Refusal or a Failure, carries no key of that contract and is the identity at
+// every contract.
+//
 // On the other side, a caller below fixAttemptsContract is served the two keys that contract
 // removed, each as a stand-in (withFixAttempts, withMaxFixAttempts). A settings key no reader
 // types is owed neither a stand-in nor a band, whatever a contract did to it (answers.go's
@@ -239,8 +250,9 @@ func recordedContractAtOrBelow(n int) int {
 // stripped.
 //
 // It reports what it took off the body beside the body itself. The state's row fills it on the
-// one application it makes, and every other row takes nothing, the record's included: the log
-// holds a line for the state alone (recordShaping), so the record route records nothing.
+// one application it makes, and every other row reports nothing, the record's, the release
+// records' and the refusal's included: the log holds a line for the state alone
+// (recordShaping), so those routes record nothing.
 func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 	var took tookOff
 	switch id {
@@ -256,15 +268,37 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
 		}
 		return shapeIssue(issue, restore, strip, nil), took
+	case AnswerReleaseRecords:
+		records, isRecords := body.(ReleaseRecordsResponse)
+		if !isRecords {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		if strip < pauseContract {
+			records = withoutResumePauses(records)
+		}
+		return records, took
+	case AnswerRefusal:
+		switch refusal := body.(type) {
+		case claim.Refusal, Failure:
+			return body, took
+		case PauseFailure:
+			if strip < pauseContract {
+				return refusal.Failure, took
+			}
+			return refusal, took
+		default:
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
 	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
-		AnswerReleaseRecords, AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
-		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerRefusal:
+		AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
+		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume:
 		// The identity, one row each: every contract this daemon serves one of these answers
 		// reads the body it writes. No key has arrived on any of them since that answer arrived.
 		// One key has gone: AnswerHandoffComplete lost its `note` at stateMachineContract, and
 		// no reader from ServingFloor to 85 requires it, so no stand-in is written for it
-		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract, so no
-		// older contract records it at all.
+		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract, and
+		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, so no older
+		// contract records any of the three at all.
 		return body, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -510,6 +544,7 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "the issues' entryQueuedAt, entryConfirmedAt and architectStalls"},
 	{contract: repositoryAppsContract, state: withoutRepositoryApps,
 		dropped: "the apps of repositories.mapped and repositories.refused"},
+	{contract: pauseContract, state: withoutPause, dropped: "paused and lastPause"},
 	{contract: shapedAnswersContract, state: withoutLowestPluginContract, issue: withoutClaimRoundReport,
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
 }
@@ -887,6 +922,25 @@ const entryTimesContract = 146
 // It is a literal of its own and never shapedAnswersContract: a renumber of this change moves
 // that constant, and the contract the key arrived at stays where it is.
 const repositoryAppsContract = 152
+
+// pauseContract is the daemon contract that added the project pause (version.go's 178,
+// dispatch://INFRA-3759). It added keys to three answers a plugin parses: `paused` and
+// `lastPause` to the state, `pause` to each resume of the release records (api.ResumeRecord),
+// and `setting`, `pause` and `lastPause` to a refusal (api.PauseFailure). It added two answers
+// whole with their routes, the controller's pause and resume (answers.go's AnswerProjectPause
+// and AnswerProjectResume), which no contract below it records. A plugin before it is served the
+// state without its two keys (withoutPause, its row of stateNarrowings), every resume without
+// its `pause` (withoutResumePauses) and a PauseFailure as the Failure it carries, those two in
+// their answers' rows of shapeAnswer: one built before sjawhar/legion#2788 reads the state with
+// a strict schema and would refuse the whole body for a key it does not name, and one built
+// after strips the key instead, so each band keeps the body its own contract's record describes.
+// The pause's codes are values of the refusal's `code`, which no reader enumerates, and the one
+// enumerated field it added, `paused.waitsOn.*.role`, arrived with its key (answers.go's
+// pauseStopRoles), so no value strip is owed.
+//
+// It is a literal of its own and never shapedAnswersContract: a renumber of this change moves
+// that constant, and the contract the keys arrived at stays where it is.
+const pauseContract = 178
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
@@ -1479,6 +1533,35 @@ func withoutLowestPluginContract(state State) (State, bool) {
 	return state, moved
 }
 
+// withoutPause is state with no `paused` and no `lastPause`, the two keys pauseContract added to
+// the state; nothing else of that contract is a key of this route. Both are pointers with
+// `omitempty`, absent wherever the state holds none, so the band reports a move only for a state
+// that carries one. The fields are the state's own values, so the state the source answered is
+// left as it was, as withoutLowestPluginContract leaves it.
+func withoutPause(state State) (State, bool) {
+	moved := state.Paused != nil || state.LastPause != nil
+	state.Paused, state.LastPause = nil, nil
+	return state, moved
+}
+
+// withoutResumePauses is records with no resume carrying `pause`, the one key pauseContract added
+// to the release records. The key is `omitempty` and absent from a wake no pause held, so records
+// whose resumes carry none are returned as they are, with no copy made. Otherwise the resumes are
+// copied before one is written, so the body the route built is left as it was, and the list stays
+// non-nil, as every list of the body is (ReleaseRecordsResponse).
+func withoutResumePauses(records ReleaseRecordsResponse) ReleaseRecordsResponse {
+	if !slices.ContainsFunc(records.Resumes, func(resume ResumeRecord) bool { return resume.Pause != 0 }) {
+		return records
+	}
+	resumes := make([]ResumeRecord, len(records.Resumes))
+	for i, resume := range records.Resumes {
+		resume.Pause = 0
+		resumes[i] = resume
+	}
+	records.Resumes = resumes
+	return records
+}
+
 // withoutClaimRoundReport is the issue with no claim view carrying `updateState` or `wake`, the
 // two keys shapedAnswersContract added to the claim views.
 func withoutClaimRoundReport(issue Issue) (Issue, bool) {
@@ -1622,14 +1705,43 @@ var answerWritten func(pattern string, id AnswerID)
 // writeAnswerFrom, which it stands on.
 //
 // It hands contractsFor no claims, which costs a caller nothing: a caller that states its own
-// contract is placed by its header alone, and the state and the record are the two answers whose
-// shape has moved since ServingFloor. Both are written by writeAnswerFrom, which hands the
-// claims of the very snapshot each answers. Every other answer is the identity at every contract
-// this daemon serves, so a read of the claims for one of them would decide nothing: such an
-// answer is written without one, and contractsFor reads no pod for it either. A serving-down
-// added to one of them therefore needs its route to hand in its claims through writeAnswerFrom.
+// contract is placed by its header alone, and the answers whose shape has moved since
+// ServingFloor are written by writeAnswerFrom. The state and the record hand in the claims of
+// the very snapshot each answers; the release records and a refusal that names a pause, whose
+// shape moved at pauseContract, hand in the claims placingClaims reads for them. Every other
+// answer is the identity at every contract this daemon serves, and so is a plain refusal (a
+// claim.Refusal or a Failure), so a read of the claims for one of them would decide nothing:
+// such an answer is written without one, and contractsFor reads no pod for it either. A
+// serving-down added to one of them therefore needs its route to hand in its claims through
+// writeAnswerFrom.
 func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID, status int, body any) {
 	s.writeAnswerFrom(w, r, id, status, body, nil)
+}
+
+// placingClaims is the project's claims for a writer whose answer has moved since ServingFloor
+// and that answers from no snapshot of its own: the release records, and every PauseFailure
+// (writePauseFailure). Their writers hand these to writeAnswerFrom, so a caller that states no
+// contract is placed by its pod there as on the state.
+//
+// It reads the store only where the reading can place the caller. It answers nil, and reads
+// nothing, for a daemon that knows no caller's pod (Options.CallerPod is nil, as under the tmux
+// runtime), for a caller that states its contract (pluginContractHeader), whom its header alone
+// places, and for a server with no supervisor to read from. A read that fails is logged and
+// answers nil too, which serves this daemon's own body, as a caller with no claims is served
+// (contractsFor), as readsTheStopAsAFailure places a caller whose claims it could not read.
+func (s *server) placingClaims(r *http.Request) []supervise.Claim {
+	if s.callerPod == nil || s.supervisor == nil {
+		return nil
+	}
+	if _, stated := statedContract(r); stated {
+		return nil
+	}
+	claims, err := s.supervisor.Claims(r.Context())
+	if err != nil {
+		s.logRequestFailure(r, err, "api: read the claims that place the caller of an answer")
+		return nil
+	}
+	return claims
 }
 
 // writeAnswerFrom is writeAnswer for an answer whose own claims place the caller: claims are the

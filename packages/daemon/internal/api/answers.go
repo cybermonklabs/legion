@@ -17,8 +17,9 @@ import (
 // the floor today (stripContract keeps its own number), so no key a strip takes from it today
 // comes back, and it is served less than a caller at the floor; the daemon logs a line for it. A
 // caller that states no contract is placed by the claims of its pod on the state and record
-// routes. On every other answer, and on every answer when it asks from no pod, it is served this
-// daemon's own shape (contractsFor, writeAnswer).
+// routes, on the release records and on a refusal that names a pause (placingClaims). On every
+// other answer, and on every answer when it asks from no pod, it is served this daemon's own
+// shape (contractsFor, writeAnswer).
 //
 // 46 is the reading this change records: no claim holding a process recorded a contract below 46.
 // The 50 claims at contracts 36 to 43 are all suspended, so they call nothing.
@@ -49,7 +50,7 @@ const ServingFloor = 46
 // The last is the constant rather than its number, because this change's own entry is the last
 // one: a renumber of this change moves shapedAnswersContract and this list with it, and moving
 // one of the two alone would describe a shape at a contract no entry declares.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, shapedAnswersContract}
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, shapedAnswersContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -73,6 +74,8 @@ const (
 	AnswerTurnOutcome        AnswerID = "turn-outcome"
 	AnswerWaveRelease        AnswerID = "wave-release"
 	AnswerRefusal            AnswerID = "refusal"
+	AnswerProjectPause       AnswerID = "project-pause"
+	AnswerProjectResume      AnswerID = "project-resume"
 )
 
 // Answer is one response schema a plugin parses, with every route that answers it and the
@@ -128,8 +131,9 @@ var typedSettings = []TypedSetting{
 	{Key: "review_round_cap", Since: stateMachineContract},
 }
 
-// Answers is one row per answer a plugin parses. The operator's claim answers and the
-// controller's secret and credential answers are no rows: no plugin parses them.
+// Answers is one row per answer a plugin parses. The operator's claim answers, the operator's
+// pause and resume answers (`legion project pause|resume`) and the controller's secret and
+// credential answers are no rows: no plugin parses them.
 var Answers = []Answer{
 	// Older than the floor: `GET /legion/v1/state` predates every numbered entry of version.go.
 	{ID: AnswerState, Routes: []string{"GET /legion/v1/state"}, Since: ServingFloor, TypedSettings: typedSettings},
@@ -186,6 +190,12 @@ var Answers = []Answer{
 	// Older than the floor: one sentence under `error`, which every route refuses with and which
 	// a client parses on every answer that is not a success. It has no route of its own.
 	{ID: AnswerRefusal, Routes: []string{}, Since: ServingFloor},
+	// version.go's 178: the pause the controller's pause began (`api.ProjectPauseResponse`). The
+	// route arrives with the answer, so no contract below 178 records either.
+	{ID: AnswerProjectPause, Routes: []string{"POST /legion/v1/project/pause"}, Since: pauseContract},
+	// version.go's 178: the pause the controller's resume ended and how many held rows it let out
+	// (`api.ProjectResumeResponse`), arrived with its route as the pause's answer did.
+	{ID: AnswerProjectResume, Routes: []string{"POST /legion/v1/project/resume"}, Since: pauseContract},
 }
 
 // EnumeratedField is one field of one answer that a plugin parses with a strict enumeration,
@@ -228,9 +238,10 @@ type EnumeratedValue struct {
 // `z.enum`, at every key path it is reachable at. The whole-project body's `issues.*.…` and the
 // record's bare `…` are two rows of one field, as the two `answeredBy` rows are. A field read
 // with a `z.literal` is no row — `issues.*.holdReason`, `controllerLocator.external` and the
-// discriminators of the two discriminated unions, `locator.runtime` and `waitingOn.kind` —
-// because a literal admits the one value its own shape carries and a daemon that widened it
-// would be changing the field's type rather than its domain.
+// discriminators of the three discriminated unions, `locator.runtime`, `waitingOn.kind` and a
+// pause actor's `kind` (`paused.by`, `lastPause.by`, `lastPause.endedBy`) — because a literal
+// admits the one value its own shape carries and a daemon that widened it would be changing the
+// field's type rather than its domain.
 //
 // Each value's arrival is the later of two readings, and each row says which of them decided
 // it: the contract the value first appears in the plugin's own list at, and the contract the
@@ -329,6 +340,11 @@ var stateEnumeratedFields = []EnumeratedField{
 	// withoutWakesWaiting). The wake's `kind` beside it is no row: the schema leaves it an
 	// unconstrained string, so a lane a later daemon names is read rather than refused.
 	{Answer: AnswerState, KeyPath: "wakesWaiting.*.role", Values: wakeRoles},
+	// `role` of one claim whose stop the project's open pause still waits on
+	// (api.PauseStopView.Role). It arrived with `paused`, which is served down below that
+	// contract whole (shaping.go's withoutPause). The pause's `by.kind` and `endedBy.kind` are no
+	// rows: each is the discriminator of a discriminated union, read with a `z.literal`.
+	{Answer: AnswerState, KeyPath: "paused.waitsOn.*.role", Values: pauseStopRoles},
 	// `runtime` of the registered controller's locator, the runtime this daemon runs under
 	// (api.ControllerLocator.Runtime).
 	{Answer: AnswerState, KeyPath: "controllerLocator.runtime", Values: controllerRuntimes},
@@ -504,9 +520,9 @@ var claimViewStates = valuesFrom(ServingFloor,
 	supervise.StateWorking, supervise.StateIdle, supervise.StateSuspended, supervise.StateFailed,
 	supervise.StateRetired)
 
-// claimRoles is every role a claim can hold, which three rows share: the stranded report's, the
-// registration's and the wake's, that last one at its own arrival (wakeRoles). The list has not
-// moved since the floor.
+// claimRoles is every role a claim can hold, which four rows share: the stranded report's, the
+// registration's, the wake's and the pause stop's, those last two at their own arrivals
+// (wakeRoles, pauseStopRoles). The list has not moved since the floor.
 var claimRoles = valuesFrom(ServingFloor,
 	claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
 	claim.RoleReviewer, claim.RoleMerger)
@@ -514,6 +530,14 @@ var claimRoles = valuesFrom(ServingFloor,
 // wakeRoles is the same list of roles at the contract `wakesWaiting` arrived at: no wake of that
 // array is served below it at all (shaping.go's withoutWakesWaiting).
 var wakeRoles = valuesFrom(wakesWaitingContract,
+	claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
+	claim.RoleReviewer, claim.RoleMerger)
+
+// pauseStopRoles is the same list of roles at the contract `paused` arrived at, which the role of
+// each claim the open pause waits on takes (api.PauseStopView.Role): no `paused` is served below
+// that contract at all (shaping.go's withoutPause), so every value arrived with its field and no
+// value strip is owed (fieldArrivals.heldBack).
+var pauseStopRoles = valuesFrom(pauseContract,
 	claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
 	claim.RoleReviewer, claim.RoleMerger)
 

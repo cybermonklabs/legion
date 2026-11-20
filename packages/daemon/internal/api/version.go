@@ -2550,6 +2550,19 @@ package api
 // `HandoffCompleteRequest`, so this change's request record of the completion route, which is
 // 182's (no request record is kept below it), holds them, and a plugin at 168, which sends them
 // on its retro, and one below it, which never does, are both decoded.
+// Contract 178 is served down here by rows of this change's own, each decided by the contract
+// the caller states, or by its pod where it states none, rather than by the pod's claims alone:
+// the state's `paused` and `lastPause` are one band of shaping.go's stateNarrowings
+// (`withoutPause`, the band of `pauseContract`); a resume's `pause` on the release records is
+// taken off by that answer's row of shapeAnswer; and a refusal's `setting`, `pause` and
+// `lastPause` (`api.PauseFailure`) are taken off by the refusal's row, which serves a caller
+// below 178 the `Failure` alone. The release-records route and every writer of a PauseFailure
+// hand in the project's claims (writeAnswerFrom), so a caller that states no contract is placed
+// by its pod there as on the state. `PROJECT_PAUSED` and the pause's other codes are values of
+// the refusal's `code`, which no reader enumerates, so no value is held back. The answers of the
+// controller's pause and resume arrived with their routes at 178, so no contract below records
+// them, and the operator's two routes answer the `legion` command, which is built from the
+// daemon's own commit.
 // Contract 146 is one of the contracts served down here too, by its row of shaping.go's
 // stateNarrowings, and this contract is served above it: a caller below 146 is served every
 // issue without `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (`withoutEntryTimes`,
@@ -2733,7 +2746,9 @@ package api
 // had taken 168 too, where the reading of the 233 open pull requests at 2026-11-19T13:36:20Z gave
 // 161 to 171 to other heads and 172 to none, and 172 again at the merge that brought main in at
 // 168 (#4488), which is below it, where the reading of the 241 open pull requests at
-// 2026-11-19T17:51:41Z gave 169 to 171 to other heads and 172 to this change alone. 87 was free
+// 2026-11-19T17:51:41Z gave 169 to 171 to other heads and 172 to this change alone, and 182 at
+// the merge that brought main in at 178 (#4115), where the reading of the 241 open pull requests
+// at 2026-11-20T00:59:33Z gave 179 to 181 to other heads and 182 to none. 87 was free
 // when this head took it and was gone
 // when the head was pushed: the gate holds a head against main alone and sees no other head's
 // number, so

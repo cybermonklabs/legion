@@ -2,9 +2,10 @@ kind: Changed
 body: |-
   The daemon answers every caller in the shape that caller's own plugin reads. A request states
   the contract its plugin speaks in the `Legion-Plugin-Contract` header. Every answer carries the
-  daemon's own contract in `Legion-Daemon-Contract`. On the state, the per-issue record and a
-  fresh session's answer, a caller that states no contract is placed by the claims of the pod it
-  asks from. A key a later contract added is left out of that body, and a
+  daemon's own contract in `Legion-Daemon-Contract`. On the state, the per-issue record, a fresh
+  session's answer, the release records and a refusal that names the project's pause, a caller
+  that states no contract is placed by the claims of the pod it asks from. A key a later contract
+  added is left out of that body, and a
   key a later contract removed is written back where the caller's own plugin requires it. The
   same rule holds for a value a later contract added to a field that was already there. A reader
   refuses the whole body for a value its contract does not name, so such a stranded claim state,

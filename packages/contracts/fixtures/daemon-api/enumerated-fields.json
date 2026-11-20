@@ -163,19 +163,19 @@
     "values": [
       {
         "value": "answered",
-        "since": 172
+        "since": 182
       },
       {
         "value": "asked",
-        "since": 172
+        "since": 182
       },
       {
         "value": "none",
-        "since": 172
+        "since": 182
       },
       {
         "value": "open",
-        "since": 172
+        "since": 182
       }
     ]
   },
@@ -185,19 +185,19 @@
     "values": [
       {
         "value": "answered",
-        "since": 172
+        "since": 182
       },
       {
         "value": "asked",
-        "since": 172
+        "since": 182
       },
       {
         "value": "none",
-        "since": 172
+        "since": 182
       },
       {
         "value": "open",
-        "since": 172
+        "since": 182
       }
     ]
   },
@@ -522,6 +522,36 @@
       {
         "value": "tester",
         "since": 53
+      }
+    ]
+  },
+  {
+    "answer": "state",
+    "keyPath": "paused.waitsOn.*.role",
+    "values": [
+      {
+        "value": "architect",
+        "since": 178
+      },
+      {
+        "value": "implementer",
+        "since": 178
+      },
+      {
+        "value": "merger",
+        "since": 178
+      },
+      {
+        "value": "planner",
+        "since": 178
+      },
+      {
+        "value": "reviewer",
+        "since": 178
+      },
+      {
+        "value": "tester",
+        "since": 178
       }
     ]
   },
@@ -1223,19 +1253,19 @@
     "values": [
       {
         "value": "answered",
-        "since": 172
+        "since": 182
       },
       {
         "value": "asked",
-        "since": 172
+        "since": 182
       },
       {
         "value": "none",
-        "since": 172
+        "since": 182
       },
       {
         "value": "open",
-        "since": 172
+        "since": 182
       }
     ]
   },
@@ -1245,19 +1275,19 @@
     "values": [
       {
         "value": "answered",
-        "since": 172
+        "since": 182
       },
       {
         "value": "asked",
-        "since": 172
+        "since": 182
       },
       {
         "value": "none",
-        "since": 172
+        "since": 182
       },
       {
         "value": "open",
-        "since": 172
+        "since": 182
       }
     ]
   },

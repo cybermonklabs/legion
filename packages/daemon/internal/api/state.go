@@ -83,7 +83,7 @@ type State struct {
 	// Paused is the project's open pause while the project is paused (dispatch://INFRA-3759,
 	// decision 25): who paused, since when and why, the claims whose stop it still waits on, and
 	// every row it holds (PausedView, PauseStateTx). Absent while the project runs, and from a body
-	// served a caller below pauseContract (server's withoutPause).
+	// served a caller below pauseContract (shaping.go's withoutPause).
 	Paused *PausedView `json:"paused,omitempty"`
 	// LastPause is the project's newest ended pause while the project runs, with who ended it and
 	// when; absent while the project is paused, before any pause has ended, and from a body served

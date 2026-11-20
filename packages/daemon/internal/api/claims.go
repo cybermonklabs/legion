@@ -500,6 +500,10 @@ type ReleaseRecordsResponse struct {
 // secret with claim.InvalidSecret, and a stale plugin with the stale-contract 409, as its
 // siblings do. `since` is required and must be an RFC 3339 instant: a window nobody named is not
 // a window, and the whole table is not an answer.
+//
+// The records are written with the claims that place a caller that states no contract by its pod
+// (placingClaims): a resume's `pause` leaves the body below pauseContract (shapeAnswer), and a
+// plugin below shapedAnswersContract states no contract, so its pod is what places it.
 func (s *server) releaseRecords(w http.ResponseWriter, r *http.Request) {
 	var req ReleaseRecordsRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !s.requireFields(w, r,
@@ -531,7 +535,7 @@ func (s *server) releaseRecords(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, http.StatusInternalServerError, "read the release records: "+err.Error())
 		return
 	}
-	s.writeAnswer(w, r, AnswerReleaseRecords, http.StatusOK, releaseRecordsBody(records))
+	s.writeAnswerFrom(w, r, AnswerReleaseRecords, http.StatusOK, releaseRecordsBody(records), s.placingClaims(r))
 }
 
 // releaseRecordsBody is store.PodReleaseRecords on the wire: every time as RFC 3339 in UTC, an
@@ -812,4 +816,7 @@ func (s *server) requireGeneration(w http.ResponseWriter, r *http.Request, gener
 	return true
 }
 
-func errorBody(message string) map[string]string { return map[string]string{"error": message} }
+// errorBody is the sentence-only refusal refuse writes, claim.Refusal's wire shape, so the
+// refusal's row of shapeAnswer reads one type for every sentence-only refusal. Its status rides
+// beside it, as refuse's own argument.
+func errorBody(message string) claim.Refusal { return claim.Refusal{Message: message} }

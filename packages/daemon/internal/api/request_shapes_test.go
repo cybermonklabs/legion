@@ -67,6 +67,8 @@ var pluginRequests = map[string]reflect.Type{
 	"POST /legion/v1/roots/close":             reflect.TypeFor[RootCloseRequest](),
 	"POST /legion/v1/children/park":           reflect.TypeFor[ChildRequest](),
 	"POST /legion/v1/children/rerun":          reflect.TypeFor[ChildRequest](),
+	"POST /legion/v1/project/pause":           reflect.TypeFor[ProjectPauseRequest](),
+	"POST /legion/v1/project/resume":          reflect.TypeFor[ProjectResumeRequest](),
 }
 
 // sameBuild is why a route whose body the `legion` command sends needs no record: the command is
@@ -83,6 +85,8 @@ var routesWithNoPluginBody = map[string]string{
 	"POST /legion/v1/operator/claims/{token}/deliver":        sameBuild + " (`legion claims deliver`)",
 	"POST /legion/v1/operator/claims/{token}/retry":          sameBuild + " (`legion claims retry`)",
 	"POST /legion/v1/operator/claims/{token}/forget-session": sameBuild + " (`legion claims forget-session`)",
+	"POST /legion/v1/operator/project/pause":                 sameBuild + " (`legion project pause`)",
+	"POST /legion/v1/operator/project/resume":                sameBuild + " (`legion project resume`)",
 }
 
 // routesReadingNoBody is every POST route the server registers that decodes no body at all, so

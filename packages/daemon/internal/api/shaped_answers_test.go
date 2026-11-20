@@ -960,9 +960,10 @@ func TestTheServedContractsOfACallerBelowTheFloor(t *testing.T) {
 // its own is an answer this names and that does not, which is a programming error rather than a
 // body served unshaped.
 //
-// Each row is handed a body its own route could write, because the two rows whose shape has
-// moved shape a State and an Issue and panic on anything else: a row handed the wrong type
-// would fail here as an answer with no row does, and never serve that body unshaped.
+// Each row is handed a body its own route could write, because the four rows whose shape has
+// moved shape a State, an Issue, the release records and a refusal and panic on anything else: a
+// row handed the wrong type would fail here as an answer with no row does, and never serve that
+// body unshaped.
 func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 	state := populatedState(t)
 	for _, answer := range Answers {
@@ -994,6 +995,29 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				if shaped.MemoryGroup != "" {
 					t.Error("the record served at the floor carries its tree's memory group, which the reader before memoryContract refuses")
 				}
+			case AnswerReleaseRecords:
+				records := ReleaseRecordsResponse{Releases: []ReleaseRecord{}, Holds: []HoldRecord{},
+					Resumes: []ResumeRecord{{ID: 203, Issue: "LEGION-210", Kind: "pause", Pause: 7}}}
+				body, _ := shapeAnswer(AnswerReleaseRecords, records, ServingFloor, ServingFloor)
+				shaped, isRecords := body.(ReleaseRecordsResponse)
+				if !isRecords {
+					t.Fatalf("the release records were shaped to %T, want a ReleaseRecordsResponse", body)
+				}
+				if len(shaped.Resumes) != 1 || shaped.Resumes[0].Pause != 0 {
+					t.Errorf("the release records served at the floor carry a resume's `pause`, which pauseContract added: %+v", shaped.Resumes)
+				}
+				if records.Resumes[0].Pause != 7 {
+					t.Error("the shaping wrote the resume of the body the route built: the resumes are copied before one is written")
+				}
+			case AnswerRefusal:
+				failure := Failure{Code: "GRANT_NOT_FOUND", Error: "no grant for this command"}
+				if shaped, _ := shapeAnswer(AnswerRefusal, failure, ServingFloor, ServingFloor); shaped != any(failure) {
+					t.Errorf("a plain refusal was shaped to %v, want the body it was given", shaped)
+				}
+				refused := PauseFailure{Failure: Failure{Code: projectPaused, Error: "the project is paused"}, Setting: "runtime: tmux"}
+				if shaped, _ := shapeAnswer(AnswerRefusal, refused, ServingFloor, ServingFloor); shaped != any(refused.Failure) {
+					t.Errorf("a refusal naming a pause was shaped to %+v at the floor, want its Failure alone", shaped)
+				}
 			default:
 				body := map[string]string{"shape": "unmoved"}
 				if shaped, _ := shapeAnswer(answer.ID, body, ServingFloor, ServingFloor); !reflectEqualBody(shaped, body) {
@@ -1004,11 +1028,11 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 	}
 }
 
-// The two rows that shape a body of their own panic on a body of another type, as a row that
+// The four rows that shape a body of their own panic on a body of another type, as a row that
 // does not exist panics: a route that wrote a State under AnswerIssueRecord would otherwise
 // have it served unshaped and in silence.
 func TestShapeAnswerPanicsOnABodyItsRowCannotShape(t *testing.T) {
-	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord} {
+	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord, AnswerReleaseRecords, AnswerRefusal} {
 		t.Run(string(id), func(t *testing.T) {
 			defer func() {
 				if recover() == nil {

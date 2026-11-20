@@ -27,7 +27,7 @@
     "routes": [
       "GET /legion/v1/issues/{key}/record"
     ],
-    "since": 172,
+    "since": 182,
     "noBody": false
   },
   {
@@ -35,7 +35,7 @@
     "routes": [
       "GET /healthz"
     ],
-    "since": 172,
+    "since": 182,
     "noBody": false
   },
   {
@@ -140,6 +140,22 @@
     "id": "refusal",
     "routes": [],
     "since": 46,
+    "noBody": false
+  },
+  {
+    "id": "project-pause",
+    "routes": [
+      "POST /legion/v1/project/pause"
+    ],
+    "since": 178,
+    "noBody": false
+  },
+  {
+    "id": "project-resume",
+    "routes": [
+      "POST /legion/v1/project/resume"
+    ],
+    "since": 178,
     "noBody": false
   }
 ]

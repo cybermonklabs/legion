@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -249,14 +250,19 @@ const sandboxSettingsBlock = `    sandbox:
 // the first body has none of; an issue whose wait a person declined to answer, which is the
 // value contract 68 added to `answeredBy` and the one this change's serving-down of a value is
 // for; a status write the daemon owes Dispatch; a repository cache whose health read failed;
-// and the settings of a tmux deployment (shapeSettingsFile). Every key of these is a key the
-// state route writes, so the records describe each of them, the settings keys no reader types
-// apart (withoutUntypedSettings), and a serving-down that forgets one is caught where a thinner
-// sample would pass.
+// the project's last pause, which a state carries only while no pause stands, and populatedState
+// carries the one that stands (contract 178); and the settings of a tmux deployment
+// (shapeSettingsFile). Every key of these is a key the state route writes, so the records
+// describe each of them, the settings keys no reader types apart (withoutUntypedSettings), and a
+// serving-down that forgets one is caught where a thinner sample would pass.
 func stateCarryingTheRestOfTheShape(t *testing.T) State {
 	t.Helper()
 	since := time.Date(2026, 9, 22, 7, 30, 0, 0, time.UTC)
 	declinedAt := time.Date(2026, 9, 22, 8, 45, 0, 0, time.UTC)
+	// The pause the controller began and ended from its session, built as the state's read builds
+	// it (PauseStateTx, pauseViewOf): every key of an ended pause, a session at `by` and at
+	// `endedBy`, and `endedAt` (controllerPause).
+	last := pauseViewOf(controllerPause(true))
 	return State{
 		Daemon: DaemonInfo{
 			Project:       "shapes",
@@ -332,7 +338,8 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 				HealthError: "read http://legion-shapes-cache-acme-widgets-5f2a1b3c.legion.svc:8418/healthz: context deadline exceeded",
 			}}},
 		},
-		Settings: SettingsOf(loadSettingsFile(t, shapeSettingsFile)),
+		LastPause: &last,
+		Settings:  SettingsOf(loadSettingsFile(t, shapeSettingsFile)),
 	}
 }
 
@@ -350,7 +357,9 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // other body carries them on an architect, so without this body no record describes those keys
 // at their architect paths, and the value comparison reads no value there. Each issue also carries
 // a merge wait with every key of one, whose `mergeState` and `toldState` take value i of the
-// merge states, so the twelve issues carry all eight words at both key paths.
+// merge states, so the twelve issues carry all eight words at both key paths. The project's pause
+// waits on the stop of one claim of each role, so `paused.waitsOn.*.role` carries every role,
+// where populatedState's pause waits on an implementer alone.
 //
 // Its settings are the maximal kubernetes file with a sandbox block that sets every member but
 // `type` (sandboxSettingsBlock), which neither other body carries: populatedState's settings are
@@ -412,6 +421,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	issues := make(map[string]Issue, len(phaseWords))
 	keys := make([]string, 0, len(phaseWords))
 	wakes := make([]WakeWaiting, 0, len(roleWords))
+	stops := make([]store.PauseStop, 0, len(roleWords))
 	for i, heldFrom := range phaseWords {
 		key := fmt.Sprintf("VALUES-%d", i+1)
 		keys = append(keys, key)
@@ -457,6 +467,8 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		if i < len(roleWords) {
 			wakes = append(wakes, WakeWaiting{Claim: claim.Token("legion-values-" + key), Issue: key, Role: roleWords[i],
 				Kind: supervise.WakeLaunch, DueAt: at})
+			stops = append(stops, store.PauseStop{ID: int64(40 + i), Pause: 7,
+				Claim: claim.Token("legion-values-" + key + "-" + string(roleWords[i])), Issue: key, Role: roleWords[i], AskedAt: at})
 		}
 	}
 	held := make([]HeldIssue, 0, len(heldWords))
@@ -475,6 +487,9 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		Issues:       issues,
 		WakesWaiting: wakes,
 		Settings:     SettingsOf(loadSettingsFile(t, settingsFixtureFile+sandboxSettingsBlock)),
+		// Built as the state's read builds it (PauseStateTx), holding no row: populatedState's
+		// pause carries the held rows.
+		Paused: pausedViewOf(goldenPause(false), stops, nil),
 	}
 }
 
@@ -502,8 +517,11 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		}
 	}
 	released := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	// The controller's pause, standing, and once the controller's resume ended it
+	// (controllerPause).
+	standing, ended := pauseViewOf(controllerPause(false)), pauseViewOf(controllerPause(true))
 	return map[AnswerID]answerFixture{
-		// The whole-project body, the one answer whose shape has moved since the floor.
+		// The whole-project body, the answer whose shape has moved most since the floor.
 		AnswerState: {roots: typesOf(State{}), bodies: bodies},
 		// The record route answers one issue of a state body, so its fixture is every issue the
 		// state fixtures hold: each is a body this route writes, and the record is their key
@@ -533,7 +551,9 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// body for them and the record says there is none.
 		AnswerNoContent: {},
 		// The release-records golden's own value (TestReleaseRecordsResponseGolden), built
-		// through releaseRecordsBody from the store's rows as the route builds it.
+		// through releaseRecordsBody from the store's rows as the route builds it. Its third
+		// resume is a wake a project pause held, the one resume that carries `pause` (contract
+		// 178), which the record of every contract below 178 describes no key of.
 		AnswerReleaseRecords: {roots: typesOf(ReleaseRecordsResponse{}), bodies: []any{releaseRecordsBody(store.PodReleaseRecords{
 			Releases: []store.PodRelease{
 				{ID: 101, Issue: "LEGION-208", Generation: 3, Roles: []string{"implementer", "tester"},
@@ -546,10 +566,15 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 					FirstTurnAt: released.Add(32 * time.Minute)},
 				{ID: 202, Issue: "LEGION-207", Role: "architect", Kind: "backstop",
 					At: released.Add(45 * time.Minute), PodReadyAt: released.Add(46 * time.Minute), Stuck: true},
+				{ID: 203, Issue: "LEGION-210", Role: "implementer", Kind: "pause",
+					At: released.Add(50 * time.Minute), PodReadyAt: released.Add(80 * time.Minute),
+					FirstTurnAt: released.Add(81 * time.Minute), Pause: 7},
 			},
 			Holds: []store.PodHold{
 				{ID: 301, Issue: "LEGION-210", Reason: "background_work", Detail: "subagent,async-job",
 					FirstAt: released.Add(time.Hour), At: released.Add(70 * time.Minute), Passes: 11},
+				{ID: 302, Issue: "LEGION-211", Reason: "overtaken",
+					FirstAt: released.Add(65 * time.Minute), At: released.Add(65 * time.Minute), Passes: 1},
 			},
 		})}},
 		// The grant golden's own value (TestTask310RouteGoldens).
@@ -588,18 +613,58 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			Started:  []string{"LEGION-209"},
 			Held:     []HeldChild{{Issue: "LEGION-211", BlockedBy: []string{"LEGION-210"}}},
 		}}},
-		// The refusal has two Go shapes: claim.Refusal, one sentence under `error`, which the
-		// claim routes answer, and api.Failure, which adds the stable `code` the credential and
-		// workflow routes carry. A client parses either on every answer that is not a success,
-		// so the fixture holds both and the record is the keys of the two read as one set.
+		// The refusal has three Go shapes: claim.Refusal, one sentence under `error`, which the
+		// claim routes answer; api.Failure, which adds the stable `code` the credential and
+		// workflow routes carry; and api.PauseFailure, the Failure with what a refusal of the
+		// pause names beside it (contract 178). A client parses any of them on every answer that
+		// is not a success, so the fixture holds each and the record is the keys of the three read
+		// as one set. The pause refusals are the three the goldens hold (TestPauseRouteGoldens):
+		// the setting that turns the pause off, the pause that stands, and the last pause, ended,
+		// which between them carry every key of a PauseFailure. Their pause is the controller's,
+		// richer than the goldens' operator's (controllerPause).
 		AnswerRefusal: {
-			roots: typesOf(claim.Refusal{}, Failure{}),
+			roots: typesOf(claim.Refusal{}, Failure{}, PauseFailure{}),
 			bodies: []any{
 				claim.SameAgentRefusal,
 				Failure{Code: "GRANT_NOT_FOUND", Error: "no grant for this command"},
+				PauseFailure{
+					Failure: Failure{Code: pause.CodeUnavailable,
+						Error: "this daemon cannot pause its project under runtime: tmux: a pause stops and wakes roles through the idle release, which runs only under runtime: kubernetes; nothing was paused"},
+					Setting: string(pause.SettingTmux),
+				},
+				PauseFailure{
+					Failure: Failure{Code: pause.CodeAlreadyPaused,
+						Error: "the project is already paused (" + describePause(controllerPause(false)) + "); this pause changed nothing"},
+					Pause: &standing,
+				},
+				PauseFailure{
+					Failure: Failure{Code: pause.CodeNotPaused,
+						Error: "the project is not paused: its last pause (" + describePause(controllerPause(true)) + ") ended 2026-11-15T09:41:30Z by the controller (session ses_controller); this resume changed nothing"},
+					LastPause: &ended,
+				},
 			},
 		},
+		// The pause the controller began, richer than the golden, which is the operator's pause
+		// and so names no session (controllerPause). A pause answers the pause it began, which no
+		// resume has ended, so no body of it carries `endedAt` or `endedBy`
+		// (excludedDeclaredFields).
+		AnswerProjectPause: {roots: typesOf(ProjectPauseResponse{}), bodies: []any{ProjectPauseResponse{Pause: standing}}},
+		// The resume of the golden (TestPauseRouteGoldens), of the controller's pause rather than
+		// the operator's: the pause it ended, by whom and when, and the held rows it let out.
+		AnswerProjectResume: {roots: typesOf(ProjectResumeResponse{}), bodies: []any{ProjectResumeResponse{
+			Pause: ended, Released: 3,
+		}}},
 	}
+}
+
+// controllerPause is the goldens' pause (goldenPause) begun by the controller from its session
+// rather than by the operator, and ended by the controller as the goldens' is, so a view of it
+// names a session at `by` and, once ended, at `endedBy` too: a fixture body is maximal, and the
+// operator's pause names no session at `by`.
+func controllerPause(ended bool) store.Pause {
+	p := goldenPause(ended)
+	p.By = store.PauseActor{Kind: store.PauseByController, Session: "ses_controller"}
+	return p
 }
 
 // typesOf is the Go types of values, for an answer fixture's roots.
@@ -932,13 +997,17 @@ func (k callerKind) askedBody(t *testing.T, handler http.Handler, target string,
 // snapshot, shapeAnswer, and the one writer.
 //
 // Every other answer goes through shapeAnswer at the pair contractsFor gives a request built like
-// the caller's own, from its address and with its header, and with no claims, because no claims
-// is what each of those routes hands it (writeAnswer). So the pod kind is placed as production
-// places it: by no pod, at this daemon's own contract. A serving-down on one of those answers
-// then reaches the caller that states its contract and not the caller of a pod, and this test
-// is red for the second until two things change together: the route hands in its claims
-// (writeAnswerFrom), and servedBodies gains a case for that answer id that drives its route, as
-// its state and record cases do, since servedShapes places every other answer with no claims.
+// the caller's own, from its address and with its header, and with the claims its route hands
+// it. The release records and the refusal are placed with the pod's claims (callerKind.claims),
+// because their writers hand those in (placingClaims): the release-records route, and the writer
+// of every PauseFailure. A plain refusal, a claim.Refusal or a Failure, is written with no
+// claims (writeAnswer), and its row is the identity on it, so the claims decide nothing for it.
+// Every answer else is placed with no claims, because no claims is what each of those routes
+// hands it (writeAnswer), so the pod kind is placed as production places it: by no pod, at this
+// daemon's own contract. A serving-down on one of those answers then reaches the caller that
+// states its contract and not the caller of a pod, and this test is red for the second until
+// two things change together: the route hands in its claims (writeAnswerFrom), and carriedShapes
+// places that answer with the pod's claims, as it places the release records and the refusal.
 //
 // These answers are not driven through their routes, as the state and the record are. Each
 // route wants a store, a registration, a boot token or a grant, and a fixture body such as the
@@ -986,6 +1055,11 @@ func carriedShapes(t *testing.T, caller callerKind) map[shapeKey]answerShape {
 		// The pair every other answer is shaped at: contractsFor with no claims, as writeAnswer
 		// hands it none.
 		restore, strip := caller.contracts(t, contract, nil)
+		// The pair the release records and the refusal are shaped at: contractsFor with the
+		// pod's claims, as their writers hand them in (placingClaims). A plain refusal is written
+		// with no claims, and its row is the identity on it, so the claims decide nothing for it;
+		// a PauseFailure's writer hands them in, and its row takes its keys off below 178.
+		placedRestore, placedStrip := caller.contracts(t, contract, caller.claims(contract))
 		for _, answer := range Answers {
 			if answer.Since > contract {
 				continue
@@ -1002,8 +1076,12 @@ func carriedShapes(t *testing.T, caller callerKind) map[shapeKey]answerShape {
 				served[key] = answerShape{noBody: true}
 				continue
 			}
+			answerRestore, answerStrip := restore, strip
+			if answer.ID == AnswerReleaseRecords || answer.ID == AnswerRefusal {
+				answerRestore, answerStrip = placedRestore, placedStrip
+			}
 			paths, carried := collectedShape(t,
-				servedBodies(t, caller, handlers, states, answer.ID, fixture, contract, restore, strip),
+				servedBodies(t, caller, handlers, states, answer.ID, fixture, contract, answerRestore, answerStrip),
 				shapes[answer.ID], enumeratedPathsOf(EnumeratedFields, answer.ID))
 			values := make(map[string][]string, len(carried))
 			for path, carriedHere := range carried {
@@ -1064,8 +1142,9 @@ func stateHandlers(t *testing.T, states []State, claims []supervise.Claim) []htt
 
 // servedBodies is every body the answer writes at one contract, as the bytes a caller reads.
 // handlers answer the state bodies of states, one handler each. restore and strip are the pair
-// every other answer is shaped at, which contractsFor gives the caller's request with no claims,
-// as writeAnswer places it (servedShapes says why those answers do not go through their routes).
+// every other answer is shaped at, which contractsFor gives the caller's request with the claims
+// its route hands it: the pod's for the release records and the refusal, none for every other
+// answer (servedShapes says why, and why those answers do not go through their routes).
 func servedBodies(t *testing.T, caller callerKind, handlers []http.Handler, states []State, id AnswerID,
 	fixture answerFixture, contract, restore, strip int,
 ) [][]byte {
@@ -1223,10 +1302,11 @@ func TestContractShapesFixture(t *testing.T) {
 // nothing from a pod whose claims record it (callerKind.reaches says why the pod kind stops
 // there). Both are held to the same records, because a body is owed to the reader and not to the
 // way it said who it is, and the second is the population this change is about. Each caller is
-// placed as production places it (servedShapes). On the state and the record its pod places
-// it. On every other answer the pod decides no shape (a fresh session's pod decides only what a
-// stop means, readsTheStopAsAFailure), so the pod kind is served this daemon's own body, and a
-// serving-down there that only the header kind gets is red here.
+// placed as production places it (servedShapes). On the state, the record, the release records
+// and the refusal its pod places it. On every other answer the pod decides no shape (a fresh
+// session's pod decides only what a stop means, readsTheStopAsAFailure), so the pod kind is
+// served this daemon's own body, and a serving-down there that only the header kind gets is red
+// here.
 func TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes(t *testing.T) {
 	if *updateGolden {
 		t.Skip("the fixture is being rewritten; run the suite again without -update")
@@ -1308,14 +1388,20 @@ func shapeProblems(key shapeKey, served answerShape, record contractShape) []str
 	for _, path := range served.paths {
 		carried[path] = true
 	}
-	// A band or a stand-in is written in the state's or the record's row of shapeAnswer, and
-	// those two routes hand in their claims (writeAnswerFrom). Every other row is the identity
-	// and every other route hands in none, so the advice for those answers is what both need.
+	// A band or a stand-in is written in the row of shapeAnswer of an answer whose route hands in
+	// its claims (writeAnswerFrom): the state's and the record's take theirs from
+	// stateNarrowings, and the release records' and the refusal's write theirs in the row itself.
+	// Every other row is the identity and every other route hands in none, so the advice for
+	// those answers is what both need.
 	shaped := key.answer == AnswerState || key.answer == AnswerIssueRecord
+	ownRow := key.answer == AnswerReleaseRecords || key.answer == AnswerRefusal
 	for _, path := range served.paths {
 		if !described[path] {
 			advice := "Write a band that leaves the key out below the contract that adds it (shaping.go's stateNarrowings)."
-			if !shaped {
+			switch {
+			case ownRow:
+				advice = fmt.Sprintf("Write a band in the %s answer's row of shapeAnswer that leaves the key out below the contract that adds it (shaping.go's withoutResumePauses is one).", key.answer)
+			case !shaped:
 				advice = "Write a band that leaves the key out below the contract that adds it. " + unshapedServingDown("band", key.answer)
 			}
 			problems = append(problems, fmt.Sprintf(
@@ -1327,7 +1413,7 @@ func shapeProblems(key shapeKey, served answerShape, record contractShape) []str
 		if !carried[path] {
 			advice := fmt.Sprintf("Serve the key to this contract with a stand-in (shaping.go's withFixAttempts is one): a reader at %d may require the key, and the removed-key half of the serving rule stands for good.",
 				key.contract)
-			if !shaped {
+			if !shaped && !ownRow {
 				advice = fmt.Sprintf("Serve the key to this contract with a stand-in: a reader at %d may require the key, and the removed-key half of the serving rule stands for good. %s",
 					key.contract, unshapedServingDown("stand-in", key.answer))
 			}
@@ -1356,7 +1442,7 @@ func shapeProblems(key shapeKey, served answerShape, record contractShape) []str
 // since servedShapes shapes such an answer with no claims (servedShapes says why).
 func unshapedServingDown(kind string, id AnswerID) string {
 	return fmt.Sprintf(
-		"A %s reaches the %s answer only once its route writes through writeAnswerFrom with the claims of the body it answers, and servedBodies has a case that drives that route, as its state and record cases do. shapeAnswer then needs a row of its own for the %s answer to write the %s in, where today that answer shares the identity row (shaping.go).",
+		"A %s reaches the %s answer only once its route writes through writeAnswerFrom with the claims that place its caller, and carriedShapes places that answer with the pod's claims, as it places the release records and the refusal. shapeAnswer then needs a row of its own for the %s answer to write the %s in, where today that answer shares the identity row (shaping.go).",
 		kind, id, id, kind)
 }
 
@@ -1900,7 +1986,7 @@ type answerField struct {
 // a later reader cannot widen an exclusion by accident: there is no prefix and no wildcard to
 // widen, and a stale entry is red rather than quiet.
 //
-// The three entries are the fields of one entry of `settings.projects.<KEY>.deploys`, the key
+// Three entries are the fields of one entry of `settings.projects.<KEY>.deploys`, the key
 // contract 54 took the daemon's reading of away. The loader accepts the key and reads nothing
 // from it, and SettingsOf writes `[]` for every project whatever the file holds
 // (settings.go's DeploySettings, api.ProjectSettings.Deploys), so no body the daemon can write
@@ -1908,13 +1994,23 @@ type answerField struct {
 // it, as no record holds any settings path no reader types (withoutUntypedSettings), and the
 // census below reads the fixture bodies rather than the records, so the three stay entries here.
 // They go with the key, when the loader stops accepting it.
+//
+// The other two are the end of the pause the controller's pause answers (contract 178): that
+// answer is the pause the route began (pauseProject, pauseViewOf), which no resume has ended, so
+// no body of it carries `endedAt` or `endedBy`. Both are realised by the resume's answer, whose
+// pause is ended, and by the refusal's `lastPause`.
 var excludedDeclaredFields = map[answerField]string{
-	{answer: AnswerState, field: declaredField{typ: "api.DeploySettings", name: "repo"}}:     deploysNeverFilled,
-	{answer: AnswerState, field: declaredField{typ: "api.DeploySettings", name: "workflow"}}: deploysNeverFilled,
-	{answer: AnswerState, field: declaredField{typ: "api.DeploySettings", name: "step"}}:     deploysNeverFilled,
+	{answer: AnswerState, field: declaredField{typ: "api.DeploySettings", name: "repo"}}:      deploysNeverFilled,
+	{answer: AnswerState, field: declaredField{typ: "api.DeploySettings", name: "workflow"}}:  deploysNeverFilled,
+	{answer: AnswerState, field: declaredField{typ: "api.DeploySettings", name: "step"}}:      deploysNeverFilled,
+	{answer: AnswerProjectPause, field: declaredField{typ: "api.PauseView", name: "endedAt"}}: pauseNeverEnded,
+	{answer: AnswerProjectPause, field: declaredField{typ: "api.PauseView", name: "endedBy"}}: pauseNeverEnded,
 }
 
-// deploysNeverFilled is the reason the three entries above share.
+// pauseNeverEnded is the reason the two entries of the pause's answer share.
+const pauseNeverEnded = "the pause the route answers is the one it began, which no resume has ended, so no body of the answer carries an end (pauseProject)"
+
+// deploysNeverFilled is the reason the three entries of the deploys share.
 const deploysNeverFilled = "the daemon holds no deploy since contract 54, so `settings.projects.<KEY>.deploys` is `[]` on every body it writes (SettingsOf) and no entry of it can be realised"
 
 // Every json field the answers' wire types declare is realised by a fixture body, so a record
