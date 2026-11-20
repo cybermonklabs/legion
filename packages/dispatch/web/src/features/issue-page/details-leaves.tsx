@@ -33,15 +33,18 @@ const ROW_BOX_ATTRIBUTE = "data-details-row-box";
 /** The mark of a row's box: `<div {...detailsRowBox}>`, so the attribute is spelled once. */
 export const detailsRowBox: Readonly<Record<string, string>> = freeze({ [ROW_BOX_ATTRIBUTE]: "" });
 
-/** The attributes that mark each section of the panel - its three property sections and Pinned
- *  - and the section's heading, the one element of it that no change made elsewhere takes away,
- *  so Details' focus keeper finds where to put a focus no row has a place for
- *  (`headingOfSection`). */
+/** The attribute that marks each section of the panel - its three property sections and Pinned -
+ *  so Details' focus keeper finds the section a lost control stood in (`headingOfSection`). */
 const SECTION_ATTRIBUTE = "data-details-section";
+
+/** The attribute that marks each section's heading, the one element of it that no change made
+ *  elsewhere takes away, where the keeper puts a focus no row has a place for. */
 const HEADING_ATTRIBUTE = "data-details-heading";
 
-/** The mark of a section of the panel, and that of its heading. */
+/** The mark of a section of the panel: `<section {...detailsSection}>`. */
 export const detailsSection: Readonly<Record<string, string>> = freeze({ [SECTION_ATTRIBUTE]: "" });
+
+/** The mark of a section's heading, a property section's button or Pinned's `<h2>`. */
 export const detailsHeading: Readonly<Record<string, string>> = freeze({ [HEADING_ATTRIBUTE]: "" });
 
 /** Where Details' focus keeper puts a focus a change took away (`IssueMarginPanel`): the first

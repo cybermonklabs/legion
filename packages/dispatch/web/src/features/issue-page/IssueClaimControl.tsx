@@ -24,14 +24,15 @@ export const RELEASE_FAILED = "Could not release this claim.";
  * control that turns disabled to the page's body, which would lose a reader who pressed it by
  * keyboard: Release and Retry take no press while it is out (`aria-disabled`), and the failure's
  * line stays until the release Retry sent again is answered (`useSaidFailure`). The row hands on
- * a focus by one rule (`useFocusHandOff`), so that no change, the reader's or another session's,
- * drops it to the page's body: an element of the row that leaves the page with the focus in it -
- * Retry, the claim's box, None - hands it to the row's own control as the row draws it then,
- * Release while a claim is drawn, else None. So Retry hands it to Release while its claim stays,
- * the claim's box to None once the release lands, and None to the new claim's Release once
- * another session claims the issue. Details' focus keeper (`IssueMarginPanel`), which waits one
- * task, leaves this choice where it is; its own rule would differ here, since None takes no press
- * and the holder's name, a link where an agent holds the claim, stands before Release.
+ * a focus by one rule (`useFocusHandOff`): an element of the row that leaves the page with the
+ * focus in it - Retry, the claim's box, None - hands it to the row's own control as the row draws
+ * it then, Release while a claim is drawn, else None. So Retry hands it to Release while its
+ * claim stays, the claim's box to None once the release lands, and None to the new claim's
+ * Release once another session claims the issue. Details' focus keeper (`IssueMarginPanel`),
+ * which waits one task, leaves this choice where it is; its own rule would differ here, since
+ * None takes no press and the holder's name, a link where an agent holds the claim, stands before
+ * Release. A holder's link that goes while the box stays, as when a person takes the claim from
+ * an agent, is the keeper's to hand on, to Release, the row's first control then.
  *
  * A release's failure is about the claim it was pressed on, and the row says it only while that
  * claim is still the issue's: Dispatch releases whichever claim the issue holds, so once the claim
@@ -71,7 +72,12 @@ export function IssueClaimControl({
   const noneRef = useCallback(
     (element: HTMLSpanElement | null) => {
       none.current = element;
-      return left(element);
+      const handOff = left(element);
+      // React calls no ref with null once it returns a cleanup, so the cleanup forgets None.
+      return () => {
+        none.current = null;
+        handOff?.();
+      };
     },
     [left]
   );

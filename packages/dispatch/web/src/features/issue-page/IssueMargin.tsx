@@ -131,7 +131,7 @@ function keptUntilFailed(queryClient: QueryClient, queryKey: QueryKey) {
  * read that answers, an event - takes away the control that held it, in this order. In Add's open
  * menu, the entry after the lost one, else Add (`addEntryAfter`), so the reader stays in the menu
  * they were walking. Else the first control that takes a press in the row the lost one stood in
- * (`firstControlOfRow`), by the one rule every hand-off of the panel reads (`usableControl`),
+ * (`firstControlOfRow`), by the rule the panel's `firstUsable` hand-offs read (`usableControl`),
  * which is often the control the row draws in the lost one's place. Else the heading of the
  * row's section (`headingOfSection`), which no change made elsewhere takes away: for a row the
  * change took away whole, and for one left with nothing that takes a press.

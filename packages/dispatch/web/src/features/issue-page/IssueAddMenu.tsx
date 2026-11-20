@@ -197,9 +197,10 @@ export function IssueAddMenu({
   // drawn open when the issue reopens or a property loses its value again, with the focus not in
   // it, since the effect above puts the focus on its first entry only as it opens, and its
   // listeners on the document would stay on meanwhile. A focus on Add or in its open menu goes
-  // with it to the page's body, since the menu's own closes keep Add drawn, and Details' focus
-  // keeper hands it on (`IssueMarginPanel`): Add stands in no row of Details, so to Development's
-  // heading. On a close the close keeper has put it there first (`useCloseFocusKeeper`).
+  // with it to the page's body: the menu's own closes give the focus back to Add, but here Add
+  // itself goes. Details' focus keeper hands it on (`IssueMarginPanel`): Add stands in no row of
+  // Details, so to Development's heading. On a close the close keeper has put it there first
+  // (`useCloseFocusKeeper`).
   const drawn = !isClosed && entries.length > 0;
   if (!drawn) {
     if (open) setOpen(false);

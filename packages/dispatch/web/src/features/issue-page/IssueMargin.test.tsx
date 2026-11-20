@@ -69,7 +69,7 @@ import {
 import { Opener } from "./details-rows-fixture";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel, PARENT_ERROR_ID, TITLES_READ_FAILED } from "./IssueMargin";
-import { narrowIssue, patchAnswer } from "./issue-fixtures";
+import { narrowIssue, patchAnswer, sessionClaim } from "./issue-fixtures";
 import {
   DETAILS_ATTRIBUTE,
   FilledMarginSlot,
@@ -1084,7 +1084,7 @@ test("each refusal of a blocked-by list is the page's sentence about the key it 
       "CORE-1",
     ])
   ).toEqual({ key: "CORE-1", words: "itself" });
-  const many = Array.from({ length: MAX_ISSUE_BLOCKERS + 1 }, (_, index) => `CORE-${index + 2}`);
+  const many = keysFrom2(MAX_ISSUE_BLOCKERS + 1);
   expect(
     blockedByRefusal(
       refused("BLOCKED_BY_INPUT", "blocked_by is 1 over the 20-item limit (21/20)"),
@@ -1137,7 +1137,7 @@ test("a blocked-by list that would make a loop is the page's sentence about the 
 // `MAX_ISSUE_BLOCKERS` issues, so the Blocked by row draws every one of them and no Show all.
 test("the blockers never fold", async () => {
   const { getIssue, restore } = stubIssueApi();
-  const blockers = Array.from({ length: MAX_ISSUE_BLOCKERS }, (_, index) => `CORE-${index + 2}`);
+  const blockers = keysFrom2(MAX_ISSUE_BLOCKERS);
   getIssue.mockResolvedValue({ ...issue, blocked_by: blockers });
   const { unmount } = renderDetails();
 
@@ -1947,20 +1947,10 @@ test("while the Blocked by editor is open, the titles' Retry hands its focus to 
 test("Show all gives the focus to the first entry it opens", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  const notes = Array.from({ length: 12 }, (_, index) => {
-    const slug = `notes-${String(index + 1).padStart(2, "0")}`;
-    return {
-      ...specArtifact,
-      id: slug,
-      name: `${slug}.md`,
-      primary: false,
-      ref_key: `CORE-1/${slug}`,
-      slug,
-    };
-  });
-  getIssue.mockResolvedValue({ ...issue, artifacts: [specArtifact, ...notes] });
+  const withTwelve = withNotes(12);
+  getIssue.mockResolvedValue(withTwelve);
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
-  const waiting = Array.from({ length: 12 }, (_, index) => `CORE-${index + 2}`);
+  const waiting = keysFrom2(12);
   const getReferences = spyOn(api, "getReferences").mockResolvedValue({
     edges: waiting.map((key) => waitingEdge(key, `Waits for ${key}`)),
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
@@ -1970,7 +1960,7 @@ test("Show all gives the focus to the first entry it opens", async () => {
   try {
     // Files and documents: the spec and twelve notes, so the eleventh entry is notes-10.md.
     const showFiles = await screen.findByRole("button", {
-      name: `${CONTROL_LABELS.show_all} ${notes.length + 1}`,
+      name: `${CONTROL_LABELS.show_all} ${withTwelve.artifacts?.length ?? 0}`,
     });
     act(() => showFiles.focus());
     await user.keyboard("{Enter}");
@@ -5103,8 +5093,8 @@ test("a close made elsewhere leaves the focus on the body once the reader left t
   try {
     const control = await screen.findByRole("button", { name: "Messages default to no route" });
     act(() => control.focus());
-    // A press on the row's label, plain text, as a browser sends it: its own task, its pointerdown
-    // first, then the blur that leaves the focus on the body.
+    // A press on the row's label, plain text: its own task, its pointerdown first, then the blur
+    // that leaves the focus on the body.
     const label = screen.getByText(PROPERTY_LABELS.route, { selector: "[data-page-chrome]" });
     await act(async () => {
       label.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
@@ -5348,8 +5338,8 @@ test("a close made elsewhere leaves the focus on the body once the reader left t
       "true"
     );
     act(() => control.focus());
-    // A press on the row's label, plain text, as a browser sends it: its own task, its pointerdown
-    // first, then the blur that leaves the focus on the body.
+    // A press on the row's label, plain text: its own task, its pointerdown first, then the blur
+    // that leaves the focus on the body.
     const label = screen.getByText(PROPERTY_LABELS.labels, { selector: "[data-page-chrome]" });
     await act(async () => {
       label.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
@@ -5654,7 +5644,7 @@ test("Unpin gives the focus to the next pin, else the one before, else the Pinne
   }
 });
 
-/** The two comments of CORE-1 the table below pins, each drawn by its words. */
+// The two comments of CORE-1 the table below pins, each drawn by its words.
 const FIRST_PIN = "4b7d1e2f-6a3c-4d8e-9f0a-1b2c3d4e5f60";
 const SECOND_PIN = "5c8e2f3a-7b4d-4e9f-8a1b-2c3d4e5f6a71";
 const PIN_WORDS: Readonly<Record<string, string>> = {
@@ -5662,16 +5652,10 @@ const PIN_WORDS: Readonly<Record<string, string>> = {
   [SECOND_PIN]: "Second pin.",
 };
 
-/** A route to an agent's session, which the route's row draws inside the agent's name, and one
- *  to a role, which it draws as its address. */
+// A route to an agent's session, which the route's row draws inside the agent's name, and one to
+// a role, which it draws as its address.
 const SESSION_ROUTE = "session:7d9f3a4b-8c5e-4fa0-9b2c-3d4e5f6a7b82";
 const ROLE_ROUTE = "role:legion-controller-core";
-
-/** A claim of CORE-1 by an agent's session, whose name the claim's row draws as a link. */
-const SESSION_CLAIM: NonNullable<IssueDetails["claim"]> = {
-  actor: { id: "session-two", kind: "session", origin: { session_title: "Reviewer" } },
-  at: "2026-09-24T07:00:00Z",
-};
 
 /** The fixture's issue with its spec and `count` notes, named in order. */
 function withNotes(count: number): IssueDetails {
@@ -5731,7 +5715,13 @@ async function firstPinLink(): Promise<HTMLElement> {
 
 /** Opens Add's menu, which puts the focus on its first entry, and answers the menu. */
 async function openAddMenu(user: UserEvent): Promise<HTMLElement> {
-  await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
+  await user.click(
+    await waitFor(() => {
+      const control = addMenuControl();
+      if (!(control instanceof HTMLElement)) throw new Error("Add is not drawn");
+      return control;
+    })
+  );
   return screen.findByRole("menu", { name: CONTROL_LABELS.add });
 }
 
@@ -5755,12 +5745,14 @@ function routeControl(): HTMLElement {
 }
 
 /**
- * Each element of Details that a change made elsewhere takes off the page while it holds the
- * focus, where one case can drive it through the query cache: first those whose focus fell to the
- * page in a browser, then those nothing else hands on, then Add's two other ways out of its open
- * menu. Each goes where Details' rule puts it: inside Add's open menu to the entry after the lost
- * one, else to Add; else to the first control of its row that takes a press, else to the heading
- * of the row's section; and on a close, to Development's heading.
+ * The elements of Details below, each of which a change made elsewhere takes off the page while
+ * it holds the focus and one case can drive through the query cache: first those whose focus fell
+ * to the page in a browser, then those nothing else hands on, then Add's two other ways out of its
+ * open menu. Each goes where Details' rule puts it: inside Add's open menu to the entry after the
+ * lost one, else to Add; else to the first control of its row that takes a press, else to the
+ * heading of the row's section; and on a close, to Development's heading. The claim row's None is
+ * the one row its own hand-off decides (`IssueClaimControl`): its first control is the holder's
+ * link, and the row hands the focus to the new claim's Release.
  */
 const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
   [
@@ -5884,7 +5876,7 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
   [
     "the claim row's None, a claim made in another session",
     {
-      after: { issue: { ...issue, claim: SESSION_CLAIM } },
+      after: { issue: { ...issue, claim: sessionClaim } },
       before: {},
       expected: { find: release, name: "the new claim's Release" },
       focused: async () =>
@@ -5967,7 +5959,7 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
           claim: { actor: { id: "alice", kind: "user" }, at: "2026-09-24T08:00:00Z" },
         },
       },
-      before: { issue: { ...issue, claim: SESSION_CLAIM } },
+      before: { issue: { ...issue, claim: sessionClaim } },
       expected: { find: release, name: "Release" },
       focused: async () => {
         const [holder] = await within(await drawnRow(PROPERTY_LABELS.claim)).findAllByRole("link");
@@ -6034,7 +6026,7 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
       after: { issue: { ...issue, advances: [{ id: "PRI-7", inherited: false }] } },
       before: {},
       expected: {
-        find: () => screen.getByRole("button", { name: CONTROL_LABELS.add }),
+        find: () => addMenuControl() as HTMLElement,
         name: "Add",
       },
       focused: async (user) => {
