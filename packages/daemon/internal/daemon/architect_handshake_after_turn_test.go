@@ -122,8 +122,10 @@ func (r *mainPathRig) rootView() api.Issue {
 	var state api.State
 	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		state, err = projection.Project(r.ctx, tx, r.records, mainPathProject, config.DesignGateRootIssues.Steps(), nil,
-			[]supervise.Claim{r.machine().Claim()}, nil, nil, time.Now().UTC())
+		state, err = projection.Project(r.ctx, projection.Inputs{
+			Tx: tx, Store: r.records, Project: mainPathProject, Steps: config.DesignGateRootIssues.Steps(),
+			Claims: []supervise.Claim{r.machine().Claim()}, Now: time.Now().UTC(),
+		})
 		return err
 	}); err != nil {
 		r.t.Fatalf("project the state: %v", err)

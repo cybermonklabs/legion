@@ -346,7 +346,7 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   directories a package's `TestMain` owns (the build directories of `internal/daemon`,
   `internal/stream` and `internal/runtime/tmux`, the jj configuration directory of
   `cmd/legion/main_test.go` and the home of `internal/workspace/workspace_test.go` in the daemon
-  module; the sign-in secret directory of `internal/broker/config` and the certificate directory
+  module; the sign-in secret directory of `internal/cipher/config` and the certificate directory
   of `infra/seed/main_test.go` in the envoy module) bind no socket, so they need no byte budget,
   and no `*testing.T` outlives them, so they keep `os.MkdirTemp("", …)` and a removal in that
   `TestMain`.

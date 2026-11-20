@@ -12,6 +12,6 @@
 // (testdb.RunDatabaseMain, testdb.RunDatabaseFor), a database reached across a network's delay
 // (testdb.Delayed) or through a proxy that holds or cuts a commit's reply (testdb.CommitFaults), a
 // pool whose transactions are cancelled between two statements (testdb.CancelAfterScan), and the
-// drop that waits an autovacuum worker out (testdb.Drop), which every clone of this package's
-// template goes through.
+// drop that waits out an autovacuum worker and a backend that has not exited yet (testdb.Drop),
+// which every clone of this package's template and the template itself go through.
 package testpg

@@ -33,7 +33,9 @@ func waitingLine(t *testing.T, pool *store.Pool) []string {
 	t.Helper()
 	var line []string
 	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
-		state, err := projection.Project(context.Background(), tx, record.NewStore(), "CAPTURE", nil, nil, nil, nil, nil, catchUpClock())
+		state, err := projection.Project(context.Background(), projection.Inputs{
+			Tx: tx, Store: record.NewStore(), Project: "CAPTURE", Now: catchUpClock(),
+		})
 		if err != nil {
 			return err
 		}
