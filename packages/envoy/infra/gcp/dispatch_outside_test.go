@@ -200,7 +200,9 @@ func TestDispatchPodWithoutOutsideInputsIsUnchanged(t *testing.T) {
 	committed, err := filepath.Glob("testdata/dispatch-pod*.golden")
 	require.NoError(t, err)
 	require.NotEmpty(t, committed, "the glob found the committed pod goldens")
-	covered := []string{"testdata/" + dispatchOutsideGolden}
+	// The two goldens rendered with an outside input set, which their own tests hold
+	// (TestDispatchPodWithOutsideSignInRendersBothSettings, TestDispatchPodWithPasskeySignInRendersTheSetting).
+	covered := []string{"testdata/" + dispatchOutsideGolden, "testdata/" + dispatchPasskeyGolden}
 	for _, row := range goldens {
 		covered = append(covered, "testdata/"+row.golden)
 		t.Run(row.golden, func(t *testing.T) {

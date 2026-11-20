@@ -1011,11 +1011,12 @@ the `url` output and the app's `DISPATCH_SERVER_URL`. It is refused beside the t
 front door's name is then Dispatch's origin; a second origin beside that one is `outsideOrigin`.
 With it the component builds what the sandbox builds and requires `natsInCluster`, refuses
 `frontDoorReplicas` and `frontDoorPdbMinAvailable`, as the sandbox does, and takes the sign-in
-group, `signInOutside` and `outsideOrigin` as it takes them beside the front door; with the
-sign-in group its host must be one Google takes in a redirect URI, as `outsideOrigin`'s must, and
-the Google client lists `<publicOrigin>/auth/callback`. `allowedNamespaces` is optional there:
-the entrance forwards to the app's Service `<hostname>` on port 8766, or straight to the app's pods,
-labelled `app=<hostname>`, through a network endpoint group of that Service.
+group, `signInOutside`, `outsideOrigin` and `signInPasskey` as it takes them beside the front
+door; with the sign-in group its host must be one Google takes in a redirect URI, as
+`outsideOrigin`'s must, and the Google client lists `<publicOrigin>/auth/callback`.
+`allowedNamespaces` is optional there: the entrance forwards to the app's Service `<hostname>` on
+port 8766, or straight to the app's pods, labelled `app=<hostname>`, through a network endpoint
+group of that Service.
 
 `loadBalancerSourceRanges` and `networkEndpointGroupName`, unset by default, describe that
 entrance, and each needs `publicOrigin`; beside the tailnet group or in the sandbox each is refused,
@@ -1048,9 +1049,9 @@ come from another resource or stack, such as one built from the backend service'
 resolves, a value of any other form is refused naming `iapAudience`, and one holding an nkey seed
 is refused without echoing it. It needs `publicOrigin`, the origin that load balancer serves, and
 `signInDomain`, the Workspace domain whose accounts may use Dispatch, which Dispatch holds the
-token's `hd` claim to; it refuses `signInClientId`, `signInClientSecret`, `signInOutside` and
-`outsideOrigin`, since IAP signs a person in and a browser reaches Dispatch through it alone. It
-renders `DISPATCH_IDENTITY=iap`, `DISPATCH_IAP_AUDIENCE=<iapAudience>` and
+token's `hd` claim to; it refuses `signInClientId`, `signInClientSecret`, `signInOutside`,
+`signInPasskey` and `outsideOrigin`, since IAP signs a person in and a browser reaches Dispatch
+through it alone. It renders `DISPATCH_IDENTITY=iap`, `DISPATCH_IAP_AUDIENCE=<iapAudience>` and
 `DISPATCH_SIGNIN_DOMAIN=<signInDomain>` on the app's container, in the place the sign-in variables
 hold, right before `DISPATCH_SERVER_URL`, and no other `DISPATCH_SIGNIN_*` variable; the Secret
 holds no client secret. Its `envoyImage` must be built from a cybermonklabs/legion `main` commit
@@ -1099,6 +1100,15 @@ with the clause naming each sign-in input still unset. Beside `publicOrigin` the
 host is not `publicOrigin`'s, as beside the front door it is not the front door's. An `envoyImage` whose `envoy-dispatch` predates the two
 settings ignores both, as it ignores every variable its settings table
 (`packages/envoy/cmd/dispatch/settings.go`) does not list.
+
+`signInPasskey`, unset by default, renders `DISPATCH_SIGNIN_PASSKEY=1` on the app's container,
+right after `DISPATCH_OUTSIDE_ORIGIN`, which turns on Dispatch's passkey sign-in at `outsideOrigin`
+for people from outside the company: the passkey's relying party is that origin, and its relying
+party ID is that origin's host. It needs `outsideOrigin` and is refused without it, naming it. It
+is not in the sign-in group and does not need it. The sandbox refuses it by name, as it refuses
+`outsideOrigin`, and so does `iapAudience`, since IAP signs a person in. With it unset the component
+renders exactly what it rendered before it existed. An `envoyImage` whose `envoy-dispatch`
+predates the setting ignores it, as it ignores every variable its settings table does not list.
 
 `databaseVersion` defaults to `POSTGRES_18`; envoy-infra v2.9.1 and every release before this
 change defaulted to `POSTGRES_16`. A stack that leaves `databaseVersion` unset is upgraded in place
@@ -1528,8 +1538,9 @@ refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is
 `oidcIssuer` with no `oidcAudience`, an `outsideOrigin` that breaks the rule the paragraph on it
 above states, a `publicOrigin` that breaks the rule its own paragraph states or is set beside the
 tailnet inputs, an `iapAudience` without `publicOrigin` or `signInDomain` or beside
-`signInClientId`, `signInClientSecret`, `signInOutside` or `outsideOrigin`, and, once it resolves,
-an `iapAudience` of another form than a backend service's, a `signInOutside` without the sign-in inputs, an
+`signInClientId`, `signInClientSecret`, `signInOutside`, `signInPasskey` or `outsideOrigin`, and,
+once it resolves, an `iapAudience` of another form than a backend service's, a `signInOutside`
+without the sign-in inputs, a `signInPasskey` without `outsideOrigin`, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` outside
@@ -2209,7 +2220,9 @@ it at and turns outside sign-in on; every other property above is unchanged:
 ```
 
 Its app then carries `DISPATCH_OUTSIDE_ORIGIN=https://dispatch-outside.example.com` and
-`DISPATCH_SIGNIN_OUTSIDE=1` ([Inputs](#inputs-1)).
+`DISPATCH_SIGNIN_OUTSIDE=1` ([Inputs](#inputs-1)). One that signs them in with a passkey at that
+origin sets `signInPasskey: true` beside `outsideOrigin`, and its app then also carries
+`DISPATCH_SIGNIN_PASSKEY=1`, right after `DISPATCH_OUTSIDE_ORIGIN`.
 
 A sandbox stack sets neither the tailnet group nor the sign-in group, and sets the two inputs the
 mode then requires: `natsInCluster`, since no front door runs a proxy to a tailnet hub, and
