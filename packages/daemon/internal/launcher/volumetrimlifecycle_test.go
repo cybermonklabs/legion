@@ -86,9 +86,6 @@ func useLauncherTrimmer(t *testing.T, f *trimFixture, prepare ...func(trim *trim
 	podTrimmer = func(ctx context.Context, trim *trimmer) {
 		trim.volumeRoot, trim.procRoot, trim.self, trim.roots = f.root, f.proc, f.self, f.roots
 		trim.now, trim.ticks = f.clock.now, f.ticks.make
-		// Its settings stay the launcher's (manager.volumeTrim). Each read of them is recorded,
-		// which tells the fixture's tick how an interval ends (settingsReads).
-		trim.settings = f.asked.of(trim.settings)
 		// The sweeps of these cases delete in this process, as the sweeps of a case that drives
 		// the trimmer directly do and for the same reason (trimFixture.trimmer): what they are
 		// about is the trimmer's life in the launcher process, and the deleter the pod runs is
@@ -746,8 +743,8 @@ func TestALaterAnswerAppliesToTheNextSweepAndNotOneInFlight(t *testing.T) {
 	case f.logged("below the high mark 85%") != 1:
 		t.Errorf("the interval after the sweep did not read the volume under the settings in force; the trimmer wrote %q", f.linesWritten())
 	}
-	// tick returns once the loop has stopped the clock of the old period; it makes the clock of
-	// the new one after that stop, so the case waits for it.
+	// The interval writes "nothing to sweep" and only then has the loop stop the clock of the old
+	// period and make one of the new (intervals), so the case waits for that clock.
 	testwait.Eventually(t, "the trimmer to wait on a clock of the later answer's interval: a shortened interval must not wait the old one out", func() bool {
 		_, live := f.ticks.live(settingsInterval(*laterTrimSettings()))
 		return live
