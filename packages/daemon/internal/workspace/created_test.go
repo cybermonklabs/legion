@@ -83,3 +83,26 @@ func TestMarkInUseIsReadByInUseAndWritesOnce(t *testing.T) {
 		}
 	})
 }
+
+// A .jj that is a symbolic link is refused before the in-use record is read or written through
+// it. .jj is on the issue's volume, which every agent of the issue can write, and a link there
+// carries the record into a directory off the workspace's disk: a record read there says nothing
+// of this workspace, and one written there can be lost at a container restart while the workspace
+// keeps its work, so a bundle could be restored over that work. InUse fails, which the restore
+// counts as in use, and MarkInUse fails, as it does for a .jj that cannot take the record, and
+// writes nothing through the link. Nothing here needs root, so nothing skips as root.
+func TestALinkedJJIsRefusedBeforeTheInUseRecordIsReadOrWritten(t *testing.T) {
+	dir, target := t.TempDir(), t.TempDir()
+	if err := os.Symlink(target, filepath.Join(dir, ".jj")); err != nil {
+		t.Fatal(err)
+	}
+	if inUse, err := InUse(dir); !errors.Is(err, errLinkedJJ) {
+		t.Errorf("InUse of a linked .jj = %t, %v; want errLinkedJJ", inUse, err)
+	}
+	if err := MarkInUse(dir); !errors.Is(err, errLinkedJJ) {
+		t.Errorf("MarkInUse over a linked .jj = %v, want errLinkedJJ", err)
+	}
+	if _, err := os.Lstat(filepath.Join(target, inUseFile)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the in-use record was written through the link into %s (%v)", target, err)
+	}
+}
