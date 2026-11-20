@@ -4,6 +4,7 @@ import {
   createProject,
   editArtifact,
   getArtifactText,
+  patchIssue,
   putRepoProject,
   recordCheckResult,
   retractCheckResult,
@@ -160,6 +161,105 @@ A check nobody has run yet reads no result.
     );
     await expect(none.getByTestId("verification-result")).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("verification-checks.png") });
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): 8.3 s, 6.2 s and 5.0 s over three one-worker runs on this pod. The 8.3 s run,
+// measured step by step, spends 7.9 s in the row's body. Seeding through the API is 1.5 s, of
+// which the issue's create is 0.77 s (0.76 s of it the server's handler, by its log) and no other
+// step is over 0.3 s; the two records are 0.37 s, the first asking the fake GitHub about the
+// issue's own repository, the linked pull request and the linked repository's commit before
+// reading through to it. Then the browser: a fresh context (0.18 s), its first page (0.67 s), the
+// load of the tab (1.29 s), the first assertion's wait while the dashboard makes its boot reads
+// and reads the document, its results and the linked head's check runs before the check draws
+// (2.98 s), the assertion on the other result's commit (0.37 s), the two other assertions
+// (0.18 s) and closing the context (0.32 s). The server's log shows every request answered once,
+// with no retry, sleep or timeout behind any step.
+test("a result at a linked pull request's head stands at it, and one at another commit of that repository names it", async ({
+  browser,
+}) => {
+  // A second repository the issue does not resolve to, which the issue links a pull request in,
+  // and two commits of it: that pull request's head, and one no pull request heads.
+  const linkedRepository = "acme/widget-tools";
+  const linkedHead = "3".repeat(40);
+  const linkedOther = "4".repeat(40);
+  const issue = await seedIssue("Verification linked repository", secondHead);
+  await patchIssue(issue.key, {
+    external_links: [{ kind: "github_pr", url: `https://github.com/${linkedRepository}/pull/9` }],
+  });
+  await seedFakeGithub({
+    [repository]: {
+      commit_pulls: { [secondHead]: [7] },
+      contents: "read",
+      installation_id: 256,
+      pull_requests: "read",
+      pulls: { "7": { head_sha: secondHead, state: "open", title: `${issue.key} the tab` } },
+    },
+    [linkedRepository]: {
+      commit_pulls: { [linkedHead]: [9] },
+      commits: [linkedOther],
+      contents: "read",
+      installation_id: 257,
+      pull_requests: "read",
+      pulls: { "9": { head_sha: linkedHead, state: "open", title: "The second half of the work" } },
+    },
+  });
+  await createIssueArtifact(issue.key, {
+    content: `How ${issue.key} is proved.
+
+:::check{#c-linked-head serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Move the linked pull request's head and this one is left behind."}
+A result at the linked pull request's head stands at it.
+:::
+
+:::check{#c-linked-other serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Open a pull request at this commit and it stands at its head."}
+A result at another commit of the linked repository names that repository.
+:::
+`,
+    name: "verification.md",
+  });
+  // Neither commit is the issue's own repository's, so each is taken as the linked repository's,
+  // whose open pull request the issue links, and the first record's read-through teaches the
+  // server that pull request's head.
+  await recordCheckResult(issue.key, {
+    check: "c-linked-head",
+    commit: linkedHead,
+    observed: "41 passed",
+    role: "tester",
+    verdict: "pass",
+  });
+  await recordCheckResult(issue.key, {
+    check: "c-linked-other",
+    commit: linkedOther,
+    observed: "41 passed",
+    role: "tester",
+    verdict: "pass",
+  });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}/verification`);
+    const checks = page.getByTestId("verification-check");
+
+    // The head of a pull request in another repository reads by GitHub's own name for it, so it
+    // reads apart from pull request 9 of the issue's own repository.
+    const head = checks.filter({ hasText: "A result at the linked pull request's head" });
+    await expect(head.getByTestId("verification-check-compared-with")).toContainText(
+      `the head of ${linkedRepository}#9 ${linkedHead}`
+    );
+    await expect(head.getByTestId("verification-result-commit-stands")).toContainText(
+      `At the head of ${linkedRepository}#9 ${linkedHead}`
+    );
+
+    // A commit of that repository no compared head is, is another commit of that repository,
+    // which the page names rather than leaving a reader to take it for the issue's own.
+    const other = checks.filter({ hasText: "A result at another commit of the linked repository" });
+    await expect(other.getByTestId("verification-result-commit-stands")).toHaveText(
+      `At another commit of ${linkedRepository}`
+    );
+    await expect(other.getByTestId("verification-result-commit")).toHaveText(linkedOther);
   } finally {
     await alice.close();
   }

@@ -30,6 +30,8 @@ legion config check --config legion.yaml
 | `worker_stop_timeout_seconds must be at least 9 when runtime is kubernetes: …` | Raise it to 9 or more. A role's stop gives its agent 5 s to exit, drains its output for 1 s and waits at least 3 s for the CodeGraph warm-up to release its lease on the issue volume; a smaller grace would let the pod kill the shim with the lease held, and the role's relaunch would skip its own build for a minute. |
 | `projects must configure <PROJECT>, the daemon's own project` | `project` must also be a key of `projects`. |
 | `postgres_dsn is required (or set LEGION_POSTGRES_DSN)` | Give the daemon its database. |
+| `<LEGION_LEAK_CHECK_REPOSITORY or leak_check.repository> is set and the manifest sha256 is not: …` or `<LEGION_LEAK_CHECK_MANIFEST_SHA256 or leak_check.manifest_sha256> is set and the repository is not: …` | The deployment's shared leak check is two values, set together or not at all: the repository it is published from and the check's manifest digest, one sha256 over every file it runs from ([Worker image](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#worker-image)). Set the half the message names, in the daemon's environment or in `legion.yaml`; or unset the half that is set, and the daemon runs no shared leak check. |
+| `connect to Postgres at …: default_query_exec_mode=<mode> is refused: the store's text rule needs the type of each parameter, which pgx learns from the server only in cache_statement, cache_describe and describe_exec` | `postgres_dsn` sets `default_query_exec_mode` to `exec` or `simple_protocol`, in which pgx sends each value with no parameter type, so the store cannot apply its text rule to what it writes. Remove `default_query_exec_mode` from the DSN, or set another mode: `cache_statement` (pgx's default), `cache_describe` or `describe_exec`. |
 | `unknown key <key>` | A typo, or a setting Legion no longer has; the message says which when it knows. `Unknown key "projects.<KEY>.repo": Dispatch holds the project's repository mapping …` is one: map the repositories in Dispatch and delete the key ([Upgrade](/legion/legion/running-legion/#upgrade)). |
 | `omp_invocation is not used when runtime is kubernetes: …` | Remove it: every pod runs the worker image's Oh My Pi. |
 | `worker_backends.architect is claude (Claude Code), which runs only planner, implementer, tester, reviewer, merger: …` | Claude Code runs the phase workers alone; leave the architect on `omp`. |
@@ -548,8 +550,14 @@ whole record.
 
 **A launch the shared public leak check refused** has a sentence of its own on the claim, as
 `leakCheckCause`. Under the Kubernetes runtime the daemon reads that check at the tag the worker
-image pins, and pushes it to the pod's launcher, which installs it before any role of the pod
-starts ([Worker image](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#worker-image)).
+image pins, from the repository the deployment names (`LEGION_LEAK_CHECK_REPOSITORY` and
+`LEGION_LEAK_CHECK_MANIFEST_SHA256` in the daemon's environment, or `leak_check.repository` and
+`leak_check.manifest_sha256` in `legion.yaml`), and pushes it to the pod's launcher, which installs
+it before any role of the pod starts
+([Worker image](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#worker-image)). A
+deployment that names no check runs none: the daemon logs `daemon: the deployment leak check is
+not configured` once at boot, and no launch is refused for the check and no claim carries this
+sentence.
 A start whose check could not be installed is not sent, and it is charged as a launch failure, so
 a claim that keeps meeting it fails with `launch failures ran out: <the refusal>` and the cause
 word `launch_refused`, or `died` where the refused launches were the relaunch of a process that
@@ -564,8 +572,9 @@ the try started or failed for another reason. It is not cleared while the claim 
 tries. It shows in `legion state --json`, `read_state` and `read_record` for a workflow role's
 claim, and in `legion claims list --json` and the last column of `legion claims list` for every
 claim. The project's controller is on no claim view of the state, so its sentence shows in the
-listing alone. What follows the colon says where to look. Each sentence names the repository
-the check is published from, written `<owner>/<repository>` below, and its owner, `<owner>`:
+listing alone. What follows the colon says where to look. Each sentence names the repository the
+deployment configured (`leak_check.repository`, or `LEGION_LEAK_CHECK_REPOSITORY` in the daemon's
+environment), written `<owner>/<repository>` below, and its owner, `<owner>`:
 
 - `the daemon runs with no GitHub App, so it cannot read <owner>/<repository>`, or `the daemon
   could not mint its read-only token for <owner>/<repository>: …`: the daemon's GitHub App
@@ -1158,9 +1167,10 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   5 minutes, serving nothing until one is placed and passes, and then reports the `pool-capacity`
   capability open with the count and the reason. Make room in the pool, or raise its limits; the
   probe pod itself needs only 500m and 1Gi.
-- **The `workspace-init` container fails.** It provisions the issue's workspace on the pod's own
-  disk, and its refusals name what to do, sometimes a `jj` command to run against the issue's
-  clone (a local bookmark deleted and never pushed, or a conflicted one). Read it with
+- **The `workspace-init` container fails.** It provisions the issue's workspace on the pod's disk
+  (the pod's own, or a kept volume, below), and its refusals name what to do, sometimes a `jj`
+  command to run against the issue's clone (a local bookmark deleted and never pushed, or a
+  conflicted one). Read it with
 
   ```sh
   kubectl -n legion logs <pod> -c workspace-init
@@ -1169,16 +1179,35 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   Nothing is registered before a refusal, so every later attempt in that pod refuses the same way.
   A pod whose `workspace-init` refuses runs no `roles` container, so there is no shell in which to
   run the commands it names; the remedy is letting the pod be replaced, and the issue's next launch
-  provisions a fresh clone and workspace from its pushed branch on a disk of its own. Run no `jj`,
-  `git` or `omp` in a running issue pod either: any role can plant configuration in its clone or
-  workspace that starts a program with every role's credentials in reach (`docs/kubernetes.md` in
-  the repository, "A shell on an issue's disk").
+  provisions a fresh clone and workspace from its pushed branch on a disk of its own, except on a
+  kept volume (below). Run no `jj`, `git` or `omp` in a running issue pod either: any role can
+  plant configuration in its clone or workspace that starts a program with every role's
+  credentials in reach (`docs/kubernetes.md` in the repository, "A shell on an issue's disk").
+
+  On a kept volume (`runtime.kubernetes.sandbox.microvm.keep_volume`), a failure of an init
+  container can come from the volume itself. So the issue's next launch gives the issue a new,
+  empty volume, except in these cases, which keep the volume:
+
+  - The container exited with code 2 or 3.
+  - The container ended as `OOMKilled`, or as `ContainerStatusUnknown`, which the kubelet writes
+    when the node or its container runtime restarts.
+  - The pod is being deleted.
+  - The kubelet ended the pod itself, for example in an eviction for node pressure or for a
+    storage limit, or in a graceful node shutdown.
+
+  The full rule is in `docs/kubernetes.md` in the repository ("A kept volume on a microVM pod",
+  "The reset").
 - **An issue's work is gone after its pod was replaced.** That is the shape of the runtime, not a
   failure: an issue's disk is its pod's own and is deleted with the pod, so a stop, a close, a
   node loss or a launch that replaces the pod takes the workspace with it. What survives is what
   was pushed to `legion/<issue>` and each role's conversation, which lives in the session
   database; the next pod provisions the workspace from that branch, and the agent is told its
   workspace is newer than its conversation before its next turn.
+  A microVM issue pod under `runtime.kubernetes.sandbox.microvm.keep_volume` is the exception: its
+  volume stays through a node loss and a replacement of the pod, and the next pod finds the
+  workspace as the last pod left it. That volume goes when the issue leaves the workflow, when its
+  disk's shape changes, or when the daemon resets it after a failed init container
+  (`docs/kubernetes.md` in the repository, "A kept volume on a microVM pod").
 - **`worker-stream: rejected hello (stale worker generation)`** in the daemon's log is the fence
   working: a pod from an older generation of a claim tried to connect after a newer one replaced it.
   Nothing to do.
@@ -1191,7 +1220,12 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   (`worker_boot_timeout_seconds × worker_boot_registration_deadline_intervals`, 6 minutes at the
   defaults), often because the registration's answer never reached it. The daemon resumes the same
   session one generation later and counts a launch failure; after `launch_failure_limit` of them
-  the claim fails.
+  the claim fails. The line carries `claim`, and `launchFailure` with `limit`, the launch failure
+  this retirement counts and the limit it counts toward. A daemon-launched controller whose Envoy
+  role claim the listener keeps answering `503` at its start lands here, and its waits are in the
+  Oh My Pi log of its session; a controller whose Oh My Pi session changed is refused when it
+  registers the new session (`SameAgentRefusal`, `409`), exits, and is relaunched on its recorded
+  session.
   While the tree's cleanup is reserved (the tree is closing), the retirement waits: the process is
   kept, nothing is counted, and the deadline is tried again at the probe interval
   (`probe_interval_seconds`, 30 seconds at the default). Each try logs **`supervise: timer`** at

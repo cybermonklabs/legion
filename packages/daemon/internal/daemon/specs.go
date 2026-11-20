@@ -493,6 +493,19 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 // tree root, and for a claim on any other issue the end of the owner walk read at the launch. The
 // architect of such an issue, a sub-architect, owns that issue itself, so its architect is the one
 // above it, and the sentence names it that way.
+//
+// The copy of the claim a launch is built from (supervise's spawnSpec) can carry two marks, and
+// each adds a sentence. A launch that follows a forget (c.SessionLost) starts a fresh session on a
+// claim that had one, and is told so in words the forget's cause chooses, which name the session
+// forgotten (c.Abandoned.Session) where the cause is not that no store holds it. A launch that has
+// Oh My Pi resume the session by its id itself, through a pod launcher older than the lookup
+// (c.AgentResumeGeneration equal to c.Generation, which only that launch's copy has), is told that
+// its workspace may have been recreated: that launcher reads no row of the session, so its word
+// that the workspace was not recreated was not checked (dispatch://INFRA-4108 R3). The guidance is
+// that of the plugin's own notice of a recreated workspace
+// (packages/pi-shared/src/workspace-recreated.ts). Each sentence that names a session quotes its id
+// as a Go string (%q), as the workflow's message of a forgotten session does: the id is what an
+// agent's registration chose, and the quotes bound it in a text the agent reads.
 func addressingFragment(project string, c supervise.Claim, architect claim.Token, repo ghrepo.Repository, defaultBranch string, owners []string) string {
 	owner := "the architect that owns your issue is"
 	if c.Role == claim.RoleArchitect && !claim.IsTreeRoot(c.Issue, c.Tree) {
@@ -501,14 +514,33 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 	fragment := fmt.Sprintf("Legion addressing: your role topic is `%s%s`; %s `%s%s`; "+
 		"the project's controller is `%s%s`; a sibling role on your issue is your topic with the trailing `-<role>` replaced.",
 		notify.RoleTopicPrefix, c.Token, owner, notify.RoleTopicPrefix, architect, notify.RoleTopicPrefix, claim.ControllerToken(project))
-	if c.SessionLost {
-		// The agent this launch starts is a fresh session on a claim that had one: nothing in it
-		// says an earlier session existed, so it would read an empty transcript as a fresh start
-		// and redo work that is already pushed (dispatch://INFRA-714 R8).
+	// The agent a launch after a forget starts is a fresh session on a claim that had one: nothing in
+	// it says an earlier session existed, so it would read an empty transcript as a fresh start and
+	// redo work that is already pushed (dispatch://INFRA-714 R8). A session the launcher could not
+	// look up was not deleted, and a store may hold it still, so its words say neither that it was
+	// lost nor that no store holds it.
+	const readFirst = "Read your issue and the committed handoffs in your workspace before you continue. " +
+		"Then tell the architect named above what you found, unless you are your tree's root architect."
+	switch c.SessionLost {
+	case "":
+	case supervise.SessionLossNotResumedByID:
+		fragment += fmt.Sprintf(" The pod's launcher, which is older than this release, could not look the session %q this claim recorded up by its id, "+
+			"and Oh My Pi did not resume it by that id, so this is a new session: the turns, tool calls and subagents of your earlier work are not in it, "+
+			"and only what you pushed and committed reaches you. ", c.Abandoned.Session) + readFirst
+	case supervise.SessionLossClaudeNoFile:
+		fragment += fmt.Sprintf(" This Claude Code claim recorded the session %q with no transcript file, so the launch could not resume it and this is a new session: "+
+			"the turns, tool calls and subagents of your earlier work are not in it, and only what you pushed and committed survives. ", c.Abandoned.Session) + readFirst
+	default:
 		fragment += " The session this claim recorded was found in no session store, so this is a new session: " +
-			"the turns, tool calls and subagents of your earlier work are gone, and only what you pushed and committed survives. " +
-			"Read your issue and the committed handoffs in your workspace before you continue. " +
-			"Then tell the architect named above what you found, unless you are your tree's root architect."
+			"the turns, tool calls and subagents of your earlier work are gone, and only what you pushed and committed survives. " + readFirst
+	}
+	if c.AgentResumeGeneration != 0 && c.AgentResumeGeneration == c.Generation {
+		fragment += fmt.Sprintf(" This launch has Oh My Pi resume the session %q by its id itself. The pod's launcher is older than this release and did not read "+
+			"when that session was last written, so its word that your workspace was not recreated was not checked: your workspace may have been recreated "+
+			"since the session last ran. If it was, it holds what was pushed to %s (the repository's default branch if nothing was), and anything you had not "+
+			"pushed is gone. Before you continue, check the workspace against what you remember doing, and read the last handoff recorded on %s again with "+
+			"`dispatch handoff-read --issue %s --phase <word>`; Dispatch keeps it, whatever the workspace holds.",
+			c.Session, claim.IssueBranch(c.Issue), c.Issue, c.Issue)
 	}
 	if repo.IsZero() {
 		return fragment

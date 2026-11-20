@@ -1,0 +1,5 @@
+kind: Fixed
+body: A daemon's start no longer exits on three conditions that clear by themselves. A TLS run of the image probe that its own time limit stops at a site an earlier run reached has no verdict and runs once more at two times its limit; `legion probe-image` exits 75 when something has no verdict and nothing failed, and the daemon reads that attempt as transient within the image probe's six attempts. The start opens its store outside the 30-second start budget and tries a connection error again, ten attempts at most, while a refused password or a missing database still stops it at once. A GitHub rate limit on the App logins read or a token mint is waited out until the time GitHub names, at most an hour each, and every rate-limit wait of one start ends 70 minutes after its first.
+time: 2026-11-20T03:58:44.215478635Z
+custom:
+    Issue: pr4574

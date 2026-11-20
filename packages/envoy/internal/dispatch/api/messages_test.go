@@ -2478,7 +2478,10 @@ func TestAMessageSenderPastItsLeaseLeavesTheResumedAttemptsReceiptAlone(t *testi
 // role whose holder has moved since. The attempt the listener already deduplicated under
 // <message>:1 belongs to the session that frame was sent to: re-pointing it at the new holder
 // sends one attempt number to two sessions under one key and leaves the first unable to answer
-// the frame it is holding. A retry that wants the new holder takes an attempt of its own.
+// the frame it is holding. A retry that wants the new holder takes an attempt of its own. The
+// role's new holder, live, may still answer an attempt sent for the role
+// (lookUpRoleHolderReply); once the original recipient has answered, its reply is the attempt's,
+// and the new holder is answered with it.
 func TestAResumedRoleMessageKeepsItsOriginalRecipient(t *testing.T) {
 	roleHolder := "s1"
 	roleLookups := 0
@@ -2544,19 +2547,20 @@ func TestAResumedRoleMessageKeepsItsOriginalRecipient(t *testing.T) {
 		t.Fatalf("role lookups = %d, want only the one the message's creation made", roleLookups)
 	}
 
-	// The session the frame reached answers the attempt it holds; the role's new holder, which
-	// was never sent this attempt, cannot.
+	// The session the frame reached answers the attempt it holds, and its reply is the attempt's;
+	// the role's new holder, live, is answered with that first reply, as a second reply is.
 	reply := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/reply", map[string]any{
 		"actor": map[string]any{"kind": "session", "id": "s1"}, "attempt": 1, "body": "It reached me.",
 	})
 	if reply.Code != http.StatusCreated {
 		t.Fatalf("the original recipient's reply: status=%d body=%s", reply.Code, reply.Body.String())
 	}
-	stolen := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/reply", map[string]any{
+	first := decodeBody[model.Message](t, reply)
+	second := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/reply", map[string]any{
 		"actor": map[string]any{"kind": "session", "id": "s2"}, "attempt": 1, "body": "I hold the role now.",
 	})
-	if stolen.Code != http.StatusForbidden {
-		t.Fatalf("the new holder's reply to an attempt it never received: status=%d body=%s", stolen.Code, stolen.Body.String())
+	if second.Code != http.StatusOK || decodeBody[model.Message](t, second).ID != first.ID {
+		t.Fatalf("the new holder's reply after the first: status=%d body=%s, want 200 with the first reply %s", second.Code, second.Body.String(), first.ID)
 	}
 }
 

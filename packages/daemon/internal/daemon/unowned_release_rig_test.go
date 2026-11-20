@@ -242,7 +242,7 @@ func TestAStartAfterTheReleaseOfAnIssueWithNoLiveClaimMakesThePodAgain(t *testin
 // about the gate; the count of the line the daemon logs at the gate is taken after that wait,
 // so the lines read after the release belong to the ticks that made it. The teardown's own line
 // is written only after the runtime has deleted the pod, its Sandbox and its disk (the outbox's
-// SuspendIssue, then its line), which is what the release wait reads, so the line is waited for
+// ReleaseIssue, then its line), which is what the release wait reads, so the line is waited for
 // rather than read once: read at once, a release that has deleted everything and not yet written
 // its line reads as no release at all, which a loaded run of the whole package met.
 func releasedWithNoLiveClaim(t *testing.T, rig *idleWakeRig, issue idleRigIssue) {

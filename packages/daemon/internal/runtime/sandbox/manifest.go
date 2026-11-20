@@ -128,7 +128,7 @@ var runtimeOwned = func() map[string]bool {
 		"LEGION_STATE_DIR": true, "LEGION_WORKSPACE": true, "ENVOY_NATS_URL": true, "ENVOY_URL": true,
 		"DISPATCH_URL": true, "GH_CONFIG_DIR": true, "GH_TOKEN": true, "GITHUB_TOKEN": true, "GH_HOST": true,
 		"LEGION_GH_OWNERS_DIR": true, "LEGION_GH_PATH": true,
-		"PATH": true, "PI_SHELL_PREFIX": true, "GIT_TERMINAL_PROMPT": true, leakguard.CheckVar: true,
+		"PATH": true, "PI_SHELL_PREFIX": true, "GIT_TERMINAL_PROMPT": true, leakguard.CheckVar: true, leakguard.CheckerVar: true,
 		"XDG_CONFIG_HOME": true, "XDG_CACHE_HOME": true, "XDG_DATA_HOME": true, "XDG_STATE_HOME": true,
 		"TMPDIR": true, "GOCACHE": true, "GOMODCACHE": true, "BUN_INSTALL_CACHE_DIR": true,
 		"POD_UID": true, bootTokenKey + "_FILE": true, dispatchTokenKey + "_FILE": true,
@@ -204,8 +204,8 @@ const slackChannelsVariable = "LEGION_SLACK_CHANNELS"
 
 // machineIdentityVariable and machineTokenFileVariable are the two variables a pod's broker
 // clients read to decide which identity the machine proves and where its token is
-// (packages/broker-client/src/environment.ts's IDENTITY_VAR and MACHINE_TOKEN_FILE_VAR, and
-// packages/envoy/internal/brokerclient's IdentityVar and MachineTokenFileVar), and
+// (packages/cipher-client/src/environment.ts's IDENTITY_VAR and MACHINE_TOKEN_FILE_VAR, and
+// packages/envoy/internal/cipherclient's IdentityVar and MachineTokenFileVar), and
 // kubernetesIdentity the value naming a projected Kubernetes ServiceAccount token. A role is told
 // them where its pod trades (launch.trades), and they are Legion's only where the deployment names
 // an exchange audience (exchangeOwned).
@@ -415,6 +415,37 @@ type keptPod struct {
 	// none, and its role is told neither of Oh My Pi's two session variables rather than a URL
 	// file it cannot read.
 	store ompsessions.StoreKind
+	// checker is the manifest digest of the deployment's leak check this pod's install holds, as
+	// the pod records it (recordedLeakChecker): the digest its template was built under
+	// (leakCheckerAnnotation), the install made at the image's own pin, or else the digest of the
+	// tarball the daemon served into it (leakCheckPushedAnnotation); and so the one its role is
+	// told (launch.leakChecker). recorded is whether the pod records one at all. A pod that records
+	// none was built under no setting, or by a daemon before the record: its role is told none where
+	// its launcher holds an install from before, which a daemon of a release before the setting
+	// pushed and hashed nothing of. Where it holds none, serveLeakCheck records the manifest of the
+	// served tarball for the reconnected session, then tells that digest to the role.
+	checker  string
+	recorded bool
+}
+
+// leakCheckerAnnotation records on a pod template's metadata the manifest digest of the
+// deployment's leak check (Options.LeakCheckSetting's ManifestSHA256) the pod was built under,
+// written where the template is built (podTemplate) and only under a configured setting. A pod's
+// install is made once, at its own image's pin, so a pod kept after the deployment moved its pin
+// and its digest together holds the install of the old pin, whose digest is the old one. A role
+// started in such a pod is told the digest its pod was built under (keptPod.checker), so its shim
+// starts against the install its pod holds, and it can push its work and answer the update round
+// that replaces the pod (leakCheckDrift), where told the digest now it would start no agent at all.
+const leakCheckerAnnotation = "legion.dev/leak-checker-manifest-sha256"
+
+// leakChecker is the manifest digest this launch's generation is told (leakguard.CheckerVar): the
+// one the live pod it keeps records (keptPod.checker), and the deployment's own for a launch that
+// builds the pod itself. "" tells none.
+func (l launch) leakChecker(r *Runtime) string {
+	if l.kept != nil {
+		return l.kept.checker
+	}
+	return r.leakCheck.ManifestSHA256
 }
 
 // enrollsIn is the one decision whether a generation of role started now in a pod holds the
@@ -603,7 +634,11 @@ func (l launch) runsClaude() bool { return runtime.Of(l.spec.Backend) == runtime
 // issue's (SandboxConfig.Of), and the controller's pod runs in gVisor whatever the configuration
 // names. The system prompt is composed here (runtime.ComposePrompt), and a prompt whose start
 // frame no launcher would read is refused here too (runtime.PromptTooLarge, wrapped so the
-// supervisor can tell it from a launch that failed).
+// supervisor can tell it from a launch that failed). So is a Claude Code spec that names its
+// session by its id alone (ResumeSession), whoever was to resolve that id: a Claude Code claim's
+// recorded session is its transcript's path, which the id is read from (claudelaunch.ResumeSession),
+// and supervise forgets a Claude Code session recorded with no file rather than look it up, so no
+// Claude Code command is started on an id it would find no transcript of.
 func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 	if err := runtime.ValidateSpawnSpec(spec, r.specOwned()); err != nil {
 		return launch{}, err
@@ -622,6 +657,9 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 		l.microVM = r.sandboxConfig.MicroVM
 	}
 	if l.runsClaude() {
+		if spec.ResumeSession != "" {
+			return launch{}, refuse("a Claude Code claim resumes its session from its recorded transcript, never by the session id %s alone", spec.ResumeSession)
+		}
 		mcp, err := claudelaunch.MCPConfig(claudeBun, claudePluginDir, claudeConfigDir(spec.Role))
 		if err != nil {
 			return launch{}, refuse("its Claude Code MCP configuration: %v", err)
@@ -704,7 +742,10 @@ func SessionFromVolume(file, root string) (string, error) {
 // agentArgv is the command the shim runs, the launch's own harness: the Claude Code command for a
 // Claude role (claudeArgv), and otherwise the image's Oh My Pi with its two explicit extensions,
 // the Envoy plugin first, `--model @default` so the session runs the model the pod's overlay puts
-// on the `default` role, `--resume` on the recorded session when resuming, then RPC mode and
+// on the `default` role, `--resume` on the session being resumed — the recorded file, or for a
+// claim that records no file the session's id (ResumeSession), which the launcher replaces with the
+// file it looks up where it was told the id (launcherCommand) and which Oh My Pi resolves itself
+// where the launch has the agent resolve it (ResumeByAgent) — then RPC mode and
 // `--append-system-prompt` naming the file the launcher writes the launch's system prompt to
 // (systemPromptPath), never the text: Oh My Pi 18.16.0 reads a value with no newline as a path
 // and appends that file's contents, so the prompt meets no argv bound however long the
@@ -742,8 +783,11 @@ func (l launch) agentArgv(agent []string) []string {
 		envoy, legion = pluginRoots(pluginGenDir(roleStateHome(l.spec.Role), l.spec.Generation))
 	}
 	argv := append(slices.Clone(agent), "--extension", envoy, "--extension", legion, "--model", "@default")
-	if l.spec.ResumeSessionFile != "" {
+	switch {
+	case l.spec.ResumeSessionFile != "":
 		argv = append(argv, "--resume="+l.spec.ResumeSessionFile)
+	case l.spec.ResumeSession != "":
+		argv = append(argv, "--resume="+l.spec.ResumeSession)
 	}
 	return append(argv, "--mode", "rpc", "--append-system-prompt", systemPromptPath(l.spec.Generation))
 }
@@ -772,23 +816,30 @@ func (l launch) claudeArgv() []string {
 // labels are the pod's resource labels, as its kind gives them (podKind.labels).
 func (r *Runtime) labels(l launch) map[string]string { return l.kind.labels(r.project, l) }
 
-// diskSpec is the claim of a pod's disk, wherever it is declared: ReadWriteOnce on the launch's
-// StorageClass at the operator's size (runtime.kubernetes.issue_volume). The class is the microVM
-// block's for a microVM pod (MicroVM.StorageClass) and the operator's
-// runtime.kubernetes.storage_class for every other, the controller's included, so whatever
-// declares an issue's disk takes its class from here. The controller's Sandbox declares it as the
-// claim template it owns, an issue pod as the template of its own ephemeral volume, so the two
-// disks are provisioned alike and differ only in who deletes them.
+// diskSpec is the claim of l's pod's disk, wherever it is declared: claimSpec of the runtime's
+// storage class and volume size, for the launch's microVM block (nil for a gVisor pod). The
+// controller's Sandbox declares it as the claim template it owns, and so does the Sandbox of an
+// issue whose pod keeps its volume (keptVolume). Every other issue pod declares it as the template
+// of its own ephemeral volume. So the disks are provisioned alike and differ only in who deletes
+// them.
 func (r *Runtime) diskSpec(l launch) corev1.PersistentVolumeClaimSpec {
-	storageClass := r.storageClass
-	if l.microVM != nil {
-		storageClass = l.microVM.StorageClass
+	return claimSpec(r.storageClass, r.volumeSize, l.microVM)
+}
+
+// claimSpec is the claim of a pod's disk: ReadWriteOnce at size (runtime.kubernetes.issue_volume),
+// on the microVM block's StorageClass for a microVM pod (MicroVM.StorageClass, microVM not nil)
+// and on storageClass (runtime.kubernetes.storage_class) for every other, the controller's
+// included. Whatever declares an issue's disk takes its class from here: a launch (diskSpec) and
+// the boot census, which runs before any runtime is built (IssueDisks.templates).
+func claimSpec(storageClass string, size resource.Quantity, microVM *MicroVM) corev1.PersistentVolumeClaimSpec {
+	if microVM != nil {
+		storageClass = microVM.StorageClass
 	}
 	return corev1.PersistentVolumeClaimSpec{
 		AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 		StorageClassName: &storageClass,
 		Resources: corev1.VolumeResourceRequirements{
-			Requests: corev1.ResourceList{corev1.ResourceStorage: r.volumeSize},
+			Requests: corev1.ResourceList{corev1.ResourceStorage: size},
 		},
 	}
 }
@@ -797,12 +848,14 @@ func (r *Runtime) diskSpec(l launch) corev1.PersistentVolumeClaimSpec {
 // before the claim's Secret is written, with whatever volume its kind has the Sandbox own
 // (podKind.disk). An issue's Sandbox owns none: its pod's disk is a generic ephemeral
 // volume the pod itself owns, created with the pod and deleted with it (INFRA-80), so nothing of
-// an issue survives the pod that did it. The controller's Sandbox still owns its one `issue`
-// template, so the working root its launcher runs in outlives the pod that left it. Its pod
-// template never runs: the relaunch's Running patch replaces it with the template the launch
-// computes before the controller creates a pod. Its metadata is a name, a namespace and the
-// launch's labels, and no annotation: the one a Sandbox is ever created carrying — the pod a
-// migrating launch displaced — is set on the object by that launch (replaceSupersededSandbox).
+// an issue survives the pod that did it. The one exception is an issue whose microVM pod keeps its
+// volume (keptVolume): its Sandbox owns the one `issue` template, labelled kept, and the claim
+// made from it outlives the issue's pods until the Sandbox goes. The controller's Sandbox still
+// owns its one `issue` template, so the working root its launcher runs in outlives the pod that
+// left it. Its pod template never runs: the relaunch's Running patch replaces it with the template
+// the launch computes before the controller creates a pod. Its metadata is a name, a namespace and
+// the launch's labels, and no annotation: the one a Sandbox is ever created carrying — the pod a
+// replacing launch displaced — is set on the object by that launch (replaceSupersededSandbox).
 func (r *Runtime) sandboxManifest(l launch) sandbox {
 	templates, _ := l.kind.disk(r, l)
 	return sandbox{
@@ -816,19 +869,21 @@ func (r *Runtime) sandboxManifest(l launch) sandbox {
 }
 
 // podTemplate is the pod a launch runs (decisions 7 and 10). Every pod mounts one disk at the same
-// volume name (issueVolume), from the source its kind gives it (podKind.disk): an issue
-// pod's is its own ephemeral claim, made with the pod and deleted with it, the controller's the
-// claim its Sandbox owns and that outlives every pod it makes. The pod runs as the operator's
-// ServiceAccount (the namespace's default when the operator names none), and its launcher
-// containers mount the providers Secret's configured keys and the operator's mounts, are told the
-// operator's variables, and start Oh My Pi on the pod's baseline (`--pod-safety`,
+// volume name (issueVolume), from the source its kind gives it (podKind.disk): an issue pod's is
+// its own ephemeral claim, made with the pod and deleted with it, or, where the pod keeps its
+// volume (keptVolume), the kept claim its Sandbox owns and that outlives the pod; the
+// controller's is the claim its Sandbox owns and that outlives every pod it makes. The pod runs as
+// the operator's ServiceAccount (the namespace's default when the operator names none), and its
+// launcher containers mount the providers Secret's configured keys and the operator's mounts, are
+// told the operator's variables, and start Oh My Pi on the pod's baseline (`--pod-safety`,
 // internal/podsafety). Its init containers and the volumes only they mount are its kind's
 // (podKind). Beyond the Legion pool's selector and tolerations, and a microVM pod's ComputeClass
-// (placement), it asks nothing of its placement: every pod owns a disk of its own and shares
-// nothing with another pod, so the scheduler puts it wherever the pool has room. The controller
-// applies a template only to the next pod it creates, so the template is rebuilt for every
-// relaunch. Its metadata carries, beside the two stop-eviction annotations, the configuration the
-// pod is built from (podShapeAnnotation, podShape), its kind's in the sandbox the launch runs it in
+// (placement), it asks nothing of its placement: an ephemeral disk is made where the pod is
+// scheduled, so the scheduler puts such a pod wherever the pool has room. A claim that outlives
+// its pods binds each later pod to the zones of its volume. The controller applies a template only
+// to the next pod it creates, so the template is rebuilt for every relaunch. Its metadata
+// carries, beside the two stop-eviction annotations, the configuration the pod is built from
+// (podShapeAnnotation, podShape), its kind's in the sandbox the launch runs it in
 // (launch.shapeKey): the one write of it, so that a later sweep can read what a pod was built from
 // without rebuilding the launch that built it (drift.go). A microVM pod's labels carry
 // labelSandbox beside its kind's, on the template alone, so the Sandbox and its Secrets carry
@@ -866,15 +921,16 @@ func (r *Runtime) podTemplate(l launch) podTemplate {
 	if l.microVM != nil {
 		labels[labelSandbox] = string(SandboxMicroVM)
 	}
+	annotations := map[string]string{
+		doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false",
+		podShapeAnnotation: r.podShapes[l.shapeKey()],
+	}
+	if r.leakCheck.Configured() {
+		annotations[leakCheckerAnnotation] = r.leakCheck.ManifestSHA256
+	}
 	return podTemplate{
-		Metadata: podMetadata{
-			Labels: labels,
-			Annotations: map[string]string{
-				doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false",
-				podShapeAnnotation: r.podShapes[l.shapeKey()],
-			},
-		},
-		Spec: spec,
+		Metadata: podMetadata{Labels: labels, Annotations: annotations},
+		Spec:     spec,
 	}
 }
 
@@ -1445,9 +1501,11 @@ func fetchEnvironment(l launch) []corev1.EnvVar {
 // put there; it carries no tool-path variables, and it is never pointed at the provisioning token.
 // It carries no role's session path either: a missing transcript must not prevent sibling
 // launchers from starting, and no session lives on the disk at all (INFRA-80). It expects nothing
-// of the disk: a pod's disk is created with the pod and empty, so every provision is the first.
-// Nothing here sizes a wait on another pod: each issue pod provisions its own clone on its own
-// disk, so no two provisions share a repository.
+// of the disk. A pod's own ephemeral disk is created with the pod and empty, so its provision is
+// the first. A kept volume (keptVolume) holds the clone and the workspace that the issue's
+// earlier pods left, and its provision reuses what the volume holds (workspace.Provision). Nothing
+// here sizes a wait on another pod: each issue pod provisions its own clone on the issue's own
+// disk, which no other pod mounts at the same time, so no two provisions share a repository.
 func (r *Runtime) initEnvironment(launch) []corev1.EnvVar {
 	return append([]corev1.EnvVar{{Name: "PATH", Value: imagePath}}, xdgEnvironment()...)
 }
@@ -1481,8 +1539,10 @@ func (r *Runtime) ProvisionBound() time.Duration {
 // LaunchBound satisfies runtime.Runtime: the longest one launch try may run once it holds its
 // pod's launch turn (relaunch), the sum of a replacing try's waits and of its bounded calls at
 // their full budgets (launchBound): the boot timeout three times — ensureSandbox's wait for a
-// Sandbox being deleted, awaitPodGone, awaitNewPod — then awaitRoleLauncher's backstop, twice the
-// boot timeout plus ProvisionBound and two recheck intervals (launcherBackstop), then the
+// Sandbox being deleted, awaitPodGone, awaitNewPod — then awaitRoleLauncher's backstop, the
+// longest start bound a pod of the runtime gets (startBound: the kept-volume bound where the
+// microvm block keeps an issue pod's volume and that bound is longer, the boot timeout otherwise)
+// plus the boot timeout, ProvisionBound and two recheck intervals (launcherBackstop), then the
 // termination grace the start frame has past the launcher deadline, then relaunchCalls times
 // apiTimeout for every client call, mint, store read and launcher frame between those waits. The
 // wait for the launch turn itself (lockPod) is outside it: that is another launch's time, bounded
@@ -1554,15 +1614,30 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	add("GIT_TERMINAL_PROMPT", "0")
 	env = append(env, gitConfigEnv()...)
 	// The shared public leak check every write of this role runs first: its `legion gh` and its
-	// pushes each resolve PUBLIC_LEAK_CHECK before anything else
-	// (leakguard's Resolve) and refuse the write when they find no check. The check is not in the
-	// image — it is published by tag, the image carries the pin, and the daemon reads the check at
-	// that pin and pushes it to the pod's launcher, which installs it once for the pod before any
-	// role starts (launchers.serveLeakCheck; each role's shim only reads that install) — so what
-	// is named here is the installed copy, under the scratch the roles of this pod share. The path
-	// is the installer's own constant, so the path a role is told and the path the install writes
-	// are one string and cannot drift (TestEveryRoleIsToldTheLeakCheckItsPodInstalls).
-	add(leakguard.CheckVar, leakguard.InstalledCheck)
+	// pushes each resolve PUBLIC_LEAK_CHECK before anything else (leakguard's Resolve) and, told
+	// the deployment's checker (leakguard.CheckerVar), refuse the write when they find no check.
+	// The check is not in the image — it is published by tag from the repository the deployment
+	// names, the image carries the pin, and the daemon reads the check at that pin and pushes it
+	// to the pod's launcher, which installs it once for the pod before any role starts
+	// (launchers.serveLeakCheck; each role's shim only reads that install) — so what is named here
+	// is the installed copy, under the scratch the roles of this pod share. The path is the
+	// installer's own constant, so the path a role is told and the path the install writes are
+	// one string and cannot drift (TestEveryRoleIsToldTheLeakCheckItsPodInstalls). The digest is
+	// the manifest digest of the check the deployment names (leakguard.Manifest), as the pod the
+	// role starts in was built under (launch.leakChecker): a kept pod holds the install of its own
+	// image's pin, so its role is told the digest that install has; a pod recording none is told
+	// the setting's where its launcher holds no install, since the check pushed into it then is the
+	// setting's, and none where it holds one from before (relaunch). It is the sign, to the shim
+	// and the guard, that the deployment runs a check at all; `legion gh` trusts its read rule
+	// under the program that rule was proven against, whose digest it compiles in, and not under
+	// this digest. A deployment that names none (Options.LeakCheckSetting) tells neither: its pods
+	// are pushed no check, and its roles start without one and refuse no write for its absence.
+	if r.leakCheck.Configured() {
+		add(leakguard.CheckVar, leakguard.InstalledCheck)
+		if checker := l.leakChecker(r); checker != "" {
+			add(leakguard.CheckerVar, checker)
+		}
+	}
 	// The two variables an agent reads to decide it holds a broker at all, gated on the same one
 	// decision as the shim's agent-secrets flags (enrollsIn, launcherCommand): a generation in a
 	// kept pod that carries no enrollment is started with neither the flags nor these, so its
@@ -1573,7 +1648,7 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	}
 	// The identity the broker's exchange trades, gated on the one exchange decision (tradesIn) as
 	// the two above are on the enrollment: the pod's projected token for the exchange's audience,
-	// which the broker clients of every session in the role (packages/broker-client's
+	// which the broker clients of every session in the role (packages/cipher-client's
 	// environment.ts, machineIdentity) trade for a broker token of the session's own.
 	if l.trades(r) {
 		add(machineIdentityVariable, kubernetesIdentity)
@@ -1648,11 +1723,13 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	// A launch that resumes a recorded Oh My Pi session holds its Oh My Pi to that session
 	// (runtime.SessionExclusiveVariable): a resume of a session another live process still holds
 	// exits non-zero after the lease wait rather than moving the role onto a session id the daemon
-	// never recorded. A fresh launch is told nothing of it, and neither is a Claude role, whose
-	// resume is Claude Code's. The name is the runtime's (runtimeOwned), so neither a spec nor an
-	// operator's pod env may set it, and it comes after both. It is plain, so it travels in the
-	// start command alone (launchEnvironment) and changes nothing of the pod.
-	if !l.runsClaude() && spec.ResumeSessionFile != "" {
+	// never recorded. A resume of a session named by its id alone (spec.ResumeSession, the file the
+	// launcher finds or Oh My Pi's own lookup) resumes a recorded session too, so it is held the
+	// same way. A fresh launch is told nothing of it, and neither is a Claude role, whose resume is
+	// Claude Code's. The name is the runtime's (runtimeOwned), so neither a spec nor an operator's
+	// pod env may set it, and it comes after both. It is plain, so it travels in the start command
+	// alone (launchEnvironment) and changes nothing of the pod.
+	if !l.runsClaude() && (spec.ResumeSessionFile != "" || spec.ResumeSession != "") {
 		add(runtime.SessionExclusiveVariable, runtime.SessionExclusiveValue)
 	}
 	return env

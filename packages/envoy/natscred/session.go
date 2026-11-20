@@ -1,5 +1,5 @@
 // Package natscred is the credential a Go NATS client presents to a hub whose connections the
-// auth service admits (internal/broker/natscallout): a session's broker access token beside a
+// auth service admits (internal/cipher/natscallout): a session's broker access token beside a
 // proof of its key over the server's nonce (Session), or a service's platform identity token
 // (Service). Each comes as the nats.Option a connection is dialled with and a Keeper that holds the
 // open connection to a credential the server still admits, reconnecting it before the user the
@@ -15,7 +15,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/cipherclient"
 )
 
 // Keeper holds an open connection to a live credential: it reconnects nc with a fresh one before
@@ -27,12 +27,13 @@ type Keeper interface {
 
 // untilClosed is ctx, ended as well once nc closes, and the stop that ends it and hands nc's
 // status listener back, which each Keep defers: a keeper lives no longer than its connection. It
-// watches nc's own CLOSED status event (Conn.StatusChanged), which nats.go sends on every close
-// (nats.go v1.53.1, close), and not nc's ClosedCB, which an owner can clear (internal/bus clears
+// watches nc's own CLOSED status event (Conn.StatusChanged), which nats.go v1.55.0 sends on every
+// close (nats.go:6242-6321), and not nc's ClosedCB, which an owner can clear (internal/bus clears
 // it on a replacement connection it discards) and which NoCallbacksAfterClientClose skips on the
-// owner's own Close. nats.go puts the event in the listener's buffer without waiting for a reader
-// (sendStatusEvent), so a close that lands while the keeper is busy is kept until it is read; a
-// close before the listener was registered is seen by IsClosed.
+// owner's own Close. StatusChanged allocates a ten-event channel, and sendStatusEvent sends a status
+// only to the listeners of that status and drops an event only while the channel is full
+// (nats.go:6828-6883). This listener is for CLOSED alone, and a connection closes once, so its one
+// CLOSED event is always kept; a close before the listener was registered is seen by IsClosed.
 func untilClosed(ctx context.Context, nc *nats.Conn) (context.Context, func()) {
 	ctx, cancel := context.WithCancel(ctx)
 	closed := nc.StatusChanged(nats.CLOSED)
@@ -68,7 +69,7 @@ const placeholderJWT = "-"
 const signTimeout = 10 * time.Second
 
 // Session is the credential of the session client trades for: its broker access token in the
-// CONNECT's token field, and in the signature field the proof brokerclient.ConnectionProof signs
+// CONNECT's token field, and in the signature field the proof cipherclient.ConnectionProof signs
 // with the client's key over the nonce the server sent this connection. The token is taken once
 // per CONNECT: nats.go asks for the signature (SignatureCB) before the token (TokenHandler), so
 // the signature stores the token it signed for and the token handler answers that one, and a
@@ -76,17 +77,17 @@ const signTimeout = 10 * time.Second
 // IgnoreAuthErrorAbort: a refused credential is retried, not given up on, so a client whose token
 // lapsed while the broker was down connects again once a live one is traded.
 //
-// The Keeper runs the client's renewal loop (brokerclient.Client.Run) and reconnects the
+// The Keeper runs the client's renewal loop (cipherclient.Client.Run) and reconnects the
 // connection on each token it lands that is not the one the connection presented, but for the
 // first when the presented token outlives that one's renewal. The loop trades on its first pass,
 // just after the connection presented a token the client held with more than RenewBefore left
-// (brokerclient.Client.Token), and renews RenewBefore ahead of each token it lands
+// (cipherclient.Client.Token), and renews RenewBefore ahead of each token it lands
 // (Client.RenewalAt). A presented token that lapses after the first token's renewal is kept until
 // the loop's second token, so the connection is not cut for nothing; one that lapses before it
 // moves to the first, since the server would drop the connection at its expiry before the second
 // landed. The service answers a session's user with its token's expiry, so either way the
 // connection moves to a later token before the server drops it.
-func Session(client *brokerclient.Client) (nats.Option, Keeper) {
+func Session(client *cipherclient.Client) (nats.Option, Keeper) {
 	credential := &sessionCredential{
 		key:     client.Key(),
 		current: client.Token,
@@ -101,9 +102,9 @@ func Session(client *brokerclient.Client) (nats.Option, Keeper) {
 // with that token's expiry.
 type sessionCredential struct {
 	key     *ecdsa.PrivateKey
-	current func(context.Context) (*brokerclient.Token, error)
-	run     func(context.Context, func(context.Context, *brokerclient.Token) error) error
-	renewal func(*brokerclient.Token) time.Time
+	current func(context.Context) (*cipherclient.Token, error)
+	run     func(context.Context, func(context.Context, *cipherclient.Token) error) error
+	renewal func(*cipherclient.Token) time.Time
 
 	mu        sync.Mutex
 	presented string
@@ -127,7 +128,7 @@ func (c *sessionCredential) sign(nonce []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("natscred: no broker access token for this session: %w", err)
 	}
-	proof, err := brokerclient.ConnectionProof(c.key, token.AccessToken, string(nonce))
+	proof, err := cipherclient.ConnectionProof(c.key, token.AccessToken, string(nonce))
 	if err != nil {
 		return nil, err
 	}
@@ -155,13 +156,13 @@ func (c *sessionCredential) presentedToken() (string, time.Time) {
 // presented a token, so the first is skipped when the presented token outlives its renewal
 // (Client.RenewalAt): nc then moves at the second, before the presented one lapses. It returns too
 // when the broker refuses the session's identity in a way no retry cures
-// (brokerclient.RefusedError.Permanent): the connection then keeps the user it has until that
+// (cipherclient.RefusedError.Permanent): the connection then keeps the user it has until that
 // expires, and each reconnect after asks the broker again.
 func (c *sessionCredential) Keep(ctx context.Context, nc *nats.Conn) {
 	ctx, stop := untilClosed(ctx, nc)
 	defer stop()
 	first := true
-	_ = c.run(ctx, func(_ context.Context, token *brokerclient.Token) error {
+	_ = c.run(ctx, func(_ context.Context, token *cipherclient.Token) error {
 		presented, expiry := c.presentedToken()
 		outlives := first && expiry.After(c.renewal(token))
 		first = false

@@ -40,16 +40,22 @@ type launchers struct {
 	mu       sync.Mutex
 	sessions map[claim.Token]*launcherSession
 
-	// leakCheck reads the shared public leak check a launcher's hello names (Options.LeakCheck);
-	// nil is a daemon that runs with no GitHub App to read it with. leakCheckHop bounds one push
-	// of it to a launcher, leakCheckHopBound outside the tests.
-	leakCheck    LeakCheckReader
-	leakCheckHop time.Duration
+	// leakCheckSetting is the deployment's shared public leak check (Options.LeakCheckSetting);
+	// the zero Setting is a deployment that runs none, whose launchers are pushed nothing.
+	// leakCheck reads the check a launcher's hello names (Options.LeakCheck); nil under a
+	// configured setting is a daemon that runs with no GitHub App to read it with. leakCheckHop
+	// bounds one push of it to a launcher, leakCheckHopBound outside the tests.
+	leakCheckSetting leakguard.Setting
+	leakCheck        LeakCheckReader
+	leakCheckHop     time.Duration
 	// saved is the bundle an issue's last release left and restored the confirmation that drops
 	// it, the daemon's store behind both (Options.SavedWorkspaceBundle, WorkspaceBundleRestored).
-	// A launchers built without the pair restores nothing.
+	// A launchers built without the pair restores nothing. held drops a bundle that a pod's own
+	// kept volume holds already (Options.HeldWorkspaceBundle). A launchers built without it takes
+	// the bundle for every pod.
 	saved    runtime.SavedWorkspaceBundle
 	restored runtime.WorkspaceBundleRestored
+	held     runtime.HeldWorkspaceBundleDrop
 	// guardKilled takes a memory guard's report of one process it ended into the daemon's fact
 	// path (Options.MemoryGuardKilled). A launchers built without it reads the frame, logs that
 	// no receiver took it, and drops it (memoryKilled).
@@ -77,8 +83,17 @@ type launcherSession struct {
 	// apart by its uid and not by this, so a role relaunched in the pod being released spends
 	// nothing.
 	podCreated time.Time
-	id         string
-	podUID     string
+	// keptSince is when the API server created this launcher's pod's Sandbox, where that Sandbox
+	// owns the issue's kept volume (ownsKeptVolume), and the zero time for a pod on a volume of its
+	// own. A Sandbox created before a release's save holds the volume the work was taken off, so
+	// its pod takes no saved work, and the store drops the bundle (restoreWorkspace).
+	keptSince time.Time
+	id        string
+	podUID    string
+	// resumesBySession is whether this launcher's hello said it can look a session up by its id
+	// and resume the file it finds (shimwire.LauncherHello.ResumesBySession). A launcher built
+	// before it could says nothing, and relaunch names it no session by its id alone.
+	resumesBySession bool
 
 	mu      sync.Mutex
 	conn    net.Conn
@@ -95,19 +110,20 @@ type launcherSession struct {
 	leakCheckInstalled bool
 }
 
-func newLaunchers(leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored,
-	guardKilled runtime.MemoryGuardKilled, volume runtime.VolumeReported, log *slog.Logger) *launchers {
-	return &launchers{sessions: map[claim.Token]*launcherSession{}, leakCheck: leakCheck, leakCheckHop: leakCheckHopBound,
-		saved: saved, restored: restored, guardKilled: guardKilled, volume: volume, log: log}
+func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored,
+	held runtime.HeldWorkspaceBundleDrop, guardKilled runtime.MemoryGuardKilled, volume runtime.VolumeReported, log *slog.Logger) *launchers {
+	return &launchers{sessions: map[claim.Token]*launcherSession{}, leakCheckSetting: setting, leakCheck: leakCheck, leakCheckHop: leakCheckHopBound,
+		saved: saved, restored: restored, held: held, guardKilled: guardKilled, volume: volume, log: log}
 }
 
-// accept registers a launcher connection of the pod of issue, created at podCreated. The newest
-// authenticated connection for a role wins: a half-open predecessor is closed so its pending
-// requests fail instead of waiting forever.
-func (d *launchers) accept(token claim.Token, issue string, podCreated time.Time, hello shimwire.LauncherHello) *launcherSession {
-	s := &launcherSession{owner: d, token: token, issue: issue, podCreated: podCreated, id: hello.LauncherID, podUID: hello.PodUID,
+// accept registers a launcher connection of the pod of issue, created at podCreated, whose
+// Sandbox owns the issue's kept volume since keptSince (the zero time for a pod on a volume of its
+// own). The newest authenticated connection for a role wins: a half-open predecessor is closed so
+// its pending requests fail instead of waiting forever.
+func (d *launchers) accept(token claim.Token, issue string, podCreated, keptSince time.Time, hello shimwire.LauncherHello) *launcherSession {
+	s := &launcherSession{owner: d, token: token, issue: issue, podCreated: podCreated, keptSince: keptSince, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
-		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled}
+		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled, resumesBySession: hello.ResumesBySession}
 	d.mu.Lock()
 	old := d.sessions[token]
 	d.sessions[token] = s
@@ -231,6 +247,24 @@ func (d *launchers) state(token claim.Token, podUID string) (shimwire.LauncherSt
 	return session.state, true
 }
 
+// resumesBySession is whether the launcher of token connected from podUID, the one state reads,
+// said in its hello that it can look a session up by its id and resume the file it finds
+// (launcherSession.resumesBySession). It is false where no launcher of that pod is connected, as
+// for one built before it could: relaunch names a session by its id alone only to a launcher
+// known to make the lookup. Any other would ignore the id and start Oh My Pi on the bare
+// `--resume=<id>`, a launch the supervisor did not build as one (runtime.SpawnSpec.ResumeByAgent).
+func (d *launchers) resumesBySession(token claim.Token, podUID string) bool {
+	d.mu.Lock()
+	session := d.sessions[token]
+	d.mu.Unlock()
+	if session == nil || session.podUID != podUID {
+		return false
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return !session.closed && session.resumesBySession
+}
+
 func (d *launchers) await(ctx context.Context, token claim.Token, podUID string) (*launcherSession, error) {
 	for {
 		d.mu.Lock()
@@ -262,6 +296,13 @@ func (d *launchers) request(ctx context.Context, token claim.Token, podUID strin
 	if err != nil {
 		return nil, nil, fmt.Errorf("launcher %s did not connect: %w", token, err)
 	}
+	return d.requestSession(ctx, session, frame, id)
+}
+
+// requestSession sends one frame to session itself. A reconnect after the caller decided what that
+// session receives is a refusal rather than a send to its successor: the successor may hold a
+// different install, so it must make the decision and receive the push from the beginning.
+func (d *launchers) requestSession(ctx context.Context, session *launcherSession, frame shimwire.Frame, id string) (shimwire.Frame, *launcherSession, error) {
 	waiter := make(chan shimwire.Frame, 1)
 	session.mu.Lock()
 	if session.closed || session.write == nil {
@@ -273,7 +314,7 @@ func (d *launchers) request(ctx context.Context, token claim.Token, podUID strin
 	if until, ok := ctx.Deadline(); ok && until.Before(deadline) {
 		deadline = until
 	}
-	err = session.conn.SetWriteDeadline(deadline)
+	err := session.conn.SetWriteDeadline(deadline)
 	if err == nil {
 		stopCancel := context.AfterFunc(ctx, func() { _ = session.conn.Close() })
 		err = session.write.WriteFrame(frame)
@@ -296,10 +337,9 @@ func (d *launchers) request(ctx context.Context, token claim.Token, podUID strin
 			return nil, nil, errors.New("launcher connection closed before its answer")
 		}
 		d.mu.Lock()
-		current := d.sessions[token]
-		sameProcess := current != nil && current.podUID == podUID && current.id == session.id
+		current := d.sessions[session.token]
 		d.mu.Unlock()
-		if !sameProcess {
+		if current != session {
 			return nil, nil, errors.New("launcher process changed before its answer was confirmed")
 		}
 		return answer, session, nil
@@ -308,12 +348,26 @@ func (d *launchers) request(ctx context.Context, token claim.Token, podUID strin
 	}
 }
 
+func (d *launchers) current(session *launcherSession) bool {
+	d.mu.Lock()
+	current := d.sessions[session.token]
+	d.mu.Unlock()
+	if current != session || session.podUID == "" {
+		return false
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return !session.closed
+}
+
 // startRefusal is a Start the launcher answered OK: false, without starting the generation: the one
 // start error after which no child of that generation can be running (stopIssuedChild). A refusal
-// over the session it was asked to resume carries the launcher's own verdict as its kind
-// (shimwire.SessionRefusal); this is the one place that kind becomes the sentinel the supervisor
-// acts on, so a lost session and a store that could not be asked reach it as they do from the tmux
-// runtime (runtime.ErrSessionFileMissing, runtime.ErrSessionStore).
+// over the session it was asked to resume, by its file or by its id alone, carries the launcher's
+// own verdict as its kind (shimwire.SessionRefusal); this is the one place that kind becomes the
+// sentinel the supervisor acts on, so a lost session and a store that could not be asked reach it
+// as they do from the tmux runtime (runtime.ErrSessionFileMissing, runtime.ErrSessionStore). A
+// session the launcher's table holds no row of under the id it was named by is as gone as a file
+// the table does not hold, and the launcher answers both shimwire.SessionGone.
 type startRefusal struct {
 	token      claim.Token
 	generation uint64
@@ -335,22 +389,13 @@ func (e startRefusal) Unwrap() error {
 	return nil
 }
 
-func (d *launchers) start(ctx context.Context, token claim.Token, podUID string, command shimwire.LauncherStart) error {
-	// The shared public leak check goes over before anything else, and a launcher that could not
-	// install it starts nothing: every write of the role resolves the check first and its shim
-	// refuses to start the agent without the install (leakguard.Installed), so a start sent
-	// anyway would be a role that fails at once. The refusal leaves the saved workspace bundle
-	// in the store, since a bundle taken here would spend its one restore attempt on a pod no role
-	// of which ran.
-	if err := d.serveLeakCheck(ctx, token, podUID); err != nil {
-		return err
-	}
-	// The work the release took off the pod this one replaces goes over next: the launcher holds
-	// the bundle and restores it into the workspace before it runs the role's command, so the
-	// restore has to be in its hands before any generation of the pod is started, this one
-	// included (internal/launcher's bundleRestore). It never stops the start.
+func (d *launchers) start(ctx context.Context, token claim.Token, podUID string, session *launcherSession, command shimwire.LauncherStart) error {
+	// serveLeakCheck chose this exact session and installed the check before the command was built.
+	// The start stays on it: a replacement session has not received that push, so this launch
+	// refuses and the supervisor retries from the new hello rather than starting a role without
+	// the checker its environment names.
 	d.restoreWorkspace(ctx, token, podUID)
-	answer, _, err := d.request(ctx, token, podUID, command, command.ID)
+	answer, _, err := d.requestSession(ctx, session, command, command.ID)
 	if err != nil {
 		return err
 	}
@@ -379,63 +424,72 @@ func (d *launchers) start(ctx context.Context, token claim.Token, podUID string,
 // start is answered Installed at once.
 const leakCheckHopBound = 2 * time.Minute
 
-// serveLeakCheck pushes the shared public leak check to token's launcher in podUID and waits for
-// the launcher to install it, before any start frame or bundle slice reaches that launcher
-// (start). The tag is the launcher's own pin, which its hello named; the daemon reads the check
-// at that tag (Options.LeakCheck) and the launcher installs it once for its pod, for every role's
-// shim to read.
-//
-// Nothing is sent to a launcher whose hello named no tag: it takes no check from the daemon,
-// and its roles start as they always have. Nothing is sent either to one that holds the tag
-// installed, as its hello said or as its answer on this connection did, so a later start of the
-// role and a daemon that restarts push nothing to a running pod.
-//
-// Every other outcome but an install is a runtime.LeakCheckRefusal, whose cause sentence
-// (leakguard.Cause) says why: the daemon holds no credential to read the check, its read was
-// refused, the launcher refused a slice or the install, the connection failed, or the hop ran
-// past leakCheckHopBound. No start frame has been sent when it refuses.
-func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUID string) error {
-	// A launcher that never arrives is the start's own error to report, not this hop's.
+// serveLeakCheck reads, records and pushes the shared public leak check for token's exact
+// launcher session. prepare decides the digest the role will be told from the served body after
+// that session has connected and before its first slice goes over; it may persist that decision.
+// A replacement session at any point refuses the launch, so no role starts on a session the
+// decision did not cover.
+func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUID string,
+	prepare func(*launcherSession, leakguard.Served) (string, error),
+) (*launcherSession, error) {
+	refuse := func(what string, err error) error {
+		return runtime.LeakCheckRefusal{Cause: leakguard.Cause(what, err)}
+	}
+	// A launcher that never arrives is the launch's own failure, not the check's: a deployment
+	// that names no check refuses nothing for it, and the deadline it ran out on stays in the
+	// error's chain, which relaunch notes as the try's bound (boundRanOut). No digest is decided
+	// before the session that would receive the push exists.
 	session, err := d.await(ctx, token, podUID)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("launcher %s did not connect: %w", token, err)
 	}
 	tag := session.leakCheckTag
 	session.mu.Lock()
 	installed := session.leakCheckInstalled
 	session.mu.Unlock()
-	if tag == "" || installed {
-		return nil
-	}
-	refuse := func(what string, err error) error {
-		return runtime.LeakCheckRefusal{Cause: leakguard.Cause(what, err)}
+	if tag == "" || installed || !d.leakCheckSetting.Configured() {
+		return session, nil
 	}
 	if d.leakCheck == nil {
-		return refuse("the daemon runs with no GitHub App, so it cannot read "+leakguard.CheckSlug, nil)
+		return nil, refuse("the daemon runs with no GitHub App, so it cannot read "+d.leakCheckSetting.Repository.String(), nil)
 	}
 	served, err := d.leakCheck.Get(ctx, tag)
 	if err != nil {
-		return refuse(err.Error(), nil)
+		return nil, refuse(err.Error(), nil)
+	}
+	if served.ManifestSHA256 == "" {
+		return nil, refuse("the check the daemon read at "+tag+" has no manifest digest", nil)
+	}
+	if !d.current(session) {
+		return nil, refuse("the pod's launcher reconnected before the shared public leak check could be pushed", nil)
+	}
+	checker, err := prepare(session, served)
+	if err != nil {
+		return nil, refuse("the daemon could not record the shared public leak check it will push", err)
+	}
+	if checker != served.ManifestSHA256 {
+		return nil, refuse(fmt.Sprintf("the check the daemon served at %s has manifest digest %s, but the role would be told %s",
+			tag, served.ManifestSHA256, checker), nil)
 	}
 	hop, cancel := context.WithTimeout(ctx, d.leakCheckHop)
 	defer cancel()
 	for _, frame := range served.Frames {
-		answer, confirmed, err := d.request(hop, token, podUID, frame, bundleWaiter(frame.ID, frame.Index))
+		answer, confirmed, err := d.requestSession(hop, session, frame, bundleWaiter(frame.ID, frame.Index))
 		if err != nil {
 			if hop.Err() != nil && ctx.Err() == nil {
-				return refuse(fmt.Sprintf("the pod's launcher did not answer the install of %s within %s", tag, d.leakCheckHop), nil)
+				return nil, refuse(fmt.Sprintf("the pod's launcher did not answer the install of %s within %s", tag, d.leakCheckHop), nil)
 			}
-			return refuse(fmt.Sprintf("the pod's launcher did not answer the install of %s", tag), err)
+			return nil, refuse(fmt.Sprintf("the pod's launcher did not answer the install of %s", tag), err)
 		}
 		result, ok := answer.(shimwire.LauncherLeakCheckResult)
 		if !ok {
-			return refuse(fmt.Sprintf("the pod's launcher answered slice %d of %s with a %s frame", frame.Index, tag, answer.FrameType()), nil)
+			return nil, refuse(fmt.Sprintf("the pod's launcher answered slice %d of %s with a %s frame", frame.Index, tag, answer.FrameType()), nil)
 		}
 		if err := result.Validate(); err != nil {
-			return refuse(fmt.Sprintf("the pod's launcher answered slice %d of %s with a malformed result", frame.Index, tag), err)
+			return nil, refuse(fmt.Sprintf("the pod's launcher answered slice %d of %s with a malformed result", frame.Index, tag), err)
 		}
 		if !result.OK {
-			return refuse(result.Error, nil)
+			return nil, refuse(result.Error, nil)
 		}
 		if !result.Installed {
 			continue
@@ -446,10 +500,12 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 		confirmed.leakCheckInstalled = true
 		confirmed.mu.Unlock()
 		d.log.Info("launcher leak check: the pod's launcher installed the shared public leak check the daemon read",
-			"launcher", token, "pod", podUID, "tag", tag, "bytes", len(served.Body), "slices", len(served.Frames))
-		return nil
+			"launcher", token, "pod", podUID, "repository", d.leakCheckSetting.Repository.String(), "tag", tag,
+			"manifest_sha256", served.ManifestSHA256, "configured_manifest_sha256", d.leakCheckSetting.ManifestSHA256,
+			"bytes", len(served.Body), "slices", len(served.Frames))
+		return session, nil
 	}
-	return refuse(fmt.Sprintf("the pod's launcher took every slice of %s without installing it", tag), nil)
+	return nil, refuse(fmt.Sprintf("the pod's launcher took every slice of %s without installing it", tag), nil)
 }
 
 // bundleRestoreBound is how long the hop of one pod's saved bundle may take. The 40 MiB a release
@@ -486,13 +542,26 @@ const bundleRestoreBound = 2 * time.Minute
 // sent to it, and nothing is sent to the pod after it either, since its roles go on working and
 // pushing from the workspace its own fetch provisioned. That refusal is this hop's one warning
 // an operator must read — the work is in the database and no pod will put it back on its own.
+//
+// A pod whose own kept volume holds the work takes none of it, and the store drops the bundle
+// first. That pod's Sandbox owns the issue's kept volume and was created before the save
+// (launcherSession.keptSince): the release kept that Sandbox, so the volume is the one the work
+// was taken off. Its launcher would refuse the bundle, because the workspace is older than the
+// save, and log a notice that the work was lost, while the bundle held the issue's pod. The drop
+// sends no slice and keeps the take's rules (store.DropHeldWorkspaceBundle). A drop that finds no
+// such bundle leaves the take to run as for any pod. A drop that fails is logged and the pod is
+// sent nothing, as a take that fails: the row is as it was, and the next start asks again. The
+// drop runs at a role's start, after the pod's launcher connected, and that launcher runs after
+// both init containers of the pod. So a kept volume whose init failed never drops the bundle its
+// reset needs: the reset replaces that Sandbox, and the pod of the new Sandbox restores the work.
 func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, podUID string) {
 	if d.saved == nil || d.restored == nil {
 		return
 	}
 	// The session names the issue its pod is of, as the Secret its launcher authenticated with
-	// did, and when that pod was created, as the API server stamped it. A launcher that never
-	// arrives is the start's own error to report, not this hop's.
+	// did, and when that pod was created, as the API server stamped it. For a pod of a Sandbox
+	// that owns the issue's kept volume, it names when that Sandbox was created too. A launcher
+	// that never arrives is the start's own error to report, not this hop's.
 	session, err := d.await(ctx, token, podUID)
 	if err != nil || session.issue == "" {
 		return
@@ -500,6 +569,19 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 	issue := session.issue
 	restoring, cancel := context.WithTimeout(ctx, bundleRestoreBound)
 	defer cancel()
+	if !session.keptSince.IsZero() && d.held != nil {
+		held, dropped, err := d.held(restoring, issue, podUID, session.keptSince)
+		if err != nil {
+			d.log.Warn("launcher bundle: the saved workspace bundle that this pod's kept volume may hold could not be dropped, so the pod is sent nothing and the bundle stays for the next start",
+				"issue", issue, "launcher", token, "pod", podUID, "volume_created", session.keptSince, "error", err)
+			return
+		}
+		if dropped {
+			d.log.Info("launcher bundle: this pod's kept volume holds the workspace the release's saved work came off, so the saved workspace bundle is dropped and the pod is sent nothing",
+				"issue", issue, "launcher", token, "pod", podUID, "release", held.Release, "volume_created", session.keptSince, "saved", held.At)
+			return
+		}
+	}
 	bundle, take, err := d.saved(restoring, issue, podUID, session.podCreated)
 	if err != nil {
 		d.log.Warn("launcher bundle: the saved workspace bundle could not be taken for this pod's one restore attempt, so the pod starts on what was pushed",
@@ -838,10 +920,16 @@ func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod
 // launcherCommand is the start command a role's launcher receives for one generation: the shim's
 // argv (its flags, then `--`, then the agent's own argv), the generation's plain environment, the
 // launch credentials and files it writes into its private directory, and the session a resume
-// continues. Every launch's Files carry its composed system prompt as runtime.SystemPromptFile,
-// which the launcher writes before the child starts and whose path the agent's argv names, Oh My
-// Pi's and Claude Code's alike (systemPromptPath says where it is and who can read it;
-// runtime.SystemPromptFile why it is a file).
+// continues: its file (ResumeFile), or for a claim that records no file the session's id
+// (ResumeSession), which the launcher looks up in the session table and resumes the file it finds
+// in place of the agent argv's one `--resume=<id>` (agentArgv). A launch that has the agent's own
+// command resolve the id (ResumeByAgent), which supervise makes after relaunch refused to name the
+// id to a launcher that has not said it can look it up, names neither: whatever launcher receives
+// it looks nothing up and starts the child as it starts any child with no ResumeFile, and that
+// child's Oh My Pi resolves the `--resume=<id>` itself. Every launch's Files carry its composed
+// system prompt as runtime.SystemPromptFile, which the launcher writes before the child starts and
+// whose path the agent's argv names, Oh My Pi's and Claude Code's alike (systemPromptPath says
+// where it is and who can read it; runtime.SystemPromptFile why it is a file).
 //
 // The shim is told the pod's stop grace, the same TerminationGrace its launcher runs with, so the
 // wait it makes for an in-flight CodeGraph warm-up on its way out stays inside the grace after
@@ -910,11 +998,15 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 	}
 	agentArgv := startArgv(roleStateHome(l.spec.Role), l.spec.Generation, l.spec.Plugins, claudeDir, r.setup,
 		l.agentArgv(r.agent), installLockWait(r.bootTimeout, r.registrationIntervals))
-	return shimwire.LauncherStart{
+	command := shimwire.LauncherStart{
 		ID: "start-" + fmt.Sprint(l.spec.Generation), Generation: l.spec.Generation,
 		Argv: append(shim, append([]string{"--"}, agentArgv...)...), Env: values, Files: files,
 		ResumeFile: l.spec.ResumeSessionFile,
 	}
+	if !l.spec.ResumeByAgent {
+		command.ResumeSession = l.spec.ResumeSession
+	}
+	return command
 }
 
 // checkStartFrame refuses command, the start l's role would be sent, when the frame that carries
