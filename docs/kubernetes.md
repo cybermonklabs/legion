@@ -2160,7 +2160,7 @@ Its migration `20261120001432_intake_failures` adds two tables and two columns, 
 - `intake_failures` holds each message of a durable consumer whose handling failed, with its subject, its headers and its payload.
   A row is an open failure until a later delivery succeeds or the intake gives the message up, and from then on a given-up record, which a replay or a discard closes and which stays in the table after that.
 
-- `cleared_pull_requests` keeps, for each pull request whose row a new generation's clear deleted, the time of the head the record last held, so a late opened event of that pull request at an older head records nothing.
+- `cleared_pull_requests` keeps, for each pull request whose row a new generation's clear deleted, the newest lifecycle clock the record applied (`head_updated_at`), so a late opened or reopened event of that pull request no newer than that clock records nothing, whatever its head.
 
 - `pull_requests.settled_runs` keeps the newest run of each check for each of the last heads a CI settlement applied on, so an earlier settlement of a head the branch came back to is stale.
 
@@ -2170,7 +2170,8 @@ The earlier release never reads the two tables or the two columns, so the rollba
 That release's own writes leave the two columns as they stand, and a row it creates takes the column's default: an empty list, or null.
 At the roll forward `Migrate` finds the migration's version recorded and applies nothing, and this release reads each table and column as it stands.
 `status_seq` can then stand at a sequence older than the issue's newest status change, which only lets a late approval queue the root, as the earlier release did.
-Under the earlier daemon, `legion intake` and the controller's `replay_give_up` and `discard_give_up` find no route (404), and the state carries no `intakeGiveUps`.
+Under the earlier daemon, `legion intake` finds no route (404), and the state carries no `intakeGiveUps`.
+The controller's `replay_give_up` and `discard_give_up` never reach the earlier daemon: it refuses this release's pi-legion with 409 at `legion controller start` and at the controller's registration, since the two speak different daemon API contracts, and the earlier release's pi-legion has neither tool.
 
 **Two kinds of the project's rows must go before the earlier image is pinned.**
 The first is each unsent `intake-gave-up` controller notice.

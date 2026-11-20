@@ -96,12 +96,13 @@ func (h *pauseHarness) serveWith(svc PauseService) {
 	h.handler = NewServer("127.0.0.1", 8437, options).Handler
 }
 
-// controllerSession registers ses_controller as the project's controller, as `legion controller
-// start` and the session's registration do, and answers a grant that session minted.
-func (h *pauseHarness) controllerSession() string {
+// controllerSession registers the project's controller as the session the constant
+// controllerSession names, as `legion controller start` and the session's registration do, and
+// answers a grant that session minted.
+func (h *harness) controllerSession() string {
 	h.t.Helper()
-	registration := h.registeredController(h.mintedSecret(), "ses_controller")
-	recorder := h.controllerSessionGrant("ses_controller", registration.Secret)
+	registration := h.registeredController(h.mintedSecret(), controllerSession)
+	recorder := h.controllerSessionGrant(controllerSession, registration.Secret)
 	if recorder.Code != http.StatusOK {
 		h.t.Fatalf("the controller session's grant = %d; body %s", recorder.Code, recorder.Body)
 	}

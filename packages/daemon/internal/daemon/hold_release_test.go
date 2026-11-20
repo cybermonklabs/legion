@@ -86,13 +86,13 @@ func TestPollHoldReleaseClosesAHeldRootOnAQuietStreamWithinABound(t *testing.T) 
 	<-done
 }
 
-// A Dispatch event whose handling fails every time once pinned the Dispatch consumer's ack floor
-// below the boot's target for as long as the stream kept the event, and the hold on the listing
-// behind it with it. The intake now gives such an event up at its bound and terminates it once the
-// give-up commits, and the floor's move past it is what releases the hold: pollHoldRelease reads
-// the position as it always has. The consumers here give a message up after 3 deliveries and
-// 300 ms, so the release comes within a second; every look at a released hold finds the give-up
-// committed, since the floor moves only once the message is terminated after that commit.
+// A Dispatch event whose handling fails every time pins the Dispatch consumer's ack floor below
+// the boot's target, and the hold on the listing behind it with it, until the intake gives the
+// event up at its bound and terminates it once the give-up commits: the floor's move past it is
+// what releases the hold, and pollHoldRelease reads only that position. The consumers here give a
+// message up after 3 deliveries and 300 ms, so the release comes within a second; every look at a
+// released hold finds the give-up committed, since the floor moves only once the message is
+// terminated after that commit.
 func TestPollHoldReleaseReleasesOnceTheEventThatPinnedTheFloorIsGivenUp(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -608,8 +608,8 @@ func (f *failingPositionReader) DispatchPosition(context.Context) (intake.Dispat
 
 // Non-blocking: a Dispatch event whose transaction always fails holds the ack floor below it until
 // the intake gives it up, no sooner than an hour after its first failure, so the hold does not
-// release before then and, before this, nothing in the log said why. Once a hold has persisted
-// past a bound, the poll warns on its own schedule — never releasing on the strength of the timer,
+// release before then, and this warning is the line that says why. Once a hold has persisted past
+// a bound, the poll warns on its own schedule — never releasing on the strength of the timer,
 // only naming what it is still waiting for: the target and the current ack floor.
 func TestPollHoldReleaseWarnsWhenAHoldPersistsPastItsBound(t *testing.T) {
 	pool := isolatedOutboxPool(t)

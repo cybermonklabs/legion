@@ -481,7 +481,7 @@ type Notice struct {
 	// the cache trimmer in that pod's launcher reported it. Only that kind carries one.
 	Volume *VolumeNearFull `json:"volume,omitempty"`
 	// Count is how many messages the intake gave up that an intake-gave-up notice counts, and
-	// GiveUps names the first of them, at most giveUpNoticeNames (Postgres.CountIntakeGiveUp). Only
+	// GiveUps names the first of them, at most giveUpNoticeNames (Postgres.countIntakeGiveUp). Only
 	// that kind carries either: the controller reads the rest in the state.
 	Count   int            `json:"count,omitempty"`
 	GiveUps []NoticeGiveUp `json:"giveUps,omitempty"`
@@ -949,7 +949,7 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // An intake-gave-up notice counts the messages the intake gave up while it waited for its
 // publish, and names the first giveUpNoticeNames of them by their records' ids (Count, GiveUps).
 // It carries no role, and its issue is the project key, as a tick's is. The give-up writes it,
-// and only while a controller is registered (Postgres.GiveUpIntakeMessage, CountIntakeGiveUp):
+// and only while a controller is registered (Postgres.GiveUpIntakeMessage, countIntakeGiveUp):
 // the first give-up of a burst opens it, due giveUpNoticeDelay later, each later give-up joins it
 // while no lease holds it, and one that finds it leased opens the next. Nobody inside a tree is
 // told: the message is the intake's, of no issue an architect runs, and the controller replays or

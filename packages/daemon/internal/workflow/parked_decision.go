@@ -290,9 +290,6 @@ func stepRef(key string, step record.DesignStep) string {
 // the newer decision kept under the same document's ref, and of the claim a start holds on it. A
 // gate that records no request, or no gate of the notice's document, says nothing against it.
 func ChangesSuperseded(gates map[record.DesignStep]record.DesignGate, issue string, notice record.Notice) bool {
-	if notice.Kind != "design-changes-requested" {
-		return false
-	}
 	for step, gate := range gates {
 		if stepRef(issue, step) == notice.Ref {
 			return gate.ToldChangesVersion != nil && (*gate.ToldChangesVersion != notice.Version || gate.ToldChangesReason != notice.Reason)

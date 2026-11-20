@@ -375,17 +375,17 @@ func TestEveryIntakeFailuresStatementKeepsItsRow(t *testing.T) {
 			want.DiscardedAt, want.DiscardedBy, want.DiscardReason = later, "operator", "the event is of an issue deleted since"
 			holds(t, st, "DiscardIntakeGiveUps", want)
 		}},
-		{"CountIntakeGiveUp", func(t *testing.T, st *store.Store) {
+		{"countIntakeGiveUp", func(t *testing.T, st *store.Store) {
 			giveUp := NoticeGiveUp{ID: 41, Consumer: "legion-go-LEGION-dispatch", Subject: "notifications.dispatch.issue.LEGION-208.issue.updated"}
 			var id int64
 			inTx(t, st, func(tx pgx.Tx) {
 				var err error
-				id, err = records.CountIntakeGiveUp(ctx, tx, "LEGION", giveUp, at)
+				id, err = records.countIntakeGiveUp(ctx, tx, "LEGION", giveUp, at)
 				must(t, err)
 			})
 			notices := intakeNotices(t, st)
 			if len(notices) != 1 || notices[0].row.ID != id {
-				t.Fatalf("CountIntakeGiveUp answered row %d and the outbox holds %#v, want that one row", id, notices)
+				t.Fatalf("countIntakeGiveUp answered row %d and the outbox holds %#v, want that one row", id, notices)
 			}
 			if want := (ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: []NoticeGiveUp{giveUp}}); !reflect.DeepEqual(notices[0].notice, want) {
 				t.Fatalf("the notice reads %#v, want %#v", notices[0].notice, want)

@@ -50,8 +50,10 @@ func githubEventEnvelope(t *testing.T, id string, fields map[string]any) []byte 
 // decode, each failing where its handling can fail, is terminated at the bound once a given-up
 // record of it has committed. Most fail in the handler; a mapping change fails in the mapping
 // read it makes in no handler (handleMessage); a review and a checks settlement name a pull
-// request the daemon records, since one of any other is acknowledged with no transaction. A fact
-// type decode.go returns later joins this table: the count of types below is the count it holds.
+// request the daemon records, since one of any other is acknowledged with no transaction. The
+// count at the end holds the table to the 19 distinct fact types decode.go returns today; it
+// counts the table, not decode.go, so a fact type decode.go returns later is added to the table,
+// and to the count, by hand.
 func TestEveryFactTypeTheDecoderReturnsIsGivenUpAtTheBound(t *testing.T) {
 	pool := migratedPool(t)
 	recordPullRequest(t, pool, "LEGION-208", 42)

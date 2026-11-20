@@ -78,11 +78,11 @@ type IntakeReplayResponse struct {
 // its replay ended (`applied`, `already applied`, `no fact` or `failed`), and for `failed` the
 // error, which the record keeps as its last error.
 type ReplayedGiveUpView struct {
-	ID        int64  `json:"id"`
-	Consumer  string `json:"consumer"`
-	StreamSeq uint64 `json:"streamSeq"`
-	Outcome   string `json:"outcome"`
-	Error     string `json:"error,omitempty"`
+	ID        int64                `json:"id"`
+	Consumer  string               `json:"consumer"`
+	StreamSeq uint64               `json:"streamSeq"`
+	Outcome   intake.ReplayOutcome `json:"outcome"`
+	Error     string               `json:"error,omitempty"`
 }
 
 // IntakeDiscardResponse is a discard's answer through either door: the id of each record it
@@ -122,7 +122,7 @@ func (s *server) operatorIntakeReplay(w http.ResponseWriter, r *http.Request) {
 func (s *server) operatorIntakeDiscard(w http.ResponseWriter, r *http.Request) {
 	var req OperatorIntakeDiscardRequest
 	if s.readBody(w, r, &req, nil) {
-		s.discardGiveUps(w, r, req.IntakeSelection, req.Reason, operatorCaller)
+		s.discardGiveUps(w, r, req.IntakeSelection, operatorCaller, req.Reason)
 	}
 }
 
@@ -144,7 +144,7 @@ func (s *server) intakeDiscard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if caller, ok := s.giveUpController(w, r, req.GrantID); ok {
-		s.discardGiveUps(w, r, req.IntakeSelection, req.Reason, caller)
+		s.discardGiveUps(w, r, req.IntakeSelection, caller, req.Reason)
 	}
 }
 
@@ -175,20 +175,19 @@ func (s *server) giveUpController(w http.ResponseWriter, r *http.Request, grantI
 // either door. A replay runs to its end when its caller hangs up (intake.GiveUps.Replay), so its
 // answer may reach no one; the log line says what it did either way.
 func (s *server) replayGiveUps(w http.ResponseWriter, r *http.Request, selection IntakeSelection, caller string) {
-	giveUps, ok := s.giveUpsServed(w, "intake replay")
-	if !ok {
+	if s.refusedGiveUps(w, "intake replay") {
 		return
 	}
-	answer, err := giveUps.Replay(r.Context(), selection.selector(), caller)
+	answer, err := s.giveUps.Replay(r.Context(), selection.selector(), caller)
 	if err != nil {
-		s.refuseGiveUps(w, "intake replay", selection, caller, err)
+		s.refuseGiveUps(w, r, "intake replay", selection, caller, err)
 		return
 	}
 	response := IntakeReplayResponse{Replayed: make([]ReplayedGiveUpView, len(answer.Replayed)), Remaining: answer.Remaining}
 	failed := 0
 	for i, replayed := range answer.Replayed {
 		response.Replayed[i] = ReplayedGiveUpView{ID: replayed.ID, Consumer: replayed.Consumer, StreamSeq: replayed.StreamSeq,
-			Outcome: string(replayed.Outcome), Error: replayed.Error}
+			Outcome: replayed.Outcome, Error: replayed.Error}
 		if replayed.Outcome == intake.ReplayFailed {
 			failed++
 		}
@@ -200,14 +199,13 @@ func (s *server) replayGiveUps(w http.ResponseWriter, r *http.Request, selection
 
 // discardGiveUps runs the discard of the give-ups selection names for caller, for reason, and
 // answers it, through either door.
-func (s *server) discardGiveUps(w http.ResponseWriter, r *http.Request, selection IntakeSelection, reason, caller string) {
-	giveUps, ok := s.giveUpsServed(w, "intake discard")
-	if !ok {
+func (s *server) discardGiveUps(w http.ResponseWriter, r *http.Request, selection IntakeSelection, caller, reason string) {
+	if s.refusedGiveUps(w, "intake discard") {
 		return
 	}
-	ids, err := giveUps.Discard(r.Context(), selection.selector(), caller, reason)
+	ids, err := s.giveUps.Discard(r.Context(), selection.selector(), caller, reason)
 	if err != nil {
-		s.refuseGiveUps(w, "intake discard", selection, caller, err)
+		s.refuseGiveUps(w, r, "intake discard", selection, caller, err)
 		return
 	}
 	if ids == nil {
@@ -218,24 +216,21 @@ func (s *server) discardGiveUps(w http.ResponseWriter, r *http.Request, selectio
 	writeJSON(w, http.StatusOK, IntakeDiscardResponse{Discarded: ids})
 }
 
-// giveUpsServed is the daemon's give-ups, refusing request with 503 where the daemon runs no
-// intake, and while its stop drains it (stopped).
-func (s *server) giveUpsServed(w http.ResponseWriter, request string) (GiveUps, bool) {
+// refusedGiveUps refuses request with 503 where the daemon runs no intake, and while its stop
+// drains it (stopped), and reports whether it did.
+func (s *server) refusedGiveUps(w http.ResponseWriter, request string) bool {
 	if s.giveUps == nil {
 		writeFailure(w, http.StatusServiceUnavailable, noIntake, request+" refused: this daemon runs no intake, so it keeps no give-ups")
-		return nil, false
+		return true
 	}
-	if s.stopped(w, request) {
-		return nil, false
-	}
-	return s.giveUps, true
+	return s.stopped(w, request)
 }
 
 // refuseGiveUps answers the refusal of a replay or a discard: 400 for what the request asks
 // (intake.RequestError), 404 for an id of no give-up of this project, 409 for an id whose record
 // is closed, with how and when, or that a replay running now holds, and 500, logged, for a failure
-// of the store.
-func (s *server) refuseGiveUps(w http.ResponseWriter, request string, selection IntakeSelection, caller string, err error) {
+// of the store (logRequestFailure, since the discard runs on r's context).
+func (s *server) refuseGiveUps(w http.ResponseWriter, r *http.Request, request string, selection IntakeSelection, caller string, err error) {
 	var invalid *intake.RequestError
 	var closed *record.IntakeGiveUpClosedError
 	switch {
@@ -248,8 +243,8 @@ func (s *server) refuseGiveUps(w http.ResponseWriter, request string, selection 
 	case errors.Is(err, record.ErrIntakeGiveUpBeingReplayed):
 		writeFailure(w, http.StatusConflict, giveUpBeingReplayed, fmt.Sprintf("give-up %d: %v", selection.GiveUp, record.ErrIntakeGiveUpBeingReplayed))
 	default:
-		s.logFailure("api: a give-up request failed", "request", request, "caller", caller, "giveUp", selection.GiveUp,
-			"consumer", selection.Consumer, "throughSeq", selection.ThroughSeq, "error", err)
+		s.logRequestFailure(r, err, "api: a give-up request failed", "request", request, "caller", caller, "giveUp", selection.GiveUp,
+			"consumer", selection.Consumer, "throughSeq", selection.ThroughSeq)
 		writeFailure(w, http.StatusInternalServerError, giveUpFailed, request+" failed: the daemon could not record it")
 	}
 }

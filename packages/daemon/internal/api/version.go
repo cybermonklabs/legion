@@ -2484,9 +2484,10 @@ package api
 // intake discard` post them, and they are not narrowed: their reader is the `legion` built with
 // this daemon. The controller notice kind `intake-gave-up` (`record.IntakeGaveUpNotice`), with
 // `record.Notice`'s `count` and `giveUps`, reaches the controller's topic, a minute after the
-// give-up that opens it, with every give-up of that minute joined to it. A plugin of this contract
-// under an older daemon finds no route for the controller's two (404), and the bump is what keeps
-// the two apart.
+// give-up that opens it, with every give-up of that minute joined to it. An older daemon refuses
+// a controller whose plugin holds this contract with 409, at `legion controller start` and at its
+// registration, so the controller never calls the two routes there; only this release's operator
+// command `legion intake` reaches an older daemon, which answers it 404.
 //
 // The change carries store migration `20261120001432_intake_failures`, which adds the tables
 // `intake_failures` and `cleared_pull_requests` and the columns `pull_requests.settled_runs` and

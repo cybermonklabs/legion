@@ -374,7 +374,8 @@ func registerCaptureController(t *testing.T, pool *pgxpool.Pool) {
 func giveUpNotices(t *testing.T, pool *pgxpool.Pool) (notices, count int) {
 	t.Helper()
 	if err := pool.QueryRow(context.Background(), `select count(*), coalesce(max((payload->>'count')::int), 0) from outbox
-		where kind = 'controller_notice' and payload->>'kind' = 'intake-gave-up'`).Scan(&notices, &count); err != nil {
+		where kind = $1 and payload->>'kind' = $2`, string(record.OutboxKindControllerNotice), string(record.IntakeGaveUpNotice)).
+		Scan(&notices, &count); err != nil {
 		t.Fatalf("read the intake-gave-up notices: %v", err)
 	}
 	return notices, count

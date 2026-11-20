@@ -208,16 +208,16 @@ type IntakeGiveUpCountView struct {
 // (record.IntakeGiveUpReason), and the start of its last error, cut where the projection cuts it
 // (projection's stateGiveUpErrorRunes).
 type IntakeGiveUpView struct {
-	ID         int64     `json:"id"`
-	Consumer   string    `json:"consumer"`
-	Subject    string    `json:"subject"`
-	StreamSeq  uint64    `json:"streamSeq"`
-	StoredAt   time.Time `json:"storedAt"`
-	EventID    *string   `json:"eventId"`
-	Deliveries int       `json:"deliveries"`
-	GaveUpAt   time.Time `json:"gaveUpAt"`
-	Reason     string    `json:"reason"`
-	LastError  string    `json:"lastError"`
+	ID         int64                     `json:"id"`
+	Consumer   string                    `json:"consumer"`
+	Subject    string                    `json:"subject"`
+	StreamSeq  uint64                    `json:"streamSeq"`
+	StoredAt   time.Time                 `json:"storedAt"`
+	EventID    *string                   `json:"eventId"`
+	Deliveries int                       `json:"deliveries"`
+	GaveUpAt   time.Time                 `json:"gaveUpAt"`
+	Reason     record.IntakeGiveUpReason `json:"reason"`
+	LastError  string                    `json:"lastError"`
 }
 
 // MarshalJSON keeps `consumers` and `newest` arrays on the wire: a nil Go slice is `null`, which

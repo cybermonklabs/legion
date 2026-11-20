@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -51,14 +50,15 @@ func (c *intakeCall) selection(required ...string) (api.IntakeSelection, int, bo
 		return api.IntakeSelection{}, code, false
 	}
 	one := c.flags.Changed("give-up")
-	bulk := c.flags.Changed("consumer") || c.flags.Changed("through-seq")
+	consumer, through := c.flags.Changed("consumer"), c.flags.Changed("through-seq")
+	bulk := consumer || through
 	switch {
 	case one && bulk:
 		return api.IntakeSelection{}, refuse(c.cmd, "name --give-up, or --consumer with --through-seq, not both"), false
 	case !one && !bulk:
 		return api.IntakeSelection{}, refuse(c.cmd, "name --give-up <id>, or --consumer <name> with --through-seq <seq>"), false
-	case bulk && !(c.flags.Changed("consumer") && c.flags.Changed("through-seq")):
-		return api.IntakeSelection{}, refuse(c.cmd, "--consumer and --through-seq are given together"), false
+	case bulk && !(consumer && through):
+		return api.IntakeSelection{}, refuse(c.cmd, "give --consumer and --through-seq together"), false
 	}
 	return api.IntakeSelection{GiveUp: *c.giveUp, Consumer: *c.consumer, ThroughSeq: *c.throughSeq}, 0, true
 }
@@ -90,7 +90,7 @@ func runIntakeReplay(ctx context.Context, c *intakeCall) int {
 	if code := c.send(ctx, op, http.MethodPost, "/legion/v1/operator/intake/replay", api.OperatorIntakeReplayRequest{IntakeSelection: selection},
 		func(w io.Writer, answer []byte) error {
 			var replay api.IntakeReplayResponse
-			if err := json.Unmarshal(answer, &replay); err != nil {
+			if err := decodeAnswer(answer, &replay); err != nil {
 				return err
 			}
 			for _, line := range replayLines(replay) {
@@ -129,7 +129,7 @@ func replayLines(replay api.IntakeReplayResponse) []string {
 // open, or still discarded, with the new error.
 func replayFailed(replay api.IntakeReplayResponse) bool {
 	for _, record := range replay.Replayed {
-		if record.Outcome == string(intake.ReplayFailed) {
+		if record.Outcome == intake.ReplayFailed {
 			return true
 		}
 	}
@@ -164,7 +164,7 @@ func runIntakeDiscard(ctx context.Context, c *intakeCall, reason string) int {
 		api.OperatorIntakeDiscardRequest{IntakeSelection: selection, Reason: reason},
 		func(w io.Writer, answer []byte) error {
 			var discard api.IntakeDiscardResponse
-			if err := json.Unmarshal(answer, &discard); err != nil {
+			if err := decodeAnswer(answer, &discard); err != nil {
 				return err
 			}
 			if len(discard.Discarded) == 0 {

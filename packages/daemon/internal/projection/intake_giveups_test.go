@@ -136,7 +136,7 @@ func TestTheStateCountsAndListsTheProjectsOpenGiveUps(t *testing.T) {
 		eventID := "dispatch-150"
 		wantView := api.IntakeGiveUpView{ID: decoded[50], Consumer: consumer, Subject: "notifications.dispatch.issue.LEGION-150.issue.updated",
 			StreamSeq: 150, StoredAt: base.Add(-time.Hour), EventID: &eventID, Deliveries: 21, GaveUpAt: base.Add(50 * time.Minute),
-			Reason: string(record.GiveUpBound), LastError: "the handler failed"}
+			Reason: record.GiveUpBound, LastError: "the handler failed"}
 		got := state.IntakeGiveUps.Newest[1]
 		if got.EventID == nil || *got.EventID != eventID {
 			t.Fatalf("the second listed give-up's event id = %v, want %q", got.EventID, eventID)
@@ -163,7 +163,7 @@ func TestTheStateCountsAndListsTheProjectsOpenGiveUps(t *testing.T) {
 	})
 	t.Run("an error of 400 multi-byte characters is cut to 300 on a rune boundary", func(t *testing.T) {
 		got := state.IntakeGiveUps.Newest[0]
-		if got.ID != newest.ID || got.EventID != nil || got.Reason != string(record.GiveUpUndecodable) || got.Deliveries != 1 {
+		if got.ID != newest.ID || got.EventID != nil || got.Reason != record.GiveUpUndecodable || got.Deliveries != 1 {
 			t.Fatalf("the newest listed give-up = %+v, want the undecodable message %d with a null event id", got, newest.ID)
 		}
 		if !utf8.ValidString(got.LastError) || got.LastError != strings.Repeat("日", stateGiveUpErrorRunes) {

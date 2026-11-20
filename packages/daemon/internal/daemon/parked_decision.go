@@ -72,12 +72,14 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 			return err
 		}
 		recorded = true
-		gates, err := r.records.GatesOf(scoped, tx, issue)
-		if err != nil {
-			return err
-		}
-		if replaced = workflow.ChangesSuperseded(gates, issue, notice); replaced {
-			return nil
+		if decision == record.DecisionDesignChangesRequested {
+			gates, err := r.records.GatesOf(scoped, tx, issue)
+			if err != nil {
+				return err
+			}
+			if replaced = workflow.ChangesSuperseded(gates, issue, notice); replaced {
+				return nil
+			}
 		}
 		outcome, err = record.RelayParkedDecision(scoped, tx, r.records, issue, *stored, true,
 			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: now}, notice.Version, notice.Reason, r.gatedSteps)

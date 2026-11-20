@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // A message that does not decode is recorded at its first delivery, given up with the decode
@@ -19,7 +21,7 @@ func TestAMessageThatDoesNotDecodeIsRecordedAtItsFirstDelivery(t *testing.T) {
 	sent := publish(t, js, "notifications.dispatch.issue.CAPTURE-208.issue.updated", []byte(`{`))
 	dispatch := dispatchConsumerName(spec.Project)
 	given := waitGivenUp(t, pool, dispatch, sent.Sequence)
-	if given.GiveUpReason != "undecodable" || given.Deliveries != 1 || given.EventID != "" || !bytes.Equal(given.Payload, []byte(`{`)) ||
+	if given.GiveUpReason != record.GiveUpUndecodable || given.Deliveries != 1 || given.EventID != "" || !bytes.Equal(given.Payload, []byte(`{`)) ||
 		!strings.Contains(given.LastError, "decode Envoy envelope") {
 		t.Fatalf("the record = %+v, want the payload given up as undecodable at its first delivery with the decode error and no event id", given)
 	}

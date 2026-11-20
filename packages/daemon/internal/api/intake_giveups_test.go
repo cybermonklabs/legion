@@ -211,7 +211,7 @@ func giveUpDoorOf(t *testing.T, h *harness, name string) giveUpDoor {
 				return h.operator(http.MethodPost, "/legion/v1/operator/intake/discard", OperatorIntakeDiscardRequest{selection, reason})
 			}}
 	}
-	return controllerDoor(t, h, sessionControllerGrant(t, h), "controller session "+controllerSession)
+	return controllerDoor(t, h, h.controllerSession(), "controller session "+controllerSession)
 }
 
 // controllerDoor is the controller's door with grant, whose caller the record keeps as caller.
@@ -225,20 +225,6 @@ func controllerDoor(t *testing.T, h *harness, grant, caller string) giveUpDoor {
 			return h.request(http.MethodPost, "/legion/v1/intake/discard",
 				IntakeDiscardRequest{GrantID: grant, IntakeSelection: selection, Reason: reason}, nil)
 		}}
-}
-
-// sessionControllerGrant registers the project's controller as controllerSession, with the
-// capability `legion controller start` fetches, and answers a grant that session mints.
-func sessionControllerGrant(t *testing.T, h *harness) string {
-	t.Helper()
-	registration := h.registeredController(h.mintedSecret(), controllerSession)
-	recorder := h.controllerSessionGrant(controllerSession, registration.Secret)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("the controller session's grant = %d: %s", recorder.Code, recorder.Body)
-	}
-	var grant GrantResponse
-	decodeInto(t, recorder, &grant)
-	return grant.GrantID
 }
 
 // replayAnswer is a replay's 200 answer.
@@ -297,7 +283,7 @@ func TestTheGiveUpRoutesReplayARecordThroughBothDoors(t *testing.T) {
 					t.Fatalf("%s: the replay answered %+v, want one record and %d remaining", row.name, answer, row.remaining)
 				}
 				got := answer.Replayed[0]
-				if got.ID != row.given.ID || got.Consumer != giveUpConsumer || got.StreamSeq != row.given.StreamSeq || got.Outcome != string(row.outcome) {
+				if got.ID != row.given.ID || got.Consumer != giveUpConsumer || got.StreamSeq != row.given.StreamSeq || got.Outcome != row.outcome {
 					t.Fatalf("%s: the replay answered %+v, want record %d at %d %s", row.name, got, row.given.ID, row.given.StreamSeq, row.outcome)
 				}
 				kept := giveUpRecord(t, h, row.given.ID)
@@ -462,7 +448,7 @@ func TestTheGiveUpRoutesDiscardThroughBothDoors(t *testing.T) {
 				t.Errorf("a second discard of %d is not refused saying how and when it closed, %q", one.ID, sentence)
 			}
 			// A record a replay closed is refused too, as applied, at the replay's time.
-			if answer := replayAnswer(t, door.replay(IntakeSelection{GiveUp: replayed.ID})); answer.Replayed[0].Outcome != string(intake.ReplayApplied) {
+			if answer := replayAnswer(t, door.replay(IntakeSelection{GiveUp: replayed.ID})); answer.Replayed[0].Outcome != intake.ReplayApplied {
 				t.Fatalf("the replay of %d answered %+v, want it applied", replayed.ID, answer)
 			}
 			if sentence := (&record.IntakeGiveUpClosedError{ID: replayed.ID, How: record.IntakeApplied, At: giveUpsNow}).Error(); refused(t,
@@ -612,6 +598,60 @@ func TestTheGiveUpRoutesRefuseEveryCallerButTheOperatorAndTheController(t *testi
 	}
 }
 
+// A daemon that runs no intake keeps no give-ups, so the replay and the discard answer 503
+// NO_INTAKE through either door; a daemon whose stop has begun refuses both through either door
+// with 503, naming the stop; and neither reaches the replay or the discard.
+func TestTheGiveUpRoutesRefuseADaemonWithNoIntakeAndADaemonThatIsStopping(t *testing.T) {
+	h := newHarness(t)
+	stand := &countingGiveUps{}
+	// One grant service for every server below, so the controller's grant redeems at each.
+	grants := credential.New(nil)
+	serve := func(giveUps GiveUps, stopping context.Context) {
+		h.handler = NewServer("127.0.0.1", 8437, Options{
+			Steps:      config.DesignGateRootIssues.Steps(),
+			Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
+			OperatorToken: testOperatorToken, Controller: h.store, Grants: grants, Intake: giveUps, Stopping: stopping,
+			Log: slog.New(slog.NewTextHandler(h.serverLog, nil)),
+		}).Handler
+	}
+	serve(stand, context.Background())
+	doors := map[string]giveUpDoor{
+		"operator":   giveUpDoorOf(t, h, "operator"),
+		"controller": controllerDoor(t, h, h.controllerSession(), "controller session "+controllerSession),
+	}
+	stopping, beginStop := context.WithCancel(context.Background())
+	beginStop()
+	selection := IntakeSelection{GiveUp: 41}
+
+	for _, daemon := range []struct {
+		name     string
+		giveUps  GiveUps
+		stopping context.Context
+		refused  func(t *testing.T, recorder *httptest.ResponseRecorder, request string)
+	}{
+		{"no intake", nil, context.Background(), func(t *testing.T, recorder *httptest.ResponseRecorder, request string) {
+			refusedSaying(t, recorder, http.StatusServiceUnavailable, noIntake, request+" refused: this daemon runs no intake, so it keeps no give-ups")
+		}},
+		{"a stop begun", stand, stopping, func(t *testing.T, recorder *httptest.ResponseRecorder, request string) {
+			wantRefusal(t, recorder, http.StatusServiceUnavailable, request+" refused: the daemon is stopping; ask again once it is back")
+		}},
+	} {
+		t.Run(daemon.name, func(t *testing.T) {
+			serve(daemon.giveUps, daemon.stopping)
+			for _, name := range giveUpDoorNames {
+				t.Run(name, func(t *testing.T) {
+					door := doors[name]
+					daemon.refused(t, door.replay(selection), "intake replay")
+					daemon.refused(t, door.discard(selection, "a reason"), "intake discard")
+				})
+			}
+		})
+	}
+	if calls := stand.made(); len(calls) != 0 {
+		t.Fatalf("a refused request reached the give-ups: %v", calls)
+	}
+}
+
 // A controller grant the operator's bearer minted names no controller session, so a record closed
 // through the controller's door with it is recorded as the operator's; a grant the controller's
 // registered session minted is recorded as that session's.
@@ -623,7 +663,7 @@ func TestTheGiveUpRoutesRecordTheOperatorForAControllerGrantTheOperatorMinted(t 
 	bySession := givenUp(t, h, giveUpMessage(t, testDispatchProject, "LEGION-902", 2))
 	// The session registers first: a capability's mint revokes every controller grant minted
 	// before it, the operator's among them.
-	sessionGrant := sessionControllerGrant(t, h)
+	sessionGrant := h.controllerSession()
 	operatorGrant := controllerGrant(t, h).GrantID
 	for _, row := range []struct {
 		door  giveUpDoor
@@ -709,10 +749,10 @@ func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
 func TestIntakeReplayAnswerGolden(t *testing.T) {
 	golden(t, "intake-replay.json", IntakeReplayResponse{
 		Replayed: []ReplayedGiveUpView{
-			{ID: 41, Consumer: "legion-go-LEGION-dispatch", StreamSeq: 6044801, Outcome: string(intake.ReplayApplied)},
-			{ID: 42, Consumer: "legion-go-LEGION-dispatch", StreamSeq: 6044802, Outcome: string(intake.ReplayAlreadyApplied)},
-			{ID: 43, Consumer: "legion-go-LEGION-dispatch", StreamSeq: 6044850, Outcome: string(intake.ReplayNoFact)},
-			{ID: 44, Consumer: "legion-go-LEGION-dispatch", StreamSeq: 6044896, Outcome: string(intake.ReplayFailed),
+			{ID: 41, Consumer: "legion-go-LEGION-dispatch", StreamSeq: 6044801, Outcome: intake.ReplayApplied},
+			{ID: 42, Consumer: "legion-go-LEGION-dispatch", StreamSeq: 6044802, Outcome: intake.ReplayAlreadyApplied},
+			{ID: 43, Consumer: "legion-go-LEGION-dispatch", StreamSeq: 6044850, Outcome: intake.ReplayNoFact},
+			{ID: 44, Consumer: "legion-go-LEGION-dispatch", StreamSeq: 6044896, Outcome: intake.ReplayFailed,
 				Error: "decode Envoy envelope: unexpected end of JSON input"},
 		},
 		Remaining: 1,

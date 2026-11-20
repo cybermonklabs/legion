@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -36,12 +34,9 @@ const intakeOperatorToken = "intake-operator-bearer-for-tests"
 // serving the give-up routes over giveUps, on a loopback port, with every request that reached it
 // recorded.
 type intakeDaemon struct {
+	*recordingDaemon
 	t         *testing.T
-	port      int
 	tokenFile string
-
-	mu   sync.Mutex
-	seen []seenRequest
 }
 
 func newIntakeDaemon(t *testing.T, giveUps api.GiveUps) *intakeDaemon {
@@ -50,35 +45,8 @@ func newIntakeDaemon(t *testing.T, giveUps api.GiveUps) *intakeDaemon {
 		OperatorToken: intakeOperatorToken, Intake: giveUps, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}).Handler
 	d := &intakeDaemon{t: t, tokenFile: writeFile(t, "operator-token", intakeOperatorToken+"\n")}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read the request body: %v", err)
-		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, r)
-		d.mu.Lock()
-		d.seen = append(d.seen, seenRequest{
-			method: r.Method, path: r.URL.Path, authorization: r.Header.Get("Authorization"),
-			contentType: r.Header.Get("Content-Type"), body: body, status: recorder.Code, answer: recorder.Body.Bytes(),
-		})
-		d.mu.Unlock()
-		for name, values := range recorder.Header() {
-			w.Header()[name] = values
-		}
-		w.WriteHeader(recorder.Code)
-		_, _ = w.Write(recorder.Body.Bytes())
-	}))
-	t.Cleanup(server.Close)
-	d.port = server.Listener.Addr().(*net.TCPAddr).Port
+	d.recordingDaemon = serveRecorded(t, handler)
 	return d
-}
-
-func (d *intakeDaemon) requests() []seenRequest {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return slices.Clone(d.seen)
 }
 
 // intake runs `legion intake <args>` against the daemon, with the flags that reach it, and holds
@@ -236,8 +204,8 @@ func TestIntakeCommandsSendTheirSelector(t *testing.T) {
 	}{
 		{"neither form", []string{"replay"}, "name --give-up <id>, or --consumer <name> with --through-seq <seq>"},
 		{"both forms", []string{"replay", "--give-up", "41", "--consumer", consumer, "--through-seq", "9"}, "name --give-up, or --consumer with --through-seq, not both"},
-		{"a consumer without a sequence", []string{"discard", "--consumer", consumer, "--reason", "r"}, "--consumer and --through-seq are given together"},
-		{"a sequence without a consumer", []string{"replay", "--through-seq", "9"}, "--consumer and --through-seq are given together"},
+		{"a consumer without a sequence", []string{"discard", "--consumer", consumer, "--reason", "r"}, "give --consumer and --through-seq together"},
+		{"a sequence without a consumer", []string{"replay", "--through-seq", "9"}, "give --consumer and --through-seq together"},
 	} {
 		t.Run(usage.name, func(t *testing.T) {
 			stand := &standInGiveUps{}

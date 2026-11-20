@@ -67,7 +67,7 @@ func TestTheBootedDaemonsIntakeRoutesReachItsGiveUps(t *testing.T) {
 		api.OperatorIntakeReplayRequest{IntakeSelection: api.IntakeSelection{GiveUp: replayed.ID}}, true)
 	var replay api.IntakeReplayResponse
 	if status != http.StatusOK || json.Unmarshal(body, &replay) != nil || len(replay.Replayed) != 1 ||
-		replay.Replayed[0].ID != replayed.ID || replay.Replayed[0].Outcome != string(intake.ReplayNoFact) {
+		replay.Replayed[0].ID != replayed.ID || replay.Replayed[0].Outcome != intake.ReplayNoFact {
 		t.Fatalf("the replay of %d = %d %s, want 200 answering it no fact", replayed.ID, status, body)
 	}
 

@@ -409,7 +409,7 @@ function requiredString(
   return value;
 }
 
-/** A give-up's record id or a stream sequence: a whole number from 1. */
+/** A whole number from 1: a give-up's record id, a stream sequence or a gate's version. */
 const isWholeFromOne = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
 
@@ -718,7 +718,7 @@ export function createLegionTool(deps: {
         switch (operation) {
           case "register_gate": {
             const version = parameters.version;
-            if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 1) {
+            if (!isWholeFromOne(version)) {
               throw new Error("register_gate requires a positive integer version");
             }
             // The gate is the tree root's, registered by the root's own architect, as the daemon

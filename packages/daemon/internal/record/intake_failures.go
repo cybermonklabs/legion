@@ -159,9 +159,10 @@ func (s IntakeSelector) Validate() error {
 	return nil
 }
 
-// throughSeq is the selector's stream sequence as the bigint column compares it.
-func (s IntakeSelector) throughSeq() int64 {
-	return int64(min(s.ThroughSeq, math.MaxInt64))
+// throughSeqArg is a stream sequence as the bigint column compares it: one above the column's
+// range compares as its highest.
+func throughSeqArg(seq uint64) int64 {
+	return int64(min(seq, math.MaxInt64))
 }
 
 // IntakeReplayClaim is what a replay's claim took (ClaimIntakeReplay): the records, in stream
@@ -232,6 +233,13 @@ const (
 	intakeGiveUpColumns  = intakeFailureKey + `null::bytea, null::bytea` + intakeFailureRest
 )
 
+// The states of a record the statements below select by: an open give-up, and a give-up a replay
+// may still close, open or discarded.
+const (
+	openGiveUp     = `given_up_at is not null and closed_at is null`
+	replayClosable = `given_up_at is not null and (closed_at is null or closed_how = '` + string(IntakeDiscarded) + `')`
+)
+
 // scanIntakeFailure reads one row of intakeFailureColumns, each time in UTC and each null time
 // as the zero time.
 func scanIntakeFailure(row scanner) (IntakeFailure, error) {
@@ -251,6 +259,11 @@ func scanIntakeFailure(row scanner) (IntakeFailure, error) {
 	return f, nil
 }
 
+// intakeFailureRow is scanIntakeFailure as pgx.CollectRows takes it.
+func intakeFailureRow(row pgx.CollectableRow) (IntakeFailure, error) {
+	return scanIntakeFailure(row)
+}
+
 // utcOrZero is *at in UTC, or the zero time for a null column.
 func utcOrZero(at *time.Time) time.Time {
 	if at == nil {
@@ -259,19 +272,18 @@ func utcOrZero(at *time.Time) time.Time {
 	return at.UTC()
 }
 
-// messageArgs is message's key and contents as the statements below take them, $1 to $9: the
+// messageArgs is message's key and contents as the statements below take them, $1 to $7: the
 // project, the consumer, the subject, the stream sequence, the stored time truncated to the
 // microseconds PostgreSQL keeps (never rounded up, as intake's recordStreamPosition truncates
-// it), the header block, the payload, the event source and the event id. An empty payload is
-// written as no bytes rather than as null, which the column refuses: a NATS message may carry
-// none.
+// it), the header block and the payload. An empty payload is written as no bytes rather than as
+// null, which the column refuses: a NATS message may carry none.
 func messageArgs(message IntakeMessage) []any {
 	payload := message.Payload
 	if payload == nil {
 		payload = []byte{}
 	}
 	return []any{message.Project, message.Consumer, message.Subject, int64(message.StreamSeq),
-		message.StoredAt.Truncate(time.Microsecond), message.Headers, payload, message.EventSource, message.EventID}
+		message.StoredAt.Truncate(time.Microsecond), message.Headers, payload}
 }
 
 // noteIntakeFailure runs statement, an insert of message's record that updates an open failure
@@ -309,7 +321,7 @@ func (s *Postgres) NoteRedelivery(ctx context.Context, tx pgx.Tx, message Intake
 		values ($1, $2, $3, $4, $5, $6, $7, nullif($8, ''), nullif($9, ''), $10, $10, $11)
 		on conflict (consumer, stream_seq, stored_at) do update set updated_at = excluded.updated_at, deliveries = excluded.deliveries
 		where intake_failures.project = excluded.project and intake_failures.given_up_at is null
-		returning `+intakeFailureColumns, append(messageArgs(message), now, delivered)...)
+		returning `+intakeFailureColumns, append(messageArgs(message), message.EventSource, message.EventID, now, delivered)...)
 }
 
 // NoteFailure records that delivery delivered of message failed with lastError, a far side's
@@ -325,13 +337,14 @@ func (s *Postgres) NoteFailure(ctx context.Context, tx pgx.Tx, message IntakeMes
 		on conflict (consumer, stream_seq, stored_at) do update set updated_at = excluded.updated_at,
 			deliveries = excluded.deliveries, ended_delivery = excluded.ended_delivery, last_error = excluded.last_error
 		where intake_failures.project = excluded.project and intake_failures.given_up_at is null
-		returning `+intakeFailureColumns, append(messageArgs(message), now, delivered, storetext.FarSideError(lastError))...)
+		returning `+intakeFailureColumns, append(messageArgs(message), message.EventSource, message.EventID, now, delivered,
+		storetext.FarSideError(lastError))...)
 }
 
 // GiveUpIntakeMessage is the whole of a give-up's step in the record, in the transaction that
 // decides it: the open failure id of project is marked given up at now for reason, with lastError
 // as storetext.FarSideError keeps it, and, where a controller is registered, counted in a notice
-// whose outbox id the record keeps (CountIntakeGiveUp). It answers the record as it left it, and
+// whose outbox id the record keeps (countIntakeGiveUp). It answers the record as it left it, and
 // false, with nothing written, where project has no open failure of that id: one given up
 // already, or none.
 func (s *Postgres) GiveUpIntakeMessage(ctx context.Context, tx pgx.Tx, project string, id int64, reason IntakeGiveUpReason, lastError string, now time.Time) (IntakeFailure, bool, error) {
@@ -350,11 +363,11 @@ func (s *Postgres) GiveUpIntakeMessage(ctx context.Context, tx pgx.Tx, project s
 	if err != nil {
 		return IntakeFailure{}, false, fmt.Errorf("give up intake record %d: %w", id, err)
 	}
-	given := []IntakeFailure{failure}
-	if err := s.countGiveUps(ctx, tx, project, given, now); err != nil {
+	given, err := s.countGiveUp(ctx, tx, project, failure, now)
+	if err != nil {
 		return IntakeFailure{}, false, err
 	}
-	return given[0], true, nil
+	return given, true, nil
 }
 
 // RecordUndecodable records message, which did not decode, as given up at its delivery delivered
@@ -363,7 +376,6 @@ func (s *Postgres) GiveUpIntakeMessage(ctx context.Context, tx pgx.Tx, project s
 // and true; and false, with nothing written, for a message recorded as given up already, which is
 // a termination that was lost: no second record and no second count.
 func (s *Postgres) RecordUndecodable(ctx context.Context, tx pgx.Tx, message IntakeMessage, delivered int, decodeError string, now time.Time) (IntakeFailure, bool, error) {
-	args := messageArgs(message)[:7]
 	failure, err := scanIntakeFailure(tx.QueryRow(ctx, `insert into intake_failures (project, consumer, subject, stream_seq, stored_at,
 		headers, payload, first_failed_at, updated_at, deliveries, ended_delivery, last_error, given_up_at, give_up_reason)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $9, $10, $8, $11)
@@ -372,24 +384,34 @@ func (s *Postgres) RecordUndecodable(ctx context.Context, tx pgx.Tx, message Int
 			ended_delivery = excluded.ended_delivery, updated_at = excluded.updated_at
 		where intake_failures.project = excluded.project and intake_failures.given_up_at is null
 		returning `+intakeFailureColumns,
-		append(args, now, delivered, storetext.FarSideError(decodeError), string(GiveUpUndecodable))...))
+		append(messageArgs(message), now, delivered, storetext.FarSideError(decodeError), string(GiveUpUndecodable))...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return IntakeFailure{}, false, nil
 	}
 	if err != nil {
 		return IntakeFailure{}, false, fmt.Errorf("record %s's undecodable message %d: %w", message.Consumer, message.StreamSeq, err)
 	}
-	given := []IntakeFailure{failure}
-	if err := s.countGiveUps(ctx, tx, message.Project, given, now); err != nil {
+	given, err := s.countGiveUp(ctx, tx, message.Project, failure, now)
+	if err != nil {
 		return IntakeFailure{}, false, err
 	}
-	return given[0], true, nil
+	return given, true, nil
+}
+
+// countGiveUp is countGiveUps of the one record failure, which it answers as it left it.
+func (s *Postgres) countGiveUp(ctx context.Context, tx pgx.Tx, project string, failure IntakeFailure, now time.Time) (IntakeFailure, error) {
+	given := []IntakeFailure{failure}
+	if err := s.countGiveUps(ctx, tx, project, given, now); err != nil {
+		return IntakeFailure{}, err
+	}
+	return given[0], nil
 }
 
 // countGiveUps counts each of failures, project's records given up in this transaction, in the
 // project's notice where a controller is registered, and keeps that notice's id on each record and
-// in failures. With no controller registered it writes nothing, and the records keep no notice for
-// good: a controller that registers later reads them in the state.
+// in failures. The statement that gave each up wrote its updated_at, at now, already. With no
+// controller registered it writes nothing, and the records keep no notice for good: a controller
+// that registers later reads them in the state.
 func (s *Postgres) countGiveUps(ctx context.Context, tx pgx.Tx, project string, failures []IntakeFailure, now time.Time) error {
 	if len(failures) == 0 {
 		return nil
@@ -400,19 +422,19 @@ func (s *Postgres) countGiveUps(ctx context.Context, tx pgx.Tx, project string, 
 	}
 	for i := range failures {
 		failure := &failures[i]
-		notice, err := s.CountIntakeGiveUp(ctx, tx, project, NoticeGiveUp{ID: failure.ID, Consumer: failure.Consumer, Subject: failure.Subject}, now)
+		notice, err := s.countIntakeGiveUp(ctx, tx, project, NoticeGiveUp{ID: failure.ID, Consumer: failure.Consumer, Subject: failure.Subject}, now)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `update intake_failures set notice_id = $2, updated_at = $3 where id = $1`, failure.ID, notice, now); err != nil {
+		if _, err := tx.Exec(ctx, `update intake_failures set notice_id = $2 where id = $1`, failure.ID, notice); err != nil {
 			return fmt.Errorf("keep notice %d on intake record %d: %w", notice, failure.ID, err)
 		}
-		failure.NoticeID, failure.UpdatedAt = notice, now
+		failure.NoticeID = notice
 	}
 	return nil
 }
 
-// CountIntakeGiveUp counts giveUp in project's intake-gave-up notice and answers that notice's
+// countIntakeGiveUp counts giveUp in project's intake-gave-up notice and answers that notice's
 // outbox id. It takes the project's transaction-scoped lock first, so the give-ups of the three
 // consumers, each in a transaction of its own, join one row rather than each opening one. The
 // notice it joins is the oldest of the project's that no lease holds: its count rises by one, and
@@ -420,7 +442,7 @@ func (s *Postgres) countGiveUps(ctx context.Context, tx pgx.Tx, project string, 
 // a count raised in it may never reach the controller, so with none unleased it opens a row on the
 // project key, due giveUpNoticeDelay after now, counting and naming giveUp. A row the outbox gave
 // back to retry holds no lease, so it takes give-ups again rather than leaving one more row behind.
-func (s *Postgres) CountIntakeGiveUp(ctx context.Context, tx pgx.Tx, project string, giveUp NoticeGiveUp, now time.Time) (int64, error) {
+func (s *Postgres) countIntakeGiveUp(ctx context.Context, tx pgx.Tx, project string, giveUp NoticeGiveUp, now time.Time) (int64, error) {
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('legion.intake_give_up_notice:' || $1::text))`, project); err != nil {
 		return 0, fmt.Errorf("lock %s's intake-gave-up notice: %w", project, err)
 	}
@@ -475,7 +497,7 @@ func (s *Postgres) ClearIntakeFailure(ctx context.Context, tx pgx.Tx, project, c
 func (s *Postgres) ListPassedFailures(ctx context.Context, tx pgx.Tx, project, consumer string, throughSeq uint64) ([]OpenFailure, error) {
 	rows, err := tx.Query(ctx, `select id, stream_seq, stored_at, updated_at from intake_failures
 		where project = $1 and consumer = $2 and stream_seq <= $3 and given_up_at is null
-		order by stream_seq, stored_at, id`, project, consumer, int64(min(throughSeq, math.MaxInt64)))
+		order by stream_seq, stored_at, id`, project, consumer, throughSeqArg(throughSeq))
 	if err != nil {
 		return nil, fmt.Errorf("list the open failures of %s through %d: %w", consumer, throughSeq, err)
 	}
@@ -509,7 +531,7 @@ func (s *Postgres) SweepPassedFailures(ctx context.Context, tx pgx.Tx, project s
 	if err != nil {
 		return nil, fmt.Errorf("give up %s's open failures its consumers moved past: %w", project, err)
 	}
-	given, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (IntakeFailure, error) { return scanIntakeFailure(row) })
+	given, err := pgx.CollectRows(rows, intakeFailureRow)
 	if err != nil {
 		return nil, fmt.Errorf("give up %s's open failures its consumers moved past: %w", project, err)
 	}
@@ -530,7 +552,7 @@ func inStreamOrder(a, b IntakeFailure) int {
 // first. The records are read without their headers and payload, which the state does not show.
 func (s *Postgres) OpenIntakeGiveUps(ctx context.Context, tx pgx.Tx, project string, newest int) (IntakeGiveUps, error) {
 	rows, err := tx.Query(ctx, `select consumer, count(*), max(stream_seq) from intake_failures
-		where project = $1 and given_up_at is not null and closed_at is null
+		where project = $1 and `+openGiveUp+`
 		group by consumer order by consumer`, project)
 	if err != nil {
 		return IntakeGiveUps{}, fmt.Errorf("count %s's open give-ups: %w", project, err)
@@ -546,12 +568,12 @@ func (s *Postgres) OpenIntakeGiveUps(ctx context.Context, tx pgx.Tx, project str
 		return IntakeGiveUps{}, fmt.Errorf("count %s's open give-ups: %w", project, err)
 	}
 	rows, err = tx.Query(ctx, `select `+intakeGiveUpColumns+` from intake_failures
-		where project = $1 and given_up_at is not null and closed_at is null
+		where project = $1 and `+openGiveUp+`
 		order by given_up_at desc, id desc limit $2`, project, max(newest, 0))
 	if err != nil {
 		return IntakeGiveUps{}, fmt.Errorf("list %s's newest open give-ups: %w", project, err)
 	}
-	listed, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (IntakeFailure, error) { return scanIntakeFailure(row) })
+	listed, err := pgx.CollectRows(rows, intakeFailureRow)
 	if err != nil {
 		return IntakeGiveUps{}, fmt.Errorf("list %s's newest open give-ups: %w", project, err)
 	}
@@ -559,9 +581,10 @@ func (s *Postgres) OpenIntakeGiveUps(ctx context.Context, tx pgx.Tx, project str
 }
 
 // giveUpForUpdate is project's give-up id, locked for the rest of the transaction, and
-// ErrIntakeGiveUpNotFound where project has none of that id: no record, or an open failure.
+// ErrIntakeGiveUpNotFound where project has none of that id: no record, or an open failure. It
+// reads the record without its headers and payload, which neither caller reads.
 func giveUpForUpdate(ctx context.Context, tx pgx.Tx, project string, id int64) (IntakeFailure, error) {
-	failure, err := scanIntakeFailure(tx.QueryRow(ctx, `select `+intakeFailureColumns+` from intake_failures
+	failure, err := scanIntakeFailure(tx.QueryRow(ctx, `select `+intakeGiveUpColumns+` from intake_failures
 		where id = $1 and project = $2 for update`, id, project))
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && !failure.GivenUp() {
 		return IntakeFailure{}, ErrIntakeGiveUpNotFound
@@ -621,23 +644,23 @@ func (s *Postgres) ClaimIntakeReplay(ctx context.Context, tx pgx.Tx, project str
 	// them once it commits, and this one counts them among the records it did not take.
 	rows, err := tx.Query(ctx, `update intake_failures set replay_claimed_at = $6, updated_at = $6
 		where id in (select id from intake_failures
-			where project = $1 and consumer = $2 and stream_seq <= $3 and given_up_at is not null and closed_at is null
+			where project = $1 and consumer = $2 and stream_seq <= $3 and `+openGiveUp+`
 			and (replay_claimed_at is null or replay_claimed_at < $4)
 			order by stream_seq, stored_at, id limit $5
 			for update skip locked)
-		returning `+intakeFailureColumns, project, selector.Consumer, selector.throughSeq(), live, batch, now)
+		returning `+intakeFailureColumns, project, selector.Consumer, throughSeqArg(selector.ThroughSeq), live, batch, now)
 	if err != nil {
 		return IntakeReplayClaim{}, fmt.Errorf("claim %s's give-ups through %d for a replay: %w", selector.Consumer, selector.ThroughSeq, err)
 	}
-	claimed, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (IntakeFailure, error) { return scanIntakeFailure(row) })
+	claimed, err := pgx.CollectRows(rows, intakeFailureRow)
 	if err != nil {
 		return IntakeReplayClaim{}, fmt.Errorf("claim %s's give-ups through %d for a replay: %w", selector.Consumer, selector.ThroughSeq, err)
 	}
 	slices.SortFunc(claimed, inStreamOrder)
 	var open int
 	if err := tx.QueryRow(ctx, `select count(*) from intake_failures
-		where project = $1 and consumer = $2 and stream_seq <= $3 and given_up_at is not null and closed_at is null`,
-		project, selector.Consumer, selector.throughSeq()).Scan(&open); err != nil {
+		where project = $1 and consumer = $2 and stream_seq <= $3 and `+openGiveUp,
+		project, selector.Consumer, throughSeqArg(selector.ThroughSeq)).Scan(&open); err != nil {
 		return IntakeReplayClaim{}, fmt.Errorf("count %s's give-ups through %d: %w", selector.Consumer, selector.ThroughSeq, err)
 	}
 	return IntakeReplayClaim{Records: claimed, Unclaimed: open - len(claimed)}, nil
@@ -655,7 +678,7 @@ func (s *Postgres) CloseIntakeGiveUp(ctx context.Context, tx pgx.Tx, project str
 	}
 	tag, err := tx.Exec(ctx, `update intake_failures
 		set closed_at = $4, closed_how = $3, closed_by = $5, replay_claimed_at = null, updated_at = $4
-		where id = $1 and project = $2 and given_up_at is not null and (closed_at is null or closed_how = 'discarded')`,
+		where id = $1 and project = $2 and `+replayClosable,
 		id, project, string(how), now, by)
 	if err != nil {
 		return false, fmt.Errorf("close give-up %d as %s: %w", id, how, err)
@@ -669,7 +692,7 @@ func (s *Postgres) CloseIntakeGiveUp(ctx context.Context, tx pgx.Tx, project str
 // discarded.
 func (s *Postgres) FailIntakeReplay(ctx context.Context, tx pgx.Tx, project string, id int64, lastError string, now time.Time) (bool, error) {
 	tag, err := tx.Exec(ctx, `update intake_failures set last_error = $3, replay_claimed_at = null, updated_at = $4
-		where id = $1 and project = $2 and given_up_at is not null and (closed_at is null or closed_how = 'discarded')`,
+		where id = $1 and project = $2 and `+replayClosable,
 		id, project, storetext.FarSideError(lastError), now)
 	if err != nil {
 		return false, fmt.Errorf("keep the failed replay of give-up %d: %w", id, err)
@@ -692,8 +715,8 @@ func (s *Postgres) DiscardIntakeGiveUps(ctx context.Context, tx pgx.Tx, project 
 		return nil, errors.New("a discard names its reason")
 	}
 	live := now.Add(-staleAfter)
-	const discard = `update intake_failures set closed_at = $3, closed_how = 'discarded', closed_by = $4, discarded_at = $3,
-		discarded_by = $4, discard_reason = $5, replay_claimed_at = null, updated_at = $3`
+	const discard = `update intake_failures set closed_at = $3, closed_how = '` + string(IntakeDiscarded) + `', closed_by = $4,
+		discarded_at = $3, discarded_by = $4, discard_reason = $5, replay_claimed_at = null, updated_at = $3`
 	if selector.ID > 0 {
 		failure, err := giveUpForUpdate(ctx, tx, project, selector.ID)
 		if err != nil {
@@ -711,9 +734,9 @@ func (s *Postgres) DiscardIntakeGiveUps(ctx context.Context, tx pgx.Tx, project 
 		return []int64{failure.ID}, nil
 	}
 	rows, err := tx.Query(ctx, discard+`
-		where project = $1 and consumer = $2 and stream_seq <= $6 and given_up_at is not null and closed_at is null
+		where project = $1 and consumer = $2 and stream_seq <= $6 and `+openGiveUp+`
 		and (replay_claimed_at is null or replay_claimed_at < $7)
-		returning id, stream_seq, stored_at`, project, selector.Consumer, now, by, reason, selector.throughSeq(), live)
+		returning id, stream_seq, stored_at`, project, selector.Consumer, now, by, reason, throughSeqArg(selector.ThroughSeq), live)
 	if err != nil {
 		return nil, fmt.Errorf("discard %s's give-ups through %d: %w", selector.Consumer, selector.ThroughSeq, err)
 	}

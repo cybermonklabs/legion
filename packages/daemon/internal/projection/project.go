@@ -540,7 +540,7 @@ func intakeGiveUpsView(open record.IntakeGiveUps) api.IntakeGiveUpsView {
 		listed := api.IntakeGiveUpView{
 			ID: failure.ID, Consumer: failure.Consumer, Subject: failure.Subject, StreamSeq: failure.StreamSeq,
 			StoredAt: failure.StoredAt, Deliveries: failure.Deliveries, GaveUpAt: failure.GivenUpAt,
-			Reason: string(failure.GiveUpReason), LastError: firstRunes(failure.LastError, stateGiveUpErrorRunes),
+			Reason: failure.GiveUpReason, LastError: firstRunes(failure.LastError, stateGiveUpErrorRunes),
 		}
 		if failure.EventID != "" {
 			listed.EventID = &failure.EventID

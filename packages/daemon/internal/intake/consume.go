@@ -107,9 +107,9 @@ type ConsumerSpec struct {
 	NakDelayCap time.Duration
 	// GiveUpDeliveries and GiveUpAfter are the bound on a decoded message whose handling fails:
 	// it is given up once JetStream has delivered it GiveUpDeliveries times and its first failed
-	// delivery is GiveUpAfter old (giveUpDue), both decided from the record, so a restart resets
-	// neither. None is defaultGiveUpDeliveries and defaultGiveUpAfter, the production bound; a
-	// test shortens them, since it cannot wait an hour.
+	// delivery is GiveUpAfter old (giveUpDue), the count JetStream's and the first failure the
+	// record's, so a restart resets neither. None is defaultGiveUpDeliveries and
+	// defaultGiveUpAfter, the production bound; a test shortens them, since it cannot wait an hour.
 	GiveUpDeliveries int
 	GiveUpAfter      time.Duration
 	// RetentionMargin is how long before the stream would delete a message its next delivery must
@@ -117,9 +117,9 @@ type ConsumerSpec struct {
 	// defaultRetentionMargin.
 	RetentionMargin time.Duration
 	// WakeOutbox wakes the outbox lane that runs kind for issue once a give-up's transaction has
-	// committed a notice of it (the controller's intake-gave-up notice, record.CountIntakeGiveUp),
-	// as the daemon's records wake a lane for every row they write. None (a test) wakes nothing,
-	// and the outbox's sweep finds the row.
+	// committed a notice of it (the controller's intake-gave-up notice, which each give-up
+	// statement of the record counts it in), as the daemon's records wake a lane for every row
+	// they write. None (a test) wakes nothing, and the outbox's sweep finds the row.
 	WakeOutbox func(issue string, kind record.OutboxKind)
 	// HandlerLimit is how long one message's handling may run before it is cut. A caller that
 	// sets none gets HandlerLimitFor(AckWait), which gives one AckWait to each bounded read a
@@ -669,7 +669,7 @@ func (c *Consumers) Run(ctx context.Context, handlers ...Handler) error {
 		return c.consumeConsumer(consumeContext, c.wake, c.progress.wake, handlers)
 	})
 	group.Go(func() error {
-		return c.sweepFailures(consumeContext, c.sweepEvery)
+		return c.sweepFailures(consumeContext)
 	})
 	return group.Wait()
 }
@@ -806,8 +806,8 @@ func (l *lagWatch) observe(message jetstream.Msg, metadata *jetstream.MsgMetadat
 //  5. Acknowledged. An applied fact deleted its open failure in its own transaction
 //     (streamPosition.record), and a duplicate writes its line first (logDuplicate); one
 //     acknowledged with no transaction has its open failure deleted after.
-//  6. and 7. Naked: a failure is recorded, and the message given up where the bound or the
-//     stream's retention says so, a delivery a daemon stop ended written only for the retention
+//  6. Naked: a failure is recorded, and the message given up where the bound or the stream's
+//     retention says so, a delivery a daemon stop ended written only for the retention
 //     (consumerRun.failed).
 //
 // The keeper has to stop before that one call rather than in a defer after it. A progress signal
@@ -1205,14 +1205,15 @@ func resolveReviewBody(ctx context.Context, spec ConsumerSpec, fact Fact) (Fact,
 	return review, nil
 }
 
-// nakResolve naks message, whose delivery delivered failed with err, at the delay that delivery
-// earns (retryDelay: the doubled nak delay, or a longer RetryLater wait), logging what failed, the
-// delay and the delivery count at warn, and nakWhat at error if the nak itself fails.
-func nakResolve(spec ConsumerSpec, message jetstream.Msg, delivered uint64, eventID, what, nakWhat string, err error) {
-	delay := retryDelay(delivered, spec, err)
-	logMessage(spec.Logger, slog.LevelWarn, what, message, "event_id", eventID, "retry_in", delay, "delivered", delivered, "error", err)
+// nakResolve naks message, whose delivery delivered failed as outcome says, at the delay that
+// delivery earns (retryDelay: the doubled nak delay, or a longer RetryLater wait in outcome.err),
+// logging outcome.what, the delay and the delivery count at warn, and outcome.nakWhat at error if
+// the nak itself fails.
+func nakResolve(spec ConsumerSpec, message jetstream.Msg, delivered uint64, eventID string, outcome messageOutcome) {
+	delay := retryDelay(delivered, spec, outcome.err)
+	logMessage(spec.Logger, slog.LevelWarn, outcome.what, message, "event_id", eventID, "retry_in", delay, "delivered", delivered, "error", outcome.err)
 	if nakErr := message.NakWithDelay(delay); nakErr != nil {
-		logMessage(spec.Logger, slog.LevelError, nakWhat, message, "event_id", eventID, "error", nakErr)
+		logMessage(spec.Logger, slog.LevelError, outcome.nakWhat, message, "event_id", eventID, "error", nakErr)
 	}
 }
 

@@ -245,7 +245,7 @@ func TestANoticeNamesAtMostAHundredGiveUps(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		for i := range burst {
 			giveUp := NoticeGiveUp{ID: int64(i + 1), Consumer: intakeConsumers("LEGION")[i%3], Subject: fmt.Sprintf("notifications.dispatch.issue.LEGION-%d.issue.updated", i)}
-			if _, err := records.CountIntakeGiveUp(ctx, tx, "LEGION", giveUp, now.Add(time.Duration(i)*time.Millisecond)); err != nil {
+			if _, err := records.countIntakeGiveUp(ctx, tx, "LEGION", giveUp, now.Add(time.Duration(i)*time.Millisecond)); err != nil {
 				t.Fatalf("count give-up %d: %v", i+1, err)
 			}
 			if i < giveUpNoticeNames {

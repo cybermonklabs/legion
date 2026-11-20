@@ -14,8 +14,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// Each give-up counts itself in the project's intake-gave-up notice (record.CountIntakeGiveUp), and
-// the outbox executor publishes that row as it publishes every controller notice: on the
+// Each give-up counts itself in the project's intake-gave-up notice (record.Postgres.RecordUndecodable
+// here), and the outbox executor publishes that row as it publishes every controller notice: on the
 // controller topic of the daemon's own project, under the row's own key, with the count of the
 // give-ups it took and the id, consumer and subject of each. The two give-ups come from two of the
 // project's consumers, so the row they join is the project's, not one consumer's.

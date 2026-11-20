@@ -47,8 +47,8 @@ const (
 	// read per consumer.
 	failureSweepEvery = time.Minute
 	// stopGiveUpBound bounds the give-up a daemon stop makes of a message the stream would delete
-	// before the daemon is back (consumeMessage): one transaction of a few statements, which takes
-	// milliseconds, so a stop waits no longer than this for a PostgreSQL that does not answer.
+	// before the daemon is back (consumerRun.failed): one transaction of a few statements, which
+	// takes milliseconds, so a stop waits no longer than this for a PostgreSQL that does not answer.
 	stopGiveUpBound = 2 * time.Second
 )
 
@@ -62,7 +62,7 @@ const (
 
 // nakDelay is how long JetStream waits before it delivers again a message whose delivery
 // delivered failed: spec.NakDelay doubled for each delivery before this one while that is below
-// spec.NakDelayCap, and the cap once it reaches it, so no delivery count overflows the shift. A
+// spec.NakDelayCap, and the cap once it reaches it, so no delivery count overflows the doubling. A
 // count of 0, a delivery whose metadata did not parse, waits the cap.
 func nakDelay(delivered uint64, spec ConsumerSpec) time.Duration {
 	if delivered == 0 {
@@ -243,34 +243,40 @@ func (r consumerRun) undecodable(ctx context.Context, message jetstream.Msg, met
 	}
 	delivered := deliveredCount(metadata)
 	if metadata == nil {
-		nakResolve(spec, message, delivered, "", "a message that does not decode has no metadata to record it under",
-			"nak the message that does not decode", decodeErr)
+		nakResolve(spec, message, delivered, "", nakOutcome("a message that does not decode has no metadata to record it under",
+			"nak the message that does not decode", decodeErr))
 		return false
 	}
-	ctx = store.ForConcurrentWorker(ctx)
-	now := spec.Now()
-	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err == nil {
-		defer func() { _ = tx.Rollback(ctx) }()
-		var given record.IntakeFailure
-		var recorded bool
-		given, recorded, err = record.NewStore().RecordUndecodable(ctx, tx, r.intakeMessage(message, metadata, "", ""), int(delivered), decodeErr.Error(), now)
-		switch {
-		case err != nil:
-		case !recorded:
-			_ = tx.Rollback(ctx)
-			return termMessage(spec.Logger, message)
-		default:
-			if err = r.position(metadata, false).record(ctx, tx); err == nil {
-				if err = r.commitGiveUp(ctx, tx, given, delivered, decodeErr.Error(), attributes...); err == nil {
-					return termMessage(spec.Logger, message)
-				}
-			}
-		}
+	terminate, err := r.recordUndecodable(store.ForConcurrentWorker(ctx), message, metadata, decodeErr, attributes)
+	if terminate {
+		return termMessage(spec.Logger, message)
 	}
-	nakResolve(spec, message, delivered, "", "record the give-up of a message that does not decode",
-		"nak the message that does not decode", errors.Join(err, decodeErr))
+	nakResolve(spec, message, delivered, "", nakOutcome("record the give-up of a message that does not decode",
+		"nak the message that does not decode", errors.Join(err, decodeErr)))
 	return false
+}
+
+// recordUndecodable is undecodable's transaction: it records message as given up and commits, and
+// answers whether the message is to be terminated, recorded now or given up already. The
+// termination follows the transaction's end.
+func (r consumerRun) recordUndecodable(ctx context.Context, message jetstream.Msg, metadata *jetstream.MsgMetadata, decodeErr error, attributes []any) (bool, error) {
+	now := r.spec.Now()
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	given, recorded, err := record.NewStore().RecordUndecodable(ctx, tx, r.intakeMessage(message, metadata, "", ""), int(metadata.NumDelivered), decodeErr.Error(), now)
+	if err != nil {
+		return false, err
+	}
+	if !recorded {
+		return true, nil
+	}
+	if err := r.commitGiveUp(ctx, tx, metadata, given, decodeErr.Error(), attributes...); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // noteRedelivery notes a redelivery of a decoded message before its handling (NoteRedelivery)
@@ -279,8 +285,7 @@ func (r consumerRun) undecodable(ctx context.Context, message jetstream.Msg, met
 // no handling; or the delivery before this one did not end in a recorded failure and the bound is
 // reached, and the message is given up now, or naked at the delay when that give-up does not
 // commit, since the handler that did not end would end the daemon again. handled is then whether
-// the termination was sent. A note that fails decides nothing, and the handling runs as it did
-// before the note existed.
+// the termination was sent. A note that fails decides nothing, and the handler runs.
 func (r consumerRun) noteRedelivery(ctx context.Context, message jetstream.Msg, metadata *jetstream.MsgMetadata, decoded decodedMessage) (decided, handled bool) {
 	spec := r.spec
 	delivered := metadata.NumDelivered
@@ -303,20 +308,9 @@ func (r consumerRun) noteRedelivery(ctx context.Context, message jetstream.Msg, 
 		_ = tx.Rollback(ctx)
 		return true, termMessage(spec.Logger, message)
 	case uint64(failure.EndedDelivery) < delivered-1 && giveUpDue(delivered-1, failure.FirstFailedAt, now, spec):
-		lastError := didNotEndError(delivered-1, failure.LastError)
-		given, gaveUp, err := records.GiveUpIntakeMessage(ctx, tx, spec.Project, failure.ID, record.GiveUpDidNotEnd, lastError, now)
-		if err == nil && !gaveUp {
-			err = fmt.Errorf("intake record %d was no open failure to give up", failure.ID)
-		}
-		if err == nil {
-			err = r.position(metadata, false).record(ctx, tx)
-		}
-		if err == nil {
-			err = r.commitGiveUp(ctx, tx, given, delivered, lastError)
-		}
-		if err != nil {
-			nakResolve(spec, message, delivered, decoded.EventID, "give up a message whose delivery did not end",
-				"nak the message whose give-up was not recorded", err)
+		if err := r.giveUpOpen(ctx, tx, metadata, failure.ID, record.GiveUpDidNotEnd, didNotEndError(delivered-1, failure.LastError), now); err != nil {
+			nakResolve(spec, message, delivered, decoded.EventID, nakOutcome("give up a message whose delivery did not end",
+				"nak the message whose give-up was not recorded", err))
 			return true, false
 		}
 		return true, termMessage(spec.Logger, message)
@@ -341,7 +335,7 @@ func (r consumerRun) failed(ctx context.Context, message jetstream.Msg, metadata
 	spec := r.spec
 	delivered := deliveredCount(metadata)
 	if metadata == nil {
-		nakResolve(spec, message, delivered, decoded.EventID, outcome.what, outcome.nakWhat, outcome.err)
+		nakResolve(spec, message, delivered, decoded.EventID, outcome)
 		return false
 	}
 	now := spec.Now()
@@ -349,7 +343,7 @@ func (r consumerRun) failed(ctx context.Context, message jetstream.Msg, metadata
 	stopping := ctx.Err() != nil
 	if stopping {
 		if !retention {
-			nakResolve(spec, message, delivered, decoded.EventID, outcome.what, outcome.nakWhat, outcome.err)
+			nakResolve(spec, message, delivered, decoded.EventID, outcome)
 			return false
 		}
 		detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), stopGiveUpBound)
@@ -364,7 +358,7 @@ func (r consumerRun) failed(ctx context.Context, message jetstream.Msg, metadata
 	if terminate {
 		return termMessage(spec.Logger, message)
 	}
-	nakResolve(spec, message, delivered, decoded.EventID, outcome.what, outcome.nakWhat, outcome.err)
+	nakResolve(spec, message, delivered, decoded.EventID, outcome)
 	return false
 }
 
@@ -398,17 +392,24 @@ func (r consumerRun) recordFailure(ctx context.Context, message jetstream.Msg, m
 	default:
 		return false, tx.Commit(ctx)
 	}
-	given, gaveUp, err := records.GiveUpIntakeMessage(ctx, tx, spec.Project, failure.ID, reason, lastError, now)
-	if err == nil && !gaveUp {
-		err = fmt.Errorf("intake record %d was no open failure to give up", failure.ID)
+	if err := r.giveUpOpen(ctx, tx, metadata, failure.ID, reason, lastError, now); err != nil {
+		return false, err
 	}
-	if err == nil {
-		err = r.position(metadata, false).record(ctx, tx)
+	return true, nil
+}
+
+// giveUpOpen gives up the open failure id in tx for reason, with lastError, at now
+// (GiveUpIntakeMessage), and commits it (commitGiveUp). A record that is no open failure any
+// more is an error, and the caller naks the message.
+func (r consumerRun) giveUpOpen(ctx context.Context, tx pgx.Tx, metadata *jetstream.MsgMetadata, id int64, reason record.IntakeGiveUpReason, lastError string, now time.Time) error {
+	given, gaveUp, err := record.NewStore().GiveUpIntakeMessage(ctx, tx, r.spec.Project, id, reason, lastError, now)
+	if err != nil {
+		return err
 	}
-	if err == nil {
-		err = r.commitGiveUp(ctx, tx, given, delivered, lastError)
+	if !gaveUp {
+		return fmt.Errorf("intake record %d was no open failure to give up", id)
 	}
-	return err == nil, err
+	return r.commitGiveUp(ctx, tx, metadata, given, lastError)
 }
 
 // noteFailed logs that step, a write of the give-up record of a delivery, failed, which leaves the
@@ -418,14 +419,18 @@ func (r consumerRun) noteFailed(message jetstream.Msg, decoded decodedMessage, s
 		"step", step, "event_id", decoded.EventID, "error", err)
 }
 
-// commitGiveUp commits tx, in which given was given up, under a commit scope whose hook wakes the
-// outbox lane of the notice that counted it (ConsumerSpec.WakeOutbox), then logs the give-up
-// (logGiveUp). whole is the error before the record cut it.
-func (r consumerRun) commitGiveUp(ctx context.Context, tx pgx.Tx, given record.IntakeFailure, delivered uint64, whole string, attributes ...any) error {
+// commitGiveUp records in tx, in which given was given up, the stream position of its delivery,
+// then commits tx under a commit scope whose hook wakes the outbox lane of the notice that counted
+// it (ConsumerSpec.WakeOutbox), and logs the give-up with JetStream's delivery count (logGiveUp).
+// whole is the error before the record cut it.
+func (r consumerRun) commitGiveUp(ctx context.Context, tx pgx.Tx, metadata *jetstream.MsgMetadata, given record.IntakeFailure, whole string, attributes ...any) error {
+	if err := r.position(metadata, false).record(ctx, tx); err != nil {
+		return err
+	}
 	if err := commitGiveUps(ctx, tx, r.spec, []record.IntakeFailure{given}); err != nil {
 		return err
 	}
-	logGiveUp(r.spec.Logger, given, delivered, whole, attributes...)
+	logGiveUp(r.spec.Logger, given, deliveredCount(metadata), whole, attributes...)
 	return nil
 }
 
@@ -497,11 +502,11 @@ type sweptPass struct {
 	listed map[int64]bool
 }
 
-// sweepFailures runs a failureSweep every period until ctx ends.
-func (c *Consumers) sweepFailures(ctx context.Context, every time.Duration) error {
+// sweepFailures runs a failureSweep every sweepEvery until ctx ends.
+func (c *Consumers) sweepFailures(ctx context.Context) error {
 	ctx = store.ForConcurrentWorker(ctx)
 	sweep := &failureSweep{consumers: c}
-	ticker := time.NewTicker(every)
+	ticker := time.NewTicker(c.sweepEvery)
 	defer ticker.Stop()
 	for {
 		select {
@@ -570,23 +575,37 @@ func (s *failureSweep) sweepConsumer(ctx context.Context, name string) (sweptPas
 	if len(passed) == 0 {
 		return pass, true
 	}
+	if err := s.giveUpPassed(ctx, passed, previous.at, floor); err != nil {
+		if ctx.Err() == nil {
+			spec.Logger.Warn("intake: the failure sweep could not give up the open failures a consumer moved past; the next pass tries again",
+				"consumer", name, "error", err)
+		}
+		return sweptPass{}, false
+	}
+	return pass, true
+}
+
+// giveUpPassed gives up passed, the open failures of one consumer that both this pass and the
+// previous one, which began at listedAt, listed at or below its ack floor (SweepPassedFailures),
+// commits, and logs each give-up with floor, this pass's ack floor.
+func (s *failureSweep) giveUpPassed(ctx context.Context, passed []int64, listedAt time.Time, floor uint64) error {
+	c := s.consumers
+	spec := c.spec
 	now := spec.Now()
 	tx, err := c.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err == nil {
-		defer func() { _ = tx.Rollback(ctx) }()
-		var given []record.IntakeFailure
-		if given, err = records.SweepPassedFailures(ctx, tx, spec.Project, passed, previous.at, now); err == nil {
-			if err = commitGiveUps(ctx, tx, spec, given); err == nil {
-				for _, failure := range given {
-					logGiveUp(spec.Logger, failure, uint64(failure.Deliveries), failure.LastError, "ack_floor", floor)
-				}
-				return pass, true
-			}
-		}
+	if err != nil {
+		return err
 	}
-	if ctx.Err() == nil {
-		spec.Logger.Warn("intake: the failure sweep could not give up the open failures a consumer moved past; the next pass tries again",
-			"consumer", name, "error", err)
+	defer func() { _ = tx.Rollback(ctx) }()
+	given, err := record.NewStore().SweepPassedFailures(ctx, tx, spec.Project, passed, listedAt, now)
+	if err != nil {
+		return err
 	}
-	return sweptPass{}, false
+	if err := commitGiveUps(ctx, tx, spec, given); err != nil {
+		return err
+	}
+	for _, failure := range given {
+		logGiveUp(spec.Logger, failure, uint64(failure.Deliveries), failure.LastError, "ack_floor", floor)
+	}
+	return nil
 }

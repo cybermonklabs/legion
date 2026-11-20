@@ -1243,8 +1243,7 @@ const pauseContract = 178
 // served the state without the key: one built before sjawhar/legion#2788 reads it with a strict
 // schema and would refuse the whole body for a key it does not name, and one built after strips
 // the key instead, so the strip is what keeps the give-ups from a caller that did not ask for them
-// rather than what keeps such a caller reading at all. It is this daemon's own contract, so a
-// renumber of DaemonAPIVersion at a forward merge moves this number with it.
+// rather than what keeps such a caller reading at all.
 const intakeGiveUpsContract = 184
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.

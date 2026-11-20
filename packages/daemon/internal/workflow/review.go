@@ -678,7 +678,8 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	// a review the review App submitted: no other author's review ever reaches the compare.
 	var reviewerClaim claim.Token
 	var reviewerSession string
-	if e.byReviewApp(fact.Author) {
+	byApp := e.byReviewApp(fact.Author)
+	if byApp {
 		reviewerClaim, reviewerSession, err = e.reviewersClaim(ctx, tx, *issue)
 		if err != nil {
 			return intake.Result{}, err
@@ -699,7 +700,7 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	// A deciding review of an earlier round than the one the reviewer's row stands at decides
 	// nothing, and nothing of it is written: no refusal, no order (earlierRound).
 	if decides {
-		if why := earlierRound(fact, reviewer, e.byReviewApp(fact.Author)); why != "" {
+		if why := earlierRound(fact, reviewer, byApp); why != "" {
 			e.logOnCommit(ctx, "workflow: a review of an earlier round decides nothing: "+why, "issue", issue.Key, "pull_request", pr.Number,
 				"author", fact.Author, "state", state, "submitted_at", fact.SubmittedAt, "footer_entry", fact.LegionEntry(),
 				"entry", reviewer.Entry, "entry_raised_at", reviewer.EntryRaisedAt)

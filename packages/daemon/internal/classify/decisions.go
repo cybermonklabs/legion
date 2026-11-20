@@ -746,7 +746,7 @@ func SettlementFor(pr record.PullRequest, candidate SettlementCandidate) (record
 // one run of each check name a head reported. A branch comes back to a head it held after a push
 // or two is undone, a reopen, or a new generation, each of which is a head or two back; sixteen
 // cover that with room. A head pushed out of the memory loses only this fence: an older
-// settlement of it applies, as one did before the record kept any.
+// settlement of it applies, as one of a head the record never settled does.
 const maxSettledHeads = 16
 
 // settledBefore says whether candidate is older, check by check (CompareAttemptSets), than the

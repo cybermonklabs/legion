@@ -12,8 +12,9 @@
 -- project, because the daemons of several projects can share one database.
 --
 -- cleared_pull_requests keeps, for each pull request whose row a new generation's clear deleted,
--- the time of the head the record last held, so a late opened event of that pull request at an
--- older head records nothing (record's clearGeneration, workflow's pullRequestOpened).
+-- the newest lifecycle clock the record applied (head_updated_at), so a late opened or reopened
+-- event of that pull request no newer than that clock records nothing, whatever its head
+-- (record's clearGeneration, workflow's pullRequestOpened).
 --
 -- pull_requests.settled_runs keeps, for each of the last heads a CI settlement of the pull request
 -- applied on, that head's newest run of each check (record.PullRequest.SettledRuns), at most 16
@@ -107,6 +108,11 @@ create table intake_failures (
 create index intake_failures_open_give_ups on intake_failures (project, consumer, stream_seq)
   where given_up_at is not null and closed_at is null;
 
+-- The open failures of one consumer, which the failure sweep lists at or below its ack floor once
+-- a minute, and a consumer made again lists whole (record's ListPassedFailures).
+create index intake_failures_open_failures on intake_failures (project, consumer, stream_seq)
+  where given_up_at is null;
+
 create table cleared_pull_requests (
   repo text not null,
   number integer not null,
@@ -114,6 +120,11 @@ create table cleared_pull_requests (
   cleared_at timestamptz not null,
   primary key (repo, number)
 );
+
+-- The clock read of a pull request a clear deleted (record's ClearedPullRequestClock) compares the
+-- repository case-insensitively, as 20261102095707_pull_request_repo_case_reads.up.sql indexes
+-- pull_requests for the same read.
+create index cleared_pull_requests_lower_repo_number on cleared_pull_requests (lower(repo), number);
 
 alter table pull_requests add column settled_runs jsonb not null default '[]'::jsonb;
 

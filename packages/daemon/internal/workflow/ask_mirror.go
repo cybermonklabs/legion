@@ -240,9 +240,11 @@ func (e *Engine) dispatchAskRestored(ctx context.Context, tx pgx.Tx, fact intake
 // close is kept under the one ref of its question, so the relay is the newest close's alone: a
 // root's close is relayed only when the mirror row holds it as the question's newest
 // (record.RootAsk.ClosedSeq), and the decision is kept at Dispatch's time of the close (decidedAt).
-// An earlier close reaching the daemon after a later one — late, or replayed from a message the
-// intake gave up on, however late — then neither tells the controller of a decision the person
-// has since replaced nor takes the newer decision's place, and its claim, among those kept.
+// An earlier close of a root's question reaching the daemon after a later one — late, or replayed
+// from a message the intake gave up on, however late — then neither tells the controller of a
+// decision the person has since replaced nor takes the newer decision's place, and its claim,
+// among those kept. A child's question has no such row, so its late close is still relayed, and
+// decidedAt keeps the newer decision in its place.
 func (e *Engine) dispatchAskClosed(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskClosed) (intake.Result, error) {
 	if err := e.closeAsk(ctx, tx, fact); err != nil || fact.Kind != record.AskQuestion {
 		return intake.Result{}, err

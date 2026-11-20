@@ -1651,18 +1651,15 @@ newest sequence on the consumer's `intake give-ups` line takes all of them. A co
 neither selection, both, or only one of `--consumer` and `--through-seq` exits 2 and sends
 nothing.
 
-- **`legion intake replay`** has the daemon apply each record again through the handling a live
-  delivery takes; it publishes nothing to the stream. It prints one line for each record,
-  `<id> <consumer> seq <n>: <outcome>`, then `remaining <n>`. The outcome `applied`,
-  `already applied` or `no fact` closes the record. The outcome `failed: <error>` leaves the
-  record as it was, with the new error, and the command exits 1. One call takes at most 100
-  records, the lowest stream sequences first, and `remaining` counts the open records of the
-  selection left after it, which the same command run again takes. By its id a replay takes a
-  discarded record too, which undoes a wrong discard.
-- **`legion intake discard`** also takes `--reason <text>` (required, at most 2,048 characters).
-  The daemon closes each open record of the selection as discarded and applies nothing; the record
-  stays, with the time, the caller (`operator`) and the reason. The command prints
+- **`legion intake replay`** prints one line for each record it took,
+  `<id> <consumer> seq <n>: <outcome>`, with the error after a `failed` one, then
+  `remaining <n>`. It exits 1 when a record failed.
+- **`legion intake discard`** also takes `--reason <text>` (required). It prints
   `discarded <id>` for each record it closed, or `discarded none`.
+
+What each outcome does to its record, how many records one call takes, what `remaining` counts
+and how a replay undoes a wrong discard are in
+[A message the intake gave up](/legion/legion/troubleshooting/#a-message-the-intake-gave-up).
 
 A refusal of the daemon, such as `409 GIVE_UP_CLOSED` for a discard of a closed record, is printed
 with its status and sentence, and the command exits 1.
