@@ -278,12 +278,11 @@ and each command runs there.
   what a page draws without a read comes at once. A row that waits for what the page draws at
   once, then reads what a read brings without waiting for it, fails there under every seed, where
   under `test:web` it fails only on a runner loaded enough to split the two commits:
-  `settings.test.tsx`'s mapping row read the sidebar's Settings link after the page's heading,
-  and the sidebar draws its links only once its inbox, pinned issues and projects have answered.
-  The wait is the real
-  `setImmediate`, which a fake clock does not hold, and a cache a row seeds, a mutation and a write
-  of the page's store run no `queryFn`, so none of them is held. A row that fails there and
-  passes under `test:web` reads before it waits. Waiting fixes none of three other kinds of
+  a row of `settings.test.tsx` read the sidebar's Settings link after the page's heading, and the
+  sidebar draws its links only once its inbox, pinned issues and projects have answered. The wait
+  is the real `setImmediate`, which a fake clock does not hold, and a cache a row seeds, a mutation
+  and a write of the page's store run no `queryFn`, so none of them is held. A row that fails there
+  and passes under `test:web` reads before it waits. Waiting fixes none of three other kinds of
   failure, which the head of `hold-read-answers.ts` names: a row that times a read's answer (the
   query client's own rows, a write's 401 path through the sign-in check), a row that ends while a
   read it never reads is out, whose late answer React reports outside `act`, and a page that
