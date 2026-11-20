@@ -189,8 +189,10 @@ function TokenProjectsChoice({
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const names = new Map(projects.map((listed) => [listed.key, listed.name]));
-  const options = [...names.keys(), ...chosen.filter((key) => !names.has(key))];
+  // A closed picker draws no option (MultiSelect), so its options are built only while it is open:
+  // a page of tokens re-renders every row's picker on each change, and each would build them all.
+  const names = new Map(open ? projects.map((listed) => [listed.key, listed.name]) : []);
+  const options = open ? [...names.keys(), ...chosen.filter((key) => !names.has(key))] : [];
   // The name holds the text the trigger shows, after whose token it is, so a reader who says what
   // they see reaches it (WCAG 2.5.3, Label in Name).
   const shown =
