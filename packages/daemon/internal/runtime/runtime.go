@@ -269,8 +269,9 @@ type WorkspaceBundler interface {
 // what goes with the pod, and it is one runtime call so that INFRA-3271 can make the same read with
 // its own reading (spec R1 of INFRA-4109). The role named must be one whose process runs in the
 // issue's pod: its shim reads the workspace with the jj it already works with. The read keeps
-// nothing: it writes no ref and saves no bundle. A runtime whose processes share no workspace
-// implements nothing here.
+// nothing of the work and saves no bundle; the one thing it writes is jj's snapshot of the working
+// copy (Conn.WorkspaceWork). A runtime whose processes share no workspace implements nothing
+// here.
 type WorkspaceWorkReader interface {
 	WorkspaceWork(ctx context.Context, issue string, role claim.Role) (WorkspaceWork, error)
 }

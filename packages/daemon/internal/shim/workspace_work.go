@@ -1,15 +1,11 @@
 package shim
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 	"time"
+	"unicode/utf8"
 
-	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -47,7 +43,8 @@ const workspaceWorkRevset = `(::(working_copies() | bookmarks()) ~ ::(remote_boo
 // workspaceWork answers `workspace-work`: the read of the work the workspace this shim runs in
 // holds that origin does not. A request the shim cannot act on is answered with the reason when it
 // names an id to answer. The answer lists the first shimwire.MaxWorkspaceWorkCommits work commits
-// and counts them all, so it always fits one line.
+// and counts them all, and a refusal carries at most maxAnswerErrorBytes of its reason
+// (cutAnswerError), so the answer always fits one line.
 func (s *shim) workspaceWork(request shimwire.WorkspaceWork) {
 	result := shimwire.WorkspaceWorkResult{ID: request.ID, OK: true}
 	if err := request.Validate(); err != nil {
@@ -55,9 +52,9 @@ func (s *shim) workspaceWork(request shimwire.WorkspaceWork) {
 			s.log.Printf("[worker-shim] refusing a workspace-work frame: %v", err)
 			return
 		}
-		result.OK, result.Error = false, err.Error()
+		result.OK, result.Error = false, cutAnswerError(err.Error())
 	} else if head, changed, work, err := s.readWorkspaceWork(request); err != nil {
-		result.OK, result.Error = false, err.Error()
+		result.OK, result.Error = false, cutAnswerError(err.Error())
 	} else {
 		result.Head, result.Changed, result.Count = head, changed, len(work)
 		result.Commits = work[:min(len(work), shimwire.MaxWorkspaceWorkCommits)]
@@ -65,31 +62,58 @@ func (s *shim) workspaceWork(request shimwire.WorkspaceWork) {
 	s.toDaemon(result)
 }
 
-// readWorkspaceWork runs the read's two jj commands with the jj of PATH in the workspace the
-// shim's environment names in LEGION_WORKSPACE, as runBundle does. The first reads the working
-// copy's commit and whether it is empty, and it is the one jj snapshot the read makes; the second
-// is --ignore-working-copy, so both describe one state of the workspace. It answers the working
-// copy's commit, whether that commit holds a change, and every work commit (workspaceWorkRevset),
-// newest first. It writes no ref and no file, and needs no git. The budget is a bound on the
-// shim's command context (s.commands), as runBundle's is.
-func (s *shim) readWorkspaceWork(request shimwire.WorkspaceWork) (head string, changed bool, work []string, err error) {
-	dir := envValue(s.cfg.Env, "LEGION_WORKSPACE")
-	if dir == "" {
-		return "", false, nil, errors.New("worker-shim: LEGION_WORKSPACE is not set; no workspace to read")
-	}
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		return "", false, nil, fmt.Errorf("worker-shim: jj is not on PATH (%s); no jj to read the workspace with", os.Getenv("PATH"))
-	}
-	budget := time.Duration(request.TimeoutMs) * time.Millisecond
-	ctx, cancel := context.WithTimeout(s.commands, budget)
-	defer cancel()
-	started := time.Now()
-	run := func(args ...string) (string, error) {
-		return workspace.RunCommand(ctx, procgroup.NoReaper, budget, started, s.cfg.Env, dir, nil, args)
-	}
+// maxAnswerErrorBytes is the most of a refusal's reason that a one-line answer to the daemon
+// carries: the answer to `workspace-work` (workspaceWork) and to `adopt-working-copy` (adopt).
+// A failed command's reason holds all of jj's standard error (workspace.RunCommand), which has no
+// bound of its own. Such an answer goes out as one line, and the writer refuses a line over
+// shimwire.MaxFrameBytes: the outbox then closes the connection and sends that line first again
+// at each reconnect, so the role's stream stays down (ASVS v5.0.0-15.2.2). A cut reason keeps its
+// start, which names the command, its exit and jj's first words, and its end, where
+// workspace.RunCommand puts the note it adds to a failure (workspace.StaleGitLockNote, which tells
+// the role what to do about a git lock). The daemon names the reason on its log lines, and for the
+// read in the message on the issue too, which a short reason keeps readable. The bundle's answer
+// goes chunked instead (toDaemonChunked), since its bundle is larger than any line.
+const maxAnswerErrorBytes = 4 << 10
 
-	at, err := run(jj, "log", "-R", dir, "-r", "@", "--no-graph", "-T", `commit_id ++ " " ++ empty`)
+// cutAnswerError is reason as a one-line answer carries it: all of it when it is at most
+// maxAnswerErrorBytes, and otherwise its first and its last half of that bound, each cut where a
+// UTF-8 character starts, with a line between them that says how many bytes the shim cut there and
+// how long the reason was.
+func cutAnswerError(reason string) string {
+	if len(reason) <= maxAnswerErrorBytes {
+		return reason
+	}
+	head := maxAnswerErrorBytes / 2
+	for head > 0 && !utf8.RuneStart(reason[head]) {
+		head--
+	}
+	tail := len(reason) - maxAnswerErrorBytes/2
+	for tail < len(reason) && !utf8.RuneStart(reason[tail]) {
+		tail++
+	}
+	return fmt.Sprintf("%s\n[The shim cut %d bytes of this error here. The error had %d bytes.]\n%s",
+		reason[:head], tail-head, len(reason), reason[tail:])
+}
+
+// readWorkspaceWork runs the read's two jj commands in the workspace the shim's environment
+// names in LEGION_WORKSPACE, with the jj of PATH and within the request's budget, as runBundle
+// does (openWorkspace). The first reads the working copy's commit and whether it is empty, and it
+// is the one jj snapshot the read makes; the second is --ignore-working-copy, so both describe one
+// state of the workspace. It answers the working copy's commit, whether that commit holds a
+// change, and every work commit (workspaceWorkRevset), newest first. The snapshot is what the read
+// writes, as every jj command that reads the working copy does: jj records an operation and, where
+// files of the working copy changed, a new working-copy commit and the git ref jj keeps for it
+// (refs/jj/keep). The read changes no file of the working copy, moves no bookmark and pushes
+// nothing, and it needs no git.
+func (s *shim) readWorkspaceWork(request shimwire.WorkspaceWork) (head string, changed bool, work []string, err error) {
+	opened, done, err := s.openWorkspace("read", time.Duration(request.TimeoutMs)*time.Millisecond)
+	if err != nil {
+		return "", false, nil, err
+	}
+	defer done()
+	dir, jj, run := opened.dir, opened.jj, opened.run
+
+	at, err := run(nil, jj, "log", "-R", dir, "-r", "@", "--no-graph", "-T", `commit_id ++ " " ++ empty`)
 	if err != nil {
 		return "", false, nil, err
 	}
@@ -97,7 +121,7 @@ func (s *shim) readWorkspaceWork(request shimwire.WorkspaceWork) (head string, c
 	if head == "" || (empty != "true" && empty != "false") {
 		return "", false, nil, fmt.Errorf("worker-shim: jj answered %q for the working copy, not its commit and whether it is empty", at)
 	}
-	listed, err := run(jj, "log", "-R", dir, "--ignore-working-copy", "-r", workspaceWorkRevset, "--no-graph", "-T", `commit_id ++ "\n"`)
+	listed, err := run(nil, jj, "log", "-R", dir, "--ignore-working-copy", "-r", workspaceWorkRevset, "--no-graph", "-T", `commit_id ++ "\n"`)
 	if err != nil {
 		return "", false, nil, err
 	}

@@ -1,11 +1,13 @@
 package shim_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
@@ -154,6 +156,54 @@ func TestAMalformedWorkspaceWorkFrameReachesNoAgent(t *testing.T) {
 	}
 	if got := frameTypes(child.received(t)); !reflect.DeepEqual(got, []string{shimwire.TypeGetState}) {
 		t.Fatalf("OMP read %v; a workspace-work frame is the shim's own", got)
+	}
+}
+
+// A read that fails answers its reason to the daemon on the connection it was asked on, however
+// much jj wrote to its standard error. The reason holds all of that error, which nothing else
+// bounds, so a jj that writes more than one line can hold would make an answer the writer
+// refuses: the shim would close the connection and send that line first again at each
+// reconnect, so the role's stream would stay down. The answer keeps the start of the reason,
+// which names the command, its exit and jj's first words, and says that the shim cut the rest
+// (ASVS v5.0.0-15.2.2). The connection then carries the next answer, and Oh My Pi reads nothing
+// of the read.
+func TestAWorkspaceWorkFailureWithAnErrorOverOneLineReachesTheDaemon(t *testing.T) {
+	bin := t.TempDir()
+	script := fmt.Sprintf("#!/bin/sh\necho 'Error: the working copy is stale' >&2\nhead -c %d /dev/zero | tr '\\0' x >&2\nexit 3\n",
+		2*shimwire.MaxFrameBytes)
+	if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
+		t.Fatalf("write the fake jj: %v", err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	path := socketPath(t)
+	daemon := listen(t, path)
+	child := newOMP(t)
+	cfg := config(t, path, child)
+	cfg.Env = append(fixtureenv.Isolated(t.TempDir()), fakeOMPEnv+"=1", "FAKE_OMP_MARKER="+child.marker,
+		"FAKE_OMP_LOG="+child.log, "LEGION_WORKSPACE="+t.TempDir())
+	run(t, cfg, newClock())
+	p := daemon.accept(t)
+	p.open(t)
+
+	p.send(t, shimwire.WorkspaceWork{ID: "read-2", Issue: workIssue, TimeoutMs: 120_000})
+	got, ok := p.next(t).(shimwire.WorkspaceWorkResult)
+	if !ok || got.ID != "read-2" || got.OK {
+		t.Fatalf("the shim answered %#v, want the refusal of read-2", got)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Command failed (exit 3)", "jj log", "the working copy is stale", "cut"} {
+		if !strings.Contains(got.Error, want) {
+			t.Fatalf("the refusal reads %.300q, want it to say %q", got.Error, want)
+		}
+	}
+	p.send(t, shimwire.GetState{ID: "after"})
+	if answer, ok := p.next(t).(shimwire.Response); !ok || answer.ID != "after" {
+		t.Fatalf("the shim sent %#v, want OMP's answer to the get_state after the read on the same connection", answer)
+	}
+	if types := frameTypes(child.received(t)); !reflect.DeepEqual(types, []string{shimwire.TypeGetState}) {
+		t.Fatalf("OMP read %v; workspace-work is the shim's own", types)
 	}
 }
 

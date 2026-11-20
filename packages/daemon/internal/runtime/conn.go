@@ -125,10 +125,13 @@ type Conn interface {
 	// size it would have been in the refusal, so the release can stop and record why.
 	BundleWorkspace(ctx context.Context, issue string, timeout time.Duration) (WorkspaceBundle, error)
 	// WorkspaceWork has the agent's side read whether the workspace every role of issue shares
-	// holds work that no branch or tag on origin holds, within timeout. It writes nothing. A
-	// shim that cannot read it refuses with its reason, and a shim built before the read is
-	// refused by Oh My Pi as an unknown command; both are refusals that carry their words
-	// (RefusalReason), and neither is an answer of no work.
+	// holds work that no branch or tag on origin holds, within timeout. The read snapshots the
+	// working copy, as every jj command that reads it does: jj records an operation and, where
+	// files changed, a new working-copy commit and the git ref jj keeps for it (refs/jj/keep). It
+	// changes no file of the working copy, moves no bookmark and pushes nothing. A shim that
+	// cannot read it refuses with its reason, and a shim built before the read is refused by Oh
+	// My Pi as an unknown command; both are refusals that carry their words (RefusalReason), and
+	// neither is an answer of no work.
 	WorkspaceWork(ctx context.Context, issue string, timeout time.Duration) (WorkspaceWork, error)
 	// AgentSecretsEnrollment hands the agent's shim the secrets broker's enrollment id for its
 	// process, which the shim keeps beside the key it generated.

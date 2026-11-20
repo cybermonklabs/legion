@@ -84,22 +84,20 @@ func (s *shim) bundleWorkspace(request shimwire.BundleWorkspace) {
 
 // runBundle builds the bundle with the jj and git of PATH — the ones the pane's or pod's own
 // shell runs, since no runtime pins either on a pane or a pod — in the workspace the shim's
-// environment names in LEGION_WORKSPACE, which the runtime sets on every role. It reads the
-// working copy's commit first, which is the one jj snapshot the save makes; every read after it
-// is --ignore-working-copy, so the whole save describes one state of the workspace. The bundle is
-// written under the process's temporary directory, never in the workspace, and removed. The
-// budget is a bound on the shim's command context (s.commands) rather than a context of its own,
-// so the shim's own end ends the save's jj and git at once and a command that outlives the budget
-// is still reported as a timeout.
+// environment names in LEGION_WORKSPACE, which the runtime sets on every role (openWorkspace). It
+// reads the working copy's commit first, which is the one jj snapshot the save makes; every read
+// after it is --ignore-working-copy, so the whole save describes one state of the workspace. The
+// bundle is written under the process's temporary directory, never in the workspace, and removed.
+// The budget is a bound on the shim's command context (s.commands) rather than a context of its
+// own, so the shim's own end ends the save's jj and git at once and a command that outlives the
+// budget is still reported as a timeout.
 func (s *shim) runBundle(request shimwire.BundleWorkspace) (workspaceSave, error) {
-	dir := envValue(s.cfg.Env, "LEGION_WORKSPACE")
-	if dir == "" {
-		return workspaceSave{}, errors.New("worker-shim: LEGION_WORKSPACE is not set; no workspace to bundle")
-	}
-	jj, err := exec.LookPath("jj")
+	opened, done, err := s.openWorkspace("bundle", time.Duration(request.TimeoutMs)*time.Millisecond)
 	if err != nil {
-		return workspaceSave{}, fmt.Errorf("worker-shim: jj is not on PATH (%s); no jj to read the workspace with", os.Getenv("PATH"))
+		return workspaceSave{}, err
 	}
+	defer done()
+	dir, jj, run := opened.dir, opened.jj, opened.run
 	git, err := exec.LookPath("git")
 	if err != nil {
 		return workspaceSave{}, fmt.Errorf("worker-shim: git is not on PATH (%s); no git to bundle the workspace with", os.Getenv("PATH"))
@@ -107,13 +105,6 @@ func (s *shim) runBundle(request shimwire.BundleWorkspace) (workspaceSave, error
 	gitDir, err := workspace.GitDir(dir)
 	if err != nil {
 		return workspaceSave{}, fmt.Errorf("worker-shim: %w", err)
-	}
-	budget := time.Duration(request.TimeoutMs) * time.Millisecond
-	ctx, cancel := context.WithTimeout(s.commands, budget)
-	defer cancel()
-	env, started := s.cfg.Env, time.Now()
-	run := func(stdin []byte, args ...string) (string, error) {
-		return workspace.RunCommand(ctx, procgroup.NoReaper, budget, started, env, dir, stdin, args)
 	}
 	read := func(revset string) ([]string, error) {
 		out, err := run(nil, jj, "log", "-R", dir, "--ignore-working-copy", "-r", revset, "--no-graph", "-T", `commit_id ++ "\n"`)
@@ -192,6 +183,42 @@ func (s *shim) runBundle(request shimwire.BundleWorkspace) (workspaceSave, error
 		bundle: shimwire.WorkspaceBundle{Bundle: bundle, Head: head, Tips: tips, Bookmarks: bookmarks, At: time.Now().UTC()},
 		size:   len(bundle),
 	}, nil
+}
+
+// openedWorkspace is what one request of the daemon's runs its commands with in the workspace
+// its role works in (openWorkspace): the workspace, the jj of PATH, and run, which runs one
+// command there within the request's budget, with stdin fed to it, and answers its trimmed
+// standard output (workspace.RunCommand).
+type openedWorkspace struct {
+	dir string
+	jj  string
+	run func(stdin []byte, args ...string) (string, error)
+}
+
+// openWorkspace is the one start of every request a shim answers in its role's workspace: the
+// save (runBundle) and the read (readWorkspaceWork). The workspace is the one the shim's
+// environment names in LEGION_WORKSPACE, which the runtime sets on every role, and the jj is the
+// one of PATH, which the pane's or pod's own shell runs, since no runtime pins it on a pane or a
+// pod. The budget is a bound on the shim's command context (s.commands) rather than a context of
+// its own, so the shim's own end ends the request's commands at once and a command that outlives
+// the budget is still reported as a timeout. The caller calls done once its commands have run.
+// verb is what the caller does to the workspace ("bundle", "read"), which the refusal of a shim
+// with no LEGION_WORKSPACE names: "no workspace to <verb>".
+func (s *shim) openWorkspace(verb string, budget time.Duration) (opened openedWorkspace, done context.CancelFunc, err error) {
+	dir := envValue(s.cfg.Env, "LEGION_WORKSPACE")
+	if dir == "" {
+		return openedWorkspace{}, nil, fmt.Errorf("worker-shim: LEGION_WORKSPACE is not set; no workspace to %s", verb)
+	}
+	jj, err := exec.LookPath("jj")
+	if err != nil {
+		return openedWorkspace{}, nil, fmt.Errorf("worker-shim: jj is not on PATH (%s); no jj to read the workspace with", os.Getenv("PATH"))
+	}
+	ctx, cancel := context.WithTimeout(s.commands, budget)
+	env, started := s.cfg.Env, time.Now()
+	run := func(stdin []byte, args ...string) (string, error) {
+		return workspace.RunCommand(ctx, procgroup.NoReaper, budget, started, env, dir, stdin, args)
+	}
+	return openedWorkspace{dir: dir, jj: jj, run: run}, cancel, nil
 }
 
 // bookmarksInto is every local bookmark of listed that points at a commit the bundle keeps, by

@@ -115,7 +115,8 @@ func (s *shim) drainCommands() {
 
 // adopt answers `adopt-working-copy` (the adoption branch of createShimBridge's onLine,
 // worker-shim.ts). A request the shim cannot act on is answered with the reason when it names an
-// id to answer.
+// id to answer. The answer goes out as one line, so a refusal carries at most maxAnswerErrorBytes
+// of its reason (cutAnswerError): jj's standard error has no bound of its own.
 func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 	result := shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: true}
 	if err := request.Validate(); err != nil {
@@ -123,9 +124,9 @@ func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 			s.log.Printf("[worker-shim] refusing an adopt-working-copy frame: %v", err)
 			return
 		}
-		result.OK, result.Error = false, err.Error()
+		result.OK, result.Error = false, cutAnswerError(err.Error())
 	} else if err := s.runAdoption(request); err != nil {
-		result.OK, result.Error = false, err.Error()
+		result.OK, result.Error = false, cutAnswerError(err.Error())
 	}
 	s.toDaemon(result)
 }

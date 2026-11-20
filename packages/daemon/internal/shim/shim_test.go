@@ -1559,6 +1559,69 @@ func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 	}
 }
 
+// An adoption that fails answers its reason to the daemon on the connection it was asked on,
+// however much jj wrote to its standard error. The answer goes out as one line, and an error
+// longer than one line can hold would make an answer the writer refuses: the shim would close the
+// connection and send that line first again at each reconnect, so the role's stream would stay
+// down (ASVS v5.0.0-15.2.2). The answer keeps the start of the reason, which names the command and
+// its exit, and its end, where the note about a stale git lock goes, which tells the role what to
+// do; it says that the shim cut the bytes between. The connection then carries the next answer.
+func TestAdoptWorkingCopyFailureOverOneLineKeepsItsStartAndItsLockNote(t *testing.T) {
+	workspace := t.TempDir()
+	lock := filepath.Join(workspace, ".git", "index.lock")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	written := time.Now().Add(-31 * time.Minute)
+	if err := os.Chtimes(lock, written, written); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	script := fmt.Sprintf("#!/bin/sh\necho 'Error: the working copy is stale' >&2\nhead -c %d /dev/zero | tr '\\0' x >&2\n"+
+		"echo >&2\necho \"fatal: Unable to create '%s': File exists.\" >&2\nexit 1\n", 2*shimwire.MaxFrameBytes, lock)
+	if err := os.WriteFile(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	path := socketPath(t)
+	daemon := listen(t, path)
+	child := newOMP(t)
+	cfg := config(t, path, child)
+	cfg.Env = append(fixtureenv.Isolated(t.TempDir()), fakeOMPEnv+"=1", "FAKE_OMP_MARKER="+child.marker,
+		"FAKE_OMP_LOG="+child.log, "LEGION_WORKSPACE="+workspace)
+	run(t, cfg, newClock())
+	p := daemon.accept(t)
+	p.open(t)
+	p.send(t, shimwire.AdoptWorkingCopy{ID: "adopt", JJUser: "tester", JJEmail: "tester@example.test", TimeoutMs: 10000})
+	got, ok := p.next(t).(shimwire.AdoptWorkingCopyResult)
+	if !ok || got.ID != "adopt" || got.OK {
+		t.Fatalf("the shim answered %#v, want the failed adoption", got)
+	}
+	// The shim keeps 4 KiB of a reason and a line that says what it cut (shim's cutAnswerError).
+	if len(got.Error) > 8<<10 {
+		t.Fatalf("the failed adoption's reason has %d bytes, want it cut to about 4 KiB", len(got.Error))
+	}
+	for _, want := range []string{
+		"Command failed (exit 1)",
+		"the working copy is stale",
+		"The shim cut",
+		"git lock " + lock + " was last written 31m",
+		"Run the command again in about 16 minutes.",
+	} {
+		if !strings.Contains(got.Error, want) {
+			t.Errorf("the failed adoption's reason %.300q ... %.300q does not say %q", got.Error, got.Error[max(len(got.Error)-300, 0):], want)
+		}
+	}
+	p.send(t, shimwire.GetState{ID: "after"})
+	if answer, ok := p.next(t).(shimwire.Response); !ok || answer.ID != "after" {
+		t.Fatalf("the shim sent %#v, want OMP's answer to the get_state after the adoption on the same connection", answer)
+	}
+}
+
 // The delivery dedupe end to end: the daemon retrying a prompt with the same deliveryId reaches
 // OMP once, and every repeat is answered by the shim with the replay rules of internal/shimwire
 // — the ack, a start carrying the deliveryId once the turn began, and its end once it is over.

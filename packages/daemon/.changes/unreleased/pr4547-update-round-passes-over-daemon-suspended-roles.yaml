@@ -5,14 +5,18 @@ body: |-
     round asks and waits for the same roles (one predicate), and it does not ask, wake or resume
     such a role: an ask queued before the suspension now ends without a publish. An operator's
     suspension still holds the round past its bound, and a role that the project pause stopped
-    stays the pause's while the pause keeps its pod. Before the round replaces a pod without
-    waiting for such a role, it reads the issue workspace once through a role whose process runs in
-    the pod (the new shim frame `workspace-work`), and writes one message on the issue where the
-    read finds work that no branch or tag at origin holds, or fails. A round whose pod has no role
+    stays the pause's while the pause keeps its pod. Where the round passed over a role that the
+    daemon suspended, it reads the issue workspace once through a role whose process runs in the
+    pod (the new shim frame `workspace-work`) before it replaces the pod, once every role it asks
+    has answered and no turn runs, and writes one message on the issue where the read finds work
+    that no branch or tag at origin holds, or fails. A replacement the bound lets through over a
+    role that has not answered, or over a turn, makes no read. A round whose pod has no role
     process in it is replaced by issue where nothing holds the pod, and a launch into such a pod
-    reads the round's bound when it runs and replaces the pod first, so the role starts once. The
-    sweep decides the end of a round once while the end reaches the roles' machines, and a pod the
-    runtime cannot read is told to the controller once past the round's bound.
+    reads the round's bound when it runs and replaces the pod first, so the role starts once; a pod
+    that a project's pause still keeps for a role it stopped is kept, and so is the pod of that
+    role's own launch. The sweep decides the end of a round once while the end reaches the roles'
+    machines, and a pod the runtime cannot read is told to the controller once past the round's
+    bound.
 time: 2026-11-20T03:45:16Z
 custom:
     Issue: pr4547

@@ -873,10 +873,10 @@ type BundleWorkspaceResult struct {
 }
 
 // WorkspaceWork asks the shim whether the workspace it runs in holds work that no branch or tag
-// on origin holds: a read, which writes no ref and moves no bytes of the work. The daemon names
-// the issue whose workspace it asks about and the budget, never a command or a path: the shim
-// reads the one workspace its environment names, which is that issue's, with the jj it already
-// works with.
+// on origin holds: a read, which moves no bytes of the work and writes only jj's snapshot of the
+// working copy. The daemon names the issue whose workspace it asks about and the budget, never a
+// command or a path: the shim reads the one workspace its environment names, which is that
+// issue's, with the jj it already works with.
 type WorkspaceWork struct {
 	ID        string `json:"id"`
 	Issue     string `json:"issue"`
