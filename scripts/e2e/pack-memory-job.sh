@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # The measurement Job of the pack-memory checks: c-git-rows, c-jj-snapshot-memory,
-# c-handoff-head-read-memory and c-shim-adoption-memory. One Kubernetes Job, on the worker image
-# the caller names by digest, under gVisor, makes a large repository's clone and jj workspace with
+# c-handoff-head-read-memory, c-shim-adoption-memory and c-budget-under-gvisor, and the Job's
+# halves of c-pack-window-config and c-release-source. One Kubernetes Job, on the worker image the
+# caller names by digest, under gVisor, makes a large repository's clone and jj workspace with
 # the image's own code (`legion workspace-init cache`, `fetch` and `provision`) on a disk volume,
 # as an issue pod's are made, and measures the memory of git and jj there: each git row with the
-# role's own git settings and with git's defaults forced, each jj row with the image's jj and with
-# jj 0.45.1-sami.20260910-043938, the control. The implementer runs it at the head it measures,
-# and the tester runs it again at the head it tests, so this recipe is the one both read.
+# role's own git settings and with git's defaults forced, each jj row of R3 to R5 with the image's
+# jj and with jj 0.45.1-sami.20260910-043938, the control, and R10's rows with the released jj at
+# each JJ_PACK_MAPPED_LIMIT budget and with jj 0.46.0-sami.20261008-234600, their control, each
+# on a copy of its own. It reads the image's `git config --system` and `jj --version` too. The
+# implementer runs it at the head it measures, and the tester runs it again at the head it tests,
+# so this recipe is the one both read.
 #
 # It is three files: this harness, which renders the Job, creates it and reads its verdict;
 # `pack-memory-probe.sh` beside it, the text the Job runs inside the image, whose header says what
@@ -25,7 +29,11 @@
 #   - a check that the commands the probe copies are still the ones the code builds: the shim's
 #     describedArgs and adoptionArgs (packages/daemon/internal/shim/commands.go) and
 #     handoff-record.ts's STANDING read (packages/pi-shared/src/handoff-record.ts). A change to
-#     any of them is a refusal here, naming the line, until the probe is changed with it.
+#     any of them is a refusal here, naming the line, until the probe is changed with it;
+#   - the jj release this checkout's image installs: the version that the one `ARG
+#     JJ_TOOL=<source>@<version>` line of packages/daemon/docker/worker.Dockerfile names, set on
+#     the container as PACK_MEMORY_JJ_TOOL_VERSION, which the image's `jj --version` must print
+#     (c-release-source).
 #
 # Inputs. Every value private to a deployment is an input and never a literal here: this
 # repository is public, and its deployment's namespace, compute class, storage class and the
@@ -49,7 +57,9 @@
 #   --cpu <quantity>                the container's CPU, request and limit (default 8).
 #   --memory <quantity>             its memory, request and limit (default 32Gi): the controls
 #                                   peaked near 13 GB on the largest repository measured.
-#   --disk <quantity>               the disk volume's size (default 120Gi).
+#   --disk <quantity>               the disk volume's size (default 300Gi): the original root,
+#                                   six copies of it whose packs are hardlinks of its own, and one
+#                                   fresh root of R10's at a time.
 #   --deadline <seconds>            activeDeadlineSeconds on the Job and on its pod template
 #                                   (default 28800; at most 43200, which docs/kubernetes.md allows).
 #   --prefix <generateName prefix>  the Job's metadata.generateName, ending in a hyphen (default
@@ -121,7 +131,7 @@ labels=()
 annotations=()
 cpu=8
 memory=32Gi
-disk=120Gi
+disk=300Gi
 deadline=28800
 prefix=infra-4036-pack-memory-
 repo=mozilla-firefox/firefox
@@ -147,7 +157,7 @@ usage: scripts/e2e/pack-memory-job.sh --image <ref>@sha256:<64 hex>
   --annotation     an annotation on the Job and on its pod template; repeatable.
   --cpu            CPU, request and limit (default 8).
   --memory         memory, request and limit (default 32Gi).
-  --disk           the disk volume's size (default 120Gi).
+  --disk           the disk volume's size (default 300Gi).
   --deadline       activeDeadlineSeconds of the Job and its pod, at most 43200 (default 28800).
   --prefix         the Job's metadata.generateName, ending in a hyphen.
   --repo           the public repository to measure (default mozilla-firefox/firefox).
@@ -311,6 +321,14 @@ holds_line packages/daemon/internal/shim/commands.go \
 holds_line packages/pi-shared/src/handoff-record.ts \
   'const STANDING = ["log", "-r", "@-", "--no-graph", "-T", "commit_id"] as const;'
 
+# The jj release this checkout's image installs, which the image's `jj --version` must print
+# (c-release-source): the version of worker.Dockerfile's one `ARG JJ_TOOL=<source>@<version>`.
+dockerfile=packages/daemon/docker/worker.Dockerfile
+mapfile -t jj_tool < <(grep -E '^ARG JJ_TOOL=' "$repo_root/$dockerfile" || true)
+[ "${#jj_tool[@]}" -eq 1 ] || refuse "$dockerfile holds ${#jj_tool[@]} lines ARG JJ_TOOL=…, not one; the probe checks the image's jj --version against it"
+jj_tool_version=${jj_tool[0]##*@}
+[[ $jj_tool_version =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ ]] || refuse "$dockerfile's [${jj_tool[0]}] names no version after its @"
+
 # The role's GIT_CONFIG block, from this checkout's own Go list. Each line is NAME=value, the value
 # everything after the first `=`; the names must come in the order a role's block has them.
 block=$(cd "$repo_root/packages/daemon" && go run ./internal/runtime/sandbox/rolegitconfig) ||
@@ -458,6 +476,8 @@ ${selector_yaml}      securityContext:
               value: $(yaml_quote "$image")
             - name: PACK_MEMORY_IMAGE_REVISION
               value: $(yaml_quote "${image_revision//$'\n'/ }")
+            - name: PACK_MEMORY_JJ_TOOL_VERSION
+              value: $(yaml_quote "$jj_tool_version")
             # The role's GIT_CONFIG block, built from this checkout (rolegitconfig).
 ${git_env_yaml}          volumeMounts:
             - name: scratch
@@ -508,6 +528,7 @@ echo "image:         $image"
 echo "revision:      $image_revision"
 echo "checkout:      $repo_root (git HEAD $(git -C "$repo_root" rev-parse HEAD 2> /dev/null || echo unread))"
 echo "repository:    $repo, walking $walk_file"
+echo "jj release:    $jj_tool_version, as $dockerfile's ARG JJ_TOOL names it"
 echo "resources:     $cpu CPU, $memory memory, $disk disk of class $storage_class, deadline $deadline s"
 echo "selector:"
 printf '%s' "$selector_yaml"

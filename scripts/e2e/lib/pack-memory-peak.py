@@ -27,6 +27,15 @@ path, however many mappings or processes share it (pack_files). A peak shorter t
 can fall between two samples; GNU time's figure, the largest resident set of any one process of
 the tree, is the one that sees it, which is why the probe bounds a row by both.
 
+Beside that sample it reports, over every sample, the largest pack Rss, anonymous memory and
+other-file Rss (max_pack_kib, max_anon_kib, max_other_file_kib), each its own largest and not one
+instant's, which R10's pack figure is made of; and, for each path under /objects/pack/, the most
+mappings of it one sample held, across every process of the tree (pack_file_mappings). The largest
+.pack file among them by size is named with its size and that count (largest_pack_file,
+largest_pack_file_bytes, largest_pack_file_mappings, 0 when no sample held a pack file): a build
+that maps a pack whole maps it once for each object store that opens it, so that count is the
+command's number of stores.
+
 Without --inherit, COMMAND's stdout goes to D/L.out and its stderr to D/L.err, and the RESULT line
 (`RESULT ` then one JSON object) is printed on stdout. With --inherit, COMMAND keeps this
 process's stdin, stdout and stderr, so whatever runs this reads COMMAND's own output and nothing
@@ -126,9 +135,9 @@ def empty():
 
 
 def sample(root):
-    """One instant of the tree under root: its totals and the pack mappings' counts."""
+    """One instant of the tree under root: its totals, and the mappings of each pack path."""
     totals = empty()
-    files = set()
+    per_file = {}
     for pid in tree(root):
         try:
             with open(f"/proc/{pid}/smaps") as f:
@@ -139,7 +148,7 @@ def sample(root):
                         path = parts[5].strip() if len(parts) > 5 else ""
                         if PACK in path:
                             totals["mappings"] += 1
-                            files.add(path)
+                            per_file[path] = per_file.get(path, 0) + 1
                     elif line.startswith("Rss:"):
                         kib = int(line.split()[1])
                         totals["total"] += kib
@@ -154,8 +163,16 @@ def sample(root):
         except (OSError, IndexError, ValueError):
             # The process ended while it was read; what it held is gone from this instant.
             continue
-    totals["files"] = len(files)
-    return totals
+    totals["files"] = len(per_file)
+    return totals, per_file
+
+
+def size(path):
+    """The size of the file a mapping names, None when it is gone or unreadable."""
+    try:
+        return os.stat(path.removesuffix(" (deleted)")).st_size
+    except OSError:
+        return None
 
 
 def kill_tree(root):
@@ -216,12 +233,21 @@ def main():
     largest = None
     samples = 0
     timed_out = False
+    peaks = {"pack": 0, "anon": 0, "other": 0}
+    file_mappings = {}
+    file_sizes = {}
     while proc.poll() is None:
-        now = sample(proc.pid)
+        now, per_file = sample(proc.pid)
         samples += 1
         if largest is None or now["total"] > largest["total"]:
             largest = now
             largest["at"] = time.monotonic() - started
+        for key in peaks:
+            peaks[key] = max(peaks[key], now[key])
+        for path, count in per_file.items():
+            file_mappings[path] = max(file_mappings.get(path, 0), count)
+            if path not in file_sizes:
+                file_sizes[path] = size(path)
         if opts["timeout"] is not None and not timed_out and time.monotonic() - started > opts["timeout"]:
             timed_out = True
             kill_tree(proc.pid)
@@ -229,6 +255,8 @@ def main():
     wall = time.monotonic() - started
     if largest is None:
         largest = {**empty(), "at": None}
+    packs = [path for path in file_mappings if path.removesuffix(" (deleted)").endswith(".pack")]
+    largest_pack = max(packs, key=lambda path: file_sizes[path] or 0, default=None)
 
     maxrss, status, sig = gnu_time_report(time_file)
     if timed_out:
@@ -260,6 +288,13 @@ def main():
         "pack_files": largest["files"],
         "largest_sample_at_s": None if largest["at"] is None else round(largest["at"], 1),
         "samples": samples,
+        "max_pack_kib": peaks["pack"],
+        "max_anon_kib": peaks["anon"],
+        "max_other_file_kib": peaks["other"],
+        "pack_file_mappings": file_mappings,
+        "largest_pack_file": largest_pack,
+        "largest_pack_file_bytes": None if largest_pack is None else file_sizes[largest_pack],
+        "largest_pack_file_mappings": 0 if largest_pack is None else file_mappings[largest_pack],
     }
     if not opts["inherit"]:
         result["stdout_bytes"], result["stdout_tail"] = tail(out_file)
