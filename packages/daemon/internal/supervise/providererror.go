@@ -90,11 +90,16 @@ func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) err
 //     whose turn hits one is worse than sending the task again, and the notice the project's
 //     controller is given at six such turns in a row is what tells a person
 //     (tellControllerOfProviderErrors);
-//   - no status at all is every content-filter refusal, which ends a turn with nothing but a
-//     message. It clears because the plugin has already moved the session down its model chain,
-//     so the next prompt goes to another model. A Claude Code worker's bridge names a status
-//     only for a result Claude Code marked api_error (internal/claudebridge's result), so its
-//     statusless turns go again here too.
+//   - no status at all is a turn that ends with nothing but a message, two kinds among them.
+//     A content-filter refusal clears because the plugin has already moved the session down its
+//     model chain, so the next prompt goes to another model. A turn whose provider key could not
+//     be read (a `!command` apiKey that printed nothing, such as `!cat` of a token file not yet
+//     mounted, or, from Oh My Pi 18.18.6-sami.20261119-162325 on, stored credentials that cannot
+//     serve for a while) ends with the error of its last auto-retry, `retryable` and with no
+//     status; the plugin reads it as a provider error and moves nothing, and the key, like a
+//     401 or a 403, is the fleet's to restore, so the task goes again on the same model. A
+//     Claude Code worker's bridge names a status only for a result Claude Code marked api_error
+//     (internal/claudebridge's result), so its statusless turns go again here too.
 func holdsTheIssue(status int) bool {
 	switch status {
 	case http.StatusUnauthorized, http.StatusForbidden, http.StatusRequestTimeout, http.StatusTooManyRequests:

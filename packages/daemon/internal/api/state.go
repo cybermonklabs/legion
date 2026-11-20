@@ -80,6 +80,15 @@ type State struct {
 	// number stands at what that lane cannot act on, beside the Error line such a daemon writes
 	// for each of those claims (supervise.NoPluginSourceMessage).
 	ClaimsToRefresh int `json:"claimsToRefresh"`
+	// Paused is the project's open pause while the project is paused (dispatch://INFRA-3759,
+	// decision 25): who paused, since when and why, the claims whose stop it still waits on, and
+	// every row it holds (PausedView, PauseStateTx). Absent while the project runs, and from a body
+	// served a caller below pauseContract (server's withoutPause).
+	Paused *PausedView `json:"paused,omitempty"`
+	// LastPause is the project's newest ended pause while the project runs, with who ended it and
+	// when; absent while the project is paused, before any pause has ended, and from a body served
+	// a caller below pauseContract.
+	LastPause *PauseView `json:"lastPause,omitempty"`
 	// ControllerLocator is the project's controller, absent until a session registers as it: with
 	// the capability `legion controller start` fetched, or, under `controller: daemon`, with the boot
 	// token of the daemon's own controller launch.
@@ -117,7 +126,7 @@ type State struct {
 	// read before the floor this daemon shapes an answer from (ServingFloor) is raised: no claim
 	// holding a process reads below it. A claim that is suspended, failed or retired gave its
 	// locator up with its process and lowers it by nothing, however old the plugin it last
-	// recorded (contract 172).
+	// recorded (contract 182).
 	LowestPluginContract *int `json:"lowestPluginContract,omitempty"`
 	// wakesWaitingHidden is set on the copy the state route serves a caller whose plugin is older
 	// than the contract that added WakesWaiting (api's withoutWakesWaiting, below shaping.go's
@@ -385,7 +394,10 @@ type AgentSecretsLoginView struct {
 // contract band hides from a caller below it, `wakesWaiting` and `claimsToRefresh`: such a body
 // carries no key of that name at all, and is marshaled through a value whose own field of that
 // name shadows the embedded one. Admission.MarshalJSON hides `trees` and `held`, the two keys of
-// its own block a downgrade hides, with `omitzero` on those fields instead.
+// its own block a downgrade hides, with `omitzero` on those fields instead. The optional keys need
+// none of this: `controllerLocator`, `agentSecretsLogin`, `paused` and `lastPause` are pointers
+// with `omitempty`, absent wherever the state holds none, which is how a band hides them too
+// (withoutPause).
 //
 // One shadow type carries both keys, and both its fields are pointers. `omitempty` leaves out a
 // nil pointer, and a pointer at a value writes that value whatever it holds: `[]` for the empty
@@ -455,11 +467,11 @@ type DaemonInfo struct {
 
 // ContractView is the mark of the serving-down: the contract this body was built at and the
 // contract it was shaped to (`contract`, contract 75). Daemon is DaemonAPIVersion, what this
-// binary declares and serves; Caller is the contract the answer was shaped to. From contract 172
+// binary declares and serves; Caller is the contract the answer was shaped to. From contract 182
 // on, Caller is written for every caller. A caller served this daemon's own shape — the
 // operator's `legion state --json`, a tmux pane, a pod whose claims record no contract, a
 // caller that states this contract or a higher one — is told DaemonAPIVersion, which is the
-// contract whose shape it gets. Before 172 the daemon left Caller off for such a caller. Now the
+// contract whose shape it gets. Before 182 the daemon left Caller off for such a caller. Now the
 // key is in the record of the daemon's own contract (contract-shapes.json), so that record does
 // not change when a later contract lands above it and serves such a caller a body below the
 // daemon's own, which carries the key. The two stand beside the daemon's own block rather than
@@ -862,7 +874,7 @@ type ClaimView struct {
 	UpdateHead    string `json:"updateHead,omitempty"`
 	UpdateReasons string `json:"updateReasons,omitempty"`
 	// UpdateState is where the round above stands on this claim, as UpdateStateOf reads the
-	// claim's own update columns: `none`, `open`, `asked` or `answered` (contract 172). A
+	// claim's own update columns: `none`, `open`, `asked` or `answered` (contract 182). A
 	// reader takes it rather than spelling the same reading out of `updateRound` and
 	// `updateHead`, which tell a worker that answered with no head from one nobody asked.
 	UpdateState UpdateState `json:"updateState,omitempty"`

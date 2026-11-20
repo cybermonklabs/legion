@@ -374,6 +374,8 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     readonly issueStatus: (body: object) => Promise<unknown>;
     readonly freshSession: (body: object) => Promise<unknown>;
     readonly compact: (body: object) => Promise<unknown>;
+    readonly projectPause: (body: object) => Promise<unknown>;
+    readonly projectResume: (body: object) => Promise<unknown>;
     readonly gateRegister: (body: object) => Promise<unknown>;
     readonly waveRelease: (body: object) => Promise<unknown>;
     readonly phaseBackward: (body: object) => Promise<unknown>;
@@ -424,6 +426,16 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
       "compact.json",
     ],
+    // The controller's pause and resume name no project: the daemon pauses its own. Each
+    // answers the pause as the daemon's golden wrote it, the resume with how many held rows it
+    // let out.
+    [
+      "projectPause",
+      "/legion/v1/project/pause",
+      { grantId: "grant-208", reason: "the model provider is refusing every turn" },
+      "project-pause.json",
+    ],
+    ["projectResume", "/legion/v1/project/resume", { grantId: "grant-208" }, "project-resume.json"],
     [
       "gateRegister",
       "/legion/v1/gates/register",
@@ -521,6 +533,38 @@ test("a workflow refusal surfaces its stable code and message", async () => {
     message:
       "POST /legion/v1/gates/register failed with 409 GATE_UNAPPROVED: the current spec version needs approval",
   });
+});
+
+// A refused pause or resume carries more than a code and a sentence: the pause that stands, or
+// the last pause (`LegionPauseFailureResponse`). The client reads the refusal through the plain
+// refusal shape, which ignores those keys, so the caller still gets the daemon's code and its
+// sentence, which names the pause in words.
+test("a refused pause and a refused resume surface the daemon's code and sentence from its goldens", async () => {
+  const refusals = [
+    ["projectPause", "project-pause-refused.json", "PROJECT_ALREADY_PAUSED"],
+    ["projectPause", "project-pause-unavailable.json", "PAUSE_UNAVAILABLE"],
+    ["projectResume", "project-resume-refused.json", "PROJECT_NOT_PAUSED"],
+  ] as const;
+  for (const [operation, fixture, code] of refusals) {
+    const refusal = daemonFixture(fixture);
+    const client = createLegionDaemonClient(
+      "http://daemon.test",
+      daemon(() => Response.json(refusal, { status: 409 })).fetch
+    );
+    const refused = await (operation === "projectPause"
+      ? client.projectPause({ grantId: "grant-208", reason: "the provider is down" })
+      : client.projectResume({ grantId: "grant-208" })
+    ).catch((error: unknown) => error);
+    expect(refused, fixture).toBeInstanceOf(LegionDaemonApiError);
+    expect(refused, fixture).toMatchObject({ status: 409, code, detail: refusal.error });
+  }
+
+  // A pause with no reason is refused before it leaves the pane, as every request the schema
+  // does not describe is.
+  const { fetch, requests } = daemon(() => Response.json(daemonFixture("project-pause.json")));
+  const client = createLegionDaemonClient("http://daemon.test", fetch);
+  expect(() => client.projectPause({ grantId: "grant-208", reason: "" })).toThrow();
+  expect(requests).toEqual([]);
 });
 
 test("a controller registers on the claim route with its capability and reads the controller's answer", async () => {
@@ -1303,7 +1347,7 @@ test("the settings keys answers.json types at the daemon's own contract are the 
 });
 
 // The premise both the census above and the daemon's settings records rest on, as
-// `packages/daemon/internal/api/version.go` measures it at entry 172: `legionSettings` passes a
+// `packages/daemon/internal/api/version.go` measures it at entry 182: `legionSettings` passes a
 // key it does not name through whole, so a key no reader types is refused for nothing and no
 // record holds it, and each key it types is a scalar, so no path below a typed key is typed and
 // no record holds one either. A block that refused or stripped a key it does not name, or a typed

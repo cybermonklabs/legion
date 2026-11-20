@@ -136,6 +136,8 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 		"POST /legion/v1/issues/status":                {none: controller},
 		"POST /legion/v1/claims/fresh-session":         {none: controller},
 		"POST /legion/v1/claims/compact":               {none: controller},
+		"POST /legion/v1/project/pause":                {none: controller},
+		"POST /legion/v1/project/resume":               {none: controller},
 		"POST /legion/v1/waves/release": {none: "its own status writes name children not in the workflow yet, which no run is on, so they wait for nothing; " +
 			"its adoption of children recorded in other trees names no one issue (intake.IssueOf), so apply asks RunsAStep, the read TestTheRecordNamesTheAgentOfARunThatIsNotEnded holds, and this table drives no adoption"},
 		"POST /legion/v1/roots/close":    {none: "its root has started no phase: admitted and awaiting a person run no step (workflow's stepOf)"},
@@ -220,6 +222,8 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 		"POST /legion/v1/operator/claims/{token}/forget-session": {none: noRequester},
 		"POST /legion/v1/operator/claims/{token}/release-names":  {none: noRequester},
 		"POST /legion/v1/operator/claims/{token}/close":          {none: noRequester},
+		"POST /legion/v1/operator/project/pause":                 {none: noRequester},
+		"POST /legion/v1/operator/project/resume":                {none: noRequester},
 		"/": {none: "the catch-all answers no route; " + noFact},
 	}
 

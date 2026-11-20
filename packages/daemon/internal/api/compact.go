@@ -233,6 +233,10 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 // (supervise.ErrCompactNotEnded), or the claim lost its process under the compaction
 // (supervise.ErrCompactProcessGone). Neither gave the claim back, so neither is answered as a
 // compaction that did not run.
+//
+// While the project is paused, a claim that is not the project's controller is refused
+// PROJECT_PAUSED at both doors before anything is asked of it, and nothing of it changes
+// (refusedWhilePaused, decision 20 of dispatch://INFRA-3759).
 func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token) (CompactResponse, bool) {
 	if c := m.Claim(); s.backend != nil && runtime.Of(s.backend(c.Role)) == runtime.BackendClaude {
 		s.writeFailure(w, r, http.StatusConflict, claimNotOnOmp, fmt.Sprintf(
@@ -243,6 +247,11 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 	ctx, decided := s.decision(r, token)
 	defer decided()
 	if s.stopped(w, r, "compact") {
+		return CompactResponse{}, false
+	}
+	// A compaction sends the claim's task again once it ends, which is a turn the pause holds
+	// for every claim but the controller's.
+	if s.refusedWhilePaused(w, r, "compact", m.View().Claim) {
 		return CompactResponse{}, false
 	}
 	switch err := m.Compact(ctx, compactInstructions); {

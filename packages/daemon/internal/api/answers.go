@@ -119,7 +119,7 @@ type TypedSetting struct {
 // below 59, is served to those readers as a stand-in (shaping.go's withMaxFixAttempts).
 //
 // The rows are measured rather than guessed, at the first commit on main of each contract of
-// SupportedContracts (version.go's 172). A key a later reader types is a row here from that
+// SupportedContracts (version.go's 182). A key a later reader types is a row here from that
 // reader's contract on, and pi-shared's census (`daemon-client.test.ts`) holds the rows typed at
 // this daemon's own contract equal to the keys `legionSettings` types.
 var typedSettings = []TypedSetting{
@@ -133,11 +133,11 @@ var typedSettings = []TypedSetting{
 var Answers = []Answer{
 	// Older than the floor: `GET /legion/v1/state` predates every numbered entry of version.go.
 	{ID: AnswerState, Routes: []string{"GET /legion/v1/state"}, Since: ServingFloor, TypedSettings: typedSettings},
-	// version.go's 172: the per-issue record route a role reads in place of the whole state.
-	// This change adds the route, so no contract below 172 records it.
+	// version.go's 182: the per-issue record route a role reads in place of the whole state.
+	// This change adds the route, so no contract below 182 records it.
 	{ID: AnswerIssueRecord, Routes: []string{"GET /legion/v1/issues/{key}/record"}, Since: shapedAnswersContract},
-	// version.go's 172: the typed health body (`api.Health`), which this change puts in place of
-	// the one untyped key the route answered, so the typed body has no record below 172 either.
+	// version.go's 182: the typed health body (`api.Health`), which this change puts in place of
+	// the one untyped key the route answered, so the typed body has no record below 182 either.
 	{ID: AnswerHealth, Routes: []string{"GET /healthz"}, Since: shapedAnswersContract},
 	// Older than the floor: a role's registration answer (`claim.RegisterResponse`).
 	{ID: AnswerRegister, Routes: []string{"POST /legion/v1/claims/register"}, Since: ServingFloor},

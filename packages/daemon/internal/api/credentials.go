@@ -93,7 +93,8 @@ func (s *server) grant(w http.ResponseWriter, r *http.Request) {
 	case !s.operatorAuthorized(r):
 		s.writeFailure(w, r, http.StatusForbidden, "INVALID_OPERATOR_TOKEN", invalidOperatorToken)
 	default:
-		s.mintControllerGrant(w, r)
+		grant, err := s.grants.MintOperatorController()
+		s.writeControllerGrant(w, r, grant, err)
 	}
 }
 

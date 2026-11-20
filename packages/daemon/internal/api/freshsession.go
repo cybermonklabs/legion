@@ -351,6 +351,10 @@ func roleList() string {
 // what makes that claim reachable at all: the daemon's own report of the dead process is
 // memory a restart forgets, and the record a restart leaves reads exactly as a claim in a turn
 // does.
+//
+// While the project is paused, every other claim is refused PROJECT_PAUSED before anything is
+// asked of it, at both doors, and nothing of it changes: the start this operation ends in is a
+// launch the pause holds (refusedWhilePaused, decision 20 of dispatch://INFRA-3759).
 func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token) (status int, notRestarted string, started, ok bool) {
 	c := m.Claim()
 	if c.Role == claim.RoleController {
@@ -362,6 +366,9 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 		s.writeFailure(w, r, http.StatusConflict, "NOT_THE_CONTROLLER", fmt.Sprintf(
 			"%s is the project's controller: %s is what starts it — it launches a queued controller, resumes one the daemon suspended, and retries one that failed or retired — so the controller is left to that keeper, whatever state it is in, and no fresh session is run on it here",
 			token, controllerKeeperName))
+		return 0, "", false, false
+	}
+	if s.refusedWhilePaused(w, r, "fresh session", c) {
 		return 0, "", false, false
 	}
 	view := m.View()

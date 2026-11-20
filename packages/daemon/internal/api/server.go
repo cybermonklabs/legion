@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -265,11 +266,11 @@ type Options struct {
 	CapabilityReported func(ctx context.Context, c supervise.Claim, report capabilities.Report)
 	// RoleHoldersChanged is told, before the claim takes a ready that carries no capability report
 	// — a boot's ready, or a role-regain's — of the claim as it stands, when it has an issue and is
-	// not the controller: the daemon queues the publication of that issue's role sessions to
-	// Dispatch, which reads the live set from the store when it runs. The ready is what sends the
-	// claim its first task, so the publication is queued before any task goes. An error refuses
-	// the ready with 503: the machine has not taken it, no task goes, and the plugin tries the
-	// ready again. Nil queues nothing.
+	// not the controller: for an issue of the daemon's own project, the daemon queues the
+	// publication of that issue's role sessions to Dispatch, which reads the live set from the
+	// store when it runs. The ready is what sends the claim its first task, so the publication is
+	// queued before any task goes. An error refuses the ready with 503: the machine has not taken
+	// it, no task goes, and the plugin tries the ready again. Nil queues nothing.
 	RoleHoldersChanged func(ctx context.Context, c supervise.Claim) error
 	// ReleaseRecords is the store's record of what the idle release has done (store.Store), which
 	// the claim route `POST /legion/v1/claims/release-records` serves a pod. Nil answers that route
@@ -279,6 +280,11 @@ type Options struct {
 	// claim route `POST /legion/v1/claims/activity` writes. Nil answers that route 500 and
 	// changes nothing else.
 	ClaimActivity ClaimActivityStore
+	// Pause is the project's pause service (internal/pause's Service), which the four pause and
+	// resume routes act through and whose flag the claim routes read to refuse a turn while the
+	// project is paused (refusedWhilePaused). Nil is a daemon with no workflow, which has no pause:
+	// it answers every pause and resume PAUSE_UNAVAILABLE and refuses no turn for one.
+	Pause PauseService
 }
 
 // TreeLifecycles is the store's durable tree barrier (store.Store) as the operator routes use it:
@@ -379,6 +385,8 @@ type server struct {
 	roleHoldersChanged func(ctx context.Context, c supervise.Claim) error
 	releaseRecordStore ReleaseRecordStore
 	claimActivity      ClaimActivityStore
+	// pause is Options.Pause, nil for a daemon with no workflow.
+	pause PauseService
 	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
 	// a server that is ready, since a caller that sets no latch is serving already.
 	readiness func() bool
@@ -448,6 +456,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		roleHoldersChanged: opts.RoleHoldersChanged,
 		releaseRecordStore: opts.ReleaseRecords,
 		claimActivity:      opts.ClaimActivity,
+		pause:              opts.Pause,
 		readiness:          opts.Ready,
 		log:                opts.Log,
 		stopping:           opts.Stopping,
@@ -556,18 +565,22 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/roots/close", s.closeRoot},
 		{"POST /legion/v1/children/park", s.parkChild},
 		{"POST /legion/v1/children/rerun", s.rerunChild},
+		{"POST /legion/v1/project/pause", s.projectPause},
+		{"POST /legion/v1/project/resume", s.projectResume},
 
 		{"POST /legion/v1/operator/claims", s.operator(s.spawn)},
 		{"GET /legion/v1/operator/claims", s.operator(s.list)},
 		{"POST /legion/v1/operator/claims/{token}/deliver", s.operator(s.claimRequest("deliver", s.deliverEvent))},
 		{"POST /legion/v1/operator/claims/{token}/suspend", s.operator(s.claimRequest("suspend", suspendEvent))},
-		{"POST /legion/v1/operator/claims/{token}/resume", s.operator(s.claimRequest("resume", resumeEvent))},
+		{"POST /legion/v1/operator/claims/{token}/resume", s.operator(s.claimRequest("resume", s.resumeEvent))},
 		{"POST /legion/v1/operator/claims/{token}/stop", s.operator(s.claimRequest("stop", stopEvent))},
 		{"POST /legion/v1/operator/claims/{token}/retry", s.operator(s.retryClaim)},
 		{"POST /legion/v1/operator/claims/{token}/compact", s.operator(s.compactClaim)},
 		{"POST /legion/v1/operator/claims/{token}/forget-session", s.operator(s.forgetSession)},
 		{"POST /legion/v1/operator/claims/{token}/release-names", s.operator(s.releaseNames)},
 		{"POST /legion/v1/operator/claims/{token}/close", s.operator(s.closeTree)},
+		{"POST /legion/v1/operator/project/pause", s.operator(s.operatorProjectPause)},
+		{"POST /legion/v1/operator/project/resume", s.operator(s.operatorProjectResume)},
 
 		// The catch-all answers every unrouted request, including a known path asked for with the
 		// wrong method: "no route" is the whole story the plugin, the operator's CLI, or a proof
@@ -735,6 +748,40 @@ func (s *server) stopRefusal(request string) string {
 	}
 	s.log.Info("api: refused an operator request: the daemon is stopping", "request", request)
 	return request + " refused: the daemon is stopping; ask again once it is back"
+}
+
+// refusedWhilePaused refuses request of c, answering PROJECT_PAUSED, while the project is paused
+// and c is not the controller's claim (decision 20): a turn a paused project's role would start —
+// a compaction or a fresh session the controller asks for, the operator's resume, retry,
+// compaction, spawn or delivery — waits for the resume, and nothing of the claim changes. The
+// pause flag decides (pause.Service.Paused), as it decides every launch the machines hold; the
+// refusal names the standing pause when the store's read finds it. A stop, a suspension, an
+// issue's status and the daemon's own status are not turns, and no caller of this asks of them.
+// A claim of another project's issue, which the operator's spawn makes under the daemon's own
+// project token, is refused as every other claim is, its spawn included: the daemon runs it.
+func (s *server) refusedWhilePaused(w http.ResponseWriter, r *http.Request, request string, c supervise.Claim) bool {
+	if s.pause == nil || claim.IsController(c.Role, c.Issue, c.Tree) {
+		return false
+	}
+	id, paused := s.pause.Paused()
+	if !paused {
+		return false
+	}
+	body := PauseFailure{Failure: Failure{Code: projectPaused}}
+	named := fmt.Sprintf("pause %d", id)
+	standing, found, err := s.pause.OpenPause(r.Context())
+	switch {
+	case err != nil:
+		s.logRequestFailure(r, err, "api: read the open pause for a refusal", "pause", id)
+	case found:
+		view := pauseViewOf(standing)
+		body.Pause, named = &view, describePause(standing)
+	}
+	body.Error = fmt.Sprintf("%s of %s refused: the project is paused (%s), and a paused project starts no turn of a role but the controller's; nothing of %s changed. Resume the project first",
+		request, c.Token, named, c.Token)
+	s.log.Info("api: refused a request: the project is paused", "request", request, "claim", c.Token, "pause", id)
+	s.writePauseFailure(w, r, http.StatusConflict, body)
+	return true
 }
 
 // projectState is the project's own value, as every route that reads it reads it: one

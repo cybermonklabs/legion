@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { procRootOf } from "./proc-root";
 import { scriptFunctions } from "./script-functions";
 
 // stop_agent_daemons (parked-decision-devbox.sh), the teardown of what the run's Oh My Pi sessions
@@ -107,10 +108,11 @@ async function until(what: string, ok: () => boolean) {
 }
 
 // harness runs BODY with the script's `set` line, lib/rig.sh sourced as the script sources it (for
-// run_processes) and stop_agent_daemons taken from the script by name. $work comes in through the
-// environment, so the harness's own command line does not name it and run_processes does not name
-// the harness.
-function harness(work: string, body: string) {
+// run_processes) and stop_agent_daemons taken from the script by name, its run marked as the script
+// marks it (LEGION_E2E_RUN). $work comes in through the environment, and the mark is exported only
+// once the shell runs, so the harness's own process carries no mark and run_processes does not name
+// it. PROCROOT, when given, is the proc root the walks read (`proc_root`, lib/proc-root.ts).
+function harness(work: string, body: string, procRoot?: string) {
   const ran = Bun.spawnSync(
     [
       "bash",
@@ -121,10 +123,19 @@ work=$WORK
 note() { printf '   %s\\n' "$*"; }
 fail() { printf 'FAIL: %s\\n' "$*" >&2; exit 1; }
 . "$root/scripts/e2e/lib/rig.sh"
+export LEGION_E2E_RUN=$work
 ${fn("stop_agent_daemons")}
 ${body}`,
     ],
-    { env: { PATH: process.env.PATH ?? "", WORK: work }, stdout: "pipe", stderr: "pipe" }
+    {
+      env: {
+        PATH: process.env.PATH ?? "",
+        WORK: work,
+        ...(procRoot === undefined ? {} : { proc_root: procRoot }),
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    }
   );
   return { code: ran.exitCode, stdout: ran.stdout.toString(), stderr: ran.stderr.toString() };
 }
@@ -139,7 +150,8 @@ test.skipIf(skip)(
     const stale = join(work, "state/omp/profiles/p/run/daemons/fedcba9876543210");
     for (const d of [ws, home, runtime, stale, join(work, "tmux")])
       mkdirSync(d, { recursive: true });
-    // The stand-in broker lives outside $work, so only its working directory ties it to the run.
+    // The stand-in broker lives outside $work; its environment, the pane's, carries a daemon pane's
+    // mark.
     const broker = join(dir, "fake-broker.sh");
     writeFileSync(
       broker,
@@ -159,6 +171,7 @@ wait
     // for cleanup-is-complete's wait to name.
     const bystander = Bun.spawn(["setsid", "sleep", "303"], {
       cwd: ws,
+      env: { PATH: process.env.PATH ?? "", LEGION_E2E_RUN: work },
       stdout: "ignore",
       stderr: "ignore",
     });
@@ -175,7 +188,17 @@ wait
       [bystander.pid, stranger.pid].every((pid) => alive(pid) && sessionOf(pid) === pid)
     );
 
-    const env = { PATH: process.env.PATH ?? "", HOME: home, TMUX_TMPDIR: join(work, "tmux") };
+    // The run's tmux server, and so every pane, carries what a daemon pane carries and no variable of
+    // the run's own: the daemon builds a pane's environment from its allow-list, with the XDG
+    // directories moved under its state directory, which the run keeps under $work
+    // (packages/daemon/internal/runtime/tmux/environment.go). That is the one mark the sweep and
+    // cleanup-is-complete's wait find a pane's broker by.
+    const env = {
+      PATH: process.env.PATH ?? "",
+      HOME: home,
+      TMUX_TMPDIR: join(work, "tmux"),
+      XDG_CONFIG_HOME: join(work, "state", "home", ".config"),
+    };
     const pidFile = join(runtime, "broker.pid");
     // The stand-in broker the pane starts leads a session of its own and names it in broker.pid.
     // Ending that session is registered before the pane that starts it, so a wait below that times
@@ -216,7 +239,7 @@ wait
     Bun.spawnSync(["tmux", "-L", "teardown", "kill-server"], { env });
     await until("the pane to end", () => !alive(panePid));
     // The red half: the broker's whole session outlives the pane, and run_processes, the check's own
-    // reading, still names the members that work inside $work.
+    // reading, still names the members, which carry the run's mark.
     expect(members.every(alive)).toBe(true);
     const before = harness(work, "run_processes || true")
       .stdout.split("\n")
@@ -228,7 +251,7 @@ wait
     expect({ code: stopped.code, stderr: stopped.stderr }).toEqual({ code: 0, stderr: "" });
     await until("every member of the broker's session to end", () => !members.some(alive));
     // What no broker of the run ties to the run is left alone, and the check still names the one that
-    // works inside $work.
+    // carries the run's mark.
     expect(alive(bystander.pid)).toBe(true);
     expect(alive(stranger.pid)).toBe(true);
     const after = harness(work, "run_processes || true")
@@ -236,6 +259,45 @@ wait
       .filter(Boolean)
       .map(Number);
     expect(after).toEqual([bystander.pid]);
+  },
+  30_000
+);
+
+// The walk reads every process's session from its whole /proc/<pid>/stat: a process names itself,
+// and a name that holds a newline cut a first-line read short of the session field, so a broker so
+// named was tied to no broker.pid and outlived the run. The walk reads a proc root of the broker
+// alone (lib/proc-root.ts), so the row's time is its own and not the host's process count.
+test.skipIf(skipWithout("python3"))(
+  "stops a broker's session whose leader's name holds a newline and a `) `",
+  async () => {
+    const work = join(dir, "newline-broker");
+    const runtime = join(work, "state", "omp-daemon");
+    mkdirSync(runtime, { recursive: true });
+    const pidFile = join(runtime, "broker.pid");
+    // The stand-in leads a session of its own, renames itself to `) S 1` and a newline (prctl
+    // PR_SET_NAME), and only then writes broker.pid, so the walk starts after the rename.
+    const broker = Bun.spawn(
+      [
+        "python3",
+        "-I",
+        "-c",
+        'import ctypes, json, os, sys, time; os.setsid(); ctypes.CDLL(None).prctl(15, b") S 1\\n", 0, 0, 0); open(sys.argv[1] + ".tmp", "w").write(json.dumps({"pid": os.getpid()})); os.rename(sys.argv[1] + ".tmp", sys.argv[1]); time.sleep(60)',
+        pidFile,
+      ],
+      {
+        env: { PATH: process.env.PATH ?? "", OMP_DAEMON_RUNTIME_DIR: runtime },
+        stdout: "ignore",
+        stderr: "ignore",
+      }
+    );
+    teardowns.push(() => {
+      if (alive(broker.pid) && sessionOf(broker.pid) === broker.pid) killSession(broker.pid);
+    });
+    await until("the stand-in broker to write broker.pid", () => existsSync(pidFile));
+    expect(readFileSync(`/proc/${broker.pid}/comm`, "utf8")).toBe(") S 1\n\n");
+    const stopped = harness(work, "stop_agent_daemons", procRootOf(dir, [broker.pid]));
+    expect({ code: stopped.code, stderr: stopped.stderr }).toEqual({ code: 0, stderr: "" });
+    await until("the broker to end", () => !alive(broker.pid));
   },
   30_000
 );
