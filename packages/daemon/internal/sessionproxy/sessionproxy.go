@@ -530,7 +530,11 @@ type googleEndpoints struct {
 
 // connectorOptions are the Cloud SQL connector's options for a pod. The connector uses automatic
 // IAM database authentication, which puts a login token in the ephemeral-certificate exchange. It
-// dials the instance's private IP, which is the only address a pod's network reaches.
+// dials the instance's private IP, which is the only address a pod's network reaches. Its built-in
+// client metrics, on by default since cloudsqlconn v1.26.0, are turned off: with them on,
+// NewDialer reads the metadata server for the metrics' labels, every dialer exports to Cloud
+// Monitoring each minute as the identity that signs the Admin API calls, which then needs
+// roles/monitoring.metricWriter, and Close waits up to three seconds of the stop grace to flush.
 //
 // With no account, the connector signs in as the pod itself, with the pod's own credentials. With
 // an account, a credential impersonates that account through the IAM Service Account Credentials
@@ -553,10 +557,11 @@ type googleEndpoints struct {
 // long as the proxy serves; never Start's own context, which ends once the proof dial is over.
 // Each source refreshes its one-hour token by itself when the connector next asks for one.
 func connectorOptions(ctx context.Context, signer Signer, google googleEndpoints) ([]cloudsqlconn.Option, error) {
-	opts := make([]cloudsqlconn.Option, 0, 3)
+	opts := make([]cloudsqlconn.Option, 0, 4)
 	opts = append(opts,
 		cloudsqlconn.WithIAMAuthN(),
 		cloudsqlconn.WithDefaultDialOptions(cloudsqlconn.WithPrivateIP()),
+		cloudsqlconn.WithBuiltInMetrics(false),
 	)
 	account := signer.Account
 	if account == "" {
