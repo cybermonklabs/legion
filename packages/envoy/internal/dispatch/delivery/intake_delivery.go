@@ -218,11 +218,19 @@ func (d *heldDurable) StopDelivering(ctx context.Context) {
 // drain within bus.ConnLockWait, or took it with the link down, when DrainSubscription unsubscribes
 // on the client alone and hands no drain back: nothing then says when the server has the
 // subscription's interest gone, and a hand-back on a link that is down waits for the next attempt.
+//
+// stopping is set before the give-up is armed: a handler given up wakes from its context and calls
+// mayHandBack, which reads stopping, so the stop's withholding covers every handler it gives up. A
+// give-up armed first runs at once under a context that has already ended, and a handler it woke
+// could read stopping before it was set and publish a hand-back the stop withholds.
 func (d *intakeDelivery) stop(ctx context.Context) {
+	d.stopping.Store(true)
 	giveUp := context.AfterFunc(ctx, d.abandon)
 	defer giveUp()
+	if armed := stopGiveUpArmed.Load(); armed != nil {
+		(*armed)()
+	}
 	d.stopped.Do(func() {
-		d.stopping.Store(true)
 		for _, waiting := range d.keys.stop() {
 			d.giveBack(waiting.msg)
 		}
@@ -270,6 +278,10 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 		d.abandon()
 	})
 }
+
+// stopGiveUpArmed is nil outside tests. A row sets it to run in stop once the give-up is armed,
+// where it waits for the handler the give-up wakes to decide its hand-back.
+var stopGiveUpArmed atomic.Pointer[func()]
 
 // callNATS makes call, one call to NATS named by what, where the stop waits for it -- a call of the
 // stop's own, or a handler's answer, which the stop waits for (keyedRunner.wait) -- and waits for it

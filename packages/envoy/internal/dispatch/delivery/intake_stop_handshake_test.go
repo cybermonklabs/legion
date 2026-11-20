@@ -34,6 +34,9 @@ type stopRow struct {
 	subject string
 	// reconnected takes one value per reconnect of the client.
 	reconnected chan struct{}
+	// decided takes one value each time a given-up handler's hand-back has returned
+	// (startGivenUpRow), whether it published or withheld.
+	decided chan struct{}
 }
 
 // startStopRow subscribes a delivery keyed by key and handled by handle at the durable's deliver
@@ -168,11 +171,17 @@ func watchHandBacks(t *testing.T, uri string) func() int64 {
 func startGivenUpRow(t *testing.T) *stopRow {
 	t.Helper()
 	handling := make(chan struct{}, 2)
+	decided := make(chan struct{}, 2)
 	row := startStopRow(t, intakeKey, func(delivery *intakeDelivery, message intakeMessage) {
 		handling <- struct{}{}
 		<-delivery.handling.Done()
 		delivery.handBack(message.msg)
+		select {
+		case decided <- struct{}{}:
+		default:
+		}
 	}, true)
+	row.decided = decided
 	row.publishPullRequestSeven(t)
 	select {
 	case <-handling:
@@ -253,14 +262,20 @@ func (r *stopRow) reconnect(t *testing.T) {
 //   - a drain the lock holds: the stop drained on a moving link and waits for its drain to end, with
 //     a message still buffered, under a context that never ends; a write then holds nats.go's lock,
 //     under which nats.go ends no drain, and the stop and a second StopDelivering return while it is
-//     held. The drain's own wait (intakeDrainWait) is kept from ending it.
+//     held. The drain's own wait (intakeDrainWait) is kept from ending it;
+//   - a given-up handler woken as the give-up is armed: as the second, with one stop, whose
+//     give-up runs at once under its ended context; the stop waits, once its give-up is armed
+//     (stopGiveUpArmed), for the handler it woke to decide its hand-back, and the server is sent
+//     no hand-back of either message.
 //
 // The negative control is the stop as it was (DrainSubscription, the hand-backs and Unsubscribe
 // inside the once with no bound): no StopDelivering answers within the attempt or while the write is
 // held. So is a hand-back that skips the stop's rule (handBack), the given-up handler's in the second
 // and third subtests; a stop that withholds only when its drain did not answer, in the fourth; an
 // answer begun before the stop with no bound, in the fifth to seventh; a hand-back published inline,
-// in the ninth; and a wait for the drain that reads nothing of the connection, in the tenth.
+// in the ninth; a wait for the drain that reads nothing of the connection, in the tenth; and a stop
+// that sets stopping only after its give-up is armed, in the eleventh, whose woken handler publishes
+// the hand-back the stop withholds.
 func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 	t.Run("a drain NATS has not taken", func(t *testing.T) {
 		row := startStopRow(t, intakeKey, func(*intakeDelivery, intakeMessage) {}, false)
@@ -418,6 +433,26 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 		}
 		row.hold.HoldWriteLock(t, row.conn)
 		answersWhileWriteHeld(t, row.conn, "StopDelivering", stopped, row.stopUnder(context.Background()))
+	})
+
+	t.Run("a given-up handler woken as the give-up is armed", func(t *testing.T) {
+		row := startGivenUpRow(t)
+		naks := watchHandBacks(t, row.uri)
+		delivery := row.delivery()
+		armed := func() {
+			select {
+			case <-row.decided:
+			case <-time.After(30 * time.Second):
+				t.Error("control: the given-up handler did not decide its hand-back within 30 s of the give-up")
+			}
+		}
+		stopGiveUpArmed.Store(&armed)
+		t.Cleanup(func() { stopGiveUpArmed.Store(nil) })
+		row.hold.HoldReconnect(t, row.conn)
+		row.hold.AnswersWithinAttempt(t, row.conn, "StopDelivering", row.stopUnder(cancelled()))
+		stopGiveUpArmed.Store(nil)
+		row.reconnect(t)
+		row.requireNoHandBack(t, delivery, naks)
 	})
 }
 
