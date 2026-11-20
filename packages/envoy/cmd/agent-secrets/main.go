@@ -95,6 +95,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -735,6 +736,11 @@ func writeVerbatim(w io.Writer, raw []byte) {
 	w.Write(raw)
 }
 
+// jsonFlag is --json's usage line wherever a form prints the broker's answer: the body as the
+// broker wrote it, every field, where the form's own lines print each value as the broker's
+// address lets its answer print (brokeraddr.Address.Words). The flag asks for the body by name.
+const jsonFlag = "print the broker's response body verbatim: every field as the broker wrote it, none withheld, even beside an AGENT_SECRETS_URL that carries a credential"
+
 // nextBackoff advances the backoff the poll loops of this package keep: two seconds, doubling
 // to a ten-second cap. `machine login` sleeps it between reads of its helper; the exec form's
 // wait sleeps it only after a read the broker did not hold (a broker from before ?wait=, or a
@@ -916,7 +922,7 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 	flags := newFlagSet("request", stderr)
 	reason := flags.String("reason", "", "why these secrets are needed; necessary where a person approves")
 	ttlFlagValue := flags.Duration("ttl", 0, ttlFlag)
-	asJSON := flags.Bool("json", false, "print the response body verbatim")
+	asJSON := flags.Bool("json", false, jsonFlag)
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -949,12 +955,16 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 	if *asJSON {
 		writeVerbatim(stdout, raw)
 	} else {
-		// Every value on these lines is the broker's, so each prints on one line
-		// (redact.OneLine), as every broker-answer value this CLI prints does.
-		fmt.Fprintf(stdout, "request_id: %s\nstate: %s\nsource: %s\n", redact.OneLine(result.RequestID), redact.OneLine(result.State), c.source(ctx))
-		printDetail(stdout, result.Detail)
+		// Every value on these lines is the broker's, so each prints as the broker's address
+		// lets its answer print (brokeraddr.Address.Words): on one line beside a clean address,
+		// and not at all beside one that carries a credential, which whoever answers there can
+		// repeat in any value. It was redact.OneLine alone until the values beside a
+		// credentialed address were found to print whole; --json still prints the body as it
+		// came, since it is asked for by name.
+		fmt.Fprintf(stdout, "request_id: %s\nstate: %s\nsource: %s\n", c.baseURL.Words(result.RequestID), c.baseURL.Words(result.State), c.source(ctx))
+		printDetail(stdout, c.baseURL, result.Detail)
 		if result.State == "pending" {
-			fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL, result.JudgeDeciding))
+			fmt.Fprintln(stdout, waitingOn(c.baseURL, result.Approver, result.ApproveURL, result.JudgeDeciding))
 		}
 	}
 	switch result.State {
@@ -974,7 +984,7 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	flagArgs, positional := splitArgs(args, nil)
 	flags := newFlagSet("status", stderr)
-	asJSON := flags.Bool("json", false, "print the response body verbatim")
+	asJSON := flags.Bool("json", false, jsonFlag)
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -997,17 +1007,17 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 		writeVerbatim(stdout, raw)
 		return 0
 	}
-	fmt.Fprintf(stdout, "state: %s\nsource: %s\n", redact.OneLine(result.State), c.source(ctx))
+	fmt.Fprintf(stdout, "state: %s\nsource: %s\n", c.baseURL.Words(result.State), c.source(ctx))
 	if result.State == "pending" {
-		fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL, result.JudgeDeciding))
+		fmt.Fprintln(stdout, waitingOn(c.baseURL, result.Approver, result.ApproveURL, result.JudgeDeciding))
 	}
 	if result.GrantID != nil {
-		fmt.Fprintf(stdout, "grant_id: %s\n", redact.OneLine(*result.GrantID))
+		fmt.Fprintf(stdout, "grant_id: %s\n", c.baseURL.Words(*result.GrantID))
 	}
 	if result.Decision != nil {
-		fmt.Fprintf(stdout, "decided_by: %s\n", redact.OneLine(result.Decision.By))
+		fmt.Fprintf(stdout, "decided_by: %s\n", c.baseURL.Words(result.Decision.By))
 	}
-	printDetail(stdout, result.Detail)
+	printDetail(stdout, c.baseURL, result.Detail)
 	return 0
 }
 
@@ -1089,7 +1099,7 @@ func cmdSelf(name string, args []string, stdout, stderr io.Writer) int {
 		return refuseUnexpectedArgument(stderr, name)
 	}
 	flags := newFlagSet(name, stderr)
-	asJSON := flags.Bool("json", false, "print the response body verbatim")
+	asJSON := flags.Bool("json", false, jsonFlag)
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -1112,14 +1122,15 @@ func cmdSelf(name string, args []string, stdout, stderr io.Writer) int {
 	if result.Operator != nil {
 		operator = *result.Operator
 	}
+	words := c.baseURL.Words
 	fmt.Fprintf(stdout, "enrollment_id: %s\nkind: %s\noperator: %s\nlease_expires_at: %s\nsource: %s\n",
-		redact.OneLine(result.EnrollmentID), redact.OneLine(result.Kind), redact.OneLine(operator), result.LeaseExpiresAt.Format(time.RFC3339), c.source(ctx))
+		words(result.EnrollmentID), words(result.Kind), words(operator), result.LeaseExpiresAt.Format(time.RFC3339), c.source(ctx))
 	for _, g := range result.Grants {
 		if g.ExpiresAt == nil {
-			fmt.Fprintf(stdout, "grant: %s (request %s, until this session ends)\n", redact.OneLine(g.GrantID), redact.OneLine(g.RequestID))
+			fmt.Fprintf(stdout, "grant: %s (request %s, until this session ends)\n", words(g.GrantID), words(g.RequestID))
 			continue
 		}
-		fmt.Fprintf(stdout, "grant: %s (request %s, expires %s)\n", redact.OneLine(g.GrantID), redact.OneLine(g.RequestID), g.ExpiresAt.Format(time.RFC3339))
+		fmt.Fprintf(stdout, "grant: %s (request %s, expires %s)\n", words(g.GrantID), words(g.RequestID), g.ExpiresAt.Format(time.RFC3339))
 	}
 	return 0
 }
@@ -1211,16 +1222,17 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	}
 
 	state, grantID, requestID, detail := result.State, result.GrantID, result.RequestID, result.Detail
-	// shownID is the request's id as the lines below print it: the broker's, so on one line
-	// (redact.OneLine). requestID itself is what the polls ask after.
-	shownID := redact.OneLine(requestID)
+	// shownID is the request's id as the lines below print it: the broker's, so as its address
+	// lets its answer print (brokeraddr.Address.Words). requestID itself is what the polls ask
+	// after.
+	shownID := c.baseURL.Words(requestID)
 	// pollErr is the last status poll's failure while the polls fail in a way a retry can cure
 	// (retryable), and nil once one reads the request again. Such a poll does not end the wait:
 	// the approver may still decide before --wait runs out, and a grant this command has stopped
 	// waiting for is one nothing collects.
 	var pollErr error
 	if state == "pending" {
-		reportPending(stderr, requestID, result.Approver, result.ApproveURL, result.JudgeDeciding, *wait, src())
+		reportPending(stderr, c.baseURL, shownID, result.Approver, result.ApproveURL, result.JudgeDeciding, *wait, src())
 		judging := result.JudgeDeciding
 		deadline := time.Now().Add(*wait)
 		// backoff is the sleep before the next read after one that came back undecided before
@@ -1248,7 +1260,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 				// The judge held the request and has given it up: it is its person's now, and the
 				// agent is told who that is and where they decide it, once.
 				if judging && !status.JudgeDeciding && state == "pending" {
-					fmt.Fprintf(stderr, "agent-secrets: the model judge could not decide it; %s\n", waitingOn(status.Approver, status.ApproveURL, false))
+					fmt.Fprintf(stderr, "agent-secrets: the model judge could not decide it; %s\n", waitingOn(c.baseURL, status.Approver, status.ApproveURL, false))
 					judging = false
 				}
 			case retryable(err):
@@ -1277,13 +1289,13 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is still waiting for approval; nothing was run. Check it with: agent-secrets status %s\n", shownID, src(), shownID)
 		return exitPending
 	case "denied":
-		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was denied%s\n", shownID, src(), deniedBecause(detail))
+		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was denied%s\n", shownID, src(), deniedBecause(c.baseURL, detail))
 		return exitDenied
 	case "cancelled", "expired":
 		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was %s\n", shownID, src(), state)
 		return 1
 	default:
-		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is in unexpected state %q\n", shownID, src(), state)
+		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is in unexpected state %s\n", shownID, src(), c.baseURL.Words(strconv.Quote(state)))
 		return 1
 	}
 	if grantID == nil {
@@ -1365,9 +1377,10 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 // reportPending says, once, before the exec form's wait, who decides the request — a person, or
 // the model judge while it holds the request — where the secrets it would inject come from (src),
 // and on which page of the broker a person decides it when its answer names one (waitingOn).
-func reportPending(stderr io.Writer, requestID string, approver *string, brokerPage string, judging bool, wait time.Duration, src source) {
-	fmt.Fprintf(stderr, "agent-secrets: request %s to %s is waiting for approval; waiting up to %s\n", redact.OneLine(requestID), src, wait)
-	fmt.Fprintf(stderr, "agent-secrets: %s\n", waitingOn(approver, brokerPage, judging))
+// shownID is the request's id as the exec form prints it.
+func reportPending(stderr io.Writer, base brokeraddr.Address, shownID string, approver *string, brokerPage string, judging bool, wait time.Duration, src source) {
+	fmt.Fprintf(stderr, "agent-secrets: request %s to %s is waiting for approval; waiting up to %s\n", shownID, src, wait)
+	fmt.Fprintf(stderr, "agent-secrets: %s\n", waitingOn(base, approver, brokerPage, judging))
 }
 
 // waitingOn is the sentence that says whom a pending request waits on and where they decide it:
@@ -1381,21 +1394,23 @@ func reportPending(stderr io.Writer, requestID string, approver *string, brokerP
 // switch appends: a broker from before that page carries none, the suffix is empty, and the same
 // sentence names the approver alone, with no page - the request waits on the same person, who
 // opens the broker themselves. The broker names an approver for every pending request; one from
-// before it did names none, and the sentence says so rather than guessing. The page is the
-// broker's, so it prints on one line (redact.OneLine): as it came, or Go-quoted where a control
-// character in it would start a line of its own.
+// before it did names none, and the sentence says so rather than guessing. The page and the
+// approver are the broker's, so each prints as the broker's address base lets its answer print
+// (brokeraddr.Address.Words): on one line beside a clean address, Go-quoted where a control
+// character in it would start a line of its own, and not at all beside one that carries a
+// credential.
 //
 // A request the model judge holds (judging, the answer's judge_deciding) carries no page: its
 // keys are ones the judge decides, so the sentence says the judge is deciding it and that nobody
 // is asked, and never that its approver must approve it. If the judge cannot decide it, a later
 // answer carries the page, and the exec form says so.
-func waitingOn(approver *string, brokerPage string, judging bool) string {
+func waitingOn(base brokeraddr.Address, approver *string, brokerPage string, judging bool) string {
 	if judging {
 		return "the model judge is deciding it; nobody is asked to approve it unless the judge cannot decide it"
 	}
 	where := ""
 	if brokerPage != "" {
-		where = ": " + redact.OneLine(brokerPage)
+		where = ": " + base.Words(brokerPage)
 	}
 	switch {
 	case approver == nil:
@@ -1403,7 +1418,7 @@ func waitingOn(approver *string, brokerPage string, judging bool) string {
 	case *approver == record.AnyoneApprover:
 		return "waiting for anyone signed in to the secrets broker to approve it" + where
 	default:
-		return "waiting for " + redact.OneLine(*approver) + " to approve it on the secrets broker" + where
+		return "waiting for " + base.Words(*approver) + " to approve it on the secrets broker" + where
 	}
 }
 
@@ -1412,23 +1427,25 @@ func waitingOn(approver *string, brokerPage string, judging bool) string {
 // request and the rule that did, as ": GCLOUD_DEMO: requester-not-listed". An agent reading that
 // line on stderr then knows which secret it may not have and that asking again will not help,
 // rather than only that something was denied. A broker that recorded no detail, and one from
-// before the field, adds nothing, so such a denial reads exactly as it always has.
-func deniedBecause(detail *string) string {
+// before the field, adds nothing, so such a denial reads exactly as it always has. The sentence
+// prints as the broker's address base lets its answer print (brokeraddr.Address.Words).
+func deniedBecause(base brokeraddr.Address, detail *string) string {
 	if detail == nil {
 		return ""
 	}
-	return ": " + redact.OneLine(*detail)
+	return ": " + base.Words(*detail)
 }
 
 // printDetail writes the broker's own sentence about a request, the one the request row keeps as
-// its decision_detail, as the "detail: <text>" line the request and status forms both end with.
-// A broker that recorded none, and one from before the field, writes no line at all, so such an
-// answer reads exactly as it always has.
-func printDetail(stdout io.Writer, detail *string) {
+// its decision_detail, as the "detail: <text>" line the request and status forms both end with,
+// as the broker's address base lets its answer print (brokeraddr.Address.Words). A broker that
+// recorded none, and one from before the field, writes no line at all, so such an answer reads
+// exactly as it always has.
+func printDetail(stdout io.Writer, base brokeraddr.Address, detail *string) {
 	if detail == nil {
 		return
 	}
-	fmt.Fprintf(stdout, "detail: %s\n", redact.OneLine(*detail))
+	fmt.Fprintf(stdout, "detail: %s\n", base.Words(*detail))
 }
 
 // sessionIdentityVars are the AGENT_SECRETS_* variables the exec form's child keeps: the broker's

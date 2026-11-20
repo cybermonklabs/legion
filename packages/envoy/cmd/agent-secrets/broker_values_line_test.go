@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 )
@@ -165,11 +166,11 @@ func TestTheTablesPrintTheBrokersValuesOnOneLine(t *testing.T) {
 	plain := OperatorGrant{GrantID: "grant-1", Granted: "approved", Names: []string{"A", "B"},
 		Approver: new("ada@example.com"), DecidedBy: new("judge:model-1"),
 		Enrollment: OperatorGrantEnrollment{Kind: "session", RuntimeID: "h:1:1", Operator: "ada@example.com"}, ExpiresAt: &at}
-	if got, want := grantRow(plain), []string{"grant-1", "A,B", "approved", "ada@example.com", "judge:model-1", "session/h:1:1", "ada@example.com", "2026-11-17T09:00:00Z"}; strings.Join(got, "|") != strings.Join(want, "|") {
+	if got, want := grantRow(brokeraddr.New("https://broker.example"), plain), []string{"grant-1", "A,B", "approved", "ada@example.com", "judge:model-1", "session/h:1:1", "ada@example.com", "2026-11-17T09:00:00Z"}; strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("grantRow of plain values = %q, want %q", got, want)
 	}
 	tabbed := "a\tb"
-	row := grantRow(OperatorGrant{GrantID: forged, Granted: forged, Names: []string{forged}, Approver: &slot, DecidedBy: &tabbed,
+	row := grantRow(brokeraddr.New("https://broker.example"), OperatorGrant{GrantID: forged, Granted: forged, Names: []string{forged}, Approver: &slot, DecidedBy: &tabbed,
 		Enrollment: OperatorGrantEnrollment{Kind: forged, RuntimeID: "h:1:1", Operator: forged, Slot: &slot}})
 	for i, cell := range row {
 		if strings.ContainsAny(cell, "\t\r\n\x1b") {
@@ -180,14 +181,80 @@ func TestTheTablesPrintTheBrokersValuesOnOneLine(t *testing.T) {
 		t.Errorf("grantRow = %q, want the grant id %s and the decider %s", row, quotedForged, strconv.Quote(tabbed))
 	}
 
-	if got, want := machineRow(OperatorMachine{CredentialID: "lcred-1", Host: "box", ApprovedBy: "ada@example.com", IssuedAt: at, ExpiresAt: at}),
+	if got, want := machineRow(brokeraddr.New("https://broker.example"), OperatorMachine{CredentialID: "lcred-1", Host: "box", ApprovedBy: "ada@example.com", IssuedAt: at, ExpiresAt: at}),
 		[]string{"lcred-1", "box", "ada@example.com", "2026-11-17T09:00:00Z", "2026-11-17T09:00:00Z", "ok"}; strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("machineRow of plain values = %q, want %q", got, want)
 	}
-	cells := machineRow(OperatorMachine{CredentialID: forged, Host: forged, ApprovedBy: tabbed, IssuedAt: at, ExpiresAt: at, Expired: true})
+	cells := machineRow(brokeraddr.New("https://broker.example"), OperatorMachine{CredentialID: forged, Host: forged, ApprovedBy: tabbed, IssuedAt: at, ExpiresAt: at, Expired: true})
 	if cells[0] != quotedForged || cells[1] != quotedForged || cells[2] != strconv.Quote(tabbed) || cells[5] != "expired" {
 		t.Errorf("machineRow = %q, want the credential and the host %s and the approver %s", cells, quotedForged, strconv.Quote(tabbed))
 	}
+}
+
+// TestTheBrokersValuesPrintNothingBesideACredentialedAddress: request, status, self, the exec
+// form, a --ttl the broker did not give, and the grant and machine tables print each value of the
+// broker's answer as the address lets it print (brokeraddr.Address.Words): beside an
+// AGENT_SECRETS_URL that carries a credential, which whoever answers there can repeat in any
+// value, each prints as brokeraddr.WordsNotPrinted. Control: beside a clean address the same
+// values print, so the check sees them.
+func TestTheBrokersValuesPrintNothingBesideACredentialedAddress(t *testing.T) {
+	planted := "hunter2pw-" + "brokervalue-" + "51c7"
+	credentialed := func(t *testing.T, srv *httptest.Server) {
+		t.Setenv("AGENT_SECRETS_URL", strings.Replace(srv.URL, "http://", "http://demouser7q:demopass9z-not-a-secret@", 1))
+	}
+	for _, row := range []struct {
+		name   string
+		bodies map[string]any
+		args   []string
+		want   string
+	}{
+		{"request, pending", map[string]any{"POST /v1/requests": map[string]any{
+			"request_id": planted, "state": "pending", "approver": planted, "approve_url": "https://broker.example/approve/" + planted, "detail": planted,
+		}}, []string{"request", "--reason", "need it", "SOME_SECRET"}, "request_id: " + brokeraddr.WordsNotPrinted},
+		{"status", map[string]any{"GET /v1/requests/": map[string]any{
+			"state": "granted", "grant_id": planted, "decision": map[string]any{"by": planted, "at": time.Now()}, "detail": planted,
+		}}, []string{"status", "req-1"}, "grant_id: " + brokeraddr.WordsNotPrinted},
+		{"self", map[string]any{"GET /v1/enrollments/self": map[string]any{
+			"enrollment_id": planted, "kind": planted, "operator": planted, "lease_expires_at": time.Now(),
+			"grants": []any{map[string]any{"grant_id": planted, "request_id": planted}},
+		}}, []string{"self"}, "enrollment_id: " + brokeraddr.WordsNotPrinted},
+		{"the exec form, denied", map[string]any{"POST /v1/requests": map[string]any{"request_id": planted, "state": "denied", "detail": planted}},
+			[]string{"--reason", "need it", "SOME_SECRET", "--", "true"}, "was denied: " + brokeraddr.WordsNotPrinted},
+		{"a lifetime the broker did not give", map[string]any{"POST /v1/requests": map[string]any{
+			"request_id": planted, "state": "granted", "grant_id": planted, "record_id": "record-1",
+		}}, []string{"request", "--reason", "need it", "--ttl", "60s", "SOME_SECRET"}, "the broker gave request " + brokeraddr.WordsNotPrinted},
+	} {
+		for _, clean := range []bool{false, true} {
+			name := row.name + ", beside a credentialed address"
+			if clean {
+				name = "control: " + row.name + ", beside a clean address"
+			}
+			t.Run(name, func(t *testing.T) {
+				srv := forgedBroker(t, row.bodies)
+				if !clean {
+					credentialed(t, srv)
+				}
+				var stdout, stderr bytes.Buffer
+				run(row.args, &stdout, &stderr)
+				out := stdout.String() + stderr.String()
+				if clean {
+					if !strings.Contains(out, planted) {
+						t.Fatalf("the output %q does not print the broker's values beside a clean address", out)
+					}
+					return
+				}
+				wantNamedNotPrinted(t, "the output", out, []string{row.want}, planted, "demopass9z")
+			})
+		}
+	}
+	t.Run("the grant and machine tables", func(t *testing.T) {
+		base := brokeraddr.New("http://demouser7q:demopass9z-not-a-secret@broker.example")
+		at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+		grant := grantRow(base, OperatorGrant{GrantID: planted, Granted: planted, Names: []string{planted}, Approver: &planted,
+			Enrollment: OperatorGrantEnrollment{Kind: planted, RuntimeID: planted, Operator: planted}, ExpiresAt: &at})
+		machine := machineRow(base, OperatorMachine{CredentialID: planted, Host: planted, ApprovedBy: planted, IssuedAt: at, ExpiresAt: at})
+		wantNamedNotPrinted(t, "the rows", strings.Join(grant, "|")+"|"+strings.Join(machine, "|"), []string{brokeraddr.WordsNotPrinted}, planted)
+	})
 }
 
 // TestTheEnrollmentIDsPrintOnOneLine: the enrollment enroll and a pod's enrolment print, which the

@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -203,7 +204,7 @@ func cmdMachineList(args []string, stdout, stderr io.Writer) int {
 	const form = "machine list"
 	flagArgs, positional := splitArgs(args, nil)
 	flags := newFlagSet(form, stderr)
-	asJSON := flags.Bool("json", false, "print the broker's response body verbatim")
+	asJSON := flags.Bool("json", false, jsonFlag)
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -226,7 +227,7 @@ func cmdMachineList(args []string, stdout, stderr io.Writer) int {
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "CREDENTIAL_ID\tHOST\tAPPROVED_BY\tISSUED\tEXPIRES\tSTATE")
 	for _, m := range machines.Credentials {
-		fmt.Fprintln(tw, strings.Join(machineRow(m), "\t"))
+		fmt.Fprintln(tw, strings.Join(machineRow(base, m), "\t"))
 	}
 	if err := tw.Flush(); err != nil {
 		fmt.Fprintf(stderr, "agent-secrets %s: %v\n", form, err)
@@ -243,15 +244,16 @@ func cmdMachineList(args []string, stdout, stderr io.Writer) int {
 
 // machineRow is one machine login's cells, in the table's column order: its credential id, its
 // host, who approved it ("-" for none), when it was issued and expires, and its state. The first
-// three are the broker's, so each prints on one line (redact.OneLine): as it came, or Go-quoted
-// where a control character in it, a tab among them, would start a line of its own or split the
-// cell.
-func machineRow(m OperatorMachine) []string {
+// three are the broker's, so each prints as the broker's address base lets its answer print
+// (brokeraddr.Address.Words): as it came on one line, Go-quoted where a control character in it,
+// a tab among them, would start a line of its own or split the cell, and not at all beside an
+// address that carries a credential.
+func machineRow(base brokeraddr.Address, m OperatorMachine) []string {
 	state := "ok"
 	if m.Expired {
 		state = "expired"
 	}
-	return []string{redact.OneLine(m.CredentialID), redact.OneLine(m.Host), redact.OneLine(orDash(m.ApprovedBy)),
+	return []string{base.Words(m.CredentialID), base.Words(m.Host), base.Words(orDash(m.ApprovedBy)),
 		m.IssuedAt.UTC().Format(time.RFC3339), m.ExpiresAt.UTC().Format(time.RFC3339), state}
 }
 

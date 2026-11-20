@@ -703,7 +703,7 @@ func TestAPendingRequestWithoutABrokerPageNamesItsApproverAlone(t *testing.T) {
 		{"a person", &person, "waiting for ada@example.com to approve it on the secrets broker"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			if got := waitingOn(row.approver, "", false); got != row.want {
+			if got := waitingOn(brokeraddr.New("https://broker.example"), row.approver, "", false); got != row.want {
 				t.Errorf("waitingOn = %q, want %q", got, row.want)
 			}
 		})

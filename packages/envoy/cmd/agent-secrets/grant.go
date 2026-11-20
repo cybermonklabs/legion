@@ -16,8 +16,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
-	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // cmdGrantList implements "grant list": every live grant of a session the operator runs, given
@@ -28,7 +28,7 @@ func cmdGrantList(args []string, stdout, stderr io.Writer) int {
 	const form = "grant list"
 	flagArgs, positional := splitArgs(args, nil)
 	flags := newFlagSet(form, stderr)
-	asJSON := flags.Bool("json", false, "print the broker's response body verbatim")
+	asJSON := flags.Bool("json", false, jsonFlag)
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -53,7 +53,7 @@ func cmdGrantList(args []string, stdout, stderr io.Writer) int {
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, strings.Join(grantColumns, "\t"))
 	for _, g := range grants.Grants {
-		fmt.Fprintln(tw, strings.Join(grantRow(g), "\t"))
+		fmt.Fprintln(tw, strings.Join(grantRow(c.baseURL, g), "\t"))
 	}
 	if err := tw.Flush(); err != nil {
 		fmt.Fprintf(stderr, "agent-secrets %s: %v\n", form, err)
@@ -79,16 +79,17 @@ func grantExpiry(expires *time.Time) string {
 var grantColumns = []string{"GRANT_ID", "SECRETS", "GRANTED", "APPROVER", "DECIDED_BY", "SESSION", "OPERATOR", "EXPIRES"}
 
 // grantRow is one grant's cells, in grantColumns' order, each "-" where the grant carries no
-// such value. Each cell is the broker's, so it prints on one line (redact.OneLine): as it came, or
-// Go-quoted where a control character in it, a tab among them, would start a line of its own or
-// split the cell.
+// such value. Each cell is the broker's, so it prints as the broker's address base lets its answer
+// print (brokeraddr.Address.Words): as it came on one line, Go-quoted where a control character in
+// it, a tab among them, would start a line of its own or split the cell, and not at all beside an
+// address that carries a credential.
 //
 // APPROVER and DECIDED_BY sit side by side because they differ for one kind of grant: one the
 // model judge approved, which records the record's own approver — the secret's owner, or anyone
 // for a shared secret — and the judge as its decider, "judge:<model id>". APPROVER alone read as
 // the owner's own approval of a request that owner never saw. An automatic grant nobody decided
 // prints "-" under both.
-func grantRow(g OperatorGrant) []string {
+func grantRow(base brokeraddr.Address, g OperatorGrant) []string {
 	session := g.Enrollment.Kind + "/" + g.Enrollment.RuntimeID
 	if g.Enrollment.Slot != nil {
 		session += "/" + *g.Enrollment.Slot
@@ -98,7 +99,7 @@ func grantRow(g OperatorGrant) []string {
 		session, orDash(g.Enrollment.Operator), grantExpiry(g.ExpiresAt),
 	}
 	for i, cell := range cells {
-		cells[i] = redact.OneLine(cell)
+		cells[i] = base.Words(cell)
 	}
 	return cells
 }

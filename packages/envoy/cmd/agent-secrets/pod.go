@@ -296,9 +296,9 @@ func enrolPod(service, tokenFile, out string, base brokeraddr.Address, prefix st
 	// the token file are named.
 	fmt.Fprintf(stderr, "%s --pod: enrolled; keep this lease alive with: AGENT_SECRETS_KEY_DIR=%s agent-secrets renew --pod-token-file %s\n",
 		prefix, shellWord(out), shellWord(tokenFile))
-	// The enrollment is the broker's, so it prints on one line (redact.OneLine); the file
-	// above keeps it as it came.
-	fmt.Fprintln(stdout, redact.OneLine(enrollmentID))
+	// The enrollment is the broker's, so it prints as the broker's address lets its answer print
+	// (brokeraddr.Address.Words); the file above keeps it as it came.
+	fmt.Fprintln(stdout, base.Words(enrollmentID))
 	return 0
 }
 
