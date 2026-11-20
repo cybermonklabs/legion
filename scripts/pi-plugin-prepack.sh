@@ -111,8 +111,9 @@ stage_skills dist/skills
 # is already executable (chmod's X). The published modes are then the same whoever packs. `files`
 # must list paths that exist: a glob or a missing entry would ship, or not, with the packer's
 # modes and no word, so each is refused by name.
-files_list=$(jq -er '.files | if type == "array" and length > 0 then .[] else error("no files list") end' package.json) ||
-  refuse "$name's package.json has no files list to normalize the shipped modes of"
+files_list=$(jq -r '.files | if type == "array" then .[] else empty end' package.json) ||
+  refuse "$name's package.json could not be read for its files list"
+[ -n "$files_list" ] || refuse "$name's package.json has no files list, or an empty one, to normalize the shipped modes of"
 mapfile -t listed <<<"$files_list"
 shopt -s nullglob nocaseglob
 always=(package.json README* LICENSE* LICENCE*)

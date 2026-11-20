@@ -143,9 +143,10 @@ fi
 # files). Every user keeps read, search on each directory and execute on each file already
 # executable (chmod's X).
 command -v jq > /dev/null 2>&1 || refuse "jq is required to set the shipped files' modes"
-files_list=$(jq -er '.files | if type == "array" then .[] else error("no files list") end' package.json) ||
-  refuse "package.json has no files list to set the shipped files' modes from"
-shopt -s nocaseglob
+files_list=$(jq -r '.files | if type == "array" then .[] else empty end' package.json) ||
+  refuse "package.json could not be read for its files list"
+[ -n "$files_list" ] || refuse "package.json has no files list, or an empty one, to set the shipped files' modes from"
+shopt -s nullglob nocaseglob
 shipped=(package.json README* LICENSE* LICENCE*)
 shopt -u nocaseglob
 while IFS= read -r entry; do
