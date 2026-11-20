@@ -1379,7 +1379,7 @@ out="$(DISPATCH_URL=http://127.0.0.1:1 fixture_run "$dir" --published)"
 ending_result "--published with no Dispatch cannot run, naming Dispatch" 2 '^check\.sh cannot run --published: Dispatch, the read of the comments of INFRA-3134 did not answer' "$out"
 dir="$(fresh citations-honest)"
 out="$(fixture_run "$dir" --citations)"
-ending_result "the fixture passes --citations when Dispatch answers" 0 '^all 5 assertions passed$' "$out"
+ending_result "the fixture passes --citations when Dispatch answers" 0 '^all 6 assertions passed$' "$out"
 out="$(fixture_run "$dir" --replay)"
 ending_result "the fixture passes --replay" 0 '^all 18 assertions passed$' "$out"
 
@@ -1577,7 +1577,7 @@ ending_result "--shape whose IOC_HISTORY_REF names the fixture's branch passes" 
 out="$(IOC_CLONES="$dir/judgement.md/clones" fixture_run "$dir" --citations)"
 missing_result "--citations whose IOC_CLONES cannot be made cannot run, naming it" citations 'IOC_CLONES names .*/judgement\.md/clones, which this run cannot make' 'export IOC_CLONES=<a directory this user can write>, or leave it unset for \$TMPDIR/ioc-clones' "$out"
 out="$(fixture_run "$dir" --citations)"
-ending_result "--citations with the default clone root passes the fixture" 0 '^all 5 assertions passed$' "$out"
+ending_result "--citations with the default clone root passes the fixture" 0 '^all 6 assertions passed$' "$out"
 
 # 82. Each recorded command runs with an empty TMPDIR of its own. At 533506542a a row ran
 # with the caller's TMPDIR, so a row that read what an earlier run had left there, as
@@ -1712,7 +1712,7 @@ ending_result "--self-test whose fixture's --citations has no Dispatch to read c
 out="$(IOC_HISTORY_REF="$head_commit" DISPATCH_URL=http://127.0.0.1:1 IOC_EVIDENCE="$self_copy" gate_run "$self_copy/check.sh" --self-test)"
 ending_result "--self-test with IOC_HISTORY_REF exported runs its fixture on the fixture's own history, and ends naming Dispatch" 2 "$SELF_CANNOT" "$out"
 out="$(IOC_EVIDENCE="$self_copy" gate_run "$self_copy/check.sh" --self-test)"
-ending_result "--self-test of the copy passes when every run it makes can run" 0 '^all 41 assertions passed$' "$out"
+ending_result "--self-test of the copy passes when every run it makes can run" 0 '^all 42 assertions passed$' "$out"
 
 # 86. --admitted reads the status of the install reader. At 0fdbb24ddf it read the
 # classifier's lines through a process substitution, so no status of python3 reached it:
@@ -1875,7 +1875,7 @@ dir_copy() {
 BROKEN_LINE='{"id": "broken-row", "kind": '
 LIST_COMMAND='{"id":"command-list","requirement":"r7","source":"the case","kind":"behaviour","claim":"A command that is a list.","mark":"verified","evidence":{"surface":"cli"},"command":["ls"],"expect":{"contains":"ls"},"note":"planted"}'
 NUMBER_ID='{"id":7,"requirement":"r7","source":"the case","kind":"behaviour","claim":"An id that is a number.","mark":"verified","evidence":{"surface":"cli"},"command":"printf ran","expect":{"contains":"ran"},"note":"planted"}'
-for mode in replay:18:claim-form citations:5:citation-kinds; do
+for mode in replay:18:claim-form citations:6:citation-kinds; do
     family="${mode##*:}"
     count="${mode#*:}"
     count="${count%%:*}"
@@ -1906,7 +1906,7 @@ copy="$(dir_copy parse-self-test "$WORK/cases-stub.sh")"
 printf '%s\n' "$LIST_COMMAND" >>"$copy/claims.jsonl"
 out="$(IOC_EVIDENCE="$copy" gate_run "$copy/check.sh" --self-test)"
 one_failure_result "--self-test over a claims.jsonl holding a row whose command is a list fails admitted-table alone, exit 1" admitted-table \
-    '^1 of 41 assertions failed: admitted-table$' "^FAIL admitted-table: .*admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims\\.jsonl is no row" "$out"
+    '^1 of 42 assertions failed: admitted-table$' "^FAIL admitted-table: .*admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims\\.jsonl is no row" "$out"
 
 # 89. check.test.sh ends the three ways the gate does, and --self-test reads it by its
 # ending record. At 9c82069807 case_result, passed_result and ending_result read a fixture
@@ -1986,7 +1986,7 @@ dir="$(fresh precedence-citations)"
 printf '%s\n' "$BROKEN_LINE" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
 out="$(DISPATCH_URL=http://127.0.0.1:1 fixture_run "$dir" --citations)"
 ending_result "a mode that failed an assertion and then met no Dispatch ends exit 1, naming the failure and then what could not run" 1 \
-    "^1 of 5 assertions failed: citation-kinds; 4 could not run: citation-our-code citation-project-code citation-published citation-dispatch, since $DISPATCH_DOWN" "$out" "$DISPATCH_DOWN"
+    "^1 of 6 assertions failed: citation-kinds; 5 could not run: citation-our-code citation-project-code citation-published citation-dispatch citation-figures, since $DISPATCH_DOWN" "$out" "$DISPATCH_DOWN"
 copy="$(cases_copy cases-syntax "$case_four
 fi")"
 out="$(gate_run "$copy/check.test.sh")"
@@ -1997,7 +1997,7 @@ if [ "$RUN_CRASH" != 1 ] || [ -e "$out/ending" ] || ! grep -q "syntax error near
 fi
 out="$(IOC_EVIDENCE="$copy" gate_run "$copy/check.sh" --self-test)"
 one_failure_result "--self-test whose check.test.sh ends in a bash syntax error, exit 2 with no ending record, fails gate-cases" gate-cases \
-    '^1 of 41 assertions failed: gate-cases$' '^FAIL gate-cases: check\.test\.sh does not pass, exit 2: ' "$out"
+    '^1 of 42 assertions failed: gate-cases$' '^FAIL gate-cases: check\.test\.sh does not pass, exit 2: ' "$out"
 
 # 90-92 come from the thirteenth review of the pull request and the architect's rulings on
 # it of 2026-11-16T06:40Z and 07:08Z, and the header of check.sh states each rule they hold:
@@ -2033,7 +2033,7 @@ for planted in BROKEN_LINE LIST_COMMAND; do
     claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
     printf '%s\n' "${!planted}" >>"$claims_copy"
     one_failure_result "--citations over a claims.jsonl holding $planted fails citation-kinds alone, naming the line, exit 1" citation-kinds \
-        '^1 of 5 assertions failed: citation-kinds$' "^FAIL citation-kinds: line $(wc -l <"$claims_copy") of claims\\.jsonl is no row" \
+        '^1 of 6 assertions failed: citation-kinds$' "^FAIL citation-kinds: line $(wc -l <"$claims_copy") of claims\\.jsonl is no row" \
         "$(github_cut fixture_run "$dir" --citations)"
 done
 CASE
@@ -2062,7 +2062,7 @@ dir="$(fresh dispatch-beside-failure)"
 claims_copy="$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
 printf '%s\n' "$BROKEN_LINE" >>"$claims_copy"
 one_failure_result "--citations over a claims.jsonl holding a line cut short fails citation-kinds alone, beside a Dispatch that does not answer" citation-kinds \
-    '^1 of 5 assertions failed: citation-kinds$' "^FAIL citation-kinds: line $(wc -l <"$claims_copy") of claims\\.jsonl is no row" \
+    '^1 of 6 assertions failed: citation-kinds$' "^FAIL citation-kinds: line $(wc -l <"$claims_copy") of claims\\.jsonl is no row" \
     "$(DISPATCH_URL=http://127.0.0.1:1 fixture_run "$dir" --citations)"
 CASE
 )")"
@@ -3911,6 +3911,48 @@ sed -i '0,/^- \*\*Landing component:\*\* Legion$/s//- **Landing component:** Leg
 }
 case_result "a page with two Landing component lines naming two components fails --shape, naming the page" \
     'page-[a-z-]+: .*[Ll]anding component' "$(fixture_run "$dir" --shape)"
+
+# 128. A candidate page carries one verdict (the architect's brief of round 40, on case 127's
+# fault in the Verdict field). R9's page carries one verdict, one word of vendor, depend,
+# port and reject. At 51c58606 --shape read a page's first Verdict line alone (grep -m1), for
+# its verdict and for a second verdict word beside it, so a page whose first Verdict line
+# says port and whose second says reject passed every assertion, although it carries two
+# verdicts. The case writes a second line saying reject under the first Verdict line of the
+# fixture's judgement that says port, and runs --shape, which must fail, naming the page and
+# its verdict.
+dir="$(fresh verdict-two-lines)"
+sed -i '0,/^- \*\*Verdict:\*\* port$/s//- **Verdict:** port\n- **Verdict:** reject/' "$dir/judgement.md"
+[ "$(grep -c '^- \*\*Verdict:\*\* reject$' "$dir/judgement.md")" -ge 2 ] || {
+    printf 'FAIL the second verdict could not be planted in the fixture judgement\n'
+    exit 1
+}
+case_result "a page with two Verdict lines naming two verdicts fails --shape, naming the page" \
+    'page-[a-z-]+: .*[Vv]erdict' "$(fixture_run "$dir" --shape)"
+
+# 129. A figure the judgement states beside a citation is one the rows it cites print (the
+# architect's brief of round 40). A reader found, over six review rounds, sentences of the
+# judgement whose figures no row they cite prints. At 51c58606 --citations read no sentence
+# of the judgement, so nothing held a figure to the rows beside it. The case writes, after
+# the fixture's sentence on the one thing to do first, a sentence that cites f-behaviour-1
+# and f-figure-1 and states 12,618 rows where f-figure-1 prints 12617, and runs --citations,
+# which must fail citation-figures, naming the figure and the rows; the honest form is the
+# same sentence stating 12,617, which f-figure-1 prints without its thousands separator,
+# and --citations passes it.
+for figure in 12,618 12,617; do
+    dir="$(fresh "figure-$figure")"
+    sed -i "s/^The Envoy field\\.\$/The Envoy field. Its count reads $figure rows [f-behaviour-1, f-figure-1]./" "$dir/judgement.md"
+    grep -qF "Its count reads $figure rows [f-behaviour-1, f-figure-1]." "$dir/judgement.md" || {
+        printf 'FAIL the sentence stating %s could not be planted in the fixture judgement\n' "$figure"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    if [ "$figure" = 12,618 ]; then
+        case_result "a sentence that cites rows and states a figure none of them prints fails --citations, naming the figure and the rows" \
+            'citation-figures: line [0-9]+ of the judgement states 12,618 in a sentence that cites f-behaviour-1, f-figure-1' "$out"
+    else
+        passed_result "the same sentence stating the figure its row prints passes --citations" "$out"
+    fi
+done
 
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending

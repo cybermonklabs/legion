@@ -120,8 +120,8 @@
 # must be exactly the citations the record carries as it is read now. Where no committed
 # set exists the floor is one: a claims.jsonl with no row, no command, no quotation or no
 # absence search, a kind of citation with no row, a directory naming no dispatch://
-# reference, an empty landed list or an empty question list fails the assertion over it
-# by name.
+# reference, a judgement stating no figure in a sentence that cites a row, an empty landed
+# list or an empty question list fails the assertion over it by name.
 #
 # The live-read rule: every read of a live source the gate makes itself goes through one
 # function, live_read, in the mode's own shell before any assertion over what it reads
@@ -607,7 +607,7 @@ count-class|replay|the count classes are the three the specification names, in c
 count-denominator|replay|every class of the count carries its denominator, and the count coordination/count.py prints again reads a whole number of records above zero|a class with no denominator
 count-zero-premise|replay|a class of zero over a denominator above zero is stated on the front page as a premise that failed|a class of zero with no failed premise
 page-count|shape|the judgement carries at least three and at most seven candidate pages|an eighth candidate page
-page-parts|shape|every candidate page carries all eleven of its parts, and its landing component is Legion, Envoy or Dispatch|a page short of its reversal cost
+page-parts|shape|every candidate page carries each of its eleven parts on exactly one line, and its landing component is Legion, Envoy or Dispatch|a page short of its reversal cost
 page-verdict|shape|every candidate page carries exactly one verdict word of vendor, depend, port and reject|a page with two verdict words
 verdict-commitment|shape|a depend names its upstream owner, a port names the change in our code, a reject names its reason|a reject with no reason
 fixed-page|shape|the three pages the specification fixes exist and each answers by name the design already written for it|a fixed page that answers no named design
@@ -620,6 +620,7 @@ citation-project-code|citations|every citation into one of the projects names a 
 citation-published|citations|every citation of a published document names a committed copy whose checksum is the one sources.json recorded and whose text holds the sentence quoted|a byte appended to a committed copy
 citation-dispatch|citations|every dispatch:// reference resolves to a node Dispatch holds|a reference that resolves to no node
 citation-kinds|citations|every line of claims.jsonl is a row the one parse reads, and the extraction rule reads a citation of every kind it names, a number written in words among them|an extractor that reads digits alone
+citation-figures|citations|every figure the judgement states in a sentence that cites a row of claims.jsonl, a date among them, is printed by the recorded output or the command of a row that sentence cites|a figure no row its sentence cites prints
 landed-proof|landed|every landed page names the commit and the command sources.json commits for its title, the commit is one this pull request added and not one the base branch held, and the committed command passes|a page whose proof command differs from the committed one
 landed-refutation|landed|a page that refutes a step carries a command with output, never a search that found nothing|a refutation that rests on a search alone
 landed-order|landed|the commit of the shortfall rows is an ancestor of the commit of the combining rule|the two commits in the other order
@@ -689,7 +690,7 @@ citations|tool|git|resolves every citation into a clone or into this repository|
 citations|tool|jq|reads claims.jsonl and sources.json|apt-get install jq
 citations|tool|python3|runs citations.py, the one extraction rule|apt-get install python3
 citations|tool|curl|reads each published page's live address|apt-get install curl
-citations|tool|dispatch|resolves each dispatch:// reference|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
+citations|tool|dispatch|resolves each dispatch:// reference and reads the judgement|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
 citations|clone|IOC_CLONES|the mode clones each repository a project-code row cites under it|export IOC_CLONES=<a directory this user can write>, or leave it unset for $TMPDIR/ioc-clones
 landed|tool|git|reads the commits of this pull request|apt-get install git
 landed|tool|jq|reads the landed list of sources.json|apt-get install jq
@@ -1657,8 +1658,9 @@ coverage_report() {
 - whether the reading is deep. It reads that each of the six mas-lab directories has an
   evidence file and that each of the three questions is answered; a file that answers
   shallowly passes.
-- whether a cited text supports the claim beside it. It resolves the citation and reads
-  the quoted words; the judgement of what they support is the reader's.
+- whether a cited text supports the claim beside it. It resolves the citation, reads the
+  quoted words and holds each figure of a sentence that cites a row to the output or the
+  command of a row it cites; the judgement of what they support is the reader's.
 - whether a candidate that cannot be argued in one page was left off the list, and whether
   one fact is written once with the other half linking to it. Both are a reviewer's
   reading, and the plan of this issue names them so that nobody reads this gate as
@@ -1715,7 +1717,7 @@ prepare_env() {
 #   in                                21  comes before a for loop's words
 #   do                                21  comes before a for loop's body
 #   done                              21  closes a for loop
-#   simple command                   652  a command word and its arguments
+#   simple command                   654  a command word and its arguments
 #   pipeline                         462  two or more commands joined by |
 #   list                             247  two or more pipelines joined by ;, &&, || or newline
 #   group                             28  { list; }, whose status is its last command's
@@ -1750,7 +1752,7 @@ prepare_env() {
 #   program git                      380  wrapped in a function that records its status
 #   program go                         2  wrapped in a function that records its status
 #   program grep                     245  wrapped in a function that records its status
-#   program jq                        70  wrapped in a function that records its status
+#   program jq                        72  wrapped in a function that records its status
 #   program mkdir                      1  wrapped in a function that records its status
 #   program mktemp                     1  wrapped in a function that records its status
 #   program printf                    12  wrapped in a function that records its status
@@ -1781,7 +1783,7 @@ prepare_env() {
 #   uv run python                      4  uv run's python, whose status uv run exits with
 #   sh running a script file           1  the script's status reaches the row as sh's
 #   true                               9  a command whose status is no read
-#   $NAME or ${NAME}                 447  a parameter, its name in braces or not
+#   $NAME or ${NAME}                 449  a parameter, its name in braces or not
 #   $?                                11  the status of the last command
 #   $( )                              12  a command substitution
 #   a literal $                        2  a $ that starts no expansion, left as it stands
@@ -4745,20 +4747,29 @@ mode_shape() {
     [ "$missing" -eq 0 ] && pass front-page "the front page carries the ranking, the one thing to do first, the paragraph on where the two accounts differ, and what was not read"
 
     local parts=("**Question:**" "**Proposal:**" "**Verdict:**" "**Landing component:**" "**Cost:**" "**Deletes or replaces:**" "**Cost of reversing it:**" "**Default if nobody answers:**" "**Owner:**" "**Node model:**" "**Test:**")
-    local bad_parts=0 bad_verdict=0 bad_commitment=0 page title verdict landing read_pages=0
+    local bad_parts=0 bad_verdict=0 bad_commitment=0 page title verdict verdicts landing count read_pages=0
     while IFS= read -r -d $'\f' page; do
         read_pages=$((read_pages + 1))
         title="$(printf '%s\n' "$page" | head -1 | sed 's/^### //')"
+        # R9 gives a page each of its eleven fields once, so each field is read whole, from
+        # every line of the page that carries its label: a page short of one fails, and so
+        # does a page that carries one on more than one line, since a reader of its first
+        # line alone (grep -m1) passes a second line that names another value.
         for part in "${parts[@]}"; do
-            printf '%s\n' "$page" | grep -qF "$part" || {
+            count="$(printf '%s\n' "$page" | grep -cF -- "$part" || true)"
+            if [ "${count:-0}" -eq 0 ]; then
                 bad_parts=$((bad_parts + 1))
                 fail page-parts "the page '$title' is short of $part"
-            }
+            elif [ "$count" -gt 1 ]; then
+                bad_parts=$((bad_parts + 1))
+                fail page-parts "the page '$title' carries $part on $count lines, and R9 gives a page each of its fields once"
+            fi
         done
-        # R9 names the landing component as Legion, Envoy or Dispatch, so the line's value,
-        # after its label and with the whitespace around it and a trailing full stop trimmed,
-        # is exactly one of the three; a page with no such line is short of it above.
-        landing="$(printf '%s\n' "$page" | grep -m1 -F '**Landing component:**')" && {
+        # R9 names the landing component as Legion, Envoy or Dispatch, so the value of every
+        # line that carries the field, after its label and with the whitespace around it and
+        # a trailing full stop trimmed, is exactly one of the three; a page with no such line
+        # is short of it above, and a page with two carries it twice.
+        while IFS= read -r landing; do
             landing="$(printf '%s\n' "$landing" | sed 's/.*\*\*Landing component:\*\*//; s/^[[:space:]]*//; s/[[:space:]]*$//; s/\.$//')"
             case "$landing" in
             Legion | Envoy | Dispatch) ;;
@@ -4767,8 +4778,12 @@ mode_shape() {
                 fail page-parts "the page '$title' names the landing component '$landing', which is none of Legion, Envoy and Dispatch"
                 ;;
             esac
-        }
-        verdict="$(printf '%s\n' "$page" | grep -m1 -F '**Verdict:**' | sed 's/.*\*\*Verdict:\*\*[[:space:]]*//' | tr -d '`' | awk '{print $1}')"
+        done < <(printf '%s\n' "$page" | grep -F '**Landing component:**')
+        # The verdict field is read whole as well, every line that carries its label: the
+        # verdict is the first word after the label on its first line, and a verdict word
+        # anywhere else in the field, on that line or on another, is a second verdict.
+        verdicts="$(printf '%s\n' "$page" | grep -F '**Verdict:**' | sed 's/.*\*\*Verdict:\*\*[[:space:]]*//' | tr -d '`')"
+        verdict="$(printf '%s\n' "$verdicts" | awk '{print $1; exit}')"
         case "$verdict" in
         vendor | depend | port | reject) ;;
         *)
@@ -4779,11 +4794,11 @@ mode_shape() {
         local others=0 word
         for word in vendor depend port reject; do
             [ "$word" = "$verdict" ] && continue
-            printf '%s\n' "$page" | grep -m1 -F '**Verdict:**' | grep -qw "$word" && others=$((others + 1))
+            printf '%s\n' "$verdicts" | grep -qw "$word" && others=$((others + 1))
         done
         [ "$others" -eq 0 ] || {
             bad_verdict=$((bad_verdict + 1))
-            fail page-verdict "the page '$title' carries more than one verdict word"
+            fail page-verdict "the page '$title' carries more than one verdict word in its Verdict field"
         }
         case "$verdict" in
         depend)
@@ -4816,7 +4831,7 @@ mode_shape() {
         fail page-verdict "the judgement carries $read_pages candidate pages, fewer than the floor of $PAGE_FLOOR, so its verdicts are not judged"
         fail verdict-commitment "the judgement carries $read_pages candidate pages, fewer than the floor of $PAGE_FLOOR, so what its verdicts commit us to is not judged"
     fi
-    [ "$bad_parts" -eq 0 ] && pass page-parts "each of the $read_pages candidate pages carries all eleven of its parts, and its landing component is Legion, Envoy or Dispatch"
+    [ "$bad_parts" -eq 0 ] && pass page-parts "each of the $read_pages candidate pages carries each of its eleven parts on exactly one line, and its landing component is Legion, Envoy or Dispatch"
     [ "$bad_verdict" -eq 0 ] && pass page-verdict "each of the $read_pages candidate pages carries exactly one verdict word"
     [ "$bad_commitment" -eq 0 ] && pass verdict-commitment "the verdict of each of the $read_pages candidate pages names what it commits us to"
 
@@ -5246,6 +5261,177 @@ report_unchecked_parts() {
     printf '%d symbol parts were not checked.\n' "$(wc -l <"$list" | tr -d ' ')"
 }
 
+# citation_figures; citation-figures, the assertion that a figure the judgement states
+# beside a citation is one the cited rows print. A sentence of the judgement cites rows of
+# claims.jsonl by id in brackets, [c-acts-all-1] or [r-21, sc-genai-outside-registry], and
+# every figure of a sentence that cites at least one row appears in the recorded output or
+# the command of a row that sentence cites. The judgement is read line by line, as
+# citations.py reads a record, and through citations.py's own patterns, so a reference, an
+# address, a code span, a date, a commit hash, a heading and a bare line range are read by
+# one rule here and there. A sentence ends at a full stop, a question mark or an
+# exclamation mark, with any closing mark after it, before a space, outside a code span,
+# a reference and an address; its citations are its brackets whose ids name rows the one
+# parse read. A figure is a run of digits with its decimal point, its thousands separators
+# and its per-cent sign where it has them, as 12,617, 0.944, 66% and 19.6, inside a code
+# span or outside one, since a quoted command or answer states figures too; a range, 470-612
+# or 3–5, is two figures; and a date, 2026-11-12, is one, the date of an instant
+# 2026-11-16T13:00:00Z among them. It is printed when it stands in the row's text as a
+# number of its own, neither inside a longer number nor glued to a letter, with its
+# thousands separators there or not and its per-cent sign there or not, and a date also
+# when an instant's time follows it. What is not a figure, and why:
+#   the digits of a row id, as in [c-terms-3]: the bracket is the citation, which names a
+#     row, and its digits measure nothing;
+#   a commit hash, a run of seven to forty hexadecimal digits, as citations.py reads one:
+#     it names a commit, which citation-our-code and citation-project-code resolve, so a
+#     figure of seven digits or more is held to its rows only when written with its
+#     thousands separators;
+#   a dispatch:// reference and a web address: each names a source, which
+#     citation-dispatch and citation-published resolve;
+#   a file path, a path:line citation and a bare line range continuing one, as `:188-196`,
+#     and any token holding a slash, as theorem-labs/agent-infra#4173: each names a place
+#     in a tree, which citation-our-code and citation-project-code resolve;
+#   a token glued to a letter or an underscore, as R12, Q1, v14, gen_ai, INFRA-3134,
+#     8a4092b0 or check.sh:4761: it is a name, of a requirement, a question, a version, a
+#     field, an issue, a commit or a file, and not a measure;
+#   the number of an ordered list's item, which is markup;
+#   a question's number after the word Question, as Question 12: it is Q12 written out, the
+#     entry of questions.md that question-list holds the judgement to, and the front page
+#     must write it in digits for a question no page answers;
+#   a number written in words, as two pull requests or about four engineer-days: a row
+#     prints digits, so a word names no spelling to look for in its output, and the
+#     judgement writes in words what it orders or estimates rather than measures.
+# Each figure no cited row prints fails, naming the line of the judgement, the figure and
+# the rows its sentence cites; by the expected-set rule a judgement that states no figure in
+# a sentence that cites a row fails too, since then nothing is checked.
+citation_figures() {
+    local found="$RUN_SCRATCH/citation-figures" kind number figure rows sentence judged=0 checked=0 bad=0
+    claims_parsed || {
+        fail citation-figures "the parse of claims.jsonl did not run to its end, so no row a sentence of the judgement cites is read"
+        return
+    }
+    if ! python3 -B - "$EVIDENCE" "$RUN_SCRATCH/judgement.md" "$CLAIMS_ROWS" >"$found" 2>"$found.err" <<'PY'; then
+import json, re, sys
+
+evidence, judgement_path, rows_path = sys.argv[1:4]
+sys.path.insert(0, evidence)
+import citations
+
+# What a figure is looked for in: each row's recorded output and its command, by its id.
+printed = {}
+with open(rows_path, encoding="utf-8") as handle:
+    for text in handle:
+        row = json.loads(text)
+        printed[row["id"]] = "%s\n%s" % (row.get("output") or "", row.get("command") or "")
+
+BRACKET = re.compile(r"\[([^\[\]]+)\]")
+SENTENCE_END = re.compile(r"[.!?][\"'\u201d\u2019)\]*_]*(?=\s)")
+LIST_NUMBER = re.compile(r"^\s*(\d+)\.\s")
+QUESTION = re.compile(r"\bQuestions?\s+(\d+)\b", re.IGNORECASE)
+TOKEN = re.compile(r"[^\s()\[\]{}\"'`=|<>;\u201c\u201d\u2018\u2019]+")
+PIECES = re.compile(r"[-:\u2013\u2014]|,(?!\d{3}(?!\d))")
+FIGURE = re.compile(r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)*%?")
+
+
+def blank(text, start, end, fill=" "):
+    return text[:start] + fill * (end - start) + text[end:]
+
+
+def figures(text):
+    found = []
+    for date in citations.DATE.finditer(text):
+        if not re.match(r"[\w-]", text[date.start() - 1:date.start()] or " "):
+            found.append((date.start(), date.group(0)))
+        text = blank(text, date.start(), date.end())
+    for token in TOKEN.finditer(text):
+        raw = token.group(0)
+        if citations.BARE_LINES.fullmatch(raw.rstrip(".,;:!?*")):
+            continue
+        word = re.sub(r"[^\w%]+$", "", re.sub(r"^[^\w]+", "", raw))
+        if "/" in word or re.search(r"[^\W\d]", word) or not re.search(r"\d", word):
+            continue
+        for piece in PIECES.split(word):
+            if FIGURE.fullmatch(piece) and not citations.HEX_SHORT.fullmatch(piece):
+                found.append((token.start(), piece))
+    return [figure for _, figure in sorted(found)]
+
+
+def prints(figure, text):
+    if citations.DATE.fullmatch(figure):
+        return re.search(r"(?<![\w-])" + figure + r"(?![\d-])", text) is not None
+    bare = figure.rstrip("%")
+    plain = bare.replace(",", "")
+    whole, dot, fraction = plain.partition(".")
+    for form in {bare, plain, "{:,}".format(int(whole)) + dot + fraction}:
+        pattern = r"(?<!\w)(?<!\d\.)" + re.escape(form) + r"(?!\w)(?!\.\d)(?!,\d{3}(?!\d))"
+        if len(form) == 3:
+            pattern = r"(?<!\d,)" + pattern
+        if re.search(pattern, text):
+            return True
+    return False
+
+
+judged = checked = 0
+with open(judgement_path, encoding="utf-8") as handle:
+    lines = handle.read().splitlines()
+for number, line in enumerate(lines, 1):
+    if citations.HEADING.match(line):
+        continue
+    # Two copies of the line, each its length, so one offset reads both: bounds, where a
+    # sentence may end, with each reference, address and code span covered; and quiet,
+    # where a figure may stand, with each reference, address, citation, list number and
+    # question number covered.
+    quiet = line
+    for ref in citations.DISPATCH_REF.finditer(line):
+        quiet = blank(quiet, ref.start(), ref.start() + len(ref.group(0).rstrip(citations.TRAILING)))
+    for url in citations.WEB_URL.finditer(line):
+        quiet = blank(quiet, url.start(), url.start() + len(url.group(0).rstrip(".,;:)")))
+    bounds = citations.CODE_SPAN.sub(lambda m: "x" * len(m.group(0)), quiet)
+    cites = []
+    for bracket in BRACKET.finditer(bounds):
+        ids = [part.strip() for part in bracket.group(1).split(",")]
+        if any(i in printed for i in ids):
+            cites.append((bracket.start(), [i for i in ids if i in printed]))
+            quiet = blank(quiet, bracket.start(), bracket.end())
+    if not cites:
+        continue
+    for covered in [LIST_NUMBER.match(quiet)] + list(QUESTION.finditer(quiet)):
+        if covered:
+            quiet = blank(quiet, covered.start(1), covered.end(1))
+    start = 0
+    for end in [m.end() for m in SENTENCE_END.finditer(bounds)] + [len(line)]:
+        rows = []
+        for at, ids in cites:
+            if start <= at < end:
+                rows.extend(i for i in ids if i not in rows)
+        if rows:
+            judged += 1
+            text = "\n".join(printed[i] for i in rows)
+            for figure in figures(quiet[start:end]):
+                checked += 1
+                if not prints(figure, text):
+                    print("F\t%d\t%s\t%s\t%s" % (number, figure, ", ".join(rows), " ".join(line[start:end].split())[:80]))
+        start = end
+print("N\t%d\t%d" % (judged, checked))
+PY
+        fail citation-figures "the reader of the figures of the judgement did not run to its end: $(tail -1 "$found.err" | head -c 240)"
+        return
+    fi
+    while IFS=$'\t' read -r kind number figure rows sentence; do
+        case "$kind" in
+        N) judged="$number" checked="$figure" ;;
+        F)
+            bad=$((bad + 1))
+            fail citation-figures "line $number of the judgement states $figure in a sentence that cites $rows, and none of them prints it in its output or its command: '$sentence'"
+            ;;
+        esac
+    done <"$found"
+    if [ "$checked" -eq 0 ]; then
+        fail citation-figures "the judgement states no figure in a sentence that cites a row of claims.jsonl, in $judged such sentences, so no figure is checked"
+    elif [ "$bad" -eq 0 ]; then
+        pass citation-figures "each of the $checked figures the judgement states in its $judged sentences that cite a row of claims.jsonl is printed by the output or the command of a row its sentence cites"
+    fi
+}
+
 mode_citations() {
     local commit bad_ours=0 bad_theirs=0 bad_published=0 bad_dispatch=0 bad_kinds=0 row id file symbol repo rcommit
     # The one parse of claims.jsonl comes first: a line that is no row fails citation-kinds,
@@ -5257,11 +5443,12 @@ mode_citations() {
     mkdir -p "$flat_dir"
     commit="$(our_commit)"
     # The live inputs, read through live_read before any assertion over a citation judges:
-    # the clone of each repository a project-code row cites, and Dispatch's answer to each
-    # dispatch:// reference of this directory. A source that does not answer ends the mode,
-    # exit 2, or exit 1 after a FAIL, by the precedence of the header, as after the one
-    # parse's FAIL of citation-kinds above; a reference Dispatch answers it does not hold is
-    # kept for citation-dispatch to fail.
+    # the clone of each repository a project-code row cites, Dispatch's answer to each
+    # dispatch:// reference of this directory, and the judgement, whose figures
+    # citation-figures holds to the rows each sentence cites. A source that does not answer
+    # ends the mode, exit 2, or exit 1 after a FAIL, by the precedence of the header, as
+    # after the one parse's FAIL of citation-kinds above; a reference Dispatch answers it
+    # does not hold is kept for citation-dispatch to fail.
     while IFS= read -r repo; do
         [ -n "$repo" ] && { clone_fetch "$repo" || true; }
     done < <(claims | jq -r 'select(.kind=="project-code") | .evidence.repo // empty' | sort -u)
@@ -5277,6 +5464,7 @@ mode_citations() {
     else
         refs_read=0
     fi
+    judgement_load
     while IFS= read -r row; do
         id="$(printf '%s' "$row" | jq -r '.id')"
         case "$(printf '%s' "$row" | jq -r '.kind')" in
@@ -5402,6 +5590,8 @@ mode_citations() {
     elif [ "$bad_kinds" -eq 0 ]; then
         pass citation-kinds "every line of claims.jsonl is a row the one parse reads, and the extraction rule reads a citation of every kind it names, a number written in words among them"
     fi
+
+    citation_figures
 }
 
 # ---------------------------------------------------------------- --landed
@@ -5762,6 +5952,7 @@ MD
 {"id":"i-measure-one","requirement":"r2","source":"the interview","kind":"quotation","claim":"One misalignment took accuracy from 99% to 98%.","mark":"not-externally-checkable","evidence":{"source":"the interview","quote":"the third protocol is not released","marked":"a claim of the project, not of its code"},"note":"no published document of theirs repeats it"}
 {"id":"u-1","requirement":"r1","source":"the fixture record","kind":"our-code","claim":"The record cites the completion refusal file.","mark":"verified","evidence":{"file":"packages/daemon/internal/api/handoff.go","symbol":"TesterVerdictRequired","commit":"OURS"},"note":"read again at the commit"}
 {"id":"u-2","requirement":"r1","source":"the fixture record","kind":"project-code","claim":"The record counts thirteen normative invariants.","mark":"verified","evidence":{"repo":"mas-lab","commit":"COMMIT","file":"README.md","symbol":"README"},"note":"counted again"}
+{"id":"f-figure-1","requirement":"r7","source":"this tree's measurement","kind":"behaviour","claim":"The fixture's count prints 12617 rows.","mark":"verified","evidence":{"surface":"cli"},"command":"printf '12617 rows\\n'","expect":{"contains":"12617 rows"},"output":"12617 rows","note":"ran again"}
 JSONL
 
     cat >"$evidence/sources.json" <<JSON
@@ -5797,6 +5988,8 @@ The Envoy field.
 ## Where the authors' account and the checked reading differ
 
 The account describes the problem and the reading describes the artifacts.
+
+The fixture's count reads 12,617 rows [f-figure-1].
 
 ## What was deliberately not read
 
@@ -6058,6 +6251,7 @@ MD
     citation-published) printf 'a byte the fetched page did not carry\n' >>"$evidence/published/page.txt" ;;
     citation-dispatch) printf '\nSee dispatch://INFRA-99999999/artifact/no-such-document.\n' >>"$evidence/tests/concord.md" ;;
     citation-kinds) sed -i 's/^    if first in TENS:/    if False:/; s/^    if first in WORD_NUMBERS:/    if False:/' "$evidence/citations.py" ;;
+    citation-figures) sed -i 's/reads 12,617 rows \[f-figure-1\]/reads 12,618 rows [f-figure-1]/' "$dir/judgement.md" ;;
     landed-proof) sed -i 's/- \*\*Proven by:\*\* `true`/- **Proven by:** `false`/' "$dir/judgement.md" ;;
     landed-refutation)
         cat >>"$dir/judgement.md" <<'MD'
