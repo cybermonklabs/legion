@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
@@ -16,9 +17,10 @@ import (
 )
 
 // podKind is which of the runtime's two pods a Sandbox runs: an issue pod (issuePod), which runs
-// every workflow role of one issue on a disk its own pod owns and provisions the issue's
-// workspace, or the project controller's pod (controllerPod, `controller: daemon`), which runs the
-// controller alone on the volume its Sandbox owns and provisions nothing. prepare decides a
+// every workflow role of one issue on a disk its own pod owns, or its Sandbox owns where the pod
+// keeps its volume (keptVolume), and provisions the issue's workspace, or the project controller's
+// pod (controllerPod, `controller: daemon`), which runs the controller alone on the volume its
+// Sandbox owns and provisions nothing. prepare decides a
 // launch's kind once, from its claim, and a stored Sandbox's kind is the one its labels name
 // (podKindOf). Building a pod asks the launch's kind for every facet the two build differently;
 // supervision — relaunch's check of the running pod, the launchers, Probe, Suspend and the
@@ -38,8 +40,9 @@ type podKind interface {
 	// disk is the pod's one disk, mounted under the fixed name issueVolume: the claim templates the
 	// kind's Sandbox owns, which outlive its pods, and the source the pod mounts the disk from.
 	// They are returned together so that a template and the claim name that refers to it are
-	// decided in one place: the controller's one `issue` template and the claim its Sandbox makes
-	// from it, or no template at all and an ephemeral volume of the pod's own for an issue.
+	// decided in one place: the one `issue` template and the claim its Sandbox makes from it, for
+	// the controller and for an issue that keeps its volume (keptVolume), or no template at all
+	// and an ephemeral volume of the pod's own for every other issue.
 	disk(r *Runtime, l launch) (templates []volumeClaimTemplate, source corev1.VolumeSource)
 	// secretAnnotations are the annotations each of the pod's Secrets carries.
 	secretAnnotations(l launch) map[string]string
@@ -80,11 +83,67 @@ func podKindOf(labels map[string]string) (podKind, error) {
 		labelIssue, labels[labelIssue], labelTree, labels[labelTree], labelRole, labels[labelRole])
 }
 
+// keptVolume is the one rule that decides whether a launch keeps its volume: an issue pod (kind)
+// that runs in a microVM (microVM, launch.microVM) under keep_volume (MicroVM.KeepVolume). Its
+// disk is then a claim that its Sandbox owns and that outlives the pod (issuePod.disk), and its
+// shape records the setting (podShape). A gVisor pod keeps the ephemeral volume of its own. The
+// controller's pod ignores the setting: its volume is its Sandbox's in every case
+// (controllerPod.disk).
+func keptVolume(kind podKind, microVM *MicroVM) bool {
+	_, issue := kind.(issuePod)
+	return issue && microVM != nil && microVM.KeepVolume
+}
+
+// keepsVolume is whether l's pod keeps its volume (keptVolume).
+func (l launch) keepsVolume() bool { return keptVolume(l.kind, l.microVM) }
+
+// keptTemplate is the one rule of the stored side: whether a claim template, by its name and the
+// value of its labelVolume label ("" for none), is an issue's kept volume. That is the one `issue`
+// template that issuePod.disk writes for a launch that keeps its volume, labelled volumeKept. Only
+// that write sets the label, so only an issue Sandbox owns such a template. The controller's
+// `issue` template and the one of an issue Sandbox of the release before the pod-owned disk carry
+// no such label, so neither reads as kept. Every reader of a stored Sandbox asks it, through
+// holdsKeptVolume (ownsKeptVolume) or storedOwnsKeptVolume.
+func keptTemplate(name, volume string) bool { return name == issueVolume && volume == volumeKept }
+
+// ownsKeptVolume is whether the decoded Sandbox s owns an issue's kept volume (keptTemplate).
+func ownsKeptVolume(s *sandbox) bool { return holdsKeptVolume(s.Spec.VolumeClaimTemplates) }
+
+// holdsKeptVolume is whether one of the claim templates is an issue's kept volume (keptTemplate).
+func holdsKeptVolume(templates []volumeClaimTemplate) bool {
+	return slices.ContainsFunc(templates, func(t volumeClaimTemplate) bool {
+		return keptTemplate(t.Metadata.Name, t.Metadata.Labels[labelVolume])
+	})
+}
+
+// storedOwnsKeptVolume is ownsKeptVolume of a Sandbox as the API server or the informer holds it,
+// read without a decode, for a reader that has no decoded Sandbox: decoding a whole Sandbox costs
+// tens of kilobytes and hundreds of allocations (IssueSandbox). It reads each field in place
+// (NestedFieldNoCopy, never NestedSlice, which copies every template), and a field of another type
+// reads as absent.
+func storedOwnsKeptVolume(u *unstructured.Unstructured) bool {
+	field, _, _ := unstructured.NestedFieldNoCopy(u.Object, "spec", "volumeClaimTemplates")
+	templates, _ := field.([]any)
+	for _, template := range templates {
+		object, ok := template.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _, _ := unstructured.NestedString(object, "metadata", "name")
+		volume, _, _ := unstructured.NestedString(object, "metadata", "labels", labelVolume)
+		if keptTemplate(name, volume) {
+			return true
+		}
+	}
+	return false
+}
+
 // issuePod is an issue's pod: every workflow role of the issue, working in the issue's workspace
-// on the issue's disk, the pod's own generic ephemeral volume, created with the pod and deleted
-// with it, in one container whose PID 1 is one `legion launcher` holding a connection of each
-// role's own (launcherContainer). Two init containers provision that workspace from the issue's
-// repository.
+// on the issue's disk (disk), in one container whose PID 1 is one `legion launcher` holding a
+// connection of each role's own (launcherContainer). The disk is the pod's own generic ephemeral
+// volume, created with the pod and deleted with it, or, where the pod keeps its volume
+// (keptVolume), a claim that the issue's Sandbox owns, which outlives the pod. Two init containers
+// provision that workspace from the issue's repository.
 type issuePod struct{}
 
 func (issuePod) roles() []claim.Role { return claim.Roles }
@@ -100,10 +159,12 @@ func (issuePod) claimToken(project, issue string, role claim.Role) (claim.Token,
 
 // prepare refuses a spec with no repository, which the workspace is provisioned from, and resolves
 // the workspace's place on the issue's disk. It runs at every launch and expects nothing of that
-// disk, which is created with the pod and deleted with it (INFRA-80): only a new or replacement pod
-// provisions its workspace (provision, which relaunch runs only when it replaces the pod), and a
-// role launched into the live pod finds the workspace the roles before it left. docs/kubernetes.md,
-// "The disk dies with its pod", states which launch is which.
+// disk. The pod's own disk is created with the pod and deleted with it (INFRA-80). A kept volume
+// (keptVolume) outlives the pod, so a new pod of the issue finds on it what the pods before it
+// left. Only a new or replacement pod provisions its workspace (provision, which relaunch runs
+// only when it replaces the pod), and a role launched into the live pod finds the workspace the
+// roles before it left. docs/kubernetes.md, "The disk dies with its pod", states which launch is
+// which.
 func (issuePod) prepare(l *launch) error {
 	spec := l.spec
 	if spec.Repository.IsZero() {
@@ -127,18 +188,51 @@ func (issuePod) labels(project string, l launch) map[string]string {
 	}
 }
 
-// disk has no claim template: an issue's Sandbox owns no volume, so nothing of the issue's disk
-// outlives a pod (INFRA-80). The disk itself is the pod's own, a generic ephemeral volume: the
-// kubelet creates its claim when the pod starts and deletes it when the pod goes, so a suspended,
-// relaunched or swept issue leaves no volume behind and every pod starts on a workspace its init
-// containers provision afresh. Its claim is on the launch's class (diskSpec: a microVM pod's is
-// the microVM block's). Its claim template carries no metadata at all: the pinned Sandbox
-// CRD declares the template's `metadata` a bare object with no properties and no
-// preserve-unknown-fields, so a label set there is pruned by the API server without a word
-// (TestManifestMatchesTheSandboxCRD).
+// disk is one of two shapes, and keptVolume decides which (launch.keepsVolume).
+//
+// A launch that keeps no volume has no claim template: the issue's Sandbox owns no volume, so
+// nothing of the issue's disk outlives a pod (INFRA-80). The disk itself is the pod's own, a
+// generic ephemeral volume: the kubelet creates its claim when the pod starts and deletes it when
+// the pod goes, so a suspended, relaunched or swept issue leaves no volume behind and every pod
+// starts on a workspace its init containers provision afresh. Its claim template carries no
+// metadata at all: the pinned Sandbox CRD declares the template's `metadata` a bare object with no
+// properties and no preserve-unknown-fields, so a label set there is pruned by the API server
+// without a word (TestManifestMatchesTheSandboxCRD).
+//
+// A launch that keeps a volume (a microVM pod under keep_volume) gets what controllerPod.disk
+// gives: the one `issue` template (keptVolumeTemplates), which the issue's Sandbox owns, and the
+// claim that the Agent Sandbox controller makes from it (IssueClaimName), which the pod mounts.
+// The claim outlives the pod and goes with the Sandbox.
+//
+// Either claim is on the launch's class (diskSpec: a microVM pod's is the microVM block's).
 func (issuePod) disk(r *Runtime, l launch) ([]volumeClaimTemplate, corev1.VolumeSource) {
+	if l.keepsVolume() {
+		templates := keptVolumeTemplates(r.project, labelValue(l.spec.Issue), r.diskSpec(l))
+		return templates, corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+			ClaimName: IssueClaimName(l.spec.Claim),
+		}}
+	}
 	return nil, corev1.VolumeSource{Ephemeral: &corev1.EphemeralVolumeSource{
 		VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{Spec: r.diskSpec(l)},
+	}}
+}
+
+// keptVolumeTemplates are the claim templates of an issue's kept volume, with spec as its claim:
+// the one `issue` template, labelled with project, the issue (issueLabel, the issue key as
+// labelValue writes it) and labelVolume=volumeKept, which marks the volume as kept
+// (keptTemplate). They are not the pod's own labels (labels), which carry the tree: a launch
+// relabels the Sandbox for a new tree (ensureSandbox), and the daemon's restricted identity has no
+// PVC verb to relabel the claim. The Sandbox CRD keeps the labels of a Sandbox's own claim
+// template. A launch writes them (issuePod.disk), and the boot census renders them
+// (IssueDisks.templates).
+func keptVolumeTemplates(project, issueLabel string, spec corev1.PersistentVolumeClaimSpec) []volumeClaimTemplate {
+	return []volumeClaimTemplate{{
+		Metadata: volumeClaimMetadata{Name: issueVolume, Labels: map[string]string{
+			labelProject: project,
+			labelIssue:   issueLabel,
+			labelVolume:  volumeKept,
+		}},
+		Spec: spec,
 	}}
 }
 
@@ -157,9 +251,11 @@ func (issuePod) secretAnnotations(l launch) map[string]string {
 // issue's clone is made from, or from GitHub alone; workspace-init
 // mounts the issue's volume, the feed over it read-only, and the config home, and does all the
 // volume's work from the feed, with no credential, making the issue's clone shared with the feed
-// and starting an issue with no branch at the repository's default branch the spec names. Each
-// takes the pod's one reservation, which adds nothing to the pod's: the scheduler counts a pod's
-// request as the larger of its main containers' sum and its largest init container.
+// and starting an issue with no branch at the repository's default branch the spec names. The
+// issue's volume is the pod's disk (disk). A new pod's own ephemeral volume is empty, and a kept
+// volume (keptVolume) holds the feed and the clone that the issue's earlier pods left. Each takes
+// the pod's one reservation, which adds nothing to the pod's: the scheduler counts a pod's request
+// as the larger of its main containers' sum and its largest init container.
 func (k issuePod) initContainers(r *Runtime, l launch) []corev1.Container {
 	legion, resources := r.tools.Legion, k.resources(r)
 	return []corev1.Container{{

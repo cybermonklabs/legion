@@ -102,6 +102,38 @@ const CacheFetchTimeout = 2 * time.Hour
 // anything the answer carries.
 const CacheRepositoryHeader = "Legion-Repository"
 
+// InitExitUsage is the exit status of `legion workspace-init fetch` and `provision` for a usage
+// error, a flag or an argument they do not know. It is the usage exit of every legion command.
+const InitExitUsage = 2
+
+// InitExitOutsideVolume is the exit status of `legion workspace-init fetch` and `provision` for a
+// failure whose cause is outside the issue's volume (ErrOutsideVolume). A new volume does not cure
+// such a failure, so the runtime keeps a kept volume for it. Every other failure exits 1.
+const InitExitOutsideVolume = 3
+
+// ErrOutsideVolume is the cause of a failure outside the issue's volume. These failures wrap it
+// (OutsideVolume):
+//   - a refusal of `fetch` or `provision` before it touches the volume,
+//   - a failed read of the provisioning token,
+//   - the wait for the repository cache, and a request that the cache refuses or does not answer,
+//   - a transfer or a ref listing from GitHub that failed as outsideVolumeFailure reads it.
+var ErrOutsideVolume = errors.New("the cause is outside the issue's volume")
+
+// OutsideVolume is err with ErrOutsideVolume as a cause too. Its text is err's own text, so a log
+// or a test that reads the text reads no change. OutsideVolume(nil) is nil.
+func OutsideVolume(err error) error {
+	if err == nil {
+		return nil
+	}
+	return outsideVolume{err}
+}
+
+// outsideVolume is an error that OutsideVolume returned.
+type outsideVolume struct{ err error }
+
+func (e outsideVolume) Error() string   { return e.err.Error() }
+func (e outsideVolume) Unwrap() []error { return []error{e.err, ErrOutsideVolume} }
+
 // FetchReport is where Fetch filled the feed from and what each source brought: the feed
 // repository; whether it was cloned whole from GitHub; the repository cache's tar, its length, how
 // long it streamed and how long its history took to verify, when the feed was unpacked from it;
@@ -163,6 +195,14 @@ type FetchReport struct {
 // every other failure, is the answer at once. Each attempt's stderr has every token the fetch has
 // read replaced by *** as soon as the attempt returns, so nothing Fetch logs or returns carries
 // one, wherever git echoed it.
+//
+// A failure whose cause is outside the issue's volume wraps ErrOutsideVolume, and keeps its text:
+// a read of the provisioning token that failed, a cache named without its token, the wait for the
+// cache, a request the cache refuses or does not answer, and a transfer or a ref listing from
+// GitHub that outsideVolumeFailure reads so, retried or not. The failures of what the cache
+// streamed do not: unpackEntry gives one error for a write to the volume that failed and for a
+// stream that broke, and a write that failed is the volume's, whatever the stream did. Nor does
+// verifyCache's failure, or any other failure.
 func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, error) {
 	feed, err := FeedRepository(request.Feed, request.Repo)
 	if err != nil {
@@ -173,7 +213,7 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 	}
 	token, err := request.Token()
 	if err != nil {
-		return FetchReport{}, err
+		return FetchReport{}, OutsideVolume(err)
 	}
 	github := gitHubSource{token: func() (string, error) { return token, nil }, credentialDir: request.CredentialDir}
 	if err := github.check(request.Repo); err != nil {
@@ -186,7 +226,7 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 		return FetchReport{}, errors.New("workspace fetch clock is required")
 	}
 	if request.CacheURL != "" && request.CacheToken == "" {
-		return FetchReport{}, errors.New("workspace fetch: a repository cache needs its token")
+		return FetchReport{}, OutsideVolume(errors.New("workspace fetch: a repository cache needs its token"))
 	}
 	credential, err := github.open(request.Repo, "", "")
 	if err != nil {
@@ -240,7 +280,7 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 	}
 
 	if err := waitForCache(ctx, request); err != nil {
-		return FetchReport{}, err
+		return FetchReport{}, OutsideVolume(err)
 	}
 	started := request.Clock.Now()
 	streamed, err := unpackCache(ctx, run, request, staging)
@@ -677,11 +717,13 @@ func unpackCache(ctx context.Context, run Runner, request FetchRequest, staging 
 	if response != nil {
 		defer response.Body.Close()
 	}
+	// A request the cache refuses or does not answer fails outside the issue's volume. What the
+	// answer streams is written to the volume, so a failure from there on is not.
 	if err != nil {
-		return 0, stream.stalledBy(err)
+		return 0, OutsideVolume(stream.stalledBy(err))
 	}
 	if response.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("GET %s answered %s", response.Request.URL, response.Status)
+		return 0, OutsideVolume(fmt.Errorf("GET %s answered %s", response.Request.URL, response.Status))
 	}
 	stream.reader = response.Body
 	archive := tar.NewReader(stream)
@@ -1108,6 +1150,9 @@ func transferWithRetries(ctx context.Context, run Runner, request FetchRequest, 
 		if failed == nil {
 			return result, nil
 		}
+		if runErr == nil && outsideVolumeFailure(result) {
+			failed = OutsideVolume(failed)
+		}
 		if runErr != nil || !transientCloneFailure(result) {
 			return Result{}, failed
 		}
@@ -1152,7 +1197,7 @@ type fetchCredential struct {
 func (c *fetchCredential) renew() error {
 	token, err := c.read()
 	if err != nil {
-		return fmt.Errorf("read the provisioning token: %w", err)
+		return OutsideVolume(fmt.Errorf("read the provisioning token: %w", err))
 	}
 	if err := c.remote.setToken(token); err != nil {
 		return err
@@ -1273,6 +1318,41 @@ func transientCloneFailure(result Result) bool {
 func transientStatus(status string) bool {
 	code, err := strconv.Atoi(status)
 	return err == nil && (code == 408 || code == 429 || code >= 500 && code <= 599)
+}
+
+// gitHubRefusals are GitHub's own words, in git's output, for a credential it refused and for a
+// repository it did not find or did not grant.
+var gitHubRefusals = []string{"Authentication failed", "Repository not found"}
+
+// outsideVolumeFailure is whether a transfer or a ref listing from GitHub failed for a cause
+// outside the issue's volume (ErrOutsideVolume). A new volume does not cure such a cause, because
+// the new volume needs GitHub too. The causes are an attempt that ran out of its time, and git's
+// fatal exit with one of these in its output:
+//   - a cause line (causeLine) that names an HTTP status (statusFailure), any status,
+//   - a cause line that names a connection that failed or broke (curlNetworkFailures),
+//   - a pack stream that ended early (streamCuts), with no cause line,
+//   - GitHub's refusal of the credential or of the repository (gitHubRefusals).
+//
+// Every other cause line is not outside the volume: curl 23 is a write to the volume that failed,
+// and curl 60 is a certificate that does not verify. Nor is a credential git could not read
+// (`could not read Username`), an object the feed lacks (`fatal: bad object`), or any other
+// failure. transientCloneFailure keeps its own rule, which tells which failures the fetch runs
+// again.
+func outsideVolumeFailure(result Result) bool {
+	if result.TimedOut {
+		return true
+	}
+	if result.ExitCode != gitFatalExit {
+		return false
+	}
+	if containsAny(result.Stderr, gitHubRefusals) {
+		return true
+	}
+	cause := causeLine.FindStringSubmatch(result.Stderr)
+	if cause == nil {
+		return containsAny(result.Stderr, streamCuts)
+	}
+	return statusFailure.MatchString(cause[1]) || containsAny(cause[1], curlNetworkFailures)
 }
 
 // containsAny is whether text holds any of needles.
