@@ -23,40 +23,40 @@ var errLinkedJJ = errors.New("the workspace's .jj is a symbolic link")
 
 // openJJ opens the .jj directory of the workspace at dir with O_DIRECTORY|O_NOFOLLOW, so a .jj
 // that is a symbolic link is refused with errLinkedJJ and one that is no other directory with
-// ENOTDIR, and answers it with its path, which only errors name. A link there would carry the
-// records into a directory off the workspace's disk: a record read there says nothing of this
-// workspace, and one written there can be lost at a container restart while the workspace keeps
-// its work. Every read and write of a record goes through the open directory (openat, fstatat),
-// so nothing after this open reads .jj by its path again. held, when set, runs once the directory
-// is open and before the record is read or written: a test's seam for a .jj swapped in that
-// window.
-func openJJ(dir string, held func()) (*os.File, string, error) {
+// ENOTDIR. A link there would carry the records into a directory off the workspace's disk: a
+// record read there says nothing of this workspace, and one written there can be lost at a
+// container restart while the workspace keeps its work. Every read and write of a record goes
+// through the open directory (openat, fstatat), so nothing after this open reads .jj by its path
+// again. held, when set, runs once the directory is open and before the record is read or
+// written: a test's seam for a .jj swapped in that window.
+func openJJ(dir string, held func()) (*os.File, error) {
 	path := filepath.Join(dir, ".jj")
 	jj, err := os.OpenFile(path, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR) {
 		// The open refused it: Linux answers a link opened with O_DIRECTORY|O_NOFOLLOW ENOTDIR, as
 		// it does a file, and other kernels ELOOP. The Lstat only says which the refusal was.
 		if info, statErr := os.Lstat(path); errors.Is(err, unix.ELOOP) || (statErr == nil && info.Mode()&fs.ModeSymlink != 0) {
-			return nil, path, fmt.Errorf("%w: %s: %w", errLinkedJJ, path, err)
+			return nil, fmt.Errorf("%w: %s: %w", errLinkedJJ, path, err)
 		}
 	}
 	if err != nil {
-		return nil, path, err
+		return nil, err
 	}
 	if held != nil {
 		held()
 	}
-	return jj, path, nil
+	return jj, nil
 }
 
 // openIn opens name in the open directory jj with flags, adding O_NOFOLLOW and O_CLOEXEC, so a
-// record a role planted as a link is not followed. path is jj's, which the answer's errors name.
-func openIn(jj *os.File, path, name string, flags int, perm uint32) (*os.File, error) {
+// record a role planted as a link is not followed. The file's name is only used for diagnostics.
+func openIn(jj *os.File, name string, flags int, perm uint32) (*os.File, error) {
+	path := filepath.Join(jj.Name(), name)
 	fd, err := unix.Openat(int(jj.Fd()), name, flags|unix.O_NOFOLLOW|unix.O_CLOEXEC, perm)
 	if err != nil {
-		return nil, &fs.PathError{Op: "openat", Path: filepath.Join(path, name), Err: err}
+		return nil, &fs.PathError{Op: "openat", Path: path, Err: err}
 	}
-	return os.NewFile(uintptr(fd), filepath.Join(path, name)), nil
+	return os.NewFile(uintptr(fd), path), nil
 }
 
 // createdFile is where provisioning records the moment it created a workspace: in the workspace's
@@ -70,12 +70,12 @@ const createdRecordLimit = 128
 // RecordCreated records at, in UTC, as the moment the workspace at dir was created. It writes the
 // record through .jj's descriptor (openJJ), and refuses a .jj that is a link or a record that is.
 func RecordCreated(dir string, at time.Time) error {
-	jj, path, err := openJJ(dir, nil)
+	jj, err := openJJ(dir, nil)
 	if err != nil {
 		return fmt.Errorf("record the creation of workspace %s: %w", dir, err)
 	}
 	defer jj.Close()
-	file, err := openIn(jj, path, createdFile, unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC, 0o644)
+	file, err := openIn(jj, createdFile, unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC, 0o644)
 	if err != nil {
 		return fmt.Errorf("record the creation of workspace %s: %w", dir, err)
 	}
@@ -98,7 +98,7 @@ func Created(dir string) (at time.Time, ok bool, err error) { return created(dir
 
 // created is Created, with held run as openJJ runs it.
 func created(dir string, held func()) (at time.Time, ok bool, err error) {
-	jj, path, err := openJJ(dir, held)
+	jj, err := openJJ(dir, held)
 	if errors.Is(err, fs.ErrNotExist) {
 		return time.Time{}, false, nil
 	}
@@ -106,8 +106,8 @@ func created(dir string, held func()) (at time.Time, ok bool, err error) {
 		return time.Time{}, false, fmt.Errorf("read the creation record of workspace %s: %w", dir, err)
 	}
 	defer jj.Close()
-	record := filepath.Join(path, createdFile)
-	file, err := openIn(jj, path, createdFile, unix.O_RDONLY|unix.O_NONBLOCK, 0)
+	record := filepath.Join(jj.Name(), createdFile)
+	file, err := openIn(jj, createdFile, unix.O_RDONLY|unix.O_NONBLOCK, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return time.Time{}, false, nil
 	}
@@ -149,12 +149,12 @@ func MarkInUse(dir string) error { return markInUse(dir, nil) }
 
 // markInUse is MarkInUse, with held run as openJJ runs it.
 func markInUse(dir string, held func()) error {
-	jj, path, err := openJJ(dir, held)
+	jj, err := openJJ(dir, held)
 	if err != nil {
 		return fmt.Errorf("create the in-use record: %w", err)
 	}
 	defer jj.Close()
-	file, err := openIn(jj, path, inUseFile, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL, 0o644)
+	file, err := openIn(jj, inUseFile, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL, 0o644)
 	switch {
 	case errors.Is(err, fs.ErrExist):
 	case err != nil:
@@ -179,7 +179,7 @@ func InUse(dir string) (bool, error) { return inUse(dir, nil) }
 
 // inUse is InUse, with held run as openJJ runs it.
 func inUse(dir string, held func()) (bool, error) {
-	jj, path, err := openJJ(dir, held)
+	jj, err := openJJ(dir, held)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
@@ -195,6 +195,6 @@ func inUse(dir string, held func()) (bool, error) {
 	case errors.Is(err, fs.ErrNotExist):
 		return false, nil
 	default:
-		return false, fmt.Errorf("read the in-use record: %w", &fs.PathError{Op: "fstatat", Path: filepath.Join(path, inUseFile), Err: err})
+		return false, fmt.Errorf("read the in-use record: %w", &fs.PathError{Op: "fstatat", Path: filepath.Join(jj.Name(), inUseFile), Err: err})
 	}
 }

@@ -204,4 +204,16 @@ func TestAJJSwappedForALinkAfterItsOpenReachesNoOtherDirectory(t *testing.T) {
 			t.Errorf("Created of a workspace whose .jj was swapped for a link = %s, %t, %v; want its own %s", at, ok, err, saved.Add(-time.Hour))
 		}
 	})
+	t.Run("Created names the directory it opened", func(t *testing.T) {
+		dir, _, elsewhere, swap := workspace(t)
+		path := filepath.Join(dir, ".jj", "legion-created")
+		if err := os.Symlink(filepath.Join(elsewhere, "record"), path); err != nil {
+			t.Fatal(err)
+		}
+		_, ok, err := created(dir, swap)
+		var pathErr *fs.PathError
+		if ok || !errors.As(err, &pathErr) || pathErr.Path != path {
+			t.Errorf("Created after .jj was moved = %t, %v; want a refusal naming %s", ok, err, path)
+		}
+	})
 }
