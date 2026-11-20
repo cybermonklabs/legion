@@ -3,7 +3,7 @@
  *  blocks of the document on screen - each as a row linked to the block it cites.
  *
  *  Every row here reads what the page draws, so each runs against a recording rather than
- *  against a harness (packages/dispatch/AGENTS.md, "The stubbed layer"). The rows that edit a
+ *  against a harness (packages/dispatch/README.md, "The stubbed layer"). The rows that edit a
  *  document or a comment and then read the link again - the pinned link, the upload, and the
  *  three that wait on a live event - stayed in `block-references.e2e.ts`.
  */

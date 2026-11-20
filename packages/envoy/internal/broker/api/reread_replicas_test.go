@@ -186,11 +186,11 @@ func TestARereadRefusalCarriesTheRateOfTheReplicaCountNow(t *testing.T) {
 			rate.SetReplicas(row.replicas)
 			for sent := 1; sent <= 100; sent++ {
 				status, headers, body := postReread(t, ts, "WORKER_TOKEN", nil)
-				if status == http.StatusOK {
+				if status == http.StatusAccepted {
 					continue
 				}
 				if status != http.StatusTooManyRequests || decode[wireError](t, body).Code != "RATE_LIMITED" {
-					t.Fatalf("reread %d = %d %s; want 200 until a bucket refuses", sent, status, body)
+					t.Fatalf("reread %d = %d %s; want 202 until a bucket refuses", sent, status, body)
 				}
 				if got := headers.Get("Retry-After"); got != row.want {
 					t.Fatalf("a refused reread carries Retry-After %q, want %q: the wait a caller is told is the rate the refusing bucket refills at now",

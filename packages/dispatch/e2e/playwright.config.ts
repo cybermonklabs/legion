@@ -26,7 +26,7 @@ import { inVisualOrder, visualOrder } from "./visual-order";
 const plainHttpSpecs = /plain-http-(origin|proxy)\.e2e\.ts/;
 // The `iphone`, `webkit` and `firefox` projects run only the rows tagged `@phone` (or the
 // `@phone-only` below it), `@webkit` and `@firefox`, written at the end of the test's title.
-// Which tests take `@phone` is in `packages/dispatch/AGENTS.md`, "Phone acceptance"; an engine
+// Which tests take `@phone` is in `packages/dispatch/README.md`, "Projects"; an engine
 // tag names a row for one of two reasons, and a comment above the row says which. Either the
 // row exercises one engine behaviour the comment above those projects lists - the usual reason
 // - or every measured failure of that row was in that engine, so the row is kept where its
@@ -77,7 +77,7 @@ const multiprocessSpecs = /\.multiprocess\.e2e\.ts$/;
 // since a project's overrides this one's. A moved row lives in such a file rather than carrying an
 // annotation, because a real-stack spec takes its `test` from e2e/test.ts, which resets the
 // database before every row and signs the default context in: a stubbed row left among them would
-// pay that fixture for nothing (packages/dispatch/AGENTS.md, "The stubbed layer").
+// pay that fixture for nothing (packages/dispatch/README.md, "The stubbed layer").
 const stubSpecs = /\.stub\.e2e\.ts$/;
 // The one spec of DISPATCH_E2E_SIGNIN=oidc (e2e/harness-signin.ts), whose servers sign people in
 // through the dev OIDC issuer alone: it runs only then, and every other multiprocess spec, which
@@ -495,9 +495,10 @@ const parallelProjects = [
  *
  * Each still caps its own workers at one, which holds a project's own rows to one at a time
  * however wide the run is: the `workers: 1` below is this config's default, which a command
- * line replaces, and CI names its own (.github/workflows/dispatch-browser.yaml). Playwright
- * 1.64.1 takes that cap per project - `testProject.workers`, "The maximum number of concurrent
- * worker processes to use for parallelizing tests from this project"
+ * line replaces, and CI names its own (.github/scripts/dispatch-browser-shard-suite.sh and
+ * dispatch-browser-alone-suite.sh). Playwright 1.64.1 takes that cap per project -
+ * `testProject.workers`, "The maximum number of concurrent worker processes to use for
+ * parallelizing tests from this project"
  * (node_modules/.bun/playwright@1.64.1/node_modules/playwright/types/test.d.ts:761), which its
  * dispatcher holds a project's running jobs to (`_workerLimitPerProjectId`,
  * `playwright/lib/runner/index.js`) - and the run's own `workers` stays what it was given, so
@@ -716,9 +717,10 @@ export default defineConfig({
   // (e2e/run-outcome.ts says why no other way reaches it). It is in every run that takes this
   // list - and a `--reporter` on the command line REPLACES this list rather than adding to it,
   // which is why a run given one keeps its logs whatever it did, and why
-  // .github/workflows/dispatch-browser.yaml names this file in both of its own. With
-  // E2E_MEASURE_FILE set, the timing fixture's reporter writes one row per test beside the list
-  // reporter's own output (e2e/measure-reporter.ts); without it the run is untouched.
+  // .github/scripts/dispatch-browser-shard-suite.sh and dispatch-browser-alone-suite.sh name
+  // this file in theirs. With E2E_MEASURE_FILE set, the timing fixture's reporter writes one
+  // row per test beside the list reporter's own output (e2e/measure-reporter.ts); without it
+  // the run is untouched.
   reporter: [
     ["list"],
     [fileURLToPath(new URL("./failure-reporter.ts", import.meta.url))],

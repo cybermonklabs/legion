@@ -3180,7 +3180,7 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 	if r.supervisor == nil {
 		return errors.New("issue bundle executor has no claim supervisor")
 	}
-	if _, ok := r.supervisor.deps.Runtime.(runtime.IssueSuspender); !ok {
+	if _, ok := r.supervisor.deps.Runtime.(runtime.IssueReleaser); !ok {
 		// A runtime with no shared issue resources has no pod to release, so nothing to save.
 		return nil
 	}
@@ -3228,9 +3228,12 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 
 // releaseIssue is the last act of an idle pod's release, run once the save has stored the
 // workspace's unpushed work (bundleIssueWorkspace) and every role stop of the release has
-// suspended its claim: it suspends the issue's Sandbox, waits its pod out and deletes the Sandbox
-// with the role Secrets it owns. Nothing of the disk survives it, which is why the save runs
-// first and never here.
+// suspended its claim: it asks the runtime's release (runtime.IssueReleaser), which suspends the
+// issue's Sandbox and waits its pod out. The issue stays in the workflow, so the runtime keeps a
+// Sandbox that owns the issue's kept volume, Suspended, with that volume, for the issue's next
+// pod, and deletes the Secrets that the next launch writes again. It deletes every other Sandbox
+// with the role Secrets it owns, and nothing of such a pod's disk survives that. That is why the
+// save runs first and never here.
 //
 // It is the last act of the other release rule too, and that release's one row: the release of
 // a pod no role can use (workflow.UnownedPodRelease), whose every claim is already failed,
@@ -3238,7 +3241,7 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 // a bundle, and no role stop, since no role is running — and its teardown is told from an idle
 // one by the kind its mark carries (store.ReleaseDecision.SuspendsNoRole). Such a release reads
 // no bundle size, records no roles and no bytes, arms no backstop, and logs a line of its own
-// naming the Sandbox it deleted and the state every claim of the issue stood in; each of those
+// naming the Sandbox it released and the state every claim of the issue stood in; each of those
 // is explained where it is done.
 //
 // A release the store no longer authorizes — one whose issue has left the workflow since, or one
@@ -3257,7 +3260,7 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	if r.supervisor == nil {
 		return errors.New("issue release executor has no claim supervisor")
 	}
-	suspender, ok := r.supervisor.deps.Runtime.(runtime.IssueSuspender)
+	releaser, ok := r.supervisor.deps.Runtime.(runtime.IssueReleaser)
 	if !ok {
 		// A runtime with no shared issue resources has no pod to release.
 		return nil
@@ -3296,7 +3299,7 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	// release_id), and this release's id owns no row. WorkspaceBundleSize reads per issue, so
 	// reading it here would report another release's bytes as this release's own. Such a
 	// release reads instead the two facts its own line carries — the Sandbox the teardown is
-	// about to delete, and the state of every claim of the issue — and reads both before the
+	// about to release, and the state of every claim of the issue — and reads both before the
 	// teardown, because the pod and its claims are exactly what the teardown changes.
 	var savedBytes int
 	var sandboxName string
@@ -3309,7 +3312,7 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	} else if savedBytes, _, err = r.trees.WorkspaceBundleSize(ctx, row.Issue); err != nil {
 		return err
 	}
-	if err := suspender.SuspendIssue(ctx, row.Issue, payload.Tree, authorize); err != nil {
+	if err := releaser.ReleaseIssue(ctx, row.Issue, payload.Tree, authorize); err != nil {
 		return err
 	}
 	switch decision.Act {
@@ -3335,7 +3338,7 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		// make: armBackstops cancels the issue's open backstops before arming at most one of
 		// its own, and this release owes no wake. It
 		// suspended no claim, and a claim an earlier idle release left `released` must keep the
-		// backstop that release armed for it — the pod this teardown deleted is not the pod
+		// backstop that release armed for it — the pod this teardown took down is not the pod
 		// that claim is waiting to come back to.
 		r.recordPodRelease(ctx, row.Issue, payload.Generation, nil, 0)
 		return r.trees.ClearIssueRelease(ctx, r.project, row.Issue)

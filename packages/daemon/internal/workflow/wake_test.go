@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -204,6 +205,16 @@ func settlement(head string, failing ...string) intake.PullRequestChecks {
 		Snapshot: head + "-snapshot", CheckRuns: []record.AttemptRun{{Name: "build", ID: 1}}, Failing: failing}
 }
 
+// laterSettlement is the listener's settlement of head at a later generation of the head's record,
+// as it settles a head again when another of its checks finishes. It is newer than settlement's
+// (classify.ClassifySettlement), so it applies, and a wake reads it as a settlement of the head
+// rather than as a redelivery, which wakes nobody (wakeOnSettlement).
+func laterSettlement(head string, generation int64, failing ...string) intake.PullRequestChecks {
+	fact := settlement(head, failing...)
+	fact.Generation, fact.Snapshot = generation, fmt.Sprintf("%s-snapshot-%d", head, generation)
+	return fact
+}
+
 // R2: a settlement on the head of the issue's pull request wakes the released phase worker whose
 // phase is open, and the woken role's task names the head and what the settlement came to.
 func TestACISettlementWakesTheReleasedPhaseWorker(t *testing.T) {
@@ -213,11 +224,12 @@ func TestACISettlementWakesTheReleasedPhaseWorker(t *testing.T) {
 }
 
 // R2: one head settles again as each of its checks finishes, and each settlement of that head
-// wakes the pod at most once.
+// wakes the pod at most once. The second settlement is of a later generation, so it applies and is
+// turned away by the role's open resume, not as the redelivery of the first.
 func TestASecondSettlementOfTheSameHeadWakesThePodNoSecondTime(t *testing.T) {
 	rig := newWakeRig(t)
 	rig.apply("settled", settlement("head1", "build"))
-	rig.apply("settled-again", settlement("head1"))
+	rig.apply("settled-again", laterSettlement("head1", 2))
 	oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks, "head1")
 	if resumes := wakeResumes(t, rig.pool); len(resumes) != 1 {
 		t.Fatalf("pod resumes after a second settlement of the same head = %v, want the one", resumes)
@@ -327,8 +339,10 @@ func TestAWakeTakesOverAResumeOfAPodSinceReleased(t *testing.T) {
 
 			// The pod this wake brought back is coming, and the next wake of the role writes
 			// nothing: not a start row, not a resume, and it does not close the resume that is
-			// bringing the pod.
-			rig.apply("settled-again", settlement("head1"))
+			// bringing the pod. The settlement is of a later generation of the head than the first
+			// wake of the CI settlement row, so in each row it applies and reaches the take, where a
+			// redelivery of that first settlement would wake nobody before it (wakeOnSettlement).
+			rig.apply("settled-again", laterSettlement("head1", 2))
 
 			if starts := wakeStarts(t, rig.pool); len(starts) != 1 {
 				t.Fatalf("supervise start rows after the second wake = %+v, want the one the first wake queued: the pod is already coming back", starts)

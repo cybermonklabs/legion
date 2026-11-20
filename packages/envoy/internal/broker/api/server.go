@@ -77,13 +77,18 @@ type Deps struct {
 	// NotifyReread tells every other pod serving this database to reread name, the fan-out
 	// internal/broker/reread's Notifier sends over Postgres LISTEN/NOTIFY; nil means no fan-out,
 	// which is a single-pod broker and every test that wires none. POST
-	// /v1/secrets/{name}/reread is its one call site (rereadSecret), which explains there both
-	// when it is called and why it is called from the route rather than from RefreshOne.
+	// /v1/secrets/{name}/reread is its one route (notifyPeers, from rereadSecret and from the
+	// reread it runs after answering, rereadAfterAnswer), which explains both when it is called
+	// and why it is called from the route rather than from RefreshOne.
 	//
 	// It reports nothing, because the handler has nothing to do with a failure: the local reread
 	// has already succeeded and its answer stands, so whether a failed fan-out is logged, and at
 	// what level, belongs to the function cmd/broker supplies.
 	NotifyReread func(ctx context.Context, name string)
+	// Detached counts the work a route starts that outlives its answer, the reread run after a
+	// 202, for the stop sequence to wait on (Detached.Wait); nil counts nothing, for a mux nothing
+	// stops.
+	Detached *Detached
 	// SecretsPrefix is BROKER_SECRETS_PREFIX, the namespace GET /v1/settings answers.
 	SecretsPrefix string
 	// SecretsStore is BROKER_SECRETS_STORE, the store GET /v1/settings names: secrets.StoreAWS or
@@ -368,7 +373,7 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 // enrollment, the listed account, the service and the account it presented, or the signed-in
 // person. A route that takes no credential is public, and a route of the approval page reached
 // with no live sign-in unauthenticated; a handler that authenticates its own caller notes its
-// class over this one (tokenLogin, accountAuthAfterRecordKind).
+// class over this one (tokenLogin, and rereadSecret for a session's proof).
 func (c caller) answerCaller(route routeHandler) (class, id string) {
 	switch route.auth {
 	case authLauncher:
@@ -397,8 +402,7 @@ func serviceIdentity(account machine.ServiceAccount) string {
 // refuseWithoutPower writes 403 ACCOUNT_LACKS_POWER and reports true when the listed caller who
 // does not hold needs, the power route declares ("POST /v1/oauth/revoke", the method and the
 // pattern the broker mounted). authenticate calls it for every accountAuth row before the
-// handler runs, and decideRecord for the two rows whose handler authenticates its own caller
-// (accountAuthAfterRecordKind), so one refusal serves both.
+// handler runs.
 func refuseWithoutPower(w http.ResponseWriter, who Account, needs power, route string) bool {
 	if who.may(needs) {
 		return false
@@ -407,10 +411,11 @@ func refuseWithoutPower(w http.ResponseWriter, who Account, needs power, route s
 	return true
 }
 
-// sessionCaller authenticates a session proof for authenticate, answering a proof whose
-// enrollment is no longer live with notLiveCode and notLiveMessage: PROOF_INVALID on every
-// session route but renew, which alone answers ENROLLMENT_NOT_LIVE so a pod renewer can stop.
-// Every other bad proof is PROOF_INVALID on both.
+// sessionCaller authenticates a session proof, for authenticate on every session route and for
+// the reread route's handler on a call that carries a Proof header (rereadSecret), answering a
+// proof whose enrollment is no longer live with notLiveCode and notLiveMessage: PROOF_INVALID on
+// every session route but renew, which alone answers ENROLLMENT_NOT_LIVE so a pod renewer can
+// stop. Every other bad proof is PROOF_INVALID on both.
 func (s *server) sessionCaller(w http.ResponseWriter, r *http.Request, notLiveCode, notLiveMessage string) (caller, bool) {
 	subject, err := s.proofSubject(r)
 	switch {

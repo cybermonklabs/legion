@@ -302,12 +302,18 @@ mv "$DEV_BROKER_DIR/fake-secrets.json.new" "$DEV_BROKER_DIR/fake-secrets.json"
 ```
 
 and ask the broker to reread it, as `agent-secrets secret` does right after each write
-([Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret)). The same call
-answered `{"name":"DEMO_NEW_TOKEN","served":false,"reason":"absent"}` before the edit:
+([Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret)). Signed as this
+shell's session, the broker answers once the reread is done, with what it now serves; the same
+call answered `{"name":"DEMO_NEW_TOKEN","served":false,"reason":"absent"}` before the edit. A
+call with no proof is answered `202` with `"accepted":true` and one fixed `reason` at once,
+whatever the name, and the reread runs after that answer:
 
 ```console
-$ curl -s -X POST "$AGENT_SECRETS_URL/v1/secrets/DEMO_NEW_TOKEN/reread"
+$ reread() { curl -s -X POST -H "Proof: $(agent-secrets sign --method POST --url "$AGENT_SECRETS_URL/v1/secrets/$1/reread")" "$AGENT_SECRETS_URL/v1/secrets/$1/reread"; }
+$ reread DEMO_NEW_TOKEN
 {"name":"DEMO_NEW_TOKEN","served":true}
+$ curl -s -X POST "$AGENT_SECRETS_URL/v1/secrets/DEMO_NEW_TOKEN/reread"
+{"accepted":true,"reason":"the reread was taken; this broker says what it serves only to a signed session, so upgrade agent-secrets to the broker's release (the write stands)"}
 ```
 
 The registered session gets it at once:
@@ -326,9 +332,9 @@ has no `app_id` is added, and then read twice:
 
 ```console
 $ jq '.secrets += [(.secrets[] | select(.name=="example/agent-secrets/demo-github-app") | .name="example/agent-secrets/demo-broken-app" | .value=(.value|fromjson|del(.app_id)|tojson))]' "$DEV_BROKER_DIR/fake-secrets.json" >"$DEV_BROKER_DIR/fake-secrets.json.new" && mv "$DEV_BROKER_DIR/fake-secrets.json.new" "$DEV_BROKER_DIR/fake-secrets.json"
-$ curl -s -X POST "$AGENT_SECRETS_URL/v1/secrets/DEMO_BROKEN_APP/reread"
+$ reread DEMO_BROKEN_APP
 {"name":"DEMO_BROKEN_APP","served":false,"reason":"value-malformed"}
-$ curl -s -X POST "$AGENT_SECRETS_URL/v1/secrets/DEMO_BROKEN_APP/reread"
+$ reread DEMO_BROKEN_APP
 {"name":"DEMO_BROKEN_APP","served":false,"reason":"value-malformed"}
 ```
 
@@ -471,7 +477,7 @@ per line, so `jq` finds a line by any of its fields. Each refusal writes one lin
 `broker: answer refused`, but a `429` and the two answers of a device login's poll, which the
 broker counts and does not log. The line names the answer id, which the answer carries in its
 `X-Broker-Answer-Id` header and, in a JSON body, as `answer_id`. A reread of a name no secret can
-carry is one such refusal, and its route takes no credential:
+carry is one such refusal, to every caller, since its route needs no credential:
 
 ```console
 $ curl -si -X POST "$AGENT_SECRETS_URL/v1/secrets/bad%20name/reread"
@@ -524,8 +530,8 @@ and its token request two: the first answered `503`, `outcome="upstream"`, and t
 attempt minted. `broker_unservable_secrets` holds the one secret the broker refuses now. It drops
 that secret at the first scrape after a reread or a load reads a new version of its value, unless
 the decoder refuses that value too. After an edit of the fake secrets file, that is the next
-reread of the name (`curl -s -X POST "$AGENT_SECRETS_URL/v1/secrets/<NAME>/reread"`) or the
-five-minute reload.
+reread of the name (`reread <NAME>`, or a `curl -s -X POST "$AGENT_SECRETS_URL/v1/secrets/<NAME>/reread"`
+with no proof, which the broker rereads after its answer) or the five-minute reload.
 
 ## Reach a secret behind the airlock
 

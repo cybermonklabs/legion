@@ -1,0 +1,5 @@
+kind: Fixed
+body: An idle release no longer deletes an issue pod while its own workspace save is queued, so the pod’s unpushed work is kept.
+time: 2026-11-20T02:40:18.171829681Z
+custom:
+    Issue: pr4552

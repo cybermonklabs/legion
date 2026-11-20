@@ -37,7 +37,10 @@ import (
 // commands after it call: it records the session name and the whole form of each trade, hands out
 // an enrollment id per registration, answers a session proof naming any enrollment but the last
 // one it made exactly as the broker answers one whose lease has lapsed, and answers GET
-// /v1/settings with settings, or 404 while it holds none.
+// /v1/settings with settings, or 404 while it holds none. Its POST /v1/secrets/{name}/reread,
+// once rereadAnswer is set, answers a live session's proof with rereadAnswer, a lapsed one 401
+// PROOF_INVALID "proof invalid: not live", and a call with no proof 202, and records each call's
+// enrollment ("" for none).
 type loginBroker struct {
 	server *httptest.Server
 	mu     sync.Mutex
@@ -53,6 +56,9 @@ type loginBroker struct {
 	enrollmentID string
 	// refusal, once set (refuseTrades), answers every trade.
 	refusal *loginRefusal
+	// rereadAnswer answers a live session's reread; rereads is each reread's enrollment.
+	rereadAnswer func(name string) Reread
+	rereads      []string
 }
 
 // loginRefusal is the answer refuseTrades makes the token endpoint give.
@@ -118,6 +124,34 @@ func newLoginBroker(t *testing.T) *loginBroker {
 		}
 		writeLoginJSON(w, map[string]any{"enrollment_id": live, "runtime_id": "this-box", "grants": []any{}})
 	})
+	mux.HandleFunc("POST /v1/secrets/{name}/reread", func(w http.ResponseWriter, r *http.Request) {
+		b.mu.Lock()
+		answer, live := b.rereadAnswer, b.live
+		b.mu.Unlock()
+		if answer == nil {
+			http.NotFound(w, r)
+			return
+		}
+		enrollment := ""
+		if r.Header.Get("Proof") != "" {
+			enrollment = proofEnrollment(t, r)
+		}
+		b.mu.Lock()
+		b.rereads = append(b.rereads, enrollment)
+		b.mu.Unlock()
+		switch {
+		case enrollment == "":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"accepted":true}` + "\n"))
+		case enrollment != live:
+			w.WriteHeader(http.StatusUnauthorized)
+			writeLoginJSON(w, map[string]any{"code": "PROOF_INVALID", "error": "proof invalid: not live"})
+		default:
+			reread := answer(r.PathValue("name"))
+			writeLoginJSON(w, map[string]any{"name": reread.Name, "served": reread.Served, "reason": reread.Reason, "type": reread.Type})
+		}
+	})
 	b.server = httptest.NewServer(mux)
 	t.Cleanup(b.server.Close)
 	return b
@@ -143,6 +177,13 @@ func (b *loginBroker) liveEnrollment() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.live
+}
+
+// rereadEnrollments is each reread's enrollment, in order, "" for a call with no proof.
+func (b *loginBroker) rereadEnrollments() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.rereads...)
 }
 
 // proofEnrollment reads the enrollment a request's session proof names (its `eid` claim).

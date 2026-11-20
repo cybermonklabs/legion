@@ -178,7 +178,9 @@ jobs:
           pattern=$(../../.github/scripts/go-tagged-tests.sh twobuild ./cmd/dispatch)
           go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
-      # dispatch-browser.yaml's shard job's step of this name, for the reason it gives: Playwright's
+      # dispatch-browser.yaml's shard job's step of this name, for the reason
+      # .github/ci-notes/dispatch-browser.md#why-every-job-that-runs-the-suite-builds-contracts-first
+      # gives: Playwright's
       # Node runner reads `@legion/contracts` out of a build this checkout has to make before the
       # config loads, and the entries Dispatch imports are all it needs. `build:dispatch` bundles
       # those four and so compiles no module outside the set this job's filter lists - not
