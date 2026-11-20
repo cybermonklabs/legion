@@ -163,6 +163,86 @@ test("the check refuses a skill packed without its SKILL.md", async () => {
   expect(result.stderr).toContain("packs package/skills/envoy with no SKILL.md")
 })
 
+/** A tarball whose listing is far longer than a pipe holds, with `first` packed ahead of the rest:
+ *  the members every lookup of the two checks below finds, then 8,000 padding files of 200-byte
+ *  names, about 1.7 MB of listing. A lookup written `printf '%s\n' "$members" | grep -qxF …` finds
+ *  its member in the first lines and exits while printf still has most of the listing to write,
+ *  so printf dies of SIGPIPE and, under pipefail, the lookup reads as a member the tarball lacks.
+ *  The release's 127-name listing lost that race about once in a thousand runs; this one loses
+ *  it on every run, so the case fails on the old form every time rather than now and then. */
+async function longListing(name: string, files: Record<string, string>): Promise<string> {
+  const root = join(scratch, name)
+  for (const [member, body] of Object.entries(files)) {
+    await mkdir(join(root, member, ".."), { recursive: true })
+    await Bun.write(join(root, member), body)
+  }
+  const pad = join(root, "package", "pad")
+  await mkdir(pad, { recursive: true })
+  for (let i = 0; i < 8000; i++) {
+    await Bun.write(join(pad, `${String(i).padStart(4, "0")}-${"x".repeat(195)}`), "")
+  }
+  const tar = join(scratch, `${name}.tgz`)
+  await ran(["tar", "-czf", tar, "-C", root, ...Object.keys(files), "package/pad"], scratch)
+  return tar
+}
+
+test("the check passes a listing longer than a pipe holds, whose skill comes first", async () => {
+  const tar = await longListing("long-listing", {
+    "package/skills/dispatch-first/SKILL.md": "---\nname: dispatch-first\n---\n",
+  })
+  expect((await members(tar))[0]).toBe("package/skills/dispatch-first/SKILL.md")
+  const result = await run(["bash", checkScript, tar], scratch)
+  expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" })
+  expect(result.stdout.trim()).toBe(`check-packed-skills.sh: ${tar} carries 1 skills as real files`)
+}, 60_000)
+
+// release.yaml's claude_envoy_build step runs .github/scripts/release-claude-envoy-check-packed.sh
+// over the tarball it hands the publish job, and that script looks two members up in the listing
+// before it runs the check above. It reads packages/claude-envoy/*.tgz from the repository root,
+// so it runs here from a root of its own, which holds the three scripts it runs and the tarball.
+test("the release's check of the packed tarball passes a listing longer than a pipe holds", async () => {
+  const version = "9.9.9"
+  const url = (
+    await ran(
+      ["bash", join(repoRoot, ".github", "scripts", "repo-paths.sh"), "repository_url"],
+      scratch,
+    )
+  ).stdout.trim()
+  const manifest = (extra: Record<string, unknown>) => JSON.stringify({ version, ...extra })
+  const tar = await longListing("release-long-listing", {
+    "package/dist/envoy-channel.js": "",
+    "package/legion/.claude-plugin/plugin.json": "{}",
+    "package/skills/dispatch-first/SKILL.md": "---\nname: dispatch-first\n---\n",
+    "package/package.json": manifest({ repository: { type: "git", url } }),
+    "package/.claude-plugin/plugin.json": manifest({}),
+    "package/.omp-plugin/plugin.json": manifest({}),
+  })
+  const root = join(scratch, "release-root")
+  await mkdir(join(root, ".github", "scripts"), { recursive: true })
+  await mkdir(join(root, "packages", "claude-envoy", "scripts"), { recursive: true })
+  for (const script of ["release-claude-envoy-check-packed.sh", "repo-paths.sh"]) {
+    await cp(join(repoRoot, ".github", "scripts", script), join(root, ".github", "scripts", script))
+  }
+  await cp(checkScript, join(root, "packages", "claude-envoy", "scripts", "check-packed-skills.sh"))
+  await cp(tar, join(root, "packages", "claude-envoy", "claude-envoy-9.9.9.tgz"))
+  const child = Bun.spawn(["bash", ".github/scripts/release-claude-envoy-check-packed.sh"], {
+    cwd: root,
+    env: { ...process.env, VERSION: version },
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ])
+  expect({ exitCode, stderr, stdout: stdout.includes("::error::") }).toEqual({
+    exitCode: 0,
+    stderr: "",
+    stdout: false,
+  })
+}, 60_000)
+
 // The two ways a pack can stop with the links already swapped. The links are tracked files, so
 // what the prepack leaves behind is what the working copy holds: jj's next command would record
 // eight deleted links and eight copied skill trees.

@@ -71,7 +71,7 @@ func TestTheAnswerDecodersPrintTheAnswerOnlyAsTheAddressLetsItPrint(t *testing.T
 			return err
 		}},
 		{"decode reread", `4815162342`, func(c *client) error {
-			_, err := c.RereadSecret(ctx, "SCRATCH_TEST")
+			_, err := c.RereadSecret(ctx, signer, "SCRATCH_TEST")
 			return err
 		}},
 		{"decode machine logins", `{"credentials":[{"credential_id":"lcred-1","issued_at":` + echo + `}]}`, func(c *client) error {

@@ -611,12 +611,16 @@ stale (Secret Manager's metadata can lag a write by hours), and while the broker
 secret as stored, a grant of it releases its stored value raw. So a retag whose reread answers
 another type than the one it wrote exits 1: the broker still sees the old tags. Run the retag
 again, and store no value until the broker serves the secret as that type
-(`broker: serving NAME (type <type>)`) or refuses it as `value-malformed`. A `create` or `set`
-whose reread answers another type than the secret holds exits 1 the same way, with the value
-already stored: it names the `secret retag NAME --type <type>` that asks the broker to read the
-tags again, and until that retag exits 0 a broker serving the secret as stored releases its value
-raw. A release that finds the secret retagged while it reads the store releases nothing and ends
-that grant.
+(`broker: serving NAME (type <type>)`) or refuses it as `value-malformed`. Only a retag run where
+`agent-secrets` has a broker identity (`agent-secrets login`, or inside a session) prints that
+line. Run with no identity, a retag exits 0 once the store holds the type tag and says in one line
+that the broker's view was not checked: that exit 0 says only that the store holds the tag, and
+is not the step that lets you store the key. A `create` or `set` whose reread answers another
+type than the secret holds exits 1 the same way, with the value already stored: it names the
+`secret retag NAME --type <type>` that asks the broker to read the tags again, and until that
+retag prints `broker: serving NAME (type <type>)` a broker serving the secret as stored releases
+its value raw. A release that finds the secret retagged while it reads the store releases nothing
+and ends that grant.
 
 Exit 0 is the answer of the one broker process that served the reread, not of every process. That
 process tells the others over Postgres and they reread within seconds, so exit 0 is the usual case
@@ -748,7 +752,16 @@ broker: serving DEMO_DEPLOY_TOKEN from AWS Secrets Manager account 111122223333 
 ## What the broker answers after a write
 
 After each write, the CLI asks the broker to reread the secret (`POST /v1/secrets/{name}/reread`)
-and prints its answer on a line of its own, naming the store the secret is in:
+and prints its answer on a line of its own, naming the store the secret is in. The CLI signs that
+call with a broker identity this process already holds — a key directory holding its key and
+enrollment, your `agent-secrets login`, a helper that answers, or the machine's cached session —
+because the broker says what it now serves only to a call a session signs. It waits on nothing
+and trades no machine identity to find one. The held sign-in is
+`AGENT_SECRETS_PERSON`'s, or the only local sign-in when that variable is unset, whatever cloud
+credential wrote the secret. A sign-in record with no enrollment registers while the CLI looks up
+its signer. A sign-in session that lapses after `BROKER_LEASE_SECONDS` (15 minutes by default)
+registers again only when the broker refuses that existing session as not live, under the same box
+key, and signs the reread with the new session:
 
 | Line | What it means |
 | --- | --- |
@@ -756,6 +769,26 @@ and prints its answer on a line of its own, naming the store the secret is in:
 | `broker: serving NAME from <store> (type <type>)` | The broker serves the secret as that type: it mints from the stored value and never returns it. |
 | `broker: NAME is deleted in <store> (restorable until <date>)` | After a delete: the broker no longer serves it. |
 | `broker: refusing NAME from <store> (reason=<reason>)` | The broker leaves the secret out: `absent` (it found no such secret, or one scheduled for deletion), `pending-value` (a secret `secret create` made and has not yet filled, which carries its `agent-secrets-create` label, holds no version and was made less than ten minutes ago: the broker waits for its value rather than refuses it), or one of the refusals [Operating the broker](/legion/broker/operate/#health-and-logs) lists, such as `no-current-value`. |
+| `broker: rereading NAME from <store>` | The broker's view could not be checked: this process holds no broker identity, its identity could not sign, or the broker could not check or did not accept the proof. So the reread went with no proof. The broker took it and rereads the secret after answering, but tells such a call nothing of what it serves, and a reread that fails then reaches only the broker's log. |
+
+After `broker: rereading`, one line on standard error says why the call carried no proof and what
+the exit 0 then says:
+`the broker at <host> took the reread of NAME, but how it serves NAME was not checked (…), so this exit 0 says only that the write stands`,
+with the signed `curl` that checks it. The command exits 0: the write stands and nothing
+contradicts it.
+
+A write that leaves a type (`create --type`, `set` on a type secret, a `retag` that leaves one)
+also reads the secret's type tag back from the store, under the sign-in it wrote with, whatever
+the broker answers, a refused or unreachable reread included. When the store holds another type,
+or none, it exits 1 with
+`the write to <store> stands, but NAME's type tag there is <tag>, not <type>`, naming the retag
+that writes it again: a type secret the store holds untyped is served as stored, its key or login
+released as it is. A read back that fails exits 1 too: a sign-in that may write the tags and not
+read them fails every typed write. When the tag is right and the reread went with no proof, it
+prints one line instead of the one above,
+`NAME carries the type tag <type> in <store>, but whether the broker at <host> serves it as <type> was not checked (…), so this exit 0 says only that the store holds the tag`,
+which says to store no key or login in NAME until the retag it names, run where the command has a
+broker identity, prints `broker: serving NAME from … (type <type>)`. It exits 0.
 
 `<store>` is the store the broker's settings name: `AWS Secrets Manager account <id> in <region>`,
 or `GCP Secret Manager project <number>`. The command exits 0 when the answer is what the write
@@ -808,10 +841,14 @@ restore, or a first value for a secret that had none is served on the first requ
 since the broker rereads a name it does not serve before refusing it. A retag or a delete of a
 secret the broker serves takes effect at its next read of the namespace, within about ten minutes,
 or at once when you ask for the reread yourself — one call, whichever process it reaches, since
-that process tells the others:
+that process tells the others. A call with no proof is answered `202` with `"accepted":true` and a
+fixed `reason` at once, whatever the name, and the broker rereads the secret after that answer; to
+read what the broker then serves, sign the call as this process's session:
 
 ```sh
 curl -s -X POST "$AGENT_SECRETS_URL/v1/secrets/DEMO_DEPLOY_TOKEN/reread"
+curl -s -X POST -H "Proof: $(agent-secrets sign --method POST --url "$AGENT_SECRETS_URL/v1/secrets/DEMO_DEPLOY_TOKEN/reread")" \
+  "$AGENT_SECRETS_URL/v1/secrets/DEMO_DEPLOY_TOKEN/reread"
 ```
 
 [Troubleshooting](/legion/broker/guides/troubleshooting/#managing-a-secret) lists the messages the

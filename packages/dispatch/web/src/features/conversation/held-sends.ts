@@ -259,7 +259,7 @@ export const keptReplyTo = shape.record({
   mentions: shape.optional(
     shape.array(shape.record({ target: shape.string, title: shape.string }))
   ),
-  parentKind: shape.oneOf("comment", "message"),
+  parentKind: shape.oneOf("ask", "comment", "message"),
   thread: shape.optional(shape.record({ delivery: keptDelivery, target: shape.string })),
   to: shape.optional(shape.string),
 });

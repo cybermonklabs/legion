@@ -225,6 +225,14 @@ func fakeHelper(t *testing.T, canned helper.Response) (string, <-chan helper.Req
 // fakeHelperAt is fakeHelper listening at a path the caller chooses (a default socket path, say).
 func fakeHelperAt(t *testing.T, sock string, canned helper.Response) <-chan helper.Request {
 	t.Helper()
+	return fakeHelperAnswering(t, sock, func(int) helper.Response { return canned })
+}
+
+// fakeHelperAnswering is fakeHelperAt answering each request by answer, given how many requests
+// came before it: a helper whose answer changes between calls, such as one that says the caller is
+// in its session and then refuses to sign.
+func fakeHelperAnswering(t *testing.T, sock string, answer func(call int) helper.Response) <-chan helper.Request {
+	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(sock), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +243,7 @@ func fakeHelperAt(t *testing.T, sock string, canned helper.Response) <-chan help
 	t.Cleanup(func() { ln.Close() })
 	reqs := make(chan helper.Request, 8)
 	go func() {
-		for {
+		for call := 0; ; call++ {
 			conn, err := ln.AcceptUnix()
 			if err != nil {
 				return
@@ -244,7 +252,7 @@ func fakeHelperAt(t *testing.T, sock string, canned helper.Response) <-chan help
 			var req helper.Request
 			_ = json.Unmarshal(line, &req)
 			reqs <- req
-			data, _ := json.Marshal(canned)
+			data, _ := json.Marshal(answer(call))
 			_, _ = conn.Write(append(data, '\n'))
 			conn.Close()
 		}
@@ -266,6 +274,14 @@ func TestHelperSignerAsksTheHelper(t *testing.T) {
 	if _, err := (&helperSigner{sock: sock2}).Sign(http.MethodGet, "https://s/v1/enrollments/self"); err == nil ||
 		!strings.Contains(err.Error(), helper.CodeNotASession) {
 		t.Fatalf("the helper's code reaches the caller: %v", err)
+	}
+}
+
+func TestHelperSignerRefusesAnEmptyProof(t *testing.T) {
+	sock, _ := fakeHelper(t, helper.Response{OK: true})
+	if _, err := (&helperSigner{sock: sock}).Sign(http.MethodGet, "https://s/v1/enrollments/self"); err == nil ||
+		!strings.Contains(err.Error(), "no Proof header") {
+		t.Fatalf("a helper that answered OK with no proof = %v; want an error naming the missing Proof header", err)
 	}
 }
 

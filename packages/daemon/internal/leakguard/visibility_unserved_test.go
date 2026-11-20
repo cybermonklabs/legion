@@ -120,12 +120,13 @@ func TestTheVisibilityOfAnOwnerLegionGhDoesNotServeIsReadWithNoCredential(t *tes
 // Only `legion gh`'s refusal of the repository's owner sends the read to ls-remote: exit 2, and
 // that one line for the owner of the repository read, lowercased as `legion gh` names it, and for
 // the bundle LEGION_GH_OWNERS_DIR names. An owner spelled in capitals is read with no credential
-// at the URL as it was spelled. Every other answer is the setup failure it was, and git never
-// runs, although the stand-in git would answer public: another refusal of `legion gh`; the line
-// for another owner, for another bundle, under another exit status, beside another line or with
-// no `legion gh: ` in front; the refusal of a configured rename whose new owner the bundle holds
-// no directory for, which holds these words inside a longer line; GitHub's own 404 through gh;
-// and the line where the guard's environment names no bundle at all.
+// at the URL as it was spelled. Every other answer is refused, and git never runs, although the
+// stand-in git would answer public: another refusal of `legion gh`; the line for another owner,
+// for another bundle, under another exit status, beside another line or with no `legion gh: ` in
+// front; the refusal of a configured rename whose new owner the bundle holds no directory for,
+// which holds these words inside a longer line; the line where the guard's environment names no
+// bundle at all, each of these the setup failure it was; and GitHub's own 404 through gh, which
+// the refusal tells as GitHub's answer for the repository.
 func TestOnlyLegionGhsRefusalOfTheOwnerIsReadWithNoCredential(t *testing.T) {
 	const owners = "/var/run/invented/gh"
 	theRefusal := ownerNotServedLine("invented-org", owners)
@@ -143,9 +144,10 @@ func TestOnlyLegionGhsRefusalOfTheOwnerIsReadWithNoCredential(t *testing.T) {
 		lines []string
 		env   []string
 		// public is whether the read answers public through ls-remote; a read that does not fails
-		// saying fails.
+		// saying `gh api repos/<slug> <fails>`, or says where it is set.
 		public bool
 		fails  string
+		says   string
 	}{
 		{name: "the refusal", exit: 2, lines: []string{theRefusal}, public: true},
 		{name: "the refusal of an owner spelled in capitals", slug: "Invented-Org/invented-repo", exit: 2, lines: []string{theRefusal}, public: true},
@@ -167,7 +169,7 @@ func TestOnlyLegionGhsRefusalOfTheOwnerIsReadWithNoCredential(t *testing.T) {
 			name: "the refusal of a configured rename whose new owner has no directory", exit: 2,
 			lines: []string{renameRefusal}, fails: "exited 2: " + renameRefusal,
 		},
-		{name: "GitHub's own 404", exit: 1, lines: notFound, fails: "exited 1: HTTP/2.0 404 Not Found"},
+		{name: "GitHub's own 404", exit: 1, lines: notFound, says: "GitHub answers 404 for " + maskPath(theRepo)},
 		{name: "the refusal where no bundle is named", exit: 2, lines: []string{theRefusal}, env: []string{"LEGION_GH_OWNERS_DIR="}, fails: "exited 2: " + theRefusal},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -192,8 +194,9 @@ func TestOnlyLegionGhsRefusalOfTheOwnerIsReadWithNoCredential(t *testing.T) {
 					t.Errorf("git ran as %q, want one ls-remote of %s", calls, slug)
 				}
 			} else {
-				if err == nil || !strings.Contains(err.Error(), "gh api repos/"+slug+" "+tc.fails) {
-					t.Errorf("read %q, %v; want the read refused saying %q", visibility, err, "gh api repos/"+slug+" "+tc.fails)
+				want := cmp.Or(tc.says, "gh api repos/"+slug+" "+tc.fails)
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("read %q, %v; want the read refused saying %q", visibility, err, want)
 				}
 				if len(calls) != 0 {
 					t.Errorf("git ran %d times, want never: only the refusal of the owner is read with no credential", len(calls))

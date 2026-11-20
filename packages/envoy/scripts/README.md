@@ -391,7 +391,9 @@ cannot stand in for a new test's.
 `GO_TEST_SKIP='^(TestA|TestB)$/^aws$'` makes both lines read `aws=0` and the run exit 1.
 `GO_TEST_TIMEOUT` replaces the 5-minute `-timeout`, which `ci.yaml`'s `envoy-go` job counts
 in its time budget; the job runs it as "Count the store-form rows on each backend", over
-`./cmd/agent-secrets/` and `./internal/broker/api/`.
+`./cmd/agent-secrets/` and `./internal/broker/api/`, as those tests' one run: the job's unit
+step and its database-skips step skip them by name (`BACKEND_COUNT_TESTS` in
+`.github/scripts/ci_job_reads.py`).
 
 ## database-skips.sh
 
@@ -419,9 +421,10 @@ reads that report. `--var NAME` names a variable the packages need, and repeats;
 `database_skips=UNKNOWN` naming it, and nothing runs.
 `--race` adds `-race`, and `--timeout D` replaces the `-timeout`, as `GO_TEST_TIMEOUT` does
 when `--timeout` is not given; it bounds each package's test binary and not the run, since
-the packages run several at a time, so one that starts late ends later. `--report` reads a
-`go test -json` report instead and runs nothing, and refuses the three options that shape a
-run.
+the packages run several at a time, so one that starts late ends later. `--skip PATTERN` adds
+go test's `-skip`; go test reports nothing for a test it leaves out, so that test is neither
+run nor counted as a skip. `--report` reads a `go test -json` report instead and runs nothing,
+and refuses the four options that shape a run.
 
 It names the packages as `go list` does under the run's own flags, so a pattern spelled
 `./cmd/./broker/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
@@ -442,7 +445,9 @@ dump and a data race report among them), the build output and, for a run of its 
 stderr. A run of its own also prints each package's `pass|fail PACKAGE <seconds>s` on stderr.
 
 `ci.yaml`'s `envoy-go` job runs it as "Count the database broker suites' skips", with
-`--timeout 20m`, the unit step's own `-timeout`, and a step limit of its own
+`--timeout 20m`, the unit step's own `-timeout`, `--skip` of the one test of
+`./internal/broker/api/` that the job's "Count the store-form rows on each backend" runs
+(`backend-count.sh`, above), and a step limit of its own
 (`timeout-minutes: 30`) that its time budget counts, and `envoy-go-race-api` runs the
 Dispatch API through it as the second line above.
 `database-skips.test.sh` holds it to five controls, which `envoy-go` runs as "Test the database
