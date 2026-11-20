@@ -321,8 +321,11 @@ func askPersons(asks []*model.Ask) references {
 // answers the set the batch fills: nil for a reader that sees every object, or asks that name no
 // person, which queues nothing.
 func queueAskPersons(b *pgx.Batch, who model.Actor, asks []*model.Ask) references {
+	if seesEveryObject(who) {
+		return nil
+	}
 	named := askPersons(asks)
-	if seesEveryObject(who) || named.empty() {
+	if named.empty() {
 		return nil
 	}
 	seen := references{}
