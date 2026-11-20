@@ -122,7 +122,8 @@ export type LegionClaimState = (typeof LEGION_CLAIM_STATES)[number];
 const legionLocator = z.discriminatedUnion("runtime", [
   z.object({
     // The union's discriminator. A body without it matches no member, so `.optional()` here
-    // would state what the parse does not do, and `LEGION_ANSWER_READS` names no discriminator.
+    // would state what the parse does not do, and no plugin code reads it, so
+    // `LEGION_ANSWER_READS` names it nowhere.
     runtime: z.literal("tmux"),
     claim: nonEmptyString.optional(),
     incarnation: nonEmptyString.optional(),
@@ -190,8 +191,10 @@ const legionStepView = z.object({
 /** The two fields a wake the daemon's pacing holds carries: what kind of wake it is, and
  * `dueAt`, the moment the pacing gave it, which is when it runs (contract 182). The claim view's
  * `wake` and `legionWakeWaiting` below carry the same wake, so both spread this one object and
- * cannot drift apart. The kind is read as a plain string, so a lane a later daemon adds is read
- * rather than refused. */
+ * cannot drift apart in type. Both fields are optional here, since no plugin code reads the claim
+ * view's `wake`; `legionWakeWaiting` requires `dueAt` over the spread, because the controller's
+ * `read_state` summary reads it (LEGION_ANSWER_READS). The kind is read as a plain string, so a
+ * lane a later daemon adds is read rather than refused. */
 const legionPacedWake = {
   kind: nonEmptyString.optional(),
   dueAt: timestamp.optional(),
@@ -698,12 +701,16 @@ const legionHeldOutboxRow = z.object({
  * 73), both held in the claim's machine and lost with a restart, which raises the wave
  * again through its own paths; and `catch-up`, the notice a start writes to an architect already
  * running in place of a launch, which waits on its own outbox row. `kind` is an unconstrained
- * string, so a lane a later daemon names is read rather than refused. */
+ * string, so a lane a later daemon names is read rather than refused. `dueAt` is required: the
+ * controller's `read_state` summary names the earliest of them (`pi-legion/src/tools.ts`), and
+ * the daemon writes it on every wake. The rest is optional, since no plugin code reads it
+ * (LEGION_ANSWER_READS). */
 const legionWakeWaiting = z.object({
   claim: nonEmptyString.optional(),
   issue: issueKey.optional(),
   role: z.enum(LEGION_ROLES).optional(),
   ...legionPacedWake,
+  dueAt: timestamp,
 });
 
 /** `api.AssignmentView` — one experiment's answer for an issue (contract 141): the name the
@@ -1182,13 +1189,18 @@ const legionConsumerLag = z.object({
  * controller, with the session it acted from, or the operator, who acts from none. The daemon's
  * store holds these two shapes and no other (`project_pauses_by_session` and
  * `project_pauses_ended_by_session` in its migration `20261115194357_project_pause`), so a
- * controller's entry always names its session. */
+ * controller's entry always names its session, and the reader requires it: the controller's
+ * `read_state` summary names the session of each controller it prints (LEGION_ANSWER_READS). */
 const legionPauseActor = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("controller"), session: nonEmptyString }),
   z.object({ kind: z.literal("operator") }),
 ]);
 
-/** What every view of a pause carries: its id, when it began, who paused, and why. */
+/** What every view of a pause carries: its id, when it began, who paused, and why. Each is
+ * required: the controller's `read_state` summary names all four of the state's pauses
+ * (LEGION_ANSWER_READS), and a refusal that names a pause is a body no plugin code parses, which
+ * keeps every field the daemon always writes. The pause and resume answers, which no plugin code
+ * reads, carry the same fields as `legionAnsweredPause`. */
 const pauseFields = {
   id: z.number().int().positive(),
   since: timestamp,
@@ -1198,19 +1210,19 @@ const pauseFields = {
 
 /** `api.PauseView` — one pause of the project (contract 178): its id, `since`, when it began,
  * `by`, who paused, `reason`, why, and, once a resume has ended it, `endedAt` and `endedBy`, when
- * and by whom. A pause answers this shape for the pause it began, and a refusal that names the
- * pause that stands carries it; both are of a pause no resume has ended, so neither names an
- * end. */
+ * and by whom. A refusal that names the pause that stands carries this shape; the pause is one no
+ * resume has ended, so it names no end. */
 const legionPause = z.object({
   ...pauseFields,
   endedAt: timestamp.optional(),
   endedBy: legionPauseActor.optional(),
 });
 
-/** `api.PauseView` where the daemon writes only a pause a resume has ended: the pause a resume
- * answers, the state's `lastPause`, and the last pause a refused resume names. `endedAt` and
- * `endedBy` are both required there, since the store holds an end only with who ended it
- * (`project_pauses_end_has_its_by` in the same migration). */
+/** `api.PauseView` where the daemon writes only a pause a resume has ended: the state's
+ * `lastPause`, and the last pause a refused resume names. `endedAt` and `endedBy` are both
+ * required there, since the store holds an end only with who ended it
+ * (`project_pauses_end_has_its_by` in the same migration), and the controller's summary names
+ * both of the state's `lastPause`. */
 const legionEndedPause = z.object({
   ...pauseFields,
   endedAt: timestamp,
@@ -1219,29 +1231,33 @@ const legionEndedPause = z.object({
 
 /** `api.PauseStopView` — one claim whose stop the open pause still waits on: the claim, its issue
  * and role, and `askedAt`, when the pause asked it to stop. A role in a turn stops when that turn
- * ends, so it is listed until then. */
+ * ends, so it is listed until then. The controller's summary names each by its issue and role,
+ * so those two are required; `claim` and `askedAt` are optional, since no plugin code reads them
+ * (LEGION_ANSWER_READS). */
 const legionPauseStop = z.object({
-  claim: nonEmptyString,
+  claim: nonEmptyString.optional(),
   issue: issueKey,
   role: z.enum(LEGION_ROLES),
-  askedAt: timestamp,
+  askedAt: timestamp.optional(),
 });
 
 /** `api.PauseHeldView` — one outbox row the open pause holds: its id, its kind, its issue,
  * `claim`, the claim it is for, absent for a row that names none (an architect's notice, which
- * the daemon routes when the row runs), and `waitedSeconds`, how long the row has been due. */
+ * the daemon routes when the row runs), and `waitedSeconds`, how long the row has been due. The
+ * controller's summary counts the rows and reads no field of one, so every field is optional
+ * (LEGION_ANSWER_READS). */
 const legionPauseHeldRow = z.object({
-  id: z.number().int().positive(),
-  kind: nonEmptyString,
-  issue: nonEmptyString,
+  id: z.number().int().positive().optional(),
+  kind: nonEmptyString.optional(),
+  issue: nonEmptyString.optional(),
   claim: nonEmptyString.optional(),
-  waitedSeconds: z.number().int().nonnegative(),
+  waitedSeconds: z.number().int().nonnegative().optional(),
 });
 
 /** `api.PausedView` — the project's open pause as the state shows it (contract 178): the pause,
  * `waitsOn`, the claims whose stop it still waits on, and `held`, every row it holds. The rows
  * are listed under the pause because the pause is the reason each one waits. Both lists are
- * never null. */
+ * never null, and both are required: the controller's summary reads each. */
 const legionPaused = z.object({
   ...pauseFields,
   waitsOn: z.array(legionPauseStop),
@@ -1491,10 +1507,12 @@ export type LegionActivityRequestBody = z.output<typeof LegionActivityRequest>;
  * of the git bundle of unpushed work it saved, zero when the workspace held none. `roles` is
  * required because `read_release_records` reads it: the empty list is the whole mark of a
  * release no wake can reach, which that report counts and measures nowhere, and the daemon
- * writes the list on every release, empty rather than null. */
+ * writes the list on every release, empty rather than null. `issue` is required because that
+ * report reads it too: a wake a project pause held names no release, and ends the releases of its
+ * issue instead. */
 const legionReleaseRecord = z.object({
   id: z.number().int().positive(),
-  issue: issueKey.optional(),
+  issue: issueKey,
   generation: z.number().int().nonnegative().optional(),
   roles: z.array(nonEmptyString),
   at: timestamp,
@@ -1507,11 +1525,13 @@ const legionReleaseRecord = z.object({
  * that went ten minutes with no turn of the woken role. `pause` is the project pause that held
  * the wake (contract 178), absent on a wake no pause held: a held wake pairs with no release, so
  * its `release` is 0, and its time to the first turn measures the pause, so a reader of these
- * records counts it apart (`releaseRecords` in `packages/pi-shared/src/legion-phase-ops.ts`). */
+ * records counts it apart (`releaseRecords` in `packages/pi-shared/src/legion-phase-ops.ts`).
+ * That report keeps such a wake under its `issue`, which is required for that reason, and reads
+ * `pause` where the daemon writes it. */
 const legionResumeRecord = z.object({
   id: z.number().int().positive().optional(),
   release: z.number().int().nonnegative(),
-  issue: issueKey.optional(),
+  issue: issueKey,
   role: nonEmptyString.optional(),
   kind: nonEmptyString,
   at: timestamp,
@@ -1806,20 +1826,40 @@ export const LegionWaveReleaseResponse = z.object({
   held: z.array(legionBlockedIssue).optional(),
 });
 
+/** `api.PauseView` as the pause and resume answers carry it (contract 178): the pause a pause
+ * began, or the pause a resume ended, with `endedAt` and `endedBy`, when and by whom. The
+ * controller's `pause` and `resume` hand the daemon's answer to its agent whole
+ * (`pi-legion/src/tools.ts`), and a value handed on whole is no read, so every field is optional
+ * (LEGION_ANSWER_READS). Who acted is `legionPauseActor`, the state's own view: its
+ * discriminator is required as every union's is, and its `kind` and a controller's `session`
+ * are named in the read set at these paths as at the state's, since the census matches a read by
+ * the field's name under its parent (`by.kind`, `by.session`, `endedBy.kind`,
+ * `endedBy.session`), so the session stays required here too. */
+const legionAnsweredPause = z.object({
+  id: z.number().int().positive().optional(),
+  since: timestamp.optional(),
+  by: legionPauseActor.optional(),
+  reason: nonEmptyString.optional(),
+  endedAt: timestamp.optional(),
+  endedBy: legionPauseActor.optional(),
+});
+
 /** `api.ProjectPauseResponse`, the answer to a pause of the project, the controller's `POST
  * /legion/v1/project/pause` and the operator's `POST /legion/v1/operator/project/pause` alike:
- * the pause it began. */
+ * the pause it began. The reader takes it as optional, since no plugin code reads it
+ * (`legionAnsweredPause`). */
 export const LegionProjectPauseResponse = z.object({
-  pause: legionPause,
+  pause: legionAnsweredPause.optional(),
 });
 
 /** `api.ProjectResumeResponse`, the answer to a resume of the project, the controller's `POST
  * /legion/v1/project/resume` and the operator's `POST /legion/v1/operator/project/resume` alike:
  * the pause it ended, and `released`, how many held rows it let out to run. The daemon's log
- * names those rows one by one. */
+ * names those rows one by one. The reader takes both as optional, since no plugin code reads
+ * them (`legionAnsweredPause`). */
 export const LegionProjectResumeResponse = z.object({
-  pause: legionEndedPause,
-  released: z.number().int().nonnegative(),
+  pause: legionAnsweredPause.optional(),
+  released: z.number().int().nonnegative().optional(),
 });
 
 /** `api.PauseFailure`, the refusal of a pause, of a resume, and of a request that would start a
@@ -2104,8 +2144,9 @@ const ISSUE_RECORD_READS = [
  * The declared read set: every field of an answer schema that plugin code takes the value of,
  * by the answer schema's exported name and the path of the field within it. A path names each
  * key from that schema's root, with a record's value written `{}` and a list's element `[]`, as
- * the object census in `legion-api.test.ts` writes them. An answer schema with no entry here is
- * one no plugin code reads a field of.
+ * the object census in `legion-api.test.ts` writes them, and a discriminated union's member by
+ * its index after `|` (`paused.by|0.session`, the controller's entry). An answer schema with no
+ * entry here is one no plugin code reads a field of.
  *
  * It is the other half of "the reader requires only what it reads" (dispatch://INFRA-2694). A
  * field this set does not name is `.optional()` above, so a daemon that serves this contract
@@ -2131,9 +2172,14 @@ const ISSUE_RECORD_READS = [
  *
  * One node several paths reach is named at each of them: the claim view is read at an issue's
  * `architect` and sits under `workers{}.claim` as well, and the issue record is the same node as
- * the state's `issues{}`, so both carry the same lines. The discriminator of a discriminated
- * union (`locator.runtime`, `waitingOn.kind`) is in no entry: a body without it matches no
- * member of the union, so the union requires it whatever a reader takes.
+ * the state's `issues{}`, so both carry the same lines. The census matches a read by the field's
+ * name under its parent's, so a field of one name under a parent of one name is named in every
+ * answer that has it, read there or not: the pause and resume answers name the actor's `kind`
+ * and a controller's `session` under `by` and `endedBy`, which the summary reads of the state's
+ * pauses, though no plugin code reads either answer. A discriminator is required whatever a
+ * reader takes, since a body without it matches no member of the union: one no plugin code reads
+ * (`locator.runtime`, `waitingOn.kind`) is in no entry, and one the summary reads (the pause
+ * actor's `kind`) is named at each member, as any read is.
  */
 export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = {
   // The three readers of an issue's record ask the record route for it (dispatch://INFRA-2694),
@@ -2152,6 +2198,39 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "capabilities[].status",
     "capabilities[].detail",
     "capabilities[].configLine",
+    // The summary's line on the wakes the pacing holds counts them and names the earliest
+    // `dueAt`, and its line on the project's pause (contract 178) names the pause that stands,
+    // with the roles whose stop it waits on and how many rows it holds, or the last pause with
+    // when and by whom it was ended. `wakesWaiting`, `paused` and `lastPause` stay optional: the
+    // daemon writes the two pauses only where there is one, and strips all three for a caller
+    // below the contract that added each.
+    "wakesWaiting",
+    "wakesWaiting[].dueAt",
+    "paused",
+    "paused.id",
+    "paused.since",
+    "paused.by",
+    "paused.by|0.kind",
+    "paused.by|1.kind",
+    "paused.by|0.session",
+    "paused.reason",
+    "paused.waitsOn",
+    "paused.waitsOn[].issue",
+    "paused.waitsOn[].role",
+    "paused.held",
+    "lastPause",
+    "lastPause.id",
+    "lastPause.since",
+    "lastPause.by",
+    "lastPause.by|0.kind",
+    "lastPause.by|1.kind",
+    "lastPause.by|0.session",
+    "lastPause.reason",
+    "lastPause.endedAt",
+    "lastPause.endedBy",
+    "lastPause.endedBy|0.kind",
+    "lastPause.endedBy|1.kind",
+    "lastPause.endedBy|0.session",
   ],
   // The same record read of one issue, by the same readers.
   LegionIssueRecordResponse: ISSUE_RECORD_READS,
@@ -2175,19 +2254,45 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
   // `daemon-client.ts` reads both fields of a refusal: the code decides whether a 502 is a
   // restarting daemon, and the sentence is what the role is shown.
   LegionErrorResponse: ["error", "code"],
-  // `read_release_records` counts the window's rows and measures the time between them.
+  // `read_release_records` counts the window's rows and measures the time between them. A wake
+  // a project pause held carries `pause` and names no release, so the report keeps it under its
+  // `issue` and lets it end the releases of that issue (contract 178).
   LegionReleaseRecordsResponse: [
     "releases",
     "releases[].id",
+    "releases[].issue",
     "releases[].roles",
     "releases[].at",
     "resumes",
     "resumes[].release",
+    "resumes[].issue",
     "resumes[].at",
     "resumes[].kind",
     "resumes[].firstTurnAt",
+    "resumes[].pause",
     "holds",
     "holds[].reason",
+  ],
+  // No plugin code reads the pause and resume answers: the controller hands each to its agent
+  // whole. Each names the actor's `kind` and a controller's `session` under `by` and `endedBy`
+  // all the same, because the census reads the summary's `by.kind`, `by.session`, `endedBy.kind`
+  // and `endedBy.session` of the state's pauses as reads of these as well (above), and the actor
+  // view is one node, required alike.
+  LegionProjectPauseResponse: [
+    "pause.by|0.kind",
+    "pause.by|1.kind",
+    "pause.by|0.session",
+    "pause.endedBy|0.kind",
+    "pause.endedBy|1.kind",
+    "pause.endedBy|0.session",
+  ],
+  LegionProjectResumeResponse: [
+    "pause.by|0.kind",
+    "pause.by|1.kind",
+    "pause.by|0.session",
+    "pause.endedBy|0.kind",
+    "pause.endedBy|1.kind",
+    "pause.endedBy|0.session",
   ],
   // `pi-legion/src/turn-outcome.ts` logs the run of refused turns and whether this report
   // failed the claim on every turn it reports.

@@ -156,7 +156,8 @@ function daemonFixture(name: string): Record<string, unknown> {
 
 /** The real daemon client over a daemon that answers each route of `answers` with that golden,
  * under `status`, and records what reached it. A tool call over it goes through the contract's
- * request and answer schemas, as it does in a session. */
+ * request and answer schemas, as it does in a session, and states this build's own contract,
+ * as the extension's client does (`extensions/legion.ts`). */
 function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
   const posted: Array<readonly [string, unknown]> = [];
   const stub = (async (input, init) => {
@@ -167,7 +168,10 @@ function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
       ? Response.json({ error: `no golden answers ${route}` }, { status: 404 })
       : Response.json(daemonFixture(golden), { status });
   }) as typeof fetch;
-  const client = createLegionDaemonClient("http://daemon.test", stub);
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: pkg.legion.daemonApiVersion,
+    fetch: stub,
+  });
   return { posted, daemon: () => client };
 }
 

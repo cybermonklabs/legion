@@ -547,10 +547,10 @@ test("a refused pause and a refused resume surface the daemon's code and sentenc
   ] as const;
   for (const [operation, fixture, code] of refusals) {
     const refusal = daemonFixture(fixture);
-    const client = createLegionDaemonClient(
-      "http://daemon.test",
-      daemon(() => Response.json(refusal, { status: 409 })).fetch
-    );
+    const client = createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch: daemon(() => Response.json(refusal, { status: 409 })).fetch,
+    });
     const refused = await (operation === "projectPause"
       ? client.projectPause({ grantId: "grant-208", reason: "the provider is down" })
       : client.projectResume({ grantId: "grant-208" })
@@ -562,7 +562,10 @@ test("a refused pause and a refused resume surface the daemon's code and sentenc
   // A pause with no reason is refused before it leaves the pane, as every request the schema
   // does not describe is.
   const { fetch, requests } = daemon(() => Response.json(daemonFixture("project-pause.json")));
-  const client = createLegionDaemonClient("http://daemon.test", fetch);
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch,
+  });
   expect(() => client.projectPause({ grantId: "grant-208", reason: "" })).toThrow();
   expect(requests).toEqual([]);
 });
@@ -1744,7 +1747,7 @@ test("a field of an answer schema the declared read set does not name is optiona
     );
   expect(required).toEqual([]);
 
-  // The two fields that stay required although the read set names neither are the
+  // The two fields that stay required whether or not the read set names them are the
   // discriminators, exempted above by what the union itself declares. Were that reading to stop
   // working the list would empty, and the case would hold nothing.
   const discriminators = fields

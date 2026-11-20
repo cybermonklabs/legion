@@ -2697,10 +2697,14 @@ test("the state goldens carry the pause that stands and the last pause, and both
 
 // What the pause routes answer (contract 178). A pause answers the pause it began, which names
 // no end. A resume answers the pause it ended, with who ended it, and how many held rows it let
-// out; a body that names no end is no resume's answer. Each refusal names what its code names
-// beside its sentence, and nothing else: the setting that turns the pause off, the pause that
-// stands, or the last pause. The daemon client reads a refusal through the plain refusal shape,
-// which keeps the code and the sentence of every one of them.
+// out. No plugin code reads either answer: the controller hands each to its agent whole, so the
+// reader takes every field of it as optional (`LEGION_ANSWER_READS`), and a body that names no
+// end is read rather than refused. What is refused is a field of a type the contract does not
+// describe, and a controller's entry with no session: the actor view is the state's own, whose
+// session the read set names at every path that reaches it. Each refusal names what its code
+// names beside its sentence, and nothing else: the setting that turns the pause off, the pause
+// that stands, or the last pause. The daemon client reads a refusal through the plain refusal
+// shape, which keeps the code and the sentence of every one of them.
 test("the pause goldens answer the pause begun and the pause ended, and each refusal names what its code names", () => {
   const pause = {
     id: 7,
@@ -2723,7 +2727,17 @@ test("the pause goldens answer the pause begun and the pause ended, and each ref
   expect(
     LegionProjectResumeResponse.safeParse({ ...fixtureBody("project-pause.json"), released: 0 })
       .success
-  ).toBeFalse();
+  ).toBeTrue();
+  for (const refused of [
+    { pause: ended, released: -1 },
+    { pause: { ...ended, endedAt: "yesterday" }, released: 3 },
+    { pause: { ...ended, endedBy: { kind: "controller" } }, released: 3 },
+  ]) {
+    expect(
+      LegionProjectResumeResponse.safeParse(refused).success,
+      JSON.stringify(refused)
+    ).toBeFalse();
+  }
 
   const refusals: ReadonlyArray<readonly [string, string, Record<string, unknown>]> = [
     ["project-pause-unavailable.json", "PAUSE_UNAVAILABLE", { setting: "runtime: tmux" }],

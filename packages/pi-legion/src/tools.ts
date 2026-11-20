@@ -81,7 +81,15 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "ready_for_update",
     "read_build",
   ],
-  controller: ["read_build", "read_state", "set_status", "fresh_session", "compact", "pause", "resume"],
+  controller: [
+    "read_build",
+    "read_state",
+    "set_status",
+    "fresh_session",
+    "compact",
+    "pause",
+    "resume",
+  ],
 };
 
 /** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'.
@@ -117,20 +125,15 @@ const STATE_FILTERS = ["issue", "issues", "phase", "settings"] as const;
 /** One claim as the summary shows it, the architect's or a phase worker's. */
 type SummaryClaim = NonNullable<LegionIssue["architect"]>;
 
-/** Who paused the project or ended its pause, as the state names them. */
-type PauseActor = NonNullable<LegionState["lastPause"]>["by"];
-
-/** Who acted on a pause, in the summary's words: the controller with the session it acted from,
- * or the operator. */
-const pauseActorWords = (by: PauseActor): string =>
-  by.kind === "controller" ? `the controller (session ${by.session})` : "the operator";
+/** Who acted on a pause, in the summary's words: the controller with `session`, the session it
+ * acted from, or the operator where the entry names none. */
+const pauseActorWords = (session: string | undefined): string =>
+  session === undefined ? "the operator" : `the controller (session ${session})`;
 
 /** A pause as the summary's line names it: its id, since when, who paused and why (`pauseWords`
  * in `packages/daemon/cmd/legion/project.go`). */
-const pauseWords = (
-  pause: Pick<NonNullable<LegionState["lastPause"]>, "id" | "since" | "by" | "reason">
-): string =>
-  `pause ${pause.id} since ${pause.since} by ${pauseActorWords(pause.by)}: ${pause.reason}`;
+const pauseWords = (id: number, since: string, by: string, reason: string): string =>
+  `pause ${id} since ${since} by ${by}: ${reason}`;
 
 /**
  * The summary's line on the project's pause, in the words `legion state` prints for an operator
@@ -142,9 +145,14 @@ const pauseWords = (
  * JSON. While the project runs after a pause has ended: that pause, then when and by whom it was
  * ended. The state carries one of the two at most, and neither before the project's first pause,
  * when the summary has no such line.
+ *
+ * Each field is taken off the pause it belongs to, under the state's own names (`paused.id`,
+ * `paused.by.kind`, `lastPause.endedBy.session`), rather than inside a helper handed the pause
+ * whole: the read-set census (`packages/pi-shared/src/daemon-client.test.ts`) matches a read by
+ * the field's name under its parent's, and a helper's parameter names no field of the state.
  */
 function pauseSummary(state: LegionState): string | undefined {
-  const { paused, lastPause } = state;
+  const paused = state.paused;
   if (paused !== undefined) {
     const roles = paused.waitsOn.map((stop) => `${stop.issue} ${stop.role}`);
     const waitsOn =
@@ -153,13 +161,20 @@ function pauseSummary(state: LegionState): string | undefined {
         : `${roles.length} ${roles.length === 1 ? "role" : "roles"} — ${roles.join(", ")}`;
     const rows = paused.held.length;
     const holds = rows === 0 ? "no row" : `${rows} ${rows === 1 ? "row" : "rows"}`;
-    return `paused: ${pauseWords(paused)}; waits on ${waitsOn}; holds ${holds}`;
+    const by = pauseActorWords(paused.by.kind === "controller" ? paused.by.session : undefined);
+    const pause = pauseWords(paused.id, paused.since, by, paused.reason);
+    return `paused: ${pause}; waits on ${waitsOn}; holds ${holds}`;
   }
+  const lastPause = state.lastPause;
   if (lastPause !== undefined) {
-    return (
-      `last pause: ${pauseWords(lastPause)}; ` +
-      `ended ${lastPause.endedAt} by ${pauseActorWords(lastPause.endedBy)}`
+    const by = pauseActorWords(
+      lastPause.by.kind === "controller" ? lastPause.by.session : undefined
     );
+    const endedBy = pauseActorWords(
+      lastPause.endedBy.kind === "controller" ? lastPause.endedBy.session : undefined
+    );
+    const pause = pauseWords(lastPause.id, lastPause.since, by, lastPause.reason);
+    return `last pause: ${pause}; ended ${lastPause.endedAt} by ${endedBy}`;
   }
   return undefined;
 }
@@ -172,21 +187,22 @@ function pauseSummary(state: LegionState): string | undefined {
  * a state outside every wave. A state that carries no such key has no such line, because it says
  * nothing of what waits, where a 0 would say that nothing does: the daemon leaves the key off the
  * state it serves a caller it reads as below the contract that added the key (`api.stateFor`,
- * `withoutWakesWaiting`; `LegionStateResponse` says which callers those are).
+ * `withoutWakesWaiting`; `LegionStateResponse` says which callers those are). The loop runs over
+ * the state's own list, so the census sees each `dueAt` read under `wakesWaiting`
+ * (`pauseSummary` says why).
  */
 function wakesWaitingSummary(state: LegionState): string | undefined {
-  const wakes = state.wakesWaiting;
-  if (wakes === undefined) return undefined;
+  if (state.wakesWaiting === undefined) return undefined;
   let next: string | undefined;
   let nextAt = Number.POSITIVE_INFINITY;
-  for (const wake of wakes) {
+  for (const wake of state.wakesWaiting) {
     const dueAt = Date.parse(wake.dueAt);
     if (dueAt < nextAt) {
       nextAt = dueAt;
       next = wake.dueAt;
     }
   }
-  return `wakes waiting ${wakes.length}${next === undefined ? "" : ` next ${next}`}`;
+  return `wakes waiting ${state.wakesWaiting.length}${next === undefined ? "" : ` next ${next}`}`;
 }
 
 /** The first line of every summary: what the lines below it are, since they are not JSON. */
