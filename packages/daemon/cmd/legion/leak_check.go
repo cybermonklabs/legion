@@ -155,7 +155,7 @@ func leakCheckReport(ctx context.Context, stderr io.Writer, what string, err err
 	}
 	fmt.Fprintln(stderr, (&leakguard.SetupFailure{
 		What: cmp.Or(what, "the write"),
-		Why:  "the guard answered with neither a refusal nor a setup failure",
+		Why:  "the guard answered with none of a refusal, a setup failure and a not-found answer",
 		Err:  err,
 	}).Error())
 	return leakguard.StatusSetupFailure

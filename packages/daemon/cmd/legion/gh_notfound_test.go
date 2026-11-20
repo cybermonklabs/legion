@@ -64,7 +64,7 @@ func ghAnswers(t *testing.T, answer string) string {
 	if err := os.WriteFile(path, []byte(answer), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return "cat " + shellWord(path) + "\nexit 1\n"
+	return printsAnswer(path, 1)
 }
 
 // ghCannotReachGitHub is a REST read of the stand-in real gh that fails as every gh call failed in
@@ -186,9 +186,7 @@ func TestLeakCheckPrePushTellsAVisibilityRead404AsNotFound(t *testing.T) {
 		t.Run(read.name, func(t *testing.T) {
 			stub, record := visibilityReadGh(t, read.gh(t))
 			curl := newFakeGitHub(t, "ghs_acme_write", read.curl(t))
-			previous := leakguardCurl
-			leakguardCurl = curl.program
-			t.Cleanup(func() { leakguardCurl = previous })
+			useForkRead(t, curl.program, forkReadBound)
 			bin, gitRecord := t.TempDir(), filepath.Join(t.TempDir(), "git")
 			if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> "+shellWord(gitRecord)+"\nexit 1\n"), 0o700); err != nil {
 				t.Fatal(err)

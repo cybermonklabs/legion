@@ -3,15 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -85,8 +82,7 @@ func TestGitCredentialAnswersFromTheOwnersDirectory(t *testing.T) {
 	}
 	both := map[string]string{"GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root}
 	const answer = "username=x-access-token\npassword=%s\n"
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	github := newFakeGitHub(t, "ghs_acme_write", printsAnswer(forkReadFixture(t, "not-found.http"), 0))
+	github := newFakeGitHub(t, "ghs_acme_write", curlNotFound(t))
 	useForkRead(t, github.program, forkReadBound)
 	for _, tc := range []struct {
 		name     string
@@ -353,7 +349,9 @@ func forkRequest(path string) string {
 
 // forkReadPane sets the environment the helper's fork read runs in: LEGION_GH_OWNERS_DIR names
 // root, GH_CONFIG_DIR names configDir, or nothing where configDir is "", and XDG_STATE_HOME names
-// a directory of the test's own, where the leak guard keeps what it remembers between calls.
+// a directory of the test's own. The fork read never reads XDG_STATE_HOME; a row run through
+// `legion gh auth git-credential` needs it, since runGh writes its call log there
+// (appendGhCallLog).
 func forkReadPane(t *testing.T, root, configDir string) {
 	t.Helper()
 	t.Setenv("LEGION_GH_OWNERS_DIR", root)
@@ -490,15 +488,9 @@ type forkReadRun struct {
 // runs is every run of the fake GitHub so far, in order.
 func (g fakeGitHub) runs(t *testing.T) []forkReadRun {
 	t.Helper()
-	data, err := os.ReadFile(g.record)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
+	data := readRecord(t, g.record)
 	var runs []forkReadRun
-	for line := range strings.Lines(string(data)) {
+	for line := range strings.Lines(data) {
 		fields := strings.Split(strings.TrimSuffix(line, "\n"), "\t")
 		if len(fields) < len(forkReadSecrets) {
 			t.Fatalf("the fake GitHub recorded the line %q, which names no environment", line)
@@ -715,7 +707,7 @@ func TestGitCredentialReadsTheForkWithGHConfigDirsToken(t *testing.T) {
 					t.Errorf("curl's argv %q holds the token", read.argv)
 				}
 			}
-			// The argv the guard's curl read runs (leakguard's Guard.curlVisibility), its
+			// The argv the guard's curl read runs (leakguard's Guard.CurlGet), its
 			// --max-time compared apart.
 			want := []string{"-q", "--no-netrc", "--silent", "--show-error", "--include", "--suppress-connect-headers",
 				"--proto", "=https", "--max-time", "<seconds>", "--header", "@-",
@@ -839,7 +831,7 @@ func TestGitCredentialAnswersNothingWhenTheForkReadFails(t *testing.T) {
 	}{
 		{
 			name: "404", configDir: acme, token: "ghs_acme_write", reads: 1,
-			answer: printsAnswer(forkReadFixture(t, "not-found.http"), 0), says: []string{"the status 404"},
+			answer: curlNotFound(t), says: []string{"the status 404"},
 		},
 		{
 			// bad-credentials.http, whatever the token.
@@ -920,14 +912,23 @@ func TestGitCredentialAnswersNothingWhenTheForkReadFails(t *testing.T) {
 
 // R2: a fork read that GitHub never answers is stopped at the read's bound, here shortened to
 // 2 s: the helper answers nothing, exit 1, within the bound and 3 s more, naming the bound, and
-// the curl it started no longer runs, nor anything that curl started, which holds its output
-// open until it ends. The fake GitHub records its own PID and then waits far past the bound.
+// nothing the curl started still runs. The fake GitHub starts a sleep of its own, detached from
+// its output so nothing holds the read's pipes, records that sleep's PID, and then waits far past
+// the bound. curl runs in a process group of its own (leakguard's Guard.run), and the read's end
+// stops that whole group; a stop that killed curl alone would leave the sleep running,
+// reparented and waited for by nobody.
 func TestGitCredentialStopsAForkReadThatNeverAnswers(t *testing.T) {
+	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
+		t.Fatalf("/proc does not answer (%v): this test reads from it whether the fake GitHub's sleep is still running", err)
+	}
 	root, acme := gitCredentialBundle(t)
-	pidFile := filepath.Join(t.TempDir(), "pid")
-	github := newFakeGitHub(t, "ghs_acme_write", "echo $$ > "+shellWord(pidFile)+"\nsleep 60\n")
+	pidFile := filepath.Join(t.TempDir(), "sleep")
+	const sleepSeconds = "289"
+	github := newFakeGitHub(t, "ghs_acme_write",
+		"sleep "+sleepSeconds+" </dev/null >/dev/null 2>&1 &\necho $! > "+shellWord(pidFile)+"\nexec sleep 290\n")
 	useForkRead(t, github.program, 2*time.Second)
 	forkReadPane(t, root, acme)
+	killRecordedHelper(t, pidFile, sleepSeconds)
 	start := time.Now()
 	code, stdout, stderr := runGitCredentialHere(t, forkRequest("outside-author/oss-verify"), "get")
 	if took := time.Since(start); took > 5*time.Second {
@@ -936,15 +937,15 @@ func TestGitCredentialStopsAForkReadThatNeverAnswers(t *testing.T) {
 	answersNothingForTheFork(t, code, stdout, stderr, root, "outside-author/oss-verify", "bound of 2 s")
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
-		t.Fatalf("the fake GitHub recorded no PID: %v", err)
+		t.Fatalf("the fake GitHub recorded no sleep: %v", err)
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil {
-		t.Fatalf("the fake GitHub recorded the PID %q: %v", data, err)
+		t.Fatalf("the fake GitHub recorded the sleep's PID %q: %v", data, err)
 	}
-	for deadline := time.Now().Add(3 * time.Second); syscall.Kill(pid, 0) == nil; time.Sleep(50 * time.Millisecond) {
+	for deadline := time.Now().Add(3 * time.Second); helperRunning(pid, sleepSeconds); time.Sleep(50 * time.Millisecond) {
 		if time.Now().After(deadline) {
-			t.Fatalf("the fake GitHub, PID %d, still runs 3 s after the helper answered", pid)
+			t.Fatalf("the fake GitHub's sleep, PID %d, still runs 3 s after the helper answered; want the read's end to stop curl's whole process group", pid)
 		}
 	}
 }
@@ -954,8 +955,11 @@ func TestGitCredentialStopsAForkReadThatNeverAnswers(t *testing.T) {
 // token; one a configured rename moved to an owner with no directory keeps ghConfigDirFor's
 // refusal naming the pair, since the path's own owner is served; and a path naming only an
 // outside owner, or an outside owner and a name GitHub serves no repository under (ghrepo.Parse
-// refuses `..`), answers nothing, as before, with no repository to read. The fake GitHub
-// answers any read with a fork of acme's repository, so a read would hand out acme's token.
+// refuses `..`), answers nothing, as before, with no repository to read. So does an outside
+// owner's repository in a bundle whose pairs file ghconfig.ReadPairs refuses, naming that file's
+// error, with no read: neither the fork's parent nor its source could be routed by that file. The
+// fake GitHub answers any read with a fork of acme's repository, so a read would hand out acme's
+// token.
 func TestGitCredentialMakesNoReadForAServedOwner(t *testing.T) {
 	root, _ := gitCredentialBundle(t)
 	// A bundle whose configured rename moved sjawhar/legion to cybermonklabs, which the bundle
@@ -971,6 +975,15 @@ func TestGitCredentialMakesNoReadForAServedOwner(t *testing.T) {
 		Pairs: []ghrepo.Rename{ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion")},
 	}); err != nil {
 		t.Fatal(err)
+	}
+	// A bundle whose pairs file holds a line that is no pair.
+	broken, _ := gitCredentialBundle(t)
+	if err := os.WriteFile(filepath.Join(broken, ghconfig.PairsFile), []byte("not-a-pair\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, pairsErr := ghconfig.ReadPairs(broken)
+	if pairsErr == nil {
+		t.Fatalf("ghconfig.ReadPairs read the pairs file of %s, want a refusal", broken)
 	}
 	unserved := `the role's GitHub App is not installed on "outside-author": ` + root + " holds no gh directory for it"
 	for _, tc := range []struct {
@@ -988,6 +1001,10 @@ func TestGitCredentialMakesNoReadForAServedOwner(t *testing.T) {
 		},
 		{name: "a path naming only an outside owner", root: root, path: "outside-author", code: 1, stderrIn: unserved},
 		{name: "a path whose name is no GitHub name", root: root, path: "outside-author/..", code: 1, stderrIn: unserved},
+		{
+			name: "an outside owner's repository under a pairs file that cannot be read", root: broken, path: "outside-author/oss-verify.git",
+			code: 1, stderrIn: "read the gh bundle's configured renames: " + pairsErr.Error(),
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			github := newFakeGitHub(t, "", printsAnswer(forkReadFixture(t, "fork-of-a-served-repository.http"), 0))

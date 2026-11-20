@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -46,7 +47,8 @@ var gitCredentialStdin io.Reader = os.Stdin
 // token it would answer for the fork's parent where the bundle serves the parent's owner, else
 // for the fork's source where it serves that owner. GitHub then decides what that token may push
 // to the fork. A repository of such an owner that is no fork of a served repository, or that the
-// read cannot tell is one, answers nothing.
+// read cannot tell is one, answers nothing. A pairs file that cannot be read makes no read, since
+// neither the fork's parent nor its source could be routed by it either.
 //
 // Any other host or protocol, a request with no path, a path whose owner is no GitHub login, a
 // pair whose `to` owner has no directory, an unset LEGION_GH_OWNERS_DIR, and a hosts.yml with no
@@ -103,10 +105,13 @@ func runGitCredential(ctx context.Context, args []string, stdout, stderr io.Writ
 		return 1
 	}
 	// The second segment is the repository, which is what tells a repository a configured rename
-	// moved from every other repository of its owner; a path with none names the owner alone.
-	name, _, _ := strings.Cut(rest, "/")
-	dir, err := ghConfigDirFor(ownersDir, owner, ghconfig.RepositoryName(name))
-	if err != nil {
+	// moved from every other repository of its owner; a path with none names the owner alone. It is
+	// keyed once, as the bundle keys a repository, for both the routing and the fork read.
+	second, _, _ := strings.Cut(rest, "/")
+	name := ghconfig.RepositoryName(second)
+	dir, err := ghConfigDirFor(ownersDir, owner, name)
+	var unserved *leakguard.OwnerNotServedError
+	if errors.As(err, &unserved) {
 		if repo, ok := forkRepository(ownersDir, owner, name); ok {
 			dir, err = forkUpstreamDir(ctx, ownersDir, repo, err)
 		}

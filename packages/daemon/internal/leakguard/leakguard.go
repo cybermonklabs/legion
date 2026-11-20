@@ -77,7 +77,8 @@ type Options struct {
 	// Curl is the curl the guard's reads through curl run (Guard.CurlGet). Empty is the ordinary
 	// case, curlProgram: the system's own curl at a fixed path, never the first curl on the
 	// caller's PATH, since the curl that runs is handed a token on its standard input. A test fills
-	// it with a stand-in of its own; no caller reads it from its environment or its arguments.
+	// it with a stand-in of its own: no shipped binary sets it, and cmd/legion's test binary sets
+	// the value it passes from LEGION_CMD_TEST_CURL (its TestMain).
 	Curl string
 }
 

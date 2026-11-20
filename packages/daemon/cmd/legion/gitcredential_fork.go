@@ -26,19 +26,22 @@ var forkReadBound = 10 * time.Second
 
 // forkRepository is the repository the credential helper reads from GitHub after ghConfigDirFor
 // refused a request (forkUpstreamDir): owner, the path's owner already lowercased, and name, the
-// path's second segment, keyed as the bundle keys a repository (ghconfig.RepositoryName:
-// lowercased, without `.git`). There is one only where the bundle holds no directory for the
-// path's own owner (ownerGHConfigDir), an owner the role's App is not installed on, and where the
-// two make an `<owner>/<name>` that ghrepo.Parse accepts. ok is false for anything else, and no
-// read is made. A served owner whose repository a configured rename moved to an owner with no
-// directory keeps ghConfigDirFor's refusal, which is about that pair. A path with no second
-// segment, or with one no GitHub repository could be named for, names no repository to read.
+// path's second segment already keyed as the bundle keys a repository (ghconfig.RepositoryName:
+// lowercased, without `.git`), the keyed name the caller routed with ghConfigDirFor. Its caller
+// asks only where that refusal is, or wraps, a leakguard.OwnerNotServedError: a pairs file that
+// ghconfig.ReadPairs refuses makes no read, since neither the fork's parent nor its source could
+// be routed by it either. There is one only where the bundle holds no directory for the path's own
+// owner (ownerGHConfigDir), an owner the role's App is not installed on, and where the two make an
+// `<owner>/<name>` that ghrepo.Parse accepts. ok is false for anything else, and no read is made.
+// A served owner whose repository a configured rename moved to an owner with no directory keeps
+// ghConfigDirFor's refusal, which is about that pair. A path with no second segment, or with one
+// no GitHub repository could be named for, names no repository to read.
 func forkRepository(ownersDir, owner, name string) (repo ghrepo.Repository, ok bool) {
 	var unserved *leakguard.OwnerNotServedError
 	if _, err := ownerGHConfigDir(ownersDir, owner); !errors.As(err, &unserved) {
 		return ghrepo.Repository{}, false
 	}
-	repo, err := ghrepo.Parse("the repository the path names", owner+"/"+ghconfig.RepositoryName(name))
+	repo, err := ghrepo.Parse("the repository the path names", owner+"/"+name)
 	return repo, err == nil
 }
 
@@ -71,7 +74,12 @@ func forkUpstreamDir(ctx context.Context, ownersDir string, repo ghrepo.Reposito
 }
 
 // readForkUpstream is forkUpstreamDir's read and its answer, the error saying why there is none.
+// A SIGHUP cancels the read (hangupCancels), so a pane that closes while git waits on the helper
+// stops curl's process group, as `legion gh` and `legion leak-check` stop theirs, rather than
+// killing the helper and leaving curl running until its --max-time.
 func readForkUpstream(ctx context.Context, ownersDir string, repo ghrepo.Repository) (string, error) {
+	ctx, stopHangup := hangupCancels(ctx)
+	defer stopHangup()
 	ctx, cancel := context.WithTimeout(ctx, forkReadBound)
 	defer cancel()
 	token, err := forkReadToken(ownersDir, repo)
@@ -93,10 +101,8 @@ func readForkUpstream(ctx context.Context, ownersDir string, repo ghrepo.Reposit
 // GH_CONFIG_DIR's hosts.yml, read as every answer's token is (ghDirToken). GH_CONFIG_DIR must name
 // a directory of the bundle under ownersDir, one owner's directory directly under its root, so
 // the read carries a lease of the role's own App and no other credential the environment names.
-// An unset GH_CONFIG_DIR, one outside the bundle, a hosts.yml that cannot be read or names no
-// token, and a token that holds a line break are each an error naming which, and no read is made.
-// curl reads the token's header on its standard input a line at a time, so a line break would put
-// a header of its own on the request.
+// An unset GH_CONFIG_DIR, one outside the bundle, and a hosts.yml that cannot be read or names no
+// token are each an error naming which, and no read is made.
 func forkReadToken(ownersDir string, repo ghrepo.Repository) (string, error) {
 	configDir := os.Getenv("GH_CONFIG_DIR")
 	if configDir == "" {
@@ -110,9 +116,6 @@ func forkReadToken(ownersDir string, repo ghrepo.Repository) (string, error) {
 	token, err := ghDirToken(dir)
 	if err != nil {
 		return "", fmt.Errorf("there is no token to read %s from GitHub with: %w", repo, err)
-	}
-	if strings.ContainsAny(token, "\r\n") {
-		return "", fmt.Errorf("the token of GH_CONFIG_DIR %s holds a line break, which would add a header of its own to the read of %s", dir, repo)
 	}
 	return token, nil
 }

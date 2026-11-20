@@ -22,9 +22,11 @@ import (
 // OpenSSL's through libcurl, finished their handshakes with the same hosts in under a second. The
 // guard refused every push as a setup error for that whole time.
 
-// transportError is a visibility read that failed on its connection to GitHub before GitHub
-// answered anything: program is the program that made the read (gh or curl), and said is what it
-// printed about the failure, with the repository's name masked.
+// transportError is a read that failed on its connection to GitHub before GitHub answered
+// anything: a visibility read, or cmd/legion's fork read (CurlResponse.Unreached). program is the
+// program that made the read (gh or curl), and said is what it printed about the failure, with the
+// repository's name masked where the read masks it: the visibility read does, and the fork read,
+// which names the repository anyway, does not.
 type transportError struct {
 	program string
 	said    string
@@ -156,8 +158,9 @@ func ghStoppedByItsBound(ctx context.Context, err error, printed, slug string) *
 	return &transportError{program: "gh", said: strings.ReplaceAll(message, slug, maskPath(slug))}
 }
 
-// errNoCurlRead is a read through curl that the guard could not make: no curl at the guard's curl
-// (Guard.CurlGet), or no token for the visibility read (Guard.curlVisibility).
+// errNoCurlRead is a read through curl that the guard could not make: no curl at the guard's curl,
+// or a token that holds a line break (Guard.CurlGet), or no token for the visibility read
+// (Guard.curlVisibility).
 var errNoCurlRead = errors.New("the read through curl could not be made")
 
 // errNoTimeForCurl is a curl read that the guard did not make because less than curlLeast of the
@@ -300,7 +303,9 @@ func (g *Guard) curlMissing() error {
 //
 // ctx's deadline is the read's bound, and a ctx with none is refused, since curl's --max-time
 // needs one. Less than curlLeast left is errNoTimeForCurl. No curl at the guard's curl is
-// errNoCurlRead. In each of these cases no curl runs. A curl that the end of ctx stopped is the
+// errNoCurlRead, and so is a token that holds a line break, a carriage return included: curl reads
+// the header on its standard input a line at a time, so the token would add a header of its own to
+// the request. In each of these cases no curl runs. A curl that the end of ctx stopped is the
 // *stoppedError run answers, and one that a signal ended is that end with what curl printed
 // beneath it (procgroup.Said). A curl that exited is a CurlResponse and no error, whatever its
 // exit status and whatever GitHub answered: the caller reads which (CurlResponse).
@@ -315,6 +320,9 @@ func (g *Guard) CurlGet(ctx context.Context, path, token string) (CurlResponse, 
 	}
 	if err := g.curlMissing(); err != nil {
 		return CurlResponse{}, err
+	}
+	if strings.ContainsAny(token, "\r\n") {
+		return CurlResponse{}, fmt.Errorf("%w: the token holds a line break, which would add a header of its own to the request", errNoCurlRead)
 	}
 	var stderr bytes.Buffer
 	status, printed, err := g.run(ctx, child{
