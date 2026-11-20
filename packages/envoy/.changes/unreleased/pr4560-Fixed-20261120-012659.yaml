@@ -12,4 +12,4 @@ body: |-
   permissions left out (such as `missing=actions,statuses`); it was `… does not hold actions, …`.
 time: 2026-11-20T01:26:59Z
 custom:
-    Issue: INFRA-4714
+    Issue: pr4560
