@@ -366,9 +366,11 @@ func (exactLogin) Login(r *http.Request) (string, error) {
 // is legion-daemon:LEG writes no plan and no rating, with nothing written, where the session of that
 // id writes both, which is the control. Such a login can never sign in (people.email holds an
 // address), and a person no people row holds sees no project, so the write reads LEG-1 as a key no
-// issue holds and answers ISSUE_NOT_FOUND before its writer is judged (lockRecordedIssue).
+// issue holds and answers ISSUE_NOT_FOUND before its writer is judged (lockRecordedIssue). So the
+// kind is also judged where the issue is seen: under alice's reader, who made LEG-1, the user of
+// the daemon's id is refused STEP_WRITER at lockRecordedIssue and the session of that id passes.
 func TestTheDaemonsIDIsNoWriterButAsASession(t *testing.T) {
-	handler, _, _ := newTestServer(t, testServerOptions{identity: exactLogin{}})
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{identity: exactLogin{}})
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	writer := legionDaemonSessionPrefix + "LEG"
 	plan, retro := uuid.NewString(), uuid.NewString()
@@ -383,6 +385,32 @@ func TestTheDaemonsIDIsNoWriterButAsASession(t *testing.T) {
 	}
 	if holdsPlan(t, handler, issue) {
 		t.Fatalf("the refused writes left a plan of %s, want none", issue)
+	}
+
+	reader, err := served.readerFor(t.Context(), model.BrowserActor("alice"))
+	if err != nil {
+		t.Fatalf("resolve alice's reader: %v", err)
+	}
+	seen := httptest.NewRequestWithContext(withReader(t.Context(), reader), http.MethodPut, "/api/v1/issues/"+issue+"/plans/"+plan, nil)
+	lock := func(actor model.Actor) (*httptest.ResponseRecorder, string, bool) {
+		t.Helper()
+		tx, err := served.begin(t.Context())
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer tx.Rollback(context.Background())
+		recorder := httptest.NewRecorder()
+		project, ok := served.lockRecordedIssue(recorder, seen, tx, issue, actor, "a plan")
+		return recorder, project, ok
+	}
+	if refused, _, ok := lock(model.Actor{Kind: "user", ID: writer}); ok {
+		t.Fatalf("a user named %s under a reader who sees %s passed lockRecordedIssue, want 403 %s", writer, issue, codeStepWriter)
+	} else {
+		expectRefusal(t, "a plan of a user named "+writer+" under a reader who sees "+issue, refused, http.StatusForbidden, codeStepWriter, writer, issue)
+	}
+	if passed, project, ok := lock(model.Actor{Kind: "session", ID: writer}); !ok || project != "LEG" {
+		t.Fatalf("the session %s under a reader who sees %s answered %t, project %q, %d %s; want it to pass with project LEG",
+			writer, issue, ok, project, passed.Code, passed.Body.String())
 	}
 
 	putPlanRecordOK(t, handler, issue, plan, defaultPlanBody(daemonSessionOf("LEG"), 1))
