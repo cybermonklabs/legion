@@ -181,11 +181,12 @@ func (t *bindThrottle) reportStandby(name, message string) {
 //     durable delivering to another subject (check); it does not handle a message it is handed
 //     once its hold's loss deadline has passed, and leaves it with the durable rather than
 //     answering for it (intakeDelivery.receive, intakeDelivery.handBack).
-//   - When its process stops, it stops delivering, handing back every message it was delivered
-//     and did not handle, and then releases the hold (stop), so a standby takes over at once and
-//     is redelivered those messages within seconds rather than after the ack wait. A stop that
-//     runs past the hold's loss deadline publishes no hand-back at all: those messages are the
-//     next holder's take-over to hand over.
+//   - When its process stops, it stops delivering and hands back every message it was delivered
+//     and did not handle. Once every hand-back reached the server, it releases the hold (stop), so
+//     a standby takes over at once and is redelivered those messages within seconds rather than
+//     after the ack wait. A stop with a hand-back still pending, or whose flush cannot confirm the
+//     hand-backs reached the server, leaves the hold to lapse instead: those messages are the next
+//     holder's take-over to hand over.
 //
 // The run loop owns hold, recorded and subject; mu guards delivering, which StopDelivering reads
 // from any goroutine.

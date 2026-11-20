@@ -1593,8 +1593,8 @@ Once the stop has begun it is withheld unless NATS took the stop's drain on a li
 nothing then says when the server has the subscription's interest gone, and a hand-back would wait for the reconnect.
 It is withheld too once the hold's loss deadline has passed, as the head-write hand-back above is:
 from that moment the durable the answer names may be one a take-over has recreated, where it would move the new holder's pending entry for that message and have it delivered a second time.
-A holder whose stop runs on past the lapse — one frozen and resumed, one whose handler was given up a margin after the deadline — therefore publishes nothing, and the take-over's recreate at the ack floor hands those messages to the new holder once.
-A message withheld for either reason stays outstanding, and the take-over's recreate at the ack floor hands it to the next holder once, or the durable redelivers it after its ack wait.
+A holder whose stop runs on past the lapse — one frozen and resumed, one whose handler was given up a margin after the deadline — begins no new hand-back, and the take-over's recreate at the ack floor hands messages it left outstanding to the new holder once.
+A hand-back that began before the lapse may still be waiting on NATS; a stop does not release its hold until it confirms each such hand-back reached the server, and leaves the hold to lapse instead if it cannot.
 Last it waits for a drain it began to end, cut short by that deadline, and the run loop releases the durable's hold once its hand-backs have reached the server, so a standby takes it over at once rather than at the hold's lapse.
 A take-over under way when the context ends — a standby's poll
 — spends the same deadline rather than starting one of its own:
