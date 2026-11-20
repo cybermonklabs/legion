@@ -549,10 +549,10 @@ func TestCheckImageMarksEveryImageRowUnansweredUnderAnEndedContext(t *testing.T)
 }
 
 // A row whose check returned while the context was alive keeps what it found, a missing one in the
-// error as ever, and a row whose check returned after the context's deadline, and every image row
-// after it, which is not run, is unanswered and left out of the error: eval-python, missing at
-// once, stands, and the browser, whose Chromium sleeps past the deadline, and the rows after it are
-// unanswered.
+// error as ever, and a row whose command the context's deadline stopped, or kept from starting
+// (ran.cut), is unanswered and left out of the error, as is every image row after it, which is not
+// run: eval-python, missing at once, stands, and the browser, whose Chromium sleeps past the
+// deadline, and the rows after it are unanswered.
 func TestCheckImageKeepsARowMissingBeforeTheDeadlineAndMarksTheRestUnanswered(t *testing.T) {
 	s := newStubs(t)
 	sleep, err := exec.LookPath("sleep")
@@ -598,16 +598,16 @@ func TestCheckImageKeepsARowItsOwnTimeoutEndedMissingThoughItsStopOutlastsTheDea
 	s := newStubs(t)
 	marker := filepath.Join(t.TempDir(), "started")
 	s.install("chromium", "#!/bin/sh\n: >'"+marker+"'\ntrap '/bin/sleep 0.9; exit 1' TERM\n/bin/sleep 30 & wait\n")
-	ctx, cancel := context.WithCancelCause(context.Background())
-	defer cancel(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	// seen says whether the marker appeared; once it has, the context ends 0.4 s after the timeout
-	// fires and 0.5 s before Chromium's exit, as the deadline of a probe would.
+	// fires and 0.5 s before Chromium's exit.
 	seen := make(chan bool, 1)
 	go func() {
 		for bound := time.Now().Add(10 * time.Second); time.Now().Before(bound); time.Sleep(10 * time.Millisecond) {
 			if _, err := os.Stat(marker); err == nil {
 				time.Sleep(limit + 400*time.Millisecond)
-				cancel(context.DeadlineExceeded)
+				cancel()
 				seen <- true
 				return
 			}
@@ -617,11 +617,12 @@ func TestCheckImageKeepsARowItsOwnTimeoutEndedMissingThoughItsStopOutlastsTheDea
 	}()
 
 	states, err := CheckImage(ctx, s.image())
+	ended := ctx.Err() != nil
 
 	if !<-seen {
 		t.Fatal("the browser's Chromium never started, so the row covers no window")
 	}
-	if ctx.Err() == nil {
+	if !ended {
 		t.Fatal("CheckImage returned before the context ended; the row needs the context to end while the timeout's stop is under way")
 	}
 	got := byName(states)
@@ -706,6 +707,28 @@ func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 	}
 	if !r.cut {
 		t.Error("run is not cut, want a run the caller's context cut")
+	}
+}
+
+// A command whose caller's context had ended before it could start is cut too (ran.cut), though
+// no stop reached it, since the context's end kept it from starting, and it is no timeout: its run
+// is the context's error, and the command never ran.
+func TestRunReportsACommandItsCallerKeptFromStartingAsCut(t *testing.T) {
+	ran := filepath.Join(t.TempDir(), "ran")
+	img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	r := img.runWithin(ctx, time.Minute, "sh", "-c", `: >"$1"`, "sh", ran)
+
+	if !r.cut {
+		t.Error("run is not cut, want a run the caller's ended context kept from starting")
+	}
+	if !errors.Is(r.err, context.Canceled) {
+		t.Errorf("run = exit %d, error %v; want the context's own error, context.Canceled, and no timeout", r.exit, r.err)
+	}
+	if _, err := os.Stat(ran); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the command ran under the ended context (%s: %v)", ran, err)
 	}
 }
 

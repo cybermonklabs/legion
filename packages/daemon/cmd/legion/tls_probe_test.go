@@ -1403,9 +1403,10 @@ func TestTLSProbeFailsAClientWhoseLimitPassesAtASiteNoRunReached(t *testing.T) {
 	}
 
 	// A command at the control that answers its limit's SIGTERM, at 1 s, with an exit of its own
-	// half a second later, while the probe's deadline passes at 1.2 s, in between.
-	stopped := shTLSClient("node", t.TempDir(), `trap '/bin/sleep 0.5; exit 1' TERM; /bin/sleep 30 & wait`, nodeAnswer)
-	ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
+	// 0.6 s later, inside procgroup.StopGrace, while the probe's deadline passes at 1.3 s, 0.3 s
+	// after the limit and 0.3 s before that exit.
+	stopped := shTLSClient("node", t.TempDir(), `trap '/bin/sleep 0.6; exit 1' TERM; /bin/sleep 30 & wait`, nodeAnswer)
+	ctx, cancel := context.WithTimeout(context.Background(), 1300*time.Millisecond)
 	defer cancel()
 	outcome := stopped.probe(ctx, controlTLSSite, tlsRunTerms{})
 	if ctx.Err() == nil {

@@ -321,10 +321,8 @@ func (c *Client) serviceToken() (string, error) {
 //
 // Two shapes are read as the standard library leaves them. net/http answers a plain-HTTP port with
 // http.ErrSchemeMismatch in place of the tls.RecordHeaderError it read (net/http/client.go), so
-// both of those are read here. An alert over TCP arrives as a *net.OpError whose Op is "remote
-// error" when the far side sent it and "local error" when this client did, holding crypto/tls's
-// own unexported alert type (crypto/tls/conn.go), so the alert is read by that Op, through the
-// daemon's one reading of it (tlsalert.In).
+// both of those are read here. An alert, the far side's or this client's own, is read by
+// tlsalert.In.
 func daemonSideFault(err error) bool {
 	var verify *tls.CertificateVerificationError
 	var record tls.RecordHeaderError

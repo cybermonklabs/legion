@@ -1,6 +1,6 @@
-// Package tlsalert is the daemon's one reading of an alert of a TLS handshake: an answer, the far
-// side's or the client's own, that ends the handshake and that no wait fixes, as against a network
-// that is not there yet, which the next attempt can find.
+// Package tlsalert is the daemon's one reading of a TLS alert, the far side's or the client's own,
+// at any point of the connection: an answer that ends the connection and that no wait fixes, as
+// against a network that is not there yet, which the next attempt can find.
 package tlsalert
 
 import (
@@ -9,20 +9,23 @@ import (
 	"slices"
 )
 
-// In reports whether err carries an alert of a TLS handshake anywhere in its tree. Over TCP, Go's
-// TLS client returns an alert the far side sent as a *net.OpError whose Op is "remote error", and
-// one it sent itself, on an answer of the far side's it could not take, as a *net.OpError whose Op
-// is "local error", each holding crypto/tls's own unexported alert type (crypto/tls/conn.go). Over
-// QUIC, crypto/tls returns a tls.AlertError (crypto/tls/alert.go). So the alert is read by that Op
-// or that type, never by the error's text. Each error of the tree is read, through Unwrap() error
-// and through each error of Unwrap() []error, where errors.As would stop at the first *net.OpError:
-// an error that joins what several addresses or attempts answered can hold a refused dial ahead of
-// the alert.
+// In reports whether err carries a TLS alert, the far side's or the client's own, at any point of
+// the connection, anywhere in its tree. Over TCP, Go's TLS client returns a fatal alert the far side
+// sent as a *net.OpError whose Op is "remote error", and one it sent itself, on a record or a
+// handshake message of the far side's it could not take, a record that fails to decrypt among
+// them, as a *net.OpError whose Op is "local error", each holding crypto/tls's own unexported alert
+// type (crypto/tls/conn.go). Over QUIC, crypto/tls returns a tls.AlertError (crypto/tls/alert.go).
+// So the alert is read by that Op or that type, never by the error's text. Each error of the tree
+// is read, through Unwrap() error and through each error of Unwrap() []error, where errors.As would
+// stop at the first *net.OpError: an error that joins what several addresses or attempts answered
+// can hold a refused dial ahead of the alert.
 //
-// Its callers each keep an alert out of the failures they wait out: internal/store's
+// Three of its callers keep an alert out of the failures they wait out: internal/store's
 // OpenRetryable (the start's attempts to open its store), internal/natsauth's Unreachable (a NATS
-// that is not up yet), internal/dispatch's transportFailure (a Dispatch outage) and
-// internal/agentsecrets' daemonSideFault (a broker out of reach).
+// that is not up yet) and internal/dispatch's transportFailure (a Dispatch outage, on a request or
+// on the read of its answer's body). internal/agentsecrets' daemonSideFault still waits an alert
+// out, but on the token login's long schedule, a fault on the daemon's own side, in place of the
+// short one of a broker out of reach.
 func In(err error) bool {
 	switch err := err.(type) {
 	case *net.OpError:

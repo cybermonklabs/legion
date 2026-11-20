@@ -85,11 +85,11 @@ var imageChecks = map[Name]imageCheck{
 // present by those probes, which ran Oh My Pi — its own JavaScript runtime — and resolved the
 // prompt-named skills. err is nil when every image row checked passed; otherwise it names every
 // missing one, so one rebuild of the image fixes them all rather than the first alone. An image row
-// a command of whose check the end of ctx stopped (img.cuts counts each such command), and every
-// image row render reaches after ctx ended, which is not run, is unanswered and left out of err.
-// Every other image row keeps what its check decided, whenever the check returned: a row found
-// missing while ctx was alive is still named, one whose command its own timeout stopped among
-// them, also where that command's stop outlasted ctx.
+// a command of whose check the end of ctx stopped, or kept from starting (img.cuts counts each such
+// command), and every image row render reaches after ctx ended, which is not run, is unanswered and
+// left out of err. Every other image row keeps what its check decided, whenever the check returned:
+// a row found missing while ctx was alive is still named, one whose command its own timeout stopped
+// among them, also where that command's stop outlasted ctx.
 func CheckImage(ctx context.Context, img Image) ([]State, error) {
 	img.cuts = new(atomic.Int32)
 	states := render(ctx, renderer{
