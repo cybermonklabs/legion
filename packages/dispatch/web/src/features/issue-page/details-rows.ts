@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 
 import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
-import { firstUsable } from "./usable-control";
+import { firstUsableIn } from "./usable-control";
 
 /** The attribute each row of Details carries, by the property it holds (`IssueMargin.tsx`), so
  *  a control elsewhere on the page can open Details at that row. */
@@ -45,9 +45,7 @@ export function useOpenDetailsAt(): (row: DetailsRow, press?: boolean) => void {
           );
           if (found === null) return;
           found.scrollIntoView({ block: "nearest" });
-          const control = firstUsable(
-            ...found.querySelectorAll<HTMLElement>("input, textarea, select, button, a[href]")
-          );
+          const control = firstUsableIn(found);
           if (press) control?.click();
           else control?.focus({ preventScroll: true });
         })

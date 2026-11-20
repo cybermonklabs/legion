@@ -20,15 +20,15 @@ export const USABLE_CONTROL_ATTRIBUTES = [
 /**
  * Whether `control` takes a press now: the one rule Add's entries and the key `l` read before
  * they list, offer or press a control another component draws, so what is offered is exactly
- * what a press opens. Every hand-off of a focus in Details reads it too: those of
- * `IssueMargin.tsx` and `BlockedByControl.tsx`, and the one that moves a focus from a control
- * that takes no press once the issue closes (`IssueMargin.tsx`). So does the opener of a row
- * (`details-rows.ts`), for the control it focuses or presses. A control is usable while it is on
- * the page; neither `disabled` nor busy
- * (`aria-disabled="true"`, as the page's controls are while they save: the `refused:` variant of
- * `styles.css` reads the same pair); under no element, itself included, that is `hidden`,
- * `inert` or `aria-hidden="true"`; and drawn (`checkVisibility()`, with `visibility: hidden`
- * read too), which also catches a box the stylesheet hides.
+ * what a press opens. Details reads it in the keeper that moves a focus off a control a close
+ * disables, and wherever it hands a focus on through `firstUsable` (`IssueMargin.tsx`,
+ * `BlockedByControl.tsx`), as does the opener of a row (`details-rows.ts`, through
+ * `firstUsableIn`) for the control it focuses or presses. A control is usable while it is on
+ * the page; neither `disabled` nor busy (`aria-disabled="true"`, as the page's controls are
+ * while they save: the `refused:` variant of `styles.css` reads the same pair); under no
+ * element, itself included, that is `hidden`, `inert` or `aria-hidden="true"`; and drawn
+ * (`checkVisibility()`, with `visibility: hidden` read too), which also catches a box the
+ * stylesheet hides.
  *
  * A closed Details is no refusal. The elements around the control are read up to the Details
  * drawer's own `aside` only, which is `hidden` while Details is closed
@@ -68,5 +68,12 @@ export function firstUsable(
 ): HTMLElement | undefined {
   return candidates.find(
     (candidate): candidate is HTMLElement => candidate != null && usableControl(candidate)
+  );
+}
+
+/** A row's first control that takes a press, in the order the row draws them. */
+export function firstUsableIn(container: ParentNode | null | undefined): HTMLElement | undefined {
+  return firstUsable(
+    ...(container?.querySelectorAll<HTMLElement>("input, textarea, select, button, a[href]") ?? [])
   );
 }

@@ -173,8 +173,8 @@ export function IssueMarginCards({
  * The details slot draws it once and appends it to the shell's drawer, so nothing in it is
  * thrown away as the reader closes and opens Details. The titles of the issues this one waits
  * on, what waits on it and its links on GitHub it reads only while Details and its Development
- * are open, and what references the issue only while References is open with its Referenced by
- * list, so a load that leaves Details shut costs no request for any of them.
+ * are open, and what references the issue only while Details and its References are open with
+ * its Referenced by list, so a load that leaves Details shut costs no request for any of them.
  */
 export function IssueMarginPanel({
   documentArtifact,
@@ -387,17 +387,29 @@ export function IssueMarginPanel({
   // Add and its menu - and each takes the focus it held with it to the page's body. No hand-off
   // above answers that, since each acts only as an element it holds leaves the page or as an
   // editor closes. So the panel keeps the element the focus last went to in Development, which a
-  // focus anywhere else forgets, and as the issue closes, where that element takes no press now
-  // (`usableControl`) and the focus is still on it or on the body, the focus goes to Development's
-  // heading, where every other hand-off of the section ends. A focus a hand-off already moved to
-  // a control that takes it stays there. An issue closed as the panel is drawn moves nothing.
-  const developmentFocus = useRef<Element | null>(null);
+  // focus anywhere else forgets, as does the reader's leaving it while it still takes a press;
+  // and as the issue closes, where that element takes no press now (`usableControl`) and the
+  // focus is still on it or on the body, the focus goes to Development's heading, where every
+  // other hand-off of the section ends. A focus a hand-off already moved to a control that takes
+  // it stays there. An issue closed as the panel is drawn moves nothing.
+  const developmentFocus = useRef<HTMLElement | null>(null);
   const noteDevelopmentFocus: FocusEventHandler<HTMLElement> = (event) => {
-    developmentFocus.current = event.target instanceof Element ? event.target : null;
+    developmentFocus.current = event.target;
+  };
+  // A press on Details' plain text moves the focus to the body and sends no `focusin`, so the
+  // listener below never hears the reader leave, and a later close would move the focus to the
+  // heading of a section the reader had already left. An element that still takes a press as the
+  // focus leaves it was left by the reader, so it is forgotten. The elements a close takes the
+  // focus from stay noted: a control a close disables takes no press as Chromium blurs it, and
+  // React sends no `onBlur` for an element it takes off the page.
+  const forgetLeftDevelopmentFocus: FocusEventHandler<HTMLElement> = (event) => {
+    if (usableControl(event.target)) developmentFocus.current = null;
   };
   useEffect(() => {
     // In the capture phase of the document, so it runs before the section's `onFocus`, which
-    // React calls from its root and which notes the focus again where it went to Development.
+    // React calls from its root and which notes the focus again where it went to Development. It
+    // also forgets what the section's `onBlur` keeps: an element that was busy as the reader left
+    // it for another.
     const forget = () => {
       developmentFocus.current = null;
     };
@@ -451,6 +463,7 @@ export function IssueMarginPanel({
         drawerBox={drawerBox}
         headingRef={developmentHeading}
         name="development"
+        onBlur={forgetLeftDevelopmentFocus}
         onFocus={noteDevelopmentFocus}
         sections={sections}
       >
@@ -766,9 +779,10 @@ export function IssueMarginPanel({
           )}
           {/* The list reads what references the issue, and reads it again on each event about
               those references, so it is drawn only while the reader can see it: open, in an open
-              References. A closed section keeps its rows on the page, hidden (`PropertySection`),
-              and would keep the list's read live with them. */}
-          {referencesOpen && sections.isOpen("references") ? (
+              References of an open Details. A closed section keeps its rows on the page, hidden
+              (`PropertySection`), as a closed Details keeps the panel (`slots/details.tsx`), and
+              either would keep the list's read live with them. */}
+          {referencesOpen && reading && sections.isOpen("references") ? (
             <ReferencedBy
               className="w-full"
               reference={issueReference}
@@ -911,6 +925,7 @@ function PropertySection({
   drawerBox,
   headingRef,
   name,
+  onBlur,
   onFocus,
   sections,
 }: {
@@ -920,6 +935,9 @@ function PropertySection({
   /** Takes the section's heading, its own control, so a focus can be handed to it. */
   headingRef?: Ref<HTMLButtonElement>;
   name: MarginSection;
+  /** Hears each focus that leaves an element of the section, one its rows draw in a portal
+   *  included. */
+  onBlur?: FocusEventHandler<HTMLElement>;
   /** Hears each focus that goes to an element of the section, one its rows draw in a portal
    *  included. */
   onFocus?: FocusEventHandler<HTMLElement>;
@@ -949,8 +967,8 @@ function PropertySection({
     return () => drawerBox.removeEventListener(DETAILS_ROW_REQUEST_EVENT, openForRow);
   }, [drawerBox, name]);
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only reads where the focus has already gone, so the section needs no role of its own.
-    <section data-margin-section={name} onFocus={onFocus}>
+    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only read where the focus has gone and what it has left, so the section needs no role of its own.
+    <section data-margin-section={name} onBlur={onBlur} onFocus={onFocus}>
       <h2>
         <button
           aria-expanded={open}

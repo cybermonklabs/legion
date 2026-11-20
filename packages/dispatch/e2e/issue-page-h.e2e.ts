@@ -87,8 +87,8 @@ const ONE_DEVELOPMENT_ROWS = [
 /** The tags `e2e/accessibility.e2e.ts` holds the dashboard to. */
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
 
-/** The page's words the labels control is named from inside `NoTooltips`
- *  (`labelsControlName`). */
+/** The page's words the labels control and the Repository row's text control are named from
+ *  inside `NoTooltips` (`labelsControlName`, `repoTextControlName`). */
 const CONTROL_NAME_WORDS = { ANSWER_LINES, CONTROL_LABELS };
 
 /** The page's ink, the grey of a link's underline, as the prototype's `.lnk` draws them, and
@@ -635,7 +635,7 @@ test("every property with a value is visible in Details at every width @phone", 
       // button whose press opens the box, named by the repository it shows and what it sets.
       const repository = detailsRow(page, PROPERTY_LABELS.repository).getByRole("button", {
         exact: true,
-        name: repoTextControlName(one, { resolvedRepo: REPOSITORY, words: { CONTROL_LABELS } }),
+        name: repoTextControlName(one, { resolvedRepo: REPOSITORY, words: CONTROL_NAME_WORDS }),
       });
       const values: readonly (readonly [string, Locator])[] = [
         ["the repository", repository],
@@ -1194,7 +1194,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     await expect(
       detailsRow(page, PROPERTY_LABELS.repository).getByRole("button", {
         exact: true,
-        name: repoTextControlName(two, { resolvedRepo: null, words: { CONTROL_LABELS } }),
+        name: repoTextControlName(two, { resolvedRepo: null, words: CONTROL_NAME_WORDS }),
       }),
       "TWO resolves to no repository, but its Repository row does not read None"
     ).toHaveText(CONTROL_LABELS.none);
