@@ -800,36 +800,34 @@ func TestHorizonSafeWaitsOutAnObservationInFlightBeforeTheCall(t *testing.T) {
 
 // Every reader of a process calls Safe; concurrent calls must share observations, since each one
 // costs a round trip and a transaction id. Callers that arrive while one is in flight wait it out
-// and share the next.
+// and share the next, whether they reach it while it runs or only after it has ended.
 func TestHorizonConcurrentSafeCallsShareAnObservation(t *testing.T) {
 	database := storetest.Open(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := t.Context()
 	counting := &countingHorizonDB{HorizonDB: database.Pool, entered: make(chan struct{}), release: make(chan struct{})}
 	horizon := NewHorizon(counting)
 
 	const callers = 8
-	// Every caller but the one running the observation parks on it, and the test waits for all
-	// of them to be parked before it lets that observation end: a caller still on its way would
-	// find no observation in flight and run one of its own, which is the very thing this test
-	// says must not happen. Waiting on the parking itself is what the run's own machinery
-	// reports; a sleep long enough on an idle machine is not long enough on a loaded one.
+	// The first caller's observation is held in flight, and every other caller calls only once it
+	// is, so each of them must wait it out and take the next. The test waits for all of them to
+	// be parked on it before it lets it end: a caller that called only after the next one had
+	// ended would rightly run a third. Waiting on the parking itself is what the run's own
+	// machinery reports; a sleep long enough on an idle machine is not long enough on a loaded
+	// one.
 	parked := make(chan struct{}, callers)
 	horizon.afterObservationParked = func() { parked <- struct{}{} }
 	errs := make(chan error, callers)
-	for range callers {
-		go func() {
-			_, err := horizon.Safe(ctx)
-			errs <- err
-		}()
+	safe := func() {
+		_, err := horizon.Safe(ctx)
+		errs <- err
 	}
+	go safe()
 	<-counting.entered
 	for range callers - 1 {
-		select {
-		case <-parked:
-		case <-ctx.Done():
-			t.Fatalf("only some of the %d concurrent Safe calls reached the observation in flight: %v", callers, ctx.Err())
-		}
+		go safe()
+	}
+	for range callers - 1 {
+		<-parked
 	}
 	close(counting.release)
 	for range callers {
@@ -837,8 +835,11 @@ func TestHorizonConcurrentSafeCallsShareAnObservation(t *testing.T) {
 			t.Fatalf("concurrent Safe: %v", err)
 		}
 	}
-	if observations := counting.batches.Load(); observations >= callers {
-		t.Fatalf("%d concurrent Safe calls ran %d observations, want fewer", callers, observations)
+	// The held observation, and one more that the late callers share: the first of them to reach
+	// the lock again runs it, and each of the others joins it in flight or, when it has already
+	// ended, takes it as it stands, in whatever order the scheduler wakes them.
+	if observations := counting.batches.Load(); observations != 2 {
+		t.Fatalf("%d concurrent Safe calls ran %d observations, want 2: the one in flight when %d of them called, and the next, which those %d share", callers, observations, callers-1, callers-1)
 	}
 }
 
