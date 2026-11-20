@@ -265,13 +265,16 @@ func (m *Machine) releaseRefresh() {
 // the wake that relaunch is waiting on — and both are kept here rather than at each of the paths
 // that could break them, because a path added later keeps them by ending its decision.
 //
-// The credit goes back unless a refresh wake of this machine's own is waiting: that wake is the
-// one thing a credit may be held for, from the park that raises it to the turn that runs it
-// (parkWake, wakeNow), and a decision that ends with any other wake on the machine, or with
-// none, has either dropped that wake, spent it, or never raised one. A credit kept past such a
-// decision is worse than a credit lost, because the machine reads it as held at its next
-// uncredited post, skips the gate and parks a wake the gate never granted (refreshCredit,
-// refreshPlugin).
+// The credit goes back unless a refresh wake of this machine's own is waiting in the pacing: that
+// wake is the one thing a credit may be held for, from the park that raises it to the turn that
+// runs it (parkWake, wakeNow), and a decision that ends with any other wake on the machine, or with
+// none, has either dropped that wake, spent it, or never raised one. A refresh the project pause's
+// gate holds (wake.pause) waits in no pacing, so it holds no credit either: the claim is stopped
+// for the pause, and a launch let out at the resume enters the pacing asking this gate nothing, as
+// the retry of a refused launch does, until the next sweep's correction counts it (RefreshGate). A
+// credit kept past such a decision is worse than a credit lost, because the machine reads it as
+// held at its next uncredited post, skips the gate and parks a wake the gate never granted
+// (refreshCredit, refreshPlugin).
 //
 // The intent goes whatever the decision did with it: it names one launch and no other, and the
 // launch it names is raised, parked and committed inside the decision that marked it
@@ -282,7 +285,7 @@ func (m *Machine) releaseRefresh() {
 // one carries it in its own closure and puts it back where it runs, so it loses nothing here
 // (retryHolding).
 func (m *Machine) endRefreshLane() {
-	if m.wake == nil || m.wake.kind != WakePluginRefresh {
+	if m.wake == nil || m.wake.kind != WakePluginRefresh || m.wake.pause != 0 {
 		m.releaseRefresh()
 	}
 	m.pluginRelaunch = nil

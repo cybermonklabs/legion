@@ -4,9 +4,13 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { CredentialPendingRow } from "../../api/types";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { runningAgent } from "./agent-fixture";
 import { CredentialRequestsSection } from "./CredentialRequestsSection";
 import type { CredentialRequests } from "./pending";
@@ -230,6 +234,36 @@ test("a refused dismissal shows the broker's message and reads the list again", 
     expect(await within(row).findByText(refusal)).toBeDefined();
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["credential-pending"] });
   } finally {
+    dismiss.mockRestore();
+  }
+});
+
+// A dismissal the reader stopped may have been made: the row says so, and that Dismiss is a press
+// of its own, rather than that the dismissal failed.
+test("a dismissal the reader stopped says it may have been made, not that it failed", async () => {
+  const dismiss = spyOn(api, "dismissCredentialRequest").mockRejectedValue(
+    new NetworkError("/api/v1/credentials/requests/req-9/dismiss", new TypeError("Failed to fetch"))
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  jest.useFakeTimers();
+  try {
+    renderSection({ requests: [expiredSecretRow()], status: "listed" }, client);
+    const user = userOnFakeClock();
+    await user.click(
+      screen.getByRole("button", { name: "Dismiss expired secret request DEEL_API_KEY" })
+    );
+    await stopTheLateWrite(client);
+    const row = screen.getByText("DEEL_API_KEY").closest("li") as HTMLElement;
+    expect(
+      within(row).getByText(
+        stoppedWriteNote("the dismissal of this request", "made", {
+          anew: "Pressing Dismiss again sends a new dismissal.",
+        })
+      )
+    ).toBeDefined();
+    expect(within(row).queryByText("Could not dismiss this request.")).toBeNull();
+  } finally {
+    realClock();
     dismiss.mockRestore();
   }
 });

@@ -203,9 +203,9 @@ export type WriteMethod = (typeof WRITE_METHODS)[number];
  *  or a `PATCH`, each of which Dispatch would do a second time when a dropped answer has the page
  *  ask again. A `PUT` or a `DELETE` is the same change however often it is made, so it sends no
  *  key and Dispatch keeps nothing under one for it. The one place that rule is written: `send`
- *  reads it as it builds the headers, and `keySpent` reads it to decide whether a key's age
- *  stops a write, which is how both the retry loop (`writeUnderKey`) and a kept refusal
- *  (`refusalFrom`) reach it.
+ *  reads it as it builds the headers, the write store as it records each write (`Write.keyed`),
+ *  and `keySpent` reads it to decide whether a key's age stops a write, which is how both the
+ *  retry loop (`writeUnderKey`) and a kept refusal (`refusalFrom`) reach it.
  */
 export function goesUnderKey(method: WriteMethod): boolean {
   return method === "POST" || method === "PATCH";
@@ -315,6 +315,37 @@ export function isSourceNotFound(error: unknown): boolean {
 // when the admission read confirms this exact server response. Other 404s remain retryable.
 export function isArtifactNotFound(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404 && error.code === "ARTIFACT_NOT_FOUND";
+}
+
+// An unsubscribe of a session the owner's subscriptions no longer name: removed already - by an
+// earlier unsubscribe whose answer the page never had, or by someone else - which is the state
+// the unsubscribe asks for.
+export function isSubscriberNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404 && error.code === "SUBSCRIBER_NOT_FOUND";
+}
+
+// An unfollow of a session that does not follow the ask: taken off already, which is the state
+// the unfollow asks for.
+export function isFollowerNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404 && error.code === "FOLLOWER_NOT_FOUND";
+}
+
+/**
+ * A removal - a `DELETE` - that lands on finding the thing gone already. A `DELETE` sends no key,
+ * so Dispatch keeps no answer for one: made again after one that landed - stopped, or its answer
+ * lost - it finds nothing to remove, and Dispatch answers the `404` that `gone` names. That is the
+ * removal done, which is what the person asked, so it resolves as a `204` does; any other error
+ * rejects as `removal` did.
+ */
+export async function removedEvenIfGone(
+  removal: Promise<unknown>,
+  gone: (error: unknown) => boolean
+): Promise<void> {
+  try {
+    await removal;
+  } catch (error) {
+    if (!gone(error)) throw error;
+  }
 }
 
 // A Dispatch with no secrets broker configured (no DISPATCH_AGENT_SECRETS_URL) answers every
@@ -625,17 +656,27 @@ export function artifactVersionPath(owner: ArtifactOwner, slug: string, version:
  *  written in the browser and for a title typed with nothing under it, and a multipart form - the
  *  body those same routes take as `multipart/form-data` - for a file picked, pasted or dropped.
  *  A create carrying neither a file nor content makes an empty document, so it goes as JSON with
- *  the name alone. */
+ *  the name alone. An upload that names the base it replaces carries it either way, as the field
+ *  `precondition`, which the form sends as the object's JSON text. */
 function artifactUploadBody(
   input: CreateArtifactInput
 ): Body<"/api/v1/issues/{key}/artifacts", "post"> | FormData {
   if (input.file === undefined) {
-    return { actor: input.actor, content: input.content, name: input.name, summary: input.summary };
+    return {
+      actor: input.actor,
+      content: input.content,
+      name: input.name,
+      precondition: input.precondition,
+      summary: input.summary,
+    };
   }
   const form = new FormData();
   form.set("name", input.name);
   if (input.summary !== undefined) {
     form.set("summary", input.summary);
+  }
+  if (input.precondition !== undefined) {
+    form.set("precondition", JSON.stringify(input.precondition));
   }
   if (input.actor !== undefined) {
     form.set("actor", JSON.stringify(input.actor));
@@ -1027,6 +1068,9 @@ export class DispatchApiClient {
     );
   }
 
+  /** `DELETE /api/v1/settings/repo-projects/{owner}/{repo}`: remove the repository's mapping. A
+   *  repository with no mapping answers the same 204, so a removal made again after one that
+   *  landed needs no `removedEvenIfGone`. */
   async deleteRepoProject(repo: string, bounds: WriteBounds): Promise<void> {
     await this.remove("/api/v1/settings/repo-projects/{owner}/{repo}", repoParams(repo), bounds);
   }
@@ -1555,6 +1599,18 @@ export class DispatchApiClient {
     return this.read("/api/v1/artifacts/{id}/text", { id });
   }
 
+  /** `GET …/artifacts/{slug}/text`: the markdown, version and whole-document token of the
+   *  document `owner` holds under `slug`, which may be its slug or its filename. `404
+   *  ARTIFACT_NOT_FOUND` when the owner holds no such document, which is what the first upload
+   *  of a name reads. A conversation holds files and pictures and no document at all, and
+   *  serves no such route, which is why its owner is not one this takes. */
+  ownerArtifactText(owner: { issue: string } | { project: string }, slug: string) {
+    if ("issue" in owner) {
+      return this.read("/api/v1/issues/{key}/artifacts/{slug}/text", { key: owner.issue, slug });
+    }
+    return this.read("/api/v1/projects/{key}/artifacts/{slug}/text", { key: owner.project, slug });
+  }
+
   rebuildArtifact(id: string, markdown: string | undefined, bounds: WriteBounds) {
     return this.post(
       "/api/v1/artifacts/{id}/rebuild",
@@ -1899,16 +1955,16 @@ export class DispatchApiClient {
     );
   }
 
-  /** `GET /api/v1/machine-logins`: the machine logins the viewer may revoke, their own machines'
-   *  and every service's, whoever approved it, that are unexpired or expired with a session still
-   *  running. */
+  /** `GET /api/v1/machine-logins`: the machine logins the viewer may revoke, their own machines',
+   *  their own pods' (`person` set) and every service's, whoever approved it, that are unexpired
+   *  or expired with a session still running. */
   getMachineLogins() {
     return this.read("/api/v1/machine-logins", {});
   }
 
-  /** Revoke a machine login, expired or not: a service's, or one of the viewer's machines'.
-   *  Dispatch names the viewer as the person revoking, and every session the login enrolled ends
-   *  with it. */
+  /** Revoke a machine login, expired or not: a service's, one of the viewer's machines', or one
+   *  of the viewer's pods'. Dispatch names the viewer as the person revoking, and every session
+   *  the login enrolled ends with it. */
   async revokeMachineLogin(credentialId: string, bounds: WriteBounds): Promise<void> {
     await this.post("/api/v1/machine-logins/{id}/revoke", { id: credentialId }, undefined, bounds);
   }

@@ -28,7 +28,8 @@ import type {
 /** The signed-in principal (`/auth/whoami`). One key shared by every surface that reads it; it
  *  names the person by lowercase email, the form issue assignees carry. While it answers
  *  `EVENT_HEAD_UNAVAILABLE` it is asked again for as long as that lasts (`queryRetry`), so the
- *  shell shows its skeleton, never the error page. */
+ *  shell shows its skeleton, never the error page. News that who is signed in may have changed
+ *  asks it again through `askSignInAgain` (`query-client.ts`), never a bare invalidation. */
 export const whoAmIQuery = () =>
   queryOptions({
     queryKey: ["whoami"],

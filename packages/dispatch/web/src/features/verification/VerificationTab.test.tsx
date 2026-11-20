@@ -462,6 +462,9 @@ test("an issue with no Verification document shows the command that makes one", 
   const empty = screen.getByTestId("verification-empty");
   expect(empty.textContent).toContain("CORE-1 has no Verification document.");
   expect(empty.textContent).toContain("dispatch artifact --issue CORE-1 --name verification.md");
+  // The note's words are asserted once, in `ArtifactUpload.test.tsx`, where they live: this
+  // case asks only that the tab shows the note.
+  expect(within(empty).getByTestId("replacing-upload-note")).not.toBeNull();
   // Nothing is read for an issue that has no such document.
   expect(getIssueResults).not.toHaveBeenCalled();
 });

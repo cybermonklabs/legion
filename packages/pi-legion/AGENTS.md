@@ -55,7 +55,7 @@ The daemon client, the claim boot, the `legion` tool's phase ops and the phase r
   The entry asks the interface's injected-user-turn record at `message_start` (`matchInjectedUserTurn`) and counts every turn the record misses as an assignment, which opens even a closed phase:
   a typed turn the host starts under a new session id, and, on a host without `sendUserInput`, a turn sent in after the run's last queue poll and before its `agent_end`, which the dashboard then shows twice.
 
-- A turn the provider refused earns no reminder.
+- A turn the provider refused earns no continuation.
   `src/turn-outcome.ts` reports each turn's outcome to `POST /legion/v1/claims/turn-outcome`, and the daemon fails a claim whose run of refusals reaches `launch_failure_limit`.
 
 ## Tests
