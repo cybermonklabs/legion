@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -472,6 +473,27 @@ func TestTheKeyDirIsNamedByItsSettingNeverItsPath(t *testing.T) {
 			}
 			wantNamedNotPrinted(t, "the output", stdout+stderr, row.want, []string{secret}...)
 		})
+	}
+}
+
+// TestTheKeyDirsNameIsWhereTheKeyDirIs: keyDirName names the key dir by the expression keyDir
+// resolves it by, never its path: AGENT_SECRETS_KEY_DIR, else under XDG_RUNTIME_DIR, else under
+// /run/user/$UID, where helper.DefaultSocket looks when XDG_RUNTIME_DIR is unset. The last row
+// shows keyDir is there, so the name is not a place the key dir is not.
+func TestTheKeyDirsNameIsWhereTheKeyDirIs(t *testing.T) {
+	for _, row := range []struct{ keyDir, runtime, want, dir string }{
+		{"/elsewhere/keys", "/run/elsewhere", "AGENT_SECRETS_KEY_DIR", "/elsewhere/keys"},
+		{"", "/run/elsewhere", "$XDG_RUNTIME_DIR/agent-secrets (AGENT_SECRETS_KEY_DIR is unset)", "/run/elsewhere/agent-secrets"},
+		{"", "", "/run/user/$UID/agent-secrets (AGENT_SECRETS_KEY_DIR and XDG_RUNTIME_DIR are unset)", filepath.Join("/run/user", strconv.Itoa(os.Getuid()), "agent-secrets")},
+	} {
+		t.Setenv("AGENT_SECRETS_KEY_DIR", row.keyDir)
+		t.Setenv("XDG_RUNTIME_DIR", row.runtime)
+		if got := keyDirName(); got != row.want {
+			t.Errorf("keyDirName() = %q with AGENT_SECRETS_KEY_DIR %q and XDG_RUNTIME_DIR %q; want %q", got, row.keyDir, row.runtime, row.want)
+		}
+		if got := keyDir(); got != row.dir {
+			t.Errorf("keyDir() = %q; want %q", got, row.dir)
+		}
 	}
 }
 

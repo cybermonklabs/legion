@@ -84,13 +84,19 @@ func keyDir() string {
 }
 
 // keyDirName is how a message names the key dir (keyDir): AGENT_SECRETS_KEY_DIR where that is set,
-// else its default's own expression, never the directory's path. The key dir holds key.pem, and a
-// setting meant for a credential's place is where a person who pasted the credential puts it.
+// else its default's own expression as helper.DefaultSocket resolves it - under XDG_RUNTIME_DIR,
+// or under /run/user/$UID where that is unset too - never the directory's path. The key dir holds
+// key.pem, and a setting meant for a credential's place is where a person who pasted the
+// credential puts it.
 func keyDirName() string {
-	if os.Getenv("AGENT_SECRETS_KEY_DIR") != "" {
+	switch {
+	case os.Getenv("AGENT_SECRETS_KEY_DIR") != "":
 		return "AGENT_SECRETS_KEY_DIR"
+	case os.Getenv("XDG_RUNTIME_DIR") != "":
+		return "$XDG_RUNTIME_DIR/agent-secrets (AGENT_SECRETS_KEY_DIR is unset)"
+	default:
+		return "/run/user/$UID/agent-secrets (AGENT_SECRETS_KEY_DIR and XDG_RUNTIME_DIR are unset)"
 	}
-	return "$XDG_RUNTIME_DIR/agent-secrets (AGENT_SECRETS_KEY_DIR is unset)"
 }
 
 // keyDirFile is how a message names the file name in the key dir: name in keyDirName.
