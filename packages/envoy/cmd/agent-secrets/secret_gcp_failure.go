@@ -80,29 +80,24 @@ const x509UnknownAuthority = "x509: certificate signed by unknown authority"
 // that did not reach Secret Manager. gRPC hands the client no error but that text for a
 // connection it could not make - its picker (picker_wrapper.go) and its transport's error mapping
 // (rpc_util.go) turn the dial's error into a status of code Unavailable and that error's text,
-// with no details and no cause - so the class is read from the text, which only gRPC itself wrote
-// where nothing was reached: "connection error: desc = ..." for a failed connection and "name
-// resolver error: ..." for a name its resolver could not turn into an address. That text names the
-// address it dialed and the system's reason, so it prints as the class redact.Class gives the same
-// failure of any other request, in its words: redact.ClassTLS (with x509UnknownAuthority where the
-// text says it), redact.ClassNameResolution, redact.ClassRefused, redact.ClassTimedOut, or
-// redact.ClassRequestFailed for any other connection that failed. A connection that broke after
-// the call went out on it has a peer, and reads as Secret Manager's own Unavailable.
+// with no details and no cause - so the class is read from the words the text holds, wherever
+// they are in it: a balancer may put words of its own before them ("last connection error: ..."),
+// and with no peer the text is gRPC's alone. It names the address dialed and the system's reason,
+// so it prints as the class redact.Class gives the same failure of any other request:
+// redact.ClassTLS (with x509UnknownAuthority where the text says it, which gax reads to stop
+// retrying), redact.ClassNameResolution, redact.ClassRefused, redact.ClassTimedOut, or
+// redact.ClassRequestFailed for any other. A connection that broke after the call went out on it
+// has a peer, and reads as Secret Manager's own Unavailable.
 func storeUnreached(answer *status.Status, reached bool) (string, bool) {
 	text := answer.Message()
 	switch {
 	case reached || answer.Code() != codes.Unavailable:
 		return "", false
-	case strings.HasPrefix(text, "name resolver error: "):
-		return redact.ClassNameResolution, true
-	case !strings.HasPrefix(text, "connection error: desc = "):
-		return "", false
-	case strings.Contains(text, "transport: authentication handshake failed"):
-		if strings.Contains(text, x509UnknownAuthority) {
-			return redact.ClassTLS + ": " + x509UnknownAuthority, true
-		}
+	case strings.Contains(text, x509UnknownAuthority):
+		return redact.ClassTLS + ": " + x509UnknownAuthority, true
+	case strings.Contains(text, "authentication handshake failed"):
 		return redact.ClassTLS, true
-	case strings.Contains(text, "no such host"):
+	case strings.Contains(text, "name resolver error"), strings.Contains(text, "no such host"):
 		return redact.ClassNameResolution, true
 	case strings.Contains(text, "connection refused"):
 		return redact.ClassRefused, true

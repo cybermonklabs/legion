@@ -9,9 +9,11 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -22,6 +24,8 @@ import (
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/balancer"
+	"google.golang.org/grpc/balancer/base"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -29,6 +33,7 @@ import (
 	"google.golang.org/grpc/resolver/manual"
 	"google.golang.org/grpc/status"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testport"
 )
 
@@ -71,6 +76,48 @@ func unresolvedUnreached() unreachedTarget {
 	return unreachedTarget{"passthrough:///" + host + ":443", []grpc.DialOption{grpc.WithContextDialer(dial), grpc.WithTransportCredentials(insecure.NewCredentials())}, []string{host}}
 }
 
+// dialFailing is an address whose every dial fails with err, with no network asked: gRPC words
+// the failure "connection error: desc = ..." around err's text.
+func dialFailing(err error) func(*testing.T) unreachedTarget {
+	return func(*testing.T) unreachedTarget {
+		dial := func(context.Context, string) (net.Conn, error) { return nil, err }
+		return unreachedTarget{"passthrough:///secretmanager.unreached.example:443", []grpc.DialOption{grpc.WithContextDialer(dial), grpc.WithTransportCredentials(insecure.NewCredentials())}, []string{"unreached.example"}}
+	}
+}
+
+// baseBalancerName is a balancer built on grpc's balancer/base, which words a connection it could
+// not make "last connection error: ..." before gRPC's own words for it, as base's users and
+// grpclb do; Secret Manager's own dial uses pick_first, which does not.
+const baseBalancerName = "agent_secrets_test_base"
+
+func init() {
+	balancer.Register(base.NewBalancerBuilder(baseBalancerName, firstReady{}, base.Config{}))
+}
+
+// firstReady picks a ready connection, the one the base balancer gives it.
+type firstReady struct{}
+
+func (firstReady) Build(info base.PickerBuildInfo) balancer.Picker {
+	for sc := range info.ReadySCs {
+		return pickOnly{sc}
+	}
+	return base.NewErrPicker(balancer.ErrNoSubConnAvailable)
+}
+
+// pickOnly picks sc for every call.
+type pickOnly struct{ sc balancer.SubConn }
+
+func (p pickOnly) Pick(balancer.PickInfo) (balancer.PickResult, error) {
+	return balancer.PickResult{SubConn: p.sc}, nil
+}
+
+// baseBalancedRefused is a refused loopback port dialed under baseBalancerName.
+func baseBalancedRefused(t *testing.T) unreachedTarget {
+	addr := testport.Refused(t)
+	return unreachedTarget{addr, []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"` + baseBalancerName + `":{}}]}`)}, []string{addr}}
+}
+
 // zeroAddressesUnreached is a name the resolver answers with no address, as gRPC's dns resolver
 // answers a name that does not exist.
 func zeroAddressesUnreached() unreachedTarget {
@@ -81,12 +128,14 @@ func zeroAddressesUnreached() unreachedTarget {
 
 // TestASecretManagerCallThatDidNotReachItSaysSo: a list whose ListSecrets never reached Secret
 // Manager - a TLS handshake no root here trusts, a refused connection, a name with no such host, a
-// name the resolver gave no address - prints that the call did not reach Secret Manager and the
-// class of the failure in redact.Class's words for the same failure of any request, never gRPC's text, its address and the system's reason among it, and never
-// "answered". A server that answers Unavailable in gRPC's own words for a failed connection
-// reached nothing it can claim: it prints as Secret Manager's answer, its message not printed.
-// Control: Secret Manager's own Unavailable, with a made-up secret in its message, prints as its
-// answer.
+// name the resolver gave no address, a dial that timed out, a dial that failed for another reason -
+// prints that the call did not reach Secret Manager and the class of the failure, whatever words
+// a balancer puts before gRPC's, in redact.Class's
+// words for the same failure of any request, never gRPC's text, its address and the system's reason
+// among it, and never "answered". A server that answers Unavailable in gRPC's own words for a
+// failed connection reached nothing it can claim: it prints as Secret Manager's answer, its message
+// not printed. Control: Secret Manager's own Unavailable, with a made-up secret in its message,
+// prints as its answer.
 func TestASecretManagerCallThatDidNotReachItSaysSo(t *testing.T) {
 	planted := "hunter2pw-" + "unavailable-" + "6d2c"
 	forbidden := []string{planted, "connection error", "transport:", "desc =", "127.0.0.1", "resolver error", "zero addresses"}
@@ -98,13 +147,19 @@ func TestASecretManagerCallThatDidNotReachItSaysSo(t *testing.T) {
 		says    string
 	}{
 		{"a TLS handshake no root here trusts", tlsUnreached, "",
-			"Secret Manager ListSecrets failed: it did not reach Secret Manager (TLS failed: " + unknownAuthority + ")"},
+			"Secret Manager ListSecrets failed: it did not reach Secret Manager (" + redact.ClassTLS + ": " + unknownAuthority + ")"},
 		{"a refused connection", refusedUnreached, "",
-			"Secret Manager ListSecrets failed: it did not reach Secret Manager (connection refused)"},
+			"Secret Manager ListSecrets failed: it did not reach Secret Manager (" + redact.ClassRefused + ")"},
 		{"a name with no such host", func(*testing.T) unreachedTarget { return unresolvedUnreached() }, "",
-			"Secret Manager ListSecrets failed: it did not reach Secret Manager (name resolution failed)"},
+			"Secret Manager ListSecrets failed: it did not reach Secret Manager (" + redact.ClassNameResolution + ")"},
 		{"a name the resolver gave no address", func(*testing.T) unreachedTarget { return zeroAddressesUnreached() }, "",
-			"Secret Manager ListSecrets failed: it did not reach Secret Manager (name resolution failed)"},
+			"Secret Manager ListSecrets failed: it did not reach Secret Manager (" + redact.ClassNameResolution + ")"},
+		{"a refused connection under a balancer that words it first", baseBalancedRefused, "",
+			"Secret Manager ListSecrets failed: it did not reach Secret Manager (" + redact.ClassRefused + ")"},
+		{"a dial that timed out", dialFailing(&net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded}), "",
+			"Secret Manager ListSecrets failed: it did not reach Secret Manager (" + redact.ClassTimedOut + ")"},
+		{"a dial that failed for another reason", dialFailing(errors.New("socket: too many open files; echo: " + planted)), "",
+			"Secret Manager ListSecrets failed: it did not reach Secret Manager (" + redact.ClassRequestFailed + ")"},
 		{"a server answering Unavailable in gRPC's own words for a failed connection", nil,
 			`connection error: desc = "transport: Error while dialing: dial tcp 10.0.0.1:443: connect: connection refused"; echo: ` + planted,
 			"Secret Manager ListSecrets answered Unavailable (its message is not printed)"},
