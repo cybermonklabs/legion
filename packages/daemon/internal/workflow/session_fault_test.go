@@ -46,14 +46,14 @@ func TestALostSessionIsToldOnTheIssueToItsArchitectAndToTheController(t *testing
 	}{
 		{
 			name: "gone",
-			fact: intake.SessionLost{Issue: "LEGION-209", Role: claim.RoleTester, Cause: "gone",
+			fact: intake.SessionLost{Issue: "LEGION-209", Role: claim.RoleTester, Cause: "gone", Session: "ses-abc",
 				Detail: "the session ses-abc this claim recorded is in no session store the runtime could resume it from"},
 			kind: "session-lost",
 			says: []string{"ses-abc", "lost the session it recorded", "fresh agent"},
 		},
 		{
 			name: "not-resumed-by-id",
-			fact: intake.SessionLost{Issue: "LEGION-209", Role: claim.RoleTester, Cause: "not-resumed-by-id",
+			fact: intake.SessionLost{Issue: "LEGION-209", Role: claim.RoleTester, Cause: "not-resumed-by-id", Session: session,
 				Detail: "the pod's launcher, which is older than this release, could not look the session " + session +
 					" up by its id, and Oh My Pi did not resume it by that id, so this claim forgot it and runs a fresh agent"},
 			kind: "session-forgotten",

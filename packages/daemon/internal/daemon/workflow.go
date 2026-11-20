@@ -2051,13 +2051,16 @@ func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 	}()
 }
 
-// sessionLost applies the fact that a claim forgot its recorded session, for cause, and a fresh
-// agent is running in its place (supervise's Deps.SessionLost): the workflow tells the issue, its
-// architect and the controller. The event id carries the claim's launch, so the one launch that
-// lost the session reports once however often the fact is applied.
+// sessionLost applies the fact that a claim forgot its recorded session, for cause (supervise's
+// Deps.SessionLost): the workflow tells the issue, its architect and the controller. The machine
+// tells it at the forget, before it spawns the fresh agent that takes the session's place, with
+// the claim as the forget left it, so c.Abandoned.Session is the session forgotten, which the fact
+// carries. The event id carries the claim's launch, so the one launch that forgot the session
+// reports once however often the fact is applied.
 func (w *workflowRuntime) sessionLost(c supervise.Claim, cause supervise.SessionLoss, detail string) {
 	w.applySessionFact(c, fmt.Sprintf("session-lost:%s:%d", c.Token, c.Generation),
-		intake.SessionLost{Issue: c.Issue, Role: c.Role, Detail: detail, Cause: string(cause)}, "apply a claim's lost session")
+		intake.SessionLost{Issue: c.Issue, Role: c.Role, Detail: detail, Cause: string(cause), Session: c.Abandoned.Session},
+		"apply a claim's lost session")
 }
 
 // sessionStoreFault applies the fact that a start could not reach the session store at all
