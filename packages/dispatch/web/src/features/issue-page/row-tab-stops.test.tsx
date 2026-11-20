@@ -411,7 +411,7 @@ function keptState(container: HTMLElement, selectors: readonly string[]): Scroll
 /** Lays the content of every scroller of `KeptScrollers` out past its box, sideways, as each
  *  scrolls, until the answer is called. */
 function overflowKept(): () => void {
-  return overflowing("[data-code], [data-table], [data-diagram], [data-other]");
+  return overflowing(KEPT_SCROLLERS.join(", "));
 }
 
 // Decision 317: hiding every scroller from the keyboard leaves a reader on the keyboard no way to
