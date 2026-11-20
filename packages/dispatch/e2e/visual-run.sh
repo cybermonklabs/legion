@@ -183,11 +183,16 @@ docker run --rm --network host --ipc=host --user "$(id -u):$(id -g)" \
 # frame mid-change, so run the row again before acting). Its fix is that mark in the seed
 # (`markWhatTheShotPagesRead`, e2e/review-seed.ts), not a new baseline: a baseline taken from the
 # reverse run's shot holds the state the normal order never draws, and fails that run instead.
-# The loop reads `--output` as Playwright does: the last one wins, an empty value names nothing,
-# and arguments after `--` are no options. A line that cannot be written leaves the status as it
-# was, so the run's verdict is always the container's.
+# The loop reads `--output=DIR` and `--output DIR` as Playwright does: the last one wins, an empty
+# value names nothing, and arguments after `--` are no options. It cannot tell a word that another
+# option takes as its value (`--grep-invert --output=x`), which Playwright does not read as
+# `--output`. The status stays the container's however the lines go: a write to a closed stderr
+# fails and is ignored, and a write to a pipe whose reader has gone would raise SIGPIPE and end
+# this shell before the EXIT trap stopped the stack, so the signal is ignored from here on - after
+# `docker` has returned, so neither the container nor the stack inherits that.
 if [ "$status" -ne 0 ]; then
-  output=e2e/test-results
+  trap '' PIPE
+  output=""
   value_follows=""
   for arg in "$@"; do
     if [ -n "$value_follows" ]; then
@@ -197,17 +202,18 @@ if [ "$status" -ne 0 ]; then
     fi
     case $arg in
       --) break ;;
-      --output=?*) output=${arg#--output=} ;;
+      --output=*) output=${arg#--output=} ;;
       --output) value_follows=1 ;;
     esac
   done
   case $output in
+    "") output=packages/dispatch/e2e/test-results ;;
     /*) ;;
     *) output=packages/dispatch/${output#./} ;;
   esac
-  echo "e2e/visual-run.sh: the run failed; a failed row's shots (-actual.png, -expected.png, -diff.png) are under $output/." >&2 || :
+  printf '%s\n' "e2e/visual-run.sh: the run failed; a failed row's shots (-actual.png, -expected.png, -diff.png) are under ${output%/}/." >&2 || :
   if [ "${DISPATCH_E2E_VISUAL_ORDER:-}" = reverse ]; then
-    echo "e2e/visual-run.sh: these rows ran in reverse order. A row that fails here and passes in the normal order most likely reads a mark another row writes: run it again, and if it still fails, write that mark in the seed (markWhatTheShotPagesRead, e2e/review-seed.ts), and take no new baseline from this run." >&2 || :
+    printf '%s\n' "e2e/visual-run.sh: these rows ran in reverse order. A row that fails here and passes in the normal order most likely reads a mark another row writes: run it again, and if it still fails, write that mark in the seed (markWhatTheShotPagesRead, e2e/review-seed.ts), and take no new baseline from this run." >&2 || :
   fi
 fi
 
