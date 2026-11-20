@@ -19,9 +19,10 @@
 // A frame over 1 MiB closes the socket 1009. The server pings every 20 s.
 //
 // A test that drives the listener's HTTP routes beside the socket, as a session registers and
-// sends at the listener it opens its socket at, serves them through `routes`
-// (`RelaySocketStandInOptions`): it is asked for every request that is neither the trade nor the
-// relay path, and a route it does not answer is 404.
+// sends at the listener it opens its socket at, or the broker's other grants, as a device login
+// renews at the broker it trades at, serves them through `routes` (`RelaySocketStandInOptions`):
+// it is asked first for every request but the relay upgrade, the token endpoint included, and a
+// request it does not answer goes on to the trade, else 404.
 //
 // Nothing here registers a hook: a test file pushes the stand-in's `stop` onto its own cleanup.
 
@@ -182,9 +183,10 @@ function verifiedProof(
 /** How a test starts the stand-in. */
 export interface RelaySocketStandInOptions {
   /**
-   * Answers a request that is neither the broker's trade (`POST /v1/oauth/token`) nor the relay
-   * path (`/v1/sessions/<session>/relay`), on the same origin as both, with the stand-in itself to
-   * read and drive (`deliver`); undefined, or a request it does not answer, is 404.
+   * Asked first for every request but the relay upgrade (`GET /v1/sessions/<session>/relay`), the
+   * broker's token endpoint included, on the one origin, with the stand-in itself to read and drive
+   * (`deliver`). It is handed a copy of the request, so one it reads and does not answer still
+   * reaches the stand-in whole: undefined goes on to the trade (`POST /v1/oauth/token`), else 404.
    */
   readonly routes?: (
     request: Request,
@@ -310,11 +312,14 @@ export function startRelaySocketStandIn(
     port: 0,
     async fetch(request, srv) {
       const url = new URL(request.url);
-      if (request.method === "POST" && url.pathname === "/v1/oauth/token") return trade(request);
       const matched = /^\/v1\/sessions\/([^/]+)\/relay$/.exec(url.pathname);
       if (matched === null || request.method !== "GET") {
-        const answered = await options.routes?.(request, standIn);
-        return answered ?? new Response("not found", { status: 404 });
+        // One runtime class: a package whose lib loads undici's types reads `clone()` as theirs.
+        const copy = request.clone() as Request;
+        const answered = await options.routes?.(copy, standIn);
+        if (answered !== undefined) return answered;
+        if (request.method === "POST" && url.pathname === "/v1/oauth/token") return trade(request);
+        return new Response("not found", { status: 404 });
       }
       const session = decodeURIComponent(matched[1] ?? "");
       const authorization = request.headers.get("Authorization") ?? "";
