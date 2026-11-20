@@ -844,12 +844,15 @@ func TestAHeldRootKeepsItsPlaceOnTheRuntimeUntilItsOwnReleaseAdmitsIt(t *testing
 			releaseLine = line
 		case strings.Contains(line, slotTakenMessage):
 			takenLines = append(takenLines, line)
-			// Each line is a hook of its transaction's commit (store.OnCommit), and a
-			// transaction's hooks run in the order they were registered. The release registers its
-			// line before its pass takes any slot, so a slot the release's own pass takes is logged
-			// after the release line. A slot line before the release line is therefore a slot an
-			// earlier transaction took while the root was still held; the slots read below say
-			// separately which issue holds the row.
+			// Each line is a hook of its transaction's commit (store.OnCommit), and within one
+			// transaction the hooks run in the order they were registered: the release registers
+			// its line before its pass takes any slot, so a slot the release's own pass takes is
+			// logged after the release line. Across transactions the line order is not the commit
+			// order in general, since a commit whose outcome the store could not yet say runs its
+			// hooks later. Here the boot pass and the poller's passes run one after another and
+			// each receives its commit's reply, so a slot line before the release line is a slot
+			// an earlier pass took while the root was still held. Which issue holds the row is
+			// read from the slots table below, not from the lines.
 			takenBeforeRelease = takenBeforeRelease || releaseLine == ""
 		}
 	}

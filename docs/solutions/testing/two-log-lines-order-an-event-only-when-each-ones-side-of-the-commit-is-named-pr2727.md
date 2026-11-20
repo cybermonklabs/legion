@@ -21,14 +21,18 @@ Here the order has a named cause in the tree, which is what makes the order evid
 - **In the Legion daemon a line that says what a transaction wrote is a hook of that transaction's commit (`store.OnCommit`).**
   It is written once the transaction commits, and never for a transaction that rolls back.
   A transaction's hooks run in the order they were registered, on the goroutine that commits it, before `store.Transact` returns; only a commit whose outcome the store could not say leaves them to the outcome watcher, which runs them later.
-  So the relative order of two such lines carries a fact that neither the final state nor either line alone carries: which transaction, and which registration within it, came first.
+  So within one transaction the order of two such lines is the order their hooks were registered, a fact that neither the final state nor either line alone carries.
+
+- **Across transactions the order of the lines does not establish the order of the commits.**
+  A commit whose reply is lost and whose outcome the store cannot yet say leaves its hooks to the watcher, so they can run after the hooks of a transaction that began only once the first had committed.
+  Where a test needs the order of two transactions' commits, it reads that order from the rows they stored, not from their lines.
 
 - **Say in the test, next to the assertion, what orders the two lines.**
   Without that sentence the ordering assertion is folklore, and the next reader deletes it or inverts it.
 
-- **Let a state assertion carry the claim and the log carry only the order.**
+- **Let a state assertion carry the claim and the log carry only the order of registration.**
   This does not contradict docs/solutions/testing/measure-the-mechanism-not-the-symptom-count-the-work-the-system-does-not-do-INFRA-228.md, which says a log line is a proxy that drifts.
-  The proxy here is anchored to a code fact rather than to a duration, and the thing it proves, the order, is not available from the state at all, which the same test reads separately.
+  The proxy here is anchored to a code fact rather than to a duration, and the thing it proves, the order of one transaction's registrations, is not available from the state at all, which the same test reads separately.
 
 - **An absence of a line within a window is the strongest half.**
   "No line of this kind stands between these two" is the assertion a reordering defeats, where "the right line exists" passes either way.
@@ -37,9 +41,11 @@ Here the order has a named cause in the tree, which is what makes the order evid
 
 Admission's release of held roots (`Admission.release`, `packages/daemon/internal/admit/admit.go`) registers its line, `admission: the Dispatch consumer has caught up; releasing held roots`, before its pass takes any slot.
 Each slot the pass takes registers its own `admission: slot taken` line after it (`Admission.logSlot`).
-So within the release's transaction the release line comes first, and a slot line before the release line is a slot that an earlier transaction took while the root was still held.
+So within the release's transaction the release line comes first, and a slot line before the release line comes from the hooks of another transaction.
+In the test below the boot pass and the poller's passes run one after another, and each receives its commit's reply, so each one's hooks have run before the next begins: there a slot line before the release line is a slot an earlier pass took while the root was still held.
+That is a property of the test's setup, not of the boundary, and which issue holds the row, and that one row was taken, are read from the slots table, not from the lines.
 
-`TestAHeldRootKeepsItsPlaceOnTheRuntimeUntilItsOwnReleaseAdmitsIt` (`packages/daemon/internal/daemon/hold_release_test.go`) scans the captured log once, asserts that no slot line comes before the release line, says beside that check what orders the two, and reads the slots table with `tickSlotted` separately.
+`TestAHeldRootKeepsItsPlaceOnTheRuntimeUntilItsOwnReleaseAdmitsIt` (`packages/daemon/internal/daemon/hold_release_test.go`) scans the captured log once, asserts that no slot line comes before the release line, says beside that check what orders the two and where that order stops, and reads the slots table with `tickSlotted` separately.
 `TestAnAdmissionLineOfACommittedWriteIsWrittenOnlyOnceItsTransactionCommits` (`packages/daemon/internal/admit/committed_lines_test.go`) holds the other half: the release line, like each other line of admission that states a write, is written for no transaction whose COMMIT never reached the server, and once for the one that commits.
 
 Its three operator-visible lines are the ones a production check reads from `kubectl logs`:
@@ -61,4 +67,4 @@ This is the evidence the learning was first written from; the mechanism it names
 When #2727 landed, the slot line deferred through `intake.OnCommit`, which no longer exists, and the release line was written inline inside its transaction.
 The two lines were then ordered by opposite sides of the commit, which is how the first version of this note stated the rule.
 The proof had to show that no slot was taken before the hold's release on the real daemon runtime, and the absence assertion is what failed on the pre-fix code: with the bug, a slot line naming the lower-ranked root stood between the hold line and the release line.
-Since cybermonklabs/legion#4533 both lines are hooks of the one commit, ordered by registration, and the same assertion holds.
+Since cybermonklabs/legion#4533 both lines are hooks of the one commit, ordered by their registration in it, and the same assertion holds.
