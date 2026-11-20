@@ -47,20 +47,13 @@
       "number": 2766,
       "parent": "ACME-1395",
       "status": "done",
-      "changed": [
-        "status",
-        "closed_at"
-      ],
+      "changed": ["status", "closed_at"],
       "project": "ACME",
       "last_seq": 23,
       "priority": 1,
-      "ancestors": [
-        "ACME-1395"
-      ],
+      "ancestors": ["ACME-1395"],
       "closed_at": "2026-11-16T02:18:12.720646Z",
-      "blocked_by": [
-        "ACME-2764"
-      ],
+      "blocked_by": ["ACME-2764"],
       "created_at": "2026-11-10T19:42:03.788307Z",
       "updated_at": "2026-11-16T02:18:12.732894Z"
     }
@@ -86,20 +79,13 @@
       "number": 2766,
       "parent": "ACME-1395",
       "status": "todo",
-      "changed": [
-        "status",
-        "closed_at"
-      ],
+      "changed": ["status", "closed_at"],
       "project": "ACME",
       "last_seq": 24,
       "priority": 1,
-      "ancestors": [
-        "ACME-1395"
-      ],
+      "ancestors": ["ACME-1395"],
       "closed_at": null,
-      "blocked_by": [
-        "ACME-2764"
-      ],
+      "blocked_by": ["ACME-2764"],
       "created_at": "2026-11-10T19:42:03.788307Z",
       "updated_at": "2026-11-16T02:19:16.364975Z"
     }

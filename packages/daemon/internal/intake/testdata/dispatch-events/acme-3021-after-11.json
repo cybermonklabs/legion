@@ -43,22 +43,15 @@
       "key": "ACME-3021",
       "rank": "zzzrVUZUUUUX",
       "claim": null,
-      "labels": [
-        "legion"
-      ],
+      "labels": ["legion"],
       "number": 3021,
       "parent": "ACME-1557",
       "status": "done",
-      "changed": [
-        "status",
-        "closed_at"
-      ],
+      "changed": ["status", "closed_at"],
       "project": "ACME",
       "last_seq": 13,
       "priority": 1,
-      "ancestors": [
-        "ACME-1557"
-      ],
+      "ancestors": ["ACME-1557"],
       "closed_at": "2026-11-12T01:11:42.222396Z",
       "blocked_by": [],
       "created_at": "2026-11-11T09:50:01.330439Z",
@@ -82,22 +75,15 @@
       "key": "ACME-3021",
       "rank": "zzzrVUZUUUUX",
       "claim": null,
-      "labels": [
-        "legion"
-      ],
+      "labels": ["legion"],
       "number": 3021,
       "parent": "ACME-1557",
       "status": "backlog",
-      "changed": [
-        "status",
-        "closed_at"
-      ],
+      "changed": ["status", "closed_at"],
       "project": "ACME",
       "last_seq": 14,
       "priority": 1,
-      "ancestors": [
-        "ACME-1557"
-      ],
+      "ancestors": ["ACME-1557"],
       "closed_at": null,
       "blocked_by": [],
       "created_at": "2026-11-11T09:50:01.330439Z",
@@ -172,22 +158,15 @@
       "key": "ACME-3021",
       "rank": "zzzrVUZUUUUX",
       "claim": null,
-      "labels": [
-        "legion"
-      ],
+      "labels": ["legion"],
       "number": 3021,
       "parent": "ACME-1557",
       "status": "done",
-      "changed": [
-        "status",
-        "closed_at"
-      ],
+      "changed": ["status", "closed_at"],
       "project": "ACME",
       "last_seq": 17,
       "priority": 1,
-      "ancestors": [
-        "ACME-1557"
-      ],
+      "ancestors": ["ACME-1557"],
       "closed_at": "2026-11-15T00:44:38.16699Z",
       "blocked_by": [],
       "created_at": "2026-11-11T09:50:01.330439Z",
