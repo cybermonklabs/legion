@@ -13832,13 +13832,6 @@
           "open_asks": {
             "type": "integer"
           },
-          "projects": {
-            "description": "Never in an answer: the projects of the session's token (K6), which Dispatch reads to filter the agents list and serves to no caller (R4, R9)",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
           "roles": {
             "items": {
               "type": "string"

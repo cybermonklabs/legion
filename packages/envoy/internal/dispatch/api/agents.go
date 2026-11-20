@@ -20,7 +20,8 @@ type agentResponse struct {
 	// Projects shadows the embedded session's list, which encoding/json serves in its place, and
 	// nothing sets it, so no row names a session's projects: a viewer of PUB would read PRIV's key
 	// (R4), and a listed session's row would change in a deployment with no private project (R9).
-	Projects     []string `json:"projects,omitempty" description:"Never in an answer: the projects of the session's token (K6), which Dispatch reads to filter the agents list and serves to no caller (R4, R9)"`
+	// The OpenAPI document declares neither field (unservedFields).
+	Projects     []string `json:"projects,omitempty"`
 	OpenAsks     int      `json:"open_asks"`
 	LastActivity *string  `json:"last_activity"`
 }
