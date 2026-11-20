@@ -1322,7 +1322,7 @@ func TestMemoryGuardParsesAStatWhoseNameHoldsSpacesAndAParenthesis(t *testing.T)
 	// And through the scan, where the classifier reads it.
 	pod := newFakePod(t)
 	pod.add(fakeProcess{pid: 900, ppid: 7, start: 4242, name: "x) S 1 2 3 4 (y", exe: "/usr/bin/x", args: []string{"x"}})
-	table, err := scan(pod.proc)
+	table, err := Scan(pod.proc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1648,7 +1648,7 @@ func TestMemoryGuardNamesAProcessByItsExecutablesBaseNameOrItsStatName(t *testin
 		fakeProcess{pid: 900, ppid: 1, exe: "/opt/tool/bin/gr\now", args: []string{"grow", "SECRETPASS"}},
 		fakeProcess{pid: 901, ppid: 1, name: "gr\x1bow", unreadableExe: true, args: []string{"grow", "SECRETPASS"}},
 	)
-	table, err := scan(pod.proc)
+	table, err := Scan(pod.proc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1680,7 +1680,7 @@ func TestMemoryGuardScanReadsAtMostClassifierArgsBytesOfAMebibyteOfArguments(t *
 	}
 	cmdline := b.String()
 	pod.writeWhole(filepath.Join(pod.proc, "900", "cmdline"), cmdline)
-	table, err := scan(pod.proc)
+	table, err := Scan(pod.proc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1824,7 +1824,7 @@ func TestMemoryGuardEndsAProcessInStateZWhoseOtherThreadsRun(t *testing.T) {
 		fakeProcess{pid: 970, ppid: 100, args: []string{"python3", "threads.py"}, anon: 1500 * mib, zombie: true, threads: 3},
 		fakeProcess{pid: 971, ppid: 100, args: []string{"python3", "grow.py"}, anon: 600 * mib},
 	)
-	table, err := scan(pod.proc)
+	table, err := Scan(pod.proc)
 	if err != nil {
 		t.Fatal(err)
 	}

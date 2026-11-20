@@ -611,6 +611,13 @@ type LauncherStart struct {
 	Files         map[string]string `json:"files,omitempty"`
 	ResumeFile    string            `json:"resumeFile,omitempty"`
 	ResumeSession string            `json:"resumeSession,omitempty"`
+	// AgentExecutable is the agent's executable as /proc/<pid>/exe reads it once any start
+	// wrapper has exec'd it: an absolute path, such as the image's /opt/omp/bin/omp. Argv cannot
+	// say it, because a deployment's setup wraps the agent in `/bin/sh -c <script> legion-start`.
+	// The daemon fills it for an Oh My Pi launch, and a launcher with a session writer token
+	// knows the agent's process by it (internal/launcher's sessionPeer). It is empty for a
+	// Claude Code launch, whose agent writes no session itself.
+	AgentExecutable string `json:"agentExecutable,omitempty"`
 }
 
 // GenerationDir is the directory under a launcher's private directory that holds one generation's
