@@ -25,6 +25,9 @@ legion controller start	--config string	--daemon-url string
 legion gh	hidden	words unread
 legion git	hidden	words unread
 legion git-credential	hidden	words unread
+legion intake
+legion intake discard	--config string	--consumer string	--give-up int64	--operator-token-file string	--port int	--reason string	--through-seq uint64
+legion intake replay	--config string	--consumer string	--give-up int64	--operator-token-file string	--port int	--through-seq uint64
 legion issue
 legion issue status	--config string	--operator-token-file string	--port int
 legion launcher	hidden	--connect string	--metadata-identity-provider string	--metadata-workload-pool string	--microvm bool	--pod-uid string	--private-dir string	--role stringArray	--roles-dir string	--sandbox string	--session-database string	--session-impersonate-service-account string	--session-instance string	--session-user string	--stop-grace duration	--test-postgres bool	--token-file string

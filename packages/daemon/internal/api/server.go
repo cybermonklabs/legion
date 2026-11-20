@@ -70,6 +70,10 @@ type Options struct {
 	// intake.Consumers.Lag), which the state route reads after its transaction commits and serves as
 	// `consumers`. Nil, a daemon with no workflow and so no consumers, serves none.
 	ConsumerLag func(ctx context.Context) []intake.ConsumerLag
+	// Intake is the replay and the discard of the project's give-ups (intake.GiveUps), which the
+	// four give-up routes run. Nil, a daemon with no workflow and so no intake, answers those
+	// routes 503.
+	Intake GiveUps
 	// Supervisor is the claims the claim and operator routes post their requests to.
 	Supervisor Supervisor
 	// AwaitStream waits, bounded, until the claim's machine has handled every worker-stream event
@@ -316,6 +320,7 @@ type server struct {
 	// stateBound is Options.StateReadBound, resolved: stateReadBound where the caller set none.
 	stateBound  time.Duration
 	consumerLag func(ctx context.Context) []intake.ConsumerLag
+	giveUps     GiveUps
 	callerPod   func(addr netip.Addr) (string, bool)
 	supervisor  Supervisor
 	// awaitStream is Options.AwaitStream (apply).
@@ -411,6 +416,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		stateTransactions:  opts.StateTransactions,
 		stateBound:         opts.StateReadBound,
 		consumerLag:        opts.ConsumerLag,
+		giveUps:            opts.Intake,
 		callerPod:          opts.CallerPod,
 		supervisor:         opts.Supervisor,
 		awaitStream:        opts.AwaitStream,
@@ -534,6 +540,8 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/roots/close", s.closeRoot},
 		{"POST /legion/v1/children/park", s.parkChild},
 		{"POST /legion/v1/children/rerun", s.rerunChild},
+		{"POST /legion/v1/intake/replay", s.intakeReplay},
+		{"POST /legion/v1/intake/discard", s.intakeDiscard},
 
 		{"POST /legion/v1/operator/claims", s.operator(s.spawn)},
 		{"GET /legion/v1/operator/claims", s.operator(s.list)},
@@ -546,6 +554,8 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/operator/claims/{token}/forget-session", s.operator(s.forgetSession)},
 		{"POST /legion/v1/operator/claims/{token}/release-names", s.operator(s.releaseNames)},
 		{"POST /legion/v1/operator/claims/{token}/close", s.operator(s.closeTree)},
+		{"POST /legion/v1/operator/intake/replay", s.operator(s.operatorIntakeReplay)},
+		{"POST /legion/v1/operator/intake/discard", s.operator(s.operatorIntakeDiscard)},
 
 		// The catch-all answers every unrouted request, including a known path asked for with the
 		// wrong method: "no route" is the whole story the plugin, the operator's CLI, or a proof
@@ -851,10 +861,12 @@ func statementBound(bound time.Duration) int64 {
 // mergeWaitContract, the contract that added what a reviewing issue's round waits on from
 // GitHub, is served it without `mergeWait` (withoutMergeWait); a caller below
 // assignmentsContract, the contract that added the experiment answers each issue runs under, is
-// served every issue without `assignments` (withoutAssignments); and a caller below
+// served every issue without `assignments` (withoutAssignments); a caller below
 // entryTimesContract, the contract that added the two times of the task that entry was queued
 // as and the arms of the architect-stalled reading that hold for a root, is served it without
-// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes).
+// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes); and a caller
+// below intakeGiveUpsContract, the contract that added the intake's open give-ups, is served it
+// without `intakeGiveUps` (withoutIntakeGiveUps).
 // The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
 // carrying none of the keys they strip, the line's own fields being fields of a view such a
@@ -983,6 +995,7 @@ var stateNarrowings = []stateNarrowing{
 	{mergeWaitContract, carriesMergeWait, withoutMergeWait, "the issues' mergeWait"},
 	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
 	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt, entryConfirmedAt and architectStalls"},
+	{intakeGiveUpsContract, carriesIntakeGiveUps, withoutIntakeGiveUps, "intakeGiveUps"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1165,6 +1178,15 @@ const assignmentsContract = 141
 // it with no row of stateNarrowings between the two, so a caller in a pod at or above
 // assignmentsContract and below this contract is served `assignments` and not these three keys.
 const entryTimesContract = 146
+
+// intakeGiveUpsContract is the daemon contract that added `intakeGiveUps`, the intake's open
+// give-ups, each consumer's count and the newest records (version.go's 184). A plugin before it is
+// served the state without the key: one built before sjawhar/legion#2788 reads it with a strict
+// schema and would refuse the whole body for a key it does not name, and one built after strips
+// the key instead, so the strip is what keeps the give-ups from a caller that did not ask for them
+// rather than what keeps such a caller reading at all. It is this daemon's own contract, so a
+// renumber of DaemonAPIVersion at a forward merge moves this number with it.
+const intakeGiveUpsContract = 184
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -1621,6 +1643,23 @@ func withoutWakesWaiting(state State) State {
 // carries neither key.
 func withoutClaimsToRefresh(state State) State {
 	state.ClaimsToRefresh, state.claimsToRefreshHidden = 0, true
+	return state
+}
+
+// carriesIntakeGiveUps is whether state carries the key intakeGiveUpsContract added:
+// `intakeGiveUps`. It carries that key whatever the intake holds, since the state writes it on
+// every body, its two lists empty rather than null (IntakeGiveUpsView.MarshalJSON), and the strict
+// reader before the contract refuses the empty key as surely as one naming a give-up. So this is
+// true of every state the route writes, as carriesWakesWaiting is.
+func carriesIntakeGiveUps(State) bool { return true }
+
+// withoutIntakeGiveUps is state with no `intakeGiveUps`, the one key intakeGiveUpsContract added
+// to this route; the contract's four give-up routes are new routes, which no older plugin calls.
+// The key is left off rather than emptied, for the reason withoutWakesWaiting leaves off
+// `wakesWaiting` (State.intakeGiveUpsHidden); the flag is set on a value of the state's own, so
+// the state the source answered is left as it was.
+func withoutIntakeGiveUps(state State) State {
+	state.IntakeGiveUps, state.intakeGiveUpsHidden = IntakeGiveUpsView{}, true
 	return state
 }
 

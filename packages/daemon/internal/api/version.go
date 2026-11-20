@@ -2420,4 +2420,55 @@ package api
 // #4485, #4493 and this change's own head before this merge, and nothing above 167. Read the
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
-const DaemonAPIVersion = 168
+//
+// 184: INFRA-1575 -- the intake gives up on a message whose handling keeps failing, keeps it
+// whole, tells the controller, and lets the operator or the controller replay it or discard it.
+// `GET /legion/v1/state` gains `intakeGiveUps` (`api.IntakeGiveUpsView`), written on every body:
+// `consumers`, each durable consumer with an open give-up as `{name, open, newestSeq}`, the newest
+// stream sequence being the `throughSeq` of a bulk replay or discard of all of them, and `newest`,
+// the newest open give-ups, latest given up first, at most 50, each `{id, consumer, subject,
+// streamSeq, storedAt, eventId, deliveries, gaveUpAt, reason, lastError}`, where `eventId` is null
+// for a message that did not decode and `lastError` is the first 300 characters of the record's
+// error; both lists are empty rather than null. A caller from a pod whose claims record a contract
+// below 184 is served the state without the key (api's stateFor, withoutIntakeGiveUps), composed
+// with every narrowing below it, which is why `packages/contracts/src/legion-api.ts` declares it
+// optional, as it declares `wakesWaiting`. The controller's two routes, `POST
+// /legion/v1/intake/replay` and `POST /legion/v1/intake/discard` (`api.IntakeReplayRequest`,
+// `api.IntakeDiscardRequest`), take `grantId` and a selection: `giveUp`, one record's id, or
+// `consumer` with `throughSeq`, every open record of that consumer at or below that sequence; the
+// discard takes `reason` too. They answer `api.IntakeReplayResponse` (`replayed`, each record's
+// `{id, consumer, streamSeq, outcome, error}`, the outcome `applied`, `already applied`, `no fact`
+// or `failed`, and `remaining`) and `api.IntakeDiscardResponse` (`discarded`, the ids it closed),
+// and refuse 400 `GIVE_UP_REQUEST_INVALID` for a selection of neither form or both and a discard
+// with no reason or one longer than 2,048 characters, 403 `CONTROLLER_REQUIRED` for a grant that
+// is not the controller's, 404 `GIVE_UP_NOT_FOUND` for an id of no give-up of the project, 409
+// `GIVE_UP_CLOSED`, naming how and when, for an id the action may not take, 409
+// `GIVE_UP_BEING_REPLAYED` for an id a running replay holds, and 503 `NO_INTAKE` on a daemon
+// with no intake. A controller grant names the session it was minted for
+// (`credential.Grant.Session`), so the record keeps `controller session <id>` as who closed a
+// record, and `operator` for a controller grant the operator's bearer minted. The operator's two
+// routes, `POST /legion/v1/operator/intake/replay` and `POST /legion/v1/operator/intake/discard`,
+// take the same bodies without `grantId` and answer the same; `legion intake replay` and `legion
+// intake discard` post them, and they are not narrowed: their reader is the `legion` built with
+// this daemon. The controller notice kind `intake-gave-up` (`record.IntakeGaveUpNotice`), with
+// `record.Notice`'s `count` and `giveUps`, reaches the controller's topic, a minute after the
+// give-up that opens it, with every give-up of that minute joined to it. A plugin of this contract
+// under an older daemon finds no route for the controller's two (404), and the bump is what keeps
+// the two apart.
+//
+// The change carries store migration `20261120001432_intake_failures`, which adds
+// `intake_failures` and `cleared_pull_requests`. An older daemon binary put back on this schema
+// decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), so
+// an unsent `intake-gave-up` notice row is refused at every attempt and logged `outbox row failed`
+// each time; and it applies or drops a message with an open failure without telling the table, so
+// after a roll forward the sweep would give up as passed a message that applied. The way back is
+// the migration header's last paragraph (`migrations.WayBack`), the same text `docs/kubernetes.md`
+// carries under "Rolling back the release that gives up on intake messages": with the daemon
+// stopped, delete the project's unsent `intake-gave-up` controller notices and its open failures,
+// each statement naming the project. The given-up records and both tables stay, which the older
+// binary never reads and a roll forward finds in place.
+// (This entry takes 184: the base of this branch declared 168, main declared 178 when it was read
+// on 2026-11-20, and the open pull requests read that day declared 179, 180, 181, 182 and 183, so
+// 184 is the lowest number above main's that no open head declares. Read main's own number and
+// every open pull request again at the next merge rather than from this line.)
+const DaemonAPIVersion = 184

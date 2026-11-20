@@ -28,9 +28,10 @@ var (
 	ErrUnavailable = errors.New("grant is unavailable")
 )
 
-// Grant is the in-memory capability returned by Mint or MintController. ID is the bearer and is
-// never persisted or logged. CapabilityHash is deliberately private: routes compare it through
-// StillMatches, so a grant authenticates only while its claim holds the capability that minted it.
+// Grant is the in-memory capability returned by Mint, MintController or MintControllerSession. ID
+// is the bearer and is never persisted or logged. CapabilityHash is deliberately private: routes
+// compare it through StillMatches, so a grant authenticates only while its claim holds the
+// capability that minted it.
 type Grant struct {
 	ID         string
 	Issue      string
@@ -40,6 +41,10 @@ type Grant struct {
 	Claim      claim.Token
 	ExpiresAt  time.Time
 	Controller bool
+	// Session is the controller session a controller grant was minted for (MintControllerSession),
+	// which a route that records who acted names; empty for a grant the operator's bearer minted
+	// and for every claim grant.
+	Session string
 
 	capabilityHash []byte
 }
@@ -85,15 +90,26 @@ func (g *Grants) Mint(c supervise.Claim) (Grant, error) {
 	return grant, nil
 }
 
-// MintController records a sixty-second controller grant: for the operator's bearer, or for the
-// session registered with the current controller capability. Authorization happens at the route:
-// the service keeps no bearer and cannot accidentally copy one into a grant record.
+// MintController records a sixty-second controller grant for the operator's bearer. Authorization
+// happens at the route: the service keeps no bearer and cannot accidentally copy one into a grant
+// record.
 func (g *Grants) MintController() (Grant, error) {
+	return g.mintController("")
+}
+
+// MintControllerSession records a sixty-second controller grant for session, the session the route
+// authenticated as registered with the current controller capability, and names it on the grant
+// (Grant.Session), so a route the grant is redeemed on records which session acted.
+func (g *Grants) MintControllerSession(session string) (Grant, error) {
+	return g.mintController(session)
+}
+
+func (g *Grants) mintController(session string) (Grant, error) {
 	id, err := grantID()
 	if err != nil {
 		return Grant{}, err
 	}
-	grant := Grant{ID: id, ExpiresAt: g.now().Add(ttl), Controller: true}
+	grant := Grant{ID: id, ExpiresAt: g.now().Add(ttl), Controller: true, Session: session}
 	g.record(grant)
 	return grant, nil
 }
