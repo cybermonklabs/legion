@@ -38,8 +38,11 @@ jobs:
     # (internal/cipher/natscallout) add two test binaries to that compile and two packages,
     # natscallout and natsgrant, since the rest of their race build (`go list -deps -test -race`)
     # is the other packages' already, and they measured 28 s and 46 s under -race on a dev box,
-    # where cmd/listener took 785 s here (run 43875539224), so the sum stands.
-    timeout-minutes: 45
+    # where cmd/listener took 785 s here (run 43875539224), so the sum stands. Each forced-order
+    # step then compiles a hooked nats-server and the packages above it under the detector again,
+    # up to 5 minutes, and runs under forced-order.sh's -timeout of 10 minutes, 15 each, so 66 in
+    # all.
+    timeout-minutes: 75
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -66,6 +69,22 @@ jobs:
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials and the NATS auth service
         run: go test -count=1 -race -timeout 30m ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... ./natscred/ ./internal/cipher/natscallout/
+        working-directory: packages/envoy
+
+      # The forced-order tests (packages/envoy/scripts/forced-order.sh): every TestForcedOrder
+      # test of the packages named, built with -tags odatrace and -race against a nats-server whose
+      # own code carries the hold points internal/testnats/hooks.go drives. The first step names
+      # no version, so it hooks the nats-server the workspace links, which the hub runs; when
+      # go.mod moves to a version internal/testnats/testdata/hooked has no hooks for, the script
+      # refuses it and the step fails until the hooks are ported. The second step hooks v2.10.29.
+      # The script also fails a package that declares no such test. Neither step sets an
+      # environment variable: check-ci-filters.sh reduces no go command of a job one of whose
+      # steps sets a GO* name.
+      - name: Forced-order tests on the hooked nats-server the module links
+        run: scripts/forced-order.sh ./internal/testnats/hooktest/
+        working-directory: packages/envoy
+      - name: Forced-order tests on the hooked nats-server v2.10.29
+        run: scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run
