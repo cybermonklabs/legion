@@ -228,15 +228,39 @@ export class SignInEndedError extends Error {
   }
 }
 
+/** The command that logs a machine in at the broker's device grant, which every refusal a new
+ *  device login cures names (`device-login.ts`). */
+export const DEVICE_LOGIN_COMMAND = "dispatch login --device";
+
+/**
+ * A device login the broker no longer honours: its refresh was answered `invalid_grant`, because
+ * its credential was revoked or ran out, or its refresh token was presented again after its
+ * rotation's grace, which revokes the login (`oauthstore.Store.RevokeRefreshToken`). Like a
+ * sign-in the issuer ended it is final ({@link isFinalRefusal}): only a new
+ * {@link DEVICE_LOGIN_COMMAND} cures it. `login` names the login as its source describes it, and
+ * it keeps no cause: the library's error holds the broker's answer.
+ */
+export class DeviceLoginEndedError extends Error {
+  constructor(login: string) {
+    super(
+      `the secrets broker no longer honours ${login}: it was revoked or ran out; run: ${DEVICE_LOGIN_COMMAND}`
+    );
+    this.name = "DeviceLoginEndedError";
+  }
+}
+
 /**
  * Whether `error` ends the identity a client trades for good: a broker's refusal no retry can
- * cure (`BrokerRefusedError.permanent`), or a sign-in the issuer has ended
- * ({@link SignInEndedError}). A client drops the token in hand on one rather than answer it
+ * cure (`BrokerRefusedError.permanent`), a sign-in the issuer has ended
+ * ({@link SignInEndedError}), or a device login the broker has ended
+ * ({@link DeviceLoginEndedError}). A client drops the token in hand on one rather than answer it
  * until it lapses, and a caller that remembers refusals remembers these alone: remembering the
  * broker's 429 or a clock-skewed proof would stop a client a later trade would have answered.
  */
 export function isFinalRefusal(error: unknown): boolean {
   return (
-    (error instanceof BrokerRefusedError && error.permanent) || error instanceof SignInEndedError
+    (error instanceof BrokerRefusedError && error.permanent) ||
+    error instanceof SignInEndedError ||
+    error instanceof DeviceLoginEndedError
   );
 }

@@ -17,6 +17,7 @@ import {
   parseCommand,
 } from "./dispatch-command";
 import { defined } from "./dispatch-commands/context";
+import { loginCommand } from "./dispatch-commands/login";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
 import { checkDispatchCall, dispatchServerUrls, executeDispatchTool } from "./dispatch-execute";
@@ -56,6 +57,9 @@ export interface DispatchCliIo {
   /** Which of `names` this process's nearest ancestor runs as; `/proc` by default, a seam for a
    *  test of a shell that carries two hosts' variables. */
   readonly nearestAncestorNamed?: (names: readonly string[]) => string | undefined;
+  /** Waits between two polls of `dispatch login --device`'s code; a timer by default, a seam for
+   *  a test that answers the poll at once. */
+  readonly sleep?: ((ms: number, signal?: AbortSignal) => Promise<void>) | undefined;
 }
 
 /** Exit codes, as `skill://dispatch` states them: written or read, a refusal, and a usage error.
@@ -240,6 +244,15 @@ export async function runDispatchCli(
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(rawEnv)) {
     if (value !== undefined && value !== "") env[name] = value;
+  }
+  // `dispatch login` logs the machine in, before any session of it exists: a person runs it in a
+  // terminal, so it reads no host, no session and no envoy.json (`dispatch-commands/login.ts`).
+  if (argv[0] === "login") {
+    return await loginCommand(argv.slice(1), env, {
+      print,
+      fetchImpl: io.fetchImpl,
+      sleep: io.sleep,
+    });
   }
   // A refusal before the call reaches Dispatch goes to the session's ledger too, whenever this
   // call knows its session, so a reader of the ledger (pi-envoy's run-end check, the

@@ -275,6 +275,51 @@ export function requestInit(
   };
 }
 
+/** The most recent `DPoP-Nonce` a server sent one client, which every later proof to it carries
+ *  (RFC 9449 Section 8). */
+export interface DpopNonce {
+  value: string;
+}
+
+/**
+ * One request `openid-client` asked for in `options`, sent through `fetch` with a DPoP proof of
+ * `key` naming the request's method and URL and the nonce `nonce` holds, and sent once more when
+ * the server answers `use_dpop_nonce` with a nonce to carry. A nonce any answer sends is kept in
+ * `nonce` for the next proof. The broker's exchange and a device login's poll and refresh
+ * (`device-login.ts`) send through it, so every request to the token endpoint is proved alike.
+ */
+export async function sendWithProof(
+  proved: { readonly key: DpopKey; readonly fetch: typeof fetch; readonly nonce: DpopNonce },
+  url: string,
+  options: CustomFetchOptions,
+  signal: AbortSignal | undefined
+): Promise<Response> {
+  const send = async (): Promise<Response> => {
+    const headers = new Headers(options.headers);
+    headers.set(
+      "DPoP",
+      await proved.key.proof({ method: options.method, url, nonce: proved.nonce.value })
+    );
+    return await proved.fetch(url, requestInit(options, signal, headers));
+  };
+  let answer = await send();
+  const given = answer.headers.get("DPoP-Nonce") ?? "";
+  if (given !== "") proved.nonce.value = given;
+  if (answer.status === 400 && given !== "") {
+    const body: unknown = await answer
+      .clone()
+      .json()
+      .catch(() => null);
+    const asked =
+      typeof body === "object" &&
+      body !== null &&
+      "error" in body &&
+      body.error === "use_dpop_nonce";
+    if (asked) answer = await send();
+  }
+  return answer;
+}
+
 /** Trades this client's identity for the broker's access tokens and keeps one live. */
 export class BrokerTokenClient {
   readonly #brokerUrl: string;
@@ -292,7 +337,7 @@ export class BrokerTokenClient {
   readonly #fetch: typeof fetch;
   readonly #random: () => number;
   /** The most recent `DPoP-Nonce` the broker sent, carried in every later proof. */
-  #nonce = "";
+  readonly #nonce: DpopNonce = { value: "" };
   #held: BrokerToken | null = null;
   /** When the token in hand is traded again: {@link DEFAULT_RENEW_BEFORE_MS} (or the client's
    *  own) ahead of its expiry, or halfway through what was left of its life when it landed for a
@@ -675,17 +720,29 @@ export class BrokerTokenClient {
   }
 
   /**
-   * One RFC 8693 exchange: the subject token this moment's source answers, the actor token where a
-   * person is signing in, the session name, whether this trade declines the launcher credential
-   * its identity holds, and a DPoP proof of this client's key.
+   * One RFC 8693 exchange of this moment's subject token: through the source's own `spend`
+   * where it has one, so a token another process can end stays good until the exchange settles
+   * (a device login's), and otherwise of the token the source reads (`#exchange`).
+   */
+  async #trade(signal: AbortSignal | undefined): Promise<BrokerToken> {
+    const source = this.#subject;
+    if (source.spend !== undefined) {
+      return await source.spend((subject) => this.#exchange(subject, signal), signal);
+    }
+    return await this.#exchange(await source.read(signal), signal);
+  }
+
+  /**
+   * One RFC 8693 exchange: `subject`, the actor token where a person is signing in, the session
+   * name, whether this trade declines the launcher credential its identity holds, and a DPoP
+   * proof of this client's key.
    *
    * `openid-client` makes the request and reads the answer — the grant type, the client id, the
    * form encoding, the endpoint and the shape of what came back — and the proof is signed by the
    * fetch it is given, so one signer serves the token endpoint and every later request this
    * process makes with the token it got.
    */
-  async #trade(signal: AbortSignal | undefined): Promise<BrokerToken> {
-    const subject = await this.#subject.read(signal);
+  async #exchange(subject: SubjectToken, signal: AbortSignal | undefined): Promise<BrokerToken> {
     // Held, with the actor's and the minted token, so every line this process prints is scrubbed
     // of them (`@legion/contracts/held-secrets`): a broker at the wrong URL can echo them. Each is
     // held until an hour past its lapse (`heldUntil`), so a session that trades all its life holds
@@ -776,10 +833,9 @@ export class BrokerTokenClient {
   }
 
   /**
-   * One request through the caller's fetch with a DPoP proof of this client's key, retried once
-   * when the broker answers `use_dpop_nonce` with a nonce to carry (RFC 9449 Section 8). The
-   * answer's own body is kept in `raw`, since `openid-client` lowercases `token_type` (RFC 6749
-   * makes it case-insensitive) while the corpus names the spelling the broker wrote.
+   * One request with a proof of this client's key ({@link sendWithProof}). The answer's own body
+   * is kept in `raw`, since `openid-client` lowercases `token_type` (RFC 6749 makes it
+   * case-insensitive) while the corpus names the spelling the broker wrote.
    */
   async #send(
     url: string,
@@ -787,29 +843,12 @@ export class BrokerTokenClient {
     signal: AbortSignal | undefined,
     raw: { body: unknown }
   ): Promise<Response> {
-    const send = async (): Promise<Response> => {
-      const headers = new Headers(options.headers);
-      headers.set(
-        "DPoP",
-        await this.#key.proof({ method: options.method, url, nonce: this.#nonce })
-      );
-      return await this.#fetch(url, requestInit(options, signal, headers));
-    };
-    let answer = await send();
-    const given = answer.headers.get("DPoP-Nonce") ?? "";
-    if (given !== "") this.#nonce = given;
-    if (answer.status === 400 && given !== "") {
-      const body: unknown = await answer
-        .clone()
-        .json()
-        .catch(() => null);
-      const asked =
-        typeof body === "object" &&
-        body !== null &&
-        "error" in body &&
-        body.error === "use_dpop_nonce";
-      if (asked) answer = await send();
-    }
+    const answer = await sendWithProof(
+      { key: this.#key, fetch: this.#fetch, nonce: this.#nonce },
+      url,
+      options,
+      signal
+    );
     raw.body = await answer
       .clone()
       .json()

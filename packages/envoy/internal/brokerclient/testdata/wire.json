@@ -247,6 +247,47 @@
       }
     },
     {
+      "name": "a device login trades its machine login's access token",
+      "about": "A machine with no platform identity of its own, such as a person's laptop, logs in once through the broker's device grant and keeps that login (AGENT_SECRETS_MACHINE_IDENTITY=device-login). It presents the access token the login holds under RFC 8693's own access_token type, with no actor: the login already names the person who approved it. The proof is signed with the login's own key, since the access token is bound to it. The trade names the projects its session works on, and sends no launcher_credential parameter: a trade of a machine login's token mints no launcher credential, so the answer names none.",
+      "subject": {
+        "kind": "machine-login-access-token",
+        "token": "not-a-secret-machine-login-access-token",
+        "token_type": "urn:ietf:params:oauth:token-type:access_token"
+      },
+      "session": "ada-laptop-1",
+      "projects": ["OEDGE"],
+      "form": {
+        "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+        "client_id": "dispatch-token-exchange",
+        "subject_token": "${subject_token}",
+        "subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
+        "session": "${session}",
+        "projects": "${projects}"
+      },
+      "proof": {
+        "header": { "typ": "dpop+jwt", "alg": "ES256", "jwk": "${public_jwk}" },
+        "claims": { "jti": "${jti}", "htm": "POST", "htu": "${token_endpoint}", "iat": "${iat}" }
+      },
+      "answer": {
+        "status": 200,
+        "body": {
+          "access_token": "not-a-secret-broker-access-token-for-the-device-login",
+          "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+          "token_type": "DPoP",
+          "expires_in": 900
+        }
+      },
+      "expect": {
+        "outcome": "accept",
+        "token": {
+          "access_token": "not-a-secret-broker-access-token-for-the-device-login",
+          "token_type": "DPoP",
+          "expires_in": 900,
+          "credential_id": ""
+        }
+      }
+    },
+    {
       "name": "the broker refuses the identity",
       "about": "An identity no entry lists, a revoked sign-in, a token of the wrong audience: a refusal no retry can cure. The client stops with a plain error carrying what the broker said, and holds no token.",
       "subject": {
