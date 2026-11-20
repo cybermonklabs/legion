@@ -48,8 +48,9 @@ export interface ModelFallbackContext {
   readonly modelRegistry?: SessionContext["modelRegistry"];
   /** The host's `ctx.isIdle()`: false while a turn runs. The timer's return waits for it. */
   readonly isIdle?: () => boolean;
-  /** The host's `ctx.hasPendingMessages()`: true while a message waits to steer or follow the
-   * turn, which a continuation then reads its model for. The timer's return waits for it too. */
+  /** The host's `ctx.hasPendingMessages()`: true while the host holds a message to steer or follow
+   * the turn, which a continuation then reads its model for. The timer counts a pane that holds
+   * one as busy even when it runs no turn, so it makes no return while the message is held. */
   readonly hasPendingMessages?: () => boolean;
 }
 
@@ -111,7 +112,10 @@ export interface ModelFallback {
    *   later, and so on until a firing finds it idle, or until a hook has made the return; a busy
    *   turn's next `context` hook makes it one request on the fallback model later. A run that an
    *   agent-initiated wake starts before the first idle firing begins on the fallback model and
-   *   comes back at its second request.
+   *   comes back at its second request. A message the host holds on a pane that runs no turn
+   *   keeps the timer firing four times a second and making no return until a hook runs: the
+   *   run that message starts comes back as on main, at its `before_agent_start` when it is a
+   *   prompt and at its second request otherwise.
    *
    * An arming of any other cause waits for the host to stop suppressing its model, which no time
    * says, so it sets no timer: only the two hooks end it, and a run no prompt starts can begin on
@@ -228,8 +232,9 @@ const LONGEST_TIMER_MS = 2_147_483_647;
  *
  * At 250 ms the return misses 0.1-0.2% of cards and IRC wakes and 1.7% of job results beyond the
  * 9.4% no interval catches; at 5 s it would miss about 6% of cards and IRC wakes. A firing reads
- * the pane's context, the session's claim and two host flags, so four a second while a turn runs
- * is a small cost against a turn's own requests.
+ * the pane's context, the session's claim and two host flags, and the timer fires four times a
+ * second for as long as the pane is busy: while a turn runs, and while the host holds a message on
+ * a pane that runs no turn, until a hook runs. That is a small cost against a turn's own requests.
  */
 const BUSY_RECHECK_MS = 250;
 
