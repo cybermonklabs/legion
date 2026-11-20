@@ -1211,12 +1211,14 @@ downloaded over each other. It runs from $GITHUB_WORKSPACE, this step's own dire
 and its log names the attempt it took for each leg.
 
 The step's id, `select-blobs`, is how "Reading one, the rows" reads its conclusion beside the
-download's. Reading one reads only this step's directory, and this step runs only after a
-download that succeeded. So a leg is named as having sent no blob only when both steps
-succeeded. When either step did not complete, reading one names that step and how it ended,
-and says nothing of the legs. Run 44754426131, attempt 1, is why: the job's limit cancelled
-its `bun install`, both steps were skipped, and reading one named four shards as having sent
-no blob, though each blob had been uploaded before the job started.
+download's. Reading one reads only this step's directory; this step runs only after a download
+that succeeded, and the merge step only after this step succeeded. So a leg is named as having
+sent no blob only when both steps succeeded. When either did not, reading one names that step
+and how it ended, says that the job made no merged report, and names the legs whose blob and
+whose count it did not read, claiming nothing about whether those legs uploaded. Run
+44754426131, attempt 1, is why: the job's limit cancelled its `bun install`, both steps were
+skipped, and reading one named four shards as having sent no blob, though each blob had been
+uploaded before the job started.
 
 ## What the merged report's three outputs are for
 

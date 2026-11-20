@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # Tests for `dispatch-browser-reading-rows.sh`, reading one of dispatch-browser.yaml's merge job.
 # The cases cover what it says about the legs' blob reports and row counts for each way its two
-# input steps can end ("Download every leg's blob report" and "Take the newest attempt of each
-# leg's blob report": success, failure, cancelled, skipped), and for a run whose every owed blob
-# arrived.
+# input steps can end. The download ("Download every leg's blob report") succeeded, failed, was
+# cancelled, was skipped, or ended in a conclusion the script does not know. The selection after
+# a download that succeeded ("Take the newest attempt of each leg's blob report") succeeded,
+# failed, was skipped, or was cancelled part of the way or after it had copied every leg. Where
+# both succeeded, the cases cover a leg's blob or count absent, a count that holds no number, a
+# merged report that is absent, not JSON or holds stats that sum to no whole number, and a merged
+# total equal to, under or over the legs'.
 #
 # The case it was written for is run 44754426131, attempt 1. There the job's time limit
 # cancelled the merge job's `bun install`, both steps were skipped, and this reading said "no
@@ -51,9 +55,10 @@ fi
 # fixture <name>: one case's root, with its $RUNNER_TEMP, its step summary, the script under
 # test and the stand-in run-reads script. The stand-in writes the jobs in `jobs.fixture.json` to
 # the out-file it is given, in the shape the real read writes: an array of {id, name,
-# conclusion, leg}. The four shards ran and the alone job was skipped, as on the pull-request
-# lane, so no alone leg owes a blob. Echoes the root. A repeated name is refused here rather
-# than surfacing as one case reading another's files.
+# conclusion, leg}. The four shards ran and the alone leg was skipped, so it owes no blob. It
+# carries a leg name, so only the script's filter on the conclusion keeps it out of the legs that
+# owe one. Echoes the root. A repeated name is refused here rather than surfacing as one case
+# reading another's files.
 fixture() {
   local root="$work/$1"
   if [ -e "$root" ]; then
@@ -77,7 +82,7 @@ STANDIN
   {"id": 12, "name": "dispatch-browser / shard (2)", "conclusion": "success", "leg": "shard-2"},
   {"id": 13, "name": "dispatch-browser / shard (3)", "conclusion": "success", "leg": "shard-3"},
   {"id": 14, "name": "dispatch-browser / shard (4)", "conclusion": "success", "leg": "shard-4"},
-  {"id": 15, "name": "dispatch-browser / alone", "conclusion": "skipped", "leg": null},
+  {"id": 15, "name": "dispatch-browser / alone (webkit-alone)", "conclusion": "skipped", "leg": "alone-webkit-alone"},
   {"id": 16, "name": "dispatch-browser / merge", "conclusion": null, "leg": null}
 ]
 JOBS
@@ -145,16 +150,24 @@ check "fails the step" "$(is "$status" 1)"
 check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
 check "naming the download step and that it did not run" \
   "$(contains "$(error_line)" "the step \"Download every leg's blob report\" did not run (it concluded skipped)")"
-check "and the four legs whose rows the merged report lacks" \
-  "$(contains "$(error_line)" 'of: shard-1 shard-2 shard-3 shard-4, and the merged report is short')"
+check "and that this job made no merged report, since the merge step never ran" \
+  "$(contains "$(error_line)" "so this job made no merged report: the step \"Merge the legs' blob reports into one report\" runs only after the selection succeeds\.")"
+check "rather than a merged report short of rows" \
+  "$(is "$(contains "$(error_line)" 'merged report is short')" false)"
+check "naming the legs whose blob it did not read, without saying they sent none" \
+  "$(contains "$(error_line)" 'read no blob report of: shard-1, shard-2, shard-3, shard-4, which does not say that those legs sent none\.')"
+check "and, apart, the legs whose count it did not read" \
+  "$(contains "$(error_line)" 'It read no row count of: shard-1, shard-2, shard-3, shard-4\.')"
 check "while it does not say those legs sent no blob" \
   "$(is "$(contains "$(error_line)" 'no blob report arrived')" false)"
-check "and says so in words" \
-  "$(contains "$(error_line)" 'This does not say that those legs sent no blob')"
-check "without naming a cause the job did not show it" \
-  "$(contains "$(error_line)" "a step that failed before the download or the job's cancellation")"
+check "sending the reader to the job's log" \
+  "$(contains "$(error_line)" "This job's log shows what stopped that step\.$")"
+check "and naming no cause, which this job did not see" \
+  "$(is "$(contains "$(error_line)" 'cancellation\|install\|limit\|failed before')" false)"
 check "nor that no row failed, which this job did not read" \
   "$(is "$(contains "$(error_line)" 'no row of the suite failed')" false)"
+check "nor a step that would say whether a row failed" \
+  "$(is "$(contains "$(error_line)" 'verdict step')" false)"
 check "the notice does not say the legs printed 0 rows" \
   "$(is "$(contains "$(notice_line)" 'against 0 printed')" false)"
 check "it says no count was read" \
@@ -165,7 +178,7 @@ check "the summary table says neither each leg's count nor its blob was read" \
   "$(is "$(table_rows "$root" '| not read | not read |$')" 4)"
 check "and holds no MISSING, which is the word for a blob the selection did not find" \
   "$(is "$(table_rows "$root" 'MISSING')" 0)"
-check "the legs the lane skipped owe nothing and are not named" \
+check "the leg the lane skipped owes nothing and is not named" \
   "$(is "$(contains "$out" 'alone')" false)"
 
 echo "case: the merge job's step passes the script both conclusions"
@@ -181,22 +194,20 @@ check "and the selection step carries that id" \
 echo "case: the download step was cancelled with one leg's artifact already on the runner"
 # The limit reached the download itself. The selection after it was skipped, so shard 2's
 # artifact sits under blobs/ and no leg reached selected-blobs/. The table must not call it
-# missing or never downloaded: this job did not read it.
+# missing: this job did not read it.
 root=$(fixture cancelled)
 downloaded "$root" shard-2 40
 run_rows "$root" cancelled skipped
 check "fails the step" "$(is "$status" 1)"
 check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
-check "naming the download as cancelled before it completed" \
-  "$(contains "$(error_line)" 'was cancelled before it completed (it concluded cancelled)')"
+check "naming the download as cancelled before it completed, and no merged report" \
+  "$(contains "$(error_line)" 'was cancelled before it completed (it concluded cancelled), so this job made no merged report')"
 check "and every leg, since none reached this reading" \
-  "$(contains "$(error_line)" 'of: shard-1 shard-2 shard-3 shard-4, and the merged report is short')"
+  "$(contains "$(error_line)" 'read no blob report of: shard-1, shard-2, shard-3, shard-4,')"
 check "while it does not say those legs sent no blob" \
   "$(is "$(contains "$(error_line)" 'no blob report arrived')" false)"
 check "the table calls shard 2's blob not read, which it was not" \
   "$(is "$(table_rows "$root" '^| shard-2 | not read | not read |$')" 1)"
-check "and claims of no leg that it was never downloaded" \
-  "$(is "$(table_rows "$root" 'not downloaded')" 0)"
 
 echo "case: the download succeeded and the selection failed"
 # This reading reads only what the selection wrote, so a selection that failed leaves it
@@ -206,15 +217,18 @@ for each in 1 2 3 4; do downloaded "$root" "shard-$each" 30; done
 run_rows "$root" success failure
 check "fails the step" "$(is "$status" 1)"
 check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
-check "naming the selection step and that it failed after the download" \
-  "$(contains "$(error_line)" "the step \"Take the newest attempt of each leg's blob report\" failed after the download succeeded")"
-check "and the four legs" "$(contains "$(error_line)" 'of: shard-1 shard-2 shard-3 shard-4, and the merged report is short')"
+check "naming the selection step, that it failed after the download, and no merged report" \
+  "$(contains "$(error_line)" "the step \"Take the newest attempt of each leg's blob report\" failed after the download succeeded, so this job made no merged report")"
+check "and the four legs, without saying they sent no blob" \
+  "$(contains "$(error_line)" 'read no blob report of: shard-1, shard-2, shard-3, shard-4, which does not say that those legs sent none\.')"
 check "while it does not say those legs sent no blob" \
   "$(is "$(contains "$(error_line)" 'no blob report arrived')" false)"
+check "the table says neither each leg's count nor its blob was read" \
+  "$(is "$(table_rows "$root" '| not read | not read |$')" 4)"
+check "and holds no MISSING" "$(is "$(table_rows "$root" 'MISSING')" 0)"
 
 echo "case: the download succeeded and the selection was skipped"
-# A skipped step writes no line of its own, so the message sends the reader to the job's log and
-# promises no line of that step.
+# A skipped step writes no line of its own, so the message sends the reader to the job's log.
 root=$(fixture selection-skipped)
 for each in 1 2 3 4; do downloaded "$root" "shard-$each" 30; done
 run_rows "$root" success skipped
@@ -222,9 +236,48 @@ check "fails the step" "$(is "$status" 1)"
 check "naming the selection step and that it did not run" \
   "$(contains "$(error_line)" "blob report\" did not run (it concluded skipped) after the download succeeded")"
 check "sending the reader to the job's log" \
-  "$(contains "$(error_line)" "this job's log shows what stopped that step")"
-check "and promising no line the skipped step never wrote" \
-  "$(is "$(contains "$(error_line)" "that step's own lines")" false)"
+  "$(contains "$(error_line)" "This job's log shows what stopped that step\.$")"
+check "the table says neither each leg's count nor its blob was read" \
+  "$(is "$(table_rows "$root" '| not read | not read |$')" 4)"
+check "and holds no MISSING" "$(is "$(table_rows "$root" 'MISSING')" 0)"
+
+echo "case: the selection was cancelled after it had copied part of the legs"
+# The selection copies each leg's blob, then its count. Cancelled after shard 1 whole and shard
+# 2's blob, it leaves shard 2 with no count and shards 3 and 4 with neither.
+root=$(fixture selection-cancelled-part)
+for each in 1 2 3 4; do downloaded "$root" "shard-$each" 30; done
+leg "$root" shard-1 30
+leg "$root" shard-2 40
+rm "$root/temp/selected-blobs/rows/shard-2.txt"
+run_rows "$root" success cancelled
+check "fails the step" "$(is "$status" 1)"
+check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "naming the selection as cancelled after the download" \
+  "$(contains "$(error_line)" 'was cancelled before it completed (it concluded cancelled) after the download succeeded')"
+check "naming only the legs whose blob it did not read as such" \
+  "$(contains "$(error_line)" 'read no blob report of: shard-3, shard-4, which')"
+check "and, apart, the legs whose count it did not read" \
+  "$(contains "$(error_line)" 'It read no row count of: shard-2, shard-3, shard-4\.')"
+check "the table holds shard 1's count and blob" "$(is "$(table_rows "$root" '^| shard-1 | 30 | yes |$')" 1)"
+check "and shard 2's blob without its count" \
+  "$(is "$(table_rows "$root" '^| shard-2 | not read | yes |$')" 1)"
+check "and neither for shards 3 and 4" "$(is "$(table_rows "$root" '| not read | not read |$')" 2)"
+check "and no MISSING" "$(is "$(table_rows "$root" 'MISSING')" 0)"
+check "the notice counts the one leg read, as one leg" \
+  "$(contains "$(notice_line)" 'against 30 printed by the 1 leg whose count this job read (shard-1 30, shard-2 not read, shard-3 not read, shard-4 not read)')"
+
+echo "case: the selection was cancelled after it had copied every leg"
+# Every blob and count is in front of this reading, but the merge step after the selection never
+# ran, so there is no merged report to hold them against.
+root=$(fixture selection-cancelled-whole)
+for each in 1 2 3 4; do downloaded "$root" "shard-$each" 30; done
+for each in 1 2 3 4; do leg "$root" "shard-$each" 30; done
+run_rows "$root" success cancelled
+check "fails the step" "$(is "$status" 1)"
+check "naming the selection and that this job made no merged report" \
+  "$(contains "$(error_line)" "blob report\" was cancelled before it completed (it concluded cancelled) after the download succeeded, so this job made no merged report")"
+check "and no leg, since each leg's blob and count was read" \
+  "$(is "$(contains "$(error_line)" 'blob report of\|row count of')" false)"
 
 echo "case: an unknown conclusion is named as it was given"
 root=$(fixture empty-conclusion)
@@ -262,7 +315,10 @@ check "fails the step" "$(is "$status" 1)"
 check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
 check "naming the failed download" \
   "$(contains "$(error_line)" "the download of the legs' blob reports failed")"
-check "and the four legs" "$(contains "$(error_line)" 'the rows of: shard-1 shard-2 shard-3 shard-4;')"
+check "and the four legs, and that this job made no merged report" \
+  "$(contains "$(error_line)" 'read no blob report of: shard-1, shard-2, shard-3, shard-4, and made no merged report;')"
+check "rather than a merged report short of rows" \
+  "$(is "$(contains "$(error_line)" 'merged report is short')" false)"
 check "the table says no blob was read, not that each is missing" \
   "$(is "$(table_rows "$root" '| not read | not read |$')" 4)"
 
@@ -293,6 +349,23 @@ run_rows "$root" success success
 check "fails the step" "$(is "$status" 1)"
 check "naming the two counts" \
   "$(contains "$(error_line)" 'the merged report holds 170 rows and the legs printed 180')"
+check "and the rows the merge dropped" "$(contains "$(error_line)" 'the merge dropped rows the legs ran$')"
+
+echo "case: every owed blob arrived and the merged report holds more rows than the legs printed"
+root=$(fixture more)
+leg "$root" shard-1 30
+leg "$root" shard-2 40
+leg "$root" shard-3 50
+leg "$root" shard-4 60
+merged "$root" 190 0 0 0
+run_rows "$root" success success
+check "fails the step" "$(is "$status" 1)"
+check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "naming the two counts" \
+  "$(contains "$(error_line)" 'the merged report holds 190 rows and the legs printed 180')"
+check "and the rows no leg counted" "$(contains "$(error_line)" "holds rows that no leg's log counted$")"
+check "and not that the merge dropped rows" \
+  "$(is "$(contains "$(error_line)" 'dropped')" false)"
 
 echo "case: every owed blob arrived and one leg's count is absent"
 # The merge holds every row; only shard 4's count is missing. Read as a short total, this would
@@ -312,19 +385,51 @@ check "naming the leg whose count it did not read" \
 check "and not saying the merge dropped rows" \
   "$(is "$(contains "$(error_line)" 'the merge dropped rows')" false)"
 
-echo "case: every owed blob arrived and one leg's count file holds no number"
+echo "case: every owed blob arrived and two legs' count files hold no number"
+# The legs' suite scripts write the count file from the log's last "Running N tests" line, so a
+# count file that holds no number is a log that printed no such line this job could read.
 root=$(fixture count-empty)
 leg "$root" shard-1 30
 leg "$root" shard-2 40
 leg "$root" shard-3 50
 leg "$root" shard-4 60
+: > "$root/temp/selected-blobs/rows/shard-2.txt"
 : > "$root/temp/selected-blobs/rows/shard-3.txt"
 merged "$root" 180 0 0 0
 run_rows "$root" success success
 check "fails the step" "$(is "$status" 1)"
-check "naming that leg as unread" "$(contains "$(error_line)" 'read no row count of: shard-3, so')"
-check "and the table calls its count not read, not 0" \
-  "$(is "$(table_rows "$root" '^| shard-3 | not read | yes |$')" 1)"
+check "naming those legs as unread" "$(contains "$(error_line)" 'read no row count of: shard-2, shard-3, so')"
+check "and sending the reader to their own logs for the line the count comes from" \
+  "$(contains "$(error_line)" "A leg's count is the N of the last \"Running N tests\" line its own log printed; the log of each leg named here shows whether it printed one\.$")"
+check "and the table calls their counts not read, not 0" \
+  "$(is "$(table_rows "$root" '^| shard-[23] | not read | yes |$')" 2)"
+
+echo "case: every owed blob arrived and the merge step made no merged report"
+# The merge step's own failure names that. This reading has nothing to hold the counts against,
+# and says so in its notice.
+root=$(fixture no-report)
+leg "$root" shard-1 30
+leg "$root" shard-2 40
+leg "$root" shard-3 50
+leg "$root" shard-4 60
+run_rows "$root" success success
+check "exits 0" "$(is "$status" 0)"
+check "prints no ::error:: line" "$(is "$(errors)" 0)"
+check "the notice holds the legs' counts against no number" \
+  "$(contains "$(notice_line)" 'holds unknown rows, against 180 printed by the legs')"
+
+echo "case: every owed blob arrived and the merged report is not JSON"
+root=$(fixture report-not-json)
+leg "$root" shard-1 30
+leg "$root" shard-2 40
+leg "$root" shard-3 50
+leg "$root" shard-4 60
+printf 'not json\n' > "$root/temp/report.json"
+run_rows "$root" success success
+check "fails the step" "$(is "$status" 1)"
+check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "naming the report jq could not read" \
+  "$(contains "$(error_line)" "the merged report $root/temp/report.json is not JSON that jq can read")"
 
 echo "case: every owed blob arrived and the merged report's stats hold no number"
 # A test on `null` fails inside the comparison's `if`, where `set -e` does not reach, so the
@@ -339,6 +444,18 @@ run_rows "$root" success success
 check "fails the step" "$(is "$status" 1)"
 check "naming the stats it could not read" \
   "$(contains "$(error_line)" "the merged report's stats sum to 'null', not a whole number of rows")"
+
+echo "case: every owed blob arrived and the merged report's stats sum to a fraction"
+root=$(fixture stats-fraction)
+leg "$root" shard-1 30
+leg "$root" shard-2 40
+leg "$root" shard-3 50
+leg "$root" shard-4 60
+merged "$root" 179.5 0 0 0
+run_rows "$root" success success
+check "fails the step" "$(is "$status" 1)"
+check "naming the sum that is not a whole number" \
+  "$(contains "$(error_line)" "the merged report's stats sum to '179.5', not a whole number of rows")"
 
 echo "case: the script given one conclusion"
 root=$(fixture one-argument)

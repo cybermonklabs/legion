@@ -9,7 +9,7 @@ name: CI job daemon-go
 # pins of internal/supervise, which the text-check job runs by name and this step skips by name,
 # the race step over those three packages, and the Stage 1 live proof, which builds ./cmd/legion
 # and boots it against this job's Postgres. They left ci.yaml's `test` job, which runs
-# thirty-two shell-script harnesses and a handful of Bun suites behind one filter: that filter
+# the shell-script harnesses and a handful of Bun suites behind one filter: that filter
 # had to cover everything the daemon's Go closure reads, so a change to a shell script or to
 # packages/claude-envoy ran
 # 1,083 s (median) of Go tests that could not see it, and 28 of the 66 commits that touched
