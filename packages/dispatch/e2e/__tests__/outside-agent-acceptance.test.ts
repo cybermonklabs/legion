@@ -33,7 +33,7 @@ const tailnetLeg = join(acceptance, "outside-agent-tailnet.sh");
  *  the tailnet leg's own rows, the public leg's P1-P9 as it read them, and the gate. */
 const publicRows = ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9"];
 const publicLegRows = [...publicRows, "verdict"];
-const tailnetRows = ["pins", "issue", "T1", "T2", "T3", "T4", "T5", ...publicRows, "gate"];
+const tailnetRows = ["pins", "issue", "T1", "T2", "T3", "T4", "T5", ...publicRows, "sweep", "gate"];
 
 /** The shell tools the legs read text with. PATH holds these alone in the absent-target runs, so
  *  no tool the legs drive (`omp`, `tmux`, `bun`, `gh`, `git`, `crane`, `agent-secrets`,

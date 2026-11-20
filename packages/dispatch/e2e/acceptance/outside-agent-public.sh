@@ -464,6 +464,13 @@ else
   while [ -z "$ready" ] && [ "$(now)" -lt "$deadline" ]; do
     case $(pane) in *"outside-e2e-$nonce"*) ready=yes ;; *) sleep 1 ;; esac
   done
+  # A HOME Oh My Pi has never run in opens its first-run setup, which the session waits behind; it
+  # is skipped (Escape) as a person who skips it would, one screen at a time.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    case $(tmux -S "$tmux_socket" capture-pane -p -t outside-e2e 2>/dev/null) in *'exit setup'*) ;; *) break ;; esac
+    tmux -S "$tmux_socket" send-keys -t outside-e2e Escape
+    sleep 2
+  done
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     session_id=$(json_field at_dir "$(probe sessions "$session_dir")")
     [ -z "$session_id" ] || [ "$session_id" = null ] || break
