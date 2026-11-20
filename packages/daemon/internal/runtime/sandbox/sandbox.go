@@ -1105,6 +1105,49 @@ func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, role claim.
 	return bundle, nil
 }
 
+var _ runtime.WorkspaceWorkReader = (*Runtime)(nil)
+
+// WorkspaceWork has role's shim read whether the issue workspace every role of the issue shares
+// holds work that no branch or tag on origin holds, over that claim's connection. It makes
+// BundleWorkspace's checks: the role named must be one whose process runs in the issue's own
+// running pod, since its shim reads the workspace it already works in, so a claim with no
+// locator, one whose pod is not the recorded one, and one with no connection are each a refusal
+// rather than an answer of no work.
+func (r *Runtime) WorkspaceWork(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceWork, error) {
+	token, err := claim.NewToken(r.project, issue, role)
+	if err != nil {
+		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace: %w", issue, err)
+	}
+	claims, err := r.store.Claims(ctx)
+	if err != nil {
+		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace: %w", issue, err)
+	}
+	index := slices.IndexFunc(claims, func(c supervise.Claim) bool { return c.Token == token })
+	if index < 0 || claims[index].Locator == nil {
+		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace: %s holds no role process to read it", issue, token)
+	}
+	loc := *claims[index].Locator
+	if err := r.checkLocator(loc); err != nil {
+		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace: %w", issue, err)
+	}
+	view, err := r.view(loc.Sandbox.Name)
+	if err != nil {
+		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace: %w", issue, err)
+	}
+	if view.pod == nil || string(view.pod.UID) != loc.Sandbox.PodUID || terminal(view.pod) {
+		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace: %s's recorded role process %s is not in its running issue pod", issue, token, loc.Incarnation)
+	}
+	conn, ok := r.conns.Conn(token)
+	if !ok {
+		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace: %s has no connection to ask over", issue, token)
+	}
+	work, err := conn.WorkspaceWork(ctx, issue, runtime.WorkspaceWorkTimeout)
+	if err != nil {
+		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace over %s: %w", issue, token, err)
+	}
+	return work, nil
+}
+
 // ReconcileOrphans deletes the project's Sandboxes nothing owns, once older than grace. An issue
 // Sandbox is owned by its tree's lifecycle: it is an orphan once its tree's cleanup confirmed or
 // when it has no lifecycle, which a launch whose create reached the API after its tree's cleanup

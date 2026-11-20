@@ -72,6 +72,14 @@ var ErrTokenRefused = errors.New("runtime: the shim did not read its projected t
 // a bundle in this long is one the daemon stops rather than one it waits longer for.
 const WorkspaceBundleTimeout = 5 * time.Minute
 
+// WorkspaceWorkTimeout is how long the agent's side is given to read whether its workspace holds
+// work origin does not hold (WorkspaceWorkReader): two jj reads, one of which snapshots the
+// working copy, with nothing packed or written. It is the runtimes' budget for the request, not a
+// setting, for the reason WorkspaceBundleTimeout is one. It is half of the daemon's one-minute
+// sweep, which bounds the sweep's runtime calls, so a jj that runs out of time is answered by the
+// shim's own timeout inside that bound rather than by the caller's deadline.
+const WorkspaceWorkTimeout = 30 * time.Second
+
 // CompactTimeout is how long Oh My Pi is given to compact a session: the operation's own bound,
 // not worker_rpc_timeout_seconds, because a compaction is a model call over the whole transcript
 // where every other request on this interface is a frame the far side answers at once. It is a
@@ -116,6 +124,12 @@ type Conn interface {
 	// away. A bundle larger than MaxWorkspaceBundleBytes is refused rather than sent, with the
 	// size it would have been in the refusal, so the release can stop and record why.
 	BundleWorkspace(ctx context.Context, issue string, timeout time.Duration) (WorkspaceBundle, error)
+	// WorkspaceWork has the agent's side read whether the workspace every role of issue shares
+	// holds work that no branch or tag on origin holds, within timeout. It writes nothing. A
+	// shim that cannot read it refuses with its reason, and a shim built before the read is
+	// refused by Oh My Pi as an unknown command; both are refusals that carry their words
+	// (RefusalReason), and neither is an answer of no work.
+	WorkspaceWork(ctx context.Context, issue string, timeout time.Duration) (WorkspaceWork, error)
 	// AgentSecretsEnrollment hands the agent's shim the secrets broker's enrollment id for its
 	// process, which the shim keeps beside the key it generated.
 	AgentSecretsEnrollment(ctx context.Context, enrollmentID string) error

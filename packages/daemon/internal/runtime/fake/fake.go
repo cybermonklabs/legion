@@ -21,9 +21,10 @@ import (
 )
 
 var (
-	_ runtime.Runtime            = (*Runtime)(nil)
-	_ runtime.IssuePodReader     = (*Runtime)(nil)
-	_ runtime.LaunchSessionNamer = (*Runtime)(nil)
+	_ runtime.Runtime             = (*Runtime)(nil)
+	_ runtime.IssuePodReader      = (*Runtime)(nil)
+	_ runtime.LaunchSessionNamer  = (*Runtime)(nil)
+	_ runtime.WorkspaceWorkReader = (*Runtime)(nil)
 )
 
 // Call is one method the caller called, with the arguments it called it with. A method that does
@@ -44,8 +45,10 @@ type Call struct {
 	Identity runtime.GitIdentity
 	// Tree is CleanupTree's tree.
 	Tree string
-	// Issue is IssuePod's issue.
+	// Issue is IssuePod's and WorkspaceWork's issue.
 	Issue string
+	// Role is WorkspaceWork's role.
+	Role claim.Role
 }
 
 // SpawnResult is one scripted answer to Spawn or Resume.
@@ -95,6 +98,7 @@ type Runtime struct {
 	gone         map[claim.Token]bool
 	issuePods    map[string]string
 	sessions     map[claim.Token]string
+	work         map[string]runtime.WorkspaceWork
 	holdReplace  func()
 	replaceNoPod bool
 	holdResume   func()
@@ -111,6 +115,7 @@ func NewRuntime() *Runtime {
 		gone:      map[claim.Token]bool{},
 		issuePods: map[string]string{},
 		sessions:  map[claim.Token]string{},
+		work:      map[string]runtime.WorkspaceWork{},
 	}
 	fake.pending = sync.NewCond(&fake.mu)
 	return fake
@@ -235,6 +240,34 @@ func (r *Runtime) LaunchSession(loc runtime.Locator) (string, bool) {
 	defer r.mu.Unlock()
 	session, named := r.sessions[loc.Claim]
 	return session, named
+}
+
+// ScriptWorkspaceWork makes every later WorkspaceWork of issue answer work, as the Sandbox runtime
+// answers what the shim of a role in the issue's pod read. An issue no call named holds no work,
+// which is the uninteresting case.
+func (r *Runtime) ScriptWorkspaceWork(issue string, work runtime.WorkspaceWork) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.work[issue] = work
+}
+
+// FailWorkspaceWork makes every later WorkspaceWork of issue return err, as the Sandbox runtime
+// answers a read that no role's process could make or that the shim refused. nil clears it, and
+// the issue's scripted reading answers again.
+func (r *Runtime) FailWorkspaceWork(issue string, err error) { r.fail("WorkspaceWork:"+issue, err) }
+
+// WorkspaceWork records its call and answers what FailWorkspaceWork set for the issue, else what
+// ScriptWorkspaceWork set, else no work.
+func (r *Runtime) WorkspaceWork(_ context.Context, issue string, role claim.Role) (runtime.WorkspaceWork, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, Call{Method: "WorkspaceWork", Issue: issue, Role: role})
+	if err := r.failures["WorkspaceWork:"+issue]; err != nil {
+		return runtime.WorkspaceWork{}, err
+	}
+	work := r.work[issue]
+	work.Commits = append([]string(nil), work.Commits...)
+	return work, nil
 }
 
 // FailPodDrift makes every later PodDrift return err; nil clears it.
