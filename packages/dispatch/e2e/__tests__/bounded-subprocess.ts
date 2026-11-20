@@ -47,7 +47,7 @@
  *
  * The rule for each value: each bound is at least three times the largest reading of its kind.
  * The readings behind `short`, `listing` and `generation` are the largest cost lines of the
- * five-run whole-lane checks recorded on Dispatch issue INFRA-3082 at heads 32078f86 through
+ * five-run whole-lane checks recorded on the issue that set these bounds, at heads 32078f86 through
  * a691dbe5, each run `bun test --parallel --timeout 60000 e2e/__tests__` under nine busy loops,
  * three per CPU, on a pod of 3 CPUs, from 2026-11-15 to 2026-11-16. Three readings are older, and
  * each names the run it came from: the driver's 3.59 s and the listing's 76.20 s and 78.4 s. A

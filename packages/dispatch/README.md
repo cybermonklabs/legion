@@ -595,8 +595,8 @@ DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE DEV_SIG
 
 `e2e/acceptance/ci-check.sh` drives a check that CI proves the same way, through the HTTP API and
 the same real CLI: a `check` block carrying `ci_check`, which names the GitHub check run that
-proves it. It has one section for each of the checks `k1` to `k5` of dispatch://INFRA-3204's
-Verification document, and each runs that check's `run` and asserts its `negative_control`:
+proves it. It has one section for each of the checks `k1` to `k5` of the Verification document of
+the work that added it, and each runs that check's `run` and asserts its `negative_control`:
 
 - `k1`: a check with `ci_check` is stored and `dispatch doc-read` reads it back; the documents API
   refuses `400 INVALID_CI_CHECK` each of the four writes that break a rule, naming the block and
