@@ -374,6 +374,176 @@ func Measure() Permissions {
 	}
 }
 
+// OperatorPhase is the phase of the hold row in the broker's Postgres (public.nats_hold), which
+// decides the operator's grant (Operator). The row holds one of the three phases below, and the
+// auth service answers the operator with OperatorPhaseReleased's grant whenever it cannot read the
+// row, so an unknown phase never widens the grant. The writer hold's commands (envoy-infra hold)
+// use this type for the row's phase, since the infra module cannot be imported here.
+type OperatorPhase string
+
+// The hold row's three phases: no hold, a hold being prepared while every client is still
+// admitted, and a hold set, under which every client but the operator is refused.
+const (
+	OperatorPhaseReleased OperatorPhase = "released"
+	OperatorPhasePrepare  OperatorPhase = "prepare"
+	OperatorPhaseHeld     OperatorPhase = "held"
+)
+
+// OperatorInbox is the inbox prefix of every operator connection (nats.CustomInboxPrefix), the
+// one subscribe of every phase's grant, so the operator reads no other client's replies.
+const OperatorInbox = "_INBOX_envoy_operator"
+
+// HoldBarrierStream is the hold's barrier stream, which the held operator creates, lists until it
+// is present, and deletes: a stream rather than a consumer of the notification stream, because at
+// a full consumer cap an unnamed consumer's create is refused. Its name is literal, so the held
+// grant names it exactly; envoy-infra's streams census and its hold take it from here.
+const HoldBarrierStream = "ENVOY_HOLD_BARRIER"
+
+// sessionConsumerRecordsBucket is the bucket that records each listener session consumer's name
+// (envoy-infra consumer-names), which the operator reads outside a hold and rewrites inside one.
+const sessionConsumerRecordsBucket = "envoy_session_consumers"
+
+// measureStream is the measurement job's stream, the one stream no client depends on, which the
+// operator may create outside a hold (envoy-infra streams ensure).
+const measureStream = "ENVOY_MEASURE"
+
+// copiedBuckets are the buckets envoy-infra buckets copies: their backup is a read, taken
+// outside a hold, and their streams are made, changed, removed and restored only inside one.
+func copiedBuckets() []string {
+	return []string{bus.InterestBucket, bus.RoleClaimBucket, bus.SessionBucket, bus.KnownSessionBucket, bus.CIStateBucket}
+}
+
+// otherDeclaredStreams are the protected streams that are not copied buckets and not the session
+// consumers' records: the notification stream and every other bucket the build names. The prepare
+// operator reads their infos, and the held operator makes, changes and restores them.
+func otherDeclaredStreams() []string {
+	return []string{bus.Stream, kvStream + bus.LegionAgentBucket, kvStream + bus.DPoPProofBucket, kvStream + bus.WebhookRedeliveryBucket}
+}
+
+// operatorReleased is the operator's publish list outside a hold: JetStream's account info, the
+// read-only infos of the notification stream, the session consumers' records and each copied
+// bucket, the backup of each copied bucket (its snapshot request and the acknowledgements of its
+// chunks, nats-server jetstream_api.go's STREAM.SNAPSHOT and $JS.SNAPSHOT.ACK), consumer-names
+// status's reads (the records walked by sequence, the notification stream's consumer names and
+// infos), and the create and info of ENVOY_MEASURE. Its one mutation is that create of the one
+// unprotected stream: a backup only reads.
+func operatorReleased() []string {
+	publish := []string{
+		jsAPI + "INFO",
+		jsAPI + "STREAM.INFO." + bus.Stream,
+		jsAPI + "STREAM.INFO." + kvStream + sessionConsumerRecordsBucket,
+	}
+	for _, bucket := range copiedBuckets() {
+		publish = append(publish, jsAPI+"STREAM.INFO."+kvStream+bucket)
+	}
+	for _, bucket := range copiedBuckets() {
+		publish = append(publish, jsAPI+"STREAM.SNAPSHOT."+kvStream+bucket, "$JS.SNAPSHOT.ACK."+kvStream+bucket+".>")
+	}
+	return append(publish,
+		jsAPI+"STREAM.MSG.GET."+kvStream+sessionConsumerRecordsBucket,
+		jsAPI+"CONSUMER.NAMES."+bus.Stream,
+		jsAPI+"CONSUMER.INFO."+bus.Stream+".*",
+		jsAPI+"STREAM.CREATE."+measureStream,
+		jsAPI+"STREAM.INFO."+measureStream,
+	)
+}
+
+// operatorPrepare is released's list, then the consumer update the hold's threshold raise sends on
+// the notification stream, and the infos of every other protected bucket, which the hold's
+// preflight reads before the row turns held. nats-server has one subject for a consumer's create
+// and its update, so this admits a named consumer's create too: consumer-names prepare sends only
+// updates, which the server refuses for a consumer that does not exist, and the hold's approval
+// states the residual.
+func operatorPrepare() []string {
+	publish := append(operatorReleased(), jsAPI+"CONSUMER.CREATE."+bus.Stream+".*")
+	for _, stream := range otherDeclaredStreams()[1:] {
+		publish = append(publish, jsAPI+"STREAM.INFO."+stream)
+	}
+	return publish
+}
+
+// operatorHeld is prepare's list, then the writes the hold makes while every other client is
+// refused: the barrier stream's create and delete; the stream and consumer lists the writer census
+// reads; the retired consumer names' delete; the session consumers' records, their bucket's create
+// and restore; each copied bucket's create, update, delete and restore with its chunks, and its
+// per-bucket barrier key; envoy-infra streams update's creates and updates of every protected
+// stream; the census's removals of every undeclared stream and consumer; and the snapshot and
+// restore of every other protected stream.
+func operatorHeld() []string {
+	publish := append(operatorPrepare(),
+		jsAPI+"STREAM.CREATE."+HoldBarrierStream,
+		jsAPI+"STREAM.DELETE."+HoldBarrierStream,
+		jsAPI+"STREAM.LIST",
+		jsAPI+"STREAM.NAMES",
+		jsAPI+"CONSUMER.LIST.*",
+		jsAPI+"CONSUMER.DELETE."+bus.Stream+".*",
+		kvSubjects+sessionConsumerRecordsBucket+".>",
+		jsAPI+"STREAM.CREATE."+kvStream+sessionConsumerRecordsBucket,
+		jsAPI+"STREAM.RESTORE."+kvStream+sessionConsumerRecordsBucket,
+		"$JS.SNAPSHOT.RESTORE."+kvStream+sessionConsumerRecordsBucket+".*",
+	)
+	for _, bucket := range copiedBuckets() {
+		stream := kvStream + bucket
+		publish = append(publish,
+			jsAPI+"STREAM.CREATE."+stream,
+			jsAPI+"STREAM.UPDATE."+stream,
+			jsAPI+"STREAM.DELETE."+stream,
+			jsAPI+"STREAM.RESTORE."+stream,
+			"$JS.SNAPSHOT.RESTORE."+stream+".*",
+			kvSubjects+bucket+".hold.barrier.*",
+		)
+	}
+	for _, stream := range otherDeclaredStreams() {
+		publish = append(publish, jsAPI+"STREAM.CREATE."+stream)
+	}
+	for _, stream := range otherDeclaredStreams() {
+		publish = append(publish, jsAPI+"STREAM.UPDATE."+stream)
+	}
+	publish = append(publish, jsAPI+"STREAM.DELETE.*", jsAPI+"CONSUMER.DELETE.*.*")
+	for _, stream := range otherDeclaredStreams() {
+		publish = append(publish,
+			jsAPI+"STREAM.SNAPSHOT."+stream,
+			"$JS.SNAPSHOT.ACK."+stream+".>",
+			jsAPI+"STREAM.RESTORE."+stream,
+			"$JS.SNAPSHOT.RESTORE."+stream+".*",
+		)
+	}
+	return publish
+}
+
+// Operator is the grant of the deployment's one operator identity (the BROKER_NATS_SERVICES entry
+// of kind operator), one function of the hold row's phase: OperatorPhaseReleased's outside a hold,
+// OperatorPhasePrepare's while a hold is prepared, and OperatorPhaseHeld's, the full list, while a
+// hold is set. Each phase's list holds the one before it. A phase outside the three is answered
+// with released's, the least. Every phase subscribes the operator's own inbox prefix
+// (OperatorInbox) alone, and names only $JS. and _INBOX_envoy_operator. subjects and the copied
+// buckets' $KV. barrier keys, so NamesSystemSubject is false for each. The server installs a
+// connection's permissions at its authorization, so a process that changes the phase reconnects to
+// be given the new phase's grant.
+func Operator(phase OperatorPhase) Permissions {
+	var publish []string
+	switch phase {
+	case OperatorPhasePrepare:
+		publish = operatorPrepare()
+	case OperatorPhaseHeld:
+		publish = operatorHeld()
+	default:
+		publish = operatorReleased()
+	}
+	return Permissions{Publish: publish, Subscribe: []string{OperatorInbox + ".>"}}
+}
+
+// holdProbeSubject is the hold probe's one subject, which nothing else uses.
+const holdProbeSubject = "_ENVOY_HOLD_PROBE.none"
+
+// HoldProbe is the grant of the writer hold's probe (the BROKER_NATS_SERVICES entry of kind probe):
+// publish and subscribe of one subject nothing else uses. The probe only shows whether the hub
+// admits a connection; both directions are non-empty because the auth service refuses an empty
+// direction as open (OpenDirection).
+func HoldProbe() Permissions {
+	return Permissions{Publish: []string{holdProbeSubject}, Subscribe: []string{holdProbeSubject}}
+}
+
 // systemAccountPrefix is the first token of every subject of nats-server's own, the auth
 // service's authorization requests ($SYS.REQ.USER.AUTH) among them.
 const systemAccountPrefix = "$SYS"

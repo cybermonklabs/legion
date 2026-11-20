@@ -17,12 +17,14 @@ package natscallout
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"errors"
 	"log/slog"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/machine"
+	"github.com/sjawhar/envoy/internal/cipher/natshold"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/natscred"
@@ -48,6 +50,14 @@ type Deps struct {
 	// Metrics is the registry the service's decisions are counted on (NewMetrics); nil counts
 	// nothing.
 	Metrics *Metrics
+	// HoldRead reads the writer hold's row from the broker's Postgres (natshold.Read on a pool of
+	// its own), which decides the operator's grant and, while it cannot be read, refuses every
+	// other client. Nil is a broker whose BROKER_NATS_HOLD_READ is false: nothing reads the row,
+	// and every decision is answered as if the row held released.
+	HoldRead func(ctx context.Context) (natshold.Reading, bool, error)
+	// HoldKeys are BROKER_NATS_HOLD_SIGNING_KEYS, the operator's public keys a row must be signed
+	// with to be read at all (signedrecord.Verify).
+	HoldKeys []ed25519.PublicKey
 }
 
 func (d Deps) now() time.Time {
@@ -160,6 +170,10 @@ func serviceGrant(entry ServiceEntry) natsgrant.Permissions {
 		return natsgrant.Daemon()
 	case KindMeasure:
 		return natsgrant.Measure()
+	case KindOperator:
+		return natsgrant.Operator(natsgrant.OperatorPhaseReleased)
+	case KindProbe:
+		return natsgrant.HoldProbe()
 	}
 	return natsgrant.Permissions{}
 }

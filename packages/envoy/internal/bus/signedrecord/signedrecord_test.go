@@ -1,0 +1,138 @@
+package signedrecord_test
+
+import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/bus/signedrecord"
+)
+
+func newKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
+	t.Helper()
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return public, private
+}
+
+func sign(t *testing.T, key ed25519.PrivateKey, lines []string) string {
+	t.Helper()
+	sig, err := signedrecord.Sign(key, lines)
+	if err != nil {
+		t.Fatalf("sign %q: %v", lines, err)
+	}
+	return sig
+}
+
+// Each forgery a writer of the broker's tables could make is refused, naming the reason: a record
+// with no signature, one signed by another key, a genuine record copied onto another key, a
+// genuine older record read after a newer gen was accepted, and a value changed after signing.
+// A genuine record verifies, so the refusals are the verifier's and not a reader that refuses
+// everything.
+func TestASignedRecordRefusesForgeriesAndReplays(t *testing.T) {
+	operator, operatorKey := newKey(t)
+	_, otherKey := newKey(t)
+	keys := []ed25519.PublicKey{operator}
+	value := []byte(`{"workflow":"cutover","ops":[],"complete":false}`)
+	genuine := signedrecord.Record("hold-1", "done", "hold", 2, value)
+	genuineSig := sign(t, operatorKey, genuine)
+	if err := signedrecord.Verify(keys, genuineSig, genuine); err != nil {
+		t.Fatalf("the genuine record does not verify: %v", err)
+	}
+
+	older := signedrecord.Record("hold-1", "done", "hold", 1, value)
+	olderSig := sign(t, operatorKey, older)
+	floor := &signedrecord.Floor{}
+	if err := floor.Accept(2); err != nil {
+		t.Fatalf("the floor refuses the first gen it reads: %v", err)
+	}
+
+	for _, forgery := range []struct {
+		name string
+		read func() error
+		want error
+	}{
+		{
+			name: "no signature",
+			read: func() error { return signedrecord.Verify(keys, "", genuine) },
+			want: signedrecord.ErrNoSignature,
+		},
+		{
+			name: "signed by another key",
+			read: func() error { return signedrecord.Verify(keys, sign(t, otherKey, genuine), genuine) },
+			want: signedrecord.ErrBadSignature,
+		},
+		{
+			name: "a genuine record copied onto another key",
+			read: func() error {
+				return signedrecord.Verify(keys, genuineSig, signedrecord.Record("hold-1", "convert", "set", 2, value))
+			},
+			want: signedrecord.ErrBadSignature,
+		},
+		{
+			name: "a genuine older record after a newer gen was accepted",
+			read: func() error {
+				if err := signedrecord.Verify(keys, olderSig, older); err != nil {
+					return err
+				}
+				return floor.Accept(1)
+			},
+			want: signedrecord.ErrReplay,
+		},
+		{
+			name: "a value changed after signing",
+			read: func() error {
+				return signedrecord.Verify(keys, genuineSig, signedrecord.Record("hold-1", "done", "hold", 2, []byte(`{"workflow":"cutover","ops":[],"complete":true}`)))
+			},
+			want: signedrecord.ErrBadSignature,
+		},
+	} {
+		err := forgery.read()
+		if !errors.Is(err, forgery.want) {
+			t.Errorf("%s: read as %v, want it refused with %v", forgery.name, err, forgery.want)
+		}
+	}
+}
+
+// A value is signed by its meaning, not its bytes: Postgres stores a record's value as jsonb, which
+// reorders keys and drops whitespace, so the value read back verifies against the signature made
+// over the value written.
+func TestARecordValueVerifiesAfterJSONBRewritesIt(t *testing.T) {
+	operator, operatorKey := newKey(t)
+	written := signedrecord.Record("h", "cohort", "cohort", 1, []byte(`{ "b": [1, 2], "a": "x<y" }`))
+	read := signedrecord.Record("h", "cohort", "cohort", 1, []byte(`{"a": "x<y", "b": [1, 2]}`))
+	if err := signedrecord.Verify([]ed25519.PublicKey{operator}, sign(t, operatorKey, written), read); err != nil {
+		t.Fatalf("the value as jsonb gives it back does not verify: %v", err)
+	}
+}
+
+// A field holding a line break is refused when signed and when verified, so no two records can
+// write the same lines.
+func TestAFieldHoldingALineBreakIsRefused(t *testing.T) {
+	operator, operatorKey := newKey(t)
+	lines := signedrecord.HoldRow(3, "held", "hold\nreleased", time.Unix(0, 0))
+	if _, err := signedrecord.Sign(operatorKey, lines); !errors.Is(err, signedrecord.ErrBadField) {
+		t.Fatalf("Sign of a line break = %v, want ErrBadField", err)
+	}
+	if err := signedrecord.Verify([]ed25519.PublicKey{operator}, "c2ln", lines); !errors.Is(err, signedrecord.ErrBadField) {
+		t.Fatalf("Verify of a line break = %v, want ErrBadField", err)
+	}
+}
+
+// Each kind's lines open with its own tag, so a signature over one kind's lines never verifies as
+// another kind's.
+func TestEachKindOpensWithItsTag(t *testing.T) {
+	for want, lines := range map[string][]string{
+		"nats-hold-v1":        signedrecord.HoldRow(1, "released", "h", time.Unix(0, 0)),
+		"nats-hold-record-v1": signedrecord.Record("h", "done", "hold", 1, []byte(`{}`)),
+		"nats-cutover-v1":     signedrecord.Cutover("session", "done", "h", 1),
+	} {
+		if lines[0] != want {
+			t.Errorf("lines open with %q, want %q", lines[0], want)
+		}
+	}
+}

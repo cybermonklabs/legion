@@ -1,9 +1,12 @@
 package natscallout
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 const (
@@ -63,5 +66,33 @@ func TestParseServicesRefusals(t *testing.T) {
 			require.Error(t, err)
 			require.Contains(t, err.Error(), "BROKER_NATS_SERVICES")
 		})
+	}
+}
+
+// The deployment's one operator identity and the writer hold's one probe are entries of their own
+// kinds, each listed once, with no machine id and the whole grant: the hold and the buckets
+// command reach no project's messages, and no project scope can hold a stream create. A second
+// entry of either kind, a machine id, or the scope - is refused, naming the entry.
+func TestParseServicesReadsTheOperatorKind(t *testing.T) {
+	const operator = "system:serviceaccount:envoy-operator:envoy-operator"
+	const probe = "system:serviceaccount:envoy-operator:envoy-hold-probe"
+	services, err := ParseServices("operator/-/*=" + operator + " probe/-/*=" + probe)
+	require.NoError(t, err)
+	require.Equal(t, []ServiceEntry{
+		{Kind: KindOperator, Account: operator, AllProjects: true},
+		{Kind: KindProbe, Account: probe, AllProjects: true},
+	}, services)
+	require.Equal(t, "operator/"+operator, services[0].name())
+	require.Equal(t, natsgrant.HoldProbe(), serviceGrant(services[1]))
+	for raw, names := range map[string]string{
+		"operator/m1/*=" + operator: "operator/m1/*=" + operator,
+		"operator/-/-=" + operator:  "operator/-/-=" + operator,
+		"operator/-/*=" + operator + " operator/-/*=system:serviceaccount:envoy-operator:second": "operator/-/*=system:serviceaccount:envoy-operator:second",
+		"probe/m1/*=" + probe: "probe/m1/*=" + probe,
+		"probe/-/-=" + probe:  "probe/-/-=" + probe,
+		"probe/-/*=" + probe + " probe/-/*=system:serviceaccount:envoy-operator:second": "probe/-/*=system:serviceaccount:envoy-operator:second",
+	} {
+		_, err := ParseServices(raw)
+		require.ErrorContains(t, err, strconv.Quote(names), "ParseServices(%q)", raw)
 	}
 }

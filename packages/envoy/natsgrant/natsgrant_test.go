@@ -2,9 +2,13 @@ package natsgrant_test
 
 import (
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -151,15 +155,33 @@ func TestNamesSystemSubject(t *testing.T) {
 			require.Equal(t, entry, got)
 		}
 	}
+	grants := grantTable(t)
+	grants["KVRead"] = natsgrant.Permissions{Publish: natsgrant.KVRead(bus.InterestBucket)}
+	grants["KVWrite"] = natsgrant.Permissions{Publish: natsgrant.KVWrite(bus.InterestBucket)}
+	for name, grant := range grants {
+		require.NotEmpty(t, slices.Concat(grant.Publish, grant.Subscribe), name)
+		entry, found := natsgrant.NamesSystemSubject(grant)
+		require.False(t, found, "%s names %q", name, entry)
+	}
+}
+
+// grantTable is every grant this package builds, keyed by the call that builds it: the function's
+// name, with its argument in parentheses where it takes one. TestTheGrantTableNamesEveryGrant holds
+// it to natsgrant.go's declarations, so a new grant function fails that test until it is listed
+// here, and every test that walks the table walks the new grant too.
+func grantTable(t *testing.T) map[string]natsgrant.Permissions {
+	t.Helper()
 	session, err := natsgrant.Session("ses_a")
 	require.NoError(t, err)
 	grants := map[string]natsgrant.Permissions{
-		"SessionPattern()": natsgrant.SessionPattern(),
-		"Session(ses_a)":   session,
-		"Daemon()":         natsgrant.Daemon(),
-		"Measure()":        natsgrant.Measure(),
-		"KVRead":           {Publish: natsgrant.KVRead(bus.InterestBucket)},
-		"KVWrite":          {Publish: natsgrant.KVWrite(bus.InterestBucket)},
+		"SessionPattern()":   natsgrant.SessionPattern(),
+		"Session(ses_a)":     session,
+		"Daemon()":           natsgrant.Daemon(),
+		"Measure()":          natsgrant.Measure(),
+		"HoldProbe()":        natsgrant.HoldProbe(),
+		"Operator(released)": natsgrant.Operator(natsgrant.OperatorPhaseReleased),
+		"Operator(prepare)":  natsgrant.Operator(natsgrant.OperatorPhasePrepare),
+		"Operator(held)":     natsgrant.Operator(natsgrant.OperatorPhaseHeld),
 	}
 	for _, id := range []string{"example-host-a", "example-dispatch", "example-hub"} {
 		grants["Listener("+id+")"] = natsgrant.Listener(id)
@@ -167,9 +189,154 @@ func TestNamesSystemSubject(t *testing.T) {
 		grants["Dispatch("+id+")"] = natsgrant.Dispatch(id)
 		grants["Host("+id+")"] = natsgrant.Host(id)
 	}
-	for name, grant := range grants {
-		require.NotEmpty(t, slices.Concat(grant.Publish, grant.Subscribe), name)
-		entry, found := natsgrant.NamesSystemSubject(grant)
-		require.False(t, found, "%s names %q", name, entry)
+	return grants
+}
+
+// Every exported function natsgrant.go declares that returns Permissions, read from the source by
+// go/ast, has a row in grantTable, and every row names one of them: a grant added to the package
+// is walked by every test that reads the table, or this test names it.
+func TestTheGrantTableNamesEveryGrant(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "natsgrant.go", nil, 0)
+	require.NoError(t, err)
+	declared := map[string]bool{}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil || !fn.Name.IsExported() || fn.Type.Results == nil {
+			continue
+		}
+		if result, ok := fn.Type.Results.List[0].Type.(*ast.Ident); ok && result.Name == "Permissions" {
+			declared[fn.Name.Name] = true
+		}
+	}
+	require.NotEmpty(t, declared, "natsgrant.go declares no grant function: the reading enumerated nothing")
+	listed := map[string]bool{}
+	for call := range grantTable(t) {
+		name, _, _ := strings.Cut(call, "(")
+		require.True(t, declared[name], "grantTable lists %s, which natsgrant.go does not declare as a grant", call)
+		listed[name] = true
+	}
+	for name := range declared {
+		require.True(t, listed[name], "natsgrant.go declares the grant %s, which grantTable does not list", name)
+	}
+}
+
+// The buckets envoy-infra buckets copies, whose backup the operator takes outside a hold and whose
+// streams it makes, changes, removes and restores only inside one.
+var copiedBuckets = []string{"envoy_interests", "envoy_roles", "envoy_sessions", "envoy_known_sessions", "envoy_ci_state"}
+
+// operatorReleased is Operator(OperatorPhaseReleased)'s publish list as the plan writes it.
+func operatorReleased() []string {
+	publish := []string{
+		"$JS.API.INFO",
+		"$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS",
+		"$JS.API.STREAM.INFO.KV_envoy_session_consumers",
+	}
+	for _, b := range copiedBuckets {
+		publish = append(publish, "$JS.API.STREAM.INFO.KV_"+b)
+	}
+	for _, b := range copiedBuckets {
+		publish = append(publish, "$JS.API.STREAM.SNAPSHOT.KV_"+b, "$JS.SNAPSHOT.ACK.KV_"+b+".>")
+	}
+	return append(publish,
+		"$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers",
+		"$JS.API.CONSUMER.NAMES.ENVOY_NOTIFICATIONS",
+		"$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.*",
+		"$JS.API.STREAM.CREATE.ENVOY_MEASURE",
+		"$JS.API.STREAM.INFO.ENVOY_MEASURE",
+	)
+}
+
+// operatorPrepare is Operator(OperatorPhasePrepare)'s publish list as the plan writes it.
+func operatorPrepare() []string {
+	return append(operatorReleased(),
+		"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.*",
+		"$JS.API.STREAM.INFO.KV_legion_agents",
+		"$JS.API.STREAM.INFO.KV_envoy_dpop_proofs",
+		"$JS.API.STREAM.INFO.KV_envoy_webhook_redelivery",
+	)
+}
+
+// operatorHeld is Operator(OperatorPhaseHeld)'s publish list as the plan writes it.
+func operatorHeld() []string {
+	publish := append(operatorPrepare(),
+		"$JS.API.STREAM.CREATE.ENVOY_HOLD_BARRIER",
+		"$JS.API.STREAM.DELETE.ENVOY_HOLD_BARRIER",
+		"$JS.API.STREAM.LIST",
+		"$JS.API.STREAM.NAMES",
+		"$JS.API.CONSUMER.LIST.*",
+		"$JS.API.CONSUMER.DELETE.ENVOY_NOTIFICATIONS.*",
+		"$KV.envoy_session_consumers.>",
+		"$JS.API.STREAM.CREATE.KV_envoy_session_consumers",
+		"$JS.API.STREAM.RESTORE.KV_envoy_session_consumers",
+		"$JS.SNAPSHOT.RESTORE.KV_envoy_session_consumers.*",
+	)
+	for _, b := range copiedBuckets {
+		publish = append(publish,
+			"$JS.API.STREAM.CREATE.KV_"+b,
+			"$JS.API.STREAM.UPDATE.KV_"+b,
+			"$JS.API.STREAM.DELETE.KV_"+b,
+			"$JS.API.STREAM.RESTORE.KV_"+b,
+			"$JS.SNAPSHOT.RESTORE.KV_"+b+".*",
+			"$KV."+b+".hold.barrier.*",
+		)
+	}
+	publish = append(publish,
+		"$JS.API.STREAM.CREATE.ENVOY_NOTIFICATIONS",
+		"$JS.API.STREAM.CREATE.KV_legion_agents",
+		"$JS.API.STREAM.CREATE.KV_envoy_dpop_proofs",
+		"$JS.API.STREAM.CREATE.KV_envoy_webhook_redelivery",
+		"$JS.API.STREAM.UPDATE.ENVOY_NOTIFICATIONS",
+		"$JS.API.STREAM.UPDATE.KV_legion_agents",
+		"$JS.API.STREAM.UPDATE.KV_envoy_dpop_proofs",
+		"$JS.API.STREAM.UPDATE.KV_envoy_webhook_redelivery",
+		"$JS.API.STREAM.DELETE.*",
+		"$JS.API.CONSUMER.DELETE.*.*",
+	)
+	for _, s := range []string{"ENVOY_NOTIFICATIONS", "KV_legion_agents", "KV_envoy_dpop_proofs", "KV_envoy_webhook_redelivery"} {
+		publish = append(publish,
+			"$JS.API.STREAM.SNAPSHOT."+s,
+			"$JS.SNAPSHOT.ACK."+s+".>",
+			"$JS.API.STREAM.RESTORE."+s,
+			"$JS.SNAPSHOT.RESTORE."+s+".*",
+		)
+	}
+	return publish
+}
+
+// Operator's three phases and HoldProbe are each exactly the lists the plan writes, entry for
+// entry and in order, so a subject added to any phase, or a phase that grants another's entry, fails
+// here naming it. Every operator connection subscribes its own inbox prefix alone.
+func TestOperatorIsExactly(t *testing.T) {
+	inbox := []string{"_INBOX_envoy_operator.>"}
+	for phase, want := range map[natsgrant.OperatorPhase][]string{
+		natsgrant.OperatorPhaseReleased: operatorReleased(),
+		natsgrant.OperatorPhasePrepare:  operatorPrepare(),
+		natsgrant.OperatorPhaseHeld:     operatorHeld(),
+	} {
+		got := natsgrant.Operator(phase)
+		for _, entry := range got.Publish {
+			require.Contains(t, want, entry, "Operator(%s) publishes %q, which the plan's list does not hold", phase, entry)
+		}
+		require.Equal(t, natsgrant.Permissions{Publish: want, Subscribe: inbox}, got, "Operator(%s)", phase)
+	}
+	require.Equal(t, natsgrant.Operator(natsgrant.OperatorPhaseReleased), natsgrant.Operator("paused"),
+		"a phase outside the three is answered with the released grant")
+	require.Equal(t, natsgrant.Permissions{
+		Publish:   []string{"_ENVOY_HOLD_PROBE.none"},
+		Subscribe: []string{"_ENVOY_HOLD_PROBE.none"},
+	}, natsgrant.HoldProbe())
+	require.Equal(t, "_INBOX_envoy_operator", natsgrant.OperatorInbox)
+	require.Equal(t, "ENVOY_HOLD_BARRIER", natsgrant.HoldBarrierStream)
+}
+
+// No grant the package builds names the retired hold bucket, KV_envoy_maintenance or its keys:
+// the hold lives in the broker's Postgres, and a NATS record of it could be stored over by any
+// user with a JetStream API grant.
+func TestNoGrantNamesTheRetiredHoldBucket(t *testing.T) {
+	for name, grant := range grantTable(t) {
+		for _, entry := range slices.Concat(grant.Publish, grant.Subscribe, grant.PublishDeny, grant.SubscribeDeny) {
+			require.False(t, strings.Contains(entry, "KV_envoy_maintenance") || strings.Contains(entry, "$KV.envoy_maintenance."),
+				"%s names the retired hold bucket in %q", name, entry)
+		}
 	}
 }
