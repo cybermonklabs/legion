@@ -1845,6 +1845,9 @@ test("the header holds its limits on a large gated root @phone", async ({ browse
 // every gated document, so each entry carries Approve and Request changes (decision 213). The
 // root has the large root's shape above - the measured title, 20 labels, 24 children with 3 done
 // and the 16-character login as its assignee - so the properties line is as long as R3's cases.
+// SLOW(>=2s): 3,199 to 3,779 ms in three one-worker runs (Job e2e-rows-klnz7 at 4788afaa): two
+// roots written with 24 children and their gated documents each, a second context signed in as
+// the long login, and four loads, the header's limit measured after each.
 test("the header holds its 1440 px limit on a root whose project gates two or three steps", async ({
   browser,
 }) => {
