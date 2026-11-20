@@ -162,17 +162,12 @@ jobs:
           fi
 
       # A package's `bun run lint` checks only the paths its recipe names. This is the command the
-      # root README.md's "Development" section documents, over the whole tree, so a fixture,
-      # config or test file that Biome would rewrite fails here instead of on the next person who
-      # runs it.
+      # root README.md's "Development" section documents, `bunx biome check .`, over the whole
+      # tree, so a fixture, config or test file that Biome would rewrite fails here instead of on
+      # the next person who runs it. The script runs that command and also fails on each file
+      # Biome skips for its size, which Biome reports only as an info diagnostic while it exits 0.
       - name: Check the whole tree with Biome
-        run: bunx biome check .
-
-      # Biome reads nothing of a file at or above its files.maxSize: it prints an info diagnostic
-      # and the step above still passes. This step fails naming each such file, so a file that
-      # grows past the limit fails here instead of leaving lint without a word.
-      - name: Check no file is too large for Biome to read
-        run: .github/scripts/check-biome-max-size.sh
+        run: .github/scripts/check-biome-tree.sh
 
       # The listener and the Legion daemon refuse a nats-server below packages/envoy/natsversion's
       # floor, so a live proof that starts one, and a script or page that installs one, must name
