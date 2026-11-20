@@ -167,7 +167,10 @@ export function IssueAddMenu({
   // holds the panel while a margin thread is open (`features/margin/MarginSheet.tsx`). So where an
   // `aside` holds the panel (`drawerBox`), the whole `aside` is watched in the panel's place. An
   // element above the watched box is not watched: a hide or an inert set there is read at Add's
-  // next commit.
+  // next commit. Nothing above Details' `aside` sets either today: in the shell (`app.tsx`,
+  // `features/shell`) and the margin (`features/margin`), `hidden` is set on that `aside`, on
+  // elements inside it and on the margin's column, which is drawn only where Details is not, and
+  // `inert` on nothing.
   useLayoutEffect(() => {
     committed.current = fields;
     read();

@@ -12,7 +12,7 @@ import {
 } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { realClock } from "../../__tests__/fake-clock";
@@ -57,7 +57,13 @@ import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { blockedByControlName, referencedByControlName } from "./details-names";
-import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
+import {
+  DETAILS_OPENER_ATTRIBUTE,
+  DETAILS_ROW_ATTRIBUTE,
+  DETAILS_ROW_REQUEST_EVENT,
+  type DetailsRow,
+  useOpenDetailsAt,
+} from "./details-rows";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel, PARENT_ERROR_ID, TITLES_READ_FAILED } from "./IssueMargin";
 import { narrowIssue, patchAnswer } from "./issue-fixtures";
@@ -3138,6 +3144,26 @@ test("Add lists the same entries while Details is closed as once it is open agai
   }
 });
 
+/** The issue of the two cases below: a value for every property Add lists but the assignee, so
+ *  Add's one entry is Assignee. */
+const assigneeOnly: IssueDetails = {
+  ...advancesOnly,
+  advances: [{ id: "PRI-7", inherited: false }],
+  assignee: null,
+};
+
+/** The page's header, not yet on the page, with the assignee's control as the header draws it:
+ *  a select named by `assigneeControlName` (`AssigneeControl.tsx`), which Add focuses rather
+ *  than clicks. */
+function assigneeHeader(): { assignee: HTMLSelectElement; header: HTMLElement } {
+  const header = document.createElement("div");
+  header.setAttribute("data-issue-header", "");
+  const assignee = document.createElement("select");
+  assignee.setAttribute("aria-label", assigneeControlName("CORE-1"));
+  header.append(assignee);
+  return { assignee, header };
+}
+
 // The assignee's control is the header's, and the header can be drawn after Details. Add then
 // finds no header to watch, so it watches the body for one drawn later, and lists Assignee once
 // a header that draws the assignee's control is on the page, though that is no commit of Add's.
@@ -3145,18 +3171,8 @@ test("Add lists Assignee once a header drawn after it draws the assignee's contr
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
-  // A value for every property Add lists but the assignee.
-  getIssue.mockResolvedValue({
-    ...advancesOnly,
-    advances: [{ id: "PRI-7", inherited: false }],
-    assignee: null,
-  });
-  const header = document.createElement("div");
-  header.setAttribute("data-issue-header", "");
-  const assignee = document.createElement("button");
-  assignee.type = "button";
-  assignee.setAttribute("aria-label", assigneeControlName("CORE-1"));
-  header.append(assignee);
+  getIssue.mockResolvedValue(assigneeOnly);
+  const { header } = assigneeHeader();
   const view = renderDetails();
   try {
     await screen.findByRole("link", { name: "CORE-3" });
@@ -3174,6 +3190,43 @@ test("Add lists Assignee once a header drawn after it draws the assignee's contr
   } finally {
     header.remove();
     view.unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// The assignee's control is in the header, which the phone's Details sheet covers, so Add's
+// Assignee closes an open Details and reaches the control two frames on, once the drawer has
+// given the focus back as it closes. The header draws that control as a select, and a script's
+// click opens no select's list, so Add puts the focus on it.
+test("Add's Assignee closes an open Details, then puts the focus on the header's assignee select", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
+  // Open, Details reads what waits on the issue.
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  getIssue.mockResolvedValue(assigneeOnly);
+  const { assignee, header } = assigneeHeader();
+  document.body.append(header);
+  const setOpen = jest.fn((_open: boolean) => undefined);
+  const { unmount } = renderDetails(undefined, { ...OPEN_DRAWER, setOpen });
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
+    await user.click(screen.getByRole("menuitem", { name: PROPERTY_LABELS.assignee }));
+    expect(setOpen.mock.calls, "Add's Assignee left Details open over the header").toEqual([
+      [false],
+    ]);
+    await waitFor(() =>
+      expect(assignee, "Add's Assignee put no focus on the header's select").toHaveFocus()
+    );
+  } finally {
+    header.remove();
+    unmount();
+    getReferences.mockRestore();
     priorities.mockRestore();
     restore();
   }
@@ -4230,10 +4283,11 @@ test("on an issue with no component, the Add menu's Components reaches the picke
   }
 });
 
-// The header's Set parent issue presses the Parent row's first control (`useOpenDetailsAt`,
-// which presses a row's first control), so that control is the one that opens the parent's
-// editor, and it stands before the parent's link.
-test("the Parent row's first control opens the parent's editor, before the parent's link", async () => {
+// A press at the Parent row (`useOpenDetailsAt`, as the header's Set parent issue makes it)
+// presses the control the row marks as its opener (`DETAILS_OPENER_ATTRIBUTE`), and an open
+// without a press focuses the row's first control: both are the control that opens the parent's
+// editor, which stands before the parent's link.
+test("the Parent row's first control is its marked opener, which opens the parent's editor, before the parent's link", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
 
@@ -4242,6 +4296,7 @@ test("the Parent row's first control opens the parent's editor, before the paren
     await screen.findByText(PROPERTY_LABELS.parent, { selector: "[data-page-chrome]" });
     const none = document.querySelector(`[${DETAILS_ROW_ATTRIBUTE}="parent"]`);
     expect(firstUsableIn(none)).toHaveTextContent(CONTROL_LABELS.set_parent);
+    expect(firstUsableIn(none)).toHaveAttribute(DETAILS_OPENER_ATTRIBUTE, "control");
     expect(none).toHaveTextContent(CONTROL_LABELS.none);
     empty.unmount();
 
@@ -4252,6 +4307,7 @@ test("the Parent row's first control opens the parent's editor, before the paren
     expect(row, "the parent's link is outside the Parent row").not.toBeNull();
     const control = firstUsableIn(row);
     expect(control).toHaveTextContent(CONTROL_LABELS.edit_parent);
+    expect(control).toHaveAttribute(DETAILS_OPENER_ATTRIBUTE, "control");
     expect(
       (control?.compareDocumentPosition(link) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING,
       "the parent's link stands before the control that edits it"
@@ -4261,6 +4317,122 @@ test("the Parent row's first control opens the parent's editor, before the paren
     const box = await screen.findByLabelText(PROPERTY_LABELS.parent);
     await waitFor(() => expect(box, "the parent's editor took no focus").toHaveFocus());
     unmount();
+  } finally {
+    restore();
+  }
+});
+
+/** A control elsewhere on the page that opens Details at `row` with the row's control pressed,
+ *  as the header's Set or Edit parent issue does (`slots/header.tsx`). */
+function PressAt({ row }: { row: DetailsRow }): ReactNode {
+  const openAt = useOpenDetailsAt();
+  return (
+    <button onClick={() => openAt(row, true)} type="button">
+      Press at {row}
+    </button>
+  );
+}
+
+/** The address the router is at, which a link followed on the page changes. */
+function PageAddress(): ReactNode {
+  return <output data-testid="page-address">{useLocation().pathname}</output>;
+}
+
+/** The rows whose editor Details draws itself, each with the issue and the name of the control
+ *  that opens the editor: the parent's with no parent and with one, whose link stands before the
+ *  editor, and the route's. */
+const EDITOR_ROWS = [
+  { details: issue, opener: CONTROL_LABELS.set_parent, row: "parent" },
+  { details: { ...issue, parent: "CORE-2" }, opener: CONTROL_LABELS.edit_parent, row: "parent" },
+  { details: issue, opener: "Messages default to no route", row: "route" },
+] as const;
+
+// Details keeps an open editor of the parent or the route while it is closed
+// (`slots/details.tsx`), and the row then draws the editor in place of the control that opens
+// it. A press at the row (`useOpenDetailsAt`, as the header's Set or Edit parent issue makes it)
+// pressed the row's first control there: the parent's link, drawn before the editor, which took
+// the reader to the parent issue, or else the editor's box, where a script's click puts no focus.
+// It puts the focus in the editor's box and presses nothing.
+test("a press at the Parent or route row with its editor open puts the focus in the editor's box and presses nothing", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+
+  try {
+    for (const { details, opener, row } of EDITOR_ROWS) {
+      getIssue.mockResolvedValue(details);
+      const { unmount } = renderDetails(() => (
+        <>
+          <PressAt row={row} />
+          <PageAddress />
+        </>
+      ));
+      // Every click on a control of the row from the press on; the row goes with the case.
+      const clicked: EventTarget[] = [];
+      try {
+        await user.click(await screen.findByRole("button", { name: opener }));
+        const box = await screen.findByLabelText(PROPERTY_LABELS[row]);
+        await waitFor(() => expect(box, `the ${row}'s editor took no focus`).toHaveFocus());
+        rowAt(row).addEventListener(
+          "click",
+          (event) => {
+            if (event.target !== null) clicked.push(event.target);
+          },
+          true
+        );
+        // The press moves the focus to its own control, out of the box.
+        await user.click(screen.getByRole("button", { name: `Press at ${row}` }));
+        await waitFor(() =>
+          expect(
+            box,
+            `the press at ${row} (parent ${details.parent}) put no focus in the open editor's box`
+          ).toHaveFocus()
+        );
+        expect(clicked, `a press at the ${row} row clicked a control of the row`).toEqual([]);
+        expect(
+          screen.getByTestId("page-address").textContent,
+          `a press at the ${row} row left the issue`
+        ).toBe("/issues/CORE-1");
+      } finally {
+        unmount();
+      }
+    }
+  } finally {
+    restore();
+  }
+});
+
+// A press at a row whose editor is shut presses the control the row marks as the one that opens
+// it, and the editor, as it opens, puts the focus in its box.
+test("a press at the Parent or route row with its editor shut opens the editor, with the focus in its box", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+
+  try {
+    for (const { details, opener, row } of EDITOR_ROWS) {
+      getIssue.mockResolvedValue(details);
+      const { unmount } = renderDetails(() => (
+        <>
+          <PressAt row={row} />
+          <PageAddress />
+        </>
+      ));
+      try {
+        await screen.findByRole("button", { name: opener });
+        await user.click(screen.getByRole("button", { name: `Press at ${row}` }));
+        await waitFor(() =>
+          expect(
+            document.activeElement,
+            `the press at ${row} (parent ${details.parent}) put no focus in a new editor's box`
+          ).toBe(screen.queryByLabelText(PROPERTY_LABELS[row]))
+        );
+        expect(
+          screen.getByTestId("page-address").textContent,
+          `a press at the ${row} row left the issue`
+        ).toBe("/issues/CORE-1");
+      } finally {
+        unmount();
+      }
+    }
   } finally {
     restore();
   }

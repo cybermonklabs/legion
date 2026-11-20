@@ -59,6 +59,7 @@ import {
 } from "./details-leaves";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { blockedByControlName, referencedByControlName } from "./details-names";
+import { DETAILS_OPENER_ATTRIBUTE } from "./details-rows";
 import { IssueAddMenu } from "./IssueAddMenu";
 import { IssueClaimControl } from "./IssueClaimControl";
 import { type IssueField, IssueFieldForms } from "./IssueFieldForms";
@@ -556,9 +557,11 @@ export function IssueMarginPanel({
             </div>
           </Row>
         )}
-        {/* The parent's own control first, which opens its editor in this row: the header's Set
-            parent issue presses it (`useOpenDetailsAt`, `details-rows.ts`), as the add menu's
-            Parent does. */}
+        {/* The parent's own control first, which opens its editor in this row and is marked as
+            the row's opener: the header's Set parent issue presses it (`useOpenDetailsAt`,
+            `details-rows.ts`), and, while the editor stands in its place, puts the focus in the
+            editor, also marked, rather than press the parent's link. The add menu's Parent opens
+            the editor by its state (`onEditingField`), and presses nothing. */}
         <Row glyph="↑" label={PROPERTY_LABELS.parent} row="parent" valueRef={parentValue}>
           {isClosed || editingField === "parent" ? null : (
             <button
@@ -567,6 +570,7 @@ export function IssueMarginPanel({
               ref={parentControl}
               type="button"
               {...pageChrome}
+              {...{ [DETAILS_OPENER_ATTRIBUTE]: "control" }}
             >
               {issue.parent === null ? CONTROL_LABELS.set_parent : CONTROL_LABELS.edit_parent}
             </button>
@@ -583,13 +587,15 @@ export function IssueMarginPanel({
             </Link>
           )}
           {editingField === "parent" ? (
-            <IssueFieldForms
-              field="parent"
-              isClosed={isClosed}
-              issue={issue}
-              onClose={closeEditor}
-              writes={writes}
-            />
+            <div className="contents" {...{ [DETAILS_OPENER_ATTRIBUTE]: "editor" }}>
+              <IssueFieldForms
+                field="parent"
+                isClosed={isClosed}
+                issue={issue}
+                onClose={closeEditor}
+                writes={writes}
+              />
+            </div>
           ) : null}
           {/* A parent save the reader stopped offers to be saved again, for which a closed
               issue's row draws no control, so there its line says the issue is closed instead. */}
@@ -708,13 +714,15 @@ export function IssueMarginPanel({
             writes={writes}
           />
           {editingField === "route" ? (
-            <IssueFieldForms
-              field="route"
-              isClosed={isClosed}
-              issue={issue}
-              onClose={closeEditor}
-              writes={writes}
-            />
+            <div className="contents" {...{ [DETAILS_OPENER_ATTRIBUTE]: "editor" }}>
+              <IssueFieldForms
+                field="route"
+                isClosed={isClosed}
+                issue={issue}
+                onClose={closeEditor}
+                writes={writes}
+              />
+            </div>
           ) : null}
           {/* A route Dispatch refused, said in the row it was saved from with Dispatch's reason
               and Retry, as the Parent row says a refused parent, for as long as the draft still
