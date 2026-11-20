@@ -17,6 +17,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
@@ -31,11 +32,12 @@ const graphstoreImportPath = "github.com/sjawhar/envoy/internal/dispatch/graphst
 const graphstoreDirectory = "internal/dispatch/graphstore"
 
 // storeWriteFunctions are the calls a write of graph_nodes and graph_tuples from outside this
-// package goes through (WriteFunctions), the same ones docs' register of the tree's passes scans
-// for (storeWriterCall), and the session writers beside them, held in the package itself so api's
-// scan of the projections' writers reads the same list. A write that holds a statement of its own
-// instead is found by rawStoreWrite, and none outside this package may hold one.
-var storeWriteFunctions = WriteFunctions()
+// package goes through (graphstoretest.WriteFunctions), the same ones docs' register of the
+// tree's passes scans for (storeWriterCall), and the session writers beside them, held in
+// graphstoretest so api's scan of the projections' writers reads the same list. A write that
+// holds a statement of its own instead is found by rawStoreWrite, and none outside this package
+// may hold one.
+var storeWriteFunctions = graphstoretest.WriteFunctions()
 
 // rawStoreWrite matches a statement that writes graph_nodes or graph_tuples itself rather than
 // through one of storeWriteFunctions: an insert, an update or a delete, in any case, over any

@@ -1,6 +1,7 @@
 package claim
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -32,6 +33,31 @@ func ProjectToken(project string) (string, error) {
 
 // IsIssueKey reports whether key is a Dispatch issue key (`LEGION-208`).
 func IsIssueKey(key string) bool { return issueKey.MatchString(key) }
+
+// KeyOfProject reports whether an outbox row keyed key belongs to project: the key's part before
+// its first `-` — the whole key where it has none, as a row keyed by a project itself is (a pause's
+// stop of a claim of another project's issue, a controller notice, the gated-steps publish) — is
+// project, compared without regard to case, so that project may be the Dispatch key (`LEGION`) or
+// the claim token's project (`legion`, which ProjectToken lowercases one to one from every key a
+// Dispatch project has).
+//
+// It is the one rule every write of an outbox row by key takes (internal/daemon's projectRecords
+// and workflowRuntime.enqueueRoleHolders; internal/store's queuesRoleHolders, EnqueueRoleHolders
+// and insertOutboxRow), and the rule the outbox's run reads from the other side (record's
+// dueRowsSQL, whose `split_part(outbox.issue, '-', 1)` is the same part). A row keyed otherwise is
+// run only by the daemon whose project its key names, against that daemon's own claims, so a daemon
+// that writes it writes into another project's work.
+func KeyOfProject(project, key string) bool {
+	keyProject, _, _ := strings.Cut(key, "-")
+	return strings.EqualFold(keyProject, project)
+}
+
+// ErrKeyOfAnotherProject is the refusal of a write of an outbox row whose key is not of the
+// writer's project (KeyOfProject), by a write whose caller names the row by the id it answers:
+// internal/daemon's projectRecords.EnqueueID and internal/store's insertOutboxRow. An id of no row
+// would name nothing — the decisions a start claims, the stop a pause released, a release's mark —
+// so the write fails instead, and the caller's transaction rolls back.
+var ErrKeyOfAnotherProject = errors.New("the outbox row is keyed by another project's issue, whose rows only that project's daemon runs")
 
 // IsRole reports whether role is one of the six a claim can be on.
 func IsRole(role Role) bool {

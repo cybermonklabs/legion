@@ -203,14 +203,6 @@ held_soon() {
   pass "$1" "$2: $answer row(s)"
 }
 
-# declared SECTION WHAT FILE SED: the one value SED prints out of a Go source file, refused when
-# the file or the declaration is gone, so a build that moved the lease moves this driver with it.
-declared() {
-  [[ -r "$3" ]] || fail "$1" "$2" "$3 is unreadable"
-  answer="$(sed -n "$4" "$3")"
-  [[ -n "$answer" ]] || fail "$1" "$2" "no such declaration in $3"
-}
-
 # hold_block_index SECTION: takes the block-index pass's own lease, waiting out a tick that holds
 # it, so no tick writes an embedding window while this driver erases: duty.Exclusive takes this
 # lease before every pass and skips the pass where another session holds it. The lease is a

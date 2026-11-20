@@ -302,20 +302,44 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // bus-unavailable 503 too, with a 503 and Retry-After of its own under streamFullPrefix: the bus
 // answered, so the body must not say it did not, but the same message is taken once the stream
 // has room, so the caller's retry is right.
+//
+// A publish that may have stored its message (mayHaveStored) is the 503 with
+// listenerwire.CodeMaybeStored, whichever answer ended it - a full stream's, or a refusal of the
+// resend after a send nothing answered - so a sender treats it as a send that may have landed
+// rather than one that stored nothing.
 func writeBusUnavailable(w http.ResponseWriter, err error) int {
 	if errors.Is(err, bus.ErrPublishDenied) {
 		writeJSONError(w, http.StatusForbidden, fmt.Sprintf("%s: %s", publishDeniedPrefix, err))
 		return http.StatusForbidden
 	}
-	if errors.Is(err, bus.ErrStreamFull) {
-		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", streamFullPrefix, err))
-		return http.StatusServiceUnavailable
+	stored, full := mayHaveStored(err), errors.Is(err, bus.ErrStreamFull)
+	prefix := busUnansweredPrefix
+	if full {
+		prefix = streamFullPrefix
 	}
-	if !errors.Is(err, bus.ErrRefused) {
-		w.Header().Set("Retry-After", "1")
+	if !stored && !full {
+		if !errors.Is(err, bus.ErrRefused) {
+			w.Header().Set("Retry-After", "1")
+		}
+		return writeNATSError(w, err, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", prefix, err))
 	}
-	return writeNATSError(w, err, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", busUnansweredPrefix, err))
+	w.Header().Set("Retry-After", "1")
+	answer := listenerwire.APIError{Error: fmt.Sprintf("%s: %s", prefix, err)}
+	if stored {
+		answer.Code = listenerwire.CodeMaybeStored
+	}
+	writeJSON(w, http.StatusServiceUnavailable, answer)
+	return http.StatusServiceUnavailable
+}
+
+// mayHaveStored reports whether a publish that failed with err may still have stored its message:
+// a send of it went out and nothing answered (bus.ErrUnacknowledged), whatever answer ended the
+// publish after it - a full stream, or a refusal of a later send, since the first may have landed.
+// It is the one rule the bus-unavailable answer (writeBusUnavailable), the sender's charge
+// (senderCharge.published), a keep's failure (storeKeptRoleCopy) and a publish past an in-process
+// refusal (publishPastInProcess) read.
+func mayHaveStored(err error) bool {
+	return errors.Is(err, bus.ErrUnacknowledged)
 }
 
 // writeGrantGuardRefusal answers a soft claim the grant guard refused (roleGrantGuarded) as the
@@ -682,6 +706,15 @@ const senderStampReadTimeout = 1 * time.Second
 // (senderCharge.published): a copy the stream stored or may have stored costs one, a copy it
 // already held costs nothing, also after the wake, and a publish that sent nothing costs only the
 // wake, if one was reported.
+//
+// A send carrying role, the role a Dispatch send for a route to a role is sent for, is taken only
+// from Dispatch's own verified principal (refuseRoleMark): any other caller carrying it is the
+// 403 naming the field, before anything is read. Taken, the mark rides the envelope, and the
+// role's claim is read before the target (answerRoleSend): a claim naming the target sends as
+// above, and a claim naming another session, or none, keeps the message for the role's next live
+// holder and answers 202 kept, so the role's message never lands on the subject of a session that
+// no longer holds the role, unless the send asked connected_only, which is the 409 a stopped
+// target gives, with nothing kept. A claim read that did not answer is the bus-unavailable 503.
 func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		record := &requestRecord{logger: logger, line: "listener send", laneKey: "target_session"}
@@ -708,6 +741,9 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusForbidden, outcomeCapabilityRefused, refusal, "source_session")
 			return
 		}
+		if refuseRoleMark(w, r, d, record, request.Role) {
+			return
+		}
 		if targetSession == "" {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, "target_session is required", "target_session")
 			return
@@ -722,6 +758,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			return
 		}
 		item := contracts.AgentSendEnvelope(targetSession, body.IdempotencyKey, listenerMessage(body, bodyExpectsReply))
+		item.Role = request.Role
 		record.item = &item
 		if err := item.Validate(); err != nil {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, err.Error())
@@ -732,6 +769,9 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			return
 		}
 		defer charge.settle()
+		if answerRoleSend(ctx, w, d, record, charge, &item, request, targetSession) {
+			return
+		}
 		// The cache alone cannot say a session is gone: it trails the bucket it follows, and is
 		// still being refilled after a reconnect, so a miss is read through to the bucket itself.
 		// Only the bucket's own word for it (nats.ErrKeyNotFound, which Refresh also returns for a
@@ -999,10 +1039,11 @@ func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerF
 }
 
 // publishDedupePrefix opens every dedupe key the publish route makes for a request that chose
-// none: publish.<a new id>, or publish.<the request's idempotency_key>. Two places use it: the
+// none: publish.<a new id>, or publish.<the request's idempotency_key>. Three places use it: the
 // route, which writes it (publishHandler) and refuses a dedupe key chosen for an envelope with
-// source dispatch, so every copy it keeps of a dispatch envelope carries it; and isOutboxCopy,
-// which reads it to tell such a copy from one Dispatch's outbox kept under a key of its own.
+// source dispatch, so every copy it keeps of a dispatch envelope carries it; a takeover's copy of
+// such a message, whose own key keeps it (takenFrameDedupeKey); and isOutboxCopy, which reads it
+// to tell such a copy from one Dispatch's outbox kept under a key of its own.
 const publishDedupePrefix = "publish."
 
 // publishHandler rejects agent-targeted topics (must use /v1/messages/send
@@ -1270,10 +1311,10 @@ func sessionInfoWith(entry session.ListEntry, held []string) listenerwire.Sessio
 // legacy id past envoy_interests' get bound that envoy_sessions still lists, or one outside
 // nats.go's key alphabet, which GET /v1/interests/<session_id> answers as the 413 or 400
 // writeBusUnavailable writes and the two session routes as a row whose topics are []). Any other
-// error is a read that did not answer, whatever it names. In nats.go v1.50.0 that includes ctx's
+// error is a read that did not answer, whatever it names. In nats.go v1.55.0 that includes ctx's
 // end (store.Registry.Get's bound, or the JetStream MaxWait context nats.go's direct get always
 // runs under, so it always takes requestWithContext), nats.ErrConnectionClosed,
-// nats.ErrNoResponders, and whatever nats.go's publish returns, the raw *net.OpError of a write
+// nats.ErrDisconnected, nats.ErrNoResponders, and whatever nats.go's publish returns, the raw *net.OpError of a write
 // buffer flushed onto a broken connection among them; the rule does not rest on that list being
 // complete.
 func interestReadAnswered(err error) bool {
@@ -1716,7 +1757,9 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // claim again, decides the whole thing again on what it then finds, and tries once; a second
 // mismatch is the same 409 a stated revision gets. A claim that states its own if_claim_revision
 // is never retried - that revision is the caller's own precondition - and a hard claim that
-// states none is written with no precondition at all, last-claim-wins.
+// states none is written with the revision of the record it read, read again and written again on
+// a conflict until its request's budget ends (store.Registry.SetRoleWithPrevious), then answered
+// 503 with nothing written: the last write still wins.
 //
 // A soft claim names the process making it (client_instance_id), and the claim it writes records
 // that process as the role's holder. Where the role is already held under the claimant's own
@@ -1745,15 +1788,18 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // Legion pane. Without them a listener whose renewals stopped landing would hand a live holder's
 // role to the second process once the window passed. A claim from the process the standing claim
 // names rests on no renewal and is granted through all three, since it is that holder re-claiming
-// its own role after a listener restart. A hard claim reads no holder and lands last-claim-wins
-// as it always has.
+// its own role after a listener restart. A hard claim reads no holder: it writes with the revision
+// it read and lands as the last write, or answers 503 having written nothing.
 //
-// A claim that landed also hands the role's kept lane to its new holder: whatever the listener
-// kept while the role had none is forwarded to the claimant (runKeptRoleDrain, which reads the
-// lane first and resolves the role's holder itself, so a claim of a role with nothing kept for
-// it costs one stream read and no resolution at all, and a lane with copies on it goes to the
-// claim that superseded this one when one has). That runs in a goroutine under a context of its
-// own, so this answer's status and body are exactly what they were and wait for none of it.
+// A claim that landed also hands the role over to its new holder (runTakenRoleDrain): it runs the
+// passes of the role's takeover records, which copy what a previous holder did not read to the
+// role's kept lane, and then forwards the kept lane to the claimant (handOverTakenRole, which reads
+// the lane first and resolves the role's holder itself, so a claim of a role with nothing kept for
+// it and no record costs its stream reads and no resolution at all, and a lane with copies on it
+// goes to the claim that superseded this one when one has). That runs in a goroutine under a
+// context of its own, so this answer's status and body are exactly what they were and wait for
+// none of it. A try whose takeover record did not store writes no claim and answers 503
+// (errTakeoverUnrecorded).
 //
 // The refresh of the claimant's registration can make its session live again, as a registration
 // that returns a session does (subscribeHandler): a process that resumed a session claims its role
@@ -2030,8 +2076,8 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// answered exactly as one is today, the 409 naming the role, the holder and the revision
 		// the bucket holds. A body that states its own if_claim_revision is never retried,
 		// because that revision is the caller's own precondition and deciding again would answer
-		// a question it did not ask, and a hard claim that states none is written with no
-		// precondition at all, last-claim-wins.
+		// a question it did not ask, and a hard claim that states none is written with the
+		// revision of the record it read and read again on a conflict, the last write winning.
 		//
 		// The claimant's registration is refreshed above, once, whichever attempt then claims.
 		// The two decisions this route logs - the refusal of a second process of one session id,
@@ -2067,6 +2113,12 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 						slog.String("arm", decideErr.Error()))
 					writeGrantGuardRefusal(w, body.Role, claim.HolderSessionID, decideErr)
 					return
+				case errors.Is(decideErr, store.ErrMalformedRoleClaim):
+					// A stored claim no read can decode is no outage: the 500 the role lookup
+					// gives it (writeRoleClaimUnreadable), so a claimant stops rather than
+					// claim again at every backoff for a record that will not change.
+					writeRoleClaimUnreadable(w, body.Role, decideErr)
+					return
 				case decideErr != nil:
 					writeStoreError(ctx, w, decideErr, http.StatusServiceUnavailable)
 					return
@@ -2076,6 +2128,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 					ifClaimRevision = &decidedRevision
 				}
 			}
+			tries := takeoverTries{cfg: *d.delivery, claimant: body.SessionID, role: body.Role}
 			item, err := d.registry.SetRoleWithPrevious(ctx, store.RoleClaimRequest{
 				SessionID:         body.SessionID,
 				MachineID:         machineID,
@@ -2085,7 +2138,18 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				Soft:              body.Soft,
 				IfClaimRevision:   ifClaimRevision,
 				Supersedable:      supersedable,
+				BeforeTry:         tries.beforeTry,
 			})
+			// Neither wrote a claim, and both are the client's to make again: every try met a
+			// conflict until the deadline, or a try's takeover record did not store.
+			if errors.Is(err, store.ErrRoleClaimContended) || errors.Is(err, errTakeoverUnrecorded) {
+				if errors.Is(err, errTakeoverUnrecorded) {
+					warnTakeoverUnrecorded(logger, body.Role, body.SessionID, err)
+				}
+				w.Header().Set("Retry-After", "1")
+				writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+				return
+			}
 			var stale *store.ErrRoleClaimRevisionMismatch
 			mismatch := errors.As(err, &stale)
 			if mismatch && attempt == 0 && body.Soft && body.IfClaimRevision == nil {
@@ -2135,7 +2199,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				return
 			}
 			landed = true
-			go runKeptRoleDrain(*d.delivery, body.Role)
+			go runTakenRoleDrain(*d.delivery, body.Role)
 			answer := roleSetResponse{Interest: item}
 			if roleWarning != "" {
 				answer.Warnings = []string{roleWarning}

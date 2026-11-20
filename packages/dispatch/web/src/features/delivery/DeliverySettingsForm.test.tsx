@@ -1,12 +1,16 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 
+import { realClock } from "../../__tests__/fake-clock";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { DeliverySettings } from "../../api/types";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { DeliverySettingsForm } from "./DeliverySettingsForm";
 
 const record: DeliverySettings = {
@@ -297,6 +301,34 @@ test("a refused save shows the server's message as it wrote it, and the draft st
     expect(field("Deploy repository").value).toBe("acme/elsewhere");
   } finally {
     cleanup();
+    getDeliverySettings.mockRestore();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// A save the reader stopped may have been made: the form says so, and that its button sends what
+// the fields hold then, rather than a failure it cannot know of.
+test("a save the reader stopped says it may have been made, not that it failed", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(record);
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockRejectedValue(
+    new NetworkError("/api/v1/settings/delivery", new TypeError("Failed to fetch"))
+  );
+  const queryClient = renderForm();
+  try {
+    await screen.findByDisplayValue("acme/widgets");
+    await user.click(screen.getByRole("button", { name: "Save delivery settings" }));
+    await stopTheLateWrite(queryClient);
+    expect(screen.getByRole("alert").textContent).toBe(
+      stoppedWriteNote("the delivery settings", "saved", {
+        anew: "Save delivery settings sends what the form holds now.",
+      })
+    );
+  } finally {
+    realClock();
+    cleanup();
+    queryClient.clear();
     getDeliverySettings.mockRestore();
     putDeliverySettings.mockRestore();
   }

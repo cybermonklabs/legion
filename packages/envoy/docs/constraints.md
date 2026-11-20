@@ -25,7 +25,7 @@
 
 ## Source integration model
 
-- Envoy has two ingestion paths: dedicated webhook receivers (`cmd/github/`, `cmd/slack/`, `cmd/ghostwispr/`) and the generic MCP bridge (`cmd/mcp/`). Both are valid patterns.
+- Envoy has two ingestion paths: dedicated webhook receivers, which the listener serves (`internal/webhook/github.go`, `slack.go`, `ghostwispr.go`), and the generic MCP bridge (`cmd/mcp/`). Both are valid patterns.
 - The MCP bridge is the default path for new event sources — it connects to any MCP server that publishes resources, keeping source-specific logic out of Envoy.
 - Building a dedicated receiver adds maintenance burden. It's justified for well-known webhook standards (GitHub, Slack) and simple webhook sources (Ghost Wispr), but consider whether the maintenance cost justifies the benefit over the generic MCP bridge before adding more.
 - When using the MCP bridge, Envoy should stay naive about message content. The MCP server owns domain-specific logic (parsing, filtering, formatting); Envoy normalizes into envelopes and transports.

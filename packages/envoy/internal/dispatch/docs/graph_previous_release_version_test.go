@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"strings"
 	"sync"
@@ -522,16 +523,14 @@ func createAsThePreviousRelease(t *testing.T, database *store.Store, service *Se
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	var event int64
-	if err := tx.QueryRow(ctx, `
-		with bumped as (update issues set last_seq = last_seq + 1 where key = 'CORE-1' returning last_seq)
-		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', bumped.last_seq, 'artifact.created', '{"kind":"user","id":"alice"}',
-		       jsonb_build_object('artifact', jsonb_build_object('id', $1::text, 'issue_key', 'CORE-1',
-		           'project', 'CORE', 'slug', $2::text, 'name', $2::text || '.md', 'kind', 'doc')), false
-		from bumped
-		returning id
-	`, document, slug).Scan(&event); err != nil {
+	payload, err := json.Marshal(map[string]any{"artifact": map[string]any{
+		"id": document, "issue_key": "CORE-1", "project": "CORE", "slug": slug, "name": slug + ".md", "kind": "doc",
+	}})
+	if err != nil {
+		t.Fatalf("encode the creation's event of %s: %v", slug, err)
+	}
+	event, err := documentEvent(ctx, tx, "artifact.created", payload)
+	if err != nil {
 		t.Fatalf("append the creation's event of %s: %v", slug, err)
 	}
 	indexVersionAsThePreviousRelease(t, tx, document, 1, versionAt, event, markdown, blocks, nil, []blockLinkRow{link})
@@ -586,15 +585,12 @@ func createIssueAsThePreviousRelease(t *testing.T, database *store.Store, servic
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	var event int64
-	if err := tx.QueryRow(ctx, `
-		with bumped as (update issues set last_seq = last_seq + 1 where key = $1 returning last_seq)
-		insert into events (issue_key, seq, type, actor, payload, notify)
-		select $1, bumped.last_seq, 'issue.created', '{"kind":"user","id":"alice"}',
-		       jsonb_build_object('key', $1::text, 'project', 'CORE', 'title', 'An issue the previous release created'), false
-		from bumped
-		returning id
-	`, key).Scan(&event); err != nil {
+	payload, err := json.Marshal(map[string]any{"key": key, "project": "CORE", "title": "An issue the previous release created"})
+	if err != nil {
+		t.Fatalf("encode the issue.created event of %s: %v", key, err)
+	}
+	event, err := recordIssueEvent(ctx, tx, key, "issue.created", aliceActor, payload)
+	if err != nil {
 		t.Fatalf("append the issue.created event of %s: %v", key, err)
 	}
 	indexVersionAsThePreviousRelease(t, tx, document, 1, versionAt, event, markdown, blocks, nil, []blockLinkRow{link})
@@ -712,17 +708,11 @@ func recordedBackfillHorizon(t *testing.T, database *store.Store) int64 {
 
 // appendIssueEvent appends one event of issue CORE-1 that names no document, as the stand-in for
 // the previous release appends its own (indexAsThePreviousRelease), its seq taken off the issue's
-// own counter as that release's events.Append takes it, and answers its id.
+// own counter as that release's events.Append takes it (recordIssueEvent), and answers its id.
 func appendIssueEvent(t *testing.T, database *store.Store) int64 {
 	t.Helper()
-	var id int64
-	if err := database.Pool.QueryRow(context.Background(), `
-		with bumped as (update issues set last_seq = last_seq + 1 where key = 'CORE-1' returning last_seq)
-		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', bumped.last_seq, 'issue.updated', '{"kind":"user","id":"alice"}', '{}'::jsonb, false
-		from bumped
-		returning id
-	`).Scan(&id); err != nil {
+	id, err := recordIssueEvent(context.Background(), database.Pool, "CORE-1", "issue.updated", aliceActor, []byte(`{}`))
+	if err != nil {
 		t.Fatalf("append an event of CORE-1: %v", err)
 	}
 	return id

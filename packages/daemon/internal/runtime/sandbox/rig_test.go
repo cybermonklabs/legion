@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -64,10 +65,17 @@ var (
 	childToken = claim.Token("legion-legion-legion-209-implementer")
 )
 
+// testLeakCheck is the shared public leak check every test's deployment names, a stand-in
+// repository and checker (leakguard.Setting): the runtime a test configures tells its roles the
+// install and the checker, and pushes the check to a launcher that names its pin, as a
+// deployment that runs one has it done.
+var testLeakCheck = leakguard.Setting{Repository: ghrepo.MustParse("example-org/deployment"), ManifestSHA256: strings.Repeat("5e", 32)}
+
 // testOptions are the options every test starts from: production's shape — a store that keeps
 // sessions in a database included, which configure requires, here the postgres one with its URL key
-// — both pods' reservations at the daemon's defaults (reservations), with budgets short enough that
-// a wait the test expects to end never slows the suite.
+// — both pods' reservations at the daemon's defaults (reservations), the deployment's shared leak
+// check (testLeakCheck), with budgets short enough that a wait the test expects to end never slows
+// the suite.
 func testOptions() Options {
 	return Options{
 		Namespace:    testNamespace,
@@ -101,8 +109,9 @@ func testOptions() Options {
 			Volume: resource.MustParse("20Gi"), Refresh: 10 * time.Minute, Retain: 168 * time.Hour,
 			Resources: reservations().Controller,
 		},
-		Mapped: func() []ghrepo.Repository { return nil },
-		Log:    slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		Mapped:           func() []ghrepo.Repository { return nil },
+		LeakCheckSetting: testLeakCheck,
+		Log:              slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
 	}
 }
 
@@ -818,6 +827,17 @@ func (g *rig) writes() []action {
 	return out
 }
 
+// sandboxRemakes are the deletes and creates of the Sandbox name among g's writes, in order.
+func sandboxRemakes(g *rig, name string) []string {
+	var made []string
+	for _, w := range g.writes() {
+		if w.resource == "sandboxes" && w.name == name && (w.verb == "delete" || w.verb == "create") {
+			made = append(made, w.verb)
+		}
+	}
+	return made
+}
+
 // requests are every request the runtime made, reads included, in order; the informers' lists and
 // watches are never among them (record).
 func (g *rig) requests() []action {
@@ -975,7 +995,7 @@ func (g *rig) reportLauncher(token claim.Token, state shimwire.LauncherState) {
 	if pod == nil {
 		g.t.Fatal("cannot report launcher state without its pod")
 	}
-	s := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, shimwire.LauncherHello{LauncherID: "test-" + string(token), PodUID: string(pod.UID)})
+	s := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, g.keptSince(token), shimwire.LauncherHello{LauncherID: "test-" + string(token), PodUID: string(pod.UID)})
 	s.mu.Lock()
 	s.state = state
 	close(s.ready)
@@ -998,6 +1018,43 @@ func (g *rig) update(pod *corev1.Pod, edit func(*corev1.Pod)) {
 	if err := g.kube.Tracker().Update(podsGVR, next, testNamespace); err != nil && !apierrors.IsNotFound(err) {
 		g.t.Errorf("update pod %s: %v", pod.Name, err)
 	}
+}
+
+// editPod edits the pod name in the tracker as edit says, and waits until the pod store holds the
+// edit, which what names for the wait's failure: the same status, and a deletionTimestamp where the
+// edit set one.
+func (g *rig) editPod(name, what string, edit func(*corev1.Pod)) {
+	g.t.Helper()
+	want := g.pod(name).DeepCopy()
+	edit(want)
+	g.update(g.pod(name), edit)
+	g.eventually(what, func() bool {
+		p := g.r.storedPod(name)
+		return p != nil && reflect.DeepEqual(p.Status, want.Status) && (p.DeletionTimestamp == nil) == (want.DeletionTimestamp == nil)
+	})
+}
+
+// suspendedCopy stops g and is a second rig, made with config, that runs no controller and holds
+// copies of the Sandbox name and of its pod as g's API holds them, the Sandbox set Suspended. It
+// answers that rig and the copy of the Sandbox. The second rig's API stamps uids from its own
+// count, so the copies carry a uid of their own, which no Sandbox that rig creates holds.
+func (g *rig) suspendedCopy(name string, config func(*Options)) (*rig, *unstructured.Unstructured) {
+	g.t.Helper()
+	object, err := g.dyn.Tracker().Get(sandboxGVR, testNamespace, name)
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	suspended := object.(*unstructured.Unstructured).DeepCopy()
+	suspended.SetResourceVersion("")
+	suspended.SetUID("uid-sandbox-suspended")
+	if err := unstructured.SetNestedField(suspended.Object, modeSuspended, "spec", "operatingMode"); err != nil {
+		g.t.Fatal(err)
+	}
+	pod := g.pod(name).DeepCopy()
+	pod.ResourceVersion = ""
+	pod.OwnerReferences[0].UID = suspended.GetUID()
+	g.stop()
+	return newRig(g.t, []k8sruntime.Object{suspended, pod}, withoutController(), withOptions(config)), suspended
 }
 
 // sandbox is the Sandbox named name in the tracker, or nil.
@@ -1052,6 +1109,25 @@ func (g *rig) spawn(spec runtime.SpawnSpec) runtime.Locator {
 	return loc
 }
 
+// relaunchOnNewPod is the issue's next launch of spec's role, at its next generation and resumed
+// on its session, as the supervisor starts a role again once its pod ended. It fails the test
+// unless the launch runs in a pod other than the one prev records.
+func (g *rig) relaunchOnNewPod(prev runtime.Locator, spec *runtime.SpawnSpec) runtime.Locator {
+	g.t.Helper()
+	spec.Generation++
+	spec.BootToken = fmt.Sprintf("boot-%s-g%d", spec.Claim, spec.Generation)
+	resumed := *spec
+	resumed.ResumeSessionFile = resumeSession
+	next, err := g.r.Resume(g.ctx, &prev, resumed)
+	if err != nil {
+		g.t.Fatalf("relaunch at generation %d: %v", spec.Generation, err)
+	}
+	if next.Sandbox.PodUID == prev.Sandbox.PodUID {
+		g.t.Fatalf("the relaunch kept the pod %s, want a pod of its own", prev.Sandbox.PodUID)
+	}
+	return next
+}
+
 // launcher is the test rig's role-private launcher connection. It models only the launcher
 // protocol — one child generation at a time, a stop of another generation refused — and records
 // every command: child shims and their agent events remain the fake Conns this rig already owns.
@@ -1080,7 +1156,7 @@ func (g *rig) connect(token claim.Token) { g.connectRunning(token, 0) }
 func (g *rig) connectRunning(token claim.Token, running uint64) {
 	server, client := net.Pipe()
 	pod := g.pod(SandboxName(token))
-	session := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, shimwire.LauncherHello{
+	session := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, g.keptSince(token), shimwire.LauncherHello{
 		LauncherID: "test-" + string(token), PodUID: string(pod.UID),
 		LeakCheckTag: g.leakCheckTag, LeakCheckInstalled: g.leakCheckInstalled,
 	})
@@ -1188,6 +1264,27 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 	}()
 }
 
+// keptSince is what the resolver reads off the Sandbox of token's pod for a hello
+// (LauncherResolver, keptVolumeSince): when that Sandbox was created, where it owns the issue's
+// kept volume, and the zero time otherwise. It reads the Sandbox the tracker holds, and a Sandbox
+// the tracker does not hold or cannot decode reads as the zero time, since a fake launcher may
+// connect from the controller stand-in's goroutine, where the test cannot fail.
+func (g *rig) keptSince(token claim.Token) time.Time {
+	object, err := g.dyn.Tracker().Get(sandboxGVR, testNamespace, SandboxName(token))
+	if err != nil {
+		return time.Time{}
+	}
+	u, ok := object.(*unstructured.Unstructured)
+	if !ok {
+		return time.Time{}
+	}
+	s, err := decodeSandbox(u)
+	if err != nil {
+		return time.Time{}
+	}
+	return keptVolumeSince(s)
+}
+
 // issueLaunchers connects a fake launcher for every role of token's issue.
 func (g *rig) issueLaunchers(token claim.Token) {
 	g.t.Helper()
@@ -1213,8 +1310,9 @@ func (g *rig) sent(token claim.Token) []shimwire.Frame {
 // the API serves does. The project controller's Sandbox, which this runtime does give the `issue`
 // template its working root is on, no test starts from: a test that needs one launches it
 // (controllerSpec). A test of the cutover from the release before the pod-owned disk opts into
-// that release's issue Sandbox by name (withSupersededDisk); one of the tree-volume layout's root
-// or controller, into that layout's template (withTreeVolume).
+// that release's issue Sandbox by name (withSupersededDisk). A test of an issue that keeps its
+// volume opts into the kept template (withKeptTemplate). A test of the tree-volume layout's root
+// or controller opts into that layout's template (withTreeVolume).
 func sandboxObject(t *testing.T, name, uid, mode string, labels map[string]string, conditions ...metav1.Condition) *unstructured.Unstructured {
 	t.Helper()
 	s := sandbox{
@@ -1251,6 +1349,50 @@ func withClaimTemplate(t *testing.T, u *unstructured.Unstructured, name string) 
 		labels[key] = value
 	}
 	template := map[string]any{"metadata": map[string]any{"name": name, "labels": labels}}
+	if err := unstructured.SetNestedSlice(u.Object, []any{template}, "spec", "volumeClaimTemplates"); err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
+// keptVolumes is a runtime.kubernetes.sandbox of type kind, its canary list naming canaries, whose
+// microvm block keeps an issue pod's volume (keptMicroVM): every issue pod that runs in a microVM
+// mounts a claim that its Sandbox owns (keptVolume). keptVolumes(SandboxMicroVM) keeps the volume
+// of every issue but a canary's, and keptVolumes(SandboxGVisor, "LEGION-209") keeps the volume of
+// that canary alone.
+func keptVolumes(kind SandboxType, canaries ...string) func(*Options) {
+	return func(o *Options) {
+		o.Sandbox = SandboxConfig{Type: kind, CanaryIssues: canaries, MicroVM: keptMicroVM()}
+	}
+}
+
+// withKeptTemplate is u owning the one `issue` claim template of an issue's kept volume, as
+// issuePod.disk writes it under keptVolumes: labelled with u's project and issue and, where kept is
+// true, with labelVolume=volumeKept (keptTemplate), ReadWriteOnce on the microvm block's class
+// (testMicroVMStorageClass) at the rig's issue volume size, each of edits then applied to that
+// claim. Without the label it is an `issue` template that no launch reads as kept, as the release
+// before the pod-owned disk wrote one on that class.
+func withKeptTemplate(t *testing.T, u *unstructured.Unstructured, kept bool, edits ...func(*corev1.PersistentVolumeClaimSpec)) *unstructured.Unstructured {
+	t.Helper()
+	labels := map[string]string{labelProject: u.GetLabels()[labelProject], labelIssue: u.GetLabels()[labelIssue]}
+	if kept {
+		labels[labelVolume] = volumeKept
+	}
+	class := testMicroVMStorageClass
+	spec := corev1.PersistentVolumeClaimSpec{
+		AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+		StorageClassName: &class,
+		Resources:        corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: testOptions().IssueVolume}},
+	}
+	for _, edit := range edits {
+		edit(&spec)
+	}
+	template, err := k8sruntime.DefaultUnstructuredConverter.ToUnstructured(&volumeClaimTemplate{
+		Metadata: volumeClaimMetadata{Name: issueVolume, Labels: labels}, Spec: spec,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := unstructured.SetNestedSlice(u.Object, []any{template}, "spec", "volumeClaimTemplates"); err != nil {
 		t.Fatal(err)
 	}
@@ -1306,7 +1448,7 @@ func sandboxLocator(token claim.Token, uid string) runtime.Locator {
 
 // isMergePatch is whether a Sandbox patch body is a JSON merge patch, an object, rather than a JSON
 // patch, an array of operations: a role's address record (recordAddresses) or the suspension that
-// names a displaced pod (suspendDisplacing).
+// names a displaced pod (displacing, suspendAnnotating).
 func isMergePatch(body string) bool {
 	return strings.HasPrefix(strings.TrimSpace(body), "{")
 }

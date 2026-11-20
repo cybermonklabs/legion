@@ -35,10 +35,12 @@ import (
 //
 // This test stands in for the previous release's pass with the writes of it that matter here.
 // An edit or a rebuild-refs of either release first owes the backfilled documents a block index
-// (their version to null). The stand-in then writes each block's parent_block_id, the nesting the
-// seed's own indexing computed, and drains that null version to the latest version, as that pass
-// does when it indexes them; it writes nothing to the store, as that pass cannot. The backfill's
-// own mark must outlive that drain, and this build's reconciliation must then state every parent.
+// (their version to null). The stand-in then drains that null version to the latest version, as
+// that pass does when it indexes them, and writes nothing of the store: no tuple, and no
+// parent_block_id, a column that release does not have (migration 20261109022248 adds it). Every
+// parent is then this build's reconciliation's to write. The backfill's own mark must outlive
+// that drain, and this build's reconciliation must then state every parent, as its part_of tuple
+// and as the parent_block_id the seed's own indexing computed.
 func TestABackfillWhoseMarkThePreviousReleaseDrainedStillReachesEveryParent(t *testing.T) {
 	database, service := blockIndexService(t)
 	ctx := context.Background()
@@ -75,17 +77,6 @@ func TestABackfillWhoseMarkThePreviousReleaseDrainedStillReachesEveryParent(t *t
 		t.Fatalf("the backfill wrote %#v, want %d documents marked owed and the cutover complete", blocks, documents)
 	}
 
-	// The previous release's block index takes the lease first and drains the mark: it writes
-	// each block's parent_block_id and the document's indexed version, and no tuple.
-	for address, state := range before {
-		if !state.hasParent {
-			continue
-		}
-		if _, err := database.Pool.Exec(ctx,
-			`update document_blocks set parent_block_id = $2 where node_id = $1`, address, state.parent); err != nil {
-			t.Fatalf("write the parent of %s as the previous release's block index does: %v", address, err)
-		}
-	}
 	// An edit or a rebuild-refs of either release owes the backfilled documents a block index
 	// (document_block_versions.version to null), the mark the previous release's block index
 	// reads and drains: the backfill's own mark leaves the version alone.
@@ -94,6 +85,10 @@ func TestABackfillWhoseMarkThePreviousReleaseDrainedStillReachesEveryParent(t *t
 		where artifact_id in (select artifact_id from document_blocks)`); err != nil {
 		t.Fatalf("owe the backfilled documents a block index as an edit or rebuild-refs does: %v", err)
 	}
+	// The previous release's block index takes the lease first and drains that mark: it writes
+	// the document's indexed version and nothing of the store, no tuple and no parent_block_id, a
+	// column that release does not have (migration 20261109022248). Every parent is then this
+	// build's reconciliation's to write.
 	drained, err := database.Pool.Exec(ctx, `
 		update document_block_versions b
 		set version = (select max(v.number) from artifact_versions v where v.artifact_id = b.artifact_id)
@@ -120,10 +115,29 @@ func TestABackfillWhoseMarkThePreviousReleaseDrainedStillReachesEveryParent(t *t
 	// This build's reconciliation then runs as it does on every tick of every pod of it.
 	drainBlockIndex(t, service, "after the previous release drained the mark")
 
-	for address := range blockStates(t, database) {
+	after := blockStates(t, database)
+	for address := range after {
 		if _, stated := currentBlockParent(t, database, address); !stated {
 			t.Errorf("block %s states no parent: the previous release drained its document's mark, and nothing states its part_of now", address)
 		}
+	}
+	// Taking the store off cleared every parent (takeTheStoreOff), so nothing but this build's
+	// reconciliation writes parent_block_id, and a row holds the parent the seed's own indexing gave
+	// its block only where that reconciliation wrote it. The seed nests its blocks (nestedSpec), so
+	// a seed that gave no block a parent leaves this assertion nothing to compare.
+	nested := 0
+	for address, was := range before {
+		if !was.hasParent {
+			continue
+		}
+		nested++
+		if state := after[address]; !state.hasParent || state.parent != was.parent {
+			t.Errorf("block %s has parent_block_id %q (set %t) after this build's reconciliation, want the %q the seed's own indexing gave it",
+				address, state.parent, state.hasParent, was.parent)
+		}
+	}
+	if nested == 0 {
+		t.Errorf("the seed gave no block a parent, so no parent this build's reconciliation writes was compared")
 	}
 	census := takeStoreCensus(t, database)
 	for _, kind := range census.Kinds {

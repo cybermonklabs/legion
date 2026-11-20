@@ -198,6 +198,19 @@ func (r *writersRig) request(t *testing.T, method, target string, body any, logi
 	return response.Body.Bytes()
 }
 
+// uploadBase is the token an upload replacing the document artifact names, the one it carries
+// now: Dispatch refuses a replacement that names none (docs.ErrPreconditionRequired).
+func (r *writersRig) uploadBase(t *testing.T, artifact string) map[string]string {
+	t.Helper()
+	document := decoded[struct {
+		Token string `json:"token"`
+	}](t, r.request(t, http.MethodGet, "/api/v1/artifacts/"+artifact+"/text", nil, "alice", http.StatusOK))
+	if document.Token == "" {
+		t.Fatalf("the document %s answers no token", artifact)
+	}
+	return map[string]string{"document": document.Token}
+}
+
 // decoded decodes body into a T, failing the test where it cannot.
 func decoded[T any](t *testing.T, body []byte) T {
 	t.Helper()
@@ -477,6 +490,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Ready: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
 				"name": "spec.md", "content": "# Spec\n\nWhat the writers write, read once more.\n",
+				"precondition": r.uploadBase(t, r.spec),
 			}, "alice", http.StatusCreated)
 		},
 		Drive: func(t *testing.T) {

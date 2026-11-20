@@ -18,8 +18,8 @@ import (
 // that is appended. No tuple may be updated to learn its cause, so a base attribute stated at
 // the sentinel would stand for ever under event 0 while the row it projects named the receipt:
 // a row whose own log says no event recorded it. The settle therefore states no base attribute
-// in its node statement, marks the node as made (nodeMarks), and appends every base attribute the
-// node carries under the receipt (WriteArmsUncaused, queueAppend).
+// in its node statement, marks the node as made (nodeMark), and appends every base attribute the
+// node carries under the receipt (WriteArmsUncaused, QueueCaused).
 func TestASettlesNodeAndItsBaseTuplesNameOneEvent(t *testing.T) {
 	database := storetest.Open(t)
 	who := model.Actor{Kind: "user", ID: "alice"}

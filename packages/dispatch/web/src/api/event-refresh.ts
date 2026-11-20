@@ -70,7 +70,7 @@ function payloadStrings(event: DispatchEvent, key: string): readonly string[] | 
 }
 
 /** Whether `login` is the signed-in viewer's, compared as the server compares logins. */
-function isViewer(login: string | undefined, viewer: string | undefined): boolean {
+export function isViewer(login: string | undefined, viewer: string | undefined): boolean {
   return (
     login !== undefined &&
     viewer !== undefined &&
@@ -1503,10 +1503,10 @@ function addressUnder(address: string, owner: string, next: string): boolean {
   );
 }
 
-/** The slug of the project document `event` is on, where its payload carries it: a renamed or
- *  removed document's own, an edited comment's document's (`artifact_slug`), and an edited
- *  ask's document's, the one its anchor quotes (`anchor_artifact`), for an edit through the
- *  ask's own route the one that holds its typed block (`block_artifact`), or for an approval
+/** The slug of the project document `event` is on, where its payload carries it: a created,
+ *  renamed or removed document's own, an edited comment's document's (`artifact_slug`), and an
+ *  edited ask's document's, the one its anchor quotes (`anchor_artifact`), for an edit through
+ *  the ask's own route the one that holds its typed block (`block_artifact`), or for an approval
  *  request's rewording the one it asks approval of (`approval_artifact`, which the server's read
  *  of the event log attaches to every ask event carrying `approval`), each the document the ask
  *  is on. Four events carry none, and name the document by its id alone, which no address is
@@ -1516,6 +1516,7 @@ function addressUnder(address: string, owner: string, next: string): boolean {
  *  settlement writes without `block_artifact`. */
 function projectDocumentSlug(event: DispatchEvent): string | undefined {
   switch (event.type) {
+    case "artifact.created":
     case "artifact.removed":
     case "artifact.renamed":
       return event.payload.artifact.slug;
@@ -1603,9 +1604,10 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * naming none, as an older server sends it) renames the issue's own address, since a names read
  * names an issue by its title, so it refreshes the reads naming that address, and only those
  * (`eventAddresses`).
- * A document's rename (`artifact.renamed`) moves the name the read answers for an address to the
- * document, and its removal (`artifact.removed`) makes every address to it and to its blocks
- * name nothing (`gone`), so each refreshes them too.
+ * A document's creation (`artifact.created`) gives words to an address a page cited before the
+ * document existed, its rename (`artifact.renamed`) moves the name the read answers for an
+ * address to the document, and its removal (`artifact.removed`) makes every address to it and to
+ * its blocks name nothing (`gone`), so each refreshes them too.
  *
  * Of the names reads the app holds, each event refreshes those whose key holds an address it can
  * change, of the issue or the project document it is on (`namesReadsNaming`). The test reads the
@@ -1642,6 +1644,7 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  */
 function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
   switch (event.type) {
+    case "artifact.created":
     case "artifact.removed":
     case "artifact.renamed":
     case "artifact.version":

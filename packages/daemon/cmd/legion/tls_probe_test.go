@@ -114,9 +114,11 @@ func TestTLSCertificateErrorRecognizesClientRefusals(t *testing.T) {
 	}
 }
 
-// curl names one refusal in two ways, by version, and an image may carry either: an image built
-// on another distribution keeps that distribution's curl. Read as no certificate error, a positive
-// control's refusal is "unavailable" and the probe fails an image that is safe.
+// curl names one refusal in several ways, by version and by TLS backend, and an image may carry
+// any of them: an image built on another distribution keeps that distribution's curl. git 2.53.0's
+// https transport, through libcurl's GnuTLS build, printed the Ubuntu row in the image probe of a
+// worker image built on Ubuntu 26.04 on 2026-11-19. Read as no certificate error, a refusal is
+// "unavailable" and the probe fails an image that is safe.
 func TestTLSCertificateErrorRecognizesEachCurlRefusal(t *testing.T) {
 	for _, testCase := range []struct {
 		name, detail string
@@ -124,7 +126,9 @@ func TestTLSCertificateErrorRecognizesEachCurlRefusal(t *testing.T) {
 	}{
 		{"curl 8.14", "curl: (60) SSL certificate problem: unable to get local issuer certificate", true},
 		{"curl 8.18", "curl: (60) SSL certificate OpenSSL verify result: unable to get local issuer certificate (20)", true},
+		{"git 2.53.0 on Ubuntu 26.04", `fatal: unable to access 'https://dv-g3b-emudhra.we-have-a-problem.com/': SSL certificate verification failed: certificate signer not trusted. (CAfile: /etc/ssl/certs/ca-certificates.crt CRLfile: none)`, true},
 		{"no route", "curl: (7) Failed to connect to example.com port 443 after 3 ms: Could not connect to server", false},
+		{"no such host", `fatal: unable to access 'https://dv-g3b-emudhra.we-have-a-problem.com/': Could not resolve host: dv-g3b-emudhra.we-have-a-problem.com`, false},
 		{"timeout", "curl: (28) SSL connection timeout", false},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -165,6 +169,70 @@ func TestTLSCommandDetailKeepsCertificateErrorTail(t *testing.T) {
 	detail := trimTLSDetail(tlsCommandMessage(nil, strings.Repeat("x", tlsDetailLimit)+" invalid peer certificate"))
 	if !tlsCertificateError(detail) {
 		t.Fatalf("detail = %q, dropped the certificate refusal", detail)
+	}
+}
+
+// A detail longer than tlsDetailLimit whose head's bound falls inside a URL's user name, before
+// its "@", or whose end's window starts inside a URL's query, after its "?", keeps no part of
+// either: trimTLSDetail gives the whole detail through the URL rule before it cuts it. A cut made
+// first keeps the start of the user name, where the rule reads it as the URL's host, or the end of
+// the query with no "?" before it, where the rule finds no query. A detail the rule brings within
+// tlsDetailLimit is kept whole, rather than as a head and an end that overlap.
+func TestTrimTLSDetailKeepsNoPartOfAURLItsBoundsFallInside(t *testing.T) {
+	const user, query = "legion-reader", "token=planted-query-token-8"
+	head, window := tlsDetailLimit/3, tlsDetailLimit-tlsDetailLimit/3-1
+	// part is the first four bytes in a row of planted that text holds, and "" where it holds none.
+	part := func(text, planted string) string {
+		for i := 0; i+4 <= len(planted); i++ {
+			if strings.Contains(text, planted[i:i+4]) {
+				return planted[i : i+4]
+			}
+		}
+		return ""
+	}
+	headDetail := strings.Repeat("w", 85) + " https://" + user + "@h.example/p " + strings.Repeat("z", 400)
+	tailDetail := strings.Repeat("w", 400) + " https://h.example/p?" + query + " " + strings.Repeat("z", 177)
+	for _, tc := range []struct {
+		name, detail, planted string
+		// bound is what the bound alone keeps of the detail: its head, or its end's window; ""
+		// where the detail's length is what the case reads.
+		bound, want string
+	}{
+		{
+			name:    "a head whose bound falls inside a URL's user name",
+			detail:  headDetail,
+			planted: user,
+			bound:   headDetail[:head],
+			want:    strings.Repeat("w", 85) + " https://h.exam" + "…" + strings.Repeat("z", window),
+		},
+		{
+			name:    "an end whose window starts inside a URL's query",
+			detail:  tailDetail,
+			planted: query,
+			bound:   tailDetail[len(tailDetail)-window:],
+			want:    strings.Repeat("w", head) + "…" + "w https://h.example/p " + strings.Repeat("z", 177),
+		},
+		{
+			name:    "a detail the rule brings within the bound",
+			detail:  strings.Repeat("w", 260) + " https://h.example/p?" + query,
+			planted: query,
+			want:    strings.Repeat("w", 260) + " https://h.example/p",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.bound != "" && (part(tc.bound, tc.planted) == "" || strings.Contains(tc.bound, tc.planted)) {
+				t.Fatalf("the bound alone keeps %q, which does not cut %q: the case tests nothing", tc.bound, tc.planted)
+			}
+			got := trimTLSDetail(tc.detail)
+			for _, planted := range []string{user, query} {
+				if held := part(got, planted); held != "" {
+					t.Fatalf("trimTLSDetail = %q, which holds %q of %q", got, held, planted)
+				}
+			}
+			if got != tc.want {
+				t.Fatalf("trimTLSDetail = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

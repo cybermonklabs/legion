@@ -121,7 +121,7 @@ func idleRigWakeJustReleased(t *testing.T, rig *idleWakeRig) {
 		rig.awaitResumed(wake.issue, 2)
 	}
 	for _, wake := range wakes {
-		rig.awaitTask(wake.issue, workflow.WakeTask(wake.kind, wake.detail))
+		rig.awaitTask(wake.issue, workflow.WakeTask(wake.kind, wake.detail, workflow.StoppedByRelease))
 		if resumes := rig.resumesOf(wake.issue); len(resumes) != 1 || resumes[0].Kind != wake.kind {
 			t.Errorf("the resumes of %s are recorded as %+v, want one, of kind %q", wake.issue.key, resumes, wake.kind)
 		}

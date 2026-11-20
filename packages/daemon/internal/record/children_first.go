@@ -104,11 +104,12 @@ func ChildOpen(child DispatchIssueRow, recorded *Issue) bool {
 // Nothing here is stored. The wait ends when every open child is released and leaves the
 // workflow, is closed, is moved to icebox, is moved to another parent, or is moved out from
 // under its parent to no parent at all — Dispatch reports the last two the same way, as the
-// issue's parent now, and the mirror takes both (Store.PutDispatchIssue). Each of those is a
-// change to a mirror row or a record that the next pass reads. A flag would have to be cleared by
+// issue's parent now, and the copy takes both from the first reading that shows them at a higher
+// sequence than the parent it holds (Store.PutDispatchIssue). Each of those is a change to a row
+// of the copy or to a record that the next pass reads. A flag would have to be cleared by
 // whichever of them happened, and a missed clear would hold a parent for ever; a judgement made
-// again each pass costs one pass when a mirror row is stale, and the boot listing and the
-// controller tick both rewrite the mirror.
+// again each pass costs one pass when a row of the copy is stale, and the boot listing and the
+// controller tick both read Dispatch again and write each value a newer reading shows.
 //
 // The wait is only as complete as the mirror is. A child in backlog or triage that the daemon has
 // never recorded reaches the mirror only from a Dispatch listing of the whole project — the boot

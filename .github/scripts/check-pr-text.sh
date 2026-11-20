@@ -51,8 +51,9 @@
 # a draft is marked ready, and on the merge queue's group, where that job finds the queued pull
 # request with find-pr-payload.sh; that job's own check run carries the verdict as pr-title on
 # each. It runs in pr-title.yaml when a pull request is edited, the event ci.yaml does not run on
-# (that file's header says why it runs on no other); its tests are in check-private-names.test.sh,
-# those of the term list in check-private-names-terms.test.sh, and those of the issue-key rule in
+# (.github/ci-notes/ci.md#why-the-router-runs-on-these-events-and-no-others says why it runs on no
+# other); its tests are in check-private-names.test.sh, those of the term list in
+# check-private-names-terms.test.sh, and those of the issue-key rule in
 # check-private-names-keys.test.sh.
 # check-private-names.sh takes PRIVATE_NAME_TERMS, the deployment's own list, and
 # GITHUB_EVENT_NAME from this script's environment, so both of those steps map that secret: on

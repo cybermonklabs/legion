@@ -105,8 +105,10 @@ func TestARowThePreviousReleaseWritesDuringARollGetsItsNodeFromTheTick(t *testin
 // pass writes those rows' nodes.
 //
 // block_index_event_cursors.another_build_seen is an extra trigger of the pass, never the one this
-// cure depends on: the test forces it false on every cursor row before that tick, so the tick owes
-// the pass on its events alone, and the project census then reads zero.
+// cure depends on. This build's second tick, which found it serving alone, already left the flag
+// false, and no tick of it runs while the release before serves; the test forces it false on every
+// cursor row all the same before the next tick, so a later change that sets it here still leaves
+// the tick owing the pass on its events alone, and the project census then reads zero.
 //
 // Its control is the tick owing the pass only on the roll's triggers, as before (no
 // EventsOweObjectPass): with another_build_seen forced false, the first tick after the release

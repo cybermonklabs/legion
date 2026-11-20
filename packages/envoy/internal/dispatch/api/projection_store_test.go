@@ -27,6 +27,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus/censustest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -35,8 +36,9 @@ import (
 
 // projectedTables are the tables migration 20261109022248 made projections of the node and
 // tuple store: each row of them names the node it is the projection of, and that node is
-// written by the same transaction, before the row.
-var projectedTables = []string{"block_refs", "comments", "document_blocks"}
+// written by the same transaction, before the row. They are the tables
+// censustest.ProjectedColumns lists, in order, so a table added there is one this test holds.
+var projectedTables = slices.Sorted(maps.Keys(censustest.ProjectedColumns))
 
 // TestNoProjectionRowIsWrittenWithoutTheStore holds every writer of a projected table to the
 // one rule the projections rest on: a row of one of them is written only by a transaction that
@@ -96,10 +98,20 @@ func TestNoProjectionRowIsWrittenWithoutTheStore(t *testing.T) {
 
 // --- the source scan --------------------------------------------------------------------
 
-// projectionWriteHead matches the head of every statement that writes a projected table: an
-// insert or a delete, which makes or unmakes a row, and an update, which changes columns of a
-// row that is already there.
-var projectionWriteHead = regexp.MustCompile(`(?is)\b(insert\s+into|delete\s+from|update)\s+(?:only\s+)?(block_refs|comments|document_blocks)\b`)
+// projectionWriteHead matches the head of every statement that writes a projected table
+// (projectedTables): an insert or a delete, which makes or unmakes a row, and an update, which
+// changes columns of a row that is already there.
+var projectionWriteHead = regexp.MustCompile(`(?is)\b(insert\s+into|delete\s+from|update)\s+(?:only\s+)?(` +
+	literalAlternation(projectedTables) + `)\b`)
+
+// literalAlternation is a regular expression matching any one of words, each read literally.
+func literalAlternation(words []string) string {
+	quoted := make([]string, len(words))
+	for index, word := range words {
+		quoted[index] = regexp.QuoteMeta(word)
+	}
+	return strings.Join(quoted, "|")
+}
 
 // projectedColumns are the columns of each projected table that the store states, each with
 // what states it: censustest.ProjectedColumns, which says why each one stands there, and which
@@ -130,15 +142,15 @@ var (
 )
 
 // storeWriters are the store's own writers as a call names them: every function of graphstore a
-// write of graph_nodes and graph_tuples from outside it goes through (graphstore.WriteFunctions),
-// the one list graphstore's register of the store's write sites reads too
-// (TestEveryStoreWriteCallSiteIsListed). Among them are the node writes a projection row follows
-// (Write, QueueWrite, QueueNodes), the append of what a write stated under its event (Caused,
-// QueueCaused), which gives a link's tuple its legacy_source_seq, and the erase's delete of a
-// node and its tuples (EraseNode), beside which the erase deletes the node's rows.
+// write of graph_nodes and graph_tuples from outside it goes through
+// (graphstoretest.WriteFunctions), the one list graphstore's register of the store's write sites
+// reads too (TestEveryStoreWriteCallSiteIsListed). Among them are the node writes a projection row
+// follows (Write, QueueWrite, QueueNodes), the append of what a write stated under its event
+// (Caused, QueueCaused), which gives a link's tuple its legacy_source_seq, and the erase's delete
+// of a node and its tuples (EraseNode), beside which the erase deletes the node's rows.
 var storeWriters = func() []string {
 	var calls []string
-	for _, name := range graphstore.WriteFunctions() {
+	for _, name := range graphstoretest.WriteFunctions() {
 		calls = append(calls, "func:graphstore."+name)
 	}
 	return calls

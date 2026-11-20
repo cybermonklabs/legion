@@ -42,10 +42,10 @@ const storeStepWait = 20 * time.Second
 //   - the follower route (changeAskFollower, through appendCausingEvent) and an ask's create
 //     (createAskFor), each of which follows the ask for a session before the event it appends and
 //     moves the node that follow made onto that event (graphstore.QueueCaused);
-//   - an approval request renewed (renewApprovalAsk), once on a retry, which appends no event and
-//     leaves the follow's node and its base attributes at the sentinel, and once handing the
-//     request back, which follows after its event and states the node under it in the follow's
-//     own statement;
+//   - an approval request renewed (renewApprovalAsk), once on a retry, which follows the request
+//     for the session before it appends ask.follower_added and moves the follow's node onto that
+//     event (graphstore.QueueCaused), and once handing the request back, which follows after its
+//     event and states the node under it in the follow's own statement;
 //   - three writes of a document version, each of which runs the block index (refs'
 //     BlockIndexing.Queue) under the revision fence and appends what it stated under the event
 //     that recorded the version: an upload creating an issue's document (storeArtifact), an edit
@@ -524,6 +524,7 @@ func (r *storeWriterRig) approvalHandBack() storeWriter {
 			created(t, "write the version that moves the approval request to its agent", dispatchRequest(t, r.handler, http.MethodPost,
 				"/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
 					"name": "spec.md", "content": "# Spec\n\nWhat the writers write, as " + session + " reads it.\n",
+					"precondition": uploadBase(t, r.handler, r.spec),
 				}, "alice"))
 			actor := model.Actor{Kind: "session", ID: session}
 			return storeWriterRun{

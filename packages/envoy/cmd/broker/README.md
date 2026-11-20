@@ -61,5 +61,8 @@ go test ./internal/broker/... ./cmd/broker/...
 ```
 
 Postgres-backed tests skip unless `BROKER_TEST_DATABASE_URL` is set;
-`packages/envoy/scripts/dev-postgres.sh` starts a local Postgres for them. `packages/envoy/AGENTS.md`
-("Secrets broker") is the contributor's guide to the code.
+`packages/envoy/scripts/dev-postgres.sh` starts a local Postgres for them. `FuzzAirlock` skips
+unless `AIRLOCK_MODEL` names a built Lean model (`internal/broker/airlock/airlock_fuzz_test.go`).
+The broker's docs (`docs/site/src/content/docs/broker/`: `concepts.md`, `operate.md` and
+`guides/`) say how its packages, policy, enrollment and CLI work; `cmd/broker-refgen` writes their
+reference pages from the code's doc comments at the docs build, not in `go test`.

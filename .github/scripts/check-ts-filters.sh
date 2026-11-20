@@ -25,8 +25,9 @@
 # The gates left out are the ones whose job runs TypeScript but no typecheck, so there is no
 # program to derive: `dispatch_browser`, whose jobs are the browser suite itself, sharded and in
 # two-process mode, in the workflow ci.yaml's dispatch-browser job calls (the dashboard's and the
-# proof editor's typechecks are dispatch_ui's, and ci.yaml's comment on dispatch-ui says why they
-# were split out), `envoy_session_stall`,
+# proof editor's typechecks are dispatch_ui's, and
+# .github/ci-notes/ci.md#the-dashboards-and-the-proof-editors-lint-typecheck-unit-tests-build-and
+# says why they were split out), `envoy_session_stall`,
 # whose job builds and runs the stall entries, `envoy_e2e_local`, whose live proof renders
 # with @legion/envoy-client at run time, and `dispatch_two_builds` and `dispatch_two_builds_go`,
 # the two-build job's gates, whose job runs the browser suite against two builds and whose Go
@@ -65,9 +66,9 @@
 # predicate-quantifier the changes job declares that filter under, over the filter's patterns
 # with its anchors flattened into the list that names them - the patterns and the quantifier
 # both from the engine of check-ci-filters.sh (ci_filter_coverage.changes_filters, which reads
-# every paths-filter step of the job, and the job declares its filters in three of them) rather
-# than this check reading those steps a second way. It read the patterns as GitHub's `paths`
-# instead
+# .github/ci-filters.yaml, the file the job's one paths-filter step hands the action, and the
+# quantifier that step names) rather than this check reading that file a second way. It read
+# the patterns as GitHub's `paths` instead
 # until rule 17 of check-ci-filters.sh began writing into most filters the `!` patterns that
 # keep a job off the Go test files it does not read, and refused a covered filter that had one,
 # because GitHub's `paths` takes the last pattern that matches while dorny/paths-filter's
@@ -110,15 +111,16 @@
 #
 # THE TWO MODES, as check-ci-filters.sh has them. `check`, the default a bare call takes, is
 # every refusal above. `write` lists the programs and builds the bundles, writes each listed
-# block into ci.yaml - only ci.yaml, and only inside those blocks, one written where none was
-# going after the filter's last item - and then runs the check over what it wrote, so every
-# refusal that is not a listed block's still stands. A program that cannot be listed, or a bundle
-# that cannot be built or whose metafile cannot be read or names no module, makes it write
-# nothing, since the blocks would then be computed from a source that is unknown. Any other
-# word, or more than one, fails naming both.
+# block into .github/ci-filters.yaml - only that file, and only inside those blocks, one written
+# where none was going after the filter's last item - and then runs the check over what it
+# wrote, so every refusal that is not a listed block's still stands. A program that cannot be
+# listed, or a bundle that cannot be built or whose metafile cannot be read or names no module,
+# makes it write nothing, since the blocks would then be computed from a source that is
+# unknown. Any other word, or more than one, fails naming both.
 #
 # Why ci.yaml's lint job and not ci-filters: the ci-filters job has no Bun and no node_modules -
-# its steps are the checkout, actions/setup-go, check-ci-filters.sh and the ci-ok report - so
+# its steps are the checkout, actions/setup-go, check-ci-filters.sh, check-workflow-files.sh,
+# the actionlint step and the ci-ok report - so
 # `bunx tsc` there would install Bun and the dependency tree first, while lint already runs
 # `bun install --frozen-lockfile` for the Biome pass; lint is gated by no `changes` output, so a
 # change anywhere starts it, which is what a check of every filter needs; and the cost is small
@@ -135,11 +137,11 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 # A bare call checks: that is the contract the lint job calls under, and a caller who says
-# nothing is asking for the verdict, never for a rewrite of ci.yaml.
+# nothing is asking for the verdict, never for a rewrite of .github/ci-filters.yaml.
 case "$#:${1:-}" in
   0: | 1:check | 1:write) ;;
   *)
-    echo "::error file=.github/scripts/check-ts-filters.sh::this check takes one optional mode: \`check\` (the default) refuses a listed block of ci.yaml that is not the files its programs compile and its bundles load, and \`write\` writes those blocks instead. Run \`.github/scripts/check-ts-filters.sh\` or \`.github/scripts/check-ts-filters.sh write\`." >&2
+    echo "::error file=.github/scripts/check-ts-filters.sh::this check takes one optional mode: \`check\` (the default) refuses a listed block of .github/ci-filters.yaml that is not the files its programs compile and its bundles load, and \`write\` writes those blocks instead. Run \`.github/scripts/check-ts-filters.sh\` or \`.github/scripts/check-ts-filters.sh write\`." >&2
     exit 1
     ;;
 esac
@@ -155,8 +157,6 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-
-import yaml
 
 import ci_filter_coverage as engine
 import workflow_paths as wp
@@ -263,13 +263,18 @@ def bundle_files(entry: str) -> list | None:
 
 
 def read_workflow() -> tuple:
-    """ci.yaml's text and the changes job's filters with their quantifiers. changes_filters reads
-    every dorny/paths-filter step of the job, which declares its filters in three of them
-    (ci.yaml's `changes` job says why), so all three strings are covered here; the steps a filter
-    is declared in are rule 19's, not this check's. Read again after the write mode writes."""
-    text = (engine.REPO / engine.WORKFLOW).read_text()
-    filters, quantifiers, _steps = engine.changes_filters(yaml.safe_load(text), problems)
-    return text.splitlines(), filters, quantifiers
+    """The lines of .github/ci-filters.yaml and the changes job's filters with their quantifiers,
+    all from the one read of that file changes_filters makes, under the quantifier ci.yaml's one
+    paths-filter step names; whether a step may hand the action anything but that file is rule 21
+    of check-ci-filters.sh, not this check's. Read again after the write mode writes. A file that
+    is absent or refuses the open ends the run here, with the engine's annotation saying which."""
+    try:
+        filters, quantifiers, lines = engine.changes_filters(
+            engine.load_repository_yaml(engine.REPO / engine.WORKFLOW) or {}, problems)
+    except engine.RepositoryInputError as exc:
+        print(engine.annotation_line(exc.annotation()), file=sys.stderr)
+        raise SystemExit(1) from exc
+    return lines, filters, quantifiers
 
 
 def kinds(source: str) -> list:
@@ -299,9 +304,9 @@ def give_none(sources) -> str:
 
 def head(tree: str, sources) -> tuple:
     """A listed block's first lines: what it holds and the command that writes it, so a reader of
-    ci.yaml knows not to edit one by hand. That command names this check as the block's owner:
-    check-ci-filters.sh passes over the block's lines in its rule 9 only while the first line, in
-    this `<begin> by `<script> write`` form, names a script a job of CI runs
+    .github/ci-filters.yaml knows not to edit one by hand. That command names this check as the
+    block's owner: check-ci-filters.sh passes over the block's lines in its rule 9 only while the
+    first line, in this `<begin> by `<script> write`` form, names a script a job of CI runs
     (ci_filter_coverage.listed_owners), which ci.yaml's lint job makes of this one. A block whose
     sources are tsc programs alone says they compile its files, and one with a bundle among them
     that they load them."""
@@ -355,12 +360,12 @@ for name, tree, sources, why in LISTED:
 
 if MODE == "write":
     if any(files is None for files in wanted.values()) or problems:
-        problems.append(engine.error(engine.WORKFLOW, "wrote no listed block: the files a block holds are "
-                                                      "computed from programs and bundles this run could not list, "
-                                                      "build or read"))
+        problems.append(engine.error(engine.FILTERS_FILE, "wrote no listed block: the files a block holds are "
+                                                          "computed from programs and bundles this run could not "
+                                                          "list, build or read"))
     else:
         rows = {name: (tree, sources) for name, tree, sources, _ in LISTED}
-        engine.rewrite(engine.WORKFLOW, lines, engine.filter_blocks(lines, problems, MARKS), wanted,
+        engine.rewrite(engine.FILTERS_FILE, lines, engine.filter_blocks(lines, problems, MARKS), wanted,
                        heads=lambda name: head(*rows[name]), marks=MARKS)
         for name, tree, sources, _ in LISTED:
             print(f"filter {name}: wrote {len(wanted[name])} listed file(s) under {tree}, from {named(sources)}")
@@ -389,14 +394,15 @@ for kind, name, path, why in PAIRS:
                                            f"({why}): the filter must select it, or the change that breaks that "
                                            f"{kind} starts no job"))
     if len(uncovered) > engine.SHOWN:
-        problems.append(engine.error(engine.WORKFLOW, f"filter {name} misses "
-                                                      f"{len(uncovered) - engine.SHOWN} more file(s) of {path}"))
+        problems.append(engine.error(engine.FILTERS_FILE, f"filter {name} misses "
+                                                          f"{len(uncovered) - engine.SHOWN} more file(s) of {path}"))
 
 blocks = engine.filter_blocks(lines, problems, MARKS)
 for name in sorted(blocks):
     if blocks[name].begin >= 0 and name not in wanted:
-        problems.append(engine.error(engine.WORKFLOW, f"{name} has a listed block, and LISTED of {TABLE} names no "
-                                                      f"such filter, so nothing says what belongs in it; delete the block"))
+        problems.append(engine.error(engine.FILTERS_FILE, f"{name} has a listed block, and LISTED of {TABLE} names "
+                                                          f"no such filter, so nothing says what belongs in it; delete "
+                                                          f"the block"))
 for name, tree, sources, why in LISTED:
     files = wanted.get(name)
     if name not in filters:
@@ -411,15 +417,16 @@ for name, tree, sources, why in LISTED:
     where = f"filter {name}'s listed block" if block.begin >= 0 else f"filter {name}, which has no listed block,"
     regenerate = f"the block is generated from {named(sources)}, so run `{MARKS.write}`"
     for path in sorted(set(files) - set(committed)):
-        problems.append(engine.error(engine.WORKFLOW, f"{where} lacks '{path}', which {give(gives[path])} ({why}): "
-                                                      f"{regenerate}"))
+        problems.append(engine.error(engine.FILTERS_FILE, f"{where} lacks '{path}', which {give(gives[path])} "
+                                                          f"({why}): {regenerate}"))
     for path in sorted(set(committed) - set(files)):
-        problems.append(engine.error(engine.WORKFLOW, f"{where} has '{path}', which {give_none(sources)}, so it "
-                                                      f"selects the job for a change no step of it sees: {regenerate}"))
+        problems.append(engine.error(engine.FILTERS_FILE, f"{where} has '{path}', which {give_none(sources)}, so "
+                                                          f"it selects the job for a change no step of it sees: "
+                                                          f"{regenerate}"))
     if set(committed) == set(files) and committed != files:
-        problems.append(engine.error(engine.WORKFLOW, f"{where} holds its files out of sorted order or twice, and "
-                                                      f"the same sources must write the same text on every run; run "
-                                                      f"`{MARKS.write}`"))
+        problems.append(engine.error(engine.FILTERS_FILE, f"{where} holds its files out of sorted order or twice, "
+                                                          f"and the same sources must write the same text on every "
+                                                          f"run; run `{MARKS.write}`"))
     under = wp.walk(Path(tree)) if (engine.REPO / tree).is_dir() else []
     for pattern in dict.fromkeys(filters[name]):
         if pattern.startswith("!") or pattern in set(committed):
@@ -427,10 +434,11 @@ for name, tree, sources, why in LISTED:
         regex = wp.glob_regex(pattern)
         hit = next((path for path in under if regex.fullmatch(path)), None)
         if hit:
-            problems.append(engine.error(engine.WORKFLOW, f"filter {name} has '{pattern}' outside its listed block, "
-                                                          f"and it matches {hit} under {tree}: which files of {tree} the "
-                                                          f"filter selects is the block's to say, from {named(sources)}, so "
-                                                          f"drop the pattern and run `{MARKS.write}`"))
+            problems.append(engine.error(engine.FILTERS_FILE, f"filter {name} has '{pattern}' outside its listed "
+                                                              f"block, and it matches {hit} under {tree}: which files "
+                                                              f"of {tree} the filter selects is the block's to say, "
+                                                              f"from {named(sources)}, so drop the pattern and run "
+                                                              f"`{MARKS.write}`"))
     # A file that only another filter's pairs give is held to this filter here; one this filter's
     # own pairs give is held to it by the loop over the pairs above.
     foreign = [path for path in files if all(source != name for source, _ in gives[path])]

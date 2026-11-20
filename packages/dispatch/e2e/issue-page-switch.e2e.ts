@@ -98,33 +98,43 @@ function newPageHeading(page: Page): Locator {
   return page.locator("[data-issue-page]").getByRole("heading", { level: 1 });
 }
 
-/** The new page as the parts so far draw it: the key and the title as the page's one `h1`, no
- *  tab, the view row that part D fills, and nothing else. */
+/** The new page as the parts so far draw it: the title as the page's one `h1`, no tab, the
+ *  header, which draws the key and the title, the view row, and nothing else. */
 async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   const newPage = page.locator("[data-issue-page]");
   await expect(newPageHeading(page)).toHaveText(issue.title);
+  await expect(newPage.locator("h1"), "the new page draws an h1 beside its title").toHaveCount(1);
   // Reads the whole page: a chooser that drew both pages fails here (R4: in place of today's page).
   await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   await expect(newPage.getByRole("tab")).toHaveCount(0);
-  // The part that fills a slot changes these two: part D fills the view row
-  // (`[data-filter-row]`), and each other slot drawn so far adds no text or control.
+  // A part that fills another slot adds its selector here: so far the header
+  // (`[data-issue-header]`) and the view row (`[data-filter-row]`) are filled, and each other
+  // slot adds no text or control.
+  const header = newPage.locator("[data-issue-header]");
   const row = newPage.locator("[data-filter-row]");
+  await expect(header).toHaveCount(1);
   await expect(row).toHaveCount(1);
   await expect
     .poll(
       () =>
         newPage.evaluate((root) => {
+          const headerText =
+            root.querySelector<HTMLElement>("[data-issue-header]")?.innerText ?? "";
           const rowText = root.querySelector<HTMLElement>("[data-filter-row]")?.innerText ?? "";
-          return (root as HTMLElement).innerText.replace(rowText, " ").replace(/\s+/g, " ").trim();
+          return (root as HTMLElement).innerText
+            .replace(headerText, " ")
+            .replace(rowText, " ")
+            .replace(/\s+/g, " ")
+            .trim();
         }),
       { message: "the new page draws text outside its header and its view row" }
     )
-    .toBe(`${issue.key} ${issue.title}`);
+    .toBe("");
   const controls = "button, a, input, select, textarea";
   expect(
     await newPage.locator(controls).count(),
-    "the new page draws a control outside its view row"
-  ).toBe(await row.locator(controls).count());
+    "the new page draws a control outside its header and its view row"
+  ).toBe((await header.locator(controls).count()) + (await row.locator(controls).count()));
 }
 
 /** Every request to `/api/` or `/ws/` the page sends, with its body, and every frame it sends on

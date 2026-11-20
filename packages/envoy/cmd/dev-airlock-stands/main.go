@@ -19,7 +19,8 @@
 //	                   --pod-uid <uid> --thumbprint <thumbprint> [--service <name>] [--session <id>]
 //	dev-airlock-stands probe-private
 //	dev-airlock-stands probe-bound
-//	dev-airlock-stands load <load|tunnel|upload|gap|upgrade> [--proxy <url>] [--host <name>] ...
+//	dev-airlock-stands load <load|tunnel|upload|gap|upgrade> [--proxy-file <path>] [--header-file <path>]
+//	                   [--host <name>] ...
 //
 // The stack and its checks need five more small things of their own, and they are modes of this
 // one command rather than commands of their own so that it builds one binary: `front`, one TCP

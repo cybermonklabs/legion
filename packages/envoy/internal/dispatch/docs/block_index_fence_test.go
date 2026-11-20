@@ -218,22 +218,46 @@ func appendDocumentEvent(t *testing.T, ctx context.Context, tx pgx.Tx, kind stri
 	return event
 }
 
-// documentEvent records one event of issue CORE-1 in the write's own transaction. The sequence
-// comes off the issue's own counter, as events.Append takes it, so the settlement's next event
-// does not collide with this one. It answers an error rather than failing the test, so a write
-// run off the test's goroutine can record its event too.
+// documentEvent records one event of issue CORE-1 by alice in the write's own transaction
+// (recordIssueEvent). It answers an error rather than failing the test, so a write run off the
+// test's goroutine can record its event too.
 func documentEvent(ctx context.Context, tx pgx.Tx, kind string, payload []byte) (int64, error) {
+	return recordIssueEvent(ctx, tx, "CORE-1", kind, aliceActor, payload)
+}
+
+// aliceActor is alice, the fixture's person, as an event row stores its actor.
+var aliceActor = []byte(`{"kind":"user","id":"alice"}`)
+
+// recordIssueEvent records one event of issue key, of kind, by actor and with payload, each JSON,
+// through q: the write's own transaction, or the pool for an event that is a write of its own.
+// The sequence comes off the issue's own counter, as events.Append takes it, so the issue's next
+// event does not collide with this one. It answers the event's id.
+func recordIssueEvent(ctx context.Context, q Queryer, key, kind string, actor, payload []byte) (int64, error) {
 	var event int64
-	if err := tx.QueryRow(ctx, `
-		with bumped as (update issues set last_seq = last_seq + 1 where key = 'CORE-1' returning last_seq)
+	if err := q.QueryRow(ctx, `
+		with bumped as (update issues set last_seq = last_seq + 1 where key = $1 returning last_seq)
 		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', bumped.last_seq, $1, '{"kind":"user","id":"alice"}', $2, false
+		select $1, bumped.last_seq, $2, $3, $4, false
 		from bumped
 		returning id
-	`, kind, payload).Scan(&event); err != nil {
-		return 0, fmt.Errorf("record the %s event: %w", kind, err)
+	`, key, kind, actor, payload).Scan(&event); err != nil {
+		return 0, fmt.Errorf("record the %s event of %s: %w", kind, key, err)
 	}
 	return event, nil
+}
+
+// versionEventPayload is the payload of the artifact.version event an older build or the release
+// before this one records for version number of document artifactID, named name: the document,
+// its name and the version's number.
+func versionEventPayload(t *testing.T, artifactID, name string, number int) []byte {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"artifact_id": artifactID, "name": name, "version": map[string]any{"number": number},
+	})
+	if err != nil {
+		t.Fatalf("encode the payload of version %d of %s: %v", number, artifactID, err)
+	}
+	return payload
 }
 
 // The fixture document's two versions. Version 1 holds two callouts side by side; version 2 moves
@@ -713,7 +737,11 @@ func requireTheUploadIsFenced(t *testing.T, database *store.Store, service *Serv
 			if _, _, err := lockArtifactOwner(joined, tx, document); err != nil {
 				return 0, fmt.Errorf("take the document's owner: %w", err)
 			}
-			stored, err := service.ReplaceText(joined, document, "- alpha\n- gamma\n", alice)
+			precondition, err := replacementPrecondition(joined, service, document)
+			if err != nil {
+				return 0, fmt.Errorf("read the document's token: %w", err)
+			}
+			stored, err := service.ReplaceText(joined, document, "- alpha\n- gamma\n", alice, precondition)
 			if err != nil {
 				return 0, fmt.Errorf("replace the document's text: %w", err)
 			}

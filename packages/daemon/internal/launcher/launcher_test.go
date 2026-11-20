@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -862,14 +863,27 @@ func TestARolesExitIsReportedWithTheShimsOwnStatus(t *testing.T) {
 // The container's SIGTERM stops every role at once, each given the whole stop grace its own
 // container had: both roles' handlers run to the end, and the launcher leaves in one grace rather
 // than one per role.
+//
+// "At once" is read from the roles, not from a clock: each role's handler says it has its SIGTERM
+// and then waits for the case to let it finish, and the case lets them only once both have said
+// so. A launcher that stopped the roles one after another would leave the second without its
+// SIGTERM while the first waits, so the first would be killed at the end of its grace and never
+// finish. The launcher must then leave within one stop grace of the moment the case lets the
+// handlers finish: all that is left by then is the roles' teardown, under a second even on a
+// loaded machine, so a launcher that waits a grace on anything past its roles fails here. The case
+// once held the whole stop to 2.5 s for two handlers of 1.5 s each, which a loaded machine broke
+// with the roles stopped together: the handlers ended 1.5 s after the stop, and the roles'
+// teardown after them took the rest (3.4 s in all on a loaded dev box).
 func TestTheContainersStopEndsEveryRoleWithinOneStopGrace(t *testing.T) {
 	requireRoleNamespaces(t)
-	f := newFleet(t, 6*time.Second, "tester", "reviewer")
-	const handler = `trap '/bin/sleep 1.5; printf done > /tmp/finished; exit 0' TERM
+	const grace = 6 * time.Second
+	f := newFleet(t, grace, "tester", "reviewer")
+	const handler = `trap 'printf termed > /tmp/termed; while [ ! -e /tmp/go ]; do /bin/sleep 0.01; done; printf done > /tmp/finished; exit 0' TERM
 printf ready > /tmp/ready
 while :; do /bin/sleep 600 & wait; done
 `
-	for i, role := range []string{"tester", "reviewer"} {
+	roles := []string{"tester", "reviewer"}
+	for i, role := range roles {
 		got := f.role(role).start(shimwire.LauncherStart{
 			ID: "start-" + role, Generation: uint64(i + 1), Argv: []string{"/bin/sh", "-c", handler},
 		})
@@ -879,21 +893,37 @@ while :; do /bin/sleep 600 & wait; done
 		f.waitForRoleFile(f.roleTmp(role, "ready"))
 	}
 
-	started := time.Now()
 	f.cancel()
-	err := <-f.result
-	f.result <- err
-	elapsed := time.Since(started)
+	testwait.Eventually(t, "both roles to be in their SIGTERM handlers at the same time", func() bool {
+		for _, role := range roles {
+			if _, err := os.Stat(f.roleTmp(role, "termed")); err != nil {
+				return false
+			}
+		}
+		return true
+	})
+	released := time.Now()
+	for _, role := range roles {
+		if err := os.WriteFile(f.roleTmp(role, "go"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var err error
+	select {
+	case err = <-f.result:
+		f.result <- err
+	case <-time.After(grace - time.Since(released)):
+		t.Fatalf("the launcher had not left %s after the case let both roles finish their handlers, one stop grace: it waits on something past its roles; its log: %s",
+			grace, f.stderr.String())
+	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("the launcher returned %v, want its context's end", err)
 	}
-	for _, role := range []string{"tester", "reviewer"} {
+	for _, role := range roles {
 		if body, readErr := os.ReadFile(f.roleTmp(role, "finished")); readErr != nil || string(body) != "done" {
-			t.Fatalf("role %s was cut short at the container's stop: %q, %v; the launcher's log: %s", role, body, readErr, f.stderr.String())
+			t.Fatalf("role %s was cut short at the container's stop: %q, %v: the roles are stopped one after another, not together, or not each given the whole grace; the launcher's log: %s",
+				role, body, readErr, f.stderr.String())
 		}
-	}
-	if elapsed > 2500*time.Millisecond {
-		t.Fatalf("the container's stop took %s for two roles whose handlers take 1.5s each: the roles are stopped one after another, not together", elapsed)
 	}
 }
 
@@ -923,6 +953,60 @@ func TestTheContainersLogKeepsEveryLineWholeAcrossGenerations(t *testing.T) {
 	if got := out.String(); got != want {
 		t.Fatalf("the container's log is\n%q\nwant\n%q", got, want)
 	}
+}
+
+// A role's line longer than maxLogLine reaches the container's log in two lines behind the prefix,
+// cut just after its last byte before the mark that ends a URL for the URL rule, so the rule of the
+// log (redact.Writer, as newManagers wraps it) reads each URL whole: a URL whose user name the
+// 64 KiB mark falls inside, and which carries a planted query, reaches the log with neither, and
+// the line's text is all there otherwise. A cut at the mark itself wrote the start of the user
+// name in the first line, where the rule read it as the URL's host, and the rest of the URL in the
+// second, which held no "://" for the rule to find its query by. A run of maxLogLine bytes with no
+// such byte is cut at the mark still. The line arrives in writes of 4 KiB, as a pipe's reads give
+// it, and in writes of 7 bytes and of one, as a child that writes a byte at a time gives it: the
+// writer searches only the bytes each write adds for a newline, since what it holds from earlier
+// writes holds none, and every size of write gives the same log.
+func TestALongRoleLineIsCutWhereTheURLRuleReadsEachURLWhole(t *testing.T) {
+	filler := strings.Repeat("x", maxLogLine-len(" https://planted-user"))
+	for _, tc := range []struct {
+		name, line, want string
+	}{{
+		name: "a URL across the mark",
+		line: filler + " https://planted-user-1@example.com/path?token=planted-query-token-1 done\n",
+		want: "tester: " + filler + " \n" + "tester: https://example.com/path done\n",
+	}, {
+		name: "a run with no byte that ends a URL",
+		line: strings.Repeat("y", maxLogLine+5) + "\n",
+		want: "tester: " + strings.Repeat("y", maxLogLine) + "\n" + "tester: yyyyy\n",
+	}} {
+		for _, size := range []int{4 << 10, 7, 1} {
+			t.Run(fmt.Sprintf("%s, in writes of %d bytes", tc.name, size), func(t *testing.T) {
+				out := &lockedBuffer{}
+				log := &roleLog{stdout: redact.Writer(out), stderr: redact.Writer(out)}
+				stdout, _ := log.writers("tester")
+				for chunk := range slices.Chunk([]byte(tc.line), size) {
+					_, _ = stdout.Write(chunk)
+				}
+				got := out.String()
+				if at := strings.Index(got, "planted"); at >= 0 {
+					t.Fatalf("the container's log holds %q, part of the URL's user name or query", got[max(0, at-40):min(len(got), at+60)])
+				}
+				if got != tc.want {
+					t.Fatalf("the container's log is %v, want %v", logLines(got), logLines(tc.want))
+				}
+			})
+		}
+	}
+}
+
+// logLines describes each line of a container's log by its length and its end, for a failure
+// message of lines too long to print.
+func logLines(log string) []string {
+	var lines []string
+	for line := range strings.Lines(log) {
+		lines = append(lines, fmt.Sprintf("%d bytes ending %q", len(line), line[max(0, len(line)-60):]))
+	}
+	return lines
 }
 
 // An issue pod role's generation whose role-init exits RoleInitSetupFailedExit without reporting a

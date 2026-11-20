@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/refs/refstest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -199,10 +200,11 @@ func TestTheStoreHoldsNodesAndAppendedTuples(t *testing.T) {
 	// The backlink arms map against the kinds that reader declares, in both directions: every
 	// kind it resolves has an entry, and a kind the map does not declare is counted for nothing.
 	// The kinds are the registry's own list and not a list written here, so a kind the reader
-	// learns to resolve and the map never learns to count fails this loop the day it is added.
+	// learns to resolve and the map never learns to count fails this loop the day it is added;
+	// the map's kinds are refstest's copy of its keys, which refs' own test holds to the map.
 	// The reader resolves no node of a supertag or an attribute (refs' unresolvedKind), so the
 	// two are the registry's kinds no count is owed for.
-	counted := refs.BacklinkKinds()
+	counted := refstest.BacklinkKinds()
 	resolved := 0
 	for _, kind := range refs.VisibilityKinds() {
 		if kind == "supertag" || kind == "attribute" {

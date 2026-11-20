@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -565,8 +566,8 @@ func requireOneAuthorRule(t *testing.T) {
 	if refs.VisibilityArg(bearer) != nil {
 		t.Error("a credential that proves no author binds a name an author-private read could match")
 	}
-	visibility, err := graphstore.VisibilityFor(graphstore.VisibilityAuthor, bearer)
-	if !errors.Is(err, graphstore.ErrAuthorNamesNobody) {
+	visibility, err := graphstoretest.VisibilityFor(graphstore.VisibilityAuthor, graphstore.ProvesAuthor(bearer))
+	if !errors.Is(err, graphstoretest.ErrAuthorNamesNobody) {
 		t.Fatalf("asking for an author-private node on the shared bearer = %q, %v; want the refusal", visibility, err)
 	}
 	for _, reason := range []string{"names nobody", "compare as one credential"} {
@@ -574,7 +575,7 @@ func requireOneAuthorRule(t *testing.T) {
 			t.Errorf("the refusal does not say why: %q does not hold %q", err, reason)
 		}
 	}
-	if written, err := graphstore.VisibilityFor("", bearer); err != nil || written != graphstore.VisibilityProject {
+	if written, err := graphstoretest.VisibilityFor("", graphstore.ProvesAuthor(bearer)); err != nil || written != graphstore.VisibilityProject {
 		t.Errorf("a node written on the shared bearer = %q, %v; want %q", written, err, graphstore.VisibilityProject)
 	}
 	// The going routes call the one rule for the asker, and hold a run's owner to graphstore's
@@ -817,10 +818,10 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 	`, fixture.comment, fixture.private)
 	// The nodes themselves, reserved for their author. No route writes one yet, so the store's
 	// own writer writes them, exactly as a route that asked for `author` would
-	// (graphstore.VisibilityFor answers the visibility, and refuses this one to a credential
-	// that proves no author).
+	// (graphstoretest.VisibilityFor answers the visibility, and refuses this one to a credential
+	// that proves no author, graphstore.ProvesAuthor).
 	author := privateNodeAuthor()
-	visibility, err := graphstore.VisibilityFor(graphstore.VisibilityAuthor, author)
+	visibility, err := graphstoretest.VisibilityFor(graphstore.VisibilityAuthor, graphstore.ProvesAuthor(author))
 	if err != nil {
 		t.Fatalf("reserve the node for its author: %v", err)
 	}

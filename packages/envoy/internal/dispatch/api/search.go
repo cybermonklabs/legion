@@ -1096,8 +1096,8 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	}
 	// q is capped as `dispatch search` caps it, counted after trimming so a query the command
 	// sends is never refused here, and a project must be a key (an empty one searches every
-	// project). Both ride in the URL; packages/contracts/AGENTS.md "Search limits" says what keeps
-	// it short.
+	// project). Both ride in the URL; the URL budget in SEARCH_QUERY_MAX's doc comment
+	// (packages/contracts/src/dispatch-tools.ts) says what keeps it short.
 	if length := itemblocks.Units16(searchText); length > contracts.SearchQueryMax {
 		tooLong := capExceededError("q", length, contracts.SearchQueryMax)
 		writeError(w, tooLong.code, tooLong.status, tooLong.message+"; "+contracts.SearchQueryHint)
@@ -1172,8 +1172,8 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// text: runSearch stamps that on the response itself, true only where the fallback ran.
 	response.Query.Operators = reading.operators()
 	response.Filters = searchAppliedFilters(parameters)
-	// Where each ask hit stands is read for this route alone: the write-time suggestions share
-	// the ranking (runFusedSearchQuery) but never show it. TookMS counts the read.
+	// Where each ask hit stands is read for this route alone: the write-time suggestions
+	// (relatedSearch) rank the same bodies but never show it. TookMS counts the read.
 	started := time.Now()
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	if err := s.attachAskStates(r.Context(), s.deps.Store.Pool, response.Results, reader); err != nil {

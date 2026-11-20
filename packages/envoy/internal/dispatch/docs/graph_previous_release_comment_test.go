@@ -149,14 +149,8 @@ func commentAsThePreviousRelease(t *testing.T, database *store.Store, author mod
 	if err != nil {
 		t.Fatalf("encode the %s event of %s: %v", kind, written.ID, err)
 	}
-	var event int64
-	if err := tx.QueryRow(ctx, `
-		with bumped as (update issues set last_seq = last_seq + 1 where key = 'CORE-1' returning last_seq)
-		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', bumped.last_seq, $1, $2, $3, false
-		from bumped
-		returning id
-	`, kind, encoded, payload).Scan(&event); err != nil {
+	event, err := recordIssueEvent(ctx, tx, "CORE-1", kind, encoded, payload)
+	if err != nil {
 		t.Fatalf("append the %s event of %s: %v", kind, written.ID, err)
 	}
 	if err := tx.Commit(ctx); err != nil {

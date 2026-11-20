@@ -11,6 +11,7 @@ import {
   isDeliveryNotConfigured,
   isDocumentNewerContent,
   isDocumentSchemaError,
+  isReferencesTimeout,
   isRetryableQueryError,
   isUnauthorized,
   NetworkError,
@@ -1006,6 +1007,17 @@ test(
         )
       ).fetch
     );
+    const referencesTimeout = createApiClient(
+      stubFetch(() =>
+        Response.json(
+          {
+            error: "the issue's reference closure ran past its 2s bound",
+            code: "REFERENCES_TIMEOUT",
+          },
+          { status: 503 }
+        )
+      ).fetch
+    );
 
     const [
       unauthorizedError,
@@ -1013,6 +1025,7 @@ test(
       documentSchemaError,
       serverErrorResult,
       deliveryUnsetError,
+      referencesTimeoutError,
     ] = await Promise.all([
       unauthorized.whoAmI().catch((error: unknown) => error),
       featureOff.getCredentialGrants().catch((error: unknown) => error),
@@ -1020,6 +1033,7 @@ test(
       serverError.whoAmI().catch((error: unknown) => error),
       // The run route answers 404 DELIVERY_NOT_CONFIGURED while no settings row exists.
       deliveryUnset.getDeliveryRun(7).catch((error: unknown) => error),
+      referencesTimeout.getIssueReferences("CORE-1").catch((error: unknown) => error),
     ]);
 
     expect(isRetryableQueryError(unauthorizedError)).toBe(false);
@@ -1029,6 +1043,9 @@ test(
     expect(isRetryableQueryError(serverErrorResult)).toBe(true);
     expect(isDeliveryNotConfigured(deliveryUnsetError)).toBe(true);
     expect(isRetryableQueryError(deliveryUnsetError)).toBe(false);
+    // A references walk cut at its bound costs the database the bound again on each retry.
+    expect(isReferencesTimeout(referencesTimeoutError)).toBe(true);
+    expect(isRetryableQueryError(referencesTimeoutError)).toBe(false);
   }
 );
 
