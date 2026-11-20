@@ -77,7 +77,7 @@ func newMembershipRigFor(t *testing.T, rule SignInRule, hostedDomain string, cla
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), "dispatch-client", "dispatch-secret")
 	flow := oidc.NewCodeFlow(issuer.URL(), "dispatch-client", "dispatch-secret", hostedDomain)
 	issuer.SignInAs(claims)
-	authURL, err := flow.AuthURL(context.Background(), memberRedirect, "state", "nonce", oidc.AuthOptions{DomainHint: true})
+	authURL, err := flow.AuthURL(context.Background(), memberRedirect, "state", "nonce")
 	if err != nil {
 		t.Fatalf("AuthURL: %v", err)
 	}
@@ -420,87 +420,36 @@ func TestDomainMembershipWhoseRefreshFailsAfterAnotherAccountSignedInLeavesThatA
 	}
 }
 
-// outsideDomain is the sign-in domain of the outside-rule membership tests: memberEmail, at
-// d.example, is outside it.
-const outsideDomain = "example.com"
-
-// newOutsideMembershipRig signs memberEmail in with Google under the outside rule for
-// outsideDomain at rig.now, an account of no Workspace that lister names, as the sign-in callback
-// does, and returns the membership that renews it.
-func newOutsideMembershipRig(t *testing.T, lister *stubLister) *membershipRig {
-	t.Helper()
-	claims := googleMemberClaims()
-	delete(claims, "hd")
-	rig := newMembershipRigFor(t, OutsideRule{DomainRule: DomainRule{Domain: outsideDomain}, People: lister}, outsideDomain, claims, "google-subject")
-	if person, _ := rig.people.get(memberEmail); person.Kind != model.MemberRestricted {
-		t.Fatalf("the outside sign-in recorded member kind %q, want restricted", person.Kind)
-	}
-	return rig
-}
-
-// set makes l answer listed for email, and err for every question, from now on.
-func (l *stubLister) set(email string, listed bool, err error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.listed = map[string]bool{email: listed}
-	l.err = err
-}
-
-// The hourly confirmation runs the outside rule again: once no access list names the account, the
-// refresh ends every session, as a person who left the domain's Workspace ends under the domain
-// rule, and its row keeps no refresh token. The log line says the confirmation no longer admits
-// the person, with the reason, rather than that Google did not confirm a membership of the domain,
-// which this person never had.
-func TestOutsideSignInMembershipEndsWhenNoListNamesTheAccount(t *testing.T) {
+// A restricted member's Google sign-in that an earlier build admitted from outside the domain ends
+// at its next hourly confirmation under OutsideRule, whatever a list names: the refreshed account
+// is of no Workspace, so the rule refuses it (ErrNotInDomain) without reading the lists, every
+// session ends, and the row keeps no refresh token. The log line is the rule's own words, that the
+// confirmation no longer admits the person, with the reason, and nothing of a membership of the
+// domain, which this person never had.
+func TestOutsideRuleEndsAGoogleSignInOfARestrictedMemberAtTheHourlyConfirmation(t *testing.T) {
 	var logs bytes.Buffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
+	rig := newDomainMembershipRig(t)
+	rig.issuer.UpdateGrants(func(claims map[string]any) { delete(claims, "hd") })
+	rig.people.mu.Lock()
+	person := rig.people.people[memberEmail]
+	person.Kind = model.MemberRestricted
+	rig.people.people[memberEmail] = person
+	rig.people.mu.Unlock()
 	lister := &stubLister{listed: map[string]bool{memberEmail: true}}
-	rig := newOutsideMembershipRig(t, lister)
-	rig.now = rig.now.Add(30 * time.Minute)
-	lister.set(memberEmail, false, nil)
-	if err := rig.membership.Confirm(context.Background(), memberEmail); err != nil {
-		t.Fatalf("Confirm within the hour of the delisting: %v, want the sign-in kept until the hourly check", err)
-	}
-	rig.now = rig.now.Add(time.Hour)
+	rig.membership.Rule = OutsideRule{DomainRule: DomainRule{Domain: memberDomain}, People: lister}
+	rig.now = rig.now.Add(2 * time.Hour)
 	if err := rig.membership.Confirm(context.Background(), memberEmail); !errors.Is(err, ErrNoIdentity) {
-		t.Fatalf("Confirm past the hour with no list naming the account: err = %v, want ErrNoIdentity", err)
+		t.Fatalf("Confirm past the hour of a Google account of no Workspace: err = %v, want ErrNoIdentity", err)
 	}
-	if asked := lister.calls(); len(asked) != 2 || asked[1] != memberEmail {
-		t.Fatalf("the lister was asked %q, want the sign-in's question and the hourly check's", asked)
+	if asked := lister.calls(); len(asked) != 0 {
+		t.Fatalf("the lister was asked %q at a Google refresh, want no call", asked)
 	}
 	assertSessionEnded(t, rig)
 	logged := logs.String()
 	if !strings.Contains(logged, "sign-in ended: the hourly confirmation no longer admits the person") ||
-		!strings.Contains(logged, "no Dispatch project's access list names this account") ||
+		!strings.Contains(logged, "not in the domain that may use Dispatch") ||
 		strings.Contains(logged, "membership of the domain") {
-		t.Errorf("the delisting's log line = %q, want it to say the confirmation no longer admits the person, with the reason, and nothing of a membership of the domain", logged)
-	}
-}
-
-// A list that cannot be read at the hourly confirmation ends nothing: the request fails with an
-// error matching ErrMembershipUnreadable, the sessions, refresh token and lapsed confirmation stay
-// as they were, and the first request after the lists can be read again is confirmed and served.
-func TestOutsideSignInMembershipKeepsTheSignInWhenTheListCannotBeRead(t *testing.T) {
-	lister := &stubLister{listed: map[string]bool{memberEmail: true}}
-	rig := newOutsideMembershipRig(t, lister)
-	signedIn, _ := rig.people.get(memberEmail)
-	lister.set(memberEmail, true, errors.New("the database is down"))
-	rig.now = rig.now.Add(2 * time.Hour)
-	err := rig.membership.Confirm(context.Background(), memberEmail)
-	if !errors.Is(err, ErrMembershipUnreadable) || errors.Is(err, ErrNoIdentity) {
-		t.Fatalf("Confirm while the lists cannot be read: err = %v, want ErrMembershipUnreadable and not ErrNoIdentity", err)
-	}
-	if generation := rig.sessions.generation(memberEmail); generation != 0 {
-		t.Fatalf("session generation after the failed read = %d, want 0 (no cookie revoked)", generation)
-	}
-	if kept, _ := rig.people.get(memberEmail); kept.RefreshToken != signedIn.RefreshToken || !kept.ConfirmedAt.Equal(signedIn.ConfirmedAt) {
-		t.Fatalf("membership after the failed read = %#v, want the sign-in's %#v unchanged", kept, signedIn)
-	}
-	lister.set(memberEmail, true, nil)
-	if err := rig.membership.Confirm(context.Background(), memberEmail); err != nil {
-		t.Fatalf("Confirm once the lists can be read: %v", err)
-	}
-	if confirmed, _ := rig.people.get(memberEmail); !confirmed.ConfirmedAt.Equal(rig.now) || confirmed.Kind != model.MemberRestricted {
-		t.Fatalf("membership after the lists answered = %#v, want restricted, confirmed at %s", confirmed, rig.now)
+		t.Errorf("the end's log line = %q, want it to say the confirmation no longer admits the person, with the reason, and nothing of a membership of the domain", logged)
 	}
 }

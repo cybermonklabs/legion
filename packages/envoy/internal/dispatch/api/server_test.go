@@ -87,11 +87,11 @@ type testServerOptions struct {
 	// signInIssuer is Deps.SignInIssuer: the issuer people sign in through, the issuer of every
 	// Google account people records. Empty is the deployment that records none.
 	signInIssuer string
-	// signInOutside is a deployment that signs in people from outside its domain
-	// (DISPATCH_SIGNIN_OUTSIDE=1): its sign-in rule (testOutsideRule over the server's database)
-	// is Deps.RestrictedAdmission, which a restricted member's tokens are held to. False is the
-	// deployment that does not, whose server holds no such rule.
-	signInOutside bool
+	// admitsRestricted is a deployment that admits restricted members, people from outside its
+	// domain that an access list names: its sign-in rule (testOutsideRule over the server's
+	// database) is Deps.RestrictedAdmission, which a restricted member's tokens are held to. False
+	// is the deployment that does not, whose server holds no such rule.
+	admitsRestricted bool
 	// privateProjects and busProjects are Deps.PrivateProjects and Deps.BusProjects: the projects
 	// the deployment has provisioned as private, and the private-projects record's writer. Nil
 	// and nil are the deployment that names no private project.
@@ -323,7 +323,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		OIDCAccounts:        options.oidcAccounts,
 		AccessAccounts:      options.accessAccounts,
 		SignInIssuer:        options.signInIssuer,
-		RestrictedAdmission: restrictedAdmissionOf(options.signInOutside, database.Pool),
+		RestrictedAdmission: restrictedAdmissionOf(options.admitsRestricted, database.Pool),
 		PrivateProjects:     options.privateProjects,
 		BusProjects:         options.busProjects,
 		BrokerTokens:        brokerTokens,
@@ -356,10 +356,10 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	return mux, database, deps, served
 }
 
-// testOutsideRule is the sign-in rule cmd/dispatch builds under DISPATCH_SIGNIN_OUTSIDE=1 for the
+// testOutsideRule is the sign-in rule a deployment that admits restricted members runs for the
 // Workspace domain example.com and the other domains it owns, workspaceDomains, its access lists
 // read through pool as main's are through the server's own database (accessLister): the rule a
-// restricted member's sign-in and tokens are both held to.
+// restricted member's tokens are held to.
 func testOutsideRule(pool *store.Pool, workspaceDomains ...string) identity.OutsideRule {
 	return identity.OutsideRule{
 		DomainRule: identity.DomainRule{Domain: "example.com"},
@@ -370,10 +370,10 @@ func testOutsideRule(pool *store.Pool, workspaceDomains ...string) identity.Outs
 	}
 }
 
-// restrictedAdmissionOf is Deps.RestrictedAdmission for a deployment that signs in people from
-// outside its domain (testOutsideRule over pool) or one that does not (none).
-func restrictedAdmissionOf(signInOutside bool, pool *store.Pool) identity.RestrictedAdmission {
-	if !signInOutside {
+// restrictedAdmissionOf is Deps.RestrictedAdmission for a deployment that admits restricted
+// members (testOutsideRule over pool) or one that does not (none).
+func restrictedAdmissionOf(admitsRestricted bool, pool *store.Pool) identity.RestrictedAdmission {
+	if !admitsRestricted {
 		return nil
 	}
 	return testOutsideRule(pool)

@@ -37,7 +37,7 @@ docker buildx imagetools inspect ghcr.io/cybermonklabs/legion/envoy:<that commit
 | --- | --- | --- |
 | Postgres | `DATABASE_URL` | Required. Dispatch keeps everything here and applies its own migrations at start. Leave `pool_max_conns` out of the URL; Dispatch refuses it. |
 | A shared agent token | `DISPATCH_AGENT_TOKEN` | Required to start. A fallback credential for agents, which sees only the public projects; agents normally use personal tokens made in Settings. To change it without locking agents out, set the new value followed by the old one, separated by a space, until every agent has moved, then the new one alone. |
-| Google sign-in | `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET`, and `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` | The OpenID Connect issuer people sign in through, Dispatch's client there and that client's secret, and exactly one of: the group a person must be in, through a Cognito sign-in pool; or the Google Workspace domain whose people may sign in, with Google itself as the issuer. Required for the default cookie sign-in. `DISPATCH_SIGNIN_OUTSIDE=1` lets the people a project names sign in from outside the domain, and `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` names the organization's other domains, whose addresses only its own accounts sign in with. [Signing people in](#signing-people-in) covers all of it. |
+| Google sign-in | `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET`, and `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` | The OpenID Connect issuer people sign in through, Dispatch's client there and that client's secret, and exactly one of: the group a person must be in, through a Cognito sign-in pool; or the Google Workspace domain whose people may sign in, with Google itself as the issuer. Required for the default cookie sign-in. `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` names the organization's other domains, whose addresses no person from outside may hold. [Signing people in](#signing-people-in) covers all of it. |
 | The browser address | `DISPATCH_SERVER_URL` | The exact address people type, such as `https://dispatch.internal.example`. Dispatch's client at the issuer lists this address followed by `/auth/callback` as a callback URL. `DISPATCH_OUTSIDE_ORIGIN` is a second address, for people from outside ([People from outside the domain](#people-from-outside-the-domain)). |
 | The GitHub App | `DISPATCH_APP_CLIENT_ID`, `DISPATCH_APP_PEM_B64` | `DISPATCH_APP_PEM_B64` holds the App's private key as the PEM GitHub gives or the base64 of that PEM; a key that does not parse stops boot. Without the App the server starts, but the web app's GitHub reads answer `503` and architecture sources cannot be saved. |
 | A stable session key | `DISPATCH_SIGNING_KEY` | Signs sign-in cookies and seals the issuer's refresh tokens Dispatch stores. It holds one key, or several separated by spaces: the first signs and seals, and every one is accepted, which is how the key is changed without signing anyone out ([Changing the session key](#changing-the-session-key)). When unset, Dispatch creates one under `~/.local/share/dispatch`; keep that directory on a volume, or every restart signs everyone out. Give every server the same keys when you run more than one: a server whose keys another running server does not share refuses to start ([Running more than one copy](#running-more-than-one-copy)). |
@@ -794,53 +794,45 @@ against the guarded schema.
 
 ### People from outside the domain
 
-With Google directly, `DISPATCH_SIGNIN_OUTSIDE=1` also signs in a person whose Google account is
-outside the domain, as a **restricted member**, while a project they are to work on names them:
-the project's owner is that email, or its owner put the email on the project's access list. A
-group on an access list never admits such a person; only the email itself does. Their Google
-account's email must be verified, and an address on a domain the organization owns that is not
-one of the organization's own accounts is refused, with a page saying that such an address signs
-in only as an account of the organization. The organization's domains are `DISPATCH_SIGNIN_DOMAIN`
-and those `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists, comma-separated, such as
-`example.net,example.org`, each with its subdomains. Write an internationalized domain in Unicode,
-such as `bücher.example`, or as its A-labels, `xn--bcher-kva.example`: the two are the same domain,
-and an address written either way is on it. List every other domain the organization
-owns: then a personal Google account holding one of your people's addresses cannot sign in with
-it, even before your person ever has. Your own people sign in at an address on any of them as
-before, and without `DISPATCH_SIGNIN_OUTSIDE=1` the setting changes nothing. On a domain the
-organization owns that the setting does not list, an outside account still never takes the
-address of one of your people once they have signed in with it: it reaches a page saying the
-address belongs to a member of the organization, and your person stays signed in. An outside
-account that signed in with such an address before your person first did loses it at that first
-sign-in: Dispatch signs it out and revokes every agent token it made, so none of them acts as your
-person. An account from outside the organization holds no machine login at the secrets broker, so
-the machine logins your person made there are kept. Someone outside the domain whom no list names
-reaches a page saying that no project's
-access list names them. Dispatch checks again at least hourly, as for everyone, and signs the
-person out once no list names them, once their address is on a domain the organization owns
-(including one you add to `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` later), or once the setting is off.
+Google sign-in admits only accounts of the domain. A Google account outside it is refused, with a
+page saying it is not in the domain, whatever an access list names, at either of Dispatch's
+addresses, so the Google client's consent screen stays **Internal**. A person from outside the
+domain is a **restricted member**, and signs in another way, while a project they are to work on
+names them: the project's owner is that email, or its owner put the email on the project's access
+list. A group on an access list never admits such a person; only the email itself does.
+
+An address on a domain the organization owns is never a restricted member's. The organization's
+domains are `DISPATCH_SIGNIN_DOMAIN` and those `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists,
+comma-separated, such as `example.net,example.org`, each with its subdomains. Write an
+internationalized domain in Unicode, such as `bücher.example`, or as its A-labels,
+`xn--bcher-kva.example`: the two are the same domain, and an address written either way is on it.
+List every other domain the organization owns: then nobody from outside can hold one of your
+people's addresses, even before your person ever signs in. Your own people sign in at an address
+on any of them as before. On a domain the organization owns that the setting does not list, a
+restricted member still never takes the address of one of your people once they have signed in
+with it. A restricted member who held such an address before your person first signed in loses it
+at that first sign-in: Dispatch signs them out and revokes every agent token they made, so none
+of them acts as your person.
+
+Dispatch checks again at least hourly, as for everyone, and signs the person out once no list
+names them, once their address is on a domain the organization owns (including one you add to
+`DISPATCH_SIGNIN_WORKSPACE_DOMAINS` later), or once the deployment admits nobody from outside.
 The sign-in page they then reach says why: that no project's access list names their address any
 more, that their address signs in only as an account of the organization, or that Dispatch no
-longer signs in accounts from outside the domain. The API's `401 NO_IDENTITY` says the same, as a
+longer signs in people from outside the domain. The API's `401 NO_IDENTITY` says the same, as a
 `reason` of `NOT_LISTED`, `WORKSPACE_ADDRESS` or `OUTSIDE_SIGNIN_OFF` beside their address as
 `login`. A person who signs out, or whose sign-in simply expires, is told nothing more, and a
-deployment that never sets `DISPATCH_SIGNIN_OUTSIDE` answers as it always did.
+deployment that never admitted a restricted member answers as it always did.
 
 The agent tokens such a person makes in **Settings → Agent tokens**, and the tokens the secrets
-broker issues to their agents, follow the very rule that signs the person in, checked at every
-request rather than hourly: a token stops at once when the setting is off, when its owner's
-address is on a domain the organization owns (including one you add to
+broker issues to their agents, follow the very rule that admits the person, checked at every
+request rather than hourly: a token stops at once when the deployment admits nobody from outside,
+when its owner's address is on a domain the organization owns (including one you add to
 `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` later), or when no project names its owner any more, and the
 answer is `401 TOKEN_OWNER_NOT_ADMITTED`, saying which. None of these revokes the token, so it
 works again once all hold again; only another account's sign-in to the address revokes the
 Settings tokens, as above, after which each answers `401 TOKEN_REVOKED`. Your own people's tokens
 are not affected.
-
-For this the Google client's consent screen's audience is **External**. Dispatch asks for
-`openid`, `email` and `profile` alone, so the app can stay in Testing status with no list of test
-users, and its sign-ins do not lapse after seven days. Dispatch then names no domain to Google's
-chooser, so a person from outside sees their own accounts; your own people see every account in
-their browser and pick their organization's one.
 
 People from outside reach Dispatch however the deployment lets them, at its second address,
 `DISPATCH_OUTSIDE_ORIGIN`, such as `https://dispatch-outside.example.com`: an `https` address with no

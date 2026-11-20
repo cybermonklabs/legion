@@ -1,0 +1,11 @@
+kind: Removed
+body: |-
+  `envoy-infra:gcp:Dispatch` no longer takes `signInOutside`, which rendered
+  `DISPATCH_SIGNIN_OUTSIDE=1` and let a verified Google account outside `signInDomain` sign in as a
+  restricted member. This is a breaking change: remove `signInOutside` from a program before it
+  moves to this release. No Google sign-in admits an account outside the Workspace domain any
+  more, so the Google client's consent screen stays Internal; a person from outside the company
+  signs in with a passkey instead. `outsideOrigin` is unchanged.
+time: 2026-11-20T18:51:05Z
+custom:
+    Issue: feat-passkeys-cutover

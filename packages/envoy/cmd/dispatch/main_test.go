@@ -162,8 +162,7 @@ func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
 		"DISPATCH_SIGNIN_GROUP":         "dispatch-members",
 		"DISPATCH_OUTSIDE_ORIGIN":       "https://outside.example",
 
-		// Outside sign-in's own two settings, which only the Google sign-in rule reads.
-		"DISPATCH_SIGNIN_OUTSIDE":           "1",
+		// The Workspace's other domains, which only a rule admitting people from outside reads.
 		"DISPATCH_SIGNIN_WORKSPACE_DOMAINS": "example.org",
 	} {
 		if _, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{name: value}))); err == nil ||

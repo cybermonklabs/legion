@@ -1,23 +1,21 @@
 kind: Added
 body: |-
-  Dispatch can sign people from outside its Google Workspace domain in. With
-  `DISPATCH_SIGNIN_OUTSIDE=1` beside `DISPATCH_SIGNIN_DOMAIN`, a verified Google account outside the
-  domain signs in as a restricted member while some project's owner is that email or some
-  project's access list names it directly; a group on an access list never admits such an
-  account. The hourly confirmation runs the same rule, so an account no list names any more, or
-  any outside account once the setting is off, is signed out at its next request past the hour.
-  Such a person's personal agent tokens follow the same rule at every use: a token is refused
-  `401 TOKEN_OWNER_NOT_ADMITTED` once the setting is off or no project names its owner, with no
-  hour to wait, and acts again once both hold; a full member's token is unchanged.
+  Dispatch can admit people from outside its Google Workspace domain as restricted members, while
+  some project's owner is that email or some project's access list names it directly; a group on an
+  access list never admits such a person, and no Google sign-in admits an account outside the
+  domain. The hourly confirmation runs the same rule, so a person no list names any more is signed
+  out at their next request past the hour. Such a person's personal agent tokens follow the same
+  rule at every use: a token is refused `401 TOKEN_OWNER_NOT_ADMITTED` once the deployment admits
+  nobody from outside or no project names its owner, with no hour to wait, and acts again once
+  both hold; a full member's token is unchanged.
   `DISPATCH_OUTSIDE_ORIGIN` is a second origin Dispatch answers at, chosen by the request's
   host: its sign-in comes back to `<origin>/auth/callback`, which the Google client must list, a
   browser write from it must carry that Origin, `GET /auth/whoami` names both origins as
   `origins`, and a dashboard link of either origin is a reference the dashboard opens on the
-  origin the reader is on. A refused outside sign-in's "Sign in with a different account" asks
-  Google for its account chooser. An account outside the Workspace never takes the address of a
-  member who has signed in, even on another domain the Workspace owns: it gets a page saying the
-  address is a Workspace member's, and the member stays signed in. A deployment that sets neither
-  answers as before.
+  origin the reader is on. A restricted member never takes the address of a member who has signed
+  in, even on another domain the Workspace owns: the sign-in is refused, and the member stays
+  signed in. A deployment that admits no restricted member and sets no outside origin answers as
+  before.
 time: 2026-11-16T11:32:51.593887956Z
 custom:
     Issue: pr4199

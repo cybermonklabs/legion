@@ -1111,9 +1111,9 @@ func TestAServiceOnlyBrokerTokenWithNoProofIsRefused(t *testing.T) {
 
 // outsideBrokerRig is outsideTokenRig for the broker's tokens: two API servers over one database,
 // each deciding broker tokens against one stub broker, as one deployment is before and after its
-// operator turns outside sign-in off. on signs in people from outside its domain and off does not.
-// The database holds ACC, which alice owns and whose access list names erin, a restricted member,
-// and carol, a full member. Every token the rig's broker holds is bound to caller's key.
+// operator stops admitting restricted members. on admits them and off does not. The database holds
+// ACC, which alice owns and whose access list names erin, a restricted member, and carol, a full
+// member. Every token the rig's broker holds is bound to caller's key.
 type outsideBrokerRig struct {
 	on, off  http.Handler
 	offDeps  Deps
@@ -1125,7 +1125,7 @@ type outsideBrokerRig struct {
 func newOutsideBrokerRig(t *testing.T) outsideBrokerRig {
 	t.Helper()
 	broker := brokertokentest.NewStubBroker(t)
-	on, database := newAccessServerWith(t, testServerOptions{signInOutside: true, brokerTokens: stubBrokerTokens(t, broker)})
+	on, database := newAccessServerWith(t, testServerOptions{admitsRestricted: true, brokerTokens: stubBrokerTokens(t, broker)})
 	off, _, offDeps := newTestServer(t, testServerOptions{store: database, brokerTokens: stubBrokerTokens(t, broker)})
 	if listed := dispatchRequest(t, on, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
@@ -1158,14 +1158,14 @@ func wantAPIError(t *testing.T, err error, status int, code, what string) {
 	}
 }
 
-// TestARestrictedOwnersBrokerTokenActsOnlyWhileOutsideSignInAdmitsThem (R5): a token the secrets
+// TestARestrictedOwnersBrokerTokenActsOnlyWhileTheDeploymentAdmitsThem (R5): a token the secrets
 // broker issued for a restricted member is held to the rule their personal token is held to, at
 // every request and at every heartbeat of a socket it opened (callerStillResolves). It acts while
-// the deployment signs in people from outside its domain and a project names the owner. Over the
-// same database with outside sign-in off it is 401 TOKEN_OWNER_NOT_ADMITTED naming the setting;
-// once no project names the owner it is refused with the same code, saying so; once one names them
-// again it acts again; and lists that cannot be read are 503 IDENTITY_UNAVAILABLE, never an accept.
-func TestARestrictedOwnersBrokerTokenActsOnlyWhileOutsideSignInAdmitsThem(t *testing.T) {
+// the deployment admits restricted members and a project names the owner. Over the same database
+// on a deployment that admits none it is 401 TOKEN_OWNER_NOT_ADMITTED saying so; once no project
+// names the owner it is refused with the same code, saying so; once one names them again it acts
+// again; and lists that cannot be read are 503 IDENTITY_UNAVAILABLE, never an accept.
+func TestARestrictedOwnersBrokerTokenActsOnlyWhileTheDeploymentAdmitsThem(t *testing.T) {
 	rig := newOutsideBrokerRig(t)
 	const token = "erins-broker-token"
 	rig.broker.Says(token, rig.personToken(accessErin))
@@ -1185,11 +1185,11 @@ func TestARestrictedOwnersBrokerTokenActsOnlyWhileOutsideSignInAdmitsThem(t *tes
 			t.Fatalf("erin's broker token: %s = %s, want the refusal to say %q", call, response.Body.String(), saying)
 		}
 	}
-	wantActs("outside sign-in on and ACC's list naming erin")
+	wantActs("restricted members admitted and ACC's list naming erin")
 	// The socket erin's agent opens with the token, and its heartbeat while she is admitted.
 	opened := rig.caller.presenting(t, http.MethodGet, "/ws/live", token, nil)
 	if _, _, err := on.optionalActor(opened); err != nil {
-		t.Fatalf("erin's broker token opening /ws/live with outside sign-in on: %v, want her agent", err)
+		t.Fatalf("erin's broker token opening /ws/live with restricted members admitted: %v, want her agent", err)
 	}
 	// beat is one heartbeat of erin's socket on served (callerStillResolves), its error alone.
 	beat := func(served *server) error {
@@ -1197,9 +1197,9 @@ func TestARestrictedOwnersBrokerTokenActsOnlyWhileOutsideSignInAdmitsThem(t *tes
 		return err
 	}
 	if err := beat(on); err != nil {
-		t.Fatalf("the heartbeat of erin's socket with outside sign-in on: %v, want it kept", err)
+		t.Fatalf("the heartbeat of erin's socket with restricted members admitted: %v, want it kept", err)
 	}
-	// The rule with other.example among the Workspace's domains would refuse erin's sign-in
+	// The rule with other.example among the Workspace's domains refuses erin
 	// (identity.ErrWorkspaceAddress), so it refuses her broker token too, on a request and at the
 	// heartbeat, while ACC's list still names her: the API asks the sign-in rule, not a copy of it.
 	workspace := rig.offDeps
@@ -1214,9 +1214,9 @@ func TestARestrictedOwnersBrokerTokenActsOnlyWhileOutsideSignInAdmitsThem(t *tes
 	wantAPIError(t, beat(ofTheWorkspace), http.StatusUnauthorized, codeTokenOwnerNotAdmitted,
 		"the heartbeat of erin's socket with other.example a Workspace domain")
 
-	wantRefused(rig.whoami(t, rig.off, token), "GET /api/v1/whoami with outside sign-in off", "DISPATCH_SIGNIN_OUTSIDE is unset")
+	wantRefused(rig.whoami(t, rig.off, token), "GET /api/v1/whoami with restricted members not admitted", "admits nobody from outside it")
 	wantAPIError(t, beat(off), http.StatusUnauthorized, codeTokenOwnerNotAdmitted,
-		"the heartbeat of erin's socket with outside sign-in off")
+		"the heartbeat of erin's socket with restricted members not admitted")
 
 	if unlisted := dispatchRequest(t, rig.on, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); unlisted.Code != http.StatusOK {
 		t.Fatalf("alice takes erin off ACC's list: status=%d body=%s", unlisted.Code, unlisted.Body.String())
@@ -1460,14 +1460,14 @@ func TestEveryCaseTheSettleWindowRefusedIsRefusedByTheComparison(t *testing.T) {
 	refused("an hour after the broker confirmed")
 }
 
-// TestAFullMembersBrokerTokenAnswersAsBeforeWithOutsideSignInOff (R9): with outside sign-in off, a
-// broker token acting for a full member, for a person no people row holds, and for a service that
-// names no person answer GET /api/v1/whoami as they always did. Resolving one that names a person
-// costs one statement of Dispatch's store, the read of that person's member kind by the people
-// table's key, and reads no access list; one that names no person reads nothing. The instrument is
-// shown seeing a list read in the same run: a restricted owner's token, which must read one,
-// resolves in two.
-func TestAFullMembersBrokerTokenAnswersAsBeforeWithOutsideSignInOff(t *testing.T) {
+// TestAFullMembersBrokerTokenAnswersAsBeforeWhereNoRestrictedMemberIsAdmitted (R9): on a deployment
+// that admits no restricted member, a broker token acting for a full member, for a person no people
+// row holds, and for a service that names no person answer GET /api/v1/whoami as they always did.
+// Resolving one that names a person costs one statement of Dispatch's store, the read of that
+// person's member kind by the people table's key, and reads no access list; one that names no
+// person reads nothing. The instrument is shown seeing a list read in the same run: a restricted
+// owner's token, which must read one, resolves in two.
+func TestAFullMembersBrokerTokenAnswersAsBeforeWhereNoRestrictedMemberIsAdmitted(t *testing.T) {
 	rig := newOutsideBrokerRig(t)
 	const nobody = "nobody@example.com"
 	if rows := countRows(t, rig.database, `select count(*) from people where email = $1`, nobody); rows != 0 {
@@ -1478,7 +1478,7 @@ func TestAFullMembersBrokerTokenAnswersAsBeforeWithOutsideSignInOff(t *testing.T
 	for _, test := range []struct {
 		name, token, whoami string
 		answer              brokertoken.Introspection
-		signInOutside       bool
+		admitsRestricted    bool
 		statements          int
 		readsLists          bool
 	}{
@@ -1491,20 +1491,20 @@ func TestAFullMembersBrokerTokenAnswersAsBeforeWithOutsideSignInOff(t *testing.T
 		{"a service naming no person", "a-service-broker-token",
 			`{"kind":"agent","owner":null,"project":null,"scopes":[],"service":"` + brokerTestService + `","session":"` + brokerTestSession + `"}`,
 			serviceOnlyToken(rig.caller.jkt), false, 0, false},
-		{"erin, a restricted member, with outside sign-in on", "erins-broker-token",
+		{"erin, a restricted member, with restricted members admitted", "erins-broker-token",
 			`{"kind":"agent","owner":"erin@other.example","member_kind":"restricted","project":null,"scopes":["person","approve"],"service":null,"session":"` + brokerTestSession + `"}`,
 			rig.personToken(accessErin), true, 2, true},
 	} {
 		rig.broker.Says(test.token, test.answer)
 		handler := rig.off
-		if test.signInOutside {
+		if test.admitsRestricted {
 			handler = rig.on
 		}
 		response := rig.whoami(t, handler, test.token)
 		if got := strings.TrimSpace(response.Body.String()); response.Code != http.StatusOK || got != test.whoami {
 			t.Errorf("%s: GET /api/v1/whoami = %d %s, want 200 %s", test.name, response.Code, got, test.whoami)
 		}
-		served := directServer(Deps{Store: traced, BrokerTokens: rig.offDeps.BrokerTokens, RestrictedAdmission: restrictedAdmissionOf(test.signInOutside, traced.Pool)})
+		served := directServer(Deps{Store: traced, BrokerTokens: rig.offDeps.BrokerTokens, RestrictedAdmission: restrictedAdmissionOf(test.admitsRestricted, traced.Pool)})
 		request := rig.caller.presenting(t, http.MethodGet, "/api/v1/whoami", test.token, nil)
 		before := len(recorder.Statements())
 		actor, _, err := served.brokerTokenActor(request)

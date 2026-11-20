@@ -44,9 +44,7 @@ type Refresher interface {
 // ends nothing: the request that found the confirmation lapsed is refused with
 // ErrSignInUnavailable, since no one is served on a lapsed confirmation, and the session
 // generation and refresh token stay, so the first request after the issuer answers again
-// refreshes and is served. Under OutsideRule, access lists that cannot be read
-// (ErrMembershipUnreadable) end nothing either: the request is refused with that error and the
-// sign-in kept, so a database blip signs nobody out.
+// refreshes and is served.
 type Membership struct {
 	People auth.PeopleStore
 	SignIn Refresher
@@ -106,10 +104,6 @@ func (m *Membership) refresh(ctx context.Context, email string) error {
 		return fmt.Errorf("%w: %w", ErrSignInUnavailable, err)
 	}
 	person, err := m.Rule.Person(ctx, session.Claims)
-	if errors.Is(err, ErrMembershipUnreadable) {
-		slog.Warn("dispatch: the access lists could not be read to confirm a lapsed membership; the request is refused and the sign-in kept", "email", email, "error", err)
-		return err
-	}
 	if err != nil {
 		return m.end(ctx, email, membership, err.Error())
 	}

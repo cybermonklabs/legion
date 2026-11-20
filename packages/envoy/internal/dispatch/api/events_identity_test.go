@@ -291,7 +291,7 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration) *documentSocket
 		"cognito:groups":   []string{"dispatch-members"},
 		"identities":       []map[string]any{{"providerName": "ExampleIdP"}},
 	})
-	authURL, err := flow.AuthURL(ctx, redirect, "state", "nonce", oidc.AuthOptions{DomainHint: true})
+	authURL, err := flow.AuthURL(ctx, redirect, "state", "nonce")
 	if err != nil {
 		t.Fatalf("start the sign-in: %v", err)
 	}

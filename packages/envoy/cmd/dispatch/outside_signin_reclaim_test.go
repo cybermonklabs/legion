@@ -15,31 +15,27 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// An account outside the Workspace can take an address of another domain the Workspace owns while
-// no people row holds it: PRIV's list names alice@second.example before its member ever signed in,
-// and an account with that verified email and no hd signs in as a restricted member and mints a
-// personal token, which acts. Then the member (hd example.com, the same email, another Google
-// account) signs in, and the address is the member's: the outsider's token is refused 401
+// A restricted member can hold an address of another domain the Workspace owns while no full member
+// holds it: PRIV's list names alice@second.example, and an account holds it as a restricted member
+// with a personal token it minted. Then the member (hd example.com, the same email, another Google
+// account) signs in, and the address is the member's: the restricted member's token is refused 401
 // TOKEN_REVOKED at once, on a read and on a mint, rather than acting as the full member its owner's
-// row now reads; the outsider's cookie is signed out; and the member's own cookie mints a token
-// that acts as the full member. The router keeps sessions in the database (routerWithSessions), as
-// a deployment does, so the sign-in's end of the address's sessions reaches the cookies.
+// row now reads; the restricted member's cookie is signed out; and the member's own cookie mints a
+// token that acts as the full member. The router keeps sessions in the database
+// (routerWithSessions), as a deployment does, so the sign-in's end of the address's sessions
+// reaches the cookies.
 func TestOutsideSignInReclaimRevokesTheOutsidersToken(t *testing.T) {
 	const memberEmail = "alice@second.example"
 	s := newOutsideSignIn(t, nil)
 	handler := s.routerWithSessions(t)
 	s.listOn(t, "PRIV", access.PrincipalPerson, memberEmail)
 
-	outsider := codeFlowSignIn(t, handler, s.pool, map[string]any{"sub": "outsider", "email": memberEmail, "email_verified": true})
-	if outsider.Code != http.StatusFound || !sessionCookieSet(outsider) {
-		t.Fatalf("the account outside the Workspace at %s, which no row holds: the callback answered %d %s, want a signed-in redirect", memberEmail, outsider.Code, outsider.Body.String())
-	}
-	if kind := s.memberKind(t, memberEmail); kind != string(model.MemberRestricted) {
-		t.Fatalf("people.member_kind of %s after the outside sign-in = %q, want restricted", memberEmail, kind)
-	}
+	outsider := s.workspaceSignIn(t, handler, memberEmail, "outsider")
 	outsiderToken := mintTokenOn(t, handler, outsider)
-	requireTokenActs(t, "GET /api/v1/whoami with the outsider's token, before the member signs in",
-		bearerRequest(handler, http.MethodGet, "/api/v1/whoami", "", outsiderToken))
+	s.restrict(t, memberEmail, "outsider")
+	if kind := s.memberKind(t, memberEmail); kind != string(model.MemberRestricted) {
+		t.Fatalf("people.member_kind of %s = %q, want restricted", memberEmail, kind)
+	}
 
 	member := codeFlowSignIn(t, handler, s.pool, map[string]any{"sub": "member", "email": memberEmail, "email_verified": true, "hd": "example.com"})
 	if member.Code != http.StatusFound || !sessionCookieSet(member) {
@@ -119,7 +115,7 @@ func waitForBlockedBackends(t *testing.T, s *outsideSignIn, blocked int, what st
 	}
 }
 
-// reclaimCaller is the outsider as each credential a mint can be made with: its cookie, its
+// reclaimCaller is the first holder as each credential a mint can be made with: its cookie, its
 // personal token, or a broker token its machine was issued (machine holds that machine's key), and
 // the router the case serves it through.
 type reclaimCaller struct {
@@ -129,18 +125,15 @@ type reclaimCaller struct {
 	machine *brokertokentest.Caller
 }
 
-// A mint that races the member's reclaim of the address cannot leave the outsider a token: the
-// outsider holds alice@second.example and a credential of it, and the member's sign-in
-// (PgPeopleStore.SignInSubject under another sub) is held open with the people row locked, its
-// sessions ended and its tokens revoked, until the test lets it commit. The outsider's mint, by
-// the cookie or by the personal token, waits for that row, finds once the reclaim commits that its
-// caller no longer holds the address, and is refused as any later request of that caller is (401
-// NO_IDENTITY for the cookie, 401 TOKEN_REVOKED for the personal token), with no token row
-// written. A broker token is held no other way: an account outside the Workspace holds no broker
-// credential, so its case is a full member's address Google gives to another Workspace account,
-// whose sign-in owes the broker a revocation of the first holder's credentials, and the first
-// holder's broker token's mint is refused 401 BROKER_TOKEN_NOT_ACTIVE. A mint with no reclaim in
-// its way, the first holder's first, is answered 201 as before.
+// A mint that races another account's reclaim of the address cannot leave the first holder a
+// token: the first holder holds reassignedEmail and a credential of it, and the second holder's
+// sign-in (PgPeopleStore.SignInSubject under another sub) is held open with the people row locked,
+// its sessions ended and its tokens revoked, until the test lets it commit. The first holder's mint
+// waits for that row, finds once the reclaim commits that its caller no longer holds the address,
+// and is refused as any later request of that caller is (401 NO_IDENTITY for the cookie, 401
+// TOKEN_REVOKED for the personal token, 401 BROKER_TOKEN_NOT_ACTIVE for a broker token, whose
+// credential the second holder's sign-in owes the broker a revocation of), with no token row
+// written. A mint with no reclaim in its way, the first holder's first, is answered 201 as before.
 func TestOutsideSignInReclaimRefusesAMintThatWaitedOnIt(t *testing.T) {
 	for _, test := range []struct {
 		name, code string
@@ -174,29 +167,23 @@ func TestOutsideSignInReclaimRefusesAMintThatWaitedOnIt(t *testing.T) {
 			ctx := context.Background()
 			s := newOutsideSignIn(t, nil)
 			var caller reclaimCaller
-			var broker *fakeBroker
-			email, reclaimer := "alice@second.example", "member"
+			email := reassignedEmail
 			if test.broker {
-				email, reclaimer = reassignedEmail, secondHolder
-				broker = newFakeBroker(t)
+				broker := newFakeBroker(t)
 				caller.handler, _ = s.brokerRouter(t, broker)
 				caller.cookie = s.workspaceSignIn(t, caller.handler, email, firstHolder)
 				caller.machine, caller.token = brokertokentest.NewCaller(t), "token-of-the-first-holders-machine"
 				broker.holds(&fakeCredential{id: "login-first", person: email, subject: firstHolder, tokens: []string{caller.token}}, caller.machine)
 			} else {
 				caller.handler = s.routerWithSessions(t)
-				s.listOn(t, "PRIV", access.PrincipalPerson, email)
-				caller.cookie = codeFlowSignIn(t, caller.handler, s.pool, map[string]any{"sub": "outsider", "email": email, "email_verified": true})
-				if caller.cookie.Code != http.StatusFound || !sessionCookieSet(caller.cookie) {
-					t.Fatalf("the outside account at %s: the callback answered %d %s, want a signed-in redirect", email, caller.cookie.Code, caller.cookie.Body.String())
-				}
+				caller.cookie = s.workspaceSignIn(t, caller.handler, email, firstHolder)
 				caller.token = mintTokenOn(t, caller.handler, caller.cookie)
 			}
 			// Used once now, a personal token records its use, so the mint's own use of it a moment
 			// later writes nothing (personalTokenActor records a use a minute apart) and waits on
 			// no row the reclaim holds: the mint waits only where the mint itself takes a lock. A
 			// broker token's use writes no row the reclaim holds either.
-			requireTokenActs(t, "GET /api/v1/whoami with the outsider's credential "+test.name+", before the reclaim", test.later(t, caller))
+			requireTokenActs(t, "GET /api/v1/whoami with the first holder's credential "+test.name+", before the reclaim", test.later(t, caller))
 
 			if _, err := s.database.Pool.Exec(ctx, `
 				create function hold_reclaim() returns trigger language plpgsql as $$ begin perform pg_advisory_xact_lock(4199); return new; end $$;
@@ -215,10 +202,10 @@ func TestOutsideSignInReclaimRefusesAMintThatWaitedOnIt(t *testing.T) {
 			reclaimed, reclaimDone := make(chan error, 1), make(chan struct{})
 			go func() {
 				defer close(reclaimDone)
-				reclaimed <- s.people.SignInSubject(ctx, email, reclaimer, "refresh-member", model.MemberFull)
+				reclaimed <- s.people.SignInSubject(ctx, email, secondHolder, "refresh-second", model.MemberFull)
 			}()
-			if !waitForBlockedBackends(t, s, 1, "the member's reclaim", reclaimDone) {
-				t.Fatalf("the member's reclaim finished while the test held it: %v", <-reclaimed)
+			if !waitForBlockedBackends(t, s, 1, "the second holder's reclaim", reclaimDone) {
+				t.Fatalf("the second holder's reclaim finished while the test held it: %v", <-reclaimed)
 			}
 
 			const name = "minted while the reclaim held the address"
@@ -227,21 +214,21 @@ func TestOutsideSignInReclaimRefusesAMintThatWaitedOnIt(t *testing.T) {
 				defer close(mintDone)
 				minted <- test.mint(t, caller, `{"name":"`+name+`"}`)
 			}()
-			if !waitForBlockedBackends(t, s, 2, "the outsider's mint", mintDone) {
-				t.Logf("the outsider's mint %s answered while the reclaim held the address, without waiting for it", test.name)
+			if !waitForBlockedBackends(t, s, 2, "the first holder's mint", mintDone) {
+				t.Logf("the first holder's mint %s answered while the reclaim held the address, without waiting for it", test.name)
 			}
 			if err := holder.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
 			if err := <-reclaimed; err != nil {
-				t.Fatalf("the member's reclaim: %v", err)
+				t.Fatalf("the second holder's reclaim: %v", err)
 			}
 			refused := <-minted
 			if refused.Code != http.StatusUnauthorized || errorCode(refused) != test.code {
-				t.Errorf("the outsider's mint %s, which waited on the reclaim, answered %d %s, want 401 %s", test.name, refused.Code, refused.Body.String(), test.code)
+				t.Errorf("the first holder's mint %s, which waited on the reclaim, answered %d %s, want 401 %s", test.name, refused.Code, refused.Body.String(), test.code)
 			}
 			if later := test.later(t, caller); later.Code != refused.Code || errorCode(later) != errorCode(refused) {
-				t.Errorf("the outsider's next request %s answered %d %s, and the mint %d %s: want the mint refused as that request is", test.name, later.Code, later.Body.String(), refused.Code, refused.Body.String())
+				t.Errorf("the first holder's next request %s answered %d %s, and the mint %d %s: want the mint refused as that request is", test.name, later.Code, later.Body.String(), refused.Code, refused.Body.String())
 			}
 			var written int
 			if err := s.database.Pool.QueryRow(ctx, `select count(*) from agent_tokens where name = $1`, name).Scan(&written); err != nil {

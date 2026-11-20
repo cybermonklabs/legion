@@ -48,8 +48,8 @@ type processWalk struct {
 	routes []string
 	// at is each process at each origin it answers at: the process with none of the outside
 	// settings at its one origin, then the process that also answers at outsideHost
-	// (DISPATCH_OUTSIDE_ORIGIN) and signs people from outside the domain in
-	// (DISPATCH_SIGNIN_OUTSIDE), at its canonical origin and at its outside origin.
+	// (DISPATCH_OUTSIDE_ORIGIN) and admits restricted members from outside the domain
+	// (identity.OutsideRule), at its canonical origin and at its outside origin.
 	at []walkOrigin
 }
 

@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/approvetimingtest"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -746,14 +747,13 @@ func TestOutsideSignInHourlyEndOfAFullMemberRevokesNothing(t *testing.T) {
 		bearerRequest(handler, http.MethodGet, "/api/v1/whoami", "", token))
 }
 
-// A member who reclaims an address an account outside the Workspace took keeps their own broker
-// credentials. The member's sign-in records a revocation of the outside account, naming the member
-// as the holder, since a restricted row can name an account that made broker credentials while it
-// was full under the same `sub` (the next test): the one pass tells the broker to revoke the
-// outside account, and the machine login and sign-in the member made at the broker before
-// reclaiming the address, which record the member's account, stay live, and their broker tokens
-// act throughout, the revocation owed included, since they record the account the address's row
-// records now and nothing can make them the outside account's.
+// A member who reclaims an address a restricted member held keeps their own broker credentials. The
+// restricted member's sign-in recorded the address under its own account, outsider; the member's
+// Google sign-in records a revocation of that account, naming the member as the holder: the one
+// pass tells the broker to revoke the outside account, and the machine login and sign-in the member
+// made at the broker before reclaiming the address, which record the member's account, stay live,
+// and their broker tokens act throughout, the revocation owed included, since they record the
+// account the address's row records now and nothing can make them the outside account's.
 func TestOutsideSignInReclaimKeepsTheMembersOwnBrokerCredentials(t *testing.T) {
 	const memberEmail = "alice@second.example"
 	ctx := context.Background()
@@ -761,8 +761,8 @@ func TestOutsideSignInReclaimKeepsTheMembersOwnBrokerCredentials(t *testing.T) {
 	broker := newFakeBroker(t)
 	handler, background := s.brokerRouter(t, broker)
 	s.listOn(t, "PRIV", access.PrincipalPerson, memberEmail)
-	if outsider := codeFlowSignIn(t, handler, s.pool, map[string]any{"sub": "outsider", "email": memberEmail, "email_verified": true}); outsider.Code != http.StatusFound {
-		t.Fatalf("the account outside the Workspace at %s: the callback answered %d %s, want a signed-in redirect", memberEmail, outsider.Code, outsider.Body.String())
+	if err := s.people.SignInSubject(ctx, memberEmail, "outsider", "refresh-of-the-outsider", model.MemberRestricted); err != nil {
+		t.Fatalf("record the restricted member's sign-in at %s: %v", memberEmail, err)
 	}
 	machine, box := brokertokentest.NewCaller(t), brokertokentest.NewCaller(t)
 	broker.holds(&fakeCredential{id: "login-member", person: memberEmail, subject: "member", tokens: []string{"token-of-the-members-machine"}}, machine)
@@ -789,61 +789,6 @@ func TestOutsideSignInReclaimKeepsTheMembersOwnBrokerCredentials(t *testing.T) {
 		brokerTokenRequest(t, handler, machine, http.MethodGet, "/api/v1/whoami", "", "token-of-the-members-machine"))
 	requireTokenActs(t, "GET /api/v1/whoami with the member's sign-in's broker token, after the reclaim",
 		brokerTokenRequest(t, handler, box, http.MethodGet, "/api/v1/whoami", "", "token-of-the-members-sign-in"))
-}
-
-// A full member's address that another Workspace account took, and that account restricted since
-// under the same `sub`, is taken back with that account revoked at the broker. The first holder
-// signs in to alice@second.example, a domain the Workspace does not list, which PRIV's list names;
-// the second holder, a Workspace account too, takes it, and the pass pays the first holder's
-// revocation, after which the broker refuses the first holder at the address. Google then moves
-// the second holder's account out of the Workspace: its refresh carries no hd, so the hourly
-// confirmation keeps it signed in as a restricted member. When the first holder takes the address
-// back, its sign-in records the revocation of the second holder naming the first as the holder,
-// and the next pass tells the broker exactly that: the broker ends what the second holder made and
-// deletes its refusal of the first holder, which no other call lifts.
-func TestOutsideSignInTakingTheAddressBackFromAnAccountRestrictedSinceRevokesIt(t *testing.T) {
-	const email = "alice@second.example"
-	ctx := context.Background()
-	s := newOutsideSignIn(t, nil)
-	broker := newFakeBroker(t)
-	handler, background := s.brokerRouter(t, broker)
-	s.listOn(t, "PRIV", access.PrincipalPerson, email)
-	s.workspaceSignIn(t, handler, email, firstHolder)
-	second := s.workspaceSignIn(t, handler, email, secondHolder)
-	box := brokertokentest.NewCaller(t)
-	broker.holds(&fakeCredential{id: "signin-second", person: email, subject: secondHolder, signIn: true, tokens: []string{"token-of-the-second-holders-sign-in"}}, box)
-	background.RevokeBrokerCredentials(ctx)
-	first := s.subjectRevoke(t, email, firstHolder, secondHolder)
-	requireCalls(t, broker, "after the pass that follows the second holder's sign-in", first)
-	if !broker.refuses(email, firstHolder) {
-		t.Fatalf("after the first holder's revocation the broker does not refuse the first holder at %s", email)
-	}
-
-	s.pool.UpdateGrants(func(claims map[string]any) { delete(claims, "hd") })
-	ageConfirmation(t, s.people, email)
-	if whoami := requestWith(handler, http.MethodGet, "/auth/whoami", second); whoami.Code != http.StatusOK || !strings.Contains(whoami.Body.String(), `"member_kind":"restricted"`) {
-		t.Fatalf("the second holder's whoami that ran the hourly check, its account out of the Workspace: %d %s, want 200 as a restricted member", whoami.Code, whoami.Body.String())
-	}
-	if kind := s.memberKind(t, email); kind != "restricted" {
-		t.Fatalf("people.member_kind of %s after the hourly check = %q, want restricted", email, kind)
-	}
-
-	s.workspaceSignIn(t, handler, email, firstHolder)
-	s.ageBrokerRevocation(t, email)
-	background.RevokeBrokerCredentials(ctx)
-	if broker.refuses(email, firstHolder) {
-		t.Errorf("the broker still refuses the first holder at %s, which it holds again: no revoke named it as the holder", email)
-	}
-	if !broker.refuses(email, secondHolder) {
-		t.Errorf("the broker does not refuse the second holder at %s, which it no longer holds", email)
-	}
-	if broker.live("signin-second") {
-		t.Errorf("the second holder's sign-in at the broker, made while it was full, outlived the first holder's return")
-	}
-	requireCalls(t, broker, "after the pass that follows the first holder's return", first, s.subjectRevoke(t, email, secondHolder, firstHolder))
-	if recorded, done := s.brokerRevocation(t, email); !recorded || !done {
-		t.Fatalf("after the passes the revocations of %s read recorded %t, done %t; want both settled", email, recorded, done)
-	}
 }
 
 // tokenRowsNamed is how many personal token rows are named name.
