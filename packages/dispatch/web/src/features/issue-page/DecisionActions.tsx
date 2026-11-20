@@ -174,6 +174,7 @@ function DecisionControls({
   const keep = useKeyedWrite({
     inline: true,
     label: () => `${CONTROL_LABELS.keep_decision} ${decision.heading}`,
+    method: "POST",
     // The sum of the text this node showed: a decision the agent changed since is refused
     // (`409 DECISION_CHANGED`), so a Keep never stands over words the reader did not see.
     write: (id: string, bounds) =>
@@ -282,6 +283,7 @@ function ChangeComposer({
   const send = useKeyedWrite({
     inline: true,
     label: () => `${CONTROL_LABELS.change_decision} ${decision.heading}`,
+    method: "POST",
     // A comment on an issue's document is the issue's own write: the artifact route refuses it,
     // naming the issue route (`send-request.ts` follows the same rule for a thread's replies).
     write: (input: { anchor: ChangeAnchor; body: string }, bounds) =>
