@@ -185,8 +185,8 @@ func (t *bindThrottle) reportStandby(name, message string) {
 //     and did not handle. Once every hand-back reached the server, it releases the hold (stop), so
 //     a standby takes over at once and is redelivered those messages within seconds rather than
 //     after the ack wait. A stop with a hand-back still pending, or whose flush cannot confirm the
-//     hand-backs reached the server, leaves the hold to lapse instead: those messages are the next
-//     holder's take-over to hand over.
+//     hand-backs reached the server, keeps the hold renewing until they have, or until its
+//     connection has closed, and releases it only then (finalizeHandBacks).
 //
 // The run loop owns hold, recorded and subject; mu guards delivering, which StopDelivering reads
 // from any goroutine.
@@ -658,71 +658,107 @@ func (d *heldDurable) check(ctx context.Context) {
 	d.subject = ""
 }
 
-// stop is the end of run: it stops delivering under ctx, the run's stop deadline, confirms its
-// hand-backs reached the server (handBacksReached), then releases the hold,
-// so a standby takes the durable over at once and is redelivered whatever this intake handed back.
-// A hold whose token still records a take-over's start (intakeHoldToken) is lapsed instead, which
-// frees it as Release does and keeps the row, so the next holder reads that start. The release
-// runs on a context of its own: it is one statement, and it must reach the database even when the
-// stop's budget has run out.
+// stop is the end of run: it stops delivering under ctx, the run's stop deadline, and releases the
+// hold once every hand-back reached the server (handBacksReached), so a standby takes the durable
+// over at once and is redelivered whatever this intake handed back. A hold whose token still records
+// a take-over's start (intakeHoldToken) is lapsed instead, which frees it as Release does and keeps
+// the row, so the next holder reads that start. The release runs on a context of its own: it is one
+// statement, and it must reach the database even when the stop's budget has run out.
 //
-// A hold whose hand-backs did not all reach the server by then is not released but abandoned
-// (duty.Hold.Abandon): its row keeps naming this holder until it lapses, intakeHoldTTL after its
-// last renewal, and only then can a standby take the durable over. A hand-back is a publish at the
-// message's reply subject, which names the durable rather than the consumer: one that reached the
-// server after a standby had taken the durable over, and recreated it under the same name, would
-// move that message's pending entry on the standby's consumer and have it delivered a second time.
-// The process ends after its stop, and its connection with it, which leaves such a hand-back
-// unsent; so the lapse is what costs that standby, and it costs it only while NATS keeps a hand-back
-// waiting -- a reconnect's handshake, a write to a slow socket -- past the stop's deadline.
+// A hand-back still pending when the stop's context ends does not keep Run past that context, and
+// does not give the hold up either. A hand-back is a publish at the message's reply subject, which
+// names the durable rather than the consumer: one that reached the server after a standby had taken
+// the durable over, and recreated it under the same name, would move that message's pending entry on
+// the standby's consumer and have it delivered a second time. So the hold keeps renewing on a
+// goroutine of its own (finalizeHandBacks) until that hand-back lands and a flush confirms it, or the
+// intake client's connection closes, which leaves the hand-back unsent; only then is it released. The
+// renewal ends with the process, together with the connection, so the row cannot lapse while the
+// hand-back can still be sent.
 func (d *heldDurable) stop(ctx context.Context) {
 	d.StopDelivering(ctx)
 	if d.hold == nil {
 		return
 	}
-	if !d.handBacksReached(ctx) {
-		slog.Warn(intakeHoldAbandoned, "name", d.name)
-		d.hold.Abandon()
-		d.hold, d.subject = nil, ""
+	hold, lapse := d.hold, d.recorded.start != 0
+	d.hold, d.subject = nil, ""
+	d.mu.Lock()
+	delivery := d.delivering
+	d.mu.Unlock()
+	if d.handBacksReached(ctx, delivery, hold) {
+		d.releaseHold(hold, lapse)
 		return
 	}
-	release := d.hold.Release
-	if d.recorded.start != 0 {
-		release = d.hold.Lapse
+	select {
+	case <-hold.Lost():
+		// Another holder may act already, and there is no hold left to keep.
+	default:
+		slog.Warn(intakeHoldFinalizing, "name", d.name)
+		go d.finalizeHandBacks(delivery, hold, lapse)
+	}
+}
+
+// intakeHoldFinalizing is the line of a stop whose hand-back had not reached NATS by its deadline,
+// so its hold stays renewing until it does (stop).
+const intakeHoldFinalizing = "dispatch delivery: a hand-back has not reached NATS by the stop's deadline, so the intake's hold stays renewing until it does"
+
+// finalizeHandBacks keeps hold renewing while a hand-back of the stopped delivery is pending, and
+// releases it once that hand-back has landed and a flush of the connection answers, or once the
+// intake client's connection has closed, which leaves the hand-back unsent. It runs on a goroutine of
+// its own that nothing waits for, so it waits for nats.go's lock with no bound, and makes one flush at
+// a time. A lost hold ends it: another holder may then act, as after any loss of the hold.
+func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hold, lapse bool) {
+	select {
+	case <-delivery.handBacksLanded():
+	case <-hold.Lost():
+		return
+	}
+	retry := time.NewTicker(intakeFlushWait)
+	defer retry.Stop()
+	for {
+		if d.handBacksSettled() {
+			select {
+			case <-hold.Lost():
+			default:
+				d.releaseHold(hold, lapse)
+			}
+			return
+		}
+		select {
+		case <-hold.Lost():
+			return
+		case <-retry.C:
+		}
+	}
+}
+
+// releaseHold releases hold, or lapses it when the next holder must read a take-over's token.
+func (d *heldDurable) releaseHold(hold *duty.Hold, lapse bool) {
+	release := hold.Release
+	if lapse {
+		release = hold.Lapse
 	}
 	releasing, cancel := context.WithTimeout(context.Background(), intakeHoldRenew)
 	defer cancel()
 	if err := release(releasing); err != nil {
 		slog.Error("dispatch delivery: release the intake's hold", "name", d.name, "error", err)
 	}
-	d.hold, d.subject = nil, ""
 }
 
-// intakeHoldAbandoned is the line of a stop that leaves its hold to lapse rather than release it,
-// because a hand-back of its had not reached the server by the stop's deadline (stop).
-const intakeHoldAbandoned = "dispatch delivery: a hand-back has not reached NATS by the stop's deadline, so the intake's hold is left to lapse rather than released"
-
-// handBacksReached reports whether every hand-back the stopped delivery published has reached the
-// server. A publish NATS had not taken when the stop went on without it
-// (intakeDelivery.publishHandBack) is waited for first, until ctx ends or the hold is lost: the
-// stop can return with one still waiting, since its drain ends once nats.go has answered the drain's
-// flush and run the messages it had buffered, which need not wait for the write that holds nats.go's
-// lock. Then the connection is flushed, a round trip to the server, so the hand-backs nats.go had
-// queued have reached it. The flush waits at most intakeFlushWait, on a bound of its own, as the
-// release that follows it does: both are part of what follows the stop's deadline
-// (intakeStopBudget), and a healthy link answers the flush in a round trip. A delivery that handed
-// nothing back reports true at once.
-func (d *heldDurable) handBacksReached(ctx context.Context) bool {
-	d.mu.Lock()
-	delivery := d.delivering
-	d.mu.Unlock()
+// handBacksReached reports whether every hand-back delivery published has reached the server. A
+// publish NATS had not taken when the stop went on without it (intakeDelivery.publishHandBack) is
+// waited for first, until ctx ends or hold is lost: the stop can return with one still waiting, since
+// its drain ends once nats.go has answered the drain's flush and run the messages it had buffered,
+// which need not wait for the write that holds nats.go's lock. Then the connection is flushed, a round
+// trip to the server, so the hand-backs nats.go had queued have reached it (flushHandBacks). A
+// delivery that handed nothing back reports true at once.
+func (d *heldDurable) handBacksReached(ctx context.Context, delivery *intakeDelivery, hold *duty.Hold) bool {
 	if delivery == nil || !delivery.handedBack() {
 		return true
 	}
 	landed := delivery.handBacksLanded()
 	select {
 	case <-landed:
-	case <-d.hold.Lost():
+	case <-hold.Lost():
 	case <-ctx.Done():
 	}
 	select {
@@ -730,18 +766,27 @@ func (d *heldDurable) handBacksReached(ctx context.Context) bool {
 	default:
 		return false
 	}
-	flushing, cancel := context.WithTimeout(context.Background(), intakeFlushWait)
-	defer cancel()
-	_, flushed, err := bus.Bounded(flushing, func() (struct{}, error) {
-		conn := d.nats.Connection()
-		if conn == nil {
-			return struct{}{}, natsgo.ErrConnectionClosed
-		}
-		return struct{}{}, conn.FlushTimeout(intakeFlushWait)
-	})
-	return flushed && err == nil
+	return d.flushHandBacks()
 }
 
-// intakeFlushWait bounds the flush that confirms a stop's hand-backs reached the server before its
-// hold is released (handBacksReached).
+// flushHandBacks is handBacksSettled within intakeFlushWait, on a bound of its own as the release
+// that follows it is: both are part of what follows the stop's deadline (intakeStopBudget), and a
+// healthy link answers the flush in a round trip. A flush that has not answered by then is false.
+func (d *heldDurable) flushHandBacks() bool {
+	flushing, cancel := context.WithTimeout(context.Background(), intakeFlushWait)
+	defer cancel()
+	settled, _, _ := bus.Bounded(flushing, func() (bool, error) { return d.handBacksSettled(), nil })
+	return settled
+}
+
+// handBacksSettled reports whether no hand-back nats.go had queued can reach the server later: a
+// flush of the intake client's connection answered within intakeFlushWait, so each has reached it,
+// or the connection has closed, which leaves each unsent. It waits for nats.go's lock with no bound.
+func (d *heldDurable) handBacksSettled() bool {
+	conn := d.nats.Connection()
+	return conn == nil || conn.IsClosed() || conn.FlushTimeout(intakeFlushWait) == nil
+}
+
+// intakeFlushWait bounds each flush that confirms a stop's hand-backs reached the server before its
+// hold is released (handBacksSettled).
 const intakeFlushWait = time.Second

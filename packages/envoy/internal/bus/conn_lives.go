@@ -66,10 +66,14 @@ var connLives struct {
 	of map[*nats.Conn]*connLife
 }
 
-// lifeOf returns conn's life, following it from now on when nothing follows it yet. Its first call
-// for conn registers a status listener (nats.Conn.StatusChanged) and reads the reconnect count,
-// which wait for nats.go's connection lock, so a caller that must not wait for that lock makes it
-// inside a bound (Bounded), as window.pinFirst does. connLives' lock is not held across that wait.
+// lifeOf returns conn's life, following it from now on when nothing follows it yet. It brackets the
+// listener registration with connection snapshots: Status() and Stats().Reconnects each take
+// nats.go's connection lock, so a caller that must not wait for that lock makes it inside a bound
+// (Bounded), as window.pinFirst does. The reports read after registration identify a reconnect that
+// began after it; a RECONNECTING snapshot, or a count change, not matched by one of those reports
+// identifies the one drop that began before the listener was registered. It counts that missed report
+// once, so a listener that is later dropped is not hidden by a surplus report. connLives' lock is
+// not held across these reads.
 func lifeOf(conn *nats.Conn) *connLife {
 	connLives.mu.Lock()
 	life := connLives.of[conn]
@@ -77,8 +81,20 @@ func lifeOf(conn *nats.Conn) *connLife {
 	if life != nil {
 		return life
 	}
+	before := connSnapshotOf(conn)
 	reports := conn.StatusChanged(nats.RECONNECTING, nats.DISCONNECTED, nats.CLOSED)
-	count := conn.Stats().Reconnects
+	if entered := lifeOfAfterListener.Load(); entered != nil {
+		(*entered)()
+	}
+	after := connSnapshotOf(conn)
+	heard := reconnectReports(reports)
+	missed := before.status == nats.RECONNECTING ||
+		before.reconnectChanged ||
+		(after.status == nats.RECONNECTING && heard == 0) ||
+		(after.reconnects-before.reconnects > heard)
+	if missed {
+		heard++
+	}
 	connLives.mu.Lock()
 	if existing := connLives.of[conn]; existing != nil {
 		connLives.mu.Unlock()
@@ -88,13 +104,59 @@ func lifeOf(conn *nats.Conn) *connLife {
 	if connLives.of == nil {
 		connLives.of = map[*nats.Conn]*connLife{}
 	}
-	life = &connLife{conn: conn, life: make(chan struct{}), baseCount: count, reports: reports, quit: make(chan struct{})}
+	life = &connLife{conn: conn, life: make(chan struct{}), heard: heard, baseCount: before.reconnectsBefore, reports: reports, quit: make(chan struct{})}
 	connLives.of[conn] = life
 	connLives.mu.Unlock()
 	go life.drain(reports, life.quit)
 	go life.watch(time.Duration(lifeCheckEvery.Load()))
 	return life
 }
+
+// connSnapshot is conn's status and reconnect count around the registration of a connLife listener
+// (lifeOf). Stats before and after Status make a reconnect that crossed this snapshot visible: if it
+// did, that status change happened before lifeOf registered its listener. reconnectsBefore is the
+// baseline before that drop; counts and reports after it stay paired as they arrive. The listener
+// brackets the snapshots, and its reports reconcile changes after registration (reconnectReports).
+type connSnapshot struct {
+	status           nats.Status
+	reconnectsBefore uint64
+	reconnects       uint64
+	reconnectChanged bool
+}
+
+func connSnapshotOf(conn *nats.Conn) connSnapshot {
+	before := conn.Stats().Reconnects
+	status := conn.Status()
+	after := conn.Stats().Reconnects
+	return connSnapshot{
+		status:           status,
+		reconnectsBefore: before,
+		reconnects:       after,
+		reconnectChanged: before != after,
+	}
+}
+
+// reconnectReports takes the reports nats.go sent after lifeOf registered its listener and before
+// its first life was made. The drain takes every later report (connLife.drain).
+func reconnectReports(reports <-chan nats.Status) (heard uint64) {
+	for {
+		select {
+		case status, open := <-reports:
+			if !open {
+				return heard
+			}
+			if status == nats.RECONNECTING {
+				heard++
+			}
+		default:
+			return heard
+		}
+	}
+}
+
+// lifeOfAfterListener is nil outside a row. The row makes a drop between StatusChanged and the
+// snapshots, an interleaving nats.go otherwise does not expose (conn_lives_check_test.go).
+var lifeOfAfterListener atomic.Pointer[func()]
 
 // current is the channel closed when the connection's current life ends.
 func (l *connLife) current() <-chan struct{} {

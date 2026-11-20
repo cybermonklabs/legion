@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -157,6 +158,10 @@ type window struct {
 	// life is the life of conn the window pinned (connLife.current), closed once nats.go has
 	// reported that life over.
 	life <-chan struct{}
+	// connectionWaitEntered, when set, runs as a first send begins its wait for a connection
+	// (pinFirst). It is nil outside tests: a row sets it on the window it drives, to see two first
+	// sends wait side by side.
+	connectionWaitEntered atomic.Pointer[func()]
 }
 
 func (w *window) PublishAsync(item contracts.Envelope) <-chan error {
@@ -241,6 +246,9 @@ func (w *window) pinFirst(wait time.Duration) error {
 		conn *nats.Conn
 		js   nats.JetStreamContext
 		life <-chan struct{}
+	}
+	if entered := w.connectionWaitEntered.Load(); entered != nil {
+		(*entered)()
 	}
 	got, _, err := Bounded(ctx, func() (connection, error) {
 		for {

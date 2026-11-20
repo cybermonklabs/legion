@@ -214,16 +214,6 @@ func (h *Hold) Lapse(ctx context.Context) error {
 	return h.end(ctx, "lapse", lapseHold)
 }
 
-// Abandon stops the renewal and closes Lost as Release does, and sends nothing: the row keeps
-// naming this holder until its TTL runs out on the database's clock, and only then can another
-// holder take the name. It is for a holder that may not hand the name on yet, but can no longer
-// keep it: one that still has an act in flight that only this holder may make.
-func (h *Hold) Abandon() {
-	h.stop()
-	<-h.done
-	h.lose()
-}
-
 // Expiry reads how long name's hold has left, as expires_at - now() on the database's clock, so a
 // standby can arm one timer to the lapse instead of polling. held is false when no row exists. A
 // lapsed row that nobody has taken over or released is still reported held, with remaining zero

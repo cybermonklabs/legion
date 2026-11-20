@@ -190,7 +190,7 @@ func stopContext(ctx context.Context) (stopping context.Context, release func())
 // included -- waits for NATS at most bus.ConnLockWait (callNATS): nats.go holds its connection
 // lock, which every call to NATS waits for, through a reconnect's dial and handshake. A hand-back
 // NATS has not taken by then is published later, and the hold is released only once every
-// hand-back has reached the server, else left to lapse (publishHandBack, heldDurable.stop).
+// hand-back has reached the server, renewing until then (publishHandBack, heldDurable.stop).
 //
 // run calls it as its ctx ends, under its stop deadline (stopContext), and when the hold is lost
 // or the durable no longer delivers here, under a budget of its own (stopDeliveringWithin). It is
@@ -274,20 +274,6 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 	})
 }
 
-// boundCallNATS, when set, makes the context that bounds each call of callNATS in place of
-// bus.ConnLockWait from now. It is nil outside tests: a row sets it to end each bound itself, so it
-// sees that a call is abandoned when its bound ends and not before, whatever the box's clock does.
-var boundCallNATS atomic.Pointer[func() (context.Context, context.CancelFunc)]
-
-// callNATSBound is the context that bounds one call of callNATS: bus.ConnLockWait from now, unless
-// a row has set boundCallNATS.
-func callNATSBound() (context.Context, context.CancelFunc) {
-	if bound := boundCallNATS.Load(); bound != nil {
-		return (*bound)()
-	}
-	return context.WithTimeout(context.Background(), bus.ConnLockWait)
-}
-
 // callNATS makes call, one call to NATS named by what, where the stop waits for it -- a call of the
 // stop's own, or a handler's answer, which the stop waits for (keyedRunner.wait) -- and waits for it
 // at most bus.ConnLockWait. A call NATS has not answered by then goes on, on a goroutine of its own
@@ -297,7 +283,7 @@ func callNATSBound() (context.Context, context.CancelFunc) {
 // it ends, with attrs; a connection already closed is how a call that outlived the stop ends when
 // the client closes at shutdown, and is logged as that rather than as an error.
 func callNATS[T any](what string, call func() (T, error), attrs ...any) (value T, answered bool) {
-	ctx, cancel := callNATSBound()
+	ctx, cancel := context.WithTimeout(context.Background(), bus.ConnLockWait)
 	defer cancel()
 	value, answered, _ = bus.Bounded(ctx, func() (T, error) {
 		value, err := call()
@@ -311,10 +297,13 @@ func callNATS[T any](what string, call func() (T, error), attrs ...any) (value T
 		return value, nil
 	})
 	if !answered {
-		slog.Warn("dispatch delivery: NATS did not answer a call in time, so it goes on without waiting for it", append(attrs, "call", what, "waited", bus.ConnLockWait)...)
+		slog.Warn(callLeftRunning, append(attrs, "call", what, "waited", bus.ConnLockWait)...)
 	}
 	return value, answered
 }
+
+// callLeftRunning is the line callNATS logs for a call it goes on without.
+const callLeftRunning = "dispatch delivery: NATS did not answer a call in time, so it goes on without waiting for it"
 
 // giveBack hands msg back to NATS for the next holder: once no handler of this delivery is
 // running, at once (handBack); until then it is held, and the stop hands it back with the rest.
@@ -358,8 +347,8 @@ func (d *intakeDelivery) giveBack(msg *natsgo.Msg) {
 // The publish itself waits for NATS at most bus.ConnLockWait too (publishHandBack), since the stop
 // waits for the handlers that make it and for its own hand-backs: a write to a slow socket can take
 // nats.go's connection lock between the read and the publish. One NATS has not taken by then is
-// published later, and the hold is released only once every hand-back has reached the server, else
-// left to lapse, so none reaches a durable a standby recreated (heldDurable.stop).
+// published later, and the hold is released only once every hand-back has reached the server,
+// renewing until then, so none reaches a durable a standby recreated (heldDurable.stop).
 //
 // A message withheld is not lost: it was never acknowledged, so it stays outstanding, and the
 // take-over's recreate at the durable's ack floor hands it to the new holder once, or the durable
@@ -400,9 +389,9 @@ func (d *intakeDelivery) handBackOwn(msg *natsgo.Msg, after time.Duration) {
 // publishHandBack publishes msg's hand-back after after, waiting for NATS at most
 // bus.ConnLockWait (callNATS). A publish NATS has not taken by then goes on, on a goroutine of its
 // own, and is counted until NATS takes it (publishing). The hold's release waits for every such
-// publish of the delivery it stopped, and then for the server to have them, under the stop's
-// deadline; a hold whose hand-backs did not all reach the server by then is left to lapse rather
-// than released (heldDurable.stop), so none reaches a durable a standby recreated.
+// publish of the delivery it stopped, and then for the server to have them: under the stop's
+// deadline, and past it on a goroutine that keeps the hold renewing (heldDurable.finalizeHandBacks),
+// so none reaches a durable a standby recreated.
 func (d *intakeDelivery) publishHandBack(msg *natsgo.Msg, after time.Duration) {
 	if hook := d.beforeHandBackPublish.Load(); hook != nil {
 		(*hook)()

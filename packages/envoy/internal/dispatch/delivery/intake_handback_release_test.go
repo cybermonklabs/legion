@@ -178,6 +178,36 @@ func holdLive(t *testing.T, pool *store.Pool) bool {
 	return live
 }
 
+// holdRenewedBeforeItsExpiry reads the expiry the delivery durable's hold has now, then waits until
+// a renewal moves it later or the database's clock passes it, and reports whether the renewal came
+// first. A hold left to lapse is past its expiry within the hold's TTL; a 30 s wait past that only
+// guards against a row that neither moves nor lapses.
+func holdRenewedBeforeItsExpiry(t *testing.T, pool *store.Pool) bool {
+	t.Helper()
+	read := func() (expires, now time.Time) {
+		t.Helper()
+		if err := pool.QueryRow(t.Context(), "select expires_at, now() from duty_holds where name = $1",
+			intakeHoldName(bus.DispatchDeliveryDurable)).Scan(&expires, &now); err != nil {
+			t.Fatalf("read the delivery durable's hold: %v", err)
+		}
+		return expires, now
+	}
+	first, _ := read()
+	guard := time.Now().Add(intakeHoldTTL + 30*time.Second)
+	for time.Now().Before(guard) {
+		expires, now := read()
+		switch {
+		case expires.After(first):
+			return true
+		case !now.Before(first):
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("the delivery durable's hold was neither renewed nor past its expiry %s after it was read", intakeHoldTTL+30*time.Second)
+	return false
+}
+
 // requireHandBackBeforeCreation waits until the server has had both the holder's hand-back and the
 // standby's creation of the durable, and fails the test when the hand-back came after.
 func requireHandBackBeforeCreation(t *testing.T, recorded *durableEvents, from int, publisher *bus.Client) {
@@ -201,8 +231,8 @@ func requireHandBackBeforeCreation(t *testing.T, recorded *durableEvents, from i
 // created it again under the same name moves that message's pending entry on the standby's consumer
 // and has the standby delivered it a second time. The stop waits for each publish at most
 // bus.ConnLockWait (intakeDelivery.publishHandBack) and goes on without one NATS has not taken, so
-// the stop releases the hold only once every hand-back has reached the server, and leaves it to
-// lapse otherwise (heldDurable.stop).
+// the stop releases the hold only once every hand-back has reached the server; one still pending at
+// the stop's deadline keeps the hold renewing until it has (heldDurable.finalizeHandBacks).
 //
 // Both subtests hold a write on the holder's link from inside its stop's hand-back
 // (stopWithAHeldHandBack). Each reads, in the order the server sent them, the answers published to
@@ -213,16 +243,18 @@ func requireHandBackBeforeCreation(t *testing.T, recorded *durableEvents, from i
 //     hand-back reached the server before the standby created the durable.
 //   - a hand-back still pending at the stop's deadline: the link stays held, and the stop returns
 //     while it is, with the hand-back still pending (handBacksLanded). The hold still names the
-//     holder then, and the standby has not created the durable. Once the link moves, the hand-back
-//     reaches the server before the standby creates the durable, at the hold's lapse.
+//     holder then, and the standby has not created the durable. With the link still held, the hold is
+//     renewed before the database's clock passes the expiry it had as the stop returned, so it does
+//     not lapse, and the standby still has not created the durable. Once the link moves, the
+//     hand-back reaches the server before the standby creates the durable.
 //
-// No step waits on a time but the stop's own deadline (intakeStopBudget); a 30 s wait only guards
-// against a stop that never returns. The negative controls: a release that does not wait for the
-// hand-backs fails the first's order; a stop that leaves its hold to lapse whenever a publish was
-// left running fails the first's release; a release made at the deadline with a hand-back pending
-// fails the second's hold; and a release that waits for the pending hand-back up to the hold's loss
-// deadline, with no regard to the stop's (this change's earlier 6dc62f5514), fails the second's
-// hold too, since that deadline is not the hold's lapse while the hold renews.
+// No step waits on a time but the stop's own deadline (intakeStopBudget) and the hold's own expiry;
+// a 30 s wait only guards against a stop that never returns. The negative controls: a release that
+// does not wait for the hand-backs fails the first's order; a stop that never releases its hold when
+// a publish was left running fails the first's release; a release made at the deadline with a
+// hand-back pending fails the second's hold; and a stop that leaves its hold to lapse with a
+// hand-back pending (this change's earlier 884d560ceb) fails the second's renewal: the standby could
+// recreate the durable at the lapse, under a hand-back a link that heals later still sends.
 func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	t.Run("a hand-back that lands before the stop's deadline", func(t *testing.T) {
 		logs := captureLogs(t)
@@ -237,7 +269,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 			t.Fatal("the holder's stop did not return within 30 s of the link moving")
 		}
 		if holdLive(t, row.pool) {
-			t.Fatalf("the stop left its hold to lapse although its hand-back reached the server before its deadline, which costs the standby the lapse; the holder logged %q", loggedMessages(logs()))
+			t.Fatalf("the stop kept its hold although its hand-back reached the server before its deadline, which costs the standby the lapse; the holder logged %q", loggedMessages(logs()))
 		}
 		requireHandBackBeforeCreation(t, row.recorded, row.from, row.publisher)
 	})
@@ -259,13 +291,20 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		if slicesContains(row.recorded.since(row.from), durableCreated) {
 			t.Fatalf("the standby created the durable while the holder's hand-back was pending: %q", row.recorded.since(row.from))
 		}
+		if !holdRenewedBeforeItsExpiry(t, row.pool) {
+			t.Fatalf("the hold reached its expiry unrenewed with the holder's hand-back still pending, so the standby can recreate the durable before a link that heals sends the hand-back to its consumer: %q", row.recorded.since(row.from))
+		}
+		testnats.RequireLockHeld(t, row.conn)
+		if !row.handBackPending() {
+			t.Fatal("control: the stop's hand-back reached NATS while the write was held")
+		}
+		if slicesContains(row.recorded.since(row.from), durableCreated) {
+			t.Fatalf("the standby created the durable while the holder's hand-back was pending and its hold renewing: %q", row.recorded.since(row.from))
+		}
 		row.thaw()
 		requireHandBackBeforeCreation(t, row.recorded, row.from, row.publisher)
 	})
 }
-
-// callLeftRunning is the line callNATS logs for a call it goes on without.
-const callLeftRunning = "dispatch delivery: NATS did not answer a call in time, so it goes on without waiting for it"
 
 func slicesContains(events []string, want string) bool { return indexOf(events, want) >= 0 }
 

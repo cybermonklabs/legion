@@ -210,21 +210,6 @@ func (r *stopRow) reconnect(t *testing.T) {
 	}
 }
 
-// fireBoundsAsTheyAreMade makes each bound of callNATS (boundCallNATS) one the row ends itself, and
-// returns the channel each bound's end is sent on as the bound is made, for the test to call.
-func fireBoundsAsTheyAreMade(t *testing.T) <-chan context.CancelFunc {
-	t.Helper()
-	made := make(chan context.CancelFunc, 64)
-	bound := func() (context.Context, context.CancelFunc) {
-		ctx, cancel := context.WithCancel(context.Background())
-		made <- cancel
-		return ctx, cancel
-	}
-	boundCallNATS.Store(&bound)
-	t.Cleanup(func() { boundCallNATS.Store(nil) })
-	return made
-}
-
 // An intake's stop does not wait for nats.go's connection lock, which a reconnect's handshake and a
 // write to a link that does not move hold. The stop ran its drain, its hand-backs and the
 // unsubscribe that ends a slow drain inside its once with no bound, and waited for its handlers,
@@ -260,19 +245,14 @@ func fireBoundsAsTheyAreMade(t *testing.T) <-chan context.CancelFunc {
 //   - a drain the lock holds: the stop drained on a moving link and waits for its drain to end, with
 //     a message still buffered, under a context that never ends; a write then holds nats.go's lock,
 //     under which nats.go ends no drain, and the stop and a second StopDelivering return while it is
-//     held. The drain's own wait (intakeDrainWait) is kept from ending it;
-//   - each call the stop waits for is abandoned when its bound ends: during a held handshake, each of
-//     ten calls to NATS (callNATS) makes one bound, which the row ends itself (boundCallNATS); each
-//     call has not answered when its bound is made, and answers, abandoned, once the row ends it.
+//     held. The drain's own wait (intakeDrainWait) is kept from ending it.
 //
 // The negative control is the stop as it was (DrainSubscription, the hand-backs and Unsubscribe
 // inside the once with no bound): no StopDelivering answers within the attempt or while the write is
 // held. So is a hand-back that skips the stop's rule (handBack), the given-up handler's in the second
 // and third subtests; a stop that withholds only when its drain did not answer, in the fourth; an
 // answer begun before the stop with no bound, in the fifth to seventh; a hand-back published inline,
-// in the ninth; a wait for the drain that reads nothing of the connection, in the tenth; and a call
-// bounded at 150 ms rather than by its bound, in the eleventh, which answers with no bound the row
-// made.
+// in the ninth; and a wait for the drain that reads nothing of the connection, in the tenth.
 func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 	t.Run("a drain NATS has not taken", func(t *testing.T) {
 		row := startStopRow(t, intakeKey, func(*intakeDelivery, intakeMessage) {}, false)
@@ -430,43 +410,6 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 		}
 		row.hold.HoldWriteLock(t, row.conn)
 		answersWhileWriteHeld(t, row.conn, "StopDelivering", stopped, row.stopUnder(context.Background()))
-	})
-
-	t.Run("each call the stop waits for is abandoned when its bound ends", func(t *testing.T) {
-		row := startStopRow(t, intakeKey, func(*intakeDelivery, intakeMessage) {}, false)
-		row.hold.HoldReconnect(t, row.conn)
-		bounds := fireBoundsAsTheyAreMade(t)
-		const calls = 10
-		for call := range calls {
-			answered := make(chan bool, 1)
-			go func() {
-				_, ok := callNATS("read the connection's status", func() (natsgo.Status, error) { return row.conn.Status(), nil })
-				answered <- ok
-			}()
-			var end context.CancelFunc
-			select {
-			case end = <-bounds:
-			case ok := <-answered:
-				t.Fatalf("call %d answered (answered = %t) with no bound the row made: its bound is not callNATS's own", call+1, ok)
-			case <-time.After(30 * time.Second):
-				t.Fatalf("call %d made no bound within 30 s", call+1)
-			}
-			select {
-			case ok := <-answered:
-				t.Fatalf("call %d answered (answered = %t) before the row ended its bound", call+1, ok)
-			default:
-			}
-			end()
-			select {
-			case ok := <-answered:
-				if ok {
-					t.Fatalf("control: call %d was answered by NATS while its lock was held for a handshake", call+1)
-				}
-			case <-time.After(30 * time.Second):
-				t.Fatalf("call %d gave no answer within 30 s of its bound's end: it waits for the lock past its bound", call+1)
-			}
-		}
-		testnats.RequireLockHeld(t, row.conn)
 	})
 }
 
