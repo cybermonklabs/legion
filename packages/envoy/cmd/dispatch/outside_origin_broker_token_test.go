@@ -14,8 +14,8 @@ const outsideBrokerOrigin = "https://outside.example"
 
 // outsideAgentToken is the broker token an agent whose Dispatch URL is the outside origin
 // presents, so it signs each proof for that origin. The fixture is a service's token: the origin a
-// proof is checked against is chosen for every live token before the caller's kind is read, so the
-// token's kind does not matter to these tests.
+// proof is checked against is chosen from the request's Host alone (brokertoken's atOrigin), never
+// from the token or its caller, so the token's kind does not matter to these tests.
 const outsideAgentToken = "token-of-an-agent-outside"
 
 // presentedAt answers GET /api/v1/whoami from handler sent to origin, carrying signed's
