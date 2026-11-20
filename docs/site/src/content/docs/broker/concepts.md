@@ -850,7 +850,8 @@ The broker evaluates every name
   refuses a token holding a permission its request did not name, so the profiles file, at the boot
   and in `profiles check`, refuses a `github` block whose `permissions` leave `metadata` out or name
   it at any level but `read`. The values answer names each entry the cut left out
-  (`github_left_out`), and the broker logs one line for each. A cut that leaves no permission but
+  (`github_left_out`), the broker logs one line for each, and `agent-secrets` writes one line on
+  stderr for each account that names them. A cut that leaves no permission but
   `metadata`, of a profile that names more, refuses the release with no request to GitHub
   (`422 PROFILE_MINT_REFUSED`): every installation GitHub lists holds `metadata`, so that token
   would do nothing the profile is for, and GitHub gives every permission the installation holds
