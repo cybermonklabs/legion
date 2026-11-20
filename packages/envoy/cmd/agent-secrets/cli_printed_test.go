@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -32,6 +33,9 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 )
+
+// signArgs is a use command that asks nothing of the network once it has a signer.
+var signArgs = []string{"sign", "--method", "GET", "--url", "https://broker.example/v1/enrollments/self"}
 
 // useBareEnvironment gives the rest of t an environment of its own: HOME, XDG_STATE_HOME and
 // XDG_RUNTIME_DIR empty directories (so no settings file, sign-in, machine cache or helper socket
@@ -167,9 +171,9 @@ func TestEnrollWaitRefusalNamesTheRuleNotTheValue(t *testing.T) {
 		args       []string
 		code       int
 	}{
-		{"a use command", secret, []string{"sign", "--method", "GET", "--url", "https://broker.example/v1/enrollments/self"}, exitUsageError},
+		{"a use command", secret, signArgs, exitUsageError},
 		{"identity --source", secret, []string{"identity", "--source"}, exitUsageError},
-		{"control: a duration", "3s", []string{"sign", "--method", "GET", "--url", "https://broker.example/v1/enrollments/self"}, 0},
+		{"control: a duration", "3s", signArgs, 0},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			useBareEnvironment(t)
@@ -232,8 +236,8 @@ func TestKeyPemInTheKeyDirIsNamedByItsSettingNeverItsPath(t *testing.T) {
 			args []string
 			code int
 		}{
-			{"the key-dir source", []string{"sign", "--method", "GET", "--url", "https://broker.example/v1/enrollments/self"}, 1},
-			{"sign --enrollment", []string{"sign", "--method", "GET", "--url", "https://broker.example/v1/enrollments/self", "--enrollment", "enr-other"}, exitUsageError},
+			{"the key-dir source", signArgs, 1},
+			{"sign --enrollment", slices.Concat(signArgs, []string{"--enrollment", "enr-other"}), exitUsageError},
 		} {
 			t.Run(fault.name+", "+form.name, func(t *testing.T) {
 				useBareEnvironment(t)
@@ -254,7 +258,7 @@ func TestKeyPemInTheKeyDirIsNamedByItsSettingNeverItsPath(t *testing.T) {
 	t.Run("control: a key dir that holds a key", func(t *testing.T) {
 		useBareEnvironment(t)
 		t.Setenv("AGENT_SECRETS_KEY_DIR", newKeyDir(t))
-		stdout, stderr, code := runIn("sign", "--method", "GET", "--url", "https://broker.example/v1/enrollments/self")
+		stdout, stderr, code := runIn(signArgs...)
 		if code != 0 || strings.Count(strings.TrimSpace(stdout), ".") != 2 {
 			t.Fatalf("exit %d, stdout %q, stderr %q; want 0 and a compact JWS", code, stdout, stderr)
 		}
@@ -361,7 +365,7 @@ func TestTheMachineCacheKeyIsNamedByTheCacheNeverItsPath(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, enrollmentFile), []byte("enr-machine\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			stdout, stderr, code := runIn("sign", "--method", "GET", "--url", "https://broker.example/v1/enrollments/self")
+			stdout, stderr, code := runIn(signArgs...)
 			if code != 1 {
 				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
 			}
@@ -393,7 +397,7 @@ func TestTheMachineCacheKeyIsNamedByTheCacheNeverItsPath(t *testing.T) {
 			t.Fatal(err)
 		}
 		started := time.Now()
-		stdout, stderr, code := runIn("sign", "--method", "GET", "--url", "https://broker.example/v1/enrollments/self")
+		stdout, stderr, code := runIn(signArgs...)
 		if code != 0 || strings.Count(strings.TrimSpace(stdout), ".") != 2 || time.Since(started) > 10*time.Second {
 			t.Fatalf("exit %d, stdout %q, stderr %q; want 0 and a compact JWS", code, stdout, stderr)
 		}
@@ -402,9 +406,6 @@ func TestTheMachineCacheKeyIsNamedByTheCacheNeverItsPath(t *testing.T) {
 
 // machineCacheWords is how every line names the machine cache, written out by hand.
 const machineCacheWords = "the machine cache (${XDG_STATE_HOME:-$HOME/.local/state}/agent-secrets/machine)"
-
-// signArgs is a use command that asks nothing of the network once it has a signer.
-var signArgs = []string{"sign", "--method", "GET", "--url", "https://broker.example/v1/enrollments/self"}
 
 // TestTheKeyDirIsNamedByItsSettingNeverItsPath: the key dir holds key.pem, so no line about it, or
 // about a file beside key.pem, spells its path: the chain's refusal of a key dir with no key.pem,
