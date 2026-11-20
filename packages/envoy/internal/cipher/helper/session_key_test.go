@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -118,6 +119,26 @@ func TestSignRequestSignsTheLifetimeItIsAsked(t *testing.T) {
 		ro, err := record.VerifyRequestObject(resp.RequestObject, r.srv.Broker.URL.Raw(), time.Minute, time.Now())
 		if err != nil || (ro.LifetimeSeconds == nil) != (lifetime == nil) || lifetime != nil && *ro.LifetimeSeconds != *lifetime {
 			t.Fatalf("sign-request lifetime %v signed lifetime %v (%v)", lifetime, ro.LifetimeSeconds, err)
+		}
+	}
+}
+
+// TestSignRequestSignsTheTargetItIsAsked: sign-request with locations signs them into its one
+// agent_secret detail, the target the broker narrows that secret's profile to, as they came; and
+// without them signs none, a request for the whole profile.
+func TestSignRequestSignsTheTargetItIsAsked(t *testing.T) {
+	r := startRig(t, "")
+	if reg := r.call(t, Request{Op: "register", WaitSeconds: 5}); !reg.OK || reg.State != "enrolled" {
+		t.Fatalf("register: %+v", reg)
+	}
+	for _, locations := range [][]string{{"https://github.com/acme-org/proofs", "https://github.com/acme-org/widgets"}, {"https://github.com/acme-org"}, nil} {
+		resp := r.call(t, Request{Op: "sign-request", Secrets: []string{"GITHUB_READ"}, Reason: "x", Locations: locations})
+		if !resp.OK {
+			t.Fatalf("sign-request locations %q: %+v", locations, resp)
+		}
+		ro, err := record.VerifyRequestObject(resp.RequestObject, r.srv.Broker.URL.Raw(), time.Minute, time.Now())
+		if err != nil || len(ro.Details) != 1 || ro.Details[0].Identifier != "GITHUB_READ" || !slices.Equal(ro.Details[0].Locations, locations) {
+			t.Fatalf("sign-request locations %q signed %+v (%v); want one detail for GITHUB_READ with those locations", locations, ro.Details, err)
 		}
 	}
 }
