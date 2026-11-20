@@ -2,6 +2,7 @@ package delivery
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -216,12 +217,12 @@ func requireHandBackBeforeCreation(t *testing.T, recorded *durableEvents, from i
 	t.Helper()
 	waitFor(t, 60*time.Second, func() bool {
 		events := recorded.since(from)
-		return slicesContains(events, "-NAK") && slicesContains(events, durableCreated)
+		return slices.Contains(events, "-NAK") && slices.Contains(events, durableCreated)
 	}, func() string {
 		return fmt.Sprintf("the hand-back and the standby's creation of the durable did not both reach the server: %q; %s", recorded.since(from), consumerState(publisher))
 	})
 	events := recorded.since(from)
-	if indexOf(events, "-NAK") > indexOf(events, durableCreated) {
+	if slices.Index(events, "-NAK") > slices.Index(events, durableCreated) {
 		t.Fatalf("the hand-back landed after the standby created the durable, so it reached the standby's consumer: %q", events)
 	}
 }
@@ -232,7 +233,7 @@ func requireHandBackBeforeCreation(t *testing.T, recorded *durableEvents, from i
 // consumer: one that reaches the server after the standby's take-over has deleted the durable and
 // created it again under the same name moves that message's pending entry on the standby's consumer
 // and has the standby delivered it a second time. The stop waits for each publish at most
-// bus.ConnLockWait (intakeDelivery.publishHandBack) and goes on without one NATS has not taken, so
+// bus.ConnLockWait (intakeDelivery.publishHandBack) and goes on without one NATS has not taken; so
 // the stop releases the hold only once every hand-back has reached the server; one still pending at
 // the stop's deadline keeps the hold renewing until it has (heldDurable.finalizeHandBacks).
 //
@@ -258,7 +259,7 @@ func requireHandBackBeforeCreation(t *testing.T, recorded *durableEvents, from i
 // does not wait for the hand-backs fails the first's order; a stop that never releases its hold when
 // a publish was left running fails the first's release; a release made at the deadline with a
 // hand-back pending fails the second's hold; a stop that leaves its hold to lapse with a hand-back
-// pending (this change's earlier 884d560ceb) fails the second's renewal; and f83e859506's untracked
+// pending fails the second's renewal; and an untracked
 // finalizer fails the third by returning from its shutdown stop with the hold live.
 func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	t.Run("a hand-back that lands before the stop's deadline", func(t *testing.T) {
@@ -293,7 +294,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		if !holdLive(t, row.pool) {
 			t.Fatal("the stop released its hold with a hand-back still pending, so a standby may recreate the durable before the hand-back reaches the server")
 		}
-		if slicesContains(row.recorded.since(row.from), durableCreated) {
+		if slices.Contains(row.recorded.since(row.from), durableCreated) {
 			t.Fatalf("the standby created the durable while the holder's hand-back was pending: %q", row.recorded.since(row.from))
 		}
 		if !holdRenewedBeforeItsExpiry(t, row.pool) {
@@ -303,7 +304,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		if !row.handBackPending() {
 			t.Fatal("control: the stop's hand-back reached NATS while the write was held")
 		}
-		if slicesContains(row.recorded.since(row.from), durableCreated) {
+		if slices.Contains(row.recorded.since(row.from), durableCreated) {
 			t.Fatalf("the standby created the durable while the holder's hand-back was pending and its hold renewing: %q", row.recorded.since(row.from))
 		}
 		row.thaw()
@@ -331,7 +332,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		var runs sync.WaitGroup
 		closed := make(chan struct{})
 		go func() {
-			stopIntakes(&runs, []*bus.Client{row.holder.client}, &row.holder.intake.heldDurable)
+			stopIntakes(&runs, &row.holder.intake.heldDurable)
 			close(closed)
 		}()
 		testnats.RequireLockHeld(t, row.conn)
@@ -360,15 +361,4 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		}
 		requireHandBackBeforeCreation(t, row.recorded, row.from, row.publisher)
 	})
-}
-
-func slicesContains(events []string, want string) bool { return indexOf(events, want) >= 0 }
-
-func indexOf(events []string, want string) int {
-	for i, event := range events {
-		if event == want {
-			return i
-		}
-	}
-	return -1
 }

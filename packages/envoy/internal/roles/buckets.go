@@ -62,8 +62,8 @@ func NewBuckets(client JetStream, windows Windows) *Buckets {
 	return &Buckets{Windows: windows, client: client}
 }
 
-// openBucket opens a bucket (bus.OpenKeyValue). A row replaces it, through openBucketHook, to see
-// each open as it begins: that the open runs with b.mu released.
+// openBucket opens a bucket (bus.OpenKeyValue). A row runs openBucketHook before each open, to see
+// that the open runs with b.mu released.
 func openBucket(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, name string) (bus.KeyValue, error) {
 	if hook := openBucketHook.Load(); hook != nil {
 		(*hook)()

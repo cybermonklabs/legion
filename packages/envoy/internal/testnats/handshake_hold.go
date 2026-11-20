@@ -13,13 +13,6 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 )
 
-// HeldHandshakeAnswerWait bounds how long a row waits for an answer that must come while a
-// HandshakeHold holds a bus client's reconnect handshake. A call that waits for nats.go's connection
-// lock gives no answer until the held attempt ends at the bus client's connect timeout (5 s); one
-// that does not wait for that lock answers at once, or at its own bound of at most a second. The
-// wait lies between the two, with room for a loaded runner.
-const HeldHandshakeAnswerWait = 2 * time.Second
-
 // lockHeldWait is how long a read of a connection's status may take before RequireLockHeld and
 // HoldWriteLock take nats.go's connection lock to be held: with the lock free the read takes
 // microseconds.
@@ -195,15 +188,8 @@ func lockFree(conn *natsgo.Conn) bool {
 	}
 }
 
-// AnswersWhileHeld is AnswersWithin with HeldHandshakeAnswerWait.
-func AnswersWhileHeld(t testing.TB, what string, calls ...func() error) []error {
-	t.Helper()
-	return AnswersWithin(t, HeldHandshakeAnswerWait, what, calls...)
-}
-
 // AnswersWithin runs each call at once, each on a goroutine of its own, and returns their answers in
 // order. It fails the test, naming what, when any call has not answered within within of the start.
-// A call that waits out a held handshake answers when the attempt ends, after the test has failed.
 func AnswersWithin(t testing.TB, within time.Duration, what string, calls ...func() error) []error {
 	t.Helper()
 	answers := make([]chan error, len(calls))

@@ -24,9 +24,10 @@ import (
 //   - a clean reconnect: a reported drop ends the old life, and the post-reconnect window survives
 //     two checks.
 //
-// The f83e859506 control has no per-pin count and leaves the first row's old window usable. A fault
-// that reads connected before the life makes the second row pin across the reconnect. The tests'
-// 30 s waits only guard against NATS not changing state.
+// The controls: a pinIf that ignores its ch argument lets a stale life pin, so the second row's
+// window is refused. A check that never ends a pinned life fails the first; a < rather than <=
+// fails both the second and the third. The tests' 30 s waits only guard against NATS not changing
+// state.
 func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 	every := lifeCheckEvery.Swap(int64(time.Hour))
 	t.Cleanup(func() { lifeCheckEvery.Store(every) })

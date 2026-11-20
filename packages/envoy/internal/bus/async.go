@@ -221,8 +221,8 @@ func (w *window) send(subject string, item contracts.Envelope, msgID string) (fu
 //
 // It holds pinning only to read and to set the pin. The first send's wait for a connection, and its
 // reads of the connection, are made with it released and end at wait whatever nats.go is doing
-// (Bounded): nats.go holds its connection lock through a reconnect's dial and handshake, which
-// those reads wait for. The check of a pinned connection waits for no lock nats.go holds
+// (Bounded): nats.go holds its connection lock through a reconnect's dial and handshake. The
+// check of a pinned connection waits for no lock nats.go holds
 // (current), so no send of the window waits for a handshake, nor behind another send that does.
 func (w *window) pin(wait time.Duration) error {
 	w.pinning.Lock()
@@ -339,10 +339,10 @@ const ConnLockWait = 100 * time.Millisecond
 // one nats.go has reported lost is lost at once. A window pinned after a reconnect landed, and before
 // the client heard of it, pinned the life that reconnect began, and keeps it.
 //
-// nats.go's report of a life's end reaches connLife at once and ends the life when its goroutine
-// runs, so a send checked between the two writes. While nats.go is reconnecting it refuses that
-// write (unsent); only a goroutine kept from running through a whole reconnect attempt lets the
-// write land on the reconnected connection, as a reconnect between the check and the write does.
+// nats.go's report of a life's end reaches connLife and ends the life when its drain goroutine
+// runs, so a send can be checked between the report and the drain. While nats.go is reconnecting
+// it refuses that write (unsent); only a goroutine kept from running through a whole reconnect
+// attempt lets the write land on the reconnected connection.
 func (w *window) current() bool {
 	w.pinning.Lock()
 	life := w.life

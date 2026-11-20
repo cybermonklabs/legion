@@ -2,6 +2,7 @@ package roles
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -102,10 +103,6 @@ func TestABucketsOpenHoldsNoLockAcrossAHeldHandshake(t *testing.T) {
 }
 
 var (
-	errOpenUnderLock = rowError("the read began its bucket's open with b.mu held, so every other read of Buckets waits behind the open")
-	errNoOpen        = rowError("control: the read answered without opening its bucket")
+	errOpenUnderLock = errors.New("the read began its bucket's open with b.mu held, so every other read of Buckets waits behind the open")
+	errNoOpen        = errors.New("control: the read answered without opening its bucket")
 )
-
-type rowError string
-
-func (e rowError) Error() string { return string(e) }

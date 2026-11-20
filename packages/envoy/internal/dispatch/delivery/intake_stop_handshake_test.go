@@ -128,9 +128,8 @@ func answersWhileWriteHeld(t *testing.T, conn *natsgo.Conn, what string, calls .
 }
 
 // watchHandBacks counts the negative acknowledgements the server is sent, on a connection of the
-// test's own to uri, outside the hold: what the server receives, whatever the intake logged. The
-// count it returns is read after a flush of that connection, so every message the server had
-// routed to it before the flush has been counted.
+// test's own to uri, outside the hold. The count it returns is read after a Barrier of that
+// connection, so every callback the server routed to it before the barrier has run.
 func watchHandBacks(t *testing.T, uri string) func() int64 {
 	t.Helper()
 	var naks atomic.Int64
@@ -148,6 +147,15 @@ func watchHandBacks(t *testing.T, uri string) func() int64 {
 	return func() int64 {
 		if err := observer.Flush(); err != nil {
 			t.Fatalf("flush the acknowledgement watch: %v", err)
+		}
+		done := make(chan struct{})
+		if err := observer.Barrier(func() { close(done) }); err != nil {
+			t.Fatalf("barrier the acknowledgement watch: %v", err)
+		}
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Fatal("the acknowledgement watch's barrier did not return within 30 s")
 		}
 		return naks.Load()
 	}
@@ -180,7 +188,7 @@ func startGivenUpRow(t *testing.T) *stopRow {
 // requireNoHandBack fails the test when the server was sent a hand-back of a message of delivery.
 // It reads that once the client's link is back and moving: once every hand-back publish delivery
 // left running has returned (handBacksLanded), the client's flush has put whatever it had queued on
-// the server, and the watch's own flush has counted what the server routed to it.
+// the server, and the watch's Barrier has run every callback the server routed to it.
 func (r *stopRow) requireNoHandBack(t *testing.T, delivery *intakeDelivery, naks func() int64) {
 	t.Helper()
 	select {
@@ -403,14 +411,58 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 		awaitDrainWait(t, row)
 		delivery := row.delivery()
 		delivery.mu.Lock()
-		withheld := delivery.withheld
+		taken := delivery.drainTaken
 		delivery.mu.Unlock()
-		if withheld {
+		if !taken {
 			t.Fatal("control: the stop's drain was not taken on a moving link")
 		}
 		row.hold.HoldWriteLock(t, row.conn)
 		answersWhileWriteHeld(t, row.conn, "StopDelivering", stopped, row.stopUnder(context.Background()))
 	})
+}
+
+// A hand-back outside any stop is sent and reaches the server, even while a write holds nats.go's
+// lock past ConnLockWait. The handler waits until the write is held, then calls handBack. The
+// connected read that follows the hand-back rule runs only during a stop (mayHandBack), so it
+// never blocks the hand-back here, and the publish is left running (callNATS's bound expires).
+// Once the lock is released the hand-back reaches the server. The negative control is
+// ec2d01a1a1's code, which reads the connection outside any stop and withholds the hand-back.
+func TestAHandBackOutsideAStopReachesTheServerWhileAWriteHoldsTheLock(t *testing.T) {
+	handlerReady := make(chan struct{}, 1)
+	writeHeld := make(chan struct{})
+	row := startStopRow(t, intakeKey, func(delivery *intakeDelivery, message intakeMessage) {
+		handlerReady <- struct{}{}
+		<-writeHeld
+		delivery.handBack(message.msg)
+	}, true)
+	nakCount := watchHandBacks(t, row.uri)
+	publishPullRequestEnvelope(t, row.client, "acme", "widgets", 7, map[string]string{
+		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "7", "author": "octocat",
+	})
+	select {
+	case <-handlerReady:
+	case <-time.After(30 * time.Second):
+		t.Fatal("control: the handler did not reach its wait within 30 s")
+	}
+	releaseWrite := row.hold.HoldWriteLock(t, row.conn)
+	close(writeHeld)
+	delivery := row.delivery()
+	waitFor(t, 30*time.Second, func() bool { return delivery.handedBack() }, func() string {
+		return "the hand-back was withheld while a write held nats.go's lock: a connected read outside any stop blocked it"
+	})
+	testnats.RequireLockHeld(t, row.conn)
+	releaseWrite()
+	select {
+	case <-delivery.handBacksLanded():
+	case <-time.After(30 * time.Second):
+		t.Fatal("the hand-back did not land within 30 s of the lock's release")
+	}
+	if err := row.conn.Flush(); err != nil {
+		t.Logf("flush the intake's client: %v", err)
+	}
+	if n := nakCount(); n == 0 {
+		t.Fatal("the hand-back outside any stop did not reach the server after the lock was released: a connected read outside any stop withheld it")
+	}
 }
 
 // startBufferedDrainRow starts a row whose subscription's callback holds the first message of a

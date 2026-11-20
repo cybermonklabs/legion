@@ -87,8 +87,8 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 // at its stop deadline with a hand-back still waiting for NATS; close settles that hand-back, sent
 // in the client's close flush or dropped with its connection, and its finalizer releases the hold
 // through the still-open pool before stop returns. A message in its handler finishes and is
-// acknowledged before the Run returns; the messages behind it are handed back to NATS, and the
-// next process takes the durable over at once rather than at the hold's lapse. Each Run's stop has
+// acknowledged before the Run returns; messages behind it are handed back while the hold covers
+// them, and the next process takes the durable over at once rather than at the hold's lapse. Each Run's stop has
 // one deadline, intakeStopBudget after ctx ends (stopContext), which a take-over under way at that
 // moment spends rather than extends: the handlers still running then are given up and their
 // messages handed back too. Every handler of Intake's has returned by the time stop does, and each
@@ -126,17 +126,17 @@ func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, e
 	running.Go(func() { intake.Run(ctx) })
 	running.Go(func() { job.Run(ctx) })
 	return sync.OnceFunc(func() {
-		stopIntakes(&running, []*bus.Client{intakeClient, jobClient}, &intake.heldDurable, &job.heldDurable)
+		stopIntakes(&running, &intake.heldDurable, &job.heldDurable)
 	}), nil
 }
 
-// stopIntakes waits for their Runs, closes their clients, then waits for any hand-back finalizer
-// each Run left behind. A closed client makes such a finalizer settle, and it releases its hold
-// through the still-open database pool before this stop returns to its caller (StartIntakes).
-func stopIntakes(running *sync.WaitGroup, clients []*bus.Client, durables ...*heldDurable) {
+// stopIntakes waits for their Runs, closes their NATS clients through each durable, then waits for
+// any hand-back finalizer each Run left behind. A closed client makes such a finalizer settle, and
+// it releases its hold through the still-open database pool before this stop returns (StartIntakes).
+func stopIntakes(running *sync.WaitGroup, durables ...*heldDurable) {
 	running.Wait()
-	for _, client := range clients {
-		client.Close()
+	for _, durable := range durables {
+		durable.nats.Close()
 	}
 	for _, durable := range durables {
 		durable.waitFinalizers()
