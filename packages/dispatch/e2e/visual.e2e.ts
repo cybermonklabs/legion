@@ -34,11 +34,17 @@
  *  WHAT WOULD DRIFT BETWEEN TWO RUNS OF ONE PAGE, and what is done about each:
  *
  *  - The clock. `/` and `/agents` draw relative times ("2 minutes ago") that move with the gap
- *    between the seed and the shot, and `<EarlierApproval>` draws the seeded day's own date.
+ *    between the seed and the shot, the Activity tab and a priority's margin head their lists by
+ *    the day ("Today", "Yesterday"), and `<EarlierApproval>` draws the seeded day's own date.
  *    Nothing else in this suite freezes a clock for a whole page; `page.clock.install()` is used
- *    by rows that drive time themselves. Here each row installs it a minute after the moment
- *    `e2e/visual-seed.ts` wrote the corpus (`seededAt`), so every relative label reads the same
- *    gap on every run - a fixed literal would drift against a corpus written at wall-clock time.
+ *    by rows that drive time themselves. Here each row installs it at the one instant the seed
+ *    names (`seededAt`): the database's clock, which stamped every row of the corpus, read once
+ *    the corpus was written, and the live registry's heartbeats are pinned to that instant too.
+ *    So every relative label reads the same gap on every run, whatever the run's pace. The seed
+ *    writes its whole corpus inside one UTC day (`e2e/visual-seed.ts`) and the two projects read
+ *    pages in UTC (e2e/playwright.config.ts), so a day heading reads the same at whatever hour
+ *    the run happens. A fixed literal would not do: the server stamps the corpus with its own
+ *    clock, and its sweeps judge those stamps against that clock.
  *    The `<time>` elements (`web/src/features/refs/Timestamp.tsx`, `web/src/features/inbox/
  *    Inbox.tsx`, `web/src/features/inbox/EarlierApproval.tsx`) are masked as well. The cost is
  *    that the text of a timestamp is in no baseline; its place, its size and the layout around
@@ -85,7 +91,7 @@ import {
 } from "./review-routes";
 import { withAlice } from "./users";
 import { inVisualOrder, visualOrder } from "./visual-order";
-import { workspaceSessions } from "./workspace";
+import { workspaceSessionsSeenAt } from "./workspace";
 
 /** Both schemes in one row, as `e2e/accessibility.e2e.ts` reads them: a sign-in and a navigation
  *  paid once rather than twice, and each shot names its scheme. */
@@ -105,11 +111,12 @@ const SKIP_REASON =
 // fake Envoy when its sentinel check ends, so the sessions `seedWorkspace` wrote are gone by the
 // time the first row opens a page: the Agents page then draws "No agents are connected." and
 // every shot of it would be a baseline of an empty registry. The database half of the corpus is
-// untouched by that reset, which is why only this half is written again here. `./agents` and
-// `./workspace` reach no module that spawns `psql`.
+// untouched by that reset, which is why only this half is written again here, each heartbeat
+// fixed against the instant the page clock is pinned to. `./agents` and `./workspace` reach no
+// module that spawns `psql`.
 test.beforeAll(async () => {
   if (seedPath === undefined) return;
-  await setLiveSessions(workspaceSessions);
+  await setLiveSessions(workspaceSessionsSeenAt(Date.parse(readVisualSeed(seedPath).seededAt)));
 });
 
 /** The host's seed, with the moment it was written. A file without `seededAt` fails the row
@@ -142,7 +149,7 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
   }
   const seed = readVisualSeed(seedPath);
   await withAlice(browser, async (page) => {
-    // The page's clock, pinned a minute after the corpus was written. Every relative label
+    // The page's clock, pinned to the instant the corpus was written. Every relative label
     // these pages draw - "just now", "2 minutes ago", "0m", "Updated just now" - is that
     // label's own time against `Date.now()`, so without this a row read "just now" in a run
     // that reached it inside a minute of the seed and "2 minutes ago" in a slower one. That
@@ -153,9 +160,10 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
     // paints over the element's own box, and "just now" and "2 minutes ago" are boxes of
     // different widths, so the painted rectangle changes with the text under it.
     //
-    // Pinned from the corpus rather than from a fixed literal, because what the label reads
-    // is the gap between the two: a literal would drift against a corpus written now.
-    await page.clock.install({ time: new Date(Date.parse(seed.seededAt) + 60_000) });
+    // The instant itself and not one past it, because a day heading compares the day of each
+    // stamp with the day of this clock: a clock set a minute past a corpus written in the last
+    // minute before midnight heads that corpus "Yesterday".
+    await page.clock.install({ time: new Date(seed.seededAt) });
     await page.goto(route.path(seed));
     for (const colorScheme of SCHEMES) {
       await page.emulateMedia({ colorScheme });
@@ -296,6 +304,12 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
         // `e2e/review-routes.ts`.
         threshold: 0,
         maxDiffPixels: 20,
+        // No deadline of the comparison's own. Before it compares, the assertion takes shots
+        // until two in a row are the same, and under the project's 15 s `expect.timeout` a
+        // machine too loaded to take two in 15 s would fail the row as though the page had
+        // moved. A `timeout` of 0 leaves the row's own timeout as the only bound, as
+        // `waitForRouteSettled` does; a page that never holds still fails there.
+        timeout: 0,
       });
     }
   });

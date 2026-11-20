@@ -138,14 +138,17 @@ async function markWhatTheShotPagesRead(
 }
 
 /** Seeds the review corpus into an empty database; the caller resets first. `boundMs` is the
- *  bound of the seed's waits, which `seedWorkspace` gives each of its own: the caller's, so a
- *  browser row's seed gives up at the bound that row's assertions use. */
+ *  bound of the seed's waits, which `seedWorkspace` gives each of its own, and `signal`'s abort
+ *  ends them: `Number.POSITIVE_INFINITY` is a caller whose own end is the only bound, a row's
+ *  timeout or the visual run's step. */
 export async function seedReviewRoutes({
   boundMs,
+  signal,
 }: {
   readonly boundMs: number;
+  readonly signal?: AbortSignal;
 }): Promise<ReviewSeed> {
-  const workspace = await seedWorkspace({ boundMs });
+  const workspace = await seedWorkspace({ boundMs, signal });
   const issue = workspace.issues.workflow;
 
   // `seedPipelineFixture()` is `seedDeliveryFixture()`'s settings row written a second time and

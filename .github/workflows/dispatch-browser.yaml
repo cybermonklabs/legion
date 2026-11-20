@@ -1400,12 +1400,12 @@ jobs:
   # since the browsers they run are in it, and the `dispatch_browser` gate answers for them by
   # listing no script Run at all and pinning the binaries job's build whole instead
   # (.github/scripts/ci_job_reads.py's gate says why). This job needs no container of its own:
-  # the seed its run starts has to stay on the host, where `psql` is, and a page in a
-  # bridge-networked container would reach the harness's 127.0.0.1 listeners over another
-  # address and so be no secure context, so only the Playwright command goes into the image
-  # (packages/dispatch/e2e/visual-run.sh's head says both). Every variable this job's run needs
-  # is exported on the command line rather than set in an `env:`, which keeps it to the same
-  # shape as the shard job's browser step.
+  # the seed its run starts has to stay on the host, where `psql` is, so only the Playwright
+  # command goes into the image, which runs with no network of its own and reaches the harness's
+  # 127.0.0.1 listeners through a relay at those same addresses, the secure context the pages
+  # need (packages/dispatch/e2e/visual-run.sh's head says both). Every variable this job's run
+  # needs is exported on the command line rather than set in an `env:`, which keeps it to the
+  # same shape as the shard job's browser step.
   #
   # It writes no blob report. The merge job's row accounting reads legs out of the job names with
   # a capture that knows `shard (N)` and `alone (P)` alone, and it fails the run when the merged

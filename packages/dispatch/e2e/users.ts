@@ -47,11 +47,25 @@ export async function withAlice(
   check: (page: Page) => Promise<void>
 ): Promise<void> {
   const alice = await asUser(browser, "alice");
+  let failed = false;
+  let failure: unknown;
   try {
     await check(await alice.newPage());
-  } finally {
-    await alice.close();
+  } catch (error) {
+    failed = true;
+    failure = error;
   }
+  let closeFailure: unknown;
+  try {
+    await alice.close();
+  } catch (error) {
+    // A test timeout interrupts the pending route assertion and begins teardown at once. The
+    // close then sees that same dead browser, but the route assertion names what never
+    // settled; do not replace its diagnostic with a close error.
+    closeFailure = error;
+  }
+  if (failed) throw failure;
+  if (closeFailure !== undefined) throw closeFailure;
 }
 
 /** `asUser` for the `chromium-plain-http` project: a context signed in as `login` by opening the

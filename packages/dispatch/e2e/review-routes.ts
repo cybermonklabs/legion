@@ -39,9 +39,9 @@ export interface ReviewSeed {
  *  minute-boundary drift the pin exists to remove, and that shows up only as baselines
  *  differing late in a run. */
 export interface VisualSeed extends ReviewSeed {
-  /** When `e2e/visual-seed.ts` finished writing this corpus, ISO 8601. The visual rows pin
-   *  their page clock a little after it, so every relative label the pages draw reads the same
-   *  on every run. */
+  /** When `e2e/visual-seed.ts` finished writing this corpus, ISO 8601, read from the database's
+   *  clock, which stamped every row of it. The visual rows pin their page clock to it, so every
+   *  relative label and every day heading the pages draw reads the same on every run. */
   readonly seededAt: string;
 }
 
@@ -533,6 +533,14 @@ export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route)
   route.layers.includes("shoot-phone")
 );
 
+/** The bound of every wait of `waitForRouteSettled`: none of their own. Playwright reads a
+ *  `timeout` of 0 as no deadline of the assertion's own, so the row's own timeout ends the wait,
+ *  and the failure prints the assertion's message, which names the route, under "Test timeout of
+ *  60000ms exceeded". The project's 15 s `expect.timeout` would be a clock of the wait's own: on
+ *  a loaded machine a page that settles in 16 s then fails its row before any comparison runs,
+ *  which is a reading of the machine's load and not of the page. */
+const settleBound = { timeout: 0 } as const;
+
 /** Waits until `route`'s page has settled, which is more than drawn.
  *
  *  A page that drew is a page whose first frame reached the screen. A page that settled is one
@@ -565,14 +573,24 @@ export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route)
  *  against it. The accessibility one would otherwise scan that same state: a scan of a
  *  half-resolved page reports findings about a page no reader sees - the contrast of a
  *  skeleton, the name of a chip that is about to be replaced - and misses the findings of the
- *  page a reader does read. */
+ *  page a reader does read.
+ *
+ *  It has no clock of its own. Each of its waits ends when the fact it reads holds, or at the
+ *  row's own timeout, which ends it naming this route (`settleBound` above). A page that a busy
+ *  machine draws slowly is still drawn and compared; only a page that never settles fails. */
 export async function waitForRouteSettled(page: Page, route: ReviewedRoute): Promise<void> {
   for (const locator of route.ready(page)) {
-    await expect(locator).toBeVisible();
+    await expect(locator, `${route.name} did not draw its ready fact`).toBeVisible(settleBound);
   }
-  await expect(page.locator("[data-markdown-pending]")).toHaveCount(0);
-  await expect(page.locator('[data-testid="artifact-header"].ring-2')).toHaveCount(0);
-  await waitForInboxCountSettled(page);
+  await expect(
+    page.locator("[data-markdown-pending]"),
+    `${route.name} kept a body that waits for its formatting`
+  ).toHaveCount(0, settleBound);
+  await expect(
+    page.locator('[data-testid="artifact-header"].ring-2'),
+    `${route.name} kept an artifact header's landing ring`
+  ).toHaveCount(0, settleBound);
+  await waitForInboxCountSettled(page, route);
 }
 
 /** How long the Inbox number has to hold one value, with nothing it is read from in flight, before
@@ -636,8 +654,12 @@ export function topBarInboxBadge(page: Page): Locator {
  *  that will change it is in flight; an idle network alone is not enough either, because the
  *  refetch a write causes is sent only once the socket's event arrives. So both are asked for,
  *  and the window restarts whenever either fails. The requests come from `page.requests()`, the
- *  page's latest hundred, which holds every request recent enough to still be waiting. */
-async function waitForInboxCountSettled(page: Page): Promise<void> {
+ *  page's latest hundred, which holds every request recent enough to still be waiting.
+ *
+ *  The window is a span the number has to hold, not a deadline: a slow machine makes it start
+ *  later and never fails the row. What ends the wait is the number holding, or the row's own
+ *  timeout (`settleBound`), whose failure names `route`. */
+async function waitForInboxCountSettled(page: Page, route: ReviewedRoute): Promise<void> {
   const count = wideLayout(page) ? railInboxLink(page) : topBarInboxBadge(page);
   let held: string | undefined;
   let heldSince = Date.now();
@@ -658,8 +680,9 @@ async function waitForInboxCountSettled(page: Page): Promise<void> {
         return Date.now() - heldSince;
       },
       {
+        ...settleBound,
         intervals: [100],
-        message: `the Inbox number did not hold one value for ${INBOX_COUNT_QUIET_MS}ms with none of its requests in flight`,
+        message: `${route.name}: the Inbox number did not hold one value for ${INBOX_COUNT_QUIET_MS}ms with none of its requests in flight`,
       }
     )
     .toBeGreaterThanOrEqual(INBOX_COUNT_QUIET_MS);

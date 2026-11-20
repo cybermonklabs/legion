@@ -209,8 +209,10 @@ const plural = (count: number, word: string) => `${count} ${word}${count === 1 ?
 
 /** `step`, or an Error once `ms` pass with it still unsettled, so one read that never answers
  *  cannot hold the wait forever. `step`'s own outcome is always handled, and the timer is cleared
- *  as soon as it settles. */
+ *  as soon as it settles. An `ms` that is not finite sets no timer: the wait it belongs to has no
+ *  deadline of its own (`FactWait.boundMs`). */
 function answeredWithin<T>(step: Promise<T>, ms: number): Promise<T> {
+  if (!Number.isFinite(ms)) return step;
   const { promise, resolve, reject } = Promise.withResolvers<T>();
   const timer = setTimeout(() => {
     reject(new Error(`the read had not answered within ${(ms / 1_000).toFixed(1)} s`));
@@ -235,7 +237,10 @@ interface FactWait<T> {
    *  needs beside the fact. None where the wait gives none. */
   readonly closing?: readonly string[];
   /** How long the wait may take, in milliseconds. Its caller sets it: no wait here holds a bound
-   *  of its own, so a caller's wait gives up at the bound that caller's own checks use. */
+   *  of its own, so a caller's wait gives up at the bound that caller's own checks use.
+   *  `Number.POSITIVE_INFINITY` is a caller with no such bound of its own short of the run's end:
+   *  the wait then ends when the fact holds or when `signal` aborts, and the `Interrupted` it
+   *  rejects with names the fact. */
   readonly boundMs: number;
   /** The pause between two reads. */
   readonly intervalMs: number;
@@ -286,11 +291,12 @@ class FactGaveUp extends Error {
  * and one that takes longer is a failed read; the sleep before the deadline is cut to the time
  * left, and no read starts once the deadline has passed, so the wait ends within one interval of
  * the deadline whatever the reads do. The abort of `signal` rejects with Interrupted at once,
- * whether the wait is on a read or between reads.
+ * whether the wait is on a read or between reads, and the Interrupted names the fact.
  */
 async function awaitFact<T>(wait: FactWait<T>): Promise<FactHeld<T>> {
   const { boundMs, closing = [], fact, holds, intervalMs, read, show, signal } = wait;
-  if (signal?.aborted) throw new Interrupted("interrupted");
+  const interrupted = () => new Interrupted(`interrupted while waiting for: ${fact}`);
+  if (signal?.aborted) throw interrupted();
   const started = Date.now();
   const deadline = started + boundMs;
   let reads = 0;
@@ -310,14 +316,19 @@ async function awaitFact<T>(wait: FactWait<T>): Promise<FactHeld<T>> {
       failure = undefined;
       if (holds(value)) return { reads, value };
     } catch (error) {
-      if (signal?.aborted) throw new Interrupted("interrupted");
+      if (signal?.aborted) throw interrupted();
       failure = error instanceof Error ? error.message : String(error);
     }
     const left = deadline - Date.now();
     if (left > 0) {
-      // The interval between two reads while the fact is on its way, cut to the deadline, so
-      // the wait ends at the deadline rather than one interval past it.
-      await untilAborted(sleep(Math.min(intervalMs, left), undefined, { signal }), signal);
+      try {
+        // The interval between two reads while the fact is on its way, cut to the deadline, so
+        // the wait ends at the deadline rather than one interval past it.
+        await untilAborted(sleep(Math.min(intervalMs, left), undefined, { signal }), signal);
+      } catch (error) {
+        if (signal?.aborted) throw interrupted();
+        throw error;
+      }
     }
     if (Date.now() >= deadline) {
       throw new FactGaveUp({
@@ -447,12 +458,13 @@ export type OpenAskRead = Pick<Ask, "id" | "block_id">;
  * it again for the same block, so the block id, not the ask id, names the decision's Inbox row.
  * Open asks that name more than one block fail at once, since the spec declares one. A read that
  * names none is read again until `boundMs` has passed, and the failure names the open asks the
- * last read listed.
+ * last read listed. The abort of `signal` ends the wait with Interrupted.
  */
 export async function awaitDecisionBlock(
   issueKey: string,
   read: () => Promise<readonly OpenAskRead[]>,
-  boundMs: number
+  boundMs: number,
+  signal?: AbortSignal
 ): Promise<string> {
   const {
     value: { blockIds },
@@ -472,6 +484,7 @@ export async function awaitDecisionBlock(
       found.asks.length === 0
         ? "no open ask"
         : found.asks.map((ask) => `ask ${ask.id} (block ${ask.block_id ?? "none"})`).join(", "),
+    signal,
   });
   const [blockId, ...more] = blockIds;
   if (more.length > 0) {

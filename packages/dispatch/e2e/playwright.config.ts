@@ -587,7 +587,14 @@ const aloneProjects = [
  * screenshot comparison that fails and then passes is a tolerance that is too tight or a page
  * that is not settled, and either one is the thing this layer exists to find, so it is reported
  * as a failure rather than as a flake.
+ *
+ * `timezoneId: "UTC"`, the zone `e2e/visual-seed.ts` keeps its corpus inside one day of. A page
+ * heads a list by the day of its own clock (`dayLabel`, web/src/features/activity/
+ * activity-model.ts), so the zone decides where that day ends, and a zone read from whatever
+ * environment ran the browser would let a run end it somewhere the seed did not look.
  */
+const visualTimezoneId = "UTC";
+
 const visualProjects = [
   {
     name: "visual",
@@ -601,7 +608,11 @@ const visualProjects = [
     // would say the same thing on every file and in the name of each the route and the scheme
     // are what a reader is looking for.
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
-    use: { ...devices["Desktop Chrome"], viewport: { height: 800, width: 1280 } },
+    use: {
+      ...devices["Desktop Chrome"],
+      timezoneId: visualTimezoneId,
+      viewport: { height: 800, width: 1280 },
+    },
     workers: 1,
     retries: 0,
   },
@@ -610,7 +621,11 @@ const visualProjects = [
     testMatch: visualSpecs,
     grep: phoneRowTagged,
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
-    use: { ...devices["iPhone 13"], browserName: "chromium" as const },
+    use: {
+      ...devices["iPhone 13"],
+      browserName: "chromium" as const,
+      timezoneId: visualTimezoneId,
+    },
     workers: 1,
     retries: 0,
   },

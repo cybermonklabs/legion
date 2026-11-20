@@ -991,6 +991,68 @@ describe("awaitSeededInbox", () => {
       ].join("\n")
     );
   });
+
+  // The visual review's seed gives its waits no bound of their own, and only the run around it
+  // ends one that never settles (e2e/visual-seed.ts).
+  test("a wait with no bound of its own reads on until the fact holds, however long that is", async () => {
+    const inbox = reader((call) => (call < 1_000 ? shortSet : wholeSet));
+    const waiting = awaitSeededInbox(declared, inbox.read, {
+      boundMs: Number.POSITIVE_INFINITY,
+      intervalMs: 20,
+    });
+    // Reads at 0, 20, ..., 19,980 ms: the thousandth holds.
+    await settlesAt(19_980, waiting);
+    const match = await waiting;
+    expect(match.reads).toBe(1_000);
+    expect(inbox.calls).toBe(1_000);
+  });
+
+  test("an abort of a wait with no bound of its own names the fact it waited for", async () => {
+    const stopping = new AbortController();
+    const asked = Promise.withResolvers<void>();
+    const inbox = reader(() => {
+      asked.resolve();
+      return shortSet;
+    });
+    const waiting = awaitSeededInbox(declared, inbox.read, {
+      boundMs: Number.POSITIVE_INFINITY,
+      intervalMs: 5_000,
+      signal: stopping.signal,
+    });
+    await asked.promise;
+    await nextTurn();
+    stopping.abort();
+    await settledAfter(0, waiting);
+    expect(await rejectionOf(waiting)).toBe(`interrupted while waiting for: ${fact}`);
+    await expect(waiting).rejects.toBeInstanceOf(Interrupted);
+  });
+});
+
+describe("awaitSeededInbox with no bound of its own, on the real clock", () => {
+  // The fake clock above never fires a timer set for an infinite delay, where the real one fires
+  // it at once (Node and Bun both read a delay past 2^31 - 1 ms as 1 ms), so a read whose own
+  // limit were set from an infinite bound would fail every time here and nowhere above.
+  test(
+    "a read may take as long as it takes",
+    async () => {
+      const declared: readonly SeededInboxRow[] = [
+        { askId: "ask-one", kind: "ask", made: "the one ask on CORE-1" },
+      ];
+      let calls = 0;
+      const match = await awaitSeededInbox(
+        declared,
+        async () => {
+          calls += 1;
+          await Bun.sleep(30);
+          return [{ block_id: null, id: "ask-one", issue_key: "CORE-1" }];
+        },
+        { boundMs: Number.POSITIVE_INFINITY, intervalMs: 20 }
+      );
+      expect(match.reads).toBe(1);
+      expect(calls).toBe(1);
+    },
+    rowLimit("short")
+  );
 });
 
 describe("awaitDecisionBlock", () => {
