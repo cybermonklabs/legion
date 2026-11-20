@@ -311,17 +311,15 @@ func TestTheJJWrapperReadsTheConfigurationThePushWouldUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := filepath.Join(dir, "repo")
-	isolated := fixturegit.Isolated(t, filepath.Join(dir, "home"))
-	run := isolated.With("PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"))
+	run := fixturegit.Isolated(t, filepath.Join(dir, "home")).With("PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"))
 	run.Run(dir, fixturegit.JJInit(repo, false)...)
 	// The remote a real push has, which the pushes below must be able to resolve. jj 0.45 ended a
 	// `jj git push` with no remote at "Nothing changed." because its default revset named no
 	// bookmark; jj 0.46, whose git.push became a pattern over the remotes, resolves the remotes
 	// first and fails "No git remotes to push to", so without one the row's verdict was the host's
-	// jj version. With one, both versions stop at "Nothing changed." and run no git. It is made by
-	// the real git, past the logging stand-in run's PATH puts first.
+	// jj version. With one, both versions stop at "Nothing changed." and run no git.
 	remote := filepath.Join(dir, "remote.git")
-	isolated.Run(dir, fixturegit.InitBare(remote, "")...)
+	run.Run(dir, fixturegit.InitBare(remote, "")...)
 	run.Run(repo, "jj", "git", "remote", "add", "origin", remote)
 
 	for _, tc := range []struct {
