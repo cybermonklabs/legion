@@ -1,13 +1,19 @@
 -- 20261120012547_set_back_observed_seq.up.sql — a set-back carries the Dispatch sequence of the
 -- write it undoes (dispatch://INFRA-3178 R3). The migration changes no table and runs no statement.
 --
--- A set-back is the status row that writes the daemon's status back over a status that a session
--- of the tree wrote (record.ReassertStatusWrite). Its payload now carries observedSeq, the Dispatch
--- sequence of that session's write. Before each write, the outbox reads the issue's events after
--- that sequence. When a later event changed the status and the daemon did not write that event,
--- the row ends and writes nothing, so a set-back never writes over the owning architect's move or
--- a person's that came after the write it undoes. A row without observedSeq, which an earlier
--- release queued, writes as that release wrote it.
+-- A set-back is the status row that writes the daemon's status back over a status that the daemon
+-- does not take (record.ReassertStatusWrite). The daemon queues a set-back in three cases. A
+-- session with a claim in the issue's tree writes a status, other than the owning architect's move
+-- of a child out of the workflow. A session with no claim in the tree writes a status on a root
+-- that runs or that waits on a person. The daemon's own hand-over todo on a child of a closed tree
+-- arrives stale, for example after the root of that tree came back.
+--
+-- The payload of a set-back now carries observedSeq, the Dispatch sequence of the write it undoes.
+-- Before each write, the outbox reads the issue's events after that sequence. When a later event
+-- changed the status and the daemon did not write that event, the row ends and writes nothing, so
+-- a set-back never writes over the owning architect's move or a person's that came after the write
+-- it undoes. A row without observedSeq, which an earlier release queued, writes as that release
+-- wrote it.
 --
 -- The release before this one decodes an outbox payload strictly (record.DecodeOutboxPayload,
 -- DisallowUnknownFields). A set-back that carries observedSeq fails that decode at every attempt,

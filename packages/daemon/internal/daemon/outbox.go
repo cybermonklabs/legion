@@ -1195,8 +1195,15 @@ type reassertRule struct{}
 // status changed after the write this row undoes (setBackOwed). It is asked before the stop at a
 // third status that every kind shares (statusMoved), because Dispatch can show the observed status
 // again after a later move: the owning architect's icebox and then backlog end where a worker's
-// backlog stood, and only the events between them say that the move came.
-func (reassertRule) firstAttempt(ctx context.Context, r *outbox, row record.OutboxRow, payload record.StatusWrite, _ dispatch.Issue) (bool, error) {
+// backlog stood, and only the events between them say that the move came. When the issue read it
+// is given ends at that write (issue.LastSeq <= payload.ObservedSeq), no event follows the write,
+// so the write is owed and the events are not read. A change that lands after that read is refused
+// ISSUE_CHANGED by the write, which is fenced on the read's sequence (writeStatus), and stillWanted
+// asks setBackOwed then.
+func (reassertRule) firstAttempt(ctx context.Context, r *outbox, row record.OutboxRow, payload record.StatusWrite, issue dispatch.Issue) (bool, error) {
+	if issue.LastSeq <= payload.ObservedSeq {
+		return true, nil
+	}
 	return r.setBackOwed(ctx, row, payload)
 }
 
@@ -1219,8 +1226,9 @@ func (reassertRule) stillWanted(ctx context.Context, r *outbox, row record.Outbo
 // the status the issue already shows changes no status, so the set-back still writes
 // (intake.StatusChangeOf). The write itself stays fenced on the sequence of the issue read made
 // before this check (writeStatus), so a change that lands after that read is refused ISSUE_CHANGED,
-// and the retry asks this again. A row with no sequence, which an earlier release queued, is owed
-// its write as that release judged it.
+// and the retry asks this again. For that reason the first attempt asks this only when that read
+// shows an event after the write the row undoes (reassertRule.firstAttempt). A row with no
+// sequence, which an earlier release queued, is owed its write as that release judged it.
 func (r *outbox) setBackOwed(ctx context.Context, row record.OutboxRow, payload record.StatusWrite) (bool, error) {
 	if payload.ObservedSeq == 0 {
 		return true, nil

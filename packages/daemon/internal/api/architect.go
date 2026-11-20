@@ -1431,7 +1431,7 @@ func (s *server) rootArchitectOf(w http.ResponseWriter, r *http.Request, grant c
 		writeFailure(w, http.StatusForbidden, route.code, fmt.Sprintf(route.forChild, grant.Tree))
 		return false
 	}
-	owns, err := s.owns(r.Context(), grant, recorded)
+	owns, _, err := s.owns(r.Context(), grant, recorded)
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
 		return false
@@ -1447,7 +1447,7 @@ func (s *server) rootArchitectOf(w http.ResponseWriter, r *http.Request, grant c
 // issue into or out of the workflow, which a sub-architect does only below its own issue, takes
 // architectOwnsUnder instead.
 func (s *server) architectOwns(w http.ResponseWriter, r *http.Request, grant credential.Grant, recorded record.Issue, op string) bool {
-	owns, err := s.owns(r.Context(), grant, recorded)
+	owns, _, err := s.owns(r.Context(), grant, recorded)
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
 		return false
@@ -1458,30 +1458,38 @@ func (s *server) architectOwns(w http.ResponseWriter, r *http.Request, grant cre
 	return owns
 }
 
-// architectOwnsUnder is architectOwns for an operation that moves recorded into the workflow,
-// rerun_child, which an architect takes only on an issue under its own: recorded lies under the
-// grant's issue through its recorded parents, and a sub-architect's own issue is refused too, as
-// are the tree root, a sibling of it and an issue under a sibling. An issue's run is moved by an
-// architect above it, as one released it (releasableChild). The rule is record.OwnsUnder, which
-// the engine also asks before it takes the owning architect's status on a child (workflow's
+// architectOwnsUnder is architectOwns for rerun_child, which moves recorded into the workflow and
+// which an architect takes only on an issue under its own: recorded lies under the grant's issue
+// through its recorded parents, and a sub-architect's own issue is refused too, as are the tree
+// root, a sibling of it and an issue under a sibling. An issue's run is moved by an architect
+// above it, as one released it (releasableChild). The rule is record.OwnsUnder, which the engine
+// also asks before it takes the owning architect's status on a child (workflow's
 // sessionStatusWrite), so the API and the engine agree on the owner. The tree root's architect
 // owns every issue of its tree, so nothing is read for it, and the root it names is childOfTree's
-// to refuse. A sub-architect's request reads the tree once (treeMembers).
-// It writes a 403 ISSUE_NOT_OWNED naming op when the architect does not own recorded.
-func (s *server) architectOwnsUnder(w http.ResponseWriter, r *http.Request, grant credential.Grant, recorded record.Issue, op string) bool {
+// to refuse. A sub-architect's own issue is refused with no read. For any other issue it asks
+// owns, which reads the tree where its answer needs the tree (treeMembers).
+//
+// It answers the records of the tree that it read, nil when it read none, so rerunChild judges
+// the rest of the request over those records and reads the tree only where nothing read it yet.
+// It writes a 403 ISSUE_NOT_OWNED naming rerun_child when the architect does not own recorded.
+func (s *server) architectOwnsUnder(w http.ResponseWriter, r *http.Request, grant credential.Grant, recorded record.Issue) ([]record.Issue, bool) {
 	if claim.IsTreeRoot(grant.Issue, grant.Tree) {
-		return true
+		return nil, true
 	}
-	members, err := s.treeMembers(r.Context(), grant.Tree)
-	if err != nil {
-		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
-		return false
+	under := recorded.Key != grant.Issue
+	var members []record.Issue
+	if under {
+		var err error
+		if under, members, err = s.owns(r.Context(), grant, recorded); err != nil {
+			writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
+			return nil, false
+		}
 	}
-	if !record.OwnsUnder(members, grant.Tree, grant.Issue, recorded) {
-		notUnder(w, op, recorded.Key, grant)
-		return false
+	if !under {
+		notUnder(w, "rerun_child", recorded.Key, grant)
+		return nil, false
 	}
-	return true
+	return members, true
 }
 
 // notUnder refuses grant's sub-architect op on key, an issue of its tree that is not under the
@@ -1501,17 +1509,26 @@ func notUnder(w http.ResponseWriter, op, key string, grant credential.Grant) {
 // in Dispatch leaves an issue's tree as it was (admit's recordObservation), except a root that
 // never ran, which joins its parent's live tree (workflow/adopt.go), and the notice router ends
 // the same walk at the same place (record.OwningArchitect), so the architect the reviewer's
-// phase-finished notice reaches is the one that may accept the issue. The grant's own issue and
-// the tree root's architect need no read. Any other question reads the tree once (treeMembers).
-func (s *server) owns(ctx context.Context, grant credential.Grant, recorded record.Issue) (bool, error) {
+// phase-finished notice reaches is the one that may accept the issue.
+//
+// Four answers need no read. The grant's own issue answers yes, and every issue answers yes for
+// the tree root's architect. For a sub-architect, the tree root answers no, because the root is
+// under no issue. An issue with no recorded parent answers no, because its chain ends at the root
+// at once. record.OwnsUnder gives the last three answers too. Any other question reads the tree
+// once (treeMembers). owns also answers the records it read, nil when it read none, so a caller
+// that judges more of the tree does not read it again (rerunChild, through architectOwnsUnder).
+func (s *server) owns(ctx context.Context, grant credential.Grant, recorded record.Issue) (bool, []record.Issue, error) {
 	if recorded.Key == grant.Issue || claim.IsTreeRoot(grant.Issue, grant.Tree) {
-		return true, nil
+		return true, nil, nil
+	}
+	if claim.IsTreeRoot(recorded.Key, recorded.Tree) || recorded.Parent == nil {
+		return false, nil, nil
 	}
 	members, err := s.treeMembers(ctx, grant.Tree)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
-	return record.OwnsUnder(members, grant.Tree, grant.Issue, recorded), nil
+	return record.OwnsUnder(members, grant.Tree, grant.Issue, recorded), members, nil
 }
 
 // removedChildRoute answers an older plugin's call of a child route that this daemon no longer
@@ -1542,12 +1559,14 @@ func removedChildRoute(w http.ResponseWriter, _ *http.Request) {
 // The ancestor is named, and the chain is walked past a parent already done, so a grandchild
 // under a done parent is refused by whichever issue above it is still merging.
 //
-// The tree is read once (treeMembers) and both judgements are made over those records, as
-// release_children judges a whole wave over one read of them: the root whose linger stops a
-// rerun is among them, and the chain the ancestor is found on is walked over them
-// (record.AcceptedAncestorIn).
+// The tree is read once and both judgements are made over those records, as release_children
+// judges a whole wave over one read of them: the root whose linger stops a rerun is among them,
+// and the chain the ancestor is found on is walked over them (record.AcceptedAncestorIn). A
+// sub-architect's ownership check has read the tree already (childOfTree), so its request uses
+// those records. The root's architect needs no read for its ownership, so its request reads the
+// tree here (treeMembers).
 func (s *server) rerunChild(w http.ResponseWriter, r *http.Request) {
-	child, ok := s.childOfTree(w, r, "rerun_child")
+	child, members, ok := s.childOfTree(w, r)
 	if !ok {
 		return
 	}
@@ -1555,10 +1574,12 @@ func (s *server) rerunChild(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, http.StatusConflict, "CHILD_RUNNING", s.childRunning(r.Context(), child))
 		return
 	}
-	members, err := s.treeMembers(r.Context(), child.Tree)
-	if err != nil {
-		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the tree of the child to rerun")
-		return
+	if members == nil {
+		var err error
+		if members, err = s.treeMembers(r.Context(), child.Tree); err != nil {
+			writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the tree of the child to rerun")
+			return
+		}
 	}
 	at := slices.IndexFunc(members, func(member record.Issue) bool { return member.Key == child.Tree })
 	if at < 0 {
@@ -1604,30 +1625,35 @@ func (s *server) childRunning(ctx context.Context, child record.Issue) string {
 		child.Key, child.Phase, child.Key, child.Key, child.Key)
 }
 
-// childOfTree reads a ChildRequest for op, rerun_child, and authorizes it: an architect's grant,
-// and an issue of its tree that the architect owns for op (architectOwnsUnder) other than the tree
+// childOfTree reads rerun_child's ChildRequest and authorizes it: an architect's grant, and an
+// issue of its tree that the architect owns for the rerun (architectOwnsUnder) other than the tree
 // root, which leaves the workflow only with the whole tree. Ownership is judged first, so a
 // sub-architect that names an issue not under its own is told only that, whatever the issue's
 // run. The tree root's architect owns every issue of its tree, so it gets each of the route's
-// answers, CHILD_REQUIRED for the root included.
-func (s *server) childOfTree(w http.ResponseWriter, r *http.Request, op string) (record.Issue, bool) {
+// answers, CHILD_REQUIRED for the root included. It also answers the records of the tree that the
+// ownership check read, nil when that check read none.
+func (s *server) childOfTree(w http.ResponseWriter, r *http.Request) (record.Issue, []record.Issue, bool) {
 	var req ChildRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w, field{"grantId", req.GrantID}, field{"issue", req.Issue}) {
-		return record.Issue{}, false
+		return record.Issue{}, nil, false
 	}
 	if !claim.IsIssueKey(req.Issue) {
 		writeFailure(w, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
-		return record.Issue{}, false
+		return record.Issue{}, nil, false
 	}
 	grant, child, ok := s.architectForIssue(w, r, req.GrantID, req.Issue)
-	if !ok || !s.architectOwnsUnder(w, r, grant, child, op) {
-		return record.Issue{}, false
+	if !ok {
+		return record.Issue{}, nil, false
+	}
+	members, ok := s.architectOwnsUnder(w, r, grant, child)
+	if !ok {
+		return record.Issue{}, nil, false
 	}
 	if claim.IsTreeRoot(child.Key, child.Tree) {
 		writeFailure(w, http.StatusForbidden, "CHILD_REQUIRED", fmt.Sprintf("%s is the tree root. rerun_child takes a child of it.", child.Key))
-		return record.Issue{}, false
+		return record.Issue{}, nil, false
 	}
-	return child, true
+	return child, members, true
 }
 
 func validPhase(value phase.Phase) bool {

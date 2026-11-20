@@ -40,25 +40,50 @@ func (c *countingRecords) TreeIssues(ctx context.Context, tx pgx.Tx, tree string
 // whole wave: those records carry the root whose linger stops a rerun and the chain the accepted
 // ancestor is found on (record.AcceptedAncestorIn). It read the root by itself and then the tree
 // again through a helper of its own, so one request's two judgements stood on two snapshots of
-// the tree and a helper no other route had a use for.
+// the tree and a helper no other route had a use for. A sub-architect's request reads the tree to
+// judge its ownership (architectOwnsUnder), and it read the tree again for the two judgements, so
+// its request is held to one read too.
 func TestRerunChildJudgesTheTreeFromOneRead(t *testing.T) {
-	h, handlers, statuses := statusHarness(t)
-	counting := &countingRecords{Store: record.NewStore()}
-	h.handler = NewServer("127.0.0.1", 8437, Options{
-		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
-		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(),
-		Record: counting, Handlers: handlers, Dispatch: statuses,
-	}).Handler
-	architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
-	ownersBacklog(t, h, handlers, statuses, architect, statusChild)
-	acceptPhase(t, h, statusRoot, phase.Merging)
+	// underChild is an issue under statusChild that is out of the workflow: the architect of
+	// statusChild may run it again.
+	const underChild = "LEGION-300"
+	for _, tc := range []struct {
+		name string
+		// architect is the issue whose architect calls rerun_child. issue is the issue out of the
+		// workflow under it that the call names.
+		architect, issue string
+	}{
+		{name: "the root's architect on its child", architect: statusRoot, issue: statusChild},
+		{name: "a sub-architect on an issue under its own", architect: statusChild, issue: underChild},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, handlers, statuses := statusHarness(t)
+			counting := &countingRecords{Store: record.NewStore()}
+			h.handler = NewServer("127.0.0.1", 8437, Options{
+				Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
+				OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(),
+				Record: counting, Handlers: handlers, Dispatch: statuses,
+			}).Handler
+			rootArchitect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
+			ownersBacklog(t, h, handlers, statuses, rootArchitect, statusChild)
+			parent := statusChild
+			h.recordIssue(record.Issue{Key: underChild, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: statusRoot, Parent: &parent,
+				Project: testDispatchProject, Title: "under the child", Phase: phase.Done, Generation: 1, Status: "backlog", DispatchStatus: "backlog",
+				Rank: "C", LastDispatchSeq: 7})
+			architect := rootArchitect
+			if tc.architect != statusRoot {
+				architect = newLiveClaimIn(t, h, statusRoot, tc.architect, claim.RoleArchitect)
+			}
+			acceptPhase(t, h, statusRoot, phase.Merging)
 
-	issues, trees := counting.issues.Load(), counting.trees.Load()
-	recorder := h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil)
-	refused(t, recorder, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT")
-	// The child's own record, which authorizes the request, and the one read of its tree.
-	if read, treeReads := counting.issues.Load()-issues, counting.trees.Load()-trees; read != 1 || treeReads != 1 {
-		t.Fatalf("the refused rerun read %d issues one at a time and %d whole trees, want 1 and 1: the tree it is refused by is read once", read, treeReads)
+			issues, trees := counting.issues.Load(), counting.trees.Load()
+			recorder := h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": tc.issue}, nil)
+			refused(t, recorder, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT")
+			// The issue's own record, which authorizes the request, and the one read of its tree.
+			if read, treeReads := counting.issues.Load()-issues, counting.trees.Load()-trees; read != 1 || treeReads != 1 {
+				t.Fatalf("the refused rerun read %d issues one at a time and %d whole trees, want 1 and 1: the tree it is refused by is read once", read, treeReads)
+			}
+		})
 	}
 }
 

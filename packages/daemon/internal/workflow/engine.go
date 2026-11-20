@@ -590,7 +590,9 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 //   - The session holds the architect claim of an issue of the tree, in any state
 //     (record.Store.ArchitectIssueOfSession).
 //   - That architect owns the issue by the rule of the API's operations on a child
-//     (record.OwnsUnder), read over the tree's records.
+//     (record.OwnsUnder). The tree root's architect owns every issue of its tree, so its move is
+//     judged with no read of the tree, as the API judges its operations (api's
+//     architectOwnsUnder). A sub-architect's move is judged over the tree's records.
 //
 // A move that stands writes its own log line, which names the architect's issue.
 func (e *Engine) owningArchitectsMove(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (bool, error) {
@@ -601,12 +603,14 @@ func (e *Engine) owningArchitectsMove(ctx context.Context, tx pgx.Tx, issue reco
 	if err != nil || !held {
 		return false, err
 	}
-	members, err := e.treeMembers(ctx, tx, issue)
-	if err != nil {
-		return false, err
-	}
-	if !record.OwnsUnder(members, issue.Tree, architect, issue) {
-		return false, nil
+	if !claim.IsTreeRoot(architect, issue.Tree) {
+		members, err := e.treeMembers(ctx, tx, issue)
+		if err != nil {
+			return false, err
+		}
+		if !record.OwnsUnder(members, issue.Tree, architect, issue) {
+			return false, nil
+		}
 	}
 	e.logOnCommit(ctx, "workflow: the owning architect's status on its child stands", "issue", issue.Key,
 		"session", fact.ActorSession, "architect", architect, "status", fact.Status)

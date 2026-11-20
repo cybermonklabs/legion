@@ -929,7 +929,7 @@ func (s *Postgres) SessionClaimsTree(ctx context.Context, tx pgx.Tx, tree, sessi
 
 func (s *Postgres) ArchitectIssueOfSession(ctx context.Context, tx pgx.Tx, tree, session string) (string, bool, error) {
 	var issue string
-	err := tx.QueryRow(ctx, "select issue from claims where tree = $1 and session = $2 and role = 'architect' and session <> ''", tree, session).Scan(&issue)
+	err := tx.QueryRow(ctx, "select issue from claims where tree = $1 and session = $2 and role = $3 and session <> ''", tree, session, string(claim.RoleArchitect)).Scan(&issue)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}

@@ -2300,7 +2300,11 @@ The kind check keeps the name after the rollback, and the rollback needs no stat
 #### Rolling back the release that lets the owning architect's status stand
 
 This release takes the owning architect's `done`, `backlog`, `icebox` or `triage` on a child as it takes a person's move.
-A set-back is the status row that writes the daemon's status back over a status that a session of the tree wrote (`record.ReassertStatusWrite`).
+A set-back is the status row that writes the daemon's status back over a status that the daemon does not take (`record.ReassertStatusWrite`).
+The daemon queues a set-back in three cases.
+A session with a claim in the issue's tree writes a status, other than the owning architect's move of a child out of the workflow.
+A session with no claim in the tree writes a status on a root that runs or that waits on a person.
+The daemon's own hand-over `todo` on a child of a closed tree arrives stale, for example after the root of that tree came back.
 In this release each set-back carries `observedSeq`, the Dispatch sequence of the write it undoes.
 Before each write, the daemon reads the issue's events after that sequence.
 When a later event changed the status and the daemon did not write that event, the row ends and writes nothing.

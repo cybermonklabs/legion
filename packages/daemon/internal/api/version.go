@@ -2468,6 +2468,6 @@ package api
 // (This entry takes 186, the lowest number above main's 178 that no other open pull request
 // declared at the reading `.github/scripts/check-daemon-api-contract.sh` made, which ended at
 // 2026-11-20T04:35:09Z: each of 179 to 185 was declared by another open pull request, 184 by
-// #3659, #4065 and #4553 beside this change's own head. Read the base's own number and every open
-// pull request again at the next merge rather than from this line.)
+// #3659, #4065 and #4553. Read the base's own number and every open pull request again at the next
+// merge rather than from this line.)
 const DaemonAPIVersion = 186

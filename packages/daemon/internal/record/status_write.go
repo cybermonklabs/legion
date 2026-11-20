@@ -30,10 +30,12 @@ const (
 	// at delivery when the re-read issue no longer carries the label: a person who took it off
 	// withdrew the handover. A HandOverStatusRow, also a todo, is not one.
 	PersonHandoverStatusRow StatusRowKind = "person-handover"
-	// ReassertStatusRow is the daemon setting its own status back over one a session wrote
-	// (workflow's sessionStatusWrite): the session's close or park stands in Dispatch and the
-	// record kept the daemon's status, so this row is queued observing a status the issue is not
-	// meant to be at — done, backlog or icebox — exactly as a person's handover is. Asking the
+	// ReassertStatusRow is the daemon setting its own status back over a status that it does not
+	// take (ReassertStatusWrite names the three cases): a session's write, which the workflow
+	// keeps out of the record (workflow's sessionStatusWrite), or the daemon's own stale
+	// hand-over todo (rejectStaleHandover). The write it undoes stands in Dispatch and the record
+	// kept the daemon's status, so this row is queued observing a status the issue is not meant
+	// to be at, such as done, backlog or icebox, exactly as a person's handover is. Asking the
 	// ordinary rule of it, whether the issue is still in the workflow, would drop the row for
 	// being at the status it exists to undo.
 	ReassertStatusRow StatusRowKind = "reassert"
@@ -84,8 +86,9 @@ type StatusWrite struct {
 	// known for — one migration 20261102003600 gave its kind, queued by a release that fenced
 	// such a write on nothing — which writes as that release wrote it.
 	CloseGeneration uint64 `json:"closeGeneration,omitempty"`
-	// ObservedSeq is the Dispatch sequence of the session's write that a set-back undoes
-	// (ReassertStatusRow). Before each write the runner reads the issue's events after it and
+	// ObservedSeq is the Dispatch sequence of the write that a set-back undoes (ReassertStatusRow):
+	// a session's write, or the daemon's own hand-over todo that arrived stale (ReassertStatusWrite
+	// names each case). Before each write the runner reads the issue's events after it and
 	// finishes the row without writing when a later event changed the status and the daemon did
 	// not write that event, so a set-back never writes over a move that came after the write it
 	// undoes: the owning architect's, or a person's (dispatch://INFRA-3178 R3). A row with zero,
@@ -111,8 +114,14 @@ func PersonHandoverStatusWrite(status, observed string) StatusWrite {
 	return StatusWrite{Kind: PersonHandoverStatusRow, Status: status, ObservedStatus: observed}
 }
 
-// ReassertStatusWrite is the daemon's own status set back over the one a session wrote, which the
-// row observes (ReassertStatusRow), at observedSeq, the Dispatch sequence of that session's write.
+// ReassertStatusWrite is the daemon's own status set back over a status that the daemon does not
+// take, which the row observes (ReassertStatusRow), at observedSeq, the Dispatch sequence of the
+// write that put that status on the issue. The workflow queues one in three cases. A session with
+// a claim in the issue's tree writes a status, other than the owning architect's move of a child
+// out of the workflow (workflow's sessionStatusWrite). A session with no claim in the tree writes
+// a status on a root that runs or that waits on a person (sessionStatusWrite too). The daemon's own
+// hand-over todo on a child of a closed tree arrives stale, for example after the root of that tree
+// came back (workflow's rejectStaleHandover).
 func ReassertStatusWrite(status, observed string, observedSeq int64) StatusWrite {
 	return StatusWrite{Kind: ReassertStatusRow, Status: status, ObservedStatus: observed, ObservedSeq: observedSeq}
 }
