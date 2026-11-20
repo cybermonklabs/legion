@@ -966,20 +966,17 @@ func TestTheProductionCheckFailsAnUnobservedRequirementWhetherOrNotProductionCar
 // composed prompts hold the statement
 // (TestTheProductionCheckFailsAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge).
 func TestTheProductionCheckRuleHoldsInEveryPromptPart(t *testing.T) {
-	for _, tree := range []struct {
-		dir   string
-		parts embed.FS
-	}{{"roles", roleParts}, {"go", goParts}} {
-		err := eachPart(tree.parts, tree.dir, func(name string, body []byte) error {
+	for dir, parts := range map[string]embed.FS{"roles": roleParts, "go": goParts} {
+		err := eachPart(parts, dir, func(name string, body []byte) error {
 			for _, clause := range clauses(string(body)) {
 				for _, fault := range checkRuleFaults(clause) {
-					t.Errorf("%s/%s %s", tree.dir, name, fault)
+					t.Errorf("%s/%s %s", dir, name, fault)
 				}
 			}
 			return nil
 		})
 		if err != nil {
-			t.Fatalf("read the %s parts: %v", tree.dir, err)
+			t.Fatalf("read the %s parts: %v", dir, err)
 		}
 	}
 }

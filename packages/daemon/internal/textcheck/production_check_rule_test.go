@@ -25,8 +25,8 @@ import (
 // The unit is the clause, cut at `; ` as well as at full stops, never the sentence (ruleClauses):
 // matched sentence by sentence, a test of this rule passed with the concepts page's limit taken
 // out, since that page's one sentence of the three verdicts reads whether production carries the
-// merge in its opening clause. No clause states a limit the rule no longer has (bannedLimits). A
-// fail clause, one that holds "unobserved", "last" and "fail", holds no "production carries the
+// merge in its opening clause. No clause states a limit the rule no longer has (bannedCheckLimits).
+// A fail clause, one that holds "unobserved", "last" and "fail", holds no "production carries the
 // merge" outside the words "whether or not production carries the merge". Each page holds one
 // fail clause with those words at least, so a page that does not state the rule fails here rather
 // than passing on nothing. The concepts page lists the three verdicts, so it also holds a fail
@@ -72,7 +72,7 @@ func TestThePagesFailAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerg
 // readings of the page. A comment around the rule's clause, around "whether or not", around an old
 // limit, or one that splits the words "whether or not production carries the merge", fails for
 // the comment. A comment that holds nothing of the rule, or a "<!--" inside a fenced block before
-// it, hides nothing of it. Each old wording is joined from halves, as bannedLimits is.
+// it, hides nothing of it. Each old wording is joined from halves, as bannedCheckLimits is.
 func TestTheFailRuleIsHeldWhereAReaderSeesIt(t *testing.T) {
 	const (
 		rule         = "One still unobserved at the last look is a `fail` whether or not production carries the merge.\n"
@@ -110,22 +110,22 @@ func TestTheFailRuleIsHeldWhereAReaderSeesIt(t *testing.T) {
 	}
 }
 
-// bannedLimits are limits of the last look that the production check's rule no longer has: each
-// keeps the last look's pending, or its close as not run, for a merge that production does not
-// carry. Each is joined from halves, as internal/prompts's retiredCheckSentences are, so a search
-// of the repository for one of them finds the texts that state it and never this test.
-// internal/prompts and internal/workflow keep their own copies, since a test package cannot import
-// another package's test helpers.
-var bannedLimits = []string{
+// bannedCheckLimits are limits of the last look that the production check's rule no longer has:
+// each keeps the last look's pending, or its close as not run, for a merge that production does
+// not carry. Each is joined from halves, as internal/prompts's retiredCheckSentences are, so a
+// search of the repository for one of them finds the texts that state it and never this test.
+// internal/prompts and internal/workflow keep their own copies, since a test package cannot
+// import another package's test helpers.
+var bannedCheckLimits = []string{
 	"not carrying" + " the merge alone",
 	"did not carry the merge" + " within the bound",
 	"never carried" + " the merge",
 }
 
 const (
-	// whetherOrNot are the words that keep a fail clause's mention of production from limiting the
-	// fail.
-	whetherOrNot = "whether or not production carries the merge"
+	// whetherOrNotCarried are the words that keep a fail clause's mention of production from
+	// limiting the fail.
+	whetherOrNotCarried = "whether or not production carries the merge"
 	// proofSentence is what a proof script says of its issues: no requirement that only the deploy
 	// can show, so its last look's pending is true.
 	proofSentence = "The issues of this proof have no requirement that only the deploy can show"
@@ -133,17 +133,17 @@ const (
 
 var (
 	// errBannedLimit is why a check refuses a text: a clause of it states a limit the rule no
-	// longer has (bannedLimits).
+	// longer has (bannedCheckLimits).
 	errBannedLimit = errors.New("states a limit the production check's rule no longer has: a requirement still " +
-		"unobserved at the last look is a fail " + whetherOrNot + ", and that look's pending is only for an issue " +
+		"unobserved at the last look is a fail " + whetherOrNotCarried + ", and that look's pending is only for an issue " +
 		"with no requirement that only the deploy can show")
 	// errLimitedFail is why a check refuses a text: a fail clause of it holds "production carries
-	// the merge" outside the words whetherOrNot.
+	// the merge" outside the words whetherOrNotCarried.
 	errLimitedFail = errors.New("limits the fail of a requirement still unobserved at the last look by whether " +
-		"production carries the merge, but that requirement is a fail " + whetherOrNot)
-	// errNoStatement is why a check refuses a page: no fail clause of it holds whetherOrNot.
+		"production carries the merge, but that requirement is a fail " + whetherOrNotCarried)
+	// errNoStatement is why a check refuses a page: no fail clause of it holds whetherOrNotCarried.
 	errNoStatement = errors.New("holds no clause that makes a requirement still unobserved at the last look a fail " +
-		whetherOrNot)
+		whetherOrNotCarried)
 	// errNoObservedNotMet is why a check refuses the page that lists the three verdicts: no fail
 	// clause of it names a requirement observed as not met.
 	errNoObservedNotMet = errors.New("lists the three verdicts of a look but holds no fail clause for a requirement " +
@@ -161,18 +161,18 @@ func failRuleOfThePage(page string, listsVerdicts bool) error {
 }
 
 // failRuleIn holds the rule to text, one reading of a page (ruleClauses). The text states no limit
-// the rule no longer has (limitsIn). One fail clause at least holds whetherOrNot (errNoStatement).
-// Where the page lists the three verdicts, one fail clause at least names a requirement observed
-// as not met (errNoObservedNotMet). The error joins every refusal.
+// the rule no longer has (limitsIn). One fail clause at least holds whetherOrNotCarried
+// (errNoStatement). Where the page lists the three verdicts, one fail clause at least names a
+// requirement observed as not met (errNoObservedNotMet). The error joins every refusal.
 func failRuleIn(text string, listsVerdicts bool) error {
 	clauses := ruleClauses(text)
 	errs := []error{limitsIn(clauses)}
 	statements, observedNotMet := 0, 0
 	for _, clause := range clauses {
-		if isFailClause(clause) && strings.Contains(clause, whetherOrNot) {
+		if isCheckFailClause(clause) && strings.Contains(clause, whetherOrNotCarried) {
 			statements++
 		}
-		if isFailClause(clause) && strings.Contains(clause, "observed as not met") {
+		if isCheckFailClause(clause) && strings.Contains(clause, "observed as not met") {
 			observedNotMet++
 		}
 	}
@@ -202,19 +202,19 @@ func failRuleOfTheScript(script string) error {
 }
 
 // limitsIn holds clauses to the two limits of the rule: no clause states a limit the rule no
-// longer has (errBannedLimit, naming each such clause), and no fail clause (isFailClause) holds
-// "production carries the merge" when every whetherOrNot is taken out of it (errLimitedFail,
-// naming each such clause).
+// longer has (errBannedLimit, naming each such clause), and no fail clause (isCheckFailClause)
+// holds "production carries the merge" when every whetherOrNotCarried is taken out of it
+// (errLimitedFail, naming each such clause).
 func limitsIn(clauses []string) error {
 	var banned, limited []string
 	for _, clause := range clauses {
-		for _, phrase := range bannedLimits {
+		for _, phrase := range bannedCheckLimits {
 			if strings.Contains(clause, phrase) {
 				banned = append(banned, clause)
 				break
 			}
 		}
-		if isFailClause(clause) && strings.Contains(strings.ReplaceAll(clause, whetherOrNot, ""), "production carries the merge") {
+		if isCheckFailClause(clause) && strings.Contains(strings.ReplaceAll(clause, whetherOrNotCarried, ""), "production carries the merge") {
 			limited = append(limited, clause)
 		}
 	}
@@ -228,9 +228,9 @@ func limitsIn(clauses []string) error {
 	return errors.Join(errs...)
 }
 
-// isFailClause reports whether clause makes a requirement still unobserved at the last look a
+// isCheckFailClause reports whether clause makes a requirement still unobserved at the last look a
 // fail.
-func isFailClause(clause string) bool {
+func isCheckFailClause(clause string) bool {
 	return strings.Contains(clause, "unobserved") && strings.Contains(clause, "last") && strings.Contains(clause, "fail")
 }
 

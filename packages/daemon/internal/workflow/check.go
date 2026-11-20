@@ -135,10 +135,10 @@ const checkTaskLead = "Production check of "
 // request, no commit, the wake a pending names for its own next look and the suspension that
 // follows it, and nothing to wait for in the session, since the look ends with the report. A merge
 // production carries with such a requirement still unobserved is a pending while a look follows.
-// On the last look such a requirement, observed as not met or still unobserved, is a fail whether
-// or not production carries the merge. The last look's task gives pending only for an issue with
-// none of those requirements, and that pending closes the check as not run. The fail clause says
-// so once, the same on every look, in terms of the look that follows.
+// A requirement observed as not met is a fail on every look. On the last look one still unobserved
+// is a fail too, whether or not production carries the merge. The last look's task gives pending
+// only for an issue with none of those requirements, a pending that closes the check as not run.
+// The fail clause says so once, the same on every look, in terms of the look that follows.
 func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail string, last bool) string {
 	merge := check.MergeSHA
 	if merge == "" {
@@ -277,8 +277,9 @@ func (e *Engine) endLook(ctx context.Context, tx pgx.Tx, check *record.Productio
 
 // endLookPending is what follows a look that ended pending, reported so or with no report
 // (endLook). A look before the last pends a merge production does not carry yet, or carries with a
-// requirement only the deploy can show still unobserved. The last look's pending is only for an
-// issue with no such requirement. The last look closes the check as not run. Every other look
+// requirement only the deploy can show still unobserved. The last look's task gives pending only
+// for an issue with no such requirement. The last look, reported pending or not reported, closes
+// the check as not run. Every other look
 // names when the check is next looked at (nameWake: the clamped wake the record already carries,
 // with reason as what wakes it), which is the one thing that starts the look after this one —
 // nothing else reads production any more. An issue back in the workflow — a root reopened inside
