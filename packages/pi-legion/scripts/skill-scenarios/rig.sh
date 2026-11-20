@@ -1288,7 +1288,13 @@ judge_keys() {
 #     cannot resolve a tailnet name itself
 # The network is Docker's default bridge, for the model's endpoint. The container gets 2 CPUs and
 # 4 GiB, so the judges of a busy batch cannot take the machine. SKILL_SCENARIOS_JUDGE_ENV adds
-# `NAME=value` words to the container's environment, for tests.
+# `NAME=value` words to the container's environment, for tests. SKILL_SCENARIOS_JUDGE_PHASES names a
+# file to which each phase appends `<epoch seconds> <phase>` as it begins (judge_phase), and the
+# container's end `<epoch seconds> exited <status>`, so a caller can name the phase a slow judge was
+# in: profiles, keys, host, image (the inspect, and the pull of an image not there), container.
+judge_phase() {
+  [ -z "${SKILL_SCENARIOS_JUDGE_PHASES:-}" ] || printf '%s %s\n' "$EPOCHREALTIME" "$*" >>"$SKILL_SCENARIOS_JUDGE_PHASES"
+}
 cmd_judge_omp() {
   [ $# = 3 ] || fail "usage: rig.sh judge-omp <ste|bare> <dir> <output file name>"
   local kind=$1 dir output=$3 skills status=0 omp P agent keys key_file h=/home/judge
@@ -1301,6 +1307,7 @@ cmd_judge_omp() {
   case "$(omp_ancestor "$dir" || true)" in "") ;; *) fail "judge-omp: $dir is under $(omp_ancestor "$dir"), whose plugins Oh My Pi would load" ;; esac
   case ${LEGION_E2E_MODEL_ROUTE:-gateway} in gateway | key-file | provider) ;; *) fail "judge-omp: LEGION_E2E_MODEL_ROUTE is '$LEGION_E2E_MODEL_ROUTE': it is gateway, key-file or provider" ;; esac
   command -v docker >/dev/null || fail "judge-omp: docker is not on PATH; each judge runs in a container"
+  judge_phase profiles
   judge_profiles
   P=$work/judge-profiles/$kind
   agent=$P/home/.omp/profiles/judge-$kind/agent
@@ -1308,6 +1315,7 @@ cmd_judge_omp() {
   keys=$dir.key
   rm -rf -- "$keys"
   on_exit "$(printf 'rm -rf -- %q' "$keys")"
+  judge_phase keys
   key_file=$(judge_keys "$P" "$agent" "$keys") || exit 1
   route=(-v "$keys:/opt/key:ro")
   [ -z "$key_file" ] || route+=(-v "$key_file:$key_file:ro")
@@ -1316,6 +1324,7 @@ cmd_judge_omp() {
   # once skipped the key-file route, which reached Anthropic's own public name and needed none;
   # since that route takes LEGION_E2E_MODEL_BASE_URL it can name a gateway like any other, and a
   # route left out here would let the scenario agents reach it while its judges could not.
+  judge_phase host
   host=$(sed -n 's#^ *"\{0,1\}baseUrl"\{0,1\}: *"\{0,1\}https\{0,1\}://\([^/:"]*\).*#\1#p' "$agent/models.yml" | head -1)
   ip=$(getent hosts "$host" 2>/dev/null | awk '{print $1; exit}') || ip=
   [ -z "$ip" ] || [ "$ip" = "$host" ] || route+=(--add-host "$host:$ip")
@@ -1331,6 +1340,7 @@ cmd_judge_omp() {
   # token it refuses to mint, a manifest GET it drops) and serves the next, so the pull is asked
   # three times a couple of seconds apart before the rig refuses. Only the last attempt's own
   # words are kept, and only for the refusal: an attempt the next one makes good says nothing.
+  judge_phase image
   if ! docker image inspect "$judge_image" >/dev/null 2>&1; then
     local pulled='' pull_error='' attempt
     for attempt in 1 2 3; do
@@ -1342,6 +1352,7 @@ cmd_judge_omp() {
     done
     [ -n "$pulled" ] || fail "judge-omp: docker could not pull $judge_image in 3 attempts: $pull_error"
   fi
+  judge_phase container
   docker run --rm --init --cpus 2 --memory 4g --user "$(id -u):$(id -g)" --read-only \
     --tmpfs /tmp:exec,mode=1777 --tmpfs "$h:exec,uid=$(id -u),gid=$(id -g)" \
     -v "$(dirname "$omp"):/opt/omp:ro" -v "$agent:/opt/profile:ro" \
@@ -1357,6 +1368,7 @@ cmd_judge_omp() {
       exec timeout "$1" "$2" "${@:3}"' - "${SKILL_SCENARIOS_TIMEOUT:-1500}" "/opt/omp/$(basename "$omp")" \
     -p "$(<"$dir/prompt.txt")" --no-extensions "${skills[@]}" \
     --model "$judge_model" --thinking "$judge_thinking" --session-dir "$dir/sessions" </dev/null >"$dir/out.txt" 2>&1 || status=$?
+  judge_phase exited "$status"
   echo "exit=$status" >>"$dir/out.txt"
   rm -rf -- "$keys"
   return "$status"
