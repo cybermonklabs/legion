@@ -35,7 +35,7 @@ package api
 //     and the scope `read` alone, names a service and no person, and never reaches this check:
 //     the read-only gate register puts outside it answers that token
 //     403 READ_ONLY_TOKEN on every route the read list does not name, every write among them
-//     (refuseReadOnlyToken, readScopeRoutes). That is the rule and not a transitional measure:
+//     (refuseLimitedToken, readScopeRoutes). That is the rule and not a transitional measure:
 //     every caller that exists today writes exactly what it wrote before, which is what lets
 //     this deploy before anything presents a broker token.
 //
@@ -410,7 +410,7 @@ func addressesOneSession(route apiRoute) bool {
 // A read-only token names a service and no person too, but it is no such caller: it reads only
 // what the read list names, and signing a person in is no remedy for it. It never reaches this
 // check, since the read-only gate register puts outside it has already answered it 403
-// READ_ONLY_TOKEN (refuseReadOnlyToken).
+// READ_ONLY_TOKEN (refuseLimitedToken).
 //
 // Every other credential is unaffected: a cookie, a personal token, a service-account token, the
 // shared token and a broker token that does name a person each reach the handler as before, at

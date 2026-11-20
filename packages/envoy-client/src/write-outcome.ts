@@ -9,21 +9,27 @@
 //
 // The rule the table holds: once an attempt may have landed, only a 2xx whose body was read whole
 // and that Dispatch's keyed layer answered, or a refusal the keyed layer judged for the write's key
-// (the key echoed back), settles the write. Every other way it ends — any other answer, a failure,
-// the deadline, the caller's stop, running out of retries or of time — is
-// `DispatchWriteUnsettledError` carrying the key. Before anything may have landed, a write that ends
+// (the key echoed back) and that says what became of it, settles the write. Every other way it
+// ends — any other answer, a failure, the deadline, the caller's stop, running out of retries or of
+// time — is `DispatchWriteUnsettledError` carrying the key, and so is an echoed `401` even before
+// that, since it can follow a committed write. Before anything may have landed, a write that ends
 // is told the event's own error: the refusal, the transport's failure, the credential's, the
 // deadline's; but where the deadline or the caller's stop ends the wait after a credential that
-// could not present, the credential's failure, since it is why nothing was sent.
+// could not present, or after Dispatch's check of the token answered that it judged nothing, that
+// failure or that answer, since it is why nothing was sent or run.
 //
 // The cells rest on what Dispatch does (`packages/envoy/internal/dispatch/api/request_keys.go`):
 // every answer its keyed layer gives a keyed POST or PATCH carries the key back, a 5xx included; a
 // repeat under a key is answered from what the key holds (the stored answer, `409 KEY_IN_FLIGHT`,
-// `422 KEY_REUSED`) and never run twice; a 401, 408, 429 or 5xx is never stored; Dispatch's auth and
-// its old builds' "no route" answer before the keyed layer runs. And on what the secrets broker's
-// trade does (`packages/broker-client/src/token-client.ts`): a fail-fast caller is told the trade's
-// last failure at once while the trade goes on in the background (`TradeRetryingError`); a trade
-// not yet answered and a registration still pending are told only once the caller's signal ends.
+// `422 KEY_REUSED`) and never run twice; a 401, 408, 429 or 5xx is never stored, and a 401 the
+// handler answers releases the key though the handler may have committed (`storedStatus`,
+// `releaseRequestKey`); `422 KEY_REUSED` says only that this request was not run; Dispatch's auth,
+// its check of a broker token (`brokerTokenActor`, `broker_token.go`, which `keyedWrites` runs
+// before it claims the key) and its old builds' "no route" answer before the keyed layer runs. And
+// on what the secrets broker's trade does (`packages/broker-client/src/token-client.ts`): a
+// fail-fast caller is told the trade's last failure at once while the trade goes on in the
+// background (`TradeRetryingError`); a trade not yet answered and a registration still pending are
+// told only once the caller's signal ends.
 
 /** Where a write stands between its attempts. A settled write is no state: the call returns. */
 export type WriteState = "nothing-sent" | "may-have-landed";
@@ -34,12 +40,19 @@ export type WriteEvent =
    *  under the key. */
   | "applied"
   /** A non-2xx the keyed layer judged for the key (the key echoed back) and that a repeat cannot
-   *  change: `422 KEY_REUSED`, `409 KEY_COMMITTED`, a validation refusal. */
+   *  change: `409 KEY_COMMITTED`, a validation refusal. */
   | "judged"
   /** A non-2xx nothing judged for the key and not asked again after: a page something in
    *  Dispatch's place wrote, a refusal Dispatch's auth made before its keyed layer ran (`401`,
-   *  `403 READ_ONLY_TOKEN`), a second dead token, a 1xx. */
+   *  `403 READ_ONLY_TOKEN`), a second dead token, a 1xx; and Dispatch's `422 KEY_REUSED`, which
+   *  says only that this request was not run (another request holds the key), and nothing of an
+   *  earlier attempt of the write under it. */
   | "unjudged"
+  /** Dispatch's `401` the keyed layer answered under the key (the key echoed back): a session that
+   *  lapsed while the handler ran, on which the layer releases the key rather than keeping the
+   *  answer (`storedStatus`, request_keys.go). The handler may have committed the write first, so
+   *  it says nothing of whether the write landed, from either state. */
+  | "released"
   /** A 3xx, `304` included. Never followed: a 301, 302 or 303 would turn the POST into a GET,
    *  and a 307 or 308 would send it again to another origin without its credential. */
   | "redirect"
@@ -57,7 +70,9 @@ export type WriteEvent =
   | "server-error"
   /** Dispatch's `409 KEY_IN_FLIGHT`: an earlier attempt still runs under the key. */
   | "in-flight"
-  /** A 408 or 429: asked again under the key; nothing ran. */
+  /** A 408 or 429, or Dispatch's check of a broker token that judged nothing (`429
+   *  BROKER_TOKEN_RATE_LIMITED`, `503 BROKER_UNAVAILABLE`, answered before the key is claimed):
+   *  asked again under the key; nothing ran. */
   | "try-later"
   /** The attempt was cut off for silence (`DispatchWriteRetry.silenceMs`). */
   | "silence"
@@ -128,6 +143,8 @@ export const WRITE_TRANSITIONS: {
   applied: { "nothing-sent": nothing("settle"), "may-have-landed": landed("settle") },
   judged: { "nothing-sent": nothing("settle"), "may-have-landed": landed("settle") },
   unjudged: { "nothing-sent": nothing("end"), "may-have-landed": landed("end") },
+  // The handler may have committed before the key was released, so it may have landed.
+  released: { "nothing-sent": landed("end"), "may-have-landed": landed("end") },
   redirect: { "nothing-sent": nothing("end"), "may-have-landed": landed("end") },
   // Whether a foreign page's sender passed the write on cannot be told, so it may have landed.
   "foreign-2xx": { "nothing-sent": landed("end"), "may-have-landed": landed("end") },

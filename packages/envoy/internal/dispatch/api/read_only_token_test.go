@@ -2,7 +2,7 @@
 // broker minted from a read entry, the scope read alone beside the project scope none, a service
 // and no person — reaches the routes readScopeRoutes names and nothing else. Every other row of
 // the table and GET /ws/live answer it 403 READ_ONLY_TOKEN before the route's handler, before the
-// sign-in check and before its Idempotency-Key is read (refuseReadOnlyToken), register refuses a
+// sign-in check and before its Idempotency-Key is read (refuseLimitedToken), register refuses a
 // list that names anything but a GET row it mounts, and the route the list names writes nothing
 // for such a caller but its proof's replay row and the caches Dispatch rebuilds.
 //
@@ -66,15 +66,7 @@ func (c *brokerCaller) presentingProbe(t *testing.T, route apiRoute, token strin
 // when it is that refusal: 403 with the code READ_ONLY_TOKEN and no WWW-Authenticate challenge,
 // since no scope makes the route the token's to call.
 func notTheReadOnlyRefusal(response *httptest.ResponseRecorder) string {
-	var refusal refusalAnswer
-	_ = json.Unmarshal(response.Body.Bytes(), &refusal)
-	switch {
-	case response.Code != http.StatusForbidden || refusal.Code != contracts.DispatchReadOnlyToken:
-		return "answered " + http.StatusText(response.Code) + " " + strings.TrimSpace(response.Body.String())
-	case response.Header().Get("WWW-Authenticate") != "":
-		return "carries the challenge " + response.Header().Get("WWW-Authenticate")
-	}
-	return ""
+	return notTheLimitedRefusal(response, contracts.DispatchReadOnlyToken)
 }
 
 // readOnlyTable is the table register mounts with its test hooks in: every row a read-only token
@@ -84,77 +76,18 @@ func readOnlyTable() []apiRoute {
 }
 
 // TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler builds every row's own
-// chain as register does (routeHandler) with the row's handler replaced by a recorder, and sends
-// each a read-only token with a body and a valid Idempotency-Key. Every row the list does not name
-// answers 403 READ_ONLY_TOKEN and never runs its handler; the row the list names runs it once.
-// GET /ws/live is walked the same way through its own chain (liveSocketHandler), with the socket
-// replaced. A row is counted once its assertions have run, and the count is held to the rows the
-// registered server mounts (its route index, one entry a row), so a walk that skipped a row, or
-// walked none, fails.
+// chain as register does and sends each a read-only token: every row the list does not name
+// answers 403 READ_ONLY_TOKEN and never runs its handler, the row the list names runs it once,
+// and GET /ws/live opens no socket (walkEveryChainWith).
 func TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler(t *testing.T) {
-	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
-	caller := newBrokerCaller(t)
-	const token = "a-read-only-token-walking-every-chain"
-	rig.broker.Says(token, readOnlyToken(caller.jkt))
-
-	table := readOnlyTable()
-	replays := rig.served.keyedReplays()
-	walked, listed := 0, 0
-	for _, route := range table {
-		name := route.Method + " " + route.Pattern
-		ran := 0
-		route.Handler = func(w http.ResponseWriter, _ *http.Request) {
-			ran++
-			w.WriteHeader(http.StatusNoContent)
-		}
-		response := httptest.NewRecorder()
-		rig.served.routeHandler(route, replays[name]).ServeHTTP(response, caller.presentingProbe(t, route, token))
-		if route.ReadScope {
-			listed++
-			if ran != 1 || response.Code != http.StatusNoContent {
-				t.Errorf("%s is on the read list, and its handler ran %d times (status=%d body=%s), want once",
-					name, ran, response.Code, response.Body.String())
-			}
-		} else {
-			if ran != 0 {
-				t.Errorf("%s ran its handler %d times for a read-only token, want none", name, ran)
-			}
-			if why := notTheReadOnlyRefusal(response); why != "" {
-				t.Errorf("%s %s, want 403 %s", name, why, contracts.DispatchReadOnlyToken)
-			}
-		}
-		walked++
-	}
-
-	socketOpened := 0
-	live := rig.served.liveSocketHandler(func(http.ResponseWriter, *http.Request) { socketOpened++ })
-	response := httptest.NewRecorder()
-	live.ServeHTTP(response, caller.presenting(t, http.MethodGet, liveSocketPattern, token, nil))
-	if socketOpened != 0 {
-		t.Errorf("GET %s opened the socket %d times for a read-only token, want none", liveSocketPattern, socketOpened)
-	}
-	if why := notTheReadOnlyRefusal(response); why != "" {
-		t.Errorf("GET %s %s, want 403 %s", liveSocketPattern, why, contracts.DispatchReadOnlyToken)
-	}
-
-	if mounted := len(rig.served.routeIndex); walked == 0 || walked != mounted {
-		t.Fatalf("walked %d rows, want every one of the %d the server mounts", walked, mounted)
-	}
-	if listed != len(readScopeRoutes) {
-		t.Fatalf("%d rows carry the read list's mark, want the list's %d (%v)", listed, len(readScopeRoutes), readScopeRoutes)
-	}
-	t.Logf("walked %d rows of the table (test hooks in) and GET %s: %d listed, %d refused, every refusal %s",
-		walked, liveSocketPattern, listed, walked-listed+1, contracts.DispatchReadOnlyToken)
+	walkEveryChainWith(t, readOnlyLimitedToken())
 }
 
 // readListAnswers is what each route of the read list answers the mounted walk below at its probe
 // path, which names a project with no architecture source and an issue Dispatch does not hold: its
 // handler's own answer, which a request the gate refused could not carry. A route added to the
 // list adds its answer here.
-var readListAnswers = map[string]struct {
-	status int
-	code   string
-}{
+var readListAnswers = map[string]limitedAnswer{
 	"GET /api/v1/projects/{key}/architecture": {http.StatusNotFound, "SOURCE_NOT_FOUND"},
 	"GET /api/v1/issues/{key}/steps":          {http.StatusNotFound, "NOT_FOUND"},
 	"GET /api/v1/projects/{key}/plans":        {http.StatusNotFound, "PROJECT_NOT_FOUND"},
@@ -163,45 +96,10 @@ var readListAnswers = map[string]struct {
 // TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone walks the server register mounted,
 // test hooks in, with a read-only token: every row the list does not name and GET /ws/live answer
 // 403 READ_ONLY_TOKEN; GET /ws/doc/{room}, which reads no broker token at all, answers 401; and
-// each listed route answers its handler's own refusal of its probe path (readListAnswers).
-// A row is counted once its assertions have run, and the count is held to the rows the
-// registered server mounts, as the walk above is.
+// each listed route answers its handler's own refusal of its probe path (readListAnswers,
+// walkTheMountedServerWith).
 func TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone(t *testing.T) {
-	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
-	caller := newBrokerCaller(t)
-	const token = "a-read-only-token-walking-the-mounted-server"
-	rig.broker.Says(token, readOnlyToken(caller.jkt))
-
-	table := readOnlyTable()
-	walked := 0
-	for _, route := range table {
-		name := route.Method + " " + route.Pattern
-		response := rig.serve(caller.presentingProbe(t, route, token))
-		if !route.ReadScope {
-			if why := notTheReadOnlyRefusal(response); why != "" {
-				t.Errorf("%s %s, want 403 %s", name, why, contracts.DispatchReadOnlyToken)
-			}
-		} else if want, known := readListAnswers[name]; !known {
-			t.Errorf("%s is on the read list and readListAnswers says nothing of what it answers", name)
-		} else if refusal := decodeBody[refusalAnswer](t, response); response.Code != want.status || refusal.Code != want.code {
-			t.Errorf("%s answered %d %s, want its handler's %d %s", name, response.Code, response.Body.String(), want.status, want.code)
-		}
-		walked++
-	}
-
-	live := rig.serve(caller.presenting(t, http.MethodGet, liveSocketPattern, token, nil))
-	if why := notTheReadOnlyRefusal(live); why != "" {
-		t.Errorf("GET %s %s, want 403 %s", liveSocketPattern, why, contracts.DispatchReadOnlyToken)
-	}
-	room := "/ws/doc/00000000-0000-0000-0000-000000000001"
-	if document := rig.serve(caller.presenting(t, http.MethodGet, room, token, nil)); document.Code != http.StatusUnauthorized {
-		t.Errorf("GET %s answered %d %s, want 401: the document socket takes a cookie alone", room, document.Code, document.Body.String())
-	}
-
-	if mounted := len(rig.served.routeIndex); walked == 0 || walked != mounted {
-		t.Fatalf("walked %d rows, want every one of the %d the server mounts", walked, mounted)
-	}
-	t.Logf("walked %d rows of the mounted table (test hooks in), GET %s and GET /ws/doc/{room}", walked, liveSocketPattern)
+	walkTheMountedServerWith(t, readOnlyLimitedToken())
 }
 
 // registerRefusal is the refusal Register panics with on the table as it stands, and empty when

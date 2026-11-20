@@ -61,10 +61,12 @@ const (
 	// the name an introspection can answer and a reader can act on.
 	ClaimMachine = "machine"
 	// ClaimProjectScope is what ClaimProjects means, one of oauthwire.ProjectScopeNamed,
-	// oauthwire.ProjectScopePerson or oauthwire.ProjectScopeNone, the last for a read entry's
-	// token alone, which is granted oauthwire.ScopeRead beside it (writeProjectScope). It is
-	// written always, so a reader never has to take an absent list as "every project", "no
-	// project at all" or a claim nobody decided.
+	// oauthwire.ProjectScopePerson, oauthwire.ProjectScopeNone or
+	// oauthwire.ProjectScopeResults: none for a read entry's token alone, which is granted
+	// oauthwire.ScopeRead beside it, and results for a result entry's token alone, which is
+	// granted oauthwire.ScopeResults beside it (writeProjectScope). It is written always, so a
+	// reader never has to take an absent list as "every project", "no project at all" or a
+	// claim nobody decided.
 	ClaimProjectScope = "project_scope"
 	// ClaimProjects is the token's list of projects in its stored spelling: the keys separated by
 	// one space (oauthwire.JoinProjects), and the empty string for none, which is all a token of
@@ -74,6 +76,10 @@ const (
 	// projects at all; one grammar serves the form parameter, this claim and
 	// AGENT_SECRETS_PROJECTS. An introspection answers it as a list.
 	ClaimProjects = "projects"
+	// ClaimCI is the run a result entry's token was minted for (exchange.Claims.CI), the JSON
+	// object oauthwire.CIRun declares. It is written beside the results scope alone and is absent
+	// from every other token, which no run minted.
+	ClaimCI = "ci"
 )
 
 // subjectTokenAlgorithms are the signature algorithms a JWT subject token may be signed with: the
@@ -694,27 +700,35 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 // writeProjectScope writes what claims.Scope decides onto the session the token is stored with,
 // and grants the OAuth scope that decision carries: the project scope's wire word under
 // ClaimProjectScope; the list of projects under ClaimProjects, which is empty for every token of
-// the none scope; a named token's one project under claimLegacyProject too, and none for any
-// other; and oauthwire.ScopeRead for exchange.ProjectScopeNone, the read entry's decision, and
-// no scope for any other.
+// the none scope and the one project whose results a results token writes; a named token's one
+// project under claimLegacyProject too, and none for any other; the run under ClaimCI for a
+// results token, and no run for any other; and oauthwire.ScopeRead for
+// exchange.ProjectScopeNone, the read entry's decision, oauthwire.ScopeResults for
+// exchange.ProjectScopeResults, the result entry's, and no scope for any other.
 //
 // The entry decides the scope, and the request's own scope parameter never does. The exchange
 // client is registered for oauthwire.Scope alone (oauthstore.exchangeClient), so the library
-// refuses a request that names oauthwire.ScopeRead invalid_scope before decide runs, under every
-// entry; and it validates a requested scope without granting it, so a request under a read entry
-// that names oauthwire.Scope is granted oauthwire.ScopeRead here and nothing else, and the same
-// request under any other entry is granted nothing.
+// refuses a request that names oauthwire.ScopeRead or oauthwire.ScopeResults invalid_scope
+// before decide runs, under every entry; and it validates a requested scope without granting it,
+// so a request under a read or a result entry that names oauthwire.Scope is granted that entry's
+// scope here and nothing else, and the same request under any other entry is granted nothing.
 //
 // Any other value, exchange.ProjectScopeUnset included, is a server error that names it, and
 // nothing is written or granted: every exchange constructor sets the scope, so an unset one is a
 // decision nobody made and the broker's own failure rather than a token whose empty list reads as
 // any scope. Read as the person scope, as a build before exchange.ProjectScopeNone read every
 // value that was not named, a Claims nobody filled in would mint a token that acts as its person.
-// No path through decide hands it one today, since ExchangeConfig.Policy is a concrete
-// *exchange.Set and each of its decisions sets one of the three values below, so the refusal is
-// what keeps a value that package adds later from being minted as one of them before this switch
+// So is a run beside any scope but results, and a results decision with no run, either of which
+// would mint a token whose run says something other than its scope. No path through decide hands
+// it one today, since ExchangeConfig.Policy is a concrete *exchange.Set and each of its decisions
+// sets one of the four values below and a run exactly beside results, so the refusal is what
+// keeps a value that package adds later from being minted as one of them before this switch
 // learns its word.
 func writeProjectScope(request oauth2.Requester, session *oauthstore.ExchangeSession, claims exchange.Claims) error {
+	if (claims.CI != nil) != (claims.Scope == exchange.ProjectScopeResults) {
+		return oauth2.ErrServerError.WithDebugf("the exchange decided project scope %d (%s) with a run (%t), and a run goes beside the results scope alone", int(claims.Scope), claims.Scope, claims.CI != nil)
+	}
+	delete(session.Extra, ClaimCI)
 	switch claims.Scope {
 	case exchange.ProjectScopeNamed:
 		session.Extra[ClaimProjectScope] = oauthwire.ProjectScopeNamed
@@ -723,6 +737,12 @@ func writeProjectScope(request oauth2.Requester, session *oauthstore.ExchangeSes
 	case exchange.ProjectScopeNone:
 		session.Extra[ClaimProjectScope] = oauthwire.ProjectScopeNone
 		request.GrantScope(oauthwire.ScopeRead)
+	case exchange.ProjectScopeResults:
+		session.Extra[ClaimProjectScope] = oauthwire.ProjectScopeResults
+		// The run itself, which the store keeps as the JSON object its tags spell and an
+		// introspection reads back through the same declaration (Introspect).
+		session.Extra[ClaimCI] = *claims.CI
+		request.GrantScope(oauthwire.ScopeResults)
 	default:
 		return oauth2.ErrServerError.WithDebugf("the exchange decided project scope %d (%s) for %s, which this broker writes no word for", int(claims.Scope), claims.Scope, claims.Principal)
 	}
@@ -776,10 +796,11 @@ func dispatchUnreachable(err error) error {
 // kind at all, since the broker verified its account against BROKER_SIGNIN_DOMAIN itself; every
 // other trade acting as its person asks.
 //
-// A token an operator's entry maps: its one project must be one Dispatch says the entry's person
-// sees, and a pairing Dispatch refuses is refused invalid_request naming both. An account entry
-// that names no project (the shared public-session account's) is refused when Dispatch calls its
-// person a restricted member, who sees only the projects that name them (projectaccess.ListAllowed).
+// A token an operator's entry maps, a named token or a result entry's results token: its one
+// project must be one Dispatch says the entry's person sees, and a pairing Dispatch refuses is
+// refused invalid_request naming both. An account entry that names no project (the shared
+// public-session account's) is refused when Dispatch calls its person a restricted member, who
+// sees only the projects that name them (projectaccess.ListAllowed).
 // With no check configured an entry's token mints as it always has, since the operator's own
 // setting is what chose the project, or chose none.
 //
@@ -811,7 +832,7 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 		return oauth2.ErrServerError.WithWrap(err).WithDebugf("the decided projects %q do not parse: %v", stored, err)
 	}
 	access := p.exchange.Projects
-	if scope == oauthwire.ProjectScopeNamed {
+	if scope == oauthwire.ProjectScopeNamed || scope == oauthwire.ProjectScopeResults {
 		if access == nil {
 			return nil
 		}

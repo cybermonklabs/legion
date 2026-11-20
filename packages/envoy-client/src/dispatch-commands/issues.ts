@@ -8,6 +8,7 @@ import type {
   IssueComponentsInput,
   IssueDetails,
   IssueRouteStatus,
+  SpecCheckResult,
 } from "@legion/contracts";
 import { DEFAULT_ISSUE_PAGE_LIMIT } from "@legion/contracts";
 import { actorText } from "../actor-text";
@@ -21,6 +22,7 @@ import {
 import { dispatchChildRef, dispatchIssueRef, issueTopic } from "../dispatch-owner";
 import { messageFor } from "../errors";
 import { relatedCheckLines } from "../related-check";
+import { printable, printableJson } from "../runner-log";
 import { pageSummaryText, searchAnswer } from "../search-answer";
 import { otherAdviceLines, renderAdvice } from "./advice";
 import {
@@ -39,6 +41,7 @@ import {
 } from "./context";
 import { dispatchAnswered, refusalWithCode, withAccount, writeMayHaveLanded } from "./failures";
 import { linkFor } from "./links";
+import { observedAsKept } from "./observed-text";
 import { claimText, holdsSession, liveAgents, progressText, routeText } from "./render-issue";
 import { formatCheckResults } from "./render-results";
 import { notSubscribed } from "./results";
@@ -654,17 +657,92 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
 }
 
 /** Whether the CLI's `--dry-run` of a call asks Dispatch what the call's write would answer: a
- *  `dispatch result` record, whose dry run prints the pull-request body line the record would
- *  print, since that line is Dispatch's to write and a copy written here would be a second
- *  grammar. Every other dry run, a retraction's included, prints the arguments and sends nothing. */
+ *  `dispatch result` record of an issue's check, whose dry run prints the pull-request body line
+ *  the record would print, since that line is Dispatch's to write and a copy written here would
+ *  be a second grammar. Every other dry run, a retraction's and a CI job's record of a check of
+ *  the spec files (`project`) included, prints the arguments and sends nothing. */
 export function dryRunAsksDispatch(tool: string, args: Readonly<Record<string, unknown>>): boolean {
-  return tool === "dispatch_result" && args["retract"] === undefined;
+  return (
+    tool === "dispatch_result" && args["retract"] === undefined && args["project"] === undefined
+  );
 }
 
-/** `dispatch result`: record one result of one check of an issue's Verification document, or, as
- *  the CLI's dry run, ask Dispatch for the pull-request body line the record would print. */
+/**
+ * `dispatch result --project`: a CI job's record of its result of one check of the spec files,
+ * printed back as the stored result whole, as JSON: the in-toto statement of the run, which a
+ * reader keeps, whose recorder is the run and no person. It sends what a result keeps of observed
+ * (`observedAsKept`). The job runs it with its own identity and no session (`runDispatchCli`), and
+ * a session's call reaches it through `resultCommand`.
+ */
+export async function specCheckResultCommand(
+  client: DispatchClient,
+  args: Record<string, unknown>
+): Promise<DispatchToolResult> {
+  const project = stringArg(args, "project");
+  const observed = optionalString(args, "observed");
+  const stored = await client.recordSpecCheckResult(project, {
+    commit: stringArg(args, "commit"),
+    check: stringArg(args, "check"),
+    verdict: stringArg(args, "verdict"),
+    ...(observed === undefined ? {} : { observed: observedAsKept(observed) }),
+  });
+  const { predicate } = stored.attestation;
+  return {
+    text: JSON.stringify(stored, null, 2),
+    details: {
+      project,
+      result: stored.id,
+      seq: stored.seq,
+      check: predicate.check,
+      verdict: predicate.verdict,
+    },
+  };
+}
+
+/** One stored result of a check of the spec files, as `dispatch results --project` lists it:
+ *  Dispatch's record number, the check, the verdict, the job, the leg, the run, its attempt and
+ *  the commit. Each of them is a CI job's or the stored statement's text, so it prints by the rule
+ *  of a runner's log (`printable`, runner-log.ts): a listing read in a job's log starts no line of
+ *  its own and names no workflow command. */
+function specCheckResultLine(result: SpecCheckResult): string {
+  const { predicate, subject } = result.attestation;
+  const leg = predicate.leg === "" ? "no leg" : `leg ${printable(predicate.leg)}`;
+  const commit = subject?.[0]?.digest?.["gitCommit"] ?? "an unnamed commit";
+  return `- #${result.seq} ${printable(predicate.check)}: ${printable(predicate.verdict)}. Job ${printable(predicate.job)}, ${leg}, run ${printable(predicate.run.run_id)} attempt ${predicate.run.attempt}, commit ${printable(commit)}.`;
+}
+
+/** `dispatch results --project`: every result CI jobs stored for checks of the project's spec
+ *  files at one commit, one line each, newest first as Dispatch serves them, or the stored
+ *  results as JSON with `json`, each by the rule of a runner's log (runner-log.ts). */
+async function specCheckResultsCommand(
+  client: DispatchClient,
+  args: Record<string, unknown>
+): Promise<DispatchToolResult> {
+  const project = stringArg(args, "project");
+  const commit = stringArg(args, "commit");
+  const check = optionalString(args, "check");
+  const results = (await client.specCheckResults(project, commit, check)).results ?? [];
+  const what = check === undefined ? project : `check ${printable(check)} of ${project}`;
+  const text =
+    optionalBoolean(args, "json") === true
+      ? printableJson(JSON.stringify(results, null, 2))
+      : results.length === 0
+        ? `No result of ${what} is stored at ${printable(commit)}.`
+        : [
+            `Results of ${what} at ${printable(commit)}, newest first:`,
+            ...results.map(specCheckResultLine),
+          ].join("\n");
+  return { text, details: { project, commit, results: results.length } };
+}
+
+/** `dispatch result`: record one result of one check of an issue's Verification document, or,
+ *  with `project`, a CI job's result of a check of the spec files; or, as the CLI's dry run of
+ *  an issue's record, ask Dispatch for the pull-request body line the record would print. */
 export async function resultCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor } = context;
+  if (optionalString(args, "project") !== undefined) {
+    return await specCheckResultCommand(client, args);
+  }
   const retract = optionalString(args, "retract");
   if (retract !== undefined) {
     const retraction = await client.retractResult(retract, {
@@ -740,9 +818,12 @@ export async function resultCommand(context: CommandContext): Promise<DispatchTo
 }
 
 /** `dispatch results`: each check of an issue's Verification document with every result recorded
- *  against it. */
+ *  against it, or, with `project`, the results CI jobs stored for checks of the spec files. */
 export async function resultsCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client } = context;
+  if (optionalString(args, "project") !== undefined) {
+    return await specCheckResultsCommand(client, args);
+  }
   const issue = stringArg(args, "issue");
   const at = optionalString(args, "at");
   const brief = optionalBoolean(args, "brief") === true;

@@ -2,8 +2,9 @@
 beside it, is the data it reads: each ci.yaml gate's go commands and static reads, and the files
 tests read outside their packages. ci_workflow_rules.py, also beside it, holds the rules that
 read none of that - what no `if:` of ci.yaml may say, what every job's `if:` must say, what
-ci-caches.yaml must save for the entries ci.yaml restores, and that ci.yaml is the only workflow
-of this repository running on a merge group - and main() runs them.
+ci-caches.yaml must save for the entries ci.yaml restores, that ci.yaml is the only workflow
+of this repository running on a merge group, and that a job running the results action makes
+its go test -json report with no -v but -json's own test2json - and main() runs them.
 
 check-ci-filters.sh runs it from the repository root with this directory on PYTHONPATH, through
 `import ci_filter_coverage` rather than as a script, so ci_job_reads.py's `from ci_filter_coverage
@@ -2757,7 +2758,8 @@ def check() -> int:
     # after that work, where the files each gate reads exist.
     check_dead_patterns(data, filters, expander, problems)
     session = Session()
-    report = []
+    # Rule 22's line first: what it read of the jobs that run the results action, zero included.
+    report = rules.check_report_steps(problems)
     # Per filter, the files the gates on it read and how the check names those gates: what rule
     # 9's second direction is judged over, collected as each gate's set is built rather than
     # computed a second time.

@@ -342,6 +342,149 @@ describe("the dispatch command surface", () => {
     });
   });
 
+  // An empty issue key, project key or check id names nothing, and sent it reaches a route that is
+  // no route (`PATCH /api/v1/issues/`), which a rolling release also answers. It is refused before
+  // any request, naming the flag that gave it: an empty variable in a job's step writes one.
+  test("an empty --issue, --project or --check is refused, naming the flag that gave it", () => {
+    const emptyFile = {
+      readText: (path: string): string => {
+        if (path === "empty.txt") return "";
+        throw new Error(`unexpected read ${path}`);
+      },
+    };
+    for (const [argv, problem] of [
+      [
+        ["issue-update", "--issue", "", "--status", "in_progress"],
+        "--issue is empty, so the call names no issue: a variable that gives it may be empty or unset",
+      ],
+      [
+        ["issue-update", "--issue=", "--status", "in_progress"],
+        "--issue is empty, so the call names no issue: a variable that gives it may be empty or unset",
+      ],
+      [
+        ["read", "--issue-file", "empty.txt"],
+        "--issue-file is empty, so the call names no issue: a variable that gives it may be empty or unset",
+      ],
+      [
+        ["issues", "--project", ""],
+        "--project is empty, so the call names no project: a variable that gives it may be empty or unset",
+      ],
+      [
+        [
+          "result",
+          "--project",
+          "ACME",
+          "--check",
+          "",
+          "--verdict",
+          "pass",
+          "--commit",
+          "a".repeat(40),
+        ],
+        "--check is empty, so the call names no check: a variable that gives it may be empty or unset",
+      ],
+    ] as const) {
+      expect(parseCommand(argv, emptyFile), argv.join(" ")).toMatchObject({
+        kind: "refused",
+        problems: [problem],
+      });
+    }
+  });
+
+  // The same holds for every other value that names what a call is about or narrows what a read
+  // answers: an empty commit records a result at no commit, an empty `--at` pins the read to no
+  // commit and an issue list's empty `--parent` lists every issue of the project, each with no
+  // line, and an empty result id or comment id goes into the path. `issue-update --parent ""`
+  // clears the parent, as its flag says, so that command takes it.
+  test("an empty --commit, --at, --retract, --comment or issue list --parent is refused, naming the flag", () => {
+    const unset = (flag: string, noun: string) =>
+      `${flag} is empty, so the call names no ${noun}: a variable that gives it may be empty or unset`;
+    for (const [argv, problem] of [
+      [
+        ["result", "--project", "ACME", "--check", "probe", "--verdict", "pass", "--commit", ""],
+        unset("--commit", "commit"),
+      ],
+      [["results", "--project", "ACME", "--commit", ""], unset("--commit", "commit")],
+      [["results", "--issue", "ACME-1", "--at", ""], unset("--at", "commit")],
+      [["issues", "--project", "ACME", "--parent", ""], unset("--parent", "parent")],
+      [["result", "--retract", "", "--reason", "Wrong commit."], unset("--retract", "result")],
+      [["resolve-comment", "--comment", ""], unset("--comment", "comment")],
+    ] as const) {
+      expect(parseCommand(argv, noFiles), argv.join(" ")).toMatchObject({
+        kind: "refused",
+        problems: [problem],
+      });
+    }
+    expect(parseCommand(["issue-update", "--issue", "ACME-1", "--parent", ""], noFiles)).toEqual({
+      kind: "call",
+      tool: "dispatch_issue_update",
+      args: { issue: "ACME-1", parent: "" },
+      dryRun: false,
+    });
+  });
+
+  // A value of only white space names nothing either: Dispatch trims a query value, so
+  // `dispatch issues --project " "` listed every project's issues with no line. And `.` or `..`
+  // in a path is a step of the path, which the URL parser drops: `dispatch read --issue ..` asked
+  // `GET /api/v1/`, another route. So the one refusal reads the value trimmed, and refuses `.` and
+  // `..` for each flag whose value goes into a path, `--session` among them.
+  test("a value of only white space, or . or .. where it goes into a path, is refused, naming the flag", () => {
+    const blank = (flag: string, noun: string) =>
+      `${flag} is only white space, so the call names no ${noun}`;
+    const step = (flag: string, value: string, noun: string) =>
+      `${flag} is "${value}", a step of a URL path, which the URL drops, so the call names no ${noun}`;
+    for (const [argv, problem] of [
+      [["issues", "--project", " "], blank("--project", "project")],
+      [["issues", "--project", "ACME", "--parent", "\t"], blank("--parent", "parent")],
+      [["open-asks", "--project", " "], blank("--project", "project")],
+      [["results", "--issue", "ACME-1", "--at", " "], blank("--at", "commit")],
+      [["issue-update", "--issue", "  ", "--status", "in_progress"], blank("--issue", "issue")],
+      [["read", "--issue", ".."], step("--issue", "..", "issue")],
+      [["read", "--issue", " . "], step("--issue", ".", "issue")],
+      [
+        ["result", "--retract", "..", "--reason", "Wrong commit."],
+        step("--retract", "..", "result"),
+      ],
+      [["resolve-comment", "--comment", "."], step("--comment", ".", "comment")],
+      [
+        ["send-to-agent", "--session", "..", "--body", "Hello."],
+        step("--session", "..", "session"),
+      ],
+      [
+        ["send-to-agent", "--session", "", "--body", "Hello."],
+        "--session is empty, so the call names no session: a variable that gives it may be empty or unset",
+      ],
+      [
+        ["architecture-sync", "--project", "..", "--repo", "acme/infra"],
+        step("--project", "..", "project"),
+      ],
+    ] as const) {
+      expect(parseCommand(argv, noFiles), argv.join(" ")).toMatchObject({
+        kind: "refused",
+        problems: [problem],
+      });
+    }
+    // A dot is no step outside a path: a query's project or check of "." is sent as it is, and
+    // Dispatch answers that no such thing exists.
+    expect(parseCommand(["results", "--issue", "ACME-1", "--at", "."], noFiles)).toMatchObject({
+      kind: "call",
+    });
+  });
+
+  // `dispatch issue --parent ""` made the issue with no parent and no line, as an empty variable
+  // writes it, so the create refuses it as the issue list does. `issue-update --parent ""` clears
+  // the parent, as its help says, so that command still takes it (the row above).
+  test("an empty --parent of dispatch issue is refused, naming the flag", () => {
+    expect(
+      parseCommand(["issue", "--project", "ACME", "--title", "A title", "--parent", ""], noFiles)
+    ).toMatchObject({
+      kind: "refused",
+      problems: [
+        "--parent is empty, so the call names no parent: a variable that gives it may be empty or unset",
+      ],
+    });
+  });
+
   test("a second bare issue key is refused", () => {
     expect(parseCommand(["read", "ACME-12", "ACME-13"], noFiles)).toEqual({
       kind: "refused",

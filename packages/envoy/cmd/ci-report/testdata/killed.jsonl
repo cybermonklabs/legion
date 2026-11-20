@@ -1,0 +1,4 @@
+{"Time":"2026-11-16T12:13:53.049958426Z","Action":"start","Package":"example.com/acme/probe/slow"}
+{"Time":"2026-11-16T12:13:53.067610538Z","Action":"run","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds"}
+{"Time":"2026-11-16T12:13:53.067678826Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"=== RUN   TestTheSlowReadEnds\n","OutputType":"frame"}
+{"Time":"2026-11-16T12:13:53.067699197Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"    slow_test.go:13: the read starts\n"}

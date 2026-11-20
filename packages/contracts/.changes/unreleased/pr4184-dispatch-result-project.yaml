@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  `dispatch_result` takes `project`: a CI job's result of a check of the spec files, with `check`, `verdict`, `commit` and `observed` alone. Its verdict may be `could_not_run`, which only the project form takes. Beside `project`, every argument of an issue's record (`issue`, `role`, `surface`, `run`, `negative_control`, `failed`, `skipped`, `excluded`, `screenshots`) and `retract` and `reason` are refused, naming each.
+
+  `dispatch_results` takes `project` with `commit`, and `check` and `json`: the results CI jobs stored at that commit. `issue` is no longer required: exactly one of `issue` and `project` is. `at` and `brief` go with `issue` alone, and `commit`, `check` and `json` with `project` alone.

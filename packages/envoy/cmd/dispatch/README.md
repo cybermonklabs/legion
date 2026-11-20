@@ -217,12 +217,20 @@ A read-only token is the token the broker mints from a read entry (`BROKER_EXCHA
 It holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
 `brokerTokenVerifier` builds the verifier with `brokertoken.Options.ServesReadOnly` set, so Dispatch accepts such a token and marks its credential read-only (`model.Credential.ReadOnly`), with no OAuth scope.
 Dispatch serves it on the routes its read list names (`readScopeRoutes` in `internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone.
-Every other route of the table, and `GET /ws/live`, answers it `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseReadOnlyToken`).
+Every other route of the table, and `GET /ws/live`, answers it `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseLimitedToken`).
 That refusal comes before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing but the row of its spent DPoP proof, which the token's verification records before the refusal.
 The other mounts outside the table read no broker token: `/ws/doc/{room}` answers such a token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
 `/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries such a token as they answer any other caller, and none of the five makes a write for it.
 The document socket's heartbeat re-checks the browser credential it was admitted with, the sign-in cookie or, under `DISPATCH_IDENTITY=iap`, the IAP assertion its upgrade carried (Identity, above), and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
 A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`, and the NATS auth service, which reads the broker's answer through `brokertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
+
+A results token is the token the broker mints from a result entry (`BROKER_EXCHANGE_RESULT_WORKFLOWS`) for one GitHub Actions run.
+It holds the OAuth scope `results` alone and the project scope `results`, and names a person, one project, the session of its workflow and the run (`ci`).
+That person stays inside Dispatch: the result such a token writes names the run's session and principal as its recorder and no person, and the access log names the run's session as the caller.
+`brokerTokenVerifier` builds the verifier with `brokertoken.Options.ServesResults` set too, so Dispatch accepts such a token and marks its credential results-only with the run (`model.Credential.ResultsOnly`, `model.Credential.CI`), with no OAuth scope.
+Dispatch serves it on the routes its results list names (`resultsScopeRoutes` in `internal/dispatch/api/routes_table.go`), today `POST /api/v1/projects/{key}/results` alone, where a CI job writes the result of a check of the spec files at its commit.
+Every other route of the table, and `GET /ws/live`, answers it `403 RESULTS_ONLY_TOKEN` with no `WWW-Authenticate` challenge (`refuseLimitedToken`), before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler.
+A service whose verifier does not set that switch, the Envoy listener among them, answers a results token `401`.
 
 A credential that names one project may write that project and nothing else.
 Every mutating row of the route table declares what its write belongs to (`internal/dispatch/api/routes_table.go`, `writeClasses`;
@@ -2557,6 +2565,11 @@ Nothing updates a row — another run is another row — and a table check refus
 `check_results_check` serves the Verification tab's read of one check's results newest first, and `check_results_issue` an issue's own reads.
 A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
+Migration `20261116094741_spec_check_results` creates `spec_check_results`, one row per result a CI job wrote for a check of the spec files at the commit it tested (`POST /api/v1/projects/{key}/results`).
+A row names the project, the repository, the check, the commit, the check's procedure digest, the job and the leg read from the run's check run, the check run, the workflow run and its attempt, the verdict (`pass`, `fail` or `could_not_run`), the in-toto statement the read answers, the session of the token and `recorded_at`, and `seq`, Dispatch's record order, which the read orders by.
+Nothing updates or deletes a row: another run, attempt or leg is another row, and the table has no foreign key, so no delete of another table removes one.
+`spec_check_results_commit` on `(project_key, commit_sha, check_id)` serves the read of one project's results at one commit.
+A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 Migration `20261117093000_check_results_commit_repo` adds the nullable column `check_results.commit_repo`: the repository the record route took a result's commit to be of, written only where that is a repository the check's issue links a pull request in rather than the one the issue resolves to, and null for every other row, the rows before it included.
 Such a repository is one with an open or merged linked pull request that GitHub said holds the commit, and no other: where a linked read did not answer and no repository is shown to hold the commit, no result is stored at all (`502 GITHUB_UNREADABLE`).
 The results read compares an `after_merge` or `default_branch` result with that repository's branches where the column names one, and reads a `before_merge` result's pull requests through it.
@@ -3575,7 +3588,7 @@ a failed fetch, an attempt silent too long, a 5xx, a 408, a 429 and a `409 KEY_I
 No route requires the header: a write without one runs as it always did, unkeyed, so a script or the Legion daemon's outbox keeps working.
 `PUT` and `DELETE` take no key, being idempotent already.
 A key is 1 to 128 letters, digits, `.`, `_`, `:` and `-`, bare or double-quoted, and belongs to the caller who sent it:
-a person's canonical login (from the dashboard or through a personal token), a service token's subject, or the shared agent token.
+a person's canonical login (from the dashboard or through a personal token), a CI job's run for its results token (`ci-run:<repository>#<check run>`, since the person its result entry names sent nothing), a service token's subject, or the shared agent token.
 Dispatch keeps each key's answer for 24 hours (`request_keys`, migration `0137`; the maintenance sweep deletes older rows, Background loops above).
 
 A keyed write finishes on the server whatever its client does.

@@ -14,10 +14,11 @@ export interface SubjectToken {
  * issuer — and a source that caches must cache for less than the token it answers lives.
  *
  * It mirrors the Go client's `Source` (`packages/envoy/internal/brokerclient/source.go`). The
- * implementations here are a machine's three identities — a pod's projected token
+ * implementations here are a machine's four identities — a pod's projected token
  * (`projected-token.ts`), a Compute Engine machine's own Google identity token
- * (`metadata-identity.ts`) and a Google identity token minted through a workload identity pool
- * (`pool-identity.ts`) — and a person's sign-in on the machine (`person-identity.ts`).
+ * (`metadata-identity.ts`), a Google identity token minted through a workload identity pool
+ * (`pool-identity.ts`) and a GitHub Actions job's OIDC token (`github-actions.ts`) — and a
+ * person's sign-in on the machine (`person-identity.ts`).
  */
 export interface TokenSource {
   /**

@@ -2282,6 +2282,63 @@ func TestLoadReadsTheExchangeWorkflows(t *testing.T) {
 	}
 }
 
+// TestLoadReadsTheExchangeResultWorkflows pins BROKER_EXCHANGE_RESULT_WORKFLOWS:
+// <repository>=<workflow>=<ref pattern>=<project>=<person> entries in order, none when unset,
+// one workflow under two patterns, and refusals naming the setting and the entry for one that is
+// not of that form, a ref pattern exchange.CheckRefPattern refuses, and one workflow under one
+// pattern twice. It needs GitHub's issuer and audience, whose tokens its runs present.
+func TestLoadReadsTheExchangeResultWorkflows(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ExchangeResultWorkflows != nil {
+		t.Fatalf("ExchangeResultWorkflows = %v, want nil when BROKER_EXCHANGE_RESULT_WORKFLOWS is unset", cfg.ExchangeResultWorkflows)
+	}
+	withGitHub := func() map[string]string {
+		e := validEnv()
+		e["BROKER_EXCHANGE_GITHUB_ISSUER"] = "https://token.actions.githubusercontent.com"
+		e["BROKER_EXCHANGE_GITHUB_AUDIENCE"] = "dispatch-exchange"
+		return e
+	}
+	const workflow = "example-org/example-repo=.github/workflows/ci-results.yaml"
+	e := withGitHub()
+	e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = workflow + "=refs/heads/*=EXAMPLE=ada@example.com\n " + workflow + "=refs/heads/*/*=EXAMPLE=ada@example.com "
+	cfg, err = Load(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []exchange.ResultWorkflowEntry{
+		{Repository: "example-org/example-repo", Workflow: ".github/workflows/ci-results.yaml", RefPattern: "refs/heads/*", Project: "EXAMPLE", Person: "ada@example.com"},
+		{Repository: "example-org/example-repo", Workflow: ".github/workflows/ci-results.yaml", RefPattern: "refs/heads/*/*", Project: "EXAMPLE", Person: "ada@example.com"},
+	}
+	if !slices.Equal(cfg.ExchangeResultWorkflows, want) {
+		t.Fatalf("ExchangeResultWorkflows = %v, want %v", cfg.ExchangeResultWorkflows, want)
+	}
+	for _, bad := range []string{
+		"example-org/example-repo", workflow + "=refs/heads/*=EXAMPLE",
+		workflow + "==EXAMPLE=ada@example.com", workflow + "=refs/heads/*=EXAMPLE=ada@example.com=a-session",
+		workflow + "=refs/*/main=EXAMPLE=ada@example.com", workflow + "=refs/heads/[x=EXAMPLE=ada@example.com",
+	} {
+		e := withGitHub()
+		e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = bad
+		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_RESULT_WORKFLOWS") || !strings.Contains(err.Error(), strconv.Quote(bad)) {
+			t.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS = %q: err = %v, want a refusal naming the setting and the entry", bad, err)
+		}
+	}
+	e = withGitHub()
+	const again = workflow + "=refs/heads/*=OTHER=ada@example.com"
+	e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = workflow + "=refs/heads/*=EXAMPLE=ada@example.com " + again
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_RESULT_WORKFLOWS") || !strings.Contains(err.Error(), strconv.Quote(again)) {
+		t.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS naming one workflow and pattern twice: err = %v, want a refusal naming the setting and the entry", err)
+	}
+	e = validEnv()
+	e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = workflow + "=refs/heads/*=EXAMPLE=ada@example.com"
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_RESULT_WORKFLOWS") || !strings.Contains(err.Error(), "BROKER_EXCHANGE_GITHUB_ISSUER") {
+		t.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS with no GitHub issuer: err = %v, want a refusal naming the setting and BROKER_EXCHANGE_GITHUB_ISSUER", err)
+	}
+}
+
 // TestLoadRefusesAHalfConfiguredGitHubIssuer pins that GitHub's issuer and audience are
 // both-or-neither, as the cluster's pair is: half a pair would register a token type whose tokens
 // could not be checked.

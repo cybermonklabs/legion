@@ -1,0 +1,14 @@
+{"Time":"2026-11-16T12:50:11.271823478Z","Action":"start","Package":"example.com/acme/probe"}
+{"Time":"2026-11-16T12:50:11.297293282Z","Action":"run","Package":"example.com/acme/probe","Test":"TestProbe"}
+{"Time":"2026-11-16T12:50:11.297396039Z","Action":"output","Package":"example.com/acme/probe","Test":"TestProbe","Output":"=== RUN   TestProbe\n","OutputType":"frame"}
+{"Time":"2026-11-16T12:50:11.297426441Z","Action":"output","Package":"example.com/acme/probe","Test":"TestProbe","Output":"    probe_test.go:15: the probe read 1 claim\n"}
+{"Time":"2026-11-16T12:50:11.297436795Z","Action":"output","Package":"example.com/acme/probe","Test":"TestProbe","Output":"--- PASS: TestProbe (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T12:50:11.297440146Z","Action":"pass","Package":"example.com/acme/probe","Test":"TestProbe","Elapsed":0}
+{"Time":"2026-11-16T12:50:11.297451155Z","Action":"run","Package":"example.com/acme/probe","Test":"TestSecondProbe"}
+{"Time":"2026-11-16T12:50:11.297453395Z","Action":"output","Package":"example.com/acme/probe","Test":"TestSecondProbe","Output":"=== RUN   TestSecondProbe\n","OutputType":"frame"}
+{"Time":"2026-11-16T12:50:11.297456909Z","Action":"output","Package":"example.com/acme/probe","Test":"TestSecondProbe","Output":"    probe_test.go:23: the second probe read 1 claim\n"}
+{"Time":"2026-11-16T12:50:11.297462667Z","Action":"output","Package":"example.com/acme/probe","Test":"TestSecondProbe","Output":"--- PASS: TestSecondProbe (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T12:50:11.297465475Z","Action":"pass","Package":"example.com/acme/probe","Test":"TestSecondProbe","Elapsed":0}
+{"Time":"2026-11-16T12:50:11.297469018Z","Action":"output","Package":"example.com/acme/probe","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-16T12:50:11.301099401Z","Action":"output","Package":"example.com/acme/probe","Output":"ok  \texample.com/acme/probe\t0.027s\n"}
+{"Time":"2026-11-16T12:50:11.301145116Z","Action":"pass","Package":"example.com/acme/probe","Elapsed":0.029}

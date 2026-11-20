@@ -35,6 +35,7 @@ import {
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_KEY_REUSED,
 } from "@legion/contracts";
+import { routeAnswer } from "../../test/route-answers";
 import type { RequestCredential } from "../bearer";
 import {
   DispatchClient,
@@ -51,9 +52,14 @@ const ELSEWHERE = "http://elsewhere.test/api/v1/issues/DSP-1/comments";
 
 const actor = { kind: "session" as const, id: "session-1" };
 const comment = { body: "Shipped.", actor };
-const posted = {
-  comment: { id: "comment-1", body: "Shipped." },
-} as unknown as CommentWriteResponse;
+/** The comment Dispatch stores for the write, as its route answers it: a 2xx that names the key
+ *  back reads into the write's row (`dispatch-write-rows.ts`), and one that is not that row is a
+ *  landing whose answer was lost (`#writtenRow`). */
+const posted = routeAnswer<CommentWriteResponse>("POST /api/v1/issues/{key}/comments", {
+  id: "comment-1",
+  issue_key: "DSP-1",
+  body: "Shipped.",
+});
 
 /**
  * What a step of a write met, by what Dispatch and the broker say it is:
@@ -107,11 +113,24 @@ interface Kind {
    *  keyed write, whatever the process knows of the layer. */
   readonly notJson?: boolean;
   /** Whether it can come after Dispatch committed the write: a 5xx, `KEY_IN_FLIGHT`, a silence
-   *  cut, a reset after the request went out, a 2xx whose body did not arrive whole. */
+   *  cut, a reset after the request went out, a 2xx whose body did not arrive whole. Not
+   *  Dispatch's answers of its check of a broker token that judged nothing, which come before the
+   *  keyed layer claims the key (`brokerTokenActor`, `keyedWrites`). */
   readonly followsCommit?: boolean;
   /** Whether Dispatch may still be running the write when it comes (a silence cut,
    *  `KEY_IN_FLIGHT`), which lets the client ask for longer. */
   readonly running?: boolean;
+  /** Whether it is a bodiless 2xx (a 204, a 205) the keyed layer answered: the comment's row
+   *  (`dispatch-write-rows.ts`) needs a body, so it is a landing whose answer was lost
+   *  (`#writtenRow`). */
+  readonly bodiless?: boolean;
+  /** Whether it is a refusal the keyed layer echoed that judges this request alone and nothing of
+   *  an earlier attempt under the key (`422 KEY_REUSED`): after an attempt that may have landed,
+   *  it leaves the write unsettled. */
+  readonly ownOnly?: boolean;
+  /** Whether it is Dispatch's answer that its check of the token judged nothing: no handler ran,
+   *  so a wait the deadline or the caller's stop ends after it ends with that answer. */
+  readonly notChecked?: boolean;
   /** The status of the answer it is. */
   readonly status?: number;
   /** How a write that ends after it with nothing landed is told: its own error. */
@@ -254,6 +273,7 @@ const KINDS: readonly Kind[] = [
     role: "applied",
     at: "attempt",
     echoed: true,
+    bodiless: true,
     respond: (key) => new Response(null, { status: 204, headers: { "Idempotency-Key": key } }),
   },
   {
@@ -261,6 +281,7 @@ const KINDS: readonly Kind[] = [
     role: "applied",
     at: "attempt",
     echoed: true,
+    bodiless: true,
     respond: (key) => new Response(null, { status: 205, headers: { "Idempotency-Key": key } }),
   },
   {
@@ -300,6 +321,7 @@ const KINDS: readonly Kind[] = [
     role: "refusal",
     at: "attempt",
     echoed: true,
+    ownOnly: true,
     status: 422,
     respond: (key) =>
       refused(422, IDEMPOTENCY_KEY_REUSED, "this key was used for another request", key),
@@ -371,7 +393,9 @@ const KINDS: readonly Kind[] = [
     name: "503 BROKER_UNAVAILABLE",
     role: "repeatable",
     at: "attempt",
-    followsCommit: true,
+    notChecked: true,
+    status: 503,
+    own: { as: "refusal", status: 503 },
     respond: () =>
       refused(
         503,
@@ -528,7 +552,7 @@ const KINDS: readonly Kind[] = [
     name: "trade unanswered",
     role: "credential-final",
     at: "credential",
-    fails: () => new TradeUnansweredError("this machine's pool identity"),
+    fails: () => new TradeUnansweredError("this machine's pool identity", "exchange"),
   },
   { name: "deadline", role: "stop-wait", at: "wait", own: { as: "deadline" } },
   { name: "stop", role: "stop-wait", at: "wait", own: { as: "cancelled" } },
@@ -568,17 +592,12 @@ const UNSETTLED: Ending = { as: "unsettled" };
 
 /**
  * The rule, on its own: what follows each of `events`, read from what Dispatch and the secrets
- * broker say each is (`Kind`), and the write's state, the keyed layer it has seen, and the limits
- * it has spent.
+ * broker say each is (`Kind`), and the write's state and the limits it has spent. What the call
+ * knows of the keyed layer decides nothing here: every answer the layer gives a keyed write names
+ * its key back, so a 2xx that names none is no answer of the call's wherever it comes from.
  */
 function oracle(events: readonly Kind[]): Decision[] {
   let landed = false;
-  // Whether this call has seen the keyed layer: an answer that echoed its key, or a `/healthz`
-  // that said so, which the client asks before a paced resend once an attempt may have landed
-  // (the harness's says yes); a resend before that asks nothing. What the call saw it keeps
-  // (`WriteProgress.sawKeyedLayer`): Dispatch's own refusal with no echo sets aside only what
-  // the process remembers, which the harness starts afresh for each run.
-  let known = false;
   let running = false;
   let pauses = 0;
   let roundPauses = 0;
@@ -587,20 +606,28 @@ function oracle(events: readonly Kind[]): Decision[] {
   // Whether the last presentation could not present while its trade goes on, and no attempt went
   // out after it: a wait's stop before a landing then ends with the credential's failure.
   let credentialFailed = false;
+  // The refusal of Dispatch's check of the token that judged nothing, where the last attempt got
+  // one: a wait's stop before a landing then ends with it, since it is why nothing ran.
+  let notCheckedBy: Ending | undefined;
   const end = (ending: Ending): Decision => ({ asks: false, ending });
   const endAfter = (own: Ending): Decision => end(landed ? UNSETTLED : own);
   return events.map((event): Decision => {
     const refusal: Ending = { as: "refusal", status: event.status ?? 0 };
-    if (event.at === "attempt") credentialFailed = false;
+    if (event.at === "attempt") {
+      credentialFailed = false;
+      notCheckedBy = event.notChecked === true ? refusal : undefined;
+    }
     if (event.at === "credential") credentialFailed = event.role === "repeatable";
     switch (event.role) {
       case "applied":
         // A 2xx whose body is empty or not JSON is no answer of Dispatch's; nor is one without
-        // the key from a Dispatch known to answer every keyed write with it.
-        if (event.notJson || (!event.echoed && known)) return end(UNSETTLED);
+        // the key, which every answer the keyed layer gives a keyed write carries. A bodiless 2xx
+        // the layer answered is a landing whose answer was lost: the write's row needs a body.
+        if (event.notJson || !event.echoed) return end(UNSETTLED);
+        if (event.bodiless === true) return end({ as: "landed" });
         return end({ as: "resolved" });
       case "refusal":
-        if (event.echoed) return end(refusal);
+        if (event.echoed && event.ownOnly !== true) return end(refusal);
         return endAfter(refusal);
       case "committed":
         return end({ as: "landed" });
@@ -614,7 +641,9 @@ function oracle(events: readonly Kind[]): Decision[] {
       case "stop-in-flight":
         return end(UNSETTLED);
       case "stop-wait":
-        return endAfter(credentialFailed ? { as: "credential" } : (event.own as Ending));
+        return endAfter(
+          credentialFailed ? { as: "credential" } : (notCheckedBy ?? (event.own as Ending))
+        );
       case "dead-token":
         if (deadTokens < LIMITS.deadTokens) {
           deadTokens += 1;
@@ -631,12 +660,10 @@ function oracle(events: readonly Kind[]): Decision[] {
       case "repeatable": {
         if (event.followsCommit) landed = true;
         if (event.running) running = true;
-        if (event.echoed) known = true;
         const allowed = pauses < LIMITS.pauses && (running || roundPauses === 0);
         if (!allowed) return endAfter(event.own ?? UNSETTLED);
         pauses += 1;
         roundPauses += 1;
-        if (landed) known = true;
         return { asks: true };
       }
       default:

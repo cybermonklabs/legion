@@ -66,6 +66,17 @@ const (
 	readerService = "example-reader"
 	readerSession = "example-reader-session"
 	readerPodUID  = "pod-uid-reader"
+	// exchangeRepository is the repository both workflow settings list here: releaseWorkflow on
+	// refs/heads/main, an exact BROKER_EXCHANGE_WORKFLOWS entry whose runs write project for
+	// person, and resultsWorkflow on every branch one segment below refs/heads/, the
+	// BROKER_EXCHANGE_RESULT_WORKFLOWS entry whose runs write only project's results, under
+	// resultsSession. resultsBranch is the branch a run of it was started on, at commitSHA.
+	exchangeRepository = "example-org/example-repo"
+	releaseWorkflow    = ".github/workflows/release.yaml"
+	resultsWorkflow    = ".github/workflows/ci-results.yaml"
+	resultsSession     = "ci-results:" + exchangeRepository + "/" + resultsWorkflow
+	resultsBranch      = "refs/heads/topic"
+	commitSHA          = "0123456789abcdef0123456789abcdef01234567"
 	// enrolmentAudience is what a pod's enrolment token and a listed caller's own token carry;
 	// exchangeAudience is what a token presented to the exchange must carry, and workflowAudience
 	// what a GitHub workflow run's would. A token minted for one is not spendable at another.
@@ -179,10 +190,10 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 			fields  map[string]any
 		}{
 			{"broker listening", map[string]any{"addr": addr}},
-			{"token exchange", map[string]any{"state": "on", "kubernetes": true, "github": true, "accounts": 2, "read_accounts": 1}},
+			{"token exchange", map[string]any{"state": "on", "kubernetes": true, "github": true, "accounts": 2, "read_accounts": 1, "workflows": 1, "result_workflows": 1}},
 		} {
 			if len(recordsWith(boot, want.message, want.fields)) == 0 {
-				t.Fatalf("the boot log has no %q line carrying %v; the real binary must log the address it bound — the one that just answered /healthz — and report its token exchange on, with both issuers, the two listed accounts and the one read entry:\n%s", want.message, want.fields, boot)
+				t.Fatalf("the boot log has no %q line carrying %v; the real binary must log the address it bound — the one that just answered /healthz — and report its token exchange on, with both issuers, the two listed accounts, the one read entry, the one workflow entry and the one result entry:\n%s", want.message, want.fields, boot)
 			}
 		}
 	})
@@ -736,6 +747,162 @@ func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) 
 	})
 }
 
+// mintRunToken is a GitHub workflow run's token for the exchange: a run of workflowPath of
+// exchangeRepository on gitRef, run run of its workflow, carrying the claims GitHub puts in every
+// run's token, the run's commit, attempt, runner and the check run of its job among them. Each
+// call mints a fresh jti, as a run does: the exchange accepts one once.
+func mintRunToken(t *testing.T, github *oidctest.Issuer, key *oidctest.Key, workflowPath, gitRef, run string) string {
+	t.Helper()
+	now := time.Now()
+	runRef := exchangeRepository + "/" + workflowPath + "@" + gitRef
+	return github.Mint(t, key, map[string]any{
+		"iss":                github.URL(),
+		"sub":                "repo:" + exchangeRepository + ":ref:" + gitRef,
+		"aud":                workflowAudience,
+		"iat":                now.Add(-time.Minute).Unix(),
+		"exp":                now.Add(5 * time.Minute).Unix(),
+		"jti":                "run-" + run + "-" + strconv.FormatInt(now.UnixNano(), 10),
+		"repository":         exchangeRepository,
+		"workflow_ref":       runRef,
+		"job_workflow_ref":   runRef,
+		"ref":                gitRef,
+		"sha":                commitSHA,
+		"event_name":         "push",
+		"run_id":             run,
+		"run_attempt":        "1",
+		"runner_environment": "github-hosted",
+		"check_run_id":       "9" + run,
+	})
+}
+
+// runForm is the exchange request of a workflow run presenting subjectToken and naming session.
+func runForm(subjectToken, session string) url.Values {
+	return with(exchangeForm(subjectToken, session), "subject_token_type", oauthwire.SubjectTokenTypeGitHub)
+}
+
+// introspected is the answer the listed API account reads token back as, failing the test on
+// any status but 200. It is decoded through the one declaration both ends of the route share, so
+// a caller compares the answer whole.
+func introspected(t *testing.T, live *liveBroker, token, apiToken string) oauthwire.Introspection {
+	t.Helper()
+	status, body := live.introspect(t, token, apiToken)
+	if status != http.StatusOK {
+		t.Fatalf("introspection by the listed API account %s = %d %v, want 200", apiAccount, status, body)
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var answer oauthwire.Introspection
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		t.Fatalf("the introspection answer %s is not an introspection: %v", raw, err)
+	}
+	return answer
+}
+
+// TestTheResultsTokenIntrospectsAsResultsAlone is the live proof of the result entry, on the real
+// binary and a fresh schema: a run of the workflow BROKER_EXCHANGE_RESULT_WORKFLOWS lists, on a
+// branch its pattern matches, presents its GitHub token with a DPoP proof of its own key, naming
+// no session, and is answered a token the listed API account reads back as the scope results,
+// the project scope results, the entry's person and project, the session of the workflow, and the
+// run the token was minted for, its commit and the check run of its job among them. The same
+// GitHub token presented again mints nothing, since a run's token is spent once; and a run of the
+// same workflow on a ref the pattern does not match is refused, naming the ref.
+func TestTheResultsTokenIntrospectsAsResultsAlone(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	githubKey := github.PublishKey(t, "github-key")
+	key := proofKey(t)
+	jkt, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+	broker := startBroker(t, brokerOptions{Env: exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds)})
+	broker.Await(t, "token exchange")
+	live := newLiveBroker(broker.Addr, key)
+	subject := mintRunToken(t, github, githubKey, resultsWorkflow, resultsBranch, "7")
+	var token string
+
+	t.Run("a run of the result entry's workflow mints a token, naming no session", func(t *testing.T) {
+		status, body := live.exchange(t, runForm(subject, ""))
+		token, _ = body["access_token"].(string)
+		if status != http.StatusOK || token == "" || body["token_type"] != "DPoP" {
+			t.Fatalf("the exchange of a run of %s on %s = %d %v, want 200 with a DPoP-bound access token", resultsWorkflow, resultsBranch, status, body)
+		}
+	})
+
+	t.Run("a listed service account introspects it as the results token and nothing more", func(t *testing.T) {
+		if token == "" {
+			t.Fatal("the exchange minted no access token, so there is nothing to read back")
+		}
+		answer := introspected(t, live, token, apiToken)
+		run := oauthwire.CIRun{
+			Repository: exchangeRepository, WorkflowRef: exchangeRepository + "/" + resultsWorkflow + "@" + resultsBranch, Ref: resultsBranch,
+			SHA: commitSHA, EventName: "push", RunID: "7", RunAttempt: "1", RunnerEnvironment: "github-hosted", CheckRunID: "97",
+		}
+		if answer.CI == nil || *answer.CI != run {
+			t.Fatalf("introspection answered the run %+v, want %+v", answer.CI, run)
+		}
+		answer.CI = nil
+		want := oauthwire.Introspection{Active: true, Scope: "results", ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt, Session: resultsSession, Person: person, ProjectScope: "results", Projects: []string{project}, ExpiresAt: answer.ExpiresAt}
+		if !reflect.DeepEqual(answer, want) {
+			t.Errorf("introspection answered %+v, want %+v: a result entry's token holds the scope results and the project scope results, names the entry's person, its project and the workflow's session, and carries its run", answer, want)
+		}
+		if answer.ExpiresAt <= time.Now().Unix() {
+			t.Errorf("introspection answered exp %d, which is not in the future", answer.ExpiresAt)
+		}
+	})
+
+	t.Run("the same run token presented again mints nothing", func(t *testing.T) {
+		status, body := live.exchange(t, runForm(subject, ""))
+		hint, _ := body["error_description"].(string)
+		if status != http.StatusBadRequest || body["error"] != "invalid_request" || body["access_token"] != nil || !strings.Contains(hint, "must be used only once") {
+			t.Fatalf("the second exchange of one run token = %d %v, want 400 invalid_request saying the token must be used only once", status, body)
+		}
+	})
+
+	t.Run("a run on a ref the pattern does not match mints nothing", func(t *testing.T) {
+		const deeper = "refs/heads/topic/deeper"
+		status, body := live.exchange(t, runForm(mintRunToken(t, github, githubKey, resultsWorkflow, deeper, "8"), ""))
+		hint, _ := body["error_description"].(string)
+		if status != http.StatusBadRequest || body["error"] != "invalid_request" || body["access_token"] != nil || !strings.Contains(hint, deeper) {
+			t.Fatalf("the exchange of a run on %s = %d %v, want 400 invalid_request naming the ref", deeper, status, body)
+		}
+	})
+}
+
+// TestAnExactWorkflowTokenCarriesNoCI is the live proof that a workflow listed exactly
+// (BROKER_EXCHANGE_WORKFLOWS) mints the token it did before result entries existed, on the real
+// binary: the project scope named, its project and person, the session the run names, no OAuth
+// scope and no run.
+func TestAnExactWorkflowTokenCarriesNoCI(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	githubKey := github.PublishKey(t, "github-key")
+	key := proofKey(t)
+	jkt, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+	broker := startBroker(t, brokerOptions{Env: exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds)})
+	broker.Await(t, "token exchange")
+	live := newLiveBroker(broker.Addr, key)
+	status, body := live.exchange(t, runForm(mintRunToken(t, github, githubKey, releaseWorkflow, "refs/heads/main", "7"), "ci-release"))
+	token, _ := body["access_token"].(string)
+	if status != http.StatusOK || token == "" {
+		t.Fatalf("the exchange of a run of %s = %d %v, want 200 with an access token", releaseWorkflow, status, body)
+	}
+	answer := introspected(t, live, token, apiToken)
+	want := oauthwire.Introspection{Active: true, ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt, Session: "ci-release", Person: person, ProjectScope: "named", Projects: []string{project}, ExpiresAt: answer.ExpiresAt}
+	if !reflect.DeepEqual(answer, want) {
+		t.Errorf("introspection answered %+v (run %+v), want %+v: an exact workflow entry's token writes its named project, holds no scope and carries no run", answer, answer.CI, want)
+	}
+}
+
 // TestTheBinaryExchangesAMachinesGoogleIdentityToken is the live proof of the machine grant: the
 // real binary on a fresh schema, with an issuer of this test's own standing in for Google, a
 // machine presenting nothing but its Google identity token and a key of its own is answered a
@@ -789,7 +956,7 @@ func TestTheBinaryExchangesAMachinesGoogleIdentityToken(t *testing.T) {
 			message string
 			fields  map[string]any
 		}{
-			{"token exchange", map[string]any{"state": "on", "kubernetes": true, "github": true, "accounts": 2, "read_accounts": 1, "workflows": 0, "machines": 2}},
+			{"token exchange", map[string]any{"state": "on", "kubernetes": true, "github": true, "accounts": 2, "read_accounts": 1, "workflows": 1, "result_workflows": 1, "machines": 2}},
 			{"google machine identity", map[string]any{"issuer": google.URL(), "audience": machineAudience,
 				"services": pinnedFleetService + "," + poolFleetService, "fleets": 2}},
 		} {
@@ -1296,10 +1463,12 @@ func TestTheProjectsClaimSurvivesTheStore(t *testing.T) {
 // exchangeEnv is what one broker run of this test needs beyond productionEnv: the fresh schema it
 // migrates and serves from, the cluster issuer with the audience a pod enrols with and the one it
 // exchanges with, the GitHub issuer, the two listed accounts with their projects and persons, the
-// read entry with its service and the session it fixes, the two listed callers — dispatch, which
-// reads a token back and ends one, and listener, which only reads one back — the registrar that
-// logs in as the deployment's daemon and registers its pods' session names, listed for the pods
-// of both listed accounts (BROKER_POD_REGISTRARS), and how long an access token it mints lasts.
+// read entry with its service and the session it fixes, the exact workflow entry of
+// releaseWorkflow and the result entry of resultsWorkflow, the two listed callers — dispatch,
+// which reads a token back and ends one, and listener, which only reads one back — the registrar
+// that logs in as the deployment's daemon and registers its pods' session names, listed for the
+// pods of both listed accounts (BROKER_POD_REGISTRARS), and how long an access token it mints
+// lasts.
 func exchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Issuer, accessSeconds int, extraSecrets ...string) []string {
 	t.Helper()
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
@@ -1327,6 +1496,8 @@ func exchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Iss
 		"BROKER_EXCHANGE_READ_ACCOUNTS=" + readerAccount + "=" + readerService + "=" + readerSession,
 		"BROKER_EXCHANGE_GITHUB_ISSUER=" + github.URL(),
 		"BROKER_EXCHANGE_GITHUB_AUDIENCE=" + workflowAudience,
+		"BROKER_EXCHANGE_WORKFLOWS=" + exchangeRepository + "=" + releaseWorkflow + "=refs/heads/main=" + project + "=" + person,
+		"BROKER_EXCHANGE_RESULT_WORKFLOWS=" + exchangeRepository + "=" + resultsWorkflow + "=refs/heads/*=" + project + "=" + person,
 		"BROKER_API_ACCOUNTS=dispatch=" + apiAccount + " listener=" + listenerAccount,
 		"BROKER_SERVICE_LOGINS=" + registrarService + "=" + registrarAccount,
 		"BROKER_POD_REGISTRARS=" + registrarAccount + "=" + podAccount + " " + registrarAccount + "=" + listedAccount,

@@ -2806,6 +2806,24 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/projects/{key}/results": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Every result CI jobs wrote for checks of the spec files at ?commit= (40 lowercase hex, else 400 INVALID_QUERY), of ?check= alone when given: {results}, each {id, seq, kind, attestation}, newest first by seq, Dispatch's record order. A results token is refused it. */
+    get: operations["getApiV1ProjectsByKeyResults"];
+    put?: never;
+    /** @description Record one result of one check of the spec files, written by the CI job that ran it {commit, check, verdict, observed}: only a results token, which the secrets broker mints for one GitHub Actions run, writes it (403 RESULTS_SCOPE_REQUIRED for every other credential), and any other body member is 400 RESULT_INPUT naming it. Dispatch reads the rest from the token, from GitHub and from .dispatch/spec at the run's commit: commit must be the run's (403 COMMIT_NOT_THE_RUNS), the project must map the run's repository, in any case (403 REPOSITORY_NOT_THE_PROJECTS), GitHub must name the run's check run at that commit (403 CHECK_RUN_NOT_THE_RUNS), the graph logic must take the files as spec-check does (409 SPEC_FILES_REFUSED naming the first problem), and the files must hold the check (409 CHECK_NOT_IN_FILES) with its job the check run's name without its matrix values (409 CHECK_NOT_THIS_JOBS); 503 CHECK_RUN_UNREADABLE or FILES_UNREADABLE when GitHub does not answer. A result keeps 2000 characters of observed: a longer text is its first 500 characters, a line that says the middle was cut, and its last characters. Answers 201 with the stored row {id, seq, kind, attestation}, an in-toto statement of the run whose recorder is the run's session and principal, and no person. Each result is a new row, and none is changed. */
+    post: operations["postApiV1ProjectsByKeyResults"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/reference-targets": {
     parameters: {
       query?: never;
@@ -3816,6 +3834,12 @@ export interface components {
       urgency: string;
       waiting_on?: string;
       waiting_on_person?: string;
+    };
+    AttestationSubject: {
+      digest: {
+        [key: string]: string;
+      } | null;
+      name: string;
     };
     BasisLearnedAt: {
       /** Format: date-time */
@@ -6479,6 +6503,61 @@ export interface components {
       delay_ms?: number;
       method: string;
       path: string;
+    };
+    SpecCheckAttestation: {
+      _type: string;
+      predicate: components["schemas"]["SpecCheckPredicate"];
+      predicateType: string;
+      subject: components["schemas"]["AttestationSubject"][] | null;
+    };
+    SpecCheckPredicate: {
+      check: string;
+      job: string;
+      leg: string;
+      observed: string;
+      procedure_digest: string;
+      project: string;
+      /** Format: date-time */
+      recorded_at: string;
+      recorder: components["schemas"]["SpecCheckRecorder"];
+      run: components["schemas"]["SpecCheckRun"];
+      test: components["schemas"]["SpecCheckTest"];
+      verdict: string;
+    };
+    SpecCheckRecorder: {
+      principal: string;
+      session: string;
+    };
+    SpecCheckResult: {
+      attestation: components["schemas"]["SpecCheckAttestation"];
+      id: string;
+      kind: string;
+      /** Format: int64 */
+      seq: number;
+    };
+    SpecCheckResultInput: {
+      check: string;
+      commit: string;
+      observed?: string;
+      verdict: string;
+    };
+    SpecCheckResults: {
+      results: components["schemas"]["SpecCheckResult"][] | null;
+    };
+    SpecCheckRun: {
+      attempt: number;
+      check_run_id: string;
+      event_name: string;
+      ref: string;
+      repository: string;
+      run_id: string;
+      runner_environment: string;
+      workflow_ref: string;
+    };
+    SpecCheckTest: {
+      job: string;
+      runner: string;
+      selector: string;
     };
     StandingReview: {
       /** Format: date-time */
@@ -14023,6 +14102,80 @@ export interface operations {
       };
     };
   };
+  getApiV1ProjectsByKeyResults: {
+    parameters: {
+      query?: {
+        commit?: string;
+        check?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SpecCheckResults"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1ProjectsByKeyResults: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["SpecCheckResultInput"];
+      };
+    };
+    responses: {
+      /** @description Created */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SpecCheckResult"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1ReferenceTargets: {
     parameters: {
       query?: {
@@ -14884,6 +15037,7 @@ export type AskSnooze = components["schemas"]["AskSnooze"];
 export type AskSnoozeInput = components["schemas"]["AskSnoozeInput"];
 export type AskThread = components["schemas"]["AskThread"];
 export type AskWithTrees = components["schemas"]["AskWithTrees"];
+export type AttestationSubject = components["schemas"]["AttestationSubject"];
 export type BasisLearnedAt = components["schemas"]["BasisLearnedAt"];
 export type BlockAttributeValue = components["schemas"]["BlockAttributeValue"];
 export type BlockLink = components["schemas"]["BlockLink"];
@@ -15182,6 +15336,14 @@ export type SessionAnswer = components["schemas"]["SessionAnswer"];
 export type SessionAnswerAsk = components["schemas"]["SessionAnswerAsk"];
 export type SessionAnswersResponse = components["schemas"]["SessionAnswersResponse"];
 export type SlowWriteInput = components["schemas"]["SlowWriteInput"];
+export type SpecCheckAttestation = components["schemas"]["SpecCheckAttestation"];
+export type SpecCheckPredicate = components["schemas"]["SpecCheckPredicate"];
+export type SpecCheckRecorder = components["schemas"]["SpecCheckRecorder"];
+export type SpecCheckResult = components["schemas"]["SpecCheckResult"];
+export type SpecCheckResultInput = components["schemas"]["SpecCheckResultInput"];
+export type SpecCheckResults = components["schemas"]["SpecCheckResults"];
+export type SpecCheckRun = components["schemas"]["SpecCheckRun"];
+export type SpecCheckTest = components["schemas"]["SpecCheckTest"];
 export type StandingReview = components["schemas"]["StandingReview"];
 export type StateResponse = components["schemas"]["StateResponse"];
 export type StepRatingInput = components["schemas"]["StepRatingInput"];

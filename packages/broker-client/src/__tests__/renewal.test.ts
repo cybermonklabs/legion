@@ -7,7 +7,7 @@
 // error on one that has been ended, and trades afresh when a caller is told the token in hand is
 // dead. The loop's whole table of answers is `retry-loop.test.ts`.
 
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { signedIn, stubIssuer } from "../../test/sign-ins";
@@ -21,9 +21,10 @@ import {
   isFinalRefusal,
   SignInEndedError,
   TradeRetryingError,
+  tradeWaitEnded,
 } from "../token-errors";
 import { SUBJECT_TOKEN_TYPE_KUBERNETES } from "../wire";
-import { accepted, stubBroker } from "./stub";
+import { accepted, refusalOf, stubBroker } from "./stub";
 
 const PERSON = "ada@example.com";
 const CLIENT_ID = "example-device-client";
@@ -110,6 +111,205 @@ test("two callers that need a token at once make one trade", async () => {
     expect(second.accessToken).toBe("token-1");
     expect(broker.trades.length).toBe(1);
   } finally {
+    broker.stop();
+  }
+});
+
+// A caller that joins a trade another caller started ends at its own signal, told that the trade
+// has not been answered yet, and leaves that trade to the caller that started it: the identity
+// here answers only once the test lets it.
+test("a caller that joins a trade under way ends at its own signal", async () => {
+  const broker = stubBroker((_trade, count) => ({ body: accepted(`token-${count}`, 600) }));
+  const { promise: held, resolve: release } = Promise.withResolvers<void>();
+  const source: TokenSource = {
+    read: async () => {
+      await held;
+      return { token: "subject-1", tokenType: SUBJECT_TOKEN_TYPE_KUBERNETES };
+    },
+    describe: () => "an identity that answers once the test lets it",
+  };
+  const client = await clientAt(broker.url, { now: Date.now() }, source);
+  try {
+    const first = client.token();
+    const ended = new AbortController();
+    const joined = client.token(ended.signal);
+    ended.abort(new DOMException("The operation timed out.", "TimeoutError"));
+    expect((await refusalOf(() => joined))?.name).toBe("TradeUnansweredError");
+    release();
+    expect((await first).accessToken).toBe("token-1");
+    expect(broker.trades.length).toBe(1);
+  } finally {
+    release();
+    client.close();
+    broker.stop();
+  }
+});
+
+// The trade runs under its own bound and under no caller's signal: the caller that started it
+// leaves at its own signal, and the caller that joined it still gets its token from that one
+// trade. The broker here answers the trade only once the test lets it, after the starter left.
+test("the starter's signal ends its own wait, and never the trade another caller waits on", async () => {
+  const { promise: arrived, resolve: arrive } = Promise.withResolvers<void>();
+  const { promise: held, resolve: release } = Promise.withResolvers<void>();
+  const broker = stubBroker(async (_trade, count) => {
+    arrive();
+    await held;
+    return { body: accepted(`token-${count}`, 600) };
+  });
+  const client = await clientAt(broker.url, { now: Date.now() }, countingSource());
+  try {
+    const ended = new AbortController();
+    const starter = client.token(ended.signal);
+    const joiner = client.token();
+    await arrived;
+    ended.abort(new DOMException("The operation timed out.", "TimeoutError"));
+    const left = await refusalOf(() => starter);
+    release();
+    const joined = await joiner.then(
+      (token) => token.accessToken,
+      (error: unknown) => String(error)
+    );
+    expect({
+      left: left?.name,
+      part: tradeWaitEnded(left),
+      joined,
+      trades: broker.trades.length,
+    }).toEqual({ left: "TradeUnansweredError", part: "exchange", joined: "token-1", trades: 1 });
+  } finally {
+    release();
+    client.close();
+    broker.stop();
+  }
+});
+
+// A trade every caller left still ends, at the trade's own time (`attemptMs`): a caller that still
+// waits on a broker that took the trade and never answers it is told there that the trade is being
+// retried, and the loop's next trade lands. The time runs on the test runner's fake timers, moved
+// only once the broker holds the trade, so the row judges when on that clock the trade ended,
+// which the machine's load cannot change: it is still waited on a moment before its 300 ms, and
+// has ended at them. The broker is the row's own fetch, which fails a held trade in the same turn
+// its signal aborts: Bun's fetch hands an abort to its HTTP thread and rejects only once that
+// thread answers, after time no fake clock drives, so a count of turns could end before it.
+test("a trade its starter left ends at the trade's own time", async () => {
+  const { promise: arrived, resolve: arrive } = Promise.withResolvers<void>();
+  let trades = 0;
+  const broker = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    trades++;
+    if (trades > 1) return Response.json(accepted(`token-${trades}`, 600));
+    const { promise: held, reject } = Promise.withResolvers<Response>();
+    const signal = init?.signal;
+    signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+    arrive();
+    return await held;
+  };
+  const client = new BrokerTokenClient({
+    brokerUrl: "http://broker.test",
+    key: await newDpopKey(),
+    subject: countingSource(),
+    attemptMs: 300,
+    random: () => 1,
+    log: () => {},
+    // The loop's wait before its next trade passes at once, so the row reads that trade too.
+    sleep: async () => {},
+    fetch: broker as typeof fetch,
+  });
+  jest.useFakeTimers();
+  try {
+    const started = performance.now();
+    const ended = new AbortController();
+    const starter = client.token(ended.signal);
+    await arrived;
+    ended.abort(new DOMException("The operation was aborted.", "AbortError"));
+    const left = await refusalOf(() => starter);
+    let joinedAfter: number | undefined;
+    const joining = refusalOf(() => client.token()).finally(() => {
+      joinedAfter = performance.now() - started;
+    });
+    // The trade's failure reaches the waiting caller in microtasks alone, which one turn of the
+    // event loop drains, with no time.
+    const turns = async (): Promise<void> => {
+      for (let turn = 0; turn < 50 && joinedAfter === undefined; turn++) {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setImmediate(resolve);
+        await promise;
+      }
+    };
+    jest.advanceTimersByTime(299);
+    await turns();
+    const waitedBefore = joinedAfter === undefined;
+    jest.advanceTimersByTime(1);
+    await turns();
+    const joined = joinedAfter === undefined ? undefined : await joining;
+    const next =
+      joined === undefined ? undefined : await client.token(undefined, { waitForReady: true });
+    expect({
+      left: left?.name,
+      part: tradeWaitEnded(left),
+      retrying: joined instanceof TradeRetryingError,
+      said: joined?.message,
+      waitedBefore,
+      endedAt: joinedAfter,
+      next: next?.accessToken,
+      trades,
+    }).toEqual({
+      left: "TradeUnansweredError",
+      part: "exchange",
+      retrying: true,
+      said: "the secrets broker did not answer the trade of a scripted identity within 0.3 s, and the trade is being retried in the background",
+      waitedBefore: true,
+      endedAt: 300,
+      next: "token-2",
+      trades: 2,
+    });
+  } finally {
+    jest.useRealTimers();
+    client.close();
+  }
+});
+
+// A caller whose own signal ends its wait on the first trade is told the trade has not been
+// answered, marked with the part of the trade then under way, here the read of its identity; an
+// error of the trade itself, such as the broker's refusal, carries no such mark.
+test("a wait its signal ends is marked with the part of the trade under way", async () => {
+  const broker = stubBroker(() => ({
+    status: 400,
+    body: { error: "invalid_grant", error_description: "the run is not listed" },
+  }));
+  const { promise: held, resolve: release } = Promise.withResolvers<void>();
+  const source: TokenSource = {
+    read: async () => {
+      await held;
+      return { token: "subject-1", tokenType: SUBJECT_TOKEN_TYPE_KUBERNETES };
+    },
+    describe: () => "an identity that answers once the test lets it",
+  };
+  const client = await clientAt(broker.url, { now: Date.now() }, source);
+  try {
+    const ended = new AbortController();
+    const waiting = client.token(ended.signal);
+    ended.abort(new DOMException("The operation timed out.", "TimeoutError"));
+    const left = await refusalOf(() => waiting);
+    const tradesWhenLeft = broker.trades.length;
+    release();
+    const refused = await refusalOf(() => client.token());
+    expect({
+      left: left?.name,
+      part: tradeWaitEnded(left),
+      tradesWhenLeft,
+      refused: refused instanceof BrokerRefusedError,
+      refusedPart: tradeWaitEnded(refused),
+      trades: broker.trades.length,
+    }).toEqual({
+      left: "TradeUnansweredError",
+      part: "identity",
+      tradesWhenLeft: 0,
+      refused: true,
+      refusedPart: undefined,
+      trades: 1,
+    });
+  } finally {
+    release();
+    client.close();
     broker.stop();
   }
 });

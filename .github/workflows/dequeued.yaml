@@ -71,9 +71,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          query='query($owner: String!, $name: String!, $number: Int!) {
-            repository(owner: $owner, name: $name) {
-              pullRequest(number: $number) {
+          query="query(\$owner: String!, \$name: String!, \$number: Int!) {
+            repository(owner: \$owner, name: \$name) {
+              pullRequest(number: \$number) {
                 timelineItems(last: 20, itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT]) {
                   nodes {
                     __typename
@@ -82,14 +82,14 @@ jobs:
                 }
               }
             }
-          }'
+          }"
           # The nodes come oldest first, so the selection is the last removal after the index of
           # the last entry: a removal before that index belongs to an earlier turn in the queue.
-          select='.data.repository.pullRequest.timelineItems.nodes as $nodes
-            | ([$nodes | to_entries[]
-                | select(.value.__typename == "AddedToMergeQueueEvent") | .key] | last) as $added
-            | [$nodes[(($added // -1) + 1):][]
-               | select(.__typename == "RemovedFromMergeQueueEvent")] | last // empty'
+          select=".data.repository.pullRequest.timelineItems.nodes as \$nodes
+            | ([\$nodes | to_entries[]
+                | select(.value.__typename == \"AddedToMergeQueueEvent\") | .key] | last) as \$added
+            | [\$nodes[((\$added // -1) + 1):][]
+               | select(.__typename == \"RemovedFromMergeQueueEvent\")] | last // empty"
           # `refused` counts the reads GitHub answered with an error. A refused read says
           # nothing about the timeline, so it prints its own line and not the line about a
           # timeline that holds no removal; a run whose every read was refused read no timeline

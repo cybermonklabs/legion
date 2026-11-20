@@ -114,6 +114,29 @@ jobs:
       - name: Moved-approval advice of the real CLI against a real Dispatch
         run: bun test src/__tests__/moved-approval-advice.live.test.ts
         working-directory: packages/envoy-client
+      # A CI job's result over the whole path a job writes it through: the real CLI, run as the
+      # job's own process, trades the job's OIDC token from a stand-in of GitHub at the real
+      # secrets broker for a token that writes results only, and the real Dispatch server stores
+      # the result or refuses it (packages/envoy-client/test/ci-results-stack.ts). It builds the
+      # broker and the server from this tree, on this job's Postgres.
+      - name: A CI job's result through the real broker and a real Dispatch
+        run: bun test src/__tests__/ci-results.live.test.ts
+        working-directory: packages/envoy-client
+      # The same stack, for a commit whose spec file's name holds a line break and a workflow
+      # command: the real CLI prints Dispatch's refusal of that tree on one line, so no line of a
+      # job's log that runs the command is a workflow command to its runner.
+      - name: A CI job's refused result prints no workflow command
+        run: bun test src/__tests__/ci-result-refusal-log.live.test.ts
+        working-directory: packages/envoy-client
+      # The fixture CI job (v-recorder): packages/envoy's ci-report, the last step of a job, run
+      # over real go test reports in a checkout of the job's commit, writes one result for each
+      # check whose test ran through the real CLI, broker and Dispatch of the stack above, per test,
+      # per leg and per attempt, and nothing for a check whose test did not run.
+      # ci-report-long-output.live.test.ts checks that the stored text of an output over 64 KiB
+      # keeps the start of that output. Each file builds ./cmd/ci-report from this tree.
+      - name: The fixture CI job's results through ci-report, the real broker and a real Dispatch
+        run: bun test src/__tests__/ci-report.live.test.ts src/__tests__/ci-report-long-output.live.test.ts
+        working-directory: packages/envoy-client
       # A comment's role: mention over the same real CLI and real Dispatch (#4426): the comment the CLI posts with --mention carries one delivery attempt for that
       # target, which is what lets an agent write to the owner of a subject and leave the retry
       # to Dispatch.

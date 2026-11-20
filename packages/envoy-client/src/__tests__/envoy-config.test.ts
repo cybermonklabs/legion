@@ -1245,17 +1245,43 @@ describe("a ! command in envoy.json", () => {
     return readdirSync(scratch);
   }
 
-  /** Whether the process with this pid is gone within a second: a killed orphan is a zombie until
-   * the process it was reparented to reaps it, and `kill(pid, 0)` still answers for a zombie. */
-  function gone(pid: number): boolean {
-    for (const deadline = Date.now() + 1_000; Date.now() < deadline; Bun.sleepSync(20)) {
-      try {
-        process.kill(pid, 0);
-      } catch {
-        return true;
-      }
+  /** How long a process the command started has, once the command is done, to end by the kill:
+   * SIGKILL takes it at once, and it still has to be scheduled to finish its exit, which a busy
+   * runner can delay. This bound is not a wait on its reaper: its exit is what counts. */
+  const KILLED_WITHIN_MS = 3_000;
+
+  /** The state of the process `pid` as `/proc/<pid>/stat` gives it, or "exited" once it has
+   * exited: it is gone, or its state is a zombie (Z) or dead (X). A killed orphan stays a zombie
+   * until the process it was reparented to reaps it, pid 1 or a subreaper, which the test does not
+   * control and a loaded machine can delay; `kill(pid, 0)` still answers for a zombie, so only
+   * its state tells a killed process from a live one. Where there is no `/proc` it is "alive"
+   * until it leaves the process table. */
+  function processState(pid: number): string {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      // EPERM: another user's process holds the pid, which is still a live process.
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return "exited";
+      return "alive";
     }
-    return false;
+    let stat: string;
+    try {
+      stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
+    } catch {
+      // Reaped between the two reads, or a system with no /proc.
+      return existsSync("/proc/self/stat") ? "exited" : "alive";
+    }
+    // The name in parentheses may hold spaces and parentheses; the state is the field after it.
+    const state = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0] ?? "";
+    return state === "Z" || state === "X" ? "exited" : state;
+  }
+
+  /** `processState` of `pid` once it has exited, or once `withinMs` has passed. */
+  function stateWithin(pid: number, withinMs: number): string {
+    for (const deadline = Date.now() + withinMs; ; Bun.sleepSync(20)) {
+      const state = processState(pid);
+      if (state === "exited" || Date.now() >= deadline) return state;
+    }
   }
 
   test("that exits 0 is its value at once, and a process it left running is killed", () => {
@@ -1285,7 +1311,7 @@ describe("a ! command in envoy.json", () => {
     expect(elapsed).toBeLessThan(2_000);
     const child = Number(readFileSync(pidFile, "utf-8").trim());
     expect(child).toBeGreaterThan(0);
-    expect(gone(child)).toBe(true);
+    expect(stateWithin(child, KILLED_WITHIN_MS)).toBe("exited");
     expect(left).toEqual([]);
   }, 20_000);
 
@@ -1313,7 +1339,9 @@ describe("a ! command in envoy.json", () => {
       notice: null,
       error: `${file}: dispatch.token's command did not finish within 10 s, and does not run again in this process`,
     });
-    expect(gone(Number(readFileSync(pidFile, "utf-8").trim()))).toBe(true);
+    expect(stateWithin(Number(readFileSync(pidFile, "utf-8").trim()), KILLED_WITHIN_MS)).toBe(
+      "exited"
+    );
     expect(left).toEqual([]);
   }, 20_000);
 

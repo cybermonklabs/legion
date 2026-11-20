@@ -92,3 +92,27 @@ func TestCheckSize(t *testing.T) {
 		t.Errorf("CheckSize over MaxFileSize: message %q, want %q", err, want)
 	}
 }
+
+// A set of exactly MaxFiles notes, or of notes summing exactly MaxSetSize bytes, passes; one note
+// or one byte more is ErrSetTooLarge naming the directory, the count or the sum, and the limit.
+// A set over both bounds names the count.
+func TestCheckSet(t *testing.T) {
+	const dir = ".dispatch/spec"
+	if err := CheckSet(dir, MaxFiles, MaxSetSize); err != nil {
+		t.Fatalf("CheckSet at both bounds: %v, want nil", err)
+	}
+	for _, row := range []struct {
+		files int
+		size  int64
+		want  string
+	}{
+		{MaxFiles + 1, 1, "set too large: .dispatch/spec holds 1001 files (limit 1000)"},
+		{1, MaxSetSize + 1, "set too large: .dispatch/spec holds 16777217 bytes in its files (limit 16777216)"},
+		{MaxFiles + 1, MaxSetSize + 1, "set too large: .dispatch/spec holds 1001 files (limit 1000)"},
+	} {
+		err := CheckSet(dir, row.files, row.size)
+		if !errors.Is(err, ErrSetTooLarge) || err.Error() != row.want {
+			t.Errorf("CheckSet(%d files, %d bytes) = %v, want ErrSetTooLarge %q", row.files, row.size, err, row.want)
+		}
+	}
+}

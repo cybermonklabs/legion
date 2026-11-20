@@ -48,6 +48,7 @@ import {
   isFinalRefusal,
   RegistrationPendingError,
   TokenClientClosedError,
+  type TradePart,
   TradeRetryingError,
   TradeUnansweredError,
 } from "./token-errors";
@@ -137,17 +138,27 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return promise;
 }
 
+/** The wait a `Retry-After` value names (RFC 9110 Section 10.2.3), at `now`: a number of seconds,
+ *  or a date, none for a date passed; null for no value, or one that is neither. */
+function retryAfterWait(value: string | null, now: number): number | null {
+  const text = value?.trim() ?? "";
+  if (/^\d+$/.test(text)) return Number(text) * 1000;
+  const at = Date.parse(text);
+  return Number.isNaN(at) ? null : Math.max(0, at - now);
+}
+
 /**
  * A failed trade of the retry loop that a later trade may cure, by its class, with the text that
  * says what it was (`#failure`): `pending`, a pod session the broker holds no registration for
  * yet; `busy`, the broker's 429, a DPoP refusal or a person Dispatch holds (`membership_held`,
- * which the person's next Dispatch sign-in ends); `unanswered`, no answer within the attempt's
- * time, no connection, a 5xx, or an answer that is not this grant's; `unsent`, a trade that
- * failed before it reached the broker, its identity's source unreadable this once.
+ * which the person's next Dispatch sign-in ends), with the refusal; `unanswered`, no answer within
+ * the attempt's time, no connection, a 5xx, or an answer that is not this grant's; `unsent`, a
+ * trade that failed before it reached the broker, its identity's source unreadable this once.
  */
 type Retried =
   | { readonly kind: "pending"; readonly said: string; readonly refusal: BrokerRefusedError }
-  | { readonly kind: "busy" | "unanswered" | "unsent"; readonly said: string };
+  | { readonly kind: "busy"; readonly said: string; readonly refusal: BrokerRefusedError }
+  | { readonly kind: "unanswered" | "unsent"; readonly said: string };
 
 /** One caller waiting on a client's retry loop: how to tell it the loop's answer, and whether it
  *  waits through the loop's retries or is told the first failure ({@link TokenCallOptions}). */
@@ -317,6 +328,9 @@ export class BrokerTokenClient {
   #retryWait = RETRY_FIRST_WAIT_MS;
   /** Ended by {@link close}, which stops the retry loop. */
   readonly #closed = new AbortController();
+  /** The part of the trade under way, which a caller whose own signal ends its wait on the first
+   *  trade since its last token is told (`TradeUnansweredError.part`). */
+  #part: TradePart = "identity";
 
   constructor(options: BrokerTokenClientOptions) {
     const brokerUrl = withoutTrailingSlashes(options.brokerUrl.trim());
@@ -372,10 +386,10 @@ export class BrokerTokenClient {
    * - A caller whose `signal` ends first takes the token in hand where it is still live, and is
    *   otherwise told {@link RegistrationPendingError} where the last trade found the pod's session
    *   not registered yet, {@link TradeRetryingError} where it failed otherwise,
-   *   {@link TradeUnansweredError} where no trade has ended yet but one is out, and the signal's
-   *   own reason where no trade is out at all (`#stopped`). The loop goes on. A caller that passes
-   *   no signal waits until a token lands, a refusal ends the loop or, failing fast, a trade
-   *   fails.
+   *   {@link TradeUnansweredError} where no trade has ended yet but one is out, marked with the
+   *   part of that trade then under way (`tradeWaitEnded`), and the signal's own reason where no
+   *   trade is out at all (`#stopped`). The loop goes on. A caller that passes no signal waits
+   *   until a token lands, a refusal ends the loop or, failing fast, a trade fails.
    * - A closed client ({@link close}) answers a caller with nothing live in hand
    *   {@link TokenClientClosedError}, and trades no more.
    */
@@ -391,7 +405,7 @@ export class BrokerTokenClient {
     const last = this.#last;
     // Only while a loop is trading again: a last failure no loop is retrying is no retry under way.
     if (!waitForReady && this.#loop !== null && last !== null && last.kind !== "pending") {
-      throw new TradeRetryingError(last.said);
+      throw this.#retrying(last);
     }
     if (this.#loop === null) {
       if (this.#refused !== null && now < this.#nextAt) throw this.#refused;
@@ -407,6 +421,17 @@ export class BrokerTokenClient {
     for (const waiter of waiters) answer(waiter);
   }
 
+  /** What a caller is told of `last`, a failure the loop trades again on: its line, its class, the
+   *  broker's refusal where it refused, and how long until the loop's next trade
+   *  (`TradeRetryingError.retry`). */
+  #retrying(last: Exclude<Retried, { readonly kind: "pending" }>): TradeRetryingError {
+    return new TradeRetryingError(last.said, {
+      kind: last.kind,
+      ...(last.kind === "busy" ? { refusal: last.refusal } : {}),
+      nextTradeInMs: Math.max(0, this.#nextAt - this.#now()),
+    });
+  }
+
   /** What a caller whose wait ended before the loop's answer is told: the loop's last failure,
    *  as {@link token} says; where no trade has ended yet, that the trade still out has not been
    *  answered (`TradeUnansweredError`), the caller's deadline being no answer about the trade;
@@ -414,10 +439,10 @@ export class BrokerTokenClient {
   #stopped(reason: unknown): unknown {
     const last = this.#last;
     if (last === null)
-      return this.#loop === null ? reason : new TradeUnansweredError(this.describe());
+      return this.#loop === null ? reason : new TradeUnansweredError(this.describe(), this.#part);
     return last.kind === "pending"
       ? new RegistrationPendingError(this.#session, last.refusal)
-      : new TradeRetryingError(last.said);
+      : this.#retrying(last);
   }
 
   /**
@@ -516,7 +541,11 @@ export class BrokerTokenClient {
    *   {@link PENDING_FIRST_WAIT_MS} doubling to {@link PENDING_MAX_WAIT_MS};
    * - no answer, no connection, a 5xx, the broker's 429 or a DPoP refusal, an answer that is not
    *   this grant's, or a trade that could not be made: traded again on the Go client's schedule,
-   *   {@link RETRY_FIRST_WAIT_MS} doubling to {@link RETRY_MAX_WAIT_MS}.
+   *   {@link RETRY_FIRST_WAIT_MS} doubling to {@link RETRY_MAX_WAIT_MS}; but a refusal that names
+   *   its own wait (the broker's 429 and its `Retry-After`, `BrokerRefusedError.retryAfterMs`) is
+   *   traded again when it says, capped at {@link RETRY_MAX_WAIT_MS}, with no jitter and no slot
+   *   of the schedule spent: the broker's per-address bucket refills then, and a CI job writing a
+   *   result for each of its checks meets that limit with no fault of its own.
    *
    * It says at each wait what the trade came to, naming the session, and when it trades again.
    * Only a token landing starts a schedule over: no caller arriving, and no trade failing
@@ -587,6 +616,8 @@ export class BrokerTokenClient {
     if (failure.kind === "pending") {
       wait = this.#jittered(this.#pendingWait);
       this.#pendingWait = Math.min(this.#pendingWait * 2, PENDING_MAX_WAIT_MS);
+    } else if (failure.kind === "busy" && failure.refusal.retryAfterMs !== null) {
+      wait = Math.min(failure.refusal.retryAfterMs, RETRY_MAX_WAIT_MS);
     } else {
       wait = this.#jittered(this.#retryWait);
       this.#retryWait = Math.min(this.#retryWait * 2, RETRY_MAX_WAIT_MS);
@@ -603,7 +634,7 @@ export class BrokerTokenClient {
       // A fail-fast caller is told this failure now; a wait-for-ready caller waits on. Each kind
       // waits out a pending registration within its own signal.
       if (failure.kind !== "pending") {
-        const told = new TradeRetryingError(failure.said);
+        const told = this.#retrying(failure);
         this.#tell(
           (waiter) => waiter.reject(told),
           (waiter) => !waiter.waitForReady
@@ -642,7 +673,7 @@ export class BrokerTokenClient {
           said: `the secrets broker has no registration for this pod's session ${this.#session} yet${error.said === "" ? "" : ` (${error.said})`}`,
         };
       }
-      return { kind: "busy", said: error.message };
+      return { kind: "busy", refusal: error, said: error.message };
     }
     if (timedOut) {
       return {
@@ -668,6 +699,7 @@ export class BrokerTokenClient {
    * process makes with the token it got.
    */
   async #trade(signal: AbortSignal | undefined): Promise<BrokerToken> {
+    this.#part = "identity";
     const subject = await this.#subject.read(signal);
     // Held, with the actor's and the minted token, so every line this process prints is scrubbed
     // of them (`@legion/contracts/held-secrets`): a broker at the wrong URL can echo them. Each is
@@ -714,6 +746,7 @@ export class BrokerTokenClient {
     // http origin; the client posts where it is told, as the Go client does.
     allowInsecureRequests(config);
     config[customFetch] = (url, options) => this.#send(url, options, signal, raw);
+    this.#part = "exchange";
     let answered: TokenEndpointResponse;
     try {
       answered = await genericGrantRequest(config, GRANT_TYPE_TOKEN_EXCHANGE, form);
@@ -726,10 +759,11 @@ export class BrokerTokenClient {
 
   /**
    * What a failed trade is. An OAuth error the broker answered with a 4xx is a refusal of the
-   * identity, which no retry can cure; everything else — a broker that did not answer, a 5xx, an
-   * answer that is not this grant's — is an error a renewal may ask about again. A status the
-   * library reports without naming it is named here, since "the broker answered HTTP 503" is what
-   * tells a reader to look at the broker rather than at this process.
+   * identity, which no retry can cure, with the wait its `Retry-After` names (the broker's 429);
+   * everything else — a broker that did not answer, a 5xx, an answer that is not this grant's — is
+   * an error a renewal may ask about again. A status the library reports without naming it is
+   * named here, since "the broker answered HTTP 503" is what tells a reader to look at the broker
+   * rather than at this process.
    */
   #refusal(endpoint: string, error: unknown): Error {
     if (error instanceof ResponseBodyError && error.status >= 400 && error.status < 500) {
@@ -744,7 +778,8 @@ export class BrokerTokenClient {
         {
           ...(this.#subject.person === undefined ? {} : { person: this.#subject.person }),
           ...(this.#session === "" ? {} : { session: this.#session }),
-        }
+        },
+        retryAfterWait(error.response.headers.get("Retry-After"), this.#now())
       );
     }
     const status = statusOf(error);

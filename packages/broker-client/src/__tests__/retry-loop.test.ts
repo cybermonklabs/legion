@@ -52,7 +52,21 @@ const SILENT_ATTEMPT_MS = 25;
 const READY = { waitForReady: true } as const;
 
 /** What the broker does with one trade. */
-type Answer = "granted" | "pending" | "503" | "refused" | "connect refused" | "silent";
+type Answer =
+  | "granted"
+  | "pending"
+  | "503"
+  | "429 naming its wait"
+  | "429"
+  | "refused"
+  | "connect refused"
+  | "silent";
+
+/** The broker's 429, as its per-address bucket answers it (`oauthToken`). */
+const RATE_LIMITED = {
+  error: "invalid_request",
+  error_description: "RATE_LIMITED: too many token requests; try again later",
+};
 
 /** The broker's answer, as the client's fetch returns or throws it. */
 async function respond(answer: Answer, signal: AbortSignal | null | undefined): Promise<Response> {
@@ -66,6 +80,10 @@ async function respond(answer: Answer, signal: AbortSignal | null | undefined): 
       );
     case "503":
       return new Response("the broker is away", { status: 503 });
+    case "429 naming its wait":
+      return Response.json(RATE_LIMITED, { status: 429, headers: { "Retry-After": "2" } });
+    case "429":
+      return Response.json(RATE_LIMITED, { status: 429 });
     case "refused":
       return Response.json({ error: "invalid_client" }, { status: 401 });
     case "connect refused":
@@ -290,6 +308,34 @@ const ROWS: [string, Row][] = [
         expect(waits).toEqual([15_000, 30_000]);
         expect(lines).toHaveLength(2);
         for (const line of lines) expect(line).toContain("http://broker.test");
+      },
+    },
+  ],
+  [
+    "a 429 naming its wait: traded again when Retry-After says, a fail-fast caller is told that wait, and no slot of the schedule is spent",
+    {
+      answer: (n) => (n === 1 ? "429 naming its wait" : n === 2 ? "429" : "granted"),
+      budget: 10,
+      drive: async ({ client, waits, lines, trades }) => {
+        const fast = await client
+          .token(new AbortController().signal)
+          .catch((error: unknown) => error);
+        expect(fast).toBeInstanceOf(TradeRetryingError);
+        const { retry } = fast as TradeRetryingError;
+        expect({
+          kind: retry?.kind,
+          status: retry?.refusal?.status,
+          nextTradeInMs: retry?.nextTradeInMs,
+        }).toEqual({ kind: "busy", status: 429, nextTradeInMs: 2_000 });
+        const token = await client.token(new AbortController().signal, READY);
+        expect(token.accessToken).toStartWith("granted-");
+        expect(trades()).toBe(3);
+        // The broker's wait as it named it, with no jitter; then the 429 that names none waits
+        // the schedule's first slot, which the named wait did not spend.
+        expect(waits).toEqual([2_000, 15_000]);
+        expect(lines[0]).toContain("HTTP 429");
+        expect(lines[0]).toContain("trading again in 2 s");
+        expect(lines[1]).toContain("trading again in 15 s");
       },
     },
   ],

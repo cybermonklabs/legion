@@ -567,6 +567,12 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/projects/{key}/related": {
 		Status: http.StatusOK, Response: model.Suggestions{}, Request: relatedRequest{},
 	},
+	"POST /api/v1/projects/{key}/results": {
+		Status: http.StatusCreated, Response: model.SpecCheckResult{}, Request: specCheckResultInput{},
+	},
+	"GET /api/v1/projects/{key}/results": {
+		Status: http.StatusOK, Response: specCheckResults{}, Params: specCheckResultsQuery{},
+	},
 	"GET /api/v1/settings/repo-projects": {Status: http.StatusOK, Response: []model.RepoProject{}},
 	"PUT /api/v1/settings/repo-projects/{owner}/{repo}": {
 		Status: http.StatusOK, Response: model.RepoProject{}, Request: putRepoProjectInput{},

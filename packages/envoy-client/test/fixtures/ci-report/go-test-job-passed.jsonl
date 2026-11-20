@@ -1,0 +1,14 @@
+{"Time":"2026-11-16T12:49:54.80683486Z","Action":"start","Package":"example.com/acme/probe"}
+{"Time":"2026-11-16T12:49:54.833423056Z","Action":"run","Package":"example.com/acme/probe","Test":"TestProbe"}
+{"Time":"2026-11-16T12:49:54.833498431Z","Action":"output","Package":"example.com/acme/probe","Test":"TestProbe","Output":"=== RUN   TestProbe\n","OutputType":"frame"}
+{"Time":"2026-11-16T12:49:54.833522061Z","Action":"output","Package":"example.com/acme/probe","Test":"TestProbe","Output":"    probe_test.go:12: the probe read 0 claims, want 1\n","OutputType":"error"}
+{"Time":"2026-11-16T12:49:54.833532122Z","Action":"output","Package":"example.com/acme/probe","Test":"TestProbe","Output":"--- FAIL: TestProbe (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T12:49:54.833534984Z","Action":"fail","Package":"example.com/acme/probe","Test":"TestProbe","Elapsed":0}
+{"Time":"2026-11-16T12:49:54.833541721Z","Action":"run","Package":"example.com/acme/probe","Test":"TestSecondProbe"}
+{"Time":"2026-11-16T12:49:54.833544196Z","Action":"output","Package":"example.com/acme/probe","Test":"TestSecondProbe","Output":"=== RUN   TestSecondProbe\n","OutputType":"frame"}
+{"Time":"2026-11-16T12:49:54.833546836Z","Action":"output","Package":"example.com/acme/probe","Test":"TestSecondProbe","Output":"    probe_test.go:23: the second probe read 1 claim\n"}
+{"Time":"2026-11-16T12:49:54.833550505Z","Action":"output","Package":"example.com/acme/probe","Test":"TestSecondProbe","Output":"--- PASS: TestSecondProbe (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T12:49:54.833553094Z","Action":"pass","Package":"example.com/acme/probe","Test":"TestSecondProbe","Elapsed":0}
+{"Time":"2026-11-16T12:49:54.833555967Z","Action":"output","Package":"example.com/acme/probe","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-16T12:49:54.854420801Z","Action":"output","Package":"example.com/acme/probe","Output":"ok  \texample.com/acme/probe\t0.047s\n","OutputType":"frame"}
+{"Time":"2026-11-16T12:49:54.854452423Z","Action":"pass","Package":"example.com/acme/probe","Elapsed":0.048}

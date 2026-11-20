@@ -6,6 +6,7 @@ import {
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
+  SPEC_CHECK_OBSERVED_MAX,
 } from "./dispatch-api-limits";
 import { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST } from "./legion-roles";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
@@ -681,22 +682,59 @@ const RESULT_RECORD_FIELDS = [
   "screenshots",
 ] as const;
 
+/** The arguments a CI job's record of a check of the spec files carries beside project. */
+const RESULT_PROJECT_FIELDS: readonly string[] = ["check", "verdict", "commit", "observed"];
+
+/** The three of them the record cannot do without. */
+const RESULT_PROJECT_REQUIRED = ["check", "verdict", "commit"] as const;
+
 /** What retract does, written once: the tool's description gives it, and so does the refusal of
  *  a call that mixes a retraction with a record. */
 const RESULT_RETRACT_RULE =
   "Pass retract with the id of a result recorded before, and reason with why that result is " +
   "wrong, to retract it.";
 
+/** What a CI job's record of a check of the spec files takes, written once: the refusal of a
+ *  call that breaks it gives it whole. */
+const RESULT_PROJECT_RULE =
+  "With project, the call records a CI job's result of a check of the spec files. It takes " +
+  "project, check, verdict, commit and observed, and no other argument.";
+
+/** The arguments the project form refuses: a role's record and a retraction. Dispatch reads who
+ *  ran the check and how from the job's token, from GitHub and from the spec files, so none of
+ *  them belongs in a CI job's record. */
+const RESULT_NOT_PROJECT_FIELDS = [
+  ...RESULT_RECORD_FIELDS.filter((field) => !RESULT_PROJECT_FIELDS.includes(field)),
+  "retract",
+  "reason",
+] as const;
+
 /** The whole rule a call of this tool keeps: one shape records a result, the other retracts one. */
 const RESULT_SHAPE_RULE =
   `${RESULT_RETRACT_RULE} A call with retract takes reason and no other argument. A call ` +
-  "without retract records a result, and it takes issue, check, role, verdict and commit.";
+  "without retract records a result, and it takes issue, check, role, verdict and commit. " +
+  RESULT_PROJECT_RULE;
 
 /** The refusal of the first rule a result call breaks, or undefined when it keeps them. The two
  *  shapes are one command because a retraction answers for one recorded result: the reader of
- *  `dispatch results` sees the result and its retraction together. */
+ *  `dispatch results` sees the result and its retraction together. A CI job's record is the
+ *  third shape, named by project. */
 function resultProblem(value: unknown): string | undefined {
   const input = value as Record<string, unknown>;
+  if (input["project"] !== undefined) {
+    const others = RESULT_NOT_PROJECT_FIELDS.filter((field) => input[field] !== undefined);
+    if (others.length > 0) {
+      return `${RESULT_PROJECT_RULE} This call also carries ${others.join(", ")}.`;
+    }
+    const missing = RESULT_PROJECT_REQUIRED.filter((field) => input[field] === undefined);
+    if (missing.length > 0) {
+      return `a CI job's result needs ${missing.join(", ")}. ${RESULT_PROJECT_RULE}`;
+    }
+    return undefined;
+  }
+  if (input["verdict"] === "could_not_run") {
+    return "verdict could_not_run goes with project alone: a role's result of a check of a Verification document is pass or fail.";
+  }
   const carried = RESULT_RECORD_FIELDS.filter((field) => input[field] !== undefined);
   if (typeof input["retract"] === "string") {
     const reason = input["reason"];
@@ -716,6 +754,35 @@ function resultProblem(value: unknown): string | undefined {
     return `recording a result needs ${missing.join(", ")}. ${RESULT_RETRACT_RULE}`;
   }
   return undefined;
+}
+
+/** The first rule of the two forms of `dispatch_results`: one owner. */
+const RESULTS_OWNER_RULE =
+  "Exactly one of issue and project is required. With issue, the read prints the checks of the " +
+  "issue's Verification document. With project, it prints the results that CI jobs stored for " +
+  "checks of the spec files at commit.";
+
+/** The refusal of the first rule a `dispatch_results` call breaks, or undefined when it keeps
+ *  them: one owner, and each form's own arguments alone. */
+function resultsProblem(value: unknown): string | undefined {
+  const input = value as Record<string, unknown>;
+  if ((input["issue"] === undefined) === (input["project"] === undefined)) {
+    return RESULTS_OWNER_RULE;
+  }
+  if (input["project"] !== undefined) {
+    const issueOnly = ["at", "brief"].filter((field) => input[field] !== undefined);
+    if (issueOnly.length > 0) {
+      return `With project, the read takes commit, check and json alone, and this call also carries ${issueOnly.join(", ")}.`;
+    }
+    if (input["commit"] === undefined) {
+      return "With project, the read needs commit, the 40-character lowercase hex commit whose results it prints.";
+    }
+    return undefined;
+  }
+  const projectOnly = ["commit", "check", "json"].filter((field) => input[field] !== undefined);
+  return projectOnly.length === 0
+    ? undefined
+    : `With issue, the read takes at and brief alone, and this call also carries ${projectOnly.join(", ")}.`;
 }
 
 /**
@@ -1775,7 +1842,7 @@ export const dispatchToolSpecs = [
       "`://`, a private or Dispatch host, or an issue key of one of its projects; the record keeps " +
       "the whole reading. --dry-run prints the line the record would print, and records nothing. " +
       "Name the check by its block id. Where two Verification documents in reach hold that id, " +
-      "name it by its canonical reference (dispatch://KEY/artifact/verification-md#b-<id>). " +
+      "name it by the check block's canonical document reference. " +
       "409 CHECK_AMBIGUOUS names both documents. An id no Verification document of the issue " +
       "or of an issue above it holds is 400 UNKNOWN_CHECK. " +
       `${CHECK_PROVED_BY_CI}. ` +
@@ -1818,13 +1885,45 @@ export const dispatchToolSpecs = [
       "session that recorded the result, a session that holds the Dispatch claim of the issue " +
       "the result was recorded on, and a caller whose credential carries a person. Every other " +
       "caller is 403 RETRACTION_FORBIDDEN. A result retracted already is 409 RESULT_RETRACTED. " +
+      "With project, a CI job records its own result of one check of the spec files " +
+      "(.dispatch/spec) at the commit it tested. The job writes with its own identity: it " +
+      "trades the OIDC token of its run at the secrets broker for a results token, and Dispatch " +
+      "refuses this form from every other credential. The call sends commit, check, verdict and " +
+      "observed. Dispatch takes the job, the procedure and the recorder from the token, from " +
+      "GitHub and from the spec files at the commit. The recorder is the run, and no person. " +
+      "Spec files that the graph logic refuses hold no check: 409 SPEC_FILES_REFUSED names the " +
+      `first problem. A result keeps ${SPEC_CHECK_OBSERVED_MAX} characters of observed. The ` +
+      "command sends a longer text as its start and its end, with a line between them that says " +
+      "the middle was cut, and it sends a NUL as U+FFFD. verdict could_not_run is a test that did " +
+      "not finish. The command prints the stored result as JSON, an in-toto statement of the " +
+      "run. A write that reached Dispatch with no answer that says whether it stored the result " +
+      'prints {"write_outcome_unknown":"<code>"} and exits 1: the result may be stored, and a ' +
+      "second run is safe, because Dispatch keeps each result. A call that the broker's rate " +
+      "limit (429), a broker that cannot answer the trade (a 5xx, or no answer in 30 s) or " +
+      "Dispatch's check of the job's token (429 BROKER_TOKEN_RATE_LIMITED, 503 " +
+      "BROKER_UNAVAILABLE) turns away before anything " +
+      "is stored is asked again after the answer's Retry-After, or a second. The whole call has " +
+      "one bound, 60 s from its start, which the runner's token request, the broker's trade and " +
+      "the write all run under, and no round starts in its last 7 s; a call turned away until " +
+      "then ends with the last answer, its code named, and exits 1, and a bound that ends in the " +
+      "trade says which part of the trade and that nothing was written. " +
+      "It reads DISPATCH_URL, AGENT_SECRETS_URL, AGENT_SECRETS_MACHINE_IDENTITY " +
+      "(github-actions in a GitHub Actions job), AGENT_SECRETS_MACHINE_AUDIENCE, and the runner's " +
+      "ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN, or " +
+      "AGENT_SECRETS_MACHINE_TOKEN_FILE in their place. Its trade names no session. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
+      project: z
+        .string()
+        .describe(
+          "A project key such as ACME. With project, the call records a CI job's result of a check of the spec files."
+        )
+        .optional(),
       check: z
         .string()
         .describe(
-          "The check block's id, or its canonical reference dispatch://KEY/artifact/verification-md#b-<id> when the id is not unique among the issue's Verification document and those of the issues above it."
+          "The check block's id, or its canonical document reference when the id is not unique among the issue's Verification document and those of the issues above it. With project, the check's id as the spec files hold it."
         )
         .optional(),
       role: z
@@ -1833,7 +1932,12 @@ export const dispatchToolSpecs = [
           "Who ran it: implementer, tester, reviewer. At most 32 characters of a-z and -, printed in the pull-request line."
         )
         .optional(),
-      verdict: z.enum(["pass", "fail"]).describe("Whether the check passed.").optional(),
+      verdict: z
+        .enum(["pass", "fail", "could_not_run"])
+        .describe(
+          "Whether the check passed. could_not_run goes with project alone: the test did not finish."
+        )
+        .optional(),
       commit: z
         .string()
         .describe("The 40-character lowercase hex commit the check ran at.")
@@ -1920,9 +2024,36 @@ export const dispatchToolSpecs = [
       "A push that moves a pull request's head leaves a result at the commit before it, with " +
       "no write of anyone's: record the check again at the new head. A check CI proves is read " +
       "again at the new head by itself. " +
+      "With project and commit, the read prints each result that CI jobs stored for checks of " +
+      "the project's spec files at that commit, newest first in Dispatch's record order, one " +
+      "line each: its record number, the check, the verdict, the job, the leg of the matrix, " +
+      "the run and its attempt, and the commit. check limits the read to one check, and json " +
+      "prints the stored results as JSON. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
-      issue: z.string().describe(ISSUE_REFERENCE),
+      issue: z.string().describe(ISSUE_REFERENCE).optional(),
+      project: z
+        .string()
+        .describe(
+          "A project key such as ACME. With commit, the read prints the results that CI jobs stored for checks of the project's spec files."
+        )
+        .optional(),
+      commit: z
+        .string()
+        .describe(
+          "With project: the 40-character lowercase hex commit whose results the read prints."
+        )
+        .optional(),
+      check: z
+        .string()
+        .describe(
+          "With project: the id of one check of the spec files, whose results alone the read prints."
+        )
+        .optional(),
+      json: z
+        .boolean()
+        .describe("With project: print the stored results as JSON, one in-toto statement each.")
+        .optional(),
       at: z
         .string()
         .describe(
@@ -1936,6 +2067,11 @@ export const dispatchToolSpecs = [
         )
         .optional(),
     }),
+    validation: {
+      check: (value) => resultsProblem(value) === undefined,
+      message: RESULTS_OWNER_RULE,
+      refusal: (value) => resultsProblem(value) ?? RESULTS_OWNER_RULE,
+    },
   },
   {
     name: "dispatch_artifact",

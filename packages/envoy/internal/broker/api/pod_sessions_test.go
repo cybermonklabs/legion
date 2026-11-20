@@ -155,7 +155,7 @@ func withExchangeAccounts(t *testing.T, accounts ...string) func(*api.Deps) {
 	for _, account := range accounts {
 		entries = append(entries, exchange.AccountEntry{Account: account, Project: brokertest.ExchangeProject, Person: brokertest.ExchangePerson})
 	}
-	policy, err := exchange.NewSet(entries, nil, nil, nil, "")
+	policy, err := exchange.NewSet(entries, nil, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
 	}

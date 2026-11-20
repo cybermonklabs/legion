@@ -1,0 +1,54 @@
+name: Report the results of a job's spec checks
+description: >-
+  The last step of a CI job of this repository. It runs packages/envoy's ci-report command over
+  the spec files of .dispatch/spec at the commit of the checkout, which it reads through git and
+  never from the working tree, and the job's go test report. The command writes one result to
+  Dispatch, through the dispatch command, for each check whose test part names the job and whose
+  test ran in the report. A check whose test did not run gets no result. The step writes one JSON
+  line for each check of the job to $RUNNER_TEMP/dispatch-results.jsonl and to the log, and it
+  fails when a call of the dispatch command failed.
+
+  The calling job checks out this repository, installs the Go that packages/envoy/go.mod names and
+  runs `bun install`, since the step runs `go run` and the dispatch command under Bun. The calling
+  step sets DISPATCH_URL, AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_AUDIENCE, which the dispatch
+  command reads, and the job has `id-token: write`, so the command can trade the job's own token
+  for one that writes results and nothing else.
+
+inputs:
+  report:
+    description: >-
+      The path of the job's `go test -json` report. A relative path is read from the checkout. The
+      command that makes it passes no -v and no -test.v but the -test.v=test2json that -json passes
+      itself: under any other value a test can print a line that reads as its own pass, and such a
+      report cannot be told from one made without -v, so rule 22 of
+      .github/scripts/check-ci-filters.sh refuses a job that runs this action and such a
+      `go test`.
+    required: true
+  project:
+    description: The key of the Dispatch project that the results are for.
+    required: true
+  job:
+    description: >-
+      The job whose checks the step reports: the value of the job attribute of those checks.
+      Dispatch refuses a result of a check whose job is not the job of the run's check run.
+    default: ${{ github.job }}
+
+runs:
+  using: composite
+  steps:
+    # The inputs reach the script as environment variables and never as text of `run:`, so no
+    # input can become shell code. Their names leave out the INPUT prefix, which this repository's
+    # Bun pin check reserves for an action's own inputs. AGENT_SECRETS_MACHINE_IDENTITY makes the
+    # dispatch command read the job's own GitHub OIDC token. GitHub runs a `shell: bash` step with
+    # `-eo pipefail`, so the step fails when the command fails, after tee wrote each line. go run
+    # exits 1 for every status of the command but 0, and prints `exit status <n>` with the
+    # command's own: 1 for a failed call, 2 for a tree, a report or a commit it could not read.
+    - name: Write one result for each check whose test ran
+      shell: bash
+      env:
+        REPORT: ${{ inputs.report }}
+        PROJECT: ${{ inputs.project }}
+        JOB: ${{ inputs.job }}
+        AGENT_SECRETS_MACHINE_IDENTITY: github-actions
+      run: |
+        go run ./packages/envoy/cmd/ci-report --dir .dispatch/spec --job "$JOB" --report "$REPORT" --project "$PROJECT" --dispatch-cli "bun packages/envoy-client/bin/dispatch.ts" | tee "$RUNNER_TEMP/dispatch-results.jsonl"

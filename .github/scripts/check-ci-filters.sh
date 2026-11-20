@@ -326,7 +326,23 @@
 #      not exactly .github/ci-filters.yaml, naming the file, the job and the step. Every rule
 #      above reads that file, so a filter written into a workflow's own text instead is read by
 #      none of them: it would gate its job on patterns no coverage rule here has seen, and
-#      nothing would say so.
+#      nothing would say so,
+#  22. a job of any workflow of .github/workflows that runs the action
+#      ./.github/actions/dispatch-results, which reads the job's `go test -json` report and
+#      writes one result for each check whose test ran, and that holds a `go test` command
+#      passing a -v of go test or a -test.v of its test binary (before -args, -v and -test.v;
+#      after -args or --args, -test.v alone; one dash or two, bare or with any value but
+#      test2json, false too), naming the file, the job, the step and the line; or that holds no
+#      `go test` command in a run: script of its own, since the flags of a report made elsewhere,
+#      in a script or in another job, are flags this rule cannot read. go test -json runs the test
+#      binary with -test.v=test2json, and any other value replaces it, so a frame line carries no
+#      mark, a test can print a line that reads as its own pass, and the report cannot be told
+#      from one of `go test -json` by its content: the reader cannot refuse it, so the command
+#      that makes it must not pass such a flag. A -v after -args is a flag of the test's own, such
+#      as the log level of glog and klog, and passes. A -v in GOFLAGS (the variable, or go's own
+#      env file) reaches no test binary: under -json, go drops v and test.v from the flags it
+#      forwards from GOFLAGS (cmd/go/internal/test/testflag.go, go1.27.3), so the rule reads the
+#      command line alone.
 #
 # Rules 1, 6, 9 and 17 name .github/ci-filters.yaml in their refusals, the file the filters are
 # in, and rule 8 names it as the file holding the filter a workflow's paths must equal. That file
@@ -469,9 +485,9 @@ esac
 export CI_FILTERS_MODE="${1:-check}"
 
 # The engine (ci_filter_coverage.py), its data (ci_job_reads.py), the rules that read no filter
-# and no go command (ci_workflow_rules.py: rules 10 to 14 above, the workspace one
-# given that data's WORKSPACES by main() rather than importing the data itself, the merge-group
-# one reading .github/workflows itself) and the path
+# and no go command's closure (ci_workflow_rules.py: rules 10 to 14, 16 and 22 above, the
+# workspace one given that data's WORKSPACES by main() rather than importing the data itself, the
+# merge-group and report ones reading .github/workflows themselves) and the path
 # model (workflow_paths.py) sit beside this script in the repository it checks. The engine is
 # imported, not run as a script, so the data's `from ci_filter_coverage import ...` binds the
 # same classes.

@@ -1,0 +1,14 @@
+{"Time":"2026-11-16T12:49:53.815972736Z","Action":"start","Package":"example.com/acme/probe"}
+{"Time":"2026-11-16T12:49:53.85694252Z","Action":"run","Package":"example.com/acme/probe","Test":"TestProbe"}
+{"Time":"2026-11-16T12:49:53.857011936Z","Action":"output","Package":"example.com/acme/probe","Test":"TestProbe","Output":"=== RUN   TestProbe\n","OutputType":"frame"}
+{"Time":"2026-11-16T12:49:53.857031719Z","Action":"output","Package":"example.com/acme/probe","Test":"TestProbe","Output":"    probe_test.go:15: the probe read 1 claim\n"}
+{"Time":"2026-11-16T12:49:53.857037629Z","Action":"output","Package":"example.com/acme/probe","Test":"TestProbe","Output":"--- PASS: TestProbe (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T12:49:53.857039487Z","Action":"pass","Package":"example.com/acme/probe","Test":"TestProbe","Elapsed":0}
+{"Time":"2026-11-16T12:49:53.857045925Z","Action":"run","Package":"example.com/acme/probe","Test":"TestSecondProbe"}
+{"Time":"2026-11-16T12:49:53.857047513Z","Action":"output","Package":"example.com/acme/probe","Test":"TestSecondProbe","Output":"=== RUN   TestSecondProbe\n","OutputType":"frame"}
+{"Time":"2026-11-16T12:49:53.85705045Z","Action":"output","Package":"example.com/acme/probe","Test":"TestSecondProbe","Output":"    probe_test.go:20: the second probe read 0 claims, want 1\n","OutputType":"error"}
+{"Time":"2026-11-16T12:49:53.857054802Z","Action":"output","Package":"example.com/acme/probe","Test":"TestSecondProbe","Output":"--- FAIL: TestSecondProbe (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T12:49:53.857056332Z","Action":"fail","Package":"example.com/acme/probe","Test":"TestSecondProbe","Elapsed":0}
+{"Time":"2026-11-16T12:49:53.85705822Z","Action":"output","Package":"example.com/acme/probe","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-11-16T12:49:53.867090244Z","Action":"output","Package":"example.com/acme/probe","Output":"FAIL\texample.com/acme/probe\t0.051s\n","OutputType":"frame"}
+{"Time":"2026-11-16T12:49:53.867174232Z","Action":"fail","Package":"example.com/acme/probe","Elapsed":0.051}
