@@ -163,6 +163,18 @@ func TestTheRemovedChildRouteAnswersWithTheStatusWrite(t *testing.T) {
 	}
 }
 
+// The rules for ending a child, and the sentence on a status the daemon has not taken yet, are
+// each one text in two languages. The daemon's refusals and notices over children carry
+// record.EndChildRule and record.StatusNotTakenYet, and the legion tool's description
+// (`packages/pi-legion/src/tools.ts`) carries the same words. This golden is where the two meet,
+// as stale-entry.json is for HANDOFF_STALE_ENTRY: `packages/pi-legion/src/tools.test.ts` holds the
+// description to the file. So a word changed on the Go side fails here until the fixture is
+// written again (`go test ./internal/api/ -update`), and then fails there until the tool's text
+// says it too.
+func TestTheEndChildRuleGolden(t *testing.T) {
+	golden(t, "end-child-rule.json", map[string]string{"rule": record.EndChildRule, "notTakenYet": record.StatusNotTakenYet})
+}
+
 // The restart of a running child is its owning architect's backlog, then rerun_child
 // (dispatch://INFRA-3178/spec R5). The root architect writes backlog on the child in Dispatch, and
 // the daemon takes that write from its event as it takes a person's move: the child leaves the

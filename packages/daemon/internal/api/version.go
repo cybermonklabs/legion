@@ -2461,10 +2461,14 @@ package api
 // body, applies no fact and answers 410 ROUTE_REMOVED with a reason that says which status to
 // write in Dispatch. The `legion` tool loses the operation, `@legion/pi-shared`'s
 // `LegionDaemonClient` loses its call, and `packages/contracts/fixtures/daemon-api` loses the
-// fixture of the route's answer. `api.ChildRequest` and contracts' `LegionChildRequest` stay,
-// because rerun_child takes them. A plugin below 186 still offers the operation to its agents. On
-// a daemon at 186 that call gets the refusal as its result, so the agent reads the status to
-// write. No shape of `GET /legion/v1/state` moves, so no caller is served a narrower one.
+// fixture of the route's answer. That directory gains `end-child-rule.json`, the rules for ending
+// a child and the sentence on a status the daemon has not taken yet, which the daemon's refusals
+// and notices over children carry (`record.EndChildRule` and `record.StatusNotTakenYet`), and the
+// `legion` tool's description is held to that file word for word. `api.ChildRequest` and
+// contracts' `LegionChildRequest` stay, because rerun_child takes them. A plugin below 186 still
+// offers the operation to its agents. On a daemon at 186 that call gets the refusal as its result,
+// so the agent reads the status to write. No shape of `GET /legion/v1/state` moves, so no caller
+// is served a narrower one.
 // (This entry takes 186, the lowest number above main's 178 that no other open pull request
 // declared at the reading `.github/scripts/check-daemon-api-contract.sh` made, which ended at
 // 2026-11-20T04:35:09Z: each of 179 to 185 was declared by another open pull request, 184 by

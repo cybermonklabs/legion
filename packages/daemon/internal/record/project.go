@@ -67,8 +67,12 @@ func OutOfWorkflow(status string) bool {
 // It lives here because two packages send it, and api does not import workflow: workflow's
 // refusals and notices over children still in the workflow, and api's refusals of close_root on a
 // child and of the removed child route. The architect prompts carry the same eight things whole
-// (prompts/go/architect-common.md), and the legion tool's description carries these words
-// (packages/pi-legion/src/tools.ts), so a change to one is a change to both.
+// (prompts/go/architect-common.md). The legion tool's description carries these words
+// (packages/pi-legion/src/tools.ts), and two tests hold the two copies together.
+// TestTheEndChildRuleGolden in internal/api writes this constant and StatusNotTakenYet to
+// packages/contracts/fixtures/daemon-api/end-child-rule.json. The case "the legion tool's
+// description carries the daemon's rules for ending a child and its not-taken-yet sentence, word
+// for word" in packages/pi-legion/src/tools.test.ts holds the description to that file.
 const EndChildRule = "End a child with your own status write in Dispatch. " +
 	"Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
 	"dispatch issue-update --issue <KEY> --status done --reason '<why>'. " +
@@ -86,6 +90,18 @@ const EndChildRule = "End a child with your own status write in Dispatch. " +
 	"Write no status on a child that is already done, because a move out of done ends an open production check. " +
 	"After each move, read the child back (dispatch read --issue <KEY>). " +
 	"When the daemon set the move back, write it again."
+
+// StatusNotTakenYet is the sentence that each refusal and notice over children still in the
+// workflow adds: sign_off's and close_root's (workflow's endChildrenFirst) and the pr-merged
+// notice (workflow's waitingForTree). The daemon reads the architect's status write on a child
+// from that write's Dispatch event, and the event consumer can deliver the event after the
+// architect calls again. Until then the record holds the child in the workflow and the refusal
+// names it, so the architect waits for read_record to show its move (dispatch://INFRA-3178 R1).
+//
+// It lives here, beside EndChildRule, because the legion tool's description carries both texts
+// (packages/pi-legion/src/tools.ts). The two tests that hold EndChildRule to that description
+// hold this sentence to it too: TestTheEndChildRuleGolden writes both to end-child-rule.json.
+const StatusNotTakenYet = "A status that you wrote and that the daemon has not taken yet does not count until read_record shows it."
 
 // InWorkflow says whether an issue is in the workflow: its Dispatch status is one the workflow
 // runs in (OutOfWorkflow) and its phase is short of done. One still admitted counts, since it

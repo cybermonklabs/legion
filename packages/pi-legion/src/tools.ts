@@ -429,8 +429,13 @@ export function createLegionTool(deps: {
     // issue it returns from accepting), then the architect's retry_or_escalate, its sign_off and
     // the controller's operations: the exact text tools.test.ts pins, so a change to the shared
     // template cannot reach an Oh My Pi agent unnoticed. The rules for ending a child, from "End a
-    // child" to "write it again", are the words of the daemon's record.EndChildRule
-    // (packages/daemon/internal/record/project.go), so a change to one is a change to both.
+    // child" to "write it again", are the words of the daemon's record.EndChildRule, and the
+    // sentence after them, "A status that you wrote … read_record shows it.", is the daemon's
+    // record.StatusNotTakenYet (both in packages/daemon/internal/record/project.go). Two tests
+    // hold the two copies together. The daemon's TestTheEndChildRuleGolden writes both texts to
+    // packages/contracts/fixtures/daemon-api/end-child-rule.json, and the tools.test.ts case "the
+    // legion tool's description carries the daemon's rules for ending a child and its
+    // not-taken-yet sentence, word for word" holds this description to that file.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
@@ -444,7 +449,7 @@ export function createLegionTool(deps: {
         "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
         "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work. " +
         "Sign off again when each of them has left the workflow. " +
-        "The daemon takes your status write on a child as it takes a person's move. " +
+        "The daemon takes the owning architect's done, backlog, icebox or triage on a child as it takes a person's move. " +
         "End a child with your own status write in Dispatch. " +
         "Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
         "dispatch issue-update --issue <KEY> --status done --reason '<why>'. " +

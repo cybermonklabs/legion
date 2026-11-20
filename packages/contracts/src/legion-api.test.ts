@@ -155,6 +155,16 @@ const schemas: Record<string, z.ZodType> = {
     code: z.literal("HANDOFF_STALE_ENTRY"),
     instruction: z.string().min(1),
   }),
+  // Nor this one: the rules for ending a child (`record.EndChildRule` in
+  // `internal/record/project.go`) and the sentence on a status the daemon has not taken yet
+  // (`record.StatusNotTakenYet`), which the daemon's refusals and notices over children carry,
+  // written by `internal/api`'s TestTheEndChildRuleGolden so that
+  // `packages/pi-legion/src/tools.test.ts` can hold the `legion` tool's description to the
+  // daemon's own text, word for word.
+  "end-child-rule.json": z.strictObject({
+    rule: z.string().min(1),
+    notTakenYet: z.string().min(1),
+  }),
   // `api.HandoffCompleteRequest` as the completion that ends the retro sends it, rated: the one
   // request of the route a plugin at contract 168 must send, written by `internal/api`'s
   // TestHandoffCompleteRequestRatedGolden from Go's own struct. The request schema is strict, so

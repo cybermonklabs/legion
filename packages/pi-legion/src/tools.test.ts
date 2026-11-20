@@ -217,7 +217,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
   "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work. " +
   "Sign off again when each of them has left the workflow. " +
-  "The daemon takes your status write on a child as it takes a person's move. " +
+  "The daemon takes the owning architect's done, backlog, icebox or triage on a child as it takes a person's move. " +
   "End a child with your own status write in Dispatch. " +
   "Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
   "dispatch issue-update --issue <KEY> --status done --reason '<why>'. " +
@@ -333,6 +333,25 @@ test("the legion tool's description is the exact text Oh My Pi agents read, for 
   for (const active of EVERY_SESSION) {
     expect(toolFor(active).description).toBe(OMP_LEGION_TOOL_DESCRIPTION);
   }
+});
+
+// The daemon's refusals and notices over children carry its rules for ending a child
+// (record.EndChildRule) and its sentence on a status it has not taken yet
+// (record.StatusNotTakenYet), and the description gives an architect the same words. The daemon's
+// golden test (`packages/daemon/internal/api`, TestTheEndChildRuleGolden) writes both texts to
+// `end-child-rule.json`. This case holds the description to the file, so a word changed on either
+// side alone fails one test or the other. The first and the last sentence of the rule are written
+// out here, so a fixture that holds only a part of the rule fails here too.
+test("the legion tool's description carries the daemon's rules for ending a child and its not-taken-yet sentence, word for word", () => {
+  const { rule, notTakenYet } = daemonFixture("end-child-rule.json") as {
+    readonly rule: string;
+    readonly notTakenYet: string;
+  };
+  expect(rule).toStartWith("End a child with your own status write in Dispatch. ");
+  expect(rule).toEndWith(" When the daemon set the move back, write it again.");
+  const { description } = toolFor(claimSession("architect"));
+  expect(description).toContain(rule);
+  expect(description).toContain(notTakenYet);
 });
 
 /** The `legion` tool's parameter schema as Oh My Pi agents are given it, serialized whole: every

@@ -424,10 +424,10 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 // request finds issues beneath it still in the workflow (for a root, the rest of its tree): the
 // close is waiting, and for whom. It also says how a child leaves without its own merge, which is
 // the architect's status write (record.EndChildRule), and that such a write counts once the daemon
-// has taken it (statusNotTakenYet).
+// has taken it (record.StatusNotTakenYet).
 func waitingForTree(issue string, number int, waiting []string) string {
 	return fmt.Sprintf("pull request #%d merged, and %s's close is waiting for %s, still in the workflow. %s closes once the last of them leaves the workflow.",
-		number, issue, strings.Join(waiting, ", "), issue) + " " + statusNotTakenYet + " " + record.EndChildRule
+		number, issue, strings.Join(waiting, ", "), issue) + " " + record.StatusNotTakenYet + " " + record.EndChildRule
 }
 
 // closeMergedTelling closes issue on its merged pull request (closeMerged) and, when the close

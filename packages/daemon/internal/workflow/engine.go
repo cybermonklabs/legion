@@ -2029,20 +2029,12 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerBackward, fact.To, row, pr, fact.Reason)
 }
 
-// statusNotTakenYet is the sentence that each refusal and notice over children still in the
-// workflow adds: sign_off's, close_root's and the pr-merged notice (waitingForTree). The daemon
-// reads the architect's status write on a child from that write's Dispatch event, and the event
-// consumer can deliver the event after the architect calls again. Until then the record holds the
-// child in the workflow and the refusal names it, so the architect waits for read_record to show
-// its move (dispatch://INFRA-3178 R1).
-const statusNotTakenYet = "A status that you wrote and that the daemon has not taken yet does not count until read_record shows it."
-
 // endChildrenFirst is what the two refusals over children still in the workflow, sign_off's and
 // close_root's, tell the architect to do: wait for its status write to be taken, end a child by
 // that write (record.EndChildRule), and ask the person about a child that no move fits. hold is
 // what the architect holds until the person answers.
 func endChildrenFirst(hold string) string {
-	return statusNotTakenYet + " " + record.EndChildRule +
+	return record.StatusNotTakenYet + " " + record.EndChildRule +
 		" When a child can neither finish nor take one of these moves, ask the person. Hold the " + hold + " until they answer."
 }
 
