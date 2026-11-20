@@ -326,8 +326,10 @@ func passes(callers ...string) map[string]bool {
 // the server's, as does a session with neither a pair nor a listener record (ses_neither).
 // A role of a private project the viewer does not see (legion-priv-architect, which nobody holds,
 // and legion-priv-planner, which ses_pub holds) passes for no viewer but the server's. Any other
-// role passes for an open viewer unless a session that holds it now does not pass (priv-architect,
-// held by ses_priv), and for any other viewer when a session that holds it now passes. For a
+// role passes for a viewer when a session that holds it now passes for that viewer, and for an open
+// viewer as well when no session that holds it now fails (priv-architect, held by ses_priv alone,
+// reaches no open viewer that does not see PRIV; mixed-architect, held by ses_priv and ses_pub,
+// reaches every caller here, each of whom reads one of its holders). For a
 // restricted viewer or one that lists projects, a person passes when it sees a project the viewer
 // sees or is the viewer. A conversation of no project passes when the viewer's own person or
 // session is a party, or the viewer is open, and every session party passes SessionClause: carol's
@@ -364,7 +366,9 @@ func TestTheClausesOverTheSeededCallers(t *testing.T) {
 			('role', 'pub-architect', 'held_by', 'session', 'ses_priv', now(), '{}', 0, false);
 		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event) values
 			('role', 'pub-architect', 'held_by', 'session', 'ses_pub', now(), '{}', 0),
-			('role', 'legion-priv-planner', 'held_by', 'session', 'ses_pub', now(), '{}', 0);
+			('role', 'legion-priv-planner', 'held_by', 'session', 'ses_pub', now(), '{}', 0),
+			('role', 'mixed-architect', 'held_by', 'session', 'ses_priv', now(), '{}', 0),
+			('role', 'mixed-architect', 'held_by', 'session', 'ses_pub', now(), '{}', 0);
 	`); err != nil {
 		t.Fatalf("seed sessions and roles: %v", err)
 	}
@@ -411,6 +415,7 @@ func TestTheClausesOverTheSeededCallers(t *testing.T) {
 		{"RoleClause legion-priv-architect", RoleClause("$2", "$1"), "legion-priv-architect", passes(byCarol), openAnd()},
 		{"RoleClause legion-priv-planner", RoleClause("$2", "$1"), "legion-priv-planner", passes(byCarol), openAnd()},
 		{"RoleClause legion-pub-architect", RoleClause("$2", "$1"), "legion-pub-architect", passes(byAlice, byCarol, byCarolUnlisted, byShared), openAnd()},
+		{"RoleClause mixed-architect", RoleClause("$2", "$1"), "mixed-architect", everyone, openAnd(byBob, byCarolPriv)},
 		{"PartyClause bob and ses_pub", PartyClause("$2", "$1"), []string{"person:" + bob, "session:ses_pub"}, passes(byAlice, byCarol, byCarolUnlisted, byShared), openAnd()},
 		{"PartyClause bob and ses_priv", PartyClause("$2", "$1"), []string{"person:" + bob, "session:ses_priv"}, passes(byBob, byCarol), openAnd(byBob)},
 		{"PartyClause carol and ses_priv", PartyClause("$2", "$1"), []string{"person:" + carol, "session:ses_priv"}, passes(byCarol, byCarolPriv), openAnd(byCarolPriv)},

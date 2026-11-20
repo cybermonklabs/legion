@@ -225,12 +225,14 @@ func roleProjectSQL(roleExpr string) string {
 
 // RoleClause passes a role, by name, to no viewer but the server's when it works for a private
 // project the viewer does not see (contracts.RoleProject: legion-<token>-…), whether or not a
-// session holds it. Any other role it passes to an open viewer unless a session that holds it now
-// (its held_by tuple not retracted since) does not pass SessionClause, and to any other viewer when
-// a session that holds it now passes SessionClause. So a role held by a session of a private
-// project the viewer does not see reaches no viewer that may not read that session. A deployment
-// that holds no private project skips the read of the role's project and the open viewer's read of
-// the holders: SessionClause then passes every session to it (R9).
+// session holds it. Any other role it passes to a viewer when a session that holds it now (its
+// held_by tuple not retracted since) passes SessionClause for that viewer, and to an open viewer as
+// well when no session that holds it now fails SessionClause, a role nobody holds included. So a
+// role held only by sessions of a private project the viewer does not see reaches no viewer that
+// may not read one of them, and a role one of whose holders the viewer may read reaches it, the
+// hidden holder staying hidden wherever holders are listed. A deployment that holds no private
+// project skips the read of the role's project and the open viewer's read of the holders:
+// SessionClause then passes every session to it (R9).
 func RoleClause(roleExpr, viewerParam string) string {
 	session := SessionClause("holder.to_id", viewerParam)
 	holder := func(condition string) string {
