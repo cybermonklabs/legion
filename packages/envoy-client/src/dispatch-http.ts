@@ -609,6 +609,8 @@ interface WriteAnswer {
    *  answer is one. */
   readonly code: string | undefined;
   readonly error: string | undefined;
+  /** Whether Dispatch replayed the answer it stored under this key (`request_keys.go`). */
+  readonly replayed: boolean;
 }
 
 /** A body parsed as JSON, or undefined where it is empty, not typed JSON, or not JSON. */
@@ -672,6 +674,7 @@ async function writeAnswer(response: Response): Promise<WriteAnswer> {
       json: undefined,
       code: undefined,
       error: undefined,
+      replayed: response.headers.get(IDEMPOTENCY_REPLAYED_HEADER)?.trim() === "?1",
     };
   }
   const text = await response.text();
@@ -687,6 +690,7 @@ async function writeAnswer(response: Response): Promise<WriteAnswer> {
     json,
     code: own ? shape.code : undefined,
     error: own ? (shape.error as string) : undefined,
+    replayed: response.headers.get(IDEMPOTENCY_REPLAYED_HEADER)?.trim() === "?1",
   };
 }
 
@@ -696,32 +700,12 @@ async function writeAnswer(response: Response): Promise<WriteAnswer> {
  *   (`foreign-2xx`): its body is empty or not JSON-typed where its status carries one (`notJson`),
  *   a captive portal's 200 page for one. A 2xx whose body is not the JSON it says it is was cut
  *   short on the way (`body-malformed`).
- * - Two refusals are read by their codes whatever came back with them, since Dispatch makes both
- *   before any handler or its keyed layer runs: its `401 BROKER_TOKEN_NOT_ACTIVE`
- *   (`brokerTokenActor`), a dead token to present afresh where `canTellDeadToken` (the credential
- *   can be told and has not been told yet in this call), and an old build's `404 NOT_FOUND` "no
- *   route for …".
+ * - `401 BROKER_TOKEN_NOT_ACTIVE` and an old build's `404 NOT_FOUND` "no route for …" are read by
+ *   their codes before this rule. A non-2xx answer Dispatch explicitly replayed (`Idempotency-Replayed:
+ *   ?1`) is the stored answer after the key claim, so it is a final refusal whatever its code.
+ *   Every other non-retry answer is unjudged after a possible landing: outer layers and an old/new
+ *   rolling release can write the same JSON codes before the claim.
  */
-/**
- * The 403s every layer outside `keyedWrites` (server.go:848-887) writes in its JSON body. They
- * claim no key, so after an earlier attempt may have landed they say nothing of that attempt.
- * Every other JSON 403 reached the handler inside `keyedWrites`, whose answer is stored and
- * replayed under the key (`storedStatus`, request_keys.go:1013-1019).
- */
-function isPreKey403(code: string | undefined): boolean {
-  switch (code) {
-    case "OAUTH_SCOPE_REQUIRED":
-    case "PROJECT_SCOPE":
-    case "PROJECT_SCOPE_DEPLOYMENT":
-    case "READ_ONLY_TOKEN":
-    case "SESSION_SCOPE":
-    case "SIGN_IN_REQUIRED":
-      return true;
-    default:
-      return false;
-  }
-}
-
 function answerEvent(answer: WriteAnswer, canTellDeadToken: boolean): WriteEvent {
   const { status } = answer.response;
   if (status >= 200 && status < 300) {
@@ -744,9 +728,8 @@ function answerEvent(answer: WriteAnswer, canTellDeadToken: boolean): WriteEvent
     if (status === 409) return "in-flight";
     return status >= 500 ? "server-error" : "try-later";
   }
-  return answer.error === undefined || status === 401 || isPreKey403(answer.code)
-    ? "unjudged"
-    : "judged";
+  if (answer.replayed || answer.code === IDEMPOTENCY_KEY_COMMITTED) return "judged";
+  return "unjudged";
 }
 
 /**

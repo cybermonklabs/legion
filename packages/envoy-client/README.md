@@ -702,6 +702,12 @@ retry once even while `/healthz` is unavailable; `dispatch-keyed-resend-live.tes
 end to end against a real Dispatch server. `dispatch-write-outcomes.test.ts` drives every
 (state, event) pair and every sequence of events up to its limits.
 
+Before sessions use this client, move every Dispatch process to `b1c42d1d7d` or later: that build
+answers a caller it cannot resolve before its handler runs (cybermonklabs/legion#4350). An older
+build can run that caller's first attempt with no key, then run this client's retry under its key,
+so the write lands twice. Do not roll Dispatch back below that build while sessions use this client;
+fix forward instead.
+
 A non-2xx answer is thrown as `DispatchServiceError`. Dispatch's own refusal, JSON with a string
 `error`, is the error's message under its `code` (`HTTP_<status>` when the server set none), with
 `fromDispatch` true. Any other body — a gateway's HTML page, an empty body, JSON of another shape —

@@ -388,7 +388,7 @@ describe("DispatchClient's writes", () => {
     }
   });
 
-  test("a 409 answered after a retry keeps its code, candidates and message", async () => {
+  test("a 409 after a possibly landed retry is unsettled", async () => {
     const candidates = [{ from: 1, to: 2, context: "same" }];
     const { fetchImpl } = scripted([
       page(502, "Bad Gateway"),
@@ -400,15 +400,7 @@ describe("DispatchClient's writes", () => {
         ops: [{ op: "delete", find: "same" }],
         actor,
       })
-    ).rejects.toEqual(
-      expect.objectContaining({
-        name: "DispatchServiceError",
-        code: "TARGET_AMBIGUOUS",
-        status: 409,
-        message: "quote is ambiguous",
-        candidates,
-      })
-    );
+    ).rejects.toBeInstanceOf(DispatchWriteUnsettledError);
   });
 
   // R1-8710 (the review of 87105ed7e8): a 5xx can come after Dispatch committed the write, so a
@@ -1071,7 +1063,8 @@ describe("DispatchClient's writes", () => {
       refusal(
         403,
         "ACTOR_SESSION_MISMATCH",
-        "the actor this write names is not the session its credential proved"
+        "the actor this write names is not the session its credential proved",
+        { "Idempotency-Replayed": "?1" }
       ),
     ]);
 

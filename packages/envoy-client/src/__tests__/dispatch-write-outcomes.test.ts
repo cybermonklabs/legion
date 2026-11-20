@@ -115,6 +115,11 @@ interface Kind {
   /** Dispatch's error code, where its JSON body is one. A missing code is a page from something
    *  in Dispatch's place. */
   readonly code?: string;
+  /** Which server layer wrote this answer: before key claim, a keyed-layer answer, a handler after
+   *  the claim, or something other than Dispatch. */
+  readonly writer?: "before-claim" | "keyed-layer" | "handler" | "other";
+  /** Whether this answer is Dispatch's stored replay (`Idempotency-Replayed: ?1`). */
+  readonly replayed?: boolean;
   /** How a write that ends after it with nothing landed is told: its own error. */
   readonly own?: Ending;
   /** What a credential kind's presentation throws. */
@@ -150,8 +155,13 @@ function json(body: unknown, status: number, key?: string, headers: Record<strin
   });
 }
 
-const refused = (status: number, code: string, error: string, key?: string) =>
-  json({ code, error }, status, key);
+const refused = (
+  status: number,
+  code: string,
+  error: string,
+  key?: string,
+  headers: Record<string, string> = {}
+) => json({ code, error }, status, key, headers);
 
 function page(status: number, statusText: string): Response {
   return new Response(`<html><body><h1>${status} ${statusText}</h1></body></html>`, {
@@ -300,93 +310,115 @@ const KINDS: readonly Kind[] = [
     name: "422 KEY_REUSED",
     role: "refusal",
     at: "attempt",
-    echoed: true,
     status: 422,
     code: IDEMPOTENCY_KEY_REUSED,
+    writer: "other",
     respond: (key) =>
       refused(422, IDEMPOTENCY_KEY_REUSED, "this key was used for another request", key),
   },
   {
-    name: "400 judged",
+    name: "400 KEY_INVALID before claim",
     role: "refusal",
     at: "attempt",
-    echoed: true,
     status: 400,
-    code: "INVALID_REQUEST",
-    respond: (key) => refused(400, "INVALID_REQUEST", "body is required", key),
+    code: "KEY_INVALID",
+    writer: "before-claim",
+    respond: () => refused(400, "KEY_INVALID", "the idempotency key is invalid"),
   },
   {
     name: "400 page",
     role: "refusal",
     at: "attempt",
-    echoed: false,
     status: 400,
+    writer: "other",
     respond: () => page(400, "Bad Request"),
   },
   {
     name: "409 KEY_COMMITTED",
     role: "committed",
     at: "attempt",
-    echoed: true,
     status: 409,
     code: IDEMPOTENCY_KEY_COMMITTED,
+    writer: "keyed-layer",
     respond: (key) => refused(409, IDEMPOTENCY_KEY_COMMITTED, "this key's write landed", key),
   },
   {
     name: "401 auth",
     role: "refusal",
     at: "attempt",
-    echoed: false,
     status: 401,
+    code: "UNAUTHORIZED",
+    writer: "before-claim",
     respond: () => refused(401, "UNAUTHORIZED", "a token is required"),
   },
+  ...[
+    "OAUTH_SCOPE_REQUIRED",
+    "PROJECT_SCOPE",
+    "PROJECT_SCOPE_DEPLOYMENT",
+    "READ_ONLY_TOKEN",
+    "SESSION_SCOPE",
+    "SIGN_IN_REQUIRED",
+  ].map(
+    (code): Kind => ({
+      name: `403 ${code} before claim`,
+      role: "refusal",
+      at: "attempt",
+      status: 403,
+      code,
+      writer: "before-claim",
+      respond: () => refused(403, code, "the outer layer refused this write"),
+    })
+  ),
   {
-    name: "403 READ_ONLY_TOKEN",
+    name: "403 handler OAUTH_SCOPE_REQUIRED replay",
     role: "refusal",
     at: "attempt",
-    echoed: false,
     status: 403,
-    code: "READ_ONLY_TOKEN",
-    respond: () => refused(403, "READ_ONLY_TOKEN", "this token may only read"),
+    code: "OAUTH_SCOPE_REQUIRED",
+    writer: "handler",
+    replayed: true,
+    respond: () =>
+      refused(403, "OAUTH_SCOPE_REQUIRED", "the handler requires the approve scope", undefined, {
+        "Idempotency-Replayed": "?1",
+      }),
   },
   {
-    name: "403 handler",
+    name: "403 handler PROJECT_SCOPE replay",
     role: "refusal",
     at: "attempt",
-    echoed: false,
     status: 403,
-    code: "ACTOR_SESSION_MISMATCH",
+    code: "PROJECT_SCOPE",
+    writer: "handler",
+    replayed: true,
     respond: () =>
-      refused(
-        403,
-        "ACTOR_SESSION_MISMATCH",
-        "the actor this write names is not the session its credential proved"
-      ),
+      refused(403, "PROJECT_SCOPE", "the handler refused another project", undefined, {
+        "Idempotency-Replayed": "?1",
+      }),
   },
   {
     name: "403 page",
     role: "refusal",
     at: "attempt",
-    echoed: false,
     status: 403,
+    writer: "other",
     respond: () => page(403, "Forbidden"),
+  },
+  {
+    name: "404 ID_AMBIGUOUS before claim",
+    role: "refusal",
+    at: "attempt",
+    status: 404,
+    code: "ID_AMBIGUOUS",
+    writer: "before-claim",
+    respond: () => refused(404, "ID_AMBIGUOUS", "the path prefix is ambiguous"),
   },
   {
     name: "404 page",
     role: "refusal",
     at: "attempt",
-    echoed: false,
     status: 404,
+    writer: "other",
     respond: () => page(404, "Not Found"),
-  },
-  {
-    name: "404 judged",
-    role: "refusal",
-    at: "attempt",
-    echoed: false,
-    status: 404,
-    code: "NOT_FOUND",
-    respond: () => refused(404, "NOT_FOUND", "the issue this write names is gone"),
   },
   ...[301, 302, 303, 307, 308].map(
     (status): Kind => ({
@@ -603,20 +635,12 @@ type Decision = { readonly asks: true } | { readonly asks: false; readonly endin
 
 const UNSETTLED: Ending = { as: "unsettled" };
 
-/** The JSON codes every Dispatch layer outside keyedWrites writes for a 403 (server.go:848-887). */
-function isPreKey403Code(code: string | undefined): boolean {
-  switch (code) {
-    case "OAUTH_SCOPE_REQUIRED":
-    case "PROJECT_SCOPE":
-    case "PROJECT_SCOPE_DEPLOYMENT":
-    case "READ_ONLY_TOKEN":
-    case "SESSION_SCOPE":
-    case "SIGN_IN_REQUIRED":
-      return true;
-    default:
-      return false;
-  }
-}
+/**
+ * Ground truth from Dispatch, rather than the client: route layers outside `keyedWrites` answer
+ * before its claim (server.go:840-916, request_keys.go:247-312), while `replayStoredAnswer`
+ * writes `Idempotency-Replayed: ?1` only for the stored answer after it
+ * (request_keys.go:998-1011). A writer field makes each row say which truth it exercises.
+ */
 
 /**
  * The rule, on its own: what follows each of `events`, read from what Dispatch and the secrets
@@ -644,11 +668,10 @@ function oracle(events: readonly Kind[]): Decision[] {
         if (event.notJson) return end(UNSETTLED);
         return end({ as: "resolved" });
       case "refusal":
-        return event.code === undefined ||
-          event.status === 401 ||
-          (event.status === 403 && isPreKey403Code(event.code))
-          ? endAfter(refusal)
-          : end(refusal);
+        return event.writer === "keyed-layer" ||
+          (event.writer === "handler" && event.replayed === true)
+          ? end(refusal)
+          : endAfter(refusal);
       case "committed":
         return end({ as: "landed" });
       case "redirect":
@@ -892,8 +915,11 @@ test("every (state, event) pair goes as the rule says", async () => {
   expect([...findings].slice(0, 40)).toEqual([]);
 }, 120_000);
 
-test("a handler 403 after a possibly landed answer settles as its refusal", async () => {
-  const { run, error } = await drive([kind("201 body broken"), kind("403 handler")]);
+test("a replayed handler 403 after a possibly landed answer settles as its refusal", async () => {
+  const { run, error } = await drive([
+    kind("201 body broken"),
+    kind("403 handler OAUTH_SCOPE_REQUIRED replay"),
+  ]);
 
   expect(run.keys).toHaveLength(2);
   expect(error).toEqual(expect.objectContaining({ name: "DispatchServiceError", status: 403 }));
