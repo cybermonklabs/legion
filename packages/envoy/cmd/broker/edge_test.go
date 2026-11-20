@@ -306,6 +306,25 @@ func statusOf(t *testing.T, method, target string) int {
 	return response.StatusCode
 }
 
+// answersHelpPrefix is how broker_answers_total's HELP begins: it names every port whose answers
+// it counts, since the edge's server counts its answers on the counter the API port's does.
+const answersHelpPrefix = "Answers of the broker's API port, its edge and its airlock's proxy port, "
+
+// metricsScrape is what GET /metrics on the metrics port at addr answers, which must be 200.
+func metricsScrape(t *testing.T, addr string) string {
+	t.Helper()
+	response, err := http.Get("http://" + addr + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("GET /metrics on %s = %d, %v", addr, response.StatusCode, err)
+	}
+	return string(body)
+}
+
 // TestTheEdgeIsAbsentFromABrokerWithoutItsSettings: the real binary started with none of the
 // edge's settings binds exactly the two sockets a broker with no airlock bound before the edge
 // existed, its API's and its metrics port's, logs no edge, and serves the device grant on its own
@@ -411,6 +430,21 @@ func TestTheEdgeServesTheDeviceLoginFromTheBinary(t *testing.T) {
 				t.Errorf("%s %s at the edge = %d, want 405: the load balancer's route matches the path alone, and the edge answers POST there and nothing else", method, path, status)
 			}
 		}
+	}
+	// The edge's answers count in broker_answers_total beside the API port's, and the metric's HELP
+	// says so: the two EDGE_WORKSPACE_LOGIN refusals above are samples of it on the metrics port.
+	scrape := metricsScrape(t, broker.MetricsAddr(t))
+	if !strings.Contains(scrape, "# HELP broker_answers_total "+answersHelpPrefix) {
+		t.Errorf("the metrics port's HELP for broker_answers_total does not begin %q:\n%s", answersHelpPrefix, scrape)
+	}
+	var edgeRefusals string
+	for line := range strings.Lines(scrape) {
+		if strings.HasPrefix(line, "broker_answers_total{") && strings.Contains(line, `code="EDGE_WORKSPACE_LOGIN"`) {
+			edgeRefusals = strings.TrimSpace(line)
+		}
+	}
+	if !strings.HasSuffix(edgeRefusals, " 2") {
+		t.Errorf("broker_answers_total's EDGE_WORKSPACE_LOGIN sample is %q, want the edge's 2 refusals counted", edgeRefusals)
 	}
 
 	broker.Terminate(t)

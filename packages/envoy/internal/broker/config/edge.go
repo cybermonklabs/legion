@@ -4,14 +4,13 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"golang.org/x/net/idna"
 
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -103,18 +102,11 @@ func listenPort(addr string) (int, bool) {
 	return n, err == nil
 }
 
-// domainShape is a lowercase DNS name of two or more labels, each 1 to 63 letters, digits and
-// inner hyphens: the shape of a Google Workspace domain.
-var domainShape = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
-
-// maxDomainLength is the longest DNS name, in its dotted text form.
-const maxDomainLength = 253
-
 // parseWorkspaceDomains reads BROKER_SIGNIN_WORKSPACE_DOMAINS, raw: a list separated by commas,
-// each entry trimmed, and each as IDNA lookup writes it (idna.Lookup.ToASCII), the A-label form
-// the edge compares an address's domain in. A value blank once trimmed lists none. An entry that
-// is empty, holds a capital letter, is not taken by the lookup or is no lowercase DNS name of at
-// most maxDomainLength characters refuses, named by its position and never quoted.
+// each entry trimmed, and each as oidc.WorkspaceDomainALabel writes it, the A-label form the edge
+// compares an address's domain in. A value blank once trimmed lists none. An entry that is empty,
+// or one oidc.WorkspaceDomainALabel does not take, refuses, named by its position and never
+// quoted (oidc.DomainNameRefusal).
 func parseWorkspaceDomains(raw string) ([]string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -127,10 +119,9 @@ func parseWorkspaceDomains(raw string) ([]string, error) {
 		if entry == "" {
 			return nil, fmt.Errorf("%s entry %d of %d is empty", workspaceDomainsSetting, i+1, len(entries))
 		}
-		ascii, err := idna.Lookup.ToASCII(entry)
-		if err != nil || entry != strings.ToLower(entry) || len(ascii) > maxDomainLength || !domainShape.MatchString(ascii) {
-			return nil, fmt.Errorf("%s entry %d of %d must be a lowercase domain name such as example.com; got a value of %d characters",
-				workspaceDomainsSetting, i+1, len(entries), utf8.RuneCountInString(entry))
+		ascii, ok := oidc.WorkspaceDomainALabel(entry)
+		if !ok {
+			return nil, oidc.DomainNameRefusal(fmt.Sprintf("%s entry %d of %d", workspaceDomainsSetting, i+1, len(entries)), entry)
 		}
 		domains[i] = ascii
 	}

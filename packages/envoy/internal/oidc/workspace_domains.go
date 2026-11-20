@@ -1,11 +1,46 @@
 package oidc
 
 import (
+	"fmt"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
 	"golang.org/x/net/idna"
 )
+
+// domainShape is a lowercase DNS name of two or more labels, each 1 to 63 letters, digits and
+// inner hyphens: the shape of a Google Workspace domain.
+var domainShape = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// maxDomainLength is the longest DNS name, in its dotted text form.
+const maxDomainLength = 253
+
+// IsDomainName reports whether name is a Workspace domain as a setting writes one: a lowercase DNS
+// name (domainShape) of at most maxDomainLength characters, an internationalized label written as
+// its A-label. Dispatch's DISPATCH_SIGNIN_DOMAIN and the secrets broker's Workspace domains are
+// each held to it, so a domain one of them takes the other takes too.
+func IsDomainName(name string) bool {
+	return len(name) <= maxDomainLength && domainShape.MatchString(name)
+}
+
+// WorkspaceDomainALabel is entry, a setting's entry naming one of the Workspace's domains, as IDNA
+// lookup writes it (idna.Lookup.ToASCII), the form OnWorkspaceDomain compares an address's domain
+// in, and whether the setting takes entry: lowercase, taken by the lookup (a label such as xn--a,
+// which decodes to nothing, is not), and so written a domain name IsDomainName takes. An
+// internationalized domain is written in Unicode, bücher.example, or as its A-labels,
+// xn--bcher-kva.example, and is the same entry either way.
+func WorkspaceDomainALabel(entry string) (string, bool) {
+	ascii, err := idna.Lookup.ToASCII(entry)
+	return ascii, err == nil && entry == strings.ToLower(entry) && IsDomainName(ascii)
+}
+
+// DomainNameRefusal is the refusal of value, which setting names and which is no domain name
+// IsDomainName or WorkspaceDomainALabel takes: it names setting as its caller writes it (a setting,
+// or an entry of one by its position) and value's length in characters, and never value.
+func DomainNameRefusal(setting, value string) error {
+	return fmt.Errorf("%s must be a lowercase domain name such as example.com; got a value of %d characters", setting, utf8.RuneCountInString(value))
+}
 
 // OnWorkspaceDomain reports whether at, an address's domain, is one the Google Workspace owns or a
 // subdomain of one: one of workspace, the Workspace's domains, each a lowercase DNS name with an

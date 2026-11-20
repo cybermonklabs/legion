@@ -151,11 +151,12 @@ const (
 // counter's code label stays a small set.
 var codePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
 
-// NewAnswers registers broker_answers_total on r and answers it, for Middleware and for the
-// airlock's proxy port, which count their answers on the one counter (Count, CountCarried).
+// NewAnswers registers broker_answers_total on r and answers it, for Middleware, which serves the
+// API port and the edge, and for the airlock's proxy port, which count their answers on the one
+// counter (Count, CountCarried); its HELP names the three ports.
 func NewAnswers(r *metrics.Registry) *metrics.Counter {
 	return r.NewCounter("broker_answers_total",
-		"Answers of the broker's API and airlock ports, by outcome (served, refused, rate_limited, pending, failed, cancelled), the code the answer named and the caller's class.")
+		"Answers of the broker's API port, its edge and its airlock's proxy port, by outcome (served, refused, rate_limited, pending, failed, cancelled), the code the answer named and the caller's class.")
 }
 
 // recorderKey carries the request's Recorder on its context.

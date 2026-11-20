@@ -179,6 +179,7 @@ func TestTheEdgeReadsTheWorkspaceDomains(t *testing.T) {
 		{"second.example,,third.example", "entry 2 of 3 is empty"},
 		{"Second.example", "entry 1 of 1"},
 		{"second..example", "entry 1 of 1"},
+		{"second.example," + strings.Repeat(strings.Repeat("a", 63)+".", 4) + "com", "entry 2 of 2 must be a lowercase domain name such as example.com; got a value of 259 characters"},
 	} {
 		e := edgeEnv()
 		e["BROKER_SIGNIN_WORKSPACE_DOMAINS"] = row.value
