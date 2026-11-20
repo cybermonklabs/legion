@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -1082,20 +1083,9 @@ func cutEach(list []string, runes int) []string {
 	}
 	out := make([]string, len(list))
 	for at, one := range list {
-		out[at] = cutRunes(one, runes)
+		out[at] = redact.Runes(one, runes)
 	}
 	return out
-}
-
-// cutRunes is s cut to at most bound runes with an ellipsis where it was cut, as runtime.PodEnd
-// cuts a kubelet's message at runtime.PodEndRunes, so its size is one this package chose rather
-// than one the pod's roles happened to give it.
-func cutRunes(s string, bound int) string {
-	runes := []rune(s)
-	if len(runes) <= bound {
-		return s
-	}
-	return string(runes[:bound-1]) + "…"
 }
 
 // sizes is the size walk for one report: a fresh walk, or the last one when it is less than an
@@ -1141,7 +1131,7 @@ func walkShortfall(walk walkResult) string {
 	for _, size := range walk.Sizes {
 		if size.Refused != "" {
 			partly = append(partly, fmt.Sprintf("%q at %q",
-				cutRunes(size.Path, volumeReportPathRunes), cutRunes(size.Refused, volumeReportPathRunes)))
+				redact.Runes(size.Path, volumeReportPathRunes), redact.Runes(size.Refused, volumeReportPathRunes)))
 		}
 	}
 	partlyAll := len(partly) + walk.PartlyOmitted
@@ -1168,9 +1158,9 @@ func walkShortfall(walk walkResult) string {
 		// The walk keeps no more of the list than a report names (walkResult.miss).
 		missing := make([]string, len(walk.Missing))
 		for at, one := range walk.Missing {
-			missing[at] = strconv.Quote(cutRunes(one.Path, volumeReportPathRunes))
+			missing[at] = strconv.Quote(redact.Runes(one.Path, volumeReportPathRunes))
 			if one.Reason != "" {
-				missing[at] += " (" + strconv.Quote(cutRunes(one.Reason, volumeReportPathRunes)) + ")"
+				missing[at] += " (" + strconv.Quote(redact.Runes(one.Reason, volumeReportPathRunes)) + ")"
 			}
 		}
 		and := " and"

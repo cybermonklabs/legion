@@ -156,9 +156,9 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 		// by the branch below, which reads the bucket until the member answering has applied it.
 		//
 		// Sending the step again sends more than the create: nats.go asks the account for its
-		// JetStream info first (nats.go@v1.53.1 kv.go:432-434), and on "stream name already in
+		// JetStream info first (nats.go@v1.55.0 kv.go:422-548), and on "stream name already in
 		// use" it reads the stream and, when the stream's configuration equals the one asked for,
-		// sends a STREAM.UPDATE of it (kv.go:534-545). That update goes again with the rest of
+		// sends a STREAM.UPDATE of it. That update goes again with the rest of
 		// the step where updateStream leaves an unanswered update alone, because it carries the
 		// configuration the stream already holds: it changes nothing when it lands twice, while
 		// the replica or age change updateStream guards is a write another one can race. A

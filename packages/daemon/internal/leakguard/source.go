@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -172,10 +172,13 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 		if response.StatusCode == http.StatusUnauthorized && s.Forget != nil {
 			s.Forget()
 		}
-		body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyBytes))
+		// A read its bound cut, or that ended on an error, can stop inside a URL before its "@",
+		// which redact.Read drops rather than quote.
+		read, cut, _ := redact.ReadBounded(response.Body, refusalBodyBytes)
+		body := redact.Read(string(read), cut)
 		what := fmt.Sprintf("GitHub answered the read of %s at %s with HTTP %d", CheckSlug, tag, response.StatusCode)
-		if strings.TrimSpace(string(body)) != "" {
-			what += ": " + firstLine(string(body))
+		if strings.TrimSpace(body) != "" {
+			what += ": " + firstLine(body)
 		}
 		return Served{}, errors.New(Cause(what, nil))
 	}

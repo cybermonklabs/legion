@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/ompdirs"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // Image is what the image-site checks read.
@@ -536,11 +537,14 @@ func (img Image) runWithin(ctx context.Context, budget time.Duration, name strin
 }
 
 // oneLine is text as one printed line: its whitespace runs collapsed, and cut at maxDetail on a
-// rune boundary with an ellipsis after the cut.
+// rune boundary with an ellipsis after the cut. The text is a command's output, which can quote a
+// URL with a token in its userinfo or its query, so redact.Bytes reads the whole line through the
+// URL rule before the cut: a cut made first could end inside that userinfo, before its "@", and
+// leave the start of the token where the rule no longer finds it.
 func oneLine(text string) string {
-	line := strings.Join(strings.Fields(text), " ")
-	if len(line) > maxDetail {
-		line = truncate(line, maxDetail) + "…"
+	line, cut := redact.Bytes(strings.Join(strings.Fields(text), " "), maxDetail)
+	if cut {
+		line += "…"
 	}
 	return line
 }
