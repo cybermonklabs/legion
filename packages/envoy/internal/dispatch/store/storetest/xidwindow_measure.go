@@ -5,6 +5,7 @@ import (
 	"math"
 	"runtime"
 	"runtime/debug"
+	"sync"
 	"testing"
 	"time"
 
@@ -92,6 +93,17 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 			}
 		}
 	}()
+	// The capture ends however operation leaves: a t.Fatalf inside it exits through the deferred
+	// calls alone. Left running, the poller would query a connection Measure's defer closes, the
+	// tracer would go on recording, and the execution tracer would stay on, so the next Measure in
+	// the process could not start its own (TestAStoppedMeasureLeavesTheNextItsOwnTrace). endCapture
+	// is deferred after conn.Close, so it runs first; traced.stop is deferred inside the callback.
+	endCapture := sync.OnceFunc(func() {
+		close(stop)
+		<-polled
+		x.recording.Store(false)
+	})
+	defer endCapture()
 
 	var traced *xidTrace
 	var started, finished time.Time
@@ -101,18 +113,14 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 			if traced, err = startXidTrace(); err != nil {
 				t.Fatalf("XID RIG PROBLEM (not a finding about the code): start the execution tracer, which the rig reads the runtime's own waits off: %v", err)
 			}
+			defer traced.stop()
 		}
 		started = time.Now()
 		operation()
 		finished = time.Now()
-		if traced != nil {
-			traced.stop()
-		}
 	})
-	close(stop)
-	<-polled
+	endCapture()
 
-	x.recording.Store(false)
 	x.mu.Lock()
 	spans := x.spans
 	x.spans = nil
