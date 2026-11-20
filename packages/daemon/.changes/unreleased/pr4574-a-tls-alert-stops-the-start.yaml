@@ -5,4 +5,6 @@ body: |-
   from its store does. Before, the start waited out NATS and Dispatch for ever, because Go returns
   the alert as a network error. The boot's catch-up of the roots that run or wait on a person now
   stops the start too on a certificate the daemon cannot verify or an https URL on a plain-HTTP
-  port, where it used to skip that root and go on.
+  port, where it used to skip that root and go on. An https Dispatch URL on a port that answers in
+  neither TLS nor HTTP (an SSH server, say) now stops the start at once too, where the start used
+  to wait for ever.

@@ -505,6 +505,7 @@ func TestCatchUpAwaitingStopsTheStartOnATLSFailureOfDispatch(t *testing.T) {
 		{name: "a TLS alert", refusal: alert},
 		{name: "a certificate the daemon cannot verify", refusal: &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}},
 		{name: "an https URL on a plain-HTTP port", refusal: http.ErrSchemeMismatch},
+		{name: "an https URL on a port that answers in neither TLS nor HTTP", refusal: tls.RecordHeaderError{Msg: "first record does not look like a TLS handshake"}},
 		{name: "a TLS alert joined with an approval read Dispatch never answered", refusal: alert,
 			approval: fmt.Errorf("call Dispatch GET /api/v1/artifacts/artifact-root: %w", &dispatch.TransientError{Err: context.DeadlineExceeded})},
 		{name: "a TLS alert joined with an approval read Dispatch refused with a 503", refusal: alert,

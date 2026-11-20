@@ -551,16 +551,21 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 // every one of these as *tls.CertificateVerificationError, never a bare x509 error, since
 // httpClient sets no VerifyPeerCertificate or VerifyConnection of its own), a TLS alert, on the
 // handshake or on a later record (tlsalert.In: a front door that demands a client certificate, say,
-// or speaks no TLS version the client does; crypto/tls returns it as a *net.OpError), or an
-// https:// dispatch_url pointed at a plain-HTTP port (http.ErrSchemeMismatch) — dispatchBase's
-// scheme check (internal/config) catches a typo in the scheme itself before boot, but not a
-// correct https:// whose port serves plain HTTP. transportFailure keeps each of these out of
-// TransientError, Unreachable reads it first so it wins over an outage it is joined with, and the
-// boot's catch-up of the roots that run or wait on a person (internal/daemon's
+// or speaks no TLS version the client does; crypto/tls returns it as a *net.OpError), an https://
+// dispatch_url pointed at a plain-HTTP port (http.ErrSchemeMismatch), or one pointed at a port
+// that answers in neither TLS nor HTTP/1.x, such as an SSH server or a server that answers the
+// client hello as an HTTP/0.9 request (tls.RecordHeaderError, which net/http turns into
+// http.ErrSchemeMismatch only when the answer starts with "HTTP/", net/http/client.go).
+// dispatchBase's scheme check (internal/config) catches a typo in the scheme itself before boot,
+// but not a correct https:// whose port does not serve TLS. transportFailure keeps each of these
+// out of TransientError, Unreachable reads it first so it wins over an outage it is joined with,
+// and the boot's catch-up of the roots that run or wait on a person (internal/daemon's
 // catchUpWithRetries) stops the start on one rather than skip the root.
 func TransportRefusal(err error) bool {
 	var certErr *tls.CertificateVerificationError
-	return errors.As(err, &certErr) || tlsalert.In(err) || errors.Is(err, http.ErrSchemeMismatch)
+	var record tls.RecordHeaderError
+	return errors.As(err, &certErr) || errors.As(err, &record) || tlsalert.In(err) ||
+		errors.Is(err, http.ErrSchemeMismatch)
 }
 
 // transportFailure wraps err as a TransientError unless it is a refusal of the transport no wait
