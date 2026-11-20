@@ -4834,7 +4834,12 @@ func TestMemoryGuardRanksAHeldProcessThatHasRunAnotherProgramSinceTheBandReadItB
 // reads. Pid 302 lingers, and pid 310, of 100 MiB, starts and is read at the next reading, or at
 // the next two, while the guard waits. Pid 302 then exits and frees nothing, and the reading after
 // comes 400 ms later, pid 301 grown 64 MiB since the kill. Read once, pid 310 is new and ends,
-// before pid 301, larger and grown since the kill; read twice, it is not, and pid 301 ends.
+// before pid 301, larger and grown since the kill. Read twice, pid 310 is not new, but all its
+// memory came after the stay's first kill, since the guard first read it after that kill and that
+// read was not a fork's read: by R1 it grew the most since that kill, 100 MiB against pid 301's
+// 64 MiB, and ends first, by rule=grew-since-kill (INFRA-3368's architect's decision of
+// 2026-11-20T08:13Z, dispatch://INFRA-3531/comment/edff1f51-8c59-4078-adb2-51bef12c5f47, and its
+// answer of 09:24Z).
 func TestMemoryGuardEndsAProcessNewToTheStayAfterAKillBeforeOneThatOnlyGrewSinceTheKill(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -4844,7 +4849,7 @@ func TestMemoryGuardEndsAProcessNewToTheStayAfterAKillBeforeOneThatOnlyGrewSince
 		rule  string
 	}{
 		{"read at one reading before the one decided on", 1, 310, 100 * mib, "new"},
-		{"read at two readings before the one decided on", 2, 301, 364 * mib, "grew-since-kill"},
+		{"read at two readings before the one decided on", 2, 310, 100 * mib, "grew-since-kill"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pod := newFakePod(t)

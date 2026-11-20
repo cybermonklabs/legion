@@ -18,7 +18,7 @@ import (
 // lands between two readings, between a reading and the guard's read of the grower at it, inside a
 // read, and between a kill and the guard's next read. Over a fixed list of seeds it checks the
 // three rules of R1 the probe has broken, from the guard's kills (the Sink's Kill values) and the
-// processes' true sizes:
+// processes' true sizes, and a fourth, orphan:
 //
 //   - first: the first kill of a rise ends a process that grew over the window, where one the guard
 //     read at that reading did;
@@ -26,7 +26,11 @@ import (
 //     stay's first kill;
 //   - go-on: at a reading after a kill that has not fallen below the reading at the kill, where the
 //     killed processes have exited and the processes the guard may end hold the floor, a process it
-//     may end that has grown since the kill is a kill at that reading.
+//     may end that has grown since the kill is a kill at that reading;
+//   - orphan: no sleeping fork whose parent the guard has ended is ended by rule=grew-since-kill. It
+//     still runs its parent's program and holds what it held, and a process read as a fork stays
+//     one, its parent gone or not, until its executable or arguments differ from what that read
+//     found (INFRA-3368's architect's answer of 2026-11-20T09:24Z on its decision of 08:13Z).
 //
 // Growth since a kill is from a process's size as of the kill: its true size at the kill's reading,
 // where the guard read it running its program before that reading; the least of the guard's reads
@@ -53,7 +57,10 @@ import (
 //     that kill ran its own program, not its parent's: the guard took that first read as its size
 //     as of the kill. At 28732f65, in `8g-latepool-r2`, the guard first read five of six growers
 //     after the first kill, and its third kill ended the probe's parent by rule=largest while four
-//     of them lived.
+//     of them lived;
+//   - (e) the guard ended a sleeping fork's parent, and at a reading whose table no longer lists
+//     the parent counted the fork, which still ran its parent's program, as no fork: its size as
+//     of the stay's first kill, from a fork's read, became 0, and all it holds counted as growth.
 //
 // At 83d6a910 seeds of each of the cases (a) to (c) fail: rule largest in case (b) is r40's shape,
 // rule go-on in case (c) r31's. A guard that keeps as a size as of a kill the latest read finished
@@ -61,7 +68,12 @@ import (
 // size the decision of 2026-11-20 states passes every seed of those cases. At a28d75a8 three seeds
 // fail, each in rule largest, case (d), and none in another rule or case: in seeds 113 and 156 a
 // late grower (below) lived, and in seed 122 one of the six that fork in the band, which the guard
-// too first read after that kill.
+// too first read after that kill. With the protected rise and the runs to three readings past the
+// last kill (below), seeds 146 and 176 fail so at a28d75a8 too. The guard then ends the parent
+// while its sleeping forks live in 74 of the 200 seeds at this change; a guard that tests a fork
+// at the measuring reading by its parent alone fails 48 of them, each in rule orphan, case (e),
+// and none in another rule or case; one that keeps a fork while it runs the program of its fork's
+// read passes them.
 //
 // The model: the agent, protected, holds 1 GiB; the probe's parent, pid 700, and its three sleeping
 // forks hold the latepool block and never grow, the block in the reading once while any of them
@@ -83,13 +95,25 @@ import (
 // it, each running the grow program from its start, at 9 MiB, and step first 250 to 500 ms after
 // it, the grow program's sleep after its first block, so the guard reads none of them before that
 // kill (the architect's decision of 2026-11-20T08:13Z, item 2: the simulation missed r2's shape, so
-// its model lacked them).
+// its model lacked them). In a quarter of the seeds, by draws of their own (planRise), the agent
+// grows at or after the stay's first kill by what keeps the reading 1 to 30 MiB at or above the
+// mark once every grower has ended, as a rise of Oh My Pi's own does: the guard then ends the
+// probe's parent while its sleeping forks live, and they live on as orphans. A run ends once every
+// grower has ended and three readings have passed since then and since the guard's last kill, so a
+// kill after the growers have ended is judged at the readings after it. Where every seed runs, the
+// test fails if no seed ends the parent so, since rule orphan would then check nothing.
 func TestMemoryGuardKeepsTheRulesOfR1WhereGrowersStepAtRandomInstants(t *testing.T) {
 	failed := map[string][]uint64{}
+	ran, orphaned := 0, 0
 	for seed := uint64(1); seed <= simSeeds; seed++ {
 		var found []simFailure
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
-			found = newSimRun(t, seed).run().check()
+			run := newSimRun(t, seed).run()
+			found = run.check()
+			ran++
+			if run.orphaned() {
+				orphaned++
+			}
 			for i, f := range found {
 				if i == simFailuresShown {
 					t.Errorf("seed %d: %d more failures", seed, len(found)-i)
@@ -107,6 +131,10 @@ func TestMemoryGuardKeepsTheRulesOfR1WhereGrowersStepAtRandomInstants(t *testing
 	}
 	for _, key := range slices.Sorted(maps.Keys(failed)) {
 		t.Logf("%s: %d seeds %v", key, len(failed[key]), failed[key])
+	}
+	t.Logf("the guard ended the probe's parent while its sleeping forks lived in %d of %d seeds", orphaned, ran)
+	if ran == simSeeds && orphaned == 0 {
+		t.Errorf("no seed ended the probe's parent while its sleeping forks lived, so rule orphan checked nothing")
 	}
 }
 
@@ -150,6 +178,9 @@ const (
 	// simStart is a late grower's start: a child of the parent that runs the grow program from its
 	// start (startLate).
 	simStart
+	// simRise is the agent's own rise by: what it holds grows, and the guard may not end it
+	// (planRise).
+	simRise
 )
 
 // simEvent is one change of a grower at an instant of the model's time.
@@ -252,6 +283,7 @@ func newSimRun(t *testing.T, seed uint64) *simRun {
 	}
 	s.schedule()
 	s.planLate(seed)
+	s.planRise(seed)
 	s.pod.setAnon(s.total())
 	s.h = newHarness(t, s.pod, protect("tester", 100))
 	s.h.g.smapsRead = func(pid int) {
@@ -347,11 +379,11 @@ func (s *simRun) planLate(seed uint64) {
 	}
 }
 
-// startLate puts the late growers' changes on the model's time from the later of at, the instant
-// of the stay's first kill, and the last fork of the growers that fork in the band, so that every
-// grower takes its pid and start time in the order it starts; the guard has read none of them
-// before that kill. A start due at once lands before the guard's next read, so the reads after the
-// kill at its reading can list it, as they listed r2's 7177 to 7181.
+// startLate puts the late growers' changes and the agent's rise (planRise) on the model's time from
+// the later of at, the instant of the stay's first kill, and the last fork of the growers that fork
+// in the band, so that every grower takes its pid and start time in the order it starts; the guard
+// has read none of them before that kill. A start due at once lands before the guard's next read,
+// so the reads after the kill at its reading can list it, as they listed r2's 7177 to 7181.
 func (s *simRun) startLate(at time.Duration) {
 	from := max(at, s.lastFork)
 	for _, e := range s.late {
@@ -364,6 +396,23 @@ func (s *simRun) startLate(at time.Duration) {
 	s.late = nil
 	slices.SortStableFunc(s.events[s.next:], func(x, y simEvent) int { return cmp.Compare(x.at, y.at) })
 	s.apply(s.vt, false)
+}
+
+// planRise makes the run's protected rise (INFRA-3368's architect's answer of 2026-11-20T09:24Z:
+// a process read as a fork stays one, its parent gone or not, until its executable or arguments
+// differ from what that read found), by a stream of draws of the seed's own, so that it draws
+// nothing from the run's other draws: in a quarter of the seeds, the agent, which the guard may not
+// end, grows 0 to 300 ms after the stay's first kill (startLate) by what keeps the reading 1 to 30
+// MiB at or above the mark once every grower has ended. The guard then ends the probe's parent while
+// its sleeping forks live, and they live on as orphans that still run the parent's program.
+func (s *simRun) planRise(seed uint64) {
+	rng := rand.New(rand.NewPCG(seed, 0x6f727068))
+	if rng.IntN(4) != 0 {
+		return
+	}
+	below := share(podLimit, Defaults().ActPercent) - simAgent - latepoolBlock - s.rest
+	at := time.Duration(rng.Int64N(int64(300 * time.Millisecond)))
+	s.late = append(s.late, simEvent{at: at, pid: 100, kind: simRise, by: below + (1+rng.Uint64N(30))*mib})
 }
 
 // uniform is a duration drawn evenly from [lo, hi).
@@ -410,6 +459,8 @@ func (s *simRun) change(e simEvent) {
 		p.forked, p.execd, p.forkAt, p.alive = true, true, e.at, true
 		s.pod.add(p.fp)
 	case e.kind == simFork || e.kind == simStart || !p.alive:
+	case e.kind == simRise:
+		p.fp.anon += e.by
 	case e.kind == simExec:
 		p.execd = true
 		p.fp.args, p.fp.anon = growArgs, simGrowerBase
@@ -437,10 +488,11 @@ func (s *simRun) change(e simEvent) {
 	}
 }
 
-// total is the pod's reading: the agent, what no process holds, the block once while a process that
-// holds it lives, and each grower's own memory once it runs its program.
+// total is the pod's reading: the agent, at what it holds after any rise of its own, what no
+// process holds, the block once while a process that holds it lives, and each grower's own memory
+// once it runs its program.
 func (s *simRun) total() uint64 {
-	total := simAgent + s.rest
+	total := s.procs[100].fp.anon + s.rest
 	if slices.ContainsFunc(simBlockHolders, func(pid int) bool { return s.procs[pid].alive }) {
 		total += latepoolBlock
 	}
@@ -477,8 +529,9 @@ func (s *simRun) snapshot(now time.Duration) {
 	s.readings = append(s.readings, r)
 }
 
-// run takes the readings until every grower has forked and ended, three readings after that, or
-// simReadings have passed, and gives each kill the rule of its report.
+// run takes the readings until every grower has forked and ended and three readings have passed
+// since then and since the guard's last kill, or simReadings have passed, and gives each kill the
+// rule of its report.
 func (s *simRun) run() *simRun {
 	stopped := 0
 	finish := func() {
@@ -496,7 +549,10 @@ func (s *simRun) run() *simRun {
 		s.snapshot(s.h.clock.Now().Sub(testStart) + s.h.pending.d + late)
 		s.h.tickAfter(late)
 		finish()
-		if s.vt > s.lastFork && !slices.ContainsFunc(simGrowers, func(pid int) bool { return s.procs[pid].alive }) {
+		switch {
+		case len(s.killsAt(len(s.readings)-1)) > 0:
+			after = 0
+		case s.vt > s.lastFork && !slices.ContainsFunc(simGrowers, func(pid int) bool { return s.procs[pid].alive }):
 			after++
 		}
 	}
@@ -644,7 +700,7 @@ func (s *simRun) grownSince(k, i int, before time.Duration, fromNothing bool) (p
 	return pid, grown, read, from, cause
 }
 
-// check judges the run by the three rules, following the guard's phase in each rise and its stays
+// check judges the run by the four rules, following the guard's phase in each rise and its stays
 // in the band from the readings, the kills and the stopped lines.
 func (s *simRun) check() []simFailure {
 	d := Defaults()
@@ -703,11 +759,29 @@ func (s *simRun) check() []simFailure {
 				}
 			}
 		}
+		for _, k := range kills {
+			if k.rule == ruleGrewSinceKill && slices.Contains(simBlockHolders[1:], k.pid) && !s.aliveAt(simBlockHolders[0], k.at) {
+				out = append(out, simFailure{rule: "orphan", cause: "e", what: fmt.Sprintf(
+					"at the reading at %s, %d MiB, the guard ended pid %d, a sleeping fork that still ran its parent's program, by rule=grew-since-kill after it had ended its parent, pid %d",
+					simMS(r.now), r.reading/mib, k.pid, simBlockHolders[0])})
+			}
+		}
 		if r.stopped {
 			phase, stayFirst = stopped, -1
 		}
 	}
 	return out
+}
+
+// orphaned is whether the guard ended the probe's parent while one of its sleeping forks lived, so
+// that rule orphan judged the run.
+func (s *simRun) orphaned() bool {
+	for _, k := range s.kills {
+		if k.pid == simBlockHolders[0] {
+			return slices.ContainsFunc(simBlockHolders[1:], func(pid int) bool { return s.aliveAt(pid, k.at) })
+		}
+	}
+	return false
 }
 
 // checkFirst judges the first kill of a rise, at reading i: where a process the guard read at that
