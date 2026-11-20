@@ -801,13 +801,8 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 		// them, and its consumer holds each unacknowledged when the takeover's pass reads it.
 		readable := roleFramesOfEveryShape(t, copiesRole)
 		unreadable := framesNoReadCanTellTheRoleOf(t)
-		for _, frames := range [][]markedFrame{readable, unreadable} {
-			for _, frame := range frames {
-				if _, err := rig.harness.client.JS().Publish(contracts.LegacyAgentSubject(copiesHolder), frame.data); err != nil {
-					t.Fatalf("store %s on %s's own subject: %v", frame.shape, copiesHolder, err)
-				}
-			}
-		}
+		rig.storeFrames(t, copiesHolder, readable)
+		rig.storeFrames(t, copiesHolder, unreadable)
 
 		// The new holder's process reads each frame as bytes (hearMarks), so a frame that
 		// reached it is counted however little of it an envelope takes.

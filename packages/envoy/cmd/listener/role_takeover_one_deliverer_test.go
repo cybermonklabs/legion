@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -161,18 +160,6 @@ func (rig *delivererRig) storeDispatchMessage(t *testing.T, sessionID, role stri
 	return item.EventID
 }
 
-// storeRaw stores data on sessionID's own subject as it is, and returns its stream sequence: a row
-// stores this way a message no envelope of the listener's would marshal to
-// (roleFramesOfEveryShape, framesNoReadCanTellTheRoleOf).
-func (rig *delivererRig) storeRaw(t *testing.T, sessionID string, data []byte) uint64 {
-	t.Helper()
-	ack, err := rig.harness.client.JS().Publish(contracts.LegacyAgentSubject(sessionID), data)
-	if err != nil {
-		t.Fatalf("store a message on %s's own subject: %v", sessionID, err)
-	}
-	return ack.Sequence
-}
-
 // storeOn stores item on sessionID's own subject and returns its stream sequence.
 func (rig *delivererRig) storeOn(t *testing.T, sessionID string, item contracts.Envelope) uint64 {
 	t.Helper()
@@ -242,137 +229,6 @@ func (rig *delivererRig) relayLines(t *testing.T, sessionID, eventID string) []m
 	return lines
 }
 
-// heardFrames is every event a session stand-in received, in the order it received them, drained
-// from the stand-in as they arrive so a row reads what the session received at any point, the text
-// each was read from - the payload summary a stand-in decoded, or the raw frame a process read as
-// bytes (hearMarks) - which holds its mark (markedFrame), and the issued_at each carried
-// (issuedAtOf).
-type heardFrames struct {
-	mu       sync.Mutex
-	events   []string
-	marks    []string
-	issuedAt []int64
-}
-
-func hear(t *testing.T, standIn *sessionStandIn) *heardFrames {
-	t.Helper()
-	heard := &heardFrames{}
-	done := make(chan struct{})
-	t.Cleanup(func() { close(done) })
-	go func() {
-		for {
-			select {
-			case frame := <-standIn.frames:
-				heard.mu.Lock()
-				heard.events = append(heard.events, frame.item.EventID)
-				heard.marks = append(heard.marks, frame.item.PayloadSummary)
-				heard.issuedAt = append(heard.issuedAt, frame.item.IssuedAt)
-				heard.mu.Unlock()
-			case <-done:
-				return
-			}
-		}
-	}()
-	return heard
-}
-
-// countMark is how many frames holding mark the session received.
-func (h *heardFrames) countMark(mark string) int {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	n := 0
-	for _, text := range h.marks {
-		if strings.Contains(text, mark) {
-			n++
-		}
-	}
-	return n
-}
-
-// allMarks is the start of the text of every frame the session received, enough to show its mark.
-func (h *heardFrames) allMarks() []string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	shown := make([]string, len(h.marks))
-	for i, text := range h.marks {
-		if len(text) > 160 {
-			text = text[:160] + "..."
-		}
-		shown[i] = text
-	}
-	return shown
-}
-
-// requireIssuedAt fails the test unless every frame holding frame's mark the session received
-// carries frame's issued_at: the sender's own time, which a copy must keep however the sender wrote
-// it.
-func (h *heardFrames) requireIssuedAt(t *testing.T, who string, frame markedFrame) {
-	t.Helper()
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for i, text := range h.marks {
-		if strings.Contains(text, frame.mark) && h.issuedAt[i] != frame.issuedAt {
-			t.Errorf("%s received %q with issued_at %d, want %d, the issued_at its sender wrote", who, frame, h.issuedAt[i], frame.issuedAt)
-		}
-	}
-}
-
-// awaitMarks waits up to within for the session to have received a frame of each of frames, by
-// its mark, and reports whether it did.
-func (h *heardFrames) awaitMarks(within time.Duration, frames ...markedFrame) bool {
-	return testwait.Holds(within, 20*time.Millisecond, func() bool {
-		for _, frame := range frames {
-			if h.countMark(frame.mark) == 0 {
-				return false
-			}
-		}
-		return true
-	})
-}
-
-// count is how many frames of eventID the session received.
-func (h *heardFrames) count(eventID string) int {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	n := 0
-	for _, heard := range h.events {
-		if heard == eventID {
-			n++
-		}
-	}
-	return n
-}
-
-// all is every event the session received.
-func (h *heardFrames) all() []string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return slices.Clone(h.events)
-}
-
-// await waits up to within for the session to have received a frame of each of eventIDs, and
-// reports whether it did.
-func (h *heardFrames) await(within time.Duration, eventIDs ...string) bool {
-	return testwait.Holds(within, 20*time.Millisecond, func() bool {
-		for _, eventID := range eventIDs {
-			if h.count(eventID) == 0 {
-				return false
-			}
-		}
-		return true
-	})
-}
-
-// requireNoneHeard fails the test for each of eventIDs the session received.
-func requireNoneHeard(t *testing.T, heard *heardFrames, who string, eventIDs ...string) {
-	t.Helper()
-	for _, eventID := range eventIDs {
-		if n := heard.count(eventID); n != 0 {
-			t.Errorf("%s received event %s %d times, want none: it received %v", who, eventID, n, heard.all())
-		}
-	}
-}
-
 // requireOneRelayLineEach fails the test unless the listener logged exactly one relay line per
 // event of eventIDs for session, naming role and holder.
 func requireOneRelayLineEach(t *testing.T, rig *delivererRig, session, role, holder string, eventIDs ...string) {
@@ -410,17 +266,6 @@ func aSessionMessageIsDeliveredWithNoClaimRead(t *testing.T, rig *delivererRig, 
 // relayCopyLine is the session relay's line for a role message it copied to the role's kept lane
 // rather than sent.
 const relayCopyLine = "listener session relay copied a role message to the role's kept lane: another session holds the role, or none does"
-
-// storeEach stores each of frames on sessionID's own subject, in order, as its bytes, and
-// returns each one's stream sequence.
-func (rig *delivererRig) storeEach(t *testing.T, sessionID string, frames []markedFrame) []uint64 {
-	t.Helper()
-	seqs := make([]uint64, len(frames))
-	for i, frame := range frames {
-		seqs[i] = rig.storeRaw(t, sessionID, frame.data)
-	}
-	return seqs
-}
 
 // requireOneCopyLine fails the test unless the listener logged exactly one relay copy line for
 // the message stored at seq on session's own subject, naming role and holder.
@@ -465,7 +310,7 @@ func requireNoKeptCopyEnded(t *testing.T, rig *delivererRig) {
 // a crash is its connection closing. The role messages of a row are two publishes to the role
 // through the publish route, which the route stores on the holder's own subject, and one message
 // as Dispatch's API sends a holder for a route to the role, whose role mark names the role. Rows 5a
-// to 5e store messages on a session's own subject as bytes (storeEach): role messages of every
+// to 5e store messages on a session's own subject as bytes (storeFrames): role messages of every
 // shape a reader of JSON can read wrongly (roleFramesOfEveryShape), and messages whose role no
 // read can tell (framesNoReadCanTellTheRoleOf). Their sessions are processes that read each frame
 // as bytes (hearMarks), so a frame that reached one is counted by its mark however little of it a
@@ -701,7 +546,7 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 		rig.claim(t, holder, role, "")
 
 		frames := roleFramesOfEveryShape(t, role)
-		seqs := rig.storeEach(t, sessionID, frames)
+		seqs := rig.storeFrames(t, sessionID, frames)
 		if !rig.awaitAckedThrough(sessionID, seqs[len(seqs)-1], 30*time.Second) {
 			t.Errorf("the consumer of %s did not acknowledge the role messages through sequence %d within 30s of their store", sessionID, seqs[len(seqs)-1])
 		}
@@ -747,7 +592,7 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 		rig.claim(t, holder, role, "")
 
 		frames := roleFramesOfEveryShape(t, role)
-		seqs := rig.storeEach(t, holder, frames)
+		seqs := rig.storeFrames(t, holder, frames)
 		if !heard.awaitMarks(15*time.Second, frames...) {
 			t.Errorf("the holder %s did not receive each of its role messages within 15s: it received %v", holder, heard.allMarks())
 		}
@@ -777,7 +622,7 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 
 		frames := framesNoReadCanTellTheRoleOf(t)
 		before := rig.claimReads.Load()
-		seqs := rig.storeEach(t, sessionID, frames)
+		seqs := rig.storeFrames(t, sessionID, frames)
 		if !heard.awaitMarks(15*time.Second, frames...) {
 			t.Errorf("the session %s did not receive each of its messages within 15s: it received %v", sessionID, heard.allMarks())
 		}
@@ -818,7 +663,7 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 		deep.data = nestedDeep(marshalListenerEnvelope(t, own))
 		frames := []markedFrame{all[0], all[2], deep}
 		before := rig.claimReads.Load()
-		seqs := rig.storeEach(t, sessionID, frames)
+		seqs := rig.storeFrames(t, sessionID, frames)
 		if !heard.awaitMarks(15*time.Second, frames...) {
 			t.Errorf("the session %s did not receive each of its messages within 15s: it received %v", sessionID, heard.allMarks())
 		}
@@ -852,7 +697,7 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 		valid.PayloadSummary = ruled.String()
 		ruled.data = marshalListenerEnvelope(t, valid)
 		frames := []markedFrame{ruled, roleFramesOfEveryShape(t, role)[0]}
-		seqs := rig.storeEach(t, sessionID, frames)
+		seqs := rig.storeFrames(t, sessionID, frames)
 		if !rig.awaitAckedThrough(sessionID, seqs[len(seqs)-1], 15*time.Second) {
 			t.Errorf("the consumer of %s did not acknowledge the role messages through sequence %d within 15s of their store", sessionID, seqs[len(seqs)-1])
 		}

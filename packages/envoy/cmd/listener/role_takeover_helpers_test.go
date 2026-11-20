@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -364,6 +365,149 @@ func issuedAtOf(data []byte) int64 {
 	return int64(value)
 }
 
+// heardFrame is one frame a session stand-in received: its event id, the text it was read from -
+// the payload summary a stand-in decoded, or the raw frame a process read as bytes (hearMarks) -
+// which holds its mark (markedFrame), and the issued_at it carried (issuedAtOf).
+type heardFrame struct {
+	eventID  string
+	text     string
+	issuedAt int64
+}
+
+// heardFrames is every frame a session stand-in received, in the order it received them, drained
+// from the stand-in as they arrive so a row reads what the session received at any point.
+type heardFrames struct {
+	mu     sync.Mutex
+	frames []heardFrame
+}
+
+// add records frame as the last one the session received.
+func (h *heardFrames) add(frame heardFrame) {
+	h.mu.Lock()
+	h.frames = append(h.frames, frame)
+	h.mu.Unlock()
+}
+
+func hear(t *testing.T, standIn *sessionStandIn) *heardFrames {
+	t.Helper()
+	heard := &heardFrames{}
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	go func() {
+		for {
+			select {
+			case frame := <-standIn.frames:
+				heard.add(heardFrame{eventID: frame.item.EventID, text: frame.item.PayloadSummary, issuedAt: frame.item.IssuedAt})
+			case <-done:
+				return
+			}
+		}
+	}()
+	return heard
+}
+
+// countMark is how many frames holding mark the session received.
+func (h *heardFrames) countMark(mark string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, frame := range h.frames {
+		if strings.Contains(frame.text, mark) {
+			n++
+		}
+	}
+	return n
+}
+
+// allMarks is the start of the text of every frame the session received, enough to show its mark.
+func (h *heardFrames) allMarks() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	shown := make([]string, len(h.frames))
+	for i, frame := range h.frames {
+		text := frame.text
+		if len(text) > 160 {
+			text = text[:160] + "..."
+		}
+		shown[i] = text
+	}
+	return shown
+}
+
+// requireIssuedAt fails the test unless every frame holding frame's mark the session received
+// carries frame's issued_at: the sender's own time, which a copy must keep however the sender wrote
+// it.
+func (h *heardFrames) requireIssuedAt(t *testing.T, who string, frame markedFrame) {
+	t.Helper()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, heard := range h.frames {
+		if strings.Contains(heard.text, frame.mark) && heard.issuedAt != frame.issuedAt {
+			t.Errorf("%s received %q with issued_at %d, want %d, the issued_at its sender wrote", who, frame, heard.issuedAt, frame.issuedAt)
+		}
+	}
+}
+
+// awaitMarks waits up to within for the session to have received a frame of each of frames, by
+// its mark, and reports whether it did.
+func (h *heardFrames) awaitMarks(within time.Duration, frames ...markedFrame) bool {
+	return testwait.Holds(within, 20*time.Millisecond, func() bool {
+		for _, frame := range frames {
+			if h.countMark(frame.mark) == 0 {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+// count is how many frames of eventID the session received.
+func (h *heardFrames) count(eventID string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, frame := range h.frames {
+		if frame.eventID == eventID {
+			n++
+		}
+	}
+	return n
+}
+
+// all is every event the session received.
+func (h *heardFrames) all() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	events := make([]string, len(h.frames))
+	for i, frame := range h.frames {
+		events[i] = frame.eventID
+	}
+	return events
+}
+
+// await waits up to within for the session to have received a frame of each of eventIDs, and
+// reports whether it did.
+func (h *heardFrames) await(within time.Duration, eventIDs ...string) bool {
+	return testwait.Holds(within, 20*time.Millisecond, func() bool {
+		for _, eventID := range eventIDs {
+			if h.count(eventID) == 0 {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+// requireNoneHeard fails the test for each of eventIDs the session received.
+func requireNoneHeard(t *testing.T, heard *heardFrames, who string, eventIDs ...string) {
+	t.Helper()
+	for _, eventID := range eventIDs {
+		if n := heard.count(eventID); n != 0 {
+			t.Errorf("%s received event %s %d times, want none: it received %v", who, eventID, n, heard.all())
+		}
+	}
+}
+
 // hearMarks is sessionID's process on a connection of its own: it takes each relay frame as bytes,
 // records its event id and its raw text, which holds its mark (markedFrame) however little of it a
 // read of JSON would take, and answers it received and done, as a session that wrote it does; it
@@ -382,11 +526,7 @@ func hearMarks(t testing.TB, url, sessionID string) *heardFrames {
 		if msg.Header.Get(bus.ConnectionProbeHeader) == "1" {
 			replies = []string{relayReplyDone}
 		} else {
-			heard.mu.Lock()
-			heard.events = append(heard.events, eventIDOf(msg.Data))
-			heard.marks = append(heard.marks, string(msg.Data))
-			heard.issuedAt = append(heard.issuedAt, issuedAtOf(msg.Data))
-			heard.mu.Unlock()
+			heard.add(heardFrame{eventID: eventIDOf(msg.Data), text: string(msg.Data), issuedAt: issuedAtOf(msg.Data)})
 		}
 		// A reply that does not reach the relay leaves the frame to the relay's receipt wait,
 		// which a row's own waits see; nothing here reports to t, which may have ended.
@@ -406,6 +546,22 @@ func hearMarks(t testing.TB, url, sessionID string) *heardFrames {
 		}
 	})
 	return heard
+}
+
+// storeFrames stores each of frames on sessionID's own subject, in order, as its bytes, and
+// returns each one's stream sequence: a row stores this way a message no envelope of the
+// listener's would marshal to (roleFramesOfEveryShape, framesNoReadCanTellTheRoleOf).
+func (rig *relayRig) storeFrames(t *testing.T, sessionID string, frames []markedFrame) []uint64 {
+	t.Helper()
+	seqs := make([]uint64, len(frames))
+	for i, frame := range frames {
+		ack, err := rig.harness.client.JS().Publish(contracts.LegacyAgentSubject(sessionID), frame.data)
+		if err != nil {
+			t.Fatalf("store %s on %s's own subject: %v", frame.shape, sessionID, err)
+		}
+		seqs[i] = ack.Sequence
+	}
+	return seqs
 }
 
 // keptMarks is how many messages role's kept lane holds whose raw bytes hold mark (markedFrame),
