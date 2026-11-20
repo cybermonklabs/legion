@@ -13,7 +13,7 @@ real_docker=$(command -v docker || true)
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
 mkdir -p "$root/deploy/scripts" "$root/deploy/compose" "$root/bin"
-cp "$here/up-dispatch.sh" "$root/deploy/scripts/"
+cp "$here/up-dispatch.sh" "$here/compose-refusal.sh" "$root/deploy/scripts/"
 cp "$here/../compose/dispatch.compose.yml" "$root/deploy/compose/"
 cat >"$root/bin/docker" <<'EOF'
 #!/usr/bin/env bash
@@ -95,7 +95,7 @@ for line in "DATABASE_URL=\"postgres://dispatch:$canary@db.test:5432/dispatch" \
   if output=$(up_with "$line"); then
     fail "started Dispatch with an unterminated quote in ${line%%=*}"
   fi
-  [[ "$output" == *"Compose refused"*"docker compose config exited "[0-9]*"; its message is not printed"*"docker compose -f compose/dispatch.compose.yml config"* && ! -s "$log" ]] ||
+  [[ "$output" == *"Compose refused"*"docker compose config exited "[0-9]*"; its message is not shown"*"docker compose -f compose/dispatch.compose.yml config"* && ! -s "$log" ]] ||
     fail "did not refuse an unterminated quote in ${line%%=*} with the command to read Compose's message"
   [[ "$output" != *cret* && "$output" != *CANARY* ]] || fail "the refusal carries a value of ${line%%=*}: $output"
 done
@@ -109,19 +109,14 @@ fi
 
 # The script reads only through `docker compose config --format json`, so it runs on Compose
 # releases that lack `config --environment` (before 2.28): it starts Dispatch through Compose 2.12.2,
-# the oldest release measured, pinned by its published sha256 and cached between runs, through a
-# `docker` that hands `compose ...` to it and counts the calls.
-compose_2_12=${XDG_CACHE_HOME:-$HOME/.cache}/legion-autodeploy-test/docker-compose-v2.12.2
-compose_2_12_sha256=36d1728ce001c7f021294be43bdfa3f508038bb00886c34b0794f7731cc9bf4b
-if [[ "$(sha256sum "$compose_2_12" 2>/dev/null | cut -d' ' -f1)" != "$compose_2_12_sha256" ]]; then
-  mkdir -p "$(dirname "$compose_2_12")"
-  curl -fsSL -o "$compose_2_12.part" https://github.com/docker/compose/releases/download/v2.12.2/docker-compose-linux-x86_64 ||
-    fail 'UNKNOWN: could not download Compose 2.12.2, so the oldest release was not judged'
-  [[ "$(sha256sum "$compose_2_12.part" | cut -d' ' -f1)" == "$compose_2_12_sha256" ]] ||
-    fail 'UNKNOWN: the Compose 2.12.2 download does not match its published sha256'
-  chmod +x "$compose_2_12.part"
-  mv "$compose_2_12.part" "$compose_2_12"
-fi
+# the oldest release measured, taken by digest out of this repository's copy of the image that
+# ships it (compose-2.12.2_test.sh), through a `docker` that hands `compose ...` to it and counts
+# the calls.
+# shellcheck source=SCRIPTDIR/compose-2.12.2_test.sh
+. "$here/compose-2.12.2_test.sh"
+compose_2_12="$root/docker-compose-2.12.2"
+take_compose_2_12 "$real_docker" "$compose_2_12" ||
+  fail 'UNKNOWN: could not take Compose 2.12.2 out of its image, so the oldest release was not judged'
 cat >"$root/docker-2.12" <<EOF
 #!/usr/bin/env bash
 [[ "\$1" == compose ]] || exec "$real_docker" "\$@"

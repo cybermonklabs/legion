@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+# A person runs this at a terminal (deploy/README.md); nothing unattended calls it, the auto-deployer
+# (autodeploy.sh) included. So its Compose calls have no time limit: a Compose that does not answer
+# is the person's to stop, where the deployer bounds its own reads at 60 s.
 cd "$(dirname "$0")/.."
 # The SPA compiles into the image (bun stage in docker/Dockerfile) — no host
 # build, no bind mount. ENVOY_IMAGE_TAG is required by the compose file; a
@@ -13,12 +16,12 @@ export ENVOY_IMAGE_TAG="${ENVOY_IMAGE_TAG:-local}"
 # restart-loops under `restart: unless-stopped` while `up -d` exits 0, so a start Compose resolves
 # neither setting for is refused here. Both are read from Compose's own resolution, never from the
 # .env's text: the dispatch service's environment in `docker compose config --format json` (which
-# Compose 2.12.2, the oldest release up-dispatch_test.sh runs, has; `--environment` needs 2.28),
-# where dispatch.compose.yml gives the container each setting exactly when it is not empty
-# (`${ENVOY_ACCOUNT_GOOGLE_AUDIENCE:-}`, `${ENVOY_ACCOUNT_TOKEN_FILE:+...}`). A refusal prints no text
-# of Compose's (which can begin with a warning and can quote a .env line whole, a secret with it):
-# only the names in its `required variable <NAME> is missing a value` lines, or else its exit status
-# and the command that shows its message.
+# Compose has had since before 2.12.2, the oldest release it was measured on; `--environment`
+# needs 2.28), where dispatch.compose.yml gives the container each setting exactly when it is not
+# empty (`${ENVOY_ACCOUNT_GOOGLE_AUDIENCE:-}`, `${ENVOY_ACCOUNT_TOKEN_FILE:+...}`). A refusal prints
+# no text of Compose's (compose_refusal, which autodeploy.sh shares).
+# shellcheck source=SCRIPTDIR/compose-refusal.sh
+. scripts/compose-refusal.sh
 if ! docker compose version >/dev/null 2>&1; then
   echo "up-dispatch.sh: docker compose cannot run (docker compose version failed); it is needed to start Dispatch, and to read its settings" >&2
   exit 1
@@ -31,20 +34,9 @@ err_file=$(mktemp)
 status=0
 answer=$(docker compose -f compose/dispatch.compose.yml config --format json 2>"$err_file") || status=$?
 if ((status != 0)); then
-  missing=()
-  while IFS= read -r line; do
-    if [[ "$line" =~ required\ variable\ ([A-Za-z_][A-Za-z0-9_]*)\ is\ missing\ a\ value ]] &&
-      [[ " ${missing[*]} " != *" ${BASH_REMATCH[1]} "* ]]; then
-      missing+=("${BASH_REMATCH[1]}")
-    fi
-  done <"$err_file"
+  reason=$(compose_refusal "$err_file" "$status" "docker compose -f compose/dispatch.compose.yml config")
   rm -f "$err_file"
-  if ((${#missing[@]})); then
-    reason="a required variable is missing a value: ${missing[*]}"
-  else
-    reason="docker compose config exited $status; its message is not printed, as it can quote a setting's value; run \`docker compose -f compose/dispatch.compose.yml config\` in $PWD to read it"
-  fi
-  echo "up-dispatch.sh: Compose refused compose/dispatch.compose.yml: $reason" >&2
+  echo "up-dispatch.sh: Compose refused compose/dispatch.compose.yml (in $PWD): $reason" >&2
   exit 1
 fi
 rm -f "$err_file"

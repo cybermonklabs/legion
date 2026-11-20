@@ -41,13 +41,22 @@ mkdir -p "$BACKUPS"
 unset ENVOY_IMAGE_TAG
 
 # env_stage is the staging file a write of the env file holds while it runs (env_file set): it
-# holds the file's settings, secrets among them, so it is removed when the deployer stops, on exit
-# and on INT or TERM, which exit. A SIGKILL, which no trap sees, can leave it: its name is
-# git-ignored (packages/envoy/.gitignore), and the next start removes it (env_file sweep, below).
+# holds the file's settings, secrets among them, so it is removed when the deployer exits, and on
+# INT or TERM while the write runs, which env_file set turns into an exit for that write alone: a
+# trap left set would make bash wait for its running child, a 300 s poll or a 900 s pull, before
+# it stopped. A SIGKILL, which no trap sees, can leave it: its name is git-ignored
+# (packages/envoy/.gitignore), and the next start removes it (env_file sweep, below).
 env_stage=
 trap 'rm -f -- "${env_stage:-}"' EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+
+# File descriptor 3 is the deployer's own standard output. A reader that runs inside a command
+# substitution logs its failure there, so the line reaches the log beside every other line rather
+# than the value its caller reads.
+exec 3>&1
+
+# compose_refusal, the one formatter of a Compose refusal both deploy scripts share.
+# shellcheck source=SCRIPTDIR/compose-refusal.sh
+. "$(dirname "${BASH_SOURCE[0]}")/compose-refusal.sh"
 
 log() {
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
@@ -68,7 +77,7 @@ compose_with_tag() {
 
 # The deployer reads the compose env file only through Compose's own resolution, and only through
 # `docker compose config --format json`, which Compose has had since before 2.12.2, the oldest
-# release autodeploy_test.sh runs it on (`config --environment` needs Compose 2.28): compose_values
+# release it was measured on (`config --environment` needs Compose 2.28): compose_values
 # below for the variables Compose interpolates with (ENVOY_IMAGE_TAG, and ENVOY_IMAGE_SCHEMA, the
 # deployer's own record), resolved_settings for the dispatch service's environment. It writes the
 # file only through env_file, the one function that names its path. autodeploy_test.sh holds the
@@ -77,12 +86,12 @@ compose_with_tag() {
 # config_failed STATUS ERRFILE COMMAND WHAT logs why a `docker compose config` ended with STATUS: a
 # timeout by name, any other failure by compose_refusal's reason from ERRFILE, with COMMAND, the
 # one an operator runs to read Compose's own message; WHAT ends the line ("not deploying <sha>").
-# Its line goes to standard error, as the readers that call it run inside a command substitution.
+# Its line goes to file descriptor 3, as the readers that call it run inside a command substitution.
 config_failed() {
   if (($1 == 124)); then
-    log "docker compose config did not answer within 60 s; run \`$3\` to see why; $4" >&2
+    log "docker compose config did not answer within 60 s; run \`$3\` to see why; $4" >&3
   else
-    log "Compose refused $COMPOSE_FILE with the env file in $COMPOSE_DIR: $(compose_refusal "$2" "$1" "$3"); $4" >&2
+    log "Compose refused $COMPOSE_FILE with the env file in $COMPOSE_DIR: $(compose_refusal "$2" "$1" "$3"); $4" >&3
   fi
 }
 
@@ -117,7 +126,7 @@ for name in sys.argv[2:]:
       *) why="python3 exited $status" ;;
     esac
     rm -f "$err"
-    log "could not read the $service service's environment from docker compose config: $why; $what" >&2
+    log "could not read the $service service's environment from docker compose config: $why; $what" >&3
     return 1
   }
   rm -f "$err"
@@ -170,9 +179,10 @@ deployed_tag() {
 # `NAME=VALUE` appended (a `NAME: value` line, which Compose also reads, is kept, and loses to the
 # appended line, which Compose reads last). VALUE is one of the deployer's own, a tag or a schema
 # record, which needs no quoting. The new file is written to a staging file beside the env file,
-# `.env.stage.XXXXXX`, mode 0600 (mktemp's), which env_stage names so the trap above removes it,
-# and renamed over the env file, which on one filesystem cannot fail for a reason the write did
-# not already meet; the env file then gets back the mode it had.
+# `.env.stage.XXXXXX`, mode 0600 (mktemp's), which env_stage names so the EXIT trap above removes
+# it, and renamed over the env file, which on one filesystem cannot fail for a reason the write did
+# not already meet; the env file then gets back the mode it had. While the write runs, INT and TERM
+# exit, which runs that trap; after it, they are as the deployer started with them.
 env_file() {
   local env_path="$COMPOSE_DIR/.env" stage_prefix=".env.stage." mode status=0
   case $1 in
@@ -181,14 +191,20 @@ env_file() {
       ;;
     set)
       mode=$(stat -c %a "$env_path") || return 1
-      env_stage=$(mktemp "$COMPOSE_DIR/${stage_prefix}XXXXXX") || return 1
-      grep -vE "^[[:space:]]*(export[[:space:]]+)?$2[[:space:]]*=" "$env_path" >"$env_stage" || status=$?
-      if ((status > 1)) || ! printf '%s=%s\n' "$2" "$3" >>"$env_stage" || ! mv -f "$env_stage" "$env_path"; then
-        rm -f -- "$env_stage"
-        env_stage=
-        return 1
+      trap 'exit 130' INT
+      trap 'exit 143' TERM
+      if env_stage=$(mktemp "$COMPOSE_DIR/${stage_prefix}XXXXXX"); then
+        grep -vE "^[[:space:]]*(export[[:space:]]+)?$2[[:space:]]*=" "$env_path" >"$env_stage" || status=$?
+        if ((status > 1)) || ! printf '%s=%s\n' "$2" "$3" >>"$env_stage" || ! mv -f "$env_stage" "$env_path"; then
+          rm -f -- "$env_stage"
+          status=2
+        fi
+      else
+        status=2
       fi
       env_stage=
+      trap - INT TERM
+      ((status < 2)) || return 1
       chmod "$mode" "$env_path" || log "wrote $2 to the env file in $COMPOSE_DIR, and could not give it back its mode $mode; it is 0600"
       ;;
     *)
@@ -196,28 +212,6 @@ env_file() {
       return 2
       ;;
   esac
-}
-
-# compose_refusal ERRFILE STATUS COMMAND prints why Compose refused the configuration with no text
-# of Compose's own: its error output (ERRFILE) can begin with a warning, and can quote a line of the
-# .env whole, a token or a password with it, so nothing of it is printed. What is printed is the
-# names Compose gives in its `required variable <NAME> is missing a value` lines, which are names
-# alone; and otherwise a fixed sentence with Compose's exit status and the command (COMMAND) that
-# shows its message to whoever may read the file.
-compose_refusal() {
-  local line
-  local -a missing=()
-  while IFS= read -r line; do
-    if [[ "$line" =~ required\ variable\ ([A-Za-z_][A-Za-z0-9_]*)\ is\ missing\ a\ value ]] &&
-      [[ " ${missing[*]} " != *" ${BASH_REMATCH[1]} "* ]]; then
-      missing+=("${BASH_REMATCH[1]}")
-    fi
-  done <"$1"
-  if ((${#missing[@]})); then
-    printf 'a required variable is missing a value: %s' "${missing[*]}"
-  else
-    printf '%s' "docker compose config exited $2; its message is not logged, as it can quote a setting's value; run \`$3\` to read it"
-  fi
 }
 
 # resolved_settings SHA reads the five settings deploy() checks, as Compose resolves them with the

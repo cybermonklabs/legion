@@ -98,12 +98,15 @@ succeed) and `python3`, as does `scripts/up-dispatch.sh`. Both read `compose/.en
 Compose's own resolution, and only through `docker compose config --format json`, so a setting
 counts as Compose gives it to the container, quotes, `${...}` and an `export` prefix included; they
 run on Compose 2.12.2, the oldest release their tests run (`autodeploy_test.sh` and
-`up-dispatch_test.sh` fetch it and check its published sha256), and later ones, where
+`up-dispatch_test.sh` take that release's binary by digest out of this repository's copy of the
+`docker:20.10.20-cli` image, a row of `.github/ci-images.yaml`), and later ones, where
 `config --environment`, which they do not use, needs 2.28. A configuration Compose refuses is
 refused with no text of Compose's, which can quote a setting's value: the log names a required
 variable missing a value, or else gives Compose's exit status and the `docker compose config`
 command that shows its message. A failed read of the deployed tag is refused by name, never taken
-for an env file that names no tag.
+for an env file that names no tag. Every line the deployer logs, those refusals included, is on
+its standard output. Its Compose reads give up after 60 s, by name; `scripts/up-dispatch.sh` is run
+by a person at a terminal, nothing unattended calls it, and its Compose calls have no time limit.
 
 `compose/.env` owns `ENVOY_IMAGE_TAG` for the deployer: it writes the tag it deployed there and reads
 the deployed tag back from it, so an `ENVOY_IMAGE_TAG` in the deployer's own environment (the
