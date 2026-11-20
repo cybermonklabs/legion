@@ -73,9 +73,10 @@ var errPrivateProjectsIncomplete = errors.New("the project stays public until th
 // privateProjectIncomplete answers, read in the switch's own transaction q, why project key cannot
 // be made private yet, as errPrivateProjectsIncomplete: a row of key's whose node does not name it
 // (graphcensus.ProjectCompleteFor), which its reads would answer wrongly, a direct message whose
-// conversation names no party (conversationsNamingNoParty), the sessions' projects not yet filled
-// (session_projects_filled), or the access events not yet scrubbed (access_events_scrubbed), whose
-// older payloads may still carry a project's access list. It answers nil when none holds.
+// conversation names no party (conversationsNamingNoParty), or a backfill the switch waits for that
+// has not run (backfillMarkersMissing, the store report's own marker check). It answers nil when
+// none holds, and a read that fails as that read's error, never as errPrivateProjectsIncomplete,
+// since a database that did not answer says nothing of whether the store can hold the project.
 func privateProjectIncomplete(ctx context.Context, q graphstore.Queryer, key string) error {
 	incomplete, err := graphcensus.ProjectCompleteFor(ctx, q, key)
 	if err != nil {
@@ -91,15 +92,11 @@ func privateProjectIncomplete(ctx context.Context, q graphstore.Queryer, key str
 	if len(unnamed) > 0 {
 		return fmt.Errorf("%w: %w", errPrivateProjectsIncomplete, incompleteRowsError(unnamed, "direct messages"))
 	}
-	if err := sessionProjectsFilled(ctx, q); err != nil {
-		return fmt.Errorf("%w: %w", errPrivateProjectsIncomplete, err)
-	}
-	var scrubbed bool
-	if err := q.QueryRow(ctx, `select exists (select 1 from access_events_scrubbed)`).Scan(&scrubbed); err != nil {
+	if err := backfillMarkersMissing(ctx, q); err != nil {
+		if errors.Is(err, errBackfillNotRun) {
+			return fmt.Errorf("%w: %w", errPrivateProjectsIncomplete, err)
+		}
 		return err
-	}
-	if !scrubbed {
-		return fmt.Errorf("%w: access_events_scrubbed holds no row, so project.access_changed events stored before this release may still carry a project's access list: run envoy-dispatch scrub-access-events", errPrivateProjectsIncomplete)
 	}
 	return nil
 }
