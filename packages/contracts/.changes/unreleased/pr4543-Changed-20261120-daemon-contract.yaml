@@ -1,0 +1,5 @@
+kind: Changed
+body: The daemon API contract is 169. The daemon's public resource-attribute examples use neutral `acme.*` keys; operators still pass their own attributes through `OTEL_RESOURCE_ATTRIBUTES`.
+time: 2026-11-20T00:47:09.167035749Z
+custom:
+    Issue: pr4543
