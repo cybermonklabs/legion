@@ -465,7 +465,7 @@ func TestTheBootCensusPassesTheControllersRolesDirPod(t *testing.T) {
 	if _, rolesDir := flagValue(command, "--roles-dir"); !rolesDir {
 		t.Fatalf("the controller's stored template runs %q, not the roles-dir form, so this case proves nothing", command)
 	}
-	if err := rejectLegacyIssueSandboxes(g.ctx, g.dyn.Resource(sandboxGVR).Namespace(testNamespace), testProject, slogTo(io.Discard)); err != nil {
+	if err := rejectLegacyIssueSandboxes(g.ctx, g.dyn.Resource(sandboxGVR).Namespace(testNamespace), testProject, g.opts.IssueDisks(), slogTo(io.Discard)); err != nil {
 		t.Fatalf("census of the controller's roles-dir pod and an issue pod = %v, want none", err)
 	}
 }

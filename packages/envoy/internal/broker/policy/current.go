@@ -256,15 +256,17 @@ var ErrValueUnchecked = errors.New("the reread merged the secret's tags, and its
 //
 // A type secret whose value this pod has not decoded at the version and type the reread
 // lists is then read and decoded (readValues), on ctx, and the answer is the policy's after that:
-// a served secret whose value is refused answers ReasonValueMalformed. A caller is waiting on a
-// reread, so it waits for the writer lock to record that read only while ctx lives, and records
-// nothing once ctx has ended. When ctx ends before that read is recorded - its Store.Read cut
+// a served secret whose value is refused answers ReasonValueMalformed. The value read waits for
+// the writer lock to record that read only while ctx lives, and records nothing once ctx has
+// ended: a caller may be waiting on it, and a reread nobody waits on is bounded by ctx's own
+// deadline. When ctx ends before that read is recorded - its Store.Read cut
 // short, or its wait for the writer lock - the reread has merged what it read, and its value read
 // did not finish: RefreshOne answers ErrValueUnchecked wrapping ctx's error, rather than a Lookup
 // the value read never checked. What the reread merged stays live, and the value is read at the
 // next load or reread. Each of its callers tells that apart from a reread that merged nothing:
-// the reread route answers it 503 REQUEST_ENDED and still tells the other pods to reread the
-// name, since this pod now serves the tags it read; the miss path takes it as its request's own
+// the reread route answers a session's 503 REQUEST_ENDED, and logs it as a failed reread when it
+// ran after a 202 that nobody waits on, and tells the other pods to reread the name either way,
+// since this pod now serves the tags it read; the miss path takes it as its request's own
 // failure; and the reread listener (cmd/broker), which a peer's notification drives, takes it as
 // a reread that ran.
 func (c *Current) RefreshOne(ctx context.Context, name string) (Lookup, error) {

@@ -185,9 +185,13 @@ func EffectiveOutcome(pr record.PullRequest, in SettlementCandidate) CiOutcome {
 // head GitHub reported each run on, which is the head the settlement is of, and what the run
 // concluded, which the settlement's own lists give - a name in Failing failed, one in Cancelled
 // was cancelled, and one in neither concluded without either, since the listener settles a
-// commit only once every check it has seen there is terminal. They travel with the run into the
-// fence, which needs the first to say the run is one of the current head's own
-// (ChecksConcludedOnHead) and the second to say what the name's newest run came to
+// commit only once every check it has seen there is terminal. A run in neither list that the
+// decoder already took as skipped (intake's decodeChecks, from the settlement's skipped group)
+// stays skipped, and every other such run succeeded; the lists come first, so a skipped run whose
+// name a list gives is failed or cancelled as the list says. The word GitHub gave the run
+// (record.AttemptRun.GitHubConclusion) travels with it unchanged, deciding nothing. They travel
+// with the run into the fence, which needs the head to say the run is one of the current head's
+// own (ChecksConcludedOnHead) and the conclusion to say what the name's newest run came to
 // (mergeAttemptSets, concludedBy).
 func stampedRuns(in SettlementCandidate) []record.AttemptRun {
 	concluded := make(map[string]record.RunConclusion, len(in.Failing)+len(in.Cancelled))
@@ -204,7 +208,9 @@ func stampedRuns(in SettlementCandidate) []record.AttemptRun {
 	runs := make([]record.AttemptRun, 0, len(in.CheckRuns))
 	for _, run := range in.CheckRuns {
 		run.Head = in.Head
-		if run.Conclusion = concluded[run.Name]; run.Conclusion == "" {
+		if conclusion, listed := concluded[run.Name]; listed {
+			run.Conclusion = conclusion
+		} else if run.Conclusion != record.RunSkipped {
 			run.Conclusion = record.RunSucceeded
 		}
 		runs = append(runs, run)

@@ -850,6 +850,8 @@ var nestedKeys = []memberGroup{
 			Description: "The GKE ComputeClass whose nodes run the microVM pods, which a microVM pod selects by `cloud.google.com/compute-class` in place of any class `scheduling.node_selector` names, and whose taint it tolerates."},
 		{Name: "storage_class", Default: "`runtime.kubernetes.storage_class`", RequiredBy: "no",
 			Description: "The StorageClass a microVM pod's own workspace volume is provisioned from."},
+		{Name: "keep_volume", Default: "`false`", RequiredBy: "no",
+			Description: "Whether each microVM issue pod's workspace volume is a claim that its issue's Sandbox owns, which stays through the pod's ends and the issue's idle releases and is deleted with the Sandbox; a gVisor issue pod's volume ends with its pod whatever this says."},
 		{Name: "metadata", Default: "a microVM pod's launcher serves no metadata endpoint", RequiredBy: "no",
 			Description: "Has each microVM pod's launcher serve the metadata server's paths for the pod's own account at `127.0.0.1:8169`, exchanging the pod's projected token at Google's Security Token Service, for a microVM pod that does not reach the node's metadata server."},
 	}},
