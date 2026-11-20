@@ -205,9 +205,11 @@ var readsWithoutAViewer = map[string]string{
 	"OwedItemBlocks":   serverWork,
 	"PendingDocument.Scope": serverWork + " - the document a source whose row is only queued belongs to, which the index-time " +
 		"resolver reads for no person",
-	"PlanBlocks":         serverWork + " - a version write's read phase plans its block index against what the store holds of the document",
-	"PlanItemIfOwed":     serverWork + " - a write's read phase plans the index an item it writes beside is owed",
-	"PlanReplace":        serverWork + " - a write's read phase plans the reconciliation of a source's references against its edges",
+	"PlanBlocks":     serverWork + " - a version write's read phase plans its block index against what the store holds of the document",
+	"PlanItemIfOwed": serverWork + " - a write's read phase plans the index an item it writes beside is owed",
+	"PlanReplace":    serverWork + " - a write's read phase plans the reconciliation of a source's references against its edges",
+	"ProjectRepositories": noNode + " - the repository names the issues of one project the caller names resolve to; a route that " +
+		"answers them holds that project to its caller first, as the GitHub proxy holds each repository to RepositoryClause",
 	"ReadBlockIndex":     serverWork + " - a version write's read phase reads the document's block index it plans against",
 	"ReadIndexedVersion": serverWork + " - a version write's read phase reads the document's address and the version's writer",
 	"ReadItemIndex":      serverWork + " - a write's read phase reads the item's block index it plans against",
