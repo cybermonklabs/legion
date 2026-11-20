@@ -74,6 +74,10 @@ export interface ExecuteDispatchToolInput {
    *  off, or no answer from its listener); called only by a write that would name its owner as
    *  unsubscribed. A write names the owner the session is not subscribed to only from this. */
   readonly subscriptions?: () => Promise<readonly string[] | null>;
+  /** The CLI's `--dry-run` of a call whose dry run Dispatch answers (`dryRunAsksDispatch`): the
+   *  command asks Dispatch what its write would answer and writes nothing. No other call is run
+   *  with it (`executeDispatchTool`). */
+  readonly dryRun?: boolean;
 }
 
 export interface DispatchToolResult {
@@ -155,6 +159,15 @@ export function optionalBoolean(args: Record<string, unknown>, name: string): bo
 export function optionalNumber(args: Record<string, unknown>, name: string): number | undefined {
   const value = args[name];
   return typeof value === "number" ? value : undefined;
+}
+
+/** The optimistic-concurrency guard a call carries, under whichever shape its tool takes: an
+ *  edit's `EditPrecondition`, an upload's `UploadPrecondition`. The tool's own schema already
+ *  held the value to that shape, so this only reads it off `args`, which carries an index
+ *  signature a package built with `noPropertyAccessFromIndexSignature` denies a dotted read of. */
+export function optionalPrecondition<Guard>(args: Record<string, unknown>): Guard | undefined {
+  const { precondition } = args;
+  return precondition as Guard | undefined;
 }
 
 /** One field of a call's input, or no field at all when the argument was absent. An input whose

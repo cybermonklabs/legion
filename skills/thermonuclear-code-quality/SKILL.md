@@ -1,6 +1,6 @@
 ---
 name: thermonuclear-code-quality
-description: Use when asked for a thermonuclear code-quality review or a deep maintainability audit of a branch or PR diff. Also use when asked to review abstraction quality, oversized files or ad-hoc branching growth.
+description: Use when asked for a thermonuclear code-quality review or a deep maintainability audit of a branch or PR diff, or to review abstraction quality, oversized files or ad-hoc branching growth.
 disable-model-invocation: true
 ---
 
@@ -8,32 +8,27 @@ disable-model-invocation: true
 
 If this skill disagrees with the code, a command's output or its `--help`, follow those and say which line of this skill is wrong.
 
-Make your own scratch with `mktemp -d` and delete only the paths you made, each by its exact
-path. Never delete by a glob in a shared directory: every role of this issue writes into the same
-`$TMPDIR` on the issue's volume, so a sweep like `rm -rf "$TMPDIR"/tmp.*` deletes directories
-another role has open.
+Make your own scratch with `mktemp -d` and delete only the paths you made, each by its exact path. Never delete by a glob in a shared directory: another session's open directories may sit beside yours, as they do in a shared `$TMPDIR`.
 
-This is a maintainability review of one diff: the current branch's changes, or the range you are given. Every remedy keeps behavior the same and removes code or concepts, or moves code where a reader finds it without reading the rest of the file, because a behavior change is work for `skill://thermonuclear-deep-review`, not a cleanup. The table's last two rows change ordering or failure behavior: say so in the finding.
+This is a maintainability review of one diff: the current branch's changes, or the range you are given. Every remedy keeps behavior the same and removes code or concepts, or moves code where a reader finds it without reading the rest of the file. A behavior change is work for `skill://thermonuclear-deep-review`. The table's last two rows change ordering or failure behavior: say so in the finding.
 
 ## Report
 
-The first line is the verdict, with the short sha of the head you reviewed (`git rev-parse --short=8 HEAD`, or the sha your brief names when you have no shell):
+The first line is the verdict, with the short sha of the head you reviewed (`git rev-parse --short=8 HEAD`, or the sha your brief names when you have no shell). Put nothing before it: a PR gate reads only the first line.
 
 - `Verdict: APPROVE at <sha>` when no finding stands.
 - `Verdict: CHANGES at <sha>` when one does.
 
-Put nothing before it: a PR gate reads only the first line of a posted report.
-
-Then one entry per finding: `path:line`, the smell, the cost it adds, and the remedy, so the author can act on it without asking. Report few findings, each one you are sure of: a long list hides the ones that block. Order them so the costliest is read first: step 2's structural regressions and missed code-judo moves, then rows 2-3, 7-8, 1, 9-10, then the rest. Write each as a plain request: `this adds another special-case branch to an already busy flow. Move it into its own function.`
+Then one entry per finding: `path:line`, the smell, the cost it adds, and the remedy. Report few findings, each one you are sure of. Order them costliest first: step 2's structural regressions and missed code-judo moves, then rows 2-3, 7-8, 1, 9-10, then the rest. Write each as a plain request: `this adds another special-case branch to an already busy flow. Move it into its own function.`
 
 ## Steps
 
 1. Read the diff and each changed file around its hunks. Flag lines the pull request (the current branch against its base) adds or changes, and existing code it makes harder to follow, such as a function it lengthens or adds a branch or parameter to. A finding on code the pull request leaves alone blocks it for work it did not cause. A range limits what you must read, never what you flag: a smell you see in code the pull request changed before the range starts is a finding.
-2. Look for the code-judo move first: a restructure onto the existing architecture that deletes whole branches, helpers, modes, conditionals or layers. A structural fix often removes the line-level findings with it.
-3. For a refactor, count the concepts (the types, functions, flags and modes) a reader must know before and after. A move that keeps the count is not a simplification: say so, rather than accept a cleaner version of the same idea. When the problem is structural, do not suggest a rename, which hides the finding that matters.
-4. Check every hunk against the table below, because each row is a smell this review blocks on. For file size, compare `git show <base>:<path> | wc -l` with `wc -l <path>`; `<base>` is the range start your brief names, else `git merge-base HEAD origin/<default branch>`.
-5. Before you report a finding, quote its line at the reviewed head. For a boundary, type or duplicate-helper claim, also read the callers (`grep` the symbol) and the existing helper you name. A finding built on a misread costs the author a round.
-6. Report only a cost you can name (the table's Cost column). A preference or a micro-optimization with no such cost is not a finding. When a structural finding exists, leave out naming and style nits, because they bury it.
+2. Look for the code-judo move first: a restructure onto the existing architecture that deletes whole branches, helpers, modes, conditionals or layers. It often removes the line-level findings with it.
+3. For a refactor, count the concepts (types, functions, flags, modes) a reader must know before and after. A move that keeps the count is not a simplification: say so. When the problem is structural, do not suggest a rename.
+4. Check every hunk against the table below. For file size, compare `git show <base>:<path> | wc -l` with `wc -l <path>`; `<base>` is the range start your brief names, else `git merge-base HEAD origin/<default branch>`.
+5. Before you report a finding, quote its line at the reviewed head. For a boundary, type or duplicate-helper claim, also read the callers (`grep` the symbol) and the existing helper you name.
+6. Report only a cost you can name (the Cost column). A preference or a micro-optimization with no such cost is not a finding. When a structural finding exists, leave out naming and style nits.
 7. Ask for a new abstraction (a type, module or policy object) only when the code shows two real callers or two ways it will change. With one, the abstraction is the thin wrapper row 6 flags.
 
 ## Smells and remedies
@@ -55,16 +50,11 @@ Then one entry per finding: `path:line`, the smell, the cost it adds, and the re
 
 ## Approval bar
 
-- A structural regression, a hacky or magic abstraction, a boundary leak, or a missed obvious decomposition blocks whatever the PR says, because no evidence makes the code easier to change.
-- Every other finding blocks, and the verdict is CHANGES, unless the PR gives evidence that the simpler form fails: a caller it breaks, a measured cost, or a constraint outside the diff that the PR names with `path:line` or a link. "It works" and "tests pass" are no such evidence, because this review judges structure, not behavior.
-- State a blocking finding as blocking, directly and without rudeness. A "maybe" or "consider" finding reads as optional and gets skipped.
+- A structural regression, a hacky or magic abstraction, a boundary leak, or a missed obvious decomposition blocks whatever the PR says.
+- Every other finding blocks, and the verdict is CHANGES, unless the PR gives evidence that the simpler form fails: a caller it breaks, a measured cost, or a constraint outside the diff that the PR names with `path:line` or a link. "It works" and "tests pass" are no such evidence: this review judges structure, not behavior.
+- State a blocking finding as blocking, directly and without rudeness. A "maybe" or "consider" finding reads as optional.
 
-## A reviewer rates, a lead decides
+## Findings
 
-- Rate each finding; the lead disposes of it. Put on the must-fix list only a finding that has to
-  be fixed before this change ships, because a list that mixes those with the rest gets filtered
-  by nobody.
-- The four dispositions the lead gives a finding are act on, consider, noted and dismissed. Write
-  each finding so the lead can place it: the evidence, the cost, and what it depends on.
-- Do not review a diff you wrote. A reviewer that grades its own work reports no finding against
-  it, so hand the diff to a session that did not write it.
+- Rate each finding; the lead disposes of it (act on, consider, noted or dismissed). Give each the evidence, the cost and what it depends on, and put on the must-fix list only what must be fixed before this change ships.
+- Do not review a diff you wrote: hand it to a session that did not write it.

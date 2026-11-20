@@ -233,15 +233,18 @@ func (c *Client) Dismiss(ctx context.Context, recordID, approver string) (json.R
 }
 
 // MachineLogins lists the machine logins the named person may revoke that can still reach a
-// secret: their own machines', and every service's whoever approved it, unexpired or expired with
-// a session still running.
+// secret: their own machines', the logins of their own pods (pods whose Kubernetes account the
+// broker's BROKER_POD_OPERATORS maps to them), and every service's whoever approved it, unexpired
+// or expired with a session still running.
 func (c *Client) MachineLogins(ctx context.Context, approver string) (json.RawMessage, error) {
 	query := url.Values{"approver": {approver}}
 	return c.do(ctx, http.MethodGet, "/v1/launcher-credentials?"+query.Encode(), nil)
 }
 
 // RevokeMachineLogin relays a person's revoke of a machine login; the broker allows anyone signed
-// in for a service's login, and only the person who approved it for a person's machine login.
+// in for a service's login, only the person who approved it for a person's machine login, and only
+// the person BROKER_POD_OPERATORS maps the pod's account to for a person's pod login, although
+// such a login carries a service.
 func (c *Client) RevokeMachineLogin(ctx context.Context, credentialID, approver string) (json.RawMessage, error) {
 	body, err := Decision{Approver: approver}.body()
 	if err != nil {
