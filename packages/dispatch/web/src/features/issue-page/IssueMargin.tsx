@@ -523,7 +523,7 @@ export function IssueMarginPanel({
             disabled={isClosed}
             issueKey={issue.key}
             labels={labels}
-            onSave={(next) => writes.labels.mutateAsync(next)}
+            onSave={(next) => writes.labels.mutateAsync({ issueKey: issue.key, labels: next })}
             project={issue.project}
             saving={writes.labels.isPending}
             variant="rail"
@@ -700,7 +700,7 @@ export function IssueMarginPanel({
               route lands the line goes, and the row's control takes the focus Retry held
               (`useFocusHandOff`). */}
           {fieldFailure !== null &&
-          fieldFailure.variables?.route !== undefined &&
+          fieldFailure.variables?.input.route !== undefined &&
           writes.drafts.route !== (issue.route ?? "") ? (
             <DetailsErrorLine
               error={fieldFailure.error}

@@ -3102,7 +3102,12 @@ function OtherWrites({ issue: details }: { issue: IssueDetails }): ReactNode {
     stateForIssue(undefined, details.key)
   );
   return (
-    <button onClick={() => writes.updateIssue.mutate({ status: "in_progress" })} type="button">
+    <button
+      onClick={() =>
+        writes.updateIssue.mutate({ input: { status: "in_progress" }, issueKey: details.key })
+      }
+      type="button"
+    >
       Start it from the header
     </button>
   );

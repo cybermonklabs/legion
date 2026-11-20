@@ -45,7 +45,7 @@ export function IssueClaimControl({
   // this row was drawn afresh, with a guard that starts free.
   const release = () => {
     if (releaseClaim.isPending) return;
-    press.guard(() => releaseClaim.mutate(undefined, { onSettled: () => press.release() }));
+    press.guard(() => releaseClaim.mutate(issue.key, { onSettled: () => press.release() }));
   };
   if (issue.claim === null) {
     return (

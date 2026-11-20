@@ -415,7 +415,7 @@ async function unsubscribePlanner(user: UserEvent, held: boolean) {
 test("a release the reader stopped says Retry sends it again, not that it failed", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    running("session-one", "Implementer"),
+    runningAgent({ session_id: "session-one", title: "Implementer" }),
   ]);
   const release = spyOn(api, "releaseIssueClaim").mockRejectedValue(dropped());
   const view = header({ ...base, claim });
