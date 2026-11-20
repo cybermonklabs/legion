@@ -395,7 +395,7 @@ export function useNodeEditing({
       const row = box.querySelector(rowSelector);
       if (row !== null && event.target instanceof Node && row.contains(event.target)) lookSoon();
     };
-    box.addEventListener("focusout", movedOff, { capture: true, signal: looking.signal });
+    box.addEventListener("focusout", movedOff, lookOptions);
     const acts = abortOnReaderAct(() => {
       if (settled !== undefined) watch.disconnect();
       else lookSoon();
@@ -481,23 +481,25 @@ export function useNodeEditing({
       }
       if (putOff) {
         // The focus back in the row or its editor's box asks for the caret again, unless a press
-        // in the tree outside the box brought it there, which ends the editing (the press rule).
-        const pressInTree =
-          pressedOn !== undefined && box.contains(pressedOn) && !inEditorBox(row, pressedOn);
-        if (holdsRowsFocus(row) && !pressInTree) {
+        // that ends the editing brought it there: one in the tree outside the box, by the press
+        // rule's own test (`pressEndsEditing`).
+        if (
+          holdsRowsFocus(row) &&
+          (pressedOn === undefined || !pressEndsEditing(box, row, pressedOn))
+        ) {
           setEditing((held) => (held === editing ? { ...held } : held));
         }
         return true;
       }
       // The reader has acted and the focus is off the row: a press outside the tree puts off
       // the caret, once it has ended (above), and any other act moves on from the row.
-      const movedOff = acts.signal.aborted && !holdsRowsFocus(row);
-      if (movedOff && pressedOn !== undefined && !box.contains(pressedOn)) {
+      const offRow = acts.signal.aborted && !holdsRowsFocus(row);
+      if (offRow && pressedOn !== undefined && !box.contains(pressedOn)) {
         if (press.pressing) return false;
         putOff = true;
         window.clearTimeout(handing);
         // Each focus move into the tree is looked at, a task on or once a press has ended.
-        box.addEventListener("focusin", lookSoon, { capture: true, signal: looking.signal });
+        box.addEventListener("focusin", lookSoon, lookOptions);
         return true;
       }
       if (hold.current === "awaited" && handing === undefined && drawsBlock(row, blockId)) {
@@ -514,7 +516,7 @@ export function useNodeEditing({
       // The hold cannot go on where what it is built of did not load, or where the page has
       // handed the row no editor to hold.
       const unheld = load.current?.failed === true || (unhanded && hold.current === "awaited");
-      if (movedOff || unheld) return endUnplaced(row, movedOff);
+      if (offRow || unheld) return endUnplaced(row, offRow);
       // No caret goes in an editor that does not hold its edits to the node's block yet: the
       // focus stays on the row, where no key edits the document, and the row is looked at
       // again as the hold goes on (`holdChanged`).
@@ -772,7 +774,7 @@ export function useNodeEditing({
         // A press outside the tree ends nothing, so the edited row is looked up for one in it.
         if (box.contains(on)) {
           const row = box.querySelector<HTMLElement>(rowSelector);
-          ends = row === null || !inEditorBox(row, on);
+          ends = pressEndsEditing(box, row, on);
         } else {
           ends = false;
         }
@@ -852,6 +854,13 @@ export function inputMethodKey(event: KeyboardEvent): boolean {
  *  editable (`node-caret.ts`'s `ACTION_BAR`). */
 function inEditorBox(row: HTMLElement, node: Node | null): boolean {
   return row.querySelector(`[${EDITOR_BOX_ATTRIBUTE}]`)?.contains(node) === true;
+}
+
+/** Whether a press that went down on `on` ends the editing of `row`'s node: it went down in the
+ *  tree (`box`), outside the row's editor box, or with the row no longer drawn. The press rule
+ *  reads it (`useNodeEditing`'s `mousedown` listener), and so does a caret put off (`place`). */
+function pressEndsEditing(box: HTMLElement, row: HTMLElement | null, on: Node | null): boolean {
+  return box.contains(on) && (row === null || !inEditorBox(row, on));
 }
 
 /** Whether the focus is still the edited row's: on the row itself, or inside the box its editor

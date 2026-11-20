@@ -178,11 +178,10 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
  * Starts the controller the reader's first act since the address was followed aborts
  * (`READER_ACTS`), and puts it in `into`: one for each following, as the body keys this on the
  * following (the location's own key), started as the following is drawn. It draws nothing. It is
- * started in a layout effect, and it is the body's first child, so that effect runs before the
- * layout effects of everything the body draws after it in that commit - React runs an earlier
- * child's before a later one's, and a parent's after its children's - and before every passive
- * effect of that commit: a line drawn in the commit of the following itself reads the following's
- * own controller.
+ * started in a layout effect, which runs before every passive effect of that commit, and every
+ * reader of the controller reads it in a passive effect (`IssueTree.tsx`'s effect that reads
+ * `addressActs`, `useFocusOnDraw`'s that calls `takesFocus`): a line drawn in the commit of the
+ * following itself reads the following's own controller.
  */
 function ReaderActsWatch({ into }: { into: ReaderActs }): ReactNode {
   useLayoutEffect(() => {

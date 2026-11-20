@@ -10076,7 +10076,7 @@ test("a failed one more names read's line stays drawn, with the focus on its Ret
     const { container } = body.view;
     await failedLines(container, 1, "one more names");
     expect(
-      names.mock.calls.map(([refs]) => [...refs]),
+      names.mock.calls.map(([refs]) => refs),
       "the one more read did not name what the step's words cite"
     ).toContainEqual([cited]);
     await framesPass();
@@ -10099,7 +10099,7 @@ test("a failed one more names read's line stays drawn, with the focus on its Ret
     await waitFor(
       () =>
         expect(
-          names.mock.calls.map(([refs]) => [...refs]),
+          names.mock.calls.map(([refs]) => refs),
           "the one more read was not read under the addresses the step's new words cite"
         ).toContainEqual([cited, added]),
       OWN_WORDS
