@@ -4822,6 +4822,56 @@ test("a second Enter on the row while its editor's hold is loading starts no new
   }
 });
 
+// The tester's finding at #4205's 46dab3c7, ruled by the architect under decision 348 (2): a
+// press in Details leaves the editing as it is, and that holds between Enter and the caret's
+// placement too. At 46dab3c7 the row's look for the caret ends the editing on any act of the
+// reader's that takes the focus off the row while the editor's hold is loading, a press in
+// Details included, so the document's editor and the threads Details draws beside it go off the
+// page under the pointer. The press keeps the editing and cancels the caret's placement: once the
+// hold is on, no caret goes in and the focus stays in Details.
+test("a press in Details while the row's editor is still loading keeps the editing, and no caret takes the focus back from Details", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const parts = await nodeCaret.loadEditsHold();
+  const held = Promise.withResolvers<nodeCaret.HoldParts>();
+  const load = spyOn(nodeCaret, "loadEditsHold").mockReturnValue(held.promise);
+  try {
+    const room = liveRoom();
+    const blocks = liveBlocks();
+    const { editable, view } = await enterStatement(user, (onEditor) => (
+      <LiveEditor blocks={blocks} onEditor={onEditor} room={room} />
+    ));
+    const row = editable.closest<HTMLElement>("[data-node-row]");
+    await waitFor(() => wordsOf(editable, "r1"));
+    await nextFrame();
+    await nextFrame();
+    expect(
+      document.activeElement === row,
+      "the focus left the row before the editor held its edits"
+    ).toBe(true);
+    const card = cardInDetails();
+
+    await user.click(card);
+    // The press is over a task after its click.
+    await waitInAct(0);
+    expect(
+      view.edited.at(-1),
+      "a press in Details while the editor was loading ended the editing"
+    ).toBe("artifact-spec");
+    expect(document.activeElement === card, "the press left the focus off the card").toBe(true);
+
+    await act(async () => held.resolve(parts));
+    await nextFrame();
+    await nextFrame();
+    expect(
+      document.activeElement === card,
+      "the caret took the focus back from Details once the editor held its edits"
+    ).toBe(true);
+  } finally {
+    load.mockRestore();
+  }
+});
+
 // A page that draws the row's editor and hands the row nothing to hold would leave that editor
 // unguarded. The row waits while the editor draws no block of the node's, and a task after the
 // block is drawn with no editor handed over - a page hands its editor over in the task the
