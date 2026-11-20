@@ -22,13 +22,13 @@ export interface DetailsErrorLineProps {
    *  with the `refused:` look of `styles.css`), and the caller drops a press made meanwhile, as
    *  for any control whose own write is out. */
   readonly refused?: boolean;
-  /** Takes the Retry, so the row can hand its focus on when the line goes (`useFocusHandOff`). */
+  /** Takes the Retry, so the row can hand its focus on when it goes (`useFocusHandOff`). */
   readonly retryRef?: Ref<HTMLButtonElement>;
-  /** Notes the reader's press of Retry for the row's hand-off, which hands the focus on only once
-   *  the line goes after that press (`takePress`): set as Retry is pressed, and forgotten as the
-   *  line says a failure again, since the press then took nothing away. A line that goes on a
-   *  change the reader did not make - another read's answer, another session's write, a close -
-   *  leaves the focus on the page's body. */
+  /** Notes the reader's press of Retry for the row's hand-off (`useFocusHandOff`): set as Retry is
+   *  pressed, and forgotten as a line is drawn and as the line says a failure again, since the
+   *  press then took nothing away. Where the row hands it to the hook as its `pressed`, the hook
+   *  forgets it as Retry leaves the page too. Whether Retry's going answers the press - its
+   *  request answered, and the line went for it - the row reads in its target. */
   readonly retried?: RefObject<boolean>;
   /** Whether the read Retry sent again is still out: Retry reads busy (`aria-busy`, and a
    *  quieter look) and still takes a press, which the caller joins to the read that is out. */
@@ -56,10 +56,12 @@ export function DetailsErrorLine({
   retried,
   retrying = false,
 }: DetailsErrorLineProps): ReactNode {
-  // A failure said again answers the press that was out: the line stayed, so the press took
-  // nothing away, and the line's going later is no press of the reader's.
+  // A line drawn holds no press yet, and a failure said again answers the press that was out: the
+  // line stayed, so the press took nothing away, and the line's going later is no press of the
+  // reader's.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `failure` is the trigger, not a read
   useEffect(() => {
-    if (retried !== undefined && failure !== undefined) retried.current = false;
+    if (retried !== undefined) retried.current = false;
   }, [failure, retried]);
   return (
     <div className="flex flex-wrap items-center gap-3 text-sm">

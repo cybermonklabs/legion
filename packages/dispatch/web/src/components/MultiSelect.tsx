@@ -1,6 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
-import { takePress, useFocusHandOff } from "../hooks/useFocusHandOff";
+import { useFocusHandOff } from "../hooks/useFocusHandOff";
 import {
   borderDefault,
   borderStrong,
@@ -143,8 +143,10 @@ export function MultiSelect({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const wasOpen = useRef(false);
-  /** Whether the reader has pressed Clear or the Create row, which the press then takes away. */
-  const leavingPress = useRef(false);
+  /** Whether the reader has pressed the Create row, or Clear, while it is drawn: each press takes
+   *  its own element away. */
+  const createPressed = useRef(false);
+  const clearPressed = useRef(false);
 
   const searchText = query.trim();
   const needle = fold(searchText);
@@ -192,19 +194,19 @@ export function MultiSelect({
     wasOpen.current = open;
   }, [open]);
 
-  // The Create row and Clear are buttons, as the rows are, so the focus can reach one - a screen
-  // reader's cursor puts it there - though every key of the popover's own leaves it in the search
-  // box. A press of either takes it away under that focus: Clear as the pick empties, the Create
-  // row as its value is made and the search empties. The browser would drop the focus to the body,
-  // where Escape no longer reaches the popover, so the search box takes it. A row or a Create row
-  // the options take away - a read of them answering again without the row's value, or coming to
-  // name the value the Create row offers - is no press of the reader's, and its focus stays on the
-  // page's body, as for every change the reader did not make. A popover that closed took the
-  // search box along, and the close above gives the focus back to the trigger instead.
-  const handOff = useFocusHandOff(() => (takePress(leavingPress) ? inputRef.current : null));
-  const pressLeaving = () => {
-    leavingPress.current = true;
-  };
+  // The Create row and Clear are buttons, as the rows are, so the focus can reach one, as a screen
+  // reader's cursor puts it there. A press of either takes it away: Clear as the pick empties, the
+  // Create row as its value is made and the search empties. Where it held the focus, the browser
+  // would drop that to the body, where Escape no longer reaches the popover, so the search box
+  // takes it. Each notes its own press, which is forgotten as that element leaves, with the focus
+  // or not (`useFocusHandOff`'s `pressed`): a pointer press leaves the focus in the search box
+  // (`onMouseDown` below), and its element's going then answers no later loss. A Create row the
+  // options take away - a read of them coming to name the value it offers - holds no press, and
+  // its focus stays on the page's body, as for every change the reader did not make. A popover
+  // that closes takes the search box along, and the close above gives the focus back to the
+  // trigger instead.
+  const createLeft = useFocusHandOff(() => inputRef.current, createPressed);
+  const clearLeft = useFocusHandOff(() => inputRef.current, clearPressed);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "ArrowDown" && rows.length > 0) {
@@ -305,6 +307,14 @@ export function MultiSelect({
                   id={optionId(option)}
                   key={option}
                   onClick={() => toggle(option)}
+                  // A host can order the rows by the pick (`IssueLabels`, `ComponentPicker`), so a
+                  // press can move its row, and React's move drops a focus on the row to the body.
+                  // A press of a row that holds the focus, as a screen reader's cursor puts it
+                  // there, gives it to the search box first; a pointer press focuses no row
+                  // (`onMouseDown` below), and leaves the focus where it is.
+                  onClickCapture={(event) => {
+                    if (event.currentTarget === document.activeElement) inputRef.current?.focus();
+                  }}
                   onMouseDown={(event) => event.preventDefault()}
                   role="option"
                   type="button"
@@ -341,9 +351,11 @@ export function MultiSelect({
                 disabled={disabled}
                 id={optionId(createValue)}
                 onClick={() => create(createValue)}
-                onClickCapture={pressLeaving}
+                onClickCapture={() => {
+                  createPressed.current = true;
+                }}
                 onMouseDown={(event) => event.preventDefault()}
-                ref={handOff}
+                ref={createLeft}
                 role="option"
                 type="button"
               >
@@ -372,9 +384,11 @@ export function MultiSelect({
                 className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${tooltips ? `${surfaceMutedBg} ${textSecondaryOnSurface}` : ON_PAGE.clear}`}
                 disabled={disabled}
                 onClick={() => onChange([])}
-                onClickCapture={pressLeaving}
+                onClickCapture={() => {
+                  clearPressed.current = true;
+                }}
                 onMouseDown={(event) => event.preventDefault()}
-                ref={handOff}
+                ref={clearLeft}
                 type="button"
               >
                 Clear {label.toLocaleLowerCase()}

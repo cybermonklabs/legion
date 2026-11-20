@@ -20,7 +20,7 @@ import { MarginProvider } from "../margin/margin-context";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { IssueClaimControl, RELEASE_FAILED } from "./IssueClaimControl";
-import { claimIssue as base, sessionClaim as claim } from "./issue-fixtures";
+import { claimIssue as base, sessionClaim as claim, settleFocus } from "./issue-fixtures";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
@@ -616,14 +616,6 @@ test("a release that fails on a claim drawn after the row was says so beside it"
     restore();
   }
 });
-
-/** Waits past two frames and a task, by which any hand-off of the row would have moved the
- *  focus. */
-async function settleFocus(): Promise<void> {
-  const settled = Promise.withResolvers<void>();
-  requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(settled.resolve, 0)));
-  await act(() => settled.promise);
-}
 
 // The reader released the claim by keyboard, so the row handed the focus to its None. Another
 // session then claimed the issue, and the row drew the new claim in None's place. That claim is no

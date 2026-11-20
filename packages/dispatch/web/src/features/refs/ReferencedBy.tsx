@@ -241,10 +241,16 @@ export function ReferencedByToggle({
 export function ReferencedBy({
   className,
   reference,
+  retryKeepsFocus = false,
   toggle,
 }: {
   className?: string;
   reference: string;
+  /** Whether Retry keeps the focus while the read it sent is out: drawn `aria-disabled` then, in
+   *  place of `disabled`, since Chromium moves the focus of a control that turns disabled to the
+   *  page's body. A press while the read is out joins it (`cancelRefetch: false`) and sends
+   *  nothing new. The new issue page's Details passes it; elsewhere Retry is `disabled` then. */
+  retryKeepsFocus?: boolean;
   /** The control that discloses this panel: its `id` (which the control names in
    *  `aria-controls`) and the fact that it already reads `Referenced by (N)`, so the panel
    *  carries no heading of its own under it. Absent where the page shows the list outright,
@@ -262,6 +268,17 @@ export function ReferencedBy({
       Object.hasOwn(NODE_LABELS, edge.node.kind)
   );
   const groups = groupBySource(edges ?? []);
+  // Retry's attributes in Details (`retryKeepsFocus`), spread over the ones it has on every page.
+  // Each is optional, so the spread is typed as one that may leave the earlier one in place.
+  const retryInDetails:
+    | { "aria-disabled"?: true; disabled?: boolean; onClick?: () => void }
+    | undefined = retryKeepsFocus
+    ? {
+        "aria-disabled": query.isFetching || undefined,
+        disabled: false,
+        onClick: () => void query.refetch({ cancelRefetch: false }),
+      }
+    : undefined;
 
   return (
     <section aria-label="Referenced by" className={`space-y-2 ${className ?? ""}`} id={toggle?.id}>
@@ -280,6 +297,7 @@ export function ReferencedBy({
             className={`font-medium underline ${linkText} ${linkHoverText}`}
             disabled={query.isFetching}
             onClick={() => void query.refetch()}
+            {...retryInDetails}
             type="button"
           >
             Retry

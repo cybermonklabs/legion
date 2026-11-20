@@ -337,8 +337,20 @@ export function RepoControl({
   // repository's text, each drawn in the other's place when the issue's repository changes under
   // them, hand it on alike. Only a focus still on the document is taken (`focusOnDocument`):
   // anywhere else, the reader put it there.
+  // A change made elsewhere that draws "None" in the repository's text's place, or the text in
+  // None's place, is no press of the reader's, so that swap moves nothing: where the row drew text
+  // in its last commit (`wasText`) and draws text again, the effect returns, the focus the one
+  // leaving held stays on the page's body, as for every change the reader did not make, and the
+  // row no longer counts it as held.
   const focusHeld = useRef(false);
+  const wasText = useRef(showsText);
   useEffect(() => {
+    const drewText = wasText.current;
+    wasText.current = showsText;
+    if (drewText && showsText) {
+      focusHeld.current = false;
+      return;
+    }
     if (!focusHeld.current || !focusOnDocument()) return;
     (showsNone ? noneControl : showsText ? textControl : box).current?.focus();
   }, [showsNone, showsText]);

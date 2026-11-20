@@ -222,15 +222,25 @@ test("a row's detail reads after its label and a comma, spoken with its own word
 
 /** A host that keeps the popover open as the search box's Tab asks it to close, so Tab goes on
  *  from the search box to the rows, the Create row and Clear: buttons, which a screen reader's
- *  cursor focuses too. */
+ *  cursor focuses too. With `pickedFirst` it orders the rows as the labels' and the components'
+ *  hosts do (`IssueLabels`, `ComponentPicker`): the picked ones first, each part by its name. */
 function OpenHost({
   onCreate,
   options,
+  pickedFirst = false,
 }: {
   onCreate?: (value: string) => void;
   options: string[];
+  pickedFirst?: boolean;
 }) {
   const [selected, setSelected] = useState<string[]>([]);
+  const ordered = pickedFirst
+    ? [...options].sort(
+        (left, right) =>
+          Number(selected.includes(right)) - Number(selected.includes(left)) ||
+          left.localeCompare(right)
+      )
+    : options;
   return (
     <>
       <MultiSelect
@@ -240,7 +250,7 @@ function OpenHost({
         onCreate={onCreate}
         onOpenChange={() => undefined}
         open
-        options={options}
+        options={ordered}
         searchLabel="Search labels"
         selected={selected}
       />
@@ -331,6 +341,57 @@ test("a Create row that new options name leaves the focus on the page's body", a
     expect(screen.queryByRole("option", { name: /Create/ })).not.toBeInTheDocument();
     expect(screen.getByRole("option", { name: "urgent" })).toBeTruthy();
     expect(document.body).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A pointer press of Clear leaves the focus in the search box, so Clear goes without it. That
+// press answers no later loss: a Create row a screen reader's cursor focused, which new options
+// then take away, is no press of the reader's, and its focus stays on the page's body.
+test("a pointer press of Clear answers no later loss: a Create row new options take away leaves the focus on the page's body", async () => {
+  const user = userEvent.setup();
+  const view = render(<OpenHost onCreate={() => undefined} options={["api", "docs"]} />);
+  try {
+    const search = screen.getByRole("combobox", { name: "Search labels" });
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("selected").textContent).toBe("api");
+    await user.click(screen.getByRole("button", { name: "Clear labels" }));
+    expect(screen.getByTestId("selected").textContent).toBe("");
+    expect(search, "a pointer press of Clear took the focus out of the search box").toHaveFocus();
+    await user.paste("urgent");
+    const create = screen.getByRole("option", { name: 'Create "urgent"' });
+    create.focus();
+    view.rerender(<OpenHost onCreate={() => undefined} options={["api", "docs", "urgent"]} />);
+    expect(screen.queryByRole("option", { name: /Create/ })).not.toBeInTheDocument();
+    expect(
+      document.body,
+      "new options took the Create row away, and the focus left the page's body though the reader pressed nothing on it"
+    ).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A host that orders the rows by the pick moves a row as the reader unpicks it, and React's move
+// drops a focus on that row to the page's body. A row that holds the focus, as a screen reader's
+// cursor puts it there, gives it to the search box as it is pressed.
+test("a focused row that moves as the reader unpicks it gives the focus to the search box", async () => {
+  const user = userEvent.setup();
+  const view = render(<OpenHost options={["api", "bug", "docs"]} pickedFirst />);
+  try {
+    const search = screen.getByRole("combobox", { name: "Search labels" });
+    await user.keyboard("{Enter}");
+    await user.keyboard("{ArrowDown}");
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("selected").textContent).toBe("api,bug");
+    const api = screen.getByRole("option", { name: "api" });
+    expect(screen.getAllByRole("option")[0], "the picked rows are not drawn first").toBe(api);
+    api.focus();
+    await user.click(api);
+    expect(screen.getByTestId("selected").textContent).toBe("bug");
+    expect(screen.getAllByRole("option")[1], "the unpicked row did not move").toBe(api);
+    expect(search, "the row moved, and the focus did not go to the search box").toHaveFocus();
   } finally {
     view.unmount();
   }

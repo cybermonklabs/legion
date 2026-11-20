@@ -196,11 +196,13 @@ export function IssueAddMenu({
   // drawn open when the issue reopens or a property loses its value again, with the focus not in
   // it, since the effect above puts the focus on its first entry only as it opens, and its
   // listeners on the document would stay on meanwhile. A focus on Add or in its open menu goes
-  // with it to the page's body, and stays there: Add goes only on a change the reader did not
-  // make - another session sets the last property it lists or closes the issue, or a read takes
-  // its last entry's control away - never at a press of theirs, since a press in its menu closes
-  // the menu with Add still drawn and the control it opens takes the focus. An entry a change
-  // made elsewhere takes out of the open menu leaves the focus on the body alike.
+  // with it to the page's body, and stays there, whatever took Add away: another session setting
+  // the last property it lists or closing the issue, a read taking its last entry's control away,
+  // the command palette's Close issue, and a save of the reader's own that lands while they have
+  // tabbed onto Add and sets the last property it lists. None of these is a press live on Add or
+  // its menu; a press in its menu closes the menu with Add still drawn, and the control it opens
+  // takes the focus. An entry a change made elsewhere takes out of the open menu leaves the focus
+  // on the body alike.
   const drawn = !isClosed && entries.length > 0;
   if (!drawn) {
     if (open) setOpen(false);

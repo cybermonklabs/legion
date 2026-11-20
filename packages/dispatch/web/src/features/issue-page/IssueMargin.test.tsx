@@ -50,6 +50,7 @@ import { repoControlName, repoTextControlName } from "../issue/RepoControl";
 import { type DocumentBridge, MarginProvider, useMargin } from "../margin/margin-context";
 import { issue as marginIssue, specArtifact } from "../margin/margin-fixture";
 import { addPriorityControlName } from "../priorities/IssuePriorityLine";
+import { ReferencedBy } from "../refs/ReferencedBy";
 import { buildDispatchReference } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
@@ -69,7 +70,7 @@ import {
 import { Opener } from "./details-rows-fixture";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel, PARENT_ERROR_ID, TITLES_READ_FAILED } from "./IssueMargin";
-import { narrowIssue, patchAnswer, sessionClaim } from "./issue-fixtures";
+import { narrowIssue, patchAnswer, sessionClaim, settleFocus } from "./issue-fixtures";
 import {
   DETAILS_ATTRIBUTE,
   FilledMarginSlot,
@@ -97,6 +98,27 @@ const issue: IssueDetails = { ...marginIssue, last_seq: 250, status: "todo" };
 
 /** The fixture's issue, closed. */
 const closedIssue: IssueDetails = { ...issue, closed_at: "2026-09-10T00:00:00Z", status: "done" };
+
+/** The fixture's issue with its spec and `count` notes, named in order. */
+function withNotes(count: number): IssueDetails {
+  const notes = Array.from({ length: count }, (_, index) => {
+    const slug = `notes-${String(index + 1).padStart(2, "0")}`;
+    return {
+      ...specArtifact,
+      id: slug,
+      name: `${slug}.md`,
+      primary: false,
+      ref_key: `CORE-1/${slug}`,
+      slug,
+    };
+  });
+  return { ...issue, artifacts: [specArtifact, ...notes] };
+}
+
+/** The keys CORE-2, CORE-3 and on, `count` of them. */
+function keysFrom2(count: number): string[] {
+  return Array.from({ length: count }, (_, index) => `CORE-${index + 2}`);
+}
 
 /** An open Details drawer, whose `setOpen` and `setPage` do nothing. */
 const OPEN_DRAWER: MarginDrawer = {
@@ -254,18 +276,6 @@ function rowAt(row: DetailsRow): HTMLElement {
   const found = document.querySelector(`[${DETAILS_ROW_ATTRIBUTE}="${row}"]`);
   if (!(found instanceof HTMLElement)) throw new Error(`Details draws no ${row} row`);
   return found;
-}
-
-/** Waits past two frames and a task, by which a hand-off or a keeper that waits for a frame or a
- *  task would have moved the focus. */
-async function settleFocus(): Promise<void> {
-  await act(async () => {
-    await nextFrame();
-    await nextFrame();
-    const task = Promise.withResolvers<void>();
-    setTimeout(task.resolve, 0);
-    await task.promise;
-  });
 }
 
 /** How many times `getReferences` read what waits on `reference`, the Blocks row's read: the
@@ -1846,6 +1856,60 @@ test("Blocks read again on an event, not by its Retry, leaves the focus its Retr
   }
 });
 
+// Blocks has a Retry for what waits on the issue and one for the titles of those, each with a
+// press of its own. The reader presses the titles' Retry, and while its read is out an event reads
+// what waits on the issue again and that read fails: its line takes the list's place, and the
+// titles' Retry goes with the focus. Neither line's read has answered a press, so the focus stays
+// on the page's body rather than going to the other line's Retry.
+test("Blocks' titles Retry, taken away by a failed read of what waits on the issue, leaves its focus on the page's body", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [waitingEdge("CORE-5", "Ship the release")],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  const titles = spyOn(api, "getReferenceTargets").mockRejectedValueOnce(
+    new ApiError(500, { code: "INTERNAL", error: "read failed" })
+  );
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const blocksRow = () => within(detailsRow(PROPERTY_LABELS.blocks));
+
+  try {
+    const retry = await waitFor(() =>
+      blocksRow().getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    expect(blocksRow().getByRole("alert")).toHaveTextContent(TITLES_READ_FAILED);
+    titles.mockImplementationOnce(() => new Promise(() => undefined));
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+
+    getReferences.mockRejectedValueOnce(
+      new ApiError(500, { code: "INTERNAL", error: "read failed" })
+    );
+    await act(() =>
+      queryClient.refetchQueries({ queryKey: ["references", "to", reference, "blocked_by"] })
+    );
+    await waitFor(() =>
+      expect(blocksRow().getByRole("alert")).toHaveTextContent(
+        "Could not read what this issue blocks."
+      )
+    );
+    expect(retry, "the titles' Retry is still drawn").not.toBeInTheDocument();
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "the titles' Retry went as what waits on the issue failed again, and the focus left the page's body though no read answered the press"
+    ).toBe(document.body);
+  } finally {
+    unmount();
+    titles.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
 // While the Blocked by editor is open the row draws no control of its own, so as the titles the
 // Retry sent answer, the focus it held goes to the first issue the row waits on rather than to
 // the page.
@@ -2049,6 +2113,55 @@ test("the titles' Retry whose read failed again leaves its focus on the page's b
   }
 });
 
+// The reader presses the titles' Retry, and while its read is out another session changes the
+// issues this one waits on: the row reads the titles of the new set, and the line goes with the
+// focus on its Retry. The read the press sent has not answered, so the focus stays on the page's
+// body rather than going to the row's control.
+test("the titles' Retry taken away by blockers changed elsewhere while its read is out leaves its focus on the page's body", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  const titles = spyOn(api, "getReferenceTargets").mockRejectedValueOnce(
+    new ApiError(500, { code: "INTERNAL", error: "read failed" })
+  );
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
+
+  try {
+    const retry = await waitFor(() =>
+      blockedBy().getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    titles.mockImplementationOnce(() => new Promise(() => undefined));
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+
+    drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-4"] });
+    await blockedBy().findByRole("link", { name: "CORE-4" });
+    await waitFor(() =>
+      expect(
+        blockedBy().queryByRole("alert"),
+        "the issue waits on another set, but Blocked by still says the titles of the old one failed"
+      ).toBeNull()
+    );
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "the blockers changed elsewhere while the titles' read was out, and the focus left the page's body though that read had not answered"
+    ).toBe(document.body);
+  } finally {
+    unmount();
+    titles.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
 // A folded list's Show all goes with its press, so the focus goes on to the first entry it
 // opened, the eleventh, rather than falling to the page: in Files and documents, and in Blocks.
 test("Show all gives the focus to the first entry it opens", async () => {
@@ -2129,6 +2242,106 @@ test("Referenced by's control is in the page's ink, opens the list and reads the
     unmount();
     getReferences.mockRestore();
     restore();
+  }
+});
+
+/** What references CORE-1, the answer of Referenced by's list: nothing. */
+const NOTHING_REFERENCES: GraphReferences = {
+  edges: [],
+  node: graphNode({
+    id: "CORE-1",
+    issue_key: "CORE-1",
+    kind: "issue",
+    ref: buildDispatchReference({ key: "CORE-1", kind: "issue" }),
+  }),
+};
+
+// Inside Details, Referenced by's Retry keeps the focus while the read it sent is out: it reads
+// `aria-disabled` there rather than turning disabled, which in Chromium drops the focus to the
+// page's body, and a second press joins the read that is out.
+test("in Details, Referenced by's Retry keeps the focus while the read it sent is out, and a second press sends none", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, referenced_by_count: 3 });
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
+  // The list reads what references the issue with no kind; Blocks reads one kind of it.
+  const listReads = () =>
+    getReferences.mock.calls.filter(([to, options]) => to === reference && options === undefined)
+      .length;
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const stopBlurring = emulateChromiumFocusFixup();
+
+  try {
+    await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
+    const list = await screen.findByRole("region", { name: "Referenced by" });
+    await within(list).findByText("Nothing references this yet.");
+    getReferences.mockRejectedValueOnce(
+      new ApiError(500, { code: "INTERNAL", error: "read failed" })
+    );
+    await act(() =>
+      queryClient.refetchQueries({ exact: true, queryKey: ["references", "to", reference] })
+    );
+    const retry = await within(list).findByRole("button", { name: "Retry" });
+
+    getReferences.mockImplementationOnce(() => new Promise(() => undefined));
+    const reads = listReads();
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    expect(listReads(), "Retry did not read the list again").toBe(reads + 1);
+    await waitFor(() =>
+      expect(retry, "Retry does not refuse a press while the read it sent is out").toHaveAttribute(
+        "aria-disabled",
+        "true"
+      )
+    );
+    expect(retry, "Retry turned disabled while the read it sent is out").toBeEnabled();
+    expect(document.activeElement, "Retry lost the focus while the read it sent is out").toBe(
+      retry
+    );
+    await user.keyboard("{Enter}");
+    expect(listReads(), "a press of Retry while its read is out sent another").toBe(reads + 1);
+    expect(document.activeElement, "Retry lost the focus at a second press").toBe(retry);
+  } finally {
+    stopBlurring();
+    unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// Outside the new issue page Referenced by's Retry is as on every other page: disabled while the
+// read it sent is out.
+test("outside Details, Referenced by's Retry is disabled while the read it sent is out", async () => {
+  const user = userEvent.setup();
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <ReferencedBy reference={reference} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    await screen.findByText("Nothing references this yet.");
+    getReferences.mockRejectedValueOnce(
+      new ApiError(500, { code: "INTERNAL", error: "read failed" })
+    );
+    await act(() => queryClient.refetchQueries({ queryKey: ["references", "to", reference] }));
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    getReferences.mockImplementationOnce(() => new Promise(() => undefined));
+    await user.click(retry);
+    await waitFor(() =>
+      expect(retry, "Retry outside Details is not disabled while its read is out").toBeDisabled()
+    );
+    expect(retry, "Retry outside Details reads aria-disabled").not.toHaveAttribute("aria-disabled");
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    getReferences.mockRestore();
   }
 });
 
@@ -2985,6 +3198,105 @@ test("removing the last priority hands the focus from its Remove to the add cont
   }
 });
 
+/** Adds the priority "Evals collecting data now" from the add control beside Add, by keyboard,
+ *  and returns once the form's Add is pressed: the line gives the focus back to its add control
+ *  beside Add while the write is out. */
+async function addFirstPriority(user: UserEvent): Promise<void> {
+  const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
+  act(() => control.focus());
+  await user.keyboard("{Enter}");
+  const picker = await screen.findByRole("combobox", {
+    name: CONTROL_LABELS.priority_to_advance,
+  });
+  await within(picker).findByRole("option", { name: /Evals collecting data now$/ });
+  await user.selectOptions(picker, "evals-now");
+  await user.tab();
+  await user.keyboard("{Enter}");
+}
+
+// The reader's first priority is refused (409 ADVANCES_REVISION, another session having moved the
+// set), and the read of the issue the refusal sets off draws the priority that session added: the
+// line moves into the Advances row with the focus on the add control beside Add, which the
+// reader's write held refused until that read was drawn. The write saved nothing, so the move is
+// not the reader's, and the focus stays on the page's body.
+test("a refused first priority whose read draws another session's priority leaves the focus on the page's body", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
+  getIssue.mockResolvedValue(advancesOnly);
+  patchIssue.mockImplementationOnce(() =>
+    Promise.reject(
+      new ApiError(409, { code: "ADVANCES_REVISION", error: "the priorities moved meanwhile" })
+    )
+  );
+  const view = renderDetails();
+  try {
+    await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
+    // The issue's read after the refusal is held, so the line moves only once it is drawn.
+    const reread = Promise.withResolvers<IssueDetails>();
+    getIssue.mockImplementation(() => reread.promise);
+    await addFirstPriority(user);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(
+        document.activeElement,
+        "the line gave the focus back to no add control beside Add"
+      ).toBe(screen.queryByRole("button", { name: addPriorityControlName("CORE-1") }))
+    );
+    await act(async () =>
+      reread.resolve({ ...advancesOnly, advances: [{ id: "PRI-9", inherited: false }] })
+    );
+    await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "the refused write's read moved the line, and the focus left the page's body though the reader's write saved nothing"
+    ).toBe(document.body);
+  } finally {
+    view.unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// While the reader's first priority is out, an event's read draws the priority another session
+// added: the line moves into the Advances row with the focus on the add control beside Add, which
+// the reader's write holds refused. That write has not landed, so the move is not the reader's,
+// and the focus stays on the page's body.
+test("an event's read of another session's first priority while the reader's is out leaves the focus on the page's body", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
+  getIssue.mockResolvedValue(advancesOnly);
+  // The reader's write is held out for the whole case.
+  patchIssue.mockImplementationOnce(() => new Promise(() => undefined));
+  const { queryClient, unmount } = renderDetails();
+  try {
+    await addFirstPriority(user);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    const control = screen.getByRole("button", { name: addPriorityControlName("CORE-1") });
+    await waitFor(() => expect(document.activeElement).toBe(control));
+    expect(
+      control,
+      "the add control does not refuse a press while the write is out"
+    ).toHaveAttribute("aria-disabled", "true");
+    drawIssue(getIssue, queryClient, {
+      ...advancesOnly,
+      advances: [{ id: "PRI-9", inherited: false }],
+    });
+    await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "an event's read moved the line while the reader's write was out, and the focus left the page's body"
+    ).toBe(document.body);
+  } finally {
+    unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
 // On a closed issue another session's write takes away the last priority, and the Advances row
 // with it, with the focus on its priority's link. The reader pressed nothing, so the focus stays on
 // the page's body, as for every change the reader did not make.
@@ -3642,6 +3954,70 @@ test("the mappings read again on an event, not by their Retry, leave the focus t
       "the mappings answered on an event, and the focus left the page's body though the reader pressed nothing"
     ).toBe(document.body);
   } finally {
+    unmount();
+    listRepoProjects.mockRestore();
+    restore();
+  }
+});
+
+// The Repository row draws a failed read of the mappings and a refused write at once, each with
+// its own Retry. The reader presses the read's Retry by keyboard and, while that read is out, tabs
+// on to the write's Retry; a close made in another session then takes that Retry away, as a closed
+// issue's write line offers none. The reader pressed nothing on that line, so the focus stays on
+// the page's body.
+test("a close made elsewhere that takes the refused repository's Retry after a press of the mappings' Retry leaves its focus on the page's body", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  const listRepoProjects = spyOn(api, "listRepoProjects").mockRejectedValueOnce(
+    new Error("the network dropped the read")
+  );
+  patchIssue.mockImplementationOnce(() =>
+    Promise.reject(new ApiError(400, { code: "INVALID_ISSUE", error: "repository refused" }))
+  );
+  const { queryClient, unmount } = renderDetails();
+  const stopBlurring = emulateChromiumFocusFixup();
+
+  try {
+    const row = await waitFor(() => detailsRow(PROPERTY_LABELS.repository));
+    await within(row).findByRole("alert");
+    await user.click(
+      within(row).getByRole("button", {
+        name: repoTextControlName("CORE-1", { resolvedRepo: null, words: CONTROL_NAME_WORDS }),
+      })
+    );
+    await user.click(await screen.findByRole("combobox", { name: repoControlName("CORE-1") }));
+    await user.paste("acme/web");
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(within(row).getAllByRole("button", { name: CONTROL_LABELS.retry })).toHaveLength(2)
+    );
+    const [readRetry, writeRetry] = within(row).getAllByRole("button", {
+      name: CONTROL_LABELS.retry,
+    });
+    if (readRetry === undefined || writeRetry === undefined) {
+      throw new Error("the Repository row draws no two Retries");
+    }
+
+    listRepoProjects.mockImplementationOnce(() => new Promise(() => undefined));
+    act(() => readRetry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(readRetry).toHaveAttribute("aria-busy", "true"));
+    await user.tab();
+    expect(document.activeElement, "Tab from the mappings' Retry reached no other Retry").toBe(
+      writeRetry
+    );
+
+    drawIssue(getIssue, queryClient, closedIssue);
+    await waitFor(() =>
+      expect(writeRetry, "the close left the refused write's Retry").not.toBeInTheDocument()
+    );
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "a close elsewhere took the write's Retry, and the focus left the page's body though the reader pressed only the read's Retry"
+    ).toBe(document.body);
+  } finally {
+    stopBlurring();
     unmount();
     listRepoProjects.mockRestore();
     restore();
@@ -4976,6 +5352,103 @@ test("the refused route's Retry keeps the focus while the save is out and refuse
   }
 });
 
+// The reader presses the refused route's Retry by keyboard, and while the route it sent is out a
+// close made in another session takes the Retry away, as a closed issue's line offers none; the
+// line stays while that save is out. The save has not answered and the line did not go, so the
+// focus stays on the page's body.
+test("a close made elsewhere that takes the refused route's Retry while its route is out leaves its focus on the page's body", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  patchIssue.mockImplementationOnce(() =>
+    Promise.reject(new ApiError(400, { code: "ROUTE_INVALID", error: "invalid route" }))
+  );
+  const { queryClient, unmount } = renderDetails();
+  const stopBlurring = emulateChromiumFocusFixup();
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
+    await user.click(await screen.findByLabelText(PROPERTY_LABELS.route));
+    await user.paste("role:legion-controller-core");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_route }));
+    await waitFor(() =>
+      expect(within(rowAt("route")).queryByRole("alert")?.textContent).toBe("invalid route")
+    );
+    const retry = within(rowAt("route")).getByRole("button", { name: CONTROL_LABELS.retry });
+
+    // The route Retry sends is held out for the rest of the case.
+    patchIssue.mockImplementationOnce(() => new Promise(() => undefined));
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(retry).toHaveAttribute("aria-disabled", "true"));
+
+    drawIssue(getIssue, queryClient, closedIssue);
+    await waitFor(() =>
+      expect(retry, "the close left the route's Retry on the page").not.toBeInTheDocument()
+    );
+    expect(
+      within(rowAt("route")).queryByRole("alert"),
+      "the line went with its Retry while the route it sent is out"
+    ).not.toBeNull();
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "a close elsewhere took the Retry while its route was out, and the focus left the page's body"
+    ).toBe(document.body);
+  } finally {
+    stopBlurring();
+    unmount();
+    restore();
+  }
+});
+
+// The reader presses the refused route's Retry by keyboard, and while the route it sent is out
+// another session sets the issue's route to that same route: the draft then holds the issue's own
+// route, so the line goes with the focus on its Retry. The save the press sent has not answered,
+// so the focus stays on the page's body rather than going to the row's control.
+test("the refused route's line taken away by the route set elsewhere while its Retry's route is out leaves its focus on the page's body", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  const route = "role:legion-controller-core";
+  patchIssue.mockImplementationOnce(() =>
+    Promise.reject(new ApiError(400, { code: "ROUTE_INVALID", error: "invalid route" }))
+  );
+  const { queryClient, unmount } = renderDetails();
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
+    await user.click(await screen.findByLabelText(PROPERTY_LABELS.route));
+    await user.paste(route);
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_route }));
+    await waitFor(() =>
+      expect(within(rowAt("route")).queryByRole("alert")?.textContent).toBe("invalid route")
+    );
+    const retry = within(rowAt("route")).getByRole("button", { name: CONTROL_LABELS.retry });
+
+    // The route Retry sends is held out for the rest of the case.
+    patchIssue.mockImplementationOnce(() => new Promise(() => undefined));
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+
+    drawIssue(getIssue, queryClient, { ...issue, route });
+    await waitFor(() =>
+      expect(
+        within(rowAt("route")).queryByRole("alert"),
+        "the issue holds the route, but the row still says it was refused"
+      ).toBeNull()
+    );
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "the route set elsewhere took the line while its Retry's route was out, and the focus left the page's body"
+    ).toBe(document.body);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
 // A refused route stays the draft until the reader leaves the editor, which puts the saved route
 // back: the refusal is said while the draft still holds the route Dispatch refused, and not once
 // it no longer does, when its Retry would send nothing.
@@ -5363,11 +5836,11 @@ test("with a pin, a window focus past 30 s reads none of Pinned's questions, com
   }
 });
 
-/** The reader's state with the conversation `id` (`conversationItemId`'s `<kind>:<id>`) of
+/** The reader's state with each conversation `id` (`conversationItemId`'s `<kind>:<id>`) of
  *  CORE-1 pinned, as `pins.ts` writes a pin into `dismissed`. */
-function pinnedState(id: string): UserState {
+function pinnedState(...ids: string[]): UserState {
   return {
-    "CORE-1": { dismissed: [pinnedItemMarker(id)], last_read_seq: 0, pinned: false, seq: 0 },
+    "CORE-1": { dismissed: ids.map(pinnedItemMarker), last_read_seq: 0, pinned: false, seq: 0 },
   };
 }
 
@@ -5566,27 +6039,6 @@ const PIN_WORDS: Readonly<Record<string, string>> = {
 const SESSION_ROUTE = "session:7d9f3a4b-8c5e-4fa0-9b2c-3d4e5f6a7b82";
 const ROLE_ROUTE = "role:legion-controller-core";
 
-/** The fixture's issue with its spec and `count` notes, named in order. */
-function withNotes(count: number): IssueDetails {
-  const notes = Array.from({ length: count }, (_, index) => {
-    const slug = `notes-${String(index + 1).padStart(2, "0")}`;
-    return {
-      ...specArtifact,
-      id: slug,
-      name: `${slug}.md`,
-      primary: false,
-      ref_key: `CORE-1/${slug}`,
-      slug,
-    };
-  });
-  return { ...issue, artifacts: [specArtifact, ...notes] };
-}
-
-/** The keys CORE-2, CORE-3 and on, `count` of them. */
-function keysFrom2(count: number): string[] {
-  return Array.from({ length: count }, (_, index) => `CORE-${index + 2}`);
-}
-
 /** What Dispatch holds in a case of the table below: the issue (the fixture's where none is
  *  named), the comments the reader has pinned, and the issues that wait on CORE-1. */
 interface Held {
@@ -5660,8 +6112,9 @@ const advancingOne: IssueDetails = { ...issue, advances: [{ id: "PRI-7", inherit
  * disables, while it holds the focus, and which one case can drive through the query cache: a
  * pin, a blocker, a reference, a file or a priority taken away, a route moved, a claim made,
  * released or taken again, the lists that fold falling to ten, a value set for an entry of Add's
- * open menu, the priority's line moved by another session's write, and the issue closed while the
- * focus is on a control of Development. None of these is a press of the reader's.
+ * open menu or for its only one, the repository's None and its text drawn in each other's place,
+ * the priority's line moved by another session's write, and the issue closed while the focus is
+ * on a control of Development. None of these is a press of the reader's.
  */
 const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
   [
@@ -5925,7 +6378,7 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     },
   ],
   [
-    "Add's last menu entry, its property set in another session",
+    "Add's bottom menu entry, its property set in another session while Add stays",
     {
       after: { issue: advancingOne },
       before: {},
@@ -5933,6 +6386,42 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
         await openAddMenu(user);
         return addEntry(PROPERTY_LABELS.advances);
       },
+    },
+  ],
+  [
+    "Add's menu entry, with Add itself, its only property set in another session",
+    {
+      after: { issue: { ...orphan, parent: "CORE-2" } },
+      before: { issue: orphan },
+      focused: async (user) => {
+        await openAddMenu(user);
+        return addEntry(PROPERTY_LABELS.parent);
+      },
+    },
+  ],
+  [
+    "the repository's None, the repository set in another session",
+    {
+      after: { issue: { ...issue, repo: "acme/web", resolved_repo: "acme/web" } },
+      before: {},
+      focused: async () =>
+        within(await drawnRow(PROPERTY_LABELS.repository)).findByRole("button", {
+          name: repoTextControlName("CORE-1", { resolvedRepo: null, words: CONTROL_NAME_WORDS }),
+        }),
+    },
+  ],
+  [
+    "the repository's text, the repository cleared in another session",
+    {
+      after: { issue },
+      before: { issue: { ...issue, repo: "acme/web", resolved_repo: "acme/web" } },
+      focused: async () =>
+        within(await drawnRow(PROPERTY_LABELS.repository)).findByRole("button", {
+          name: repoTextControlName("CORE-1", {
+            resolvedRepo: "acme/web",
+            words: CONTROL_NAME_WORDS,
+          }),
+        }),
     },
   ],
   [
@@ -6028,16 +6517,7 @@ test.each(
   // Makes `held` what Dispatch answers and, once Details is drawn, what its reads hold.
   const hold = (held: Held, queryClient?: QueryClient) => {
     const details = held.issue ?? issue;
-    const state: UserState = {
-      "CORE-1": {
-        dismissed: (held.pins ?? []).map((id) =>
-          pinnedItemMarker(conversationItemId("comment", id))
-        ),
-        last_read_seq: 0,
-        pinned: false,
-        seq: 0,
-      },
-    };
+    const state = pinnedState(...(held.pins ?? []).map((id) => conversationItemId("comment", id)));
     const blocking: GraphReferences = {
       edges: (held.waiting ?? []).map((key) => waitingEdge(key, `Waits for ${key}`)),
       node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),

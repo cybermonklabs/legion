@@ -1,9 +1,13 @@
+import { act } from "@testing-library/react";
+
+import { nextFrame } from "../../__tests__/frames";
 import { issue } from "../../__tests__/issue-picks";
 import type { Issue, IssueClaim, IssueDetails, UpdateIssueInput } from "../../api/types";
 
 // What tests of the issue's writes share: the server's answer to a PATCH of the issue
-// (`shared-writes.test.ts`, `IssueMargin.test.tsx`, `issue-writes.test.tsx`), and the issue the
-// claim's tests claim and release, with the claim they put on it.
+// (`shared-writes.test.ts`, `IssueMargin.test.tsx`, `issue-writes.test.tsx`), the issue the
+// claim's tests claim and release, with the claim they put on it, and the wait the tests of
+// Details' focus make before they read where a hand-off left it.
 
 /** The server answers a PATCH with the narrow `Issue`: no artifacts, children or open asks. */
 export function narrowIssue(details: IssueDetails): Issue {
@@ -51,3 +55,15 @@ export const claimIssue: Issue = {
   title: "Claim the issue before working it",
   updated_at: "2026-09-24T06:00:00Z",
 };
+
+/** Waits past two frames and a task, by which a hand-off or a keeper that waits for a frame or a
+ *  task would have moved the focus. */
+export async function settleFocus(): Promise<void> {
+  await act(async () => {
+    await nextFrame();
+    await nextFrame();
+    const task = Promise.withResolvers<void>();
+    setTimeout(task.resolve, 0);
+    await task.promise;
+  });
+}

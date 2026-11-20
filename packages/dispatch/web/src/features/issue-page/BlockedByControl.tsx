@@ -29,10 +29,6 @@ function issueKeysIn(value: string): readonly string[] {
   return [...new Set(keys)];
 }
 
-/** The id of the editor's box, by which Details finds the box when it hands the box a focus
- *  (`IssueMargin.tsx`). */
-export const BLOCKED_BY_INPUT_ID = "issue-blocked-by";
-
 /**
  * The issues this one waits on, in their row of Details beside the repository and the
  * components, which carries the label: every blocker as a link to it with its title after it,
@@ -169,7 +165,6 @@ export function BlockedByControl({
             aria-describedby="issue-blocked-by-help"
             aria-label={`Issues ${issue.key} waits on`}
             className={`w-full rounded-[7px] border px-2 py-1 text-sm outline-none ${pageField}`}
-            id={BLOCKED_BY_INPUT_ID}
             onChange={(event) => onDraft(event.target.value)}
             placeholder={`${issue.project}-12 ${issue.project}-13`}
             ref={input}
