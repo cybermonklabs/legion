@@ -867,7 +867,9 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 		read.IssueRouteReach = roster.reach(read.Route)
 		read.IssueClaimLiveness = roster.claimLiveness(read.Claim, time.Now())
 	}
-	if err := leaveOutHiddenIssueReferences(r.Context(), s.deps.Store.Pool, who, &read.Issue, &read.IssueRouteReach); err != nil {
+	if err := leaveOutHiddenIssueReferences(r.Context(), s.deps.Store.Pool, who, &read.Issue, &issueBeside{
+		reach: &read.IssueRouteReach, liveness: &read.IssueClaimLiveness, children: read.Children,
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1029,14 +1031,29 @@ func (s *server) loadIssue(ctx context.Context, q queryer, who model.Actor, key 
 	return issue, err
 }
 
-// leaveOutHiddenIssueReferences writes issue, and the route's reach beside it when reach is not
-// nil, as who reads them (the rule of references, references_seen.go): a blocker who does not see
-// is dropped, and an assignee, a route to a session, and the session a route reaches, that who does
-// not see are null. A reader that sees every object is answered the issue as it stands, with no
-// read.
-func leaveOutHiddenIssueReferences(ctx context.Context, q queryer, who model.Actor, issue *model.Issue, reach *model.IssueRouteReach) error {
+// issueBeside is what the issue page answers beside the issue that names an object
+// (issueDetail): the route's reach, the liveness of the claim's holder and the claims of the
+// issue's children.
+type issueBeside struct {
+	reach    *model.IssueRouteReach
+	liveness *model.IssueClaimLiveness
+	children []model.IssueChild
+}
+
+// leaveOutHiddenIssueReferences writes issue, and what beside names when beside is not nil, as who
+// reads them (the rule of references, references_seen.go), in one read: a blocker who does not see
+// is dropped; an assignee, and a claim whose holder (a session or a person), who does not see are
+// null, the claim with its holder's liveness, so the issue reads as one nobody claims; a child's
+// claim whose holder who does not see is left out; and the route is written as leaveOutRoute writes
+// it - a route to a session, or to a role of a project, who does not see is no route, and a route
+// whose holder who does not see reaches nobody. A reader that sees every object is answered the
+// issue as it stands, with no read.
+func leaveOutHiddenIssueReferences(ctx context.Context, q queryer, who model.Actor, issue *model.Issue, beside *issueBeside) error {
 	if seesEveryObject(who) {
 		return nil
+	}
+	if beside == nil {
+		beside = &issueBeside{}
 	}
 	named := references{}
 	for _, blocker := range issue.BlockedBy {
@@ -1045,12 +1062,15 @@ func leaveOutHiddenIssueReferences(ctx context.Context, q queryer, who model.Act
 	if issue.Assignee != nil {
 		named.name(personReference, *issue.Assignee)
 	}
-	if issue.Route != nil {
-		named.name(sessionReference, routeSession(*issue.Route))
+	if issue.Claim != nil {
+		named.nameActor(issue.Claim.Actor)
 	}
-	if reach != nil && reach.RouteHolder != nil {
-		named.name(sessionReference, *reach.RouteHolder)
+	for _, child := range beside.children {
+		if child.Claim != nil {
+			named.nameActor(child.Claim.Actor)
+		}
 	}
+	named.nameRoute(issue.Route, beside.reach)
 	seen, err := seenReferences(ctx, q, who, named)
 	if err != nil {
 		return err
@@ -1061,37 +1081,43 @@ func leaveOutHiddenIssueReferences(ctx context.Context, q queryer, who model.Act
 	if issue.Assignee != nil && !seen.holds(personReference, *issue.Assignee) {
 		issue.Assignee = nil
 	}
-	if issue.Route != nil && routeSession(*issue.Route) != "" && !seen.holds(sessionReference, routeSession(*issue.Route)) {
-		issue.Route = nil
-		if reach != nil {
-			*reach = model.IssueRouteReach{}
+	if issue.Claim != nil && !seen.holdsActor(issue.Claim.Actor) {
+		issue.Claim = nil
+		if beside.liveness != nil {
+			*beside.liveness = model.IssueClaimLiveness{}
 		}
 	}
-	if reach != nil && reach.RouteHolder != nil && !seen.holds(sessionReference, *reach.RouteHolder) {
-		reach.RouteHolder = nil
+	for index := range beside.children {
+		if claim := beside.children[index].Claim; claim != nil && !seen.holdsActor(claim.Actor) {
+			beside.children[index].Claim = nil
+		}
 	}
+	seen.leaveOutRoute(&issue.Route, beside.reach)
 	return nil
 }
 
 // leaveOutHiddenSummaryReferences writes each listing row as who reads it, as
-// leaveOutHiddenIssueReferences writes one issue: an assignee, a route to a session and the
-// session a route reaches, that who does not see, are null. A row's blockers are left out in its
-// statement (issueSummaryJoins). One read answers every row.
+// leaveOutHiddenIssueReferences writes one issue: an assignee, a claim and the actor who moved the
+// issue (?moved=true), that who does not see, are null, and the route is written as leaveOutRoute
+// writes it. A row's blockers are left out in its statement (issueSummaryJoins). One read answers
+// every row.
 func leaveOutHiddenSummaryReferences(ctx context.Context, q queryer, who model.Actor, issues []model.IssueSummary) error {
 	if seesEveryObject(who) || len(issues) == 0 {
 		return nil
 	}
 	named := references{}
-	for _, issue := range issues {
+	for index := range issues {
+		issue := &issues[index]
 		if issue.Assignee != nil {
 			named.name(personReference, *issue.Assignee)
 		}
-		if issue.Route != nil {
-			named.name(sessionReference, routeSession(*issue.Route))
+		if issue.Claim != nil {
+			named.nameActor(issue.Claim.Actor)
 		}
-		if issue.RouteHolder != nil {
-			named.name(sessionReference, *issue.RouteHolder)
+		if issue.MovedBy != nil {
+			named.nameActor(*issue.MovedBy)
 		}
+		named.nameRoute(issue.Route, &issue.IssueRouteReach)
 	}
 	seen, err := seenReferences(ctx, q, who, named)
 	if err != nil {
@@ -1102,12 +1128,13 @@ func leaveOutHiddenSummaryReferences(ctx context.Context, q queryer, who model.A
 		if issue.Assignee != nil && !seen.holds(personReference, *issue.Assignee) {
 			issue.Assignee = nil
 		}
-		if issue.Route != nil && routeSession(*issue.Route) != "" && !seen.holds(sessionReference, routeSession(*issue.Route)) {
-			issue.Route, issue.IssueRouteReach = nil, model.IssueRouteReach{}
+		if issue.Claim != nil && !seen.holdsActor(issue.Claim.Actor) {
+			issue.Claim = nil
 		}
-		if issue.RouteHolder != nil && !seen.holds(sessionReference, *issue.RouteHolder) {
-			issue.RouteHolder = nil
+		if issue.MovedBy != nil && !seen.holdsActor(*issue.MovedBy) {
+			issue.MovedBy = nil
 		}
+		seen.leaveOutRoute(&issue.Route, &issue.IssueRouteReach)
 	}
 	return nil
 }

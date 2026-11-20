@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -25,9 +27,10 @@ import (
 // The rule has one form per kind of object, which every read binds: in a statement, the access
 // package's clause for the kind (access.IssueProjectClause for an issue by key,
 // access.DocumentClause for a document by id, access.SessionClause for a session,
-// access.PersonClause for a person by login); and over a decoded answer - a stored event's
-// payload - seenReferences, which asks those same clauses of every object the answer names in one
-// statement.
+// access.PersonClause for a person by login, and roleProjectSeenSQL, access.RoleClause's half that
+// reads a Legion role's name, for the project a role works for); and over a decoded answer - a
+// stored event's payload - seenReferences, which asks those same clauses of every object the answer
+// names in one statement.
 
 // referenceKind is a kind of object a read's answer names by its id.
 type referenceKind string
@@ -37,10 +40,14 @@ const (
 	documentReference referenceKind = "document" // a document or a conversation's file, by uuid
 	sessionReference  referenceKind = "session"  // an agent session, by id
 	personReference   referenceKind = "person"   // a person, by login
+	// roleProjectReference is the project a Legion role's name works for, by key
+	// (contracts.RoleProject): a role of a private project its reader does not see reaches that
+	// reader as no role at all, as access.RoleClause passes it.
+	roleProjectReference referenceKind = "role_project"
 )
 
 // referenceKinds is every kind, in the order seenReferences binds them.
-var referenceKinds = []referenceKind{issueReference, documentReference, sessionReference, personReference}
+var referenceKinds = []referenceKind{issueReference, documentReference, sessionReference, personReference, roleProjectReference}
 
 // references is a set of objects, by kind and id.
 type references map[referenceKind]map[string]bool
@@ -58,6 +65,80 @@ func (r references) name(kind referenceKind, id string) {
 
 // holds reports whether the set holds the object id of kind.
 func (r references) holds(kind referenceKind, id string) bool { return r[kind][id] }
+
+// actorReference is the object an actor names: a session by its id, a person by their login, and
+// none for an actor of any other kind (a service, the deployment's shared token), which no clause
+// holds back.
+func actorReference(actor model.Actor) (referenceKind, string) {
+	switch actor.Kind {
+	case "session":
+		return sessionReference, actor.ID
+	case "user":
+		return personReference, actor.ID
+	}
+	return "", ""
+}
+
+// nameActor adds the object actor names (actorReference), if it names one.
+func (r references) nameActor(actor model.Actor) {
+	if kind, id := actorReference(actor); kind != "" {
+		r.name(kind, id)
+	}
+}
+
+// holdsActor reports whether the set holds the object actor names; an actor that names none, or
+// names one by no id, is held, since nothing it names is held back.
+func (r references) holdsActor(actor model.Actor) bool {
+	kind, id := actorReference(actor)
+	return kind == "" || id == "" || r.holds(kind, id)
+}
+
+// routeRoleProject is the project the role a `role:<name>` route names works for, by the role's
+// name (contracts.RoleProject), and "" for a route of any other kind and a role of no project.
+func routeRoleProject(route string) string {
+	role, ok := strings.CutPrefix(route, "role:")
+	if !ok {
+		return ""
+	}
+	if project := contracts.RoleProject(role); project != contracts.NoProject {
+		return project
+	}
+	return ""
+}
+
+// nameRoute adds what a route and its reach name: the session a session route names, the project
+// the role a role route names works for, and the session the route reaches. A nil route or reach
+// names nothing.
+func (r references) nameRoute(route *string, reach *model.IssueRouteReach) {
+	if route != nil {
+		r.name(sessionReference, routeSession(*route))
+		r.name(roleProjectReference, routeRoleProject(*route))
+	}
+	if reach != nil && reach.RouteHolder != nil {
+		r.name(sessionReference, *reach.RouteHolder)
+	}
+}
+
+// leaveOutRoute writes a route and its reach as the reader the set answers reads them. A route that
+// names a session, or a role of a project, the reader does not see is null with its reach, as an
+// issue with no route. A reach whose holder the reader does not see is the reach of a route nobody
+// holds (model.RouteNoHolder): never live or holder_unresponsive with no holder named, which no
+// reach answers otherwise. reach may be nil where the answer carries none.
+func (r references) leaveOutRoute(route **string, reach *model.IssueRouteReach) {
+	if *route != nil {
+		session, project := routeSession(**route), routeRoleProject(**route)
+		if (session != "" && !r.holds(sessionReference, session)) || (project != "" && !r.holds(roleProjectReference, project)) {
+			*route = nil
+			if reach != nil {
+				*reach = model.IssueRouteReach{}
+			}
+			return
+		}
+	}
+	if reach != nil && reach.RouteHolder != nil && !r.holds(sessionReference, *reach.RouteHolder) {
+		*reach = model.IssueRouteReach{RouteStatus: new(model.RouteNoHolder)}
+	}
+}
 
 // empty reports whether the set names nothing.
 func (r references) empty() bool {
@@ -79,21 +160,38 @@ func seesEveryObject(who model.Actor) bool {
 	return viewer != nil && (viewer.All || (viewer.Open && !viewer.AnyPrivate))
 }
 
-// seenReferencesSQL answers, for the ids of each kind bound at $1..$4 and the viewer at $5, every
+// seenReferencesSQL answers, for the ids of each kind bound at $1..$5 and the viewer at $6, every
 // (kind, id) the viewer sees.
 var seenReferencesSQL = `
 	select 'issue', named.id from unnest($1::text[]) as named (id)
-	where ` + access.IssueProjectClause("named.id", "$5") + `
+	where ` + access.IssueProjectClause("named.id", "$6") + `
 	union all
 	select 'document', named.id from unnest($2::text[]) as named (id)
 	where exists (select 1 from artifacts seen_document where seen_document.id = ` + store.CastableUUID("named.id") + `
-		and ` + access.DocumentClause("seen_document", "$5") + ` offset 0)
+		and ` + access.DocumentClause("seen_document", "$6") + ` offset 0)
 	union all
 	select 'session', named.id from unnest($3::text[]) as named (id)
-	where ` + access.SessionClause("named.id", "$5") + `
+	where ` + access.SessionClause("named.id", "$6") + `
 	union all
 	select 'person', named.id from unnest($4::text[]) as named (id)
-	where ` + access.PersonClause("named.id", "$5")
+	where ` + access.PersonClause("named.id", "$6") + `
+	union all
+	select 'role_project', named.id from unnest($5::text[]) as named (id)
+	where ` + roleProjectSeenSQL("named.id", "$6")
+
+// roleProjectSeenSQL passes the project key keyExpr gives, the project a Legion role's name works
+// for, unless it is a private project the viewer bound at viewerParam does not see: the half of
+// access.RoleClause that reads a role's name, for a role whose holder is judged by the listener's
+// answer rather than by a held_by tuple (a route's reach, a delivery's resolve). A key no project
+// holds, a public project's and a null one pass, and a deployment that holds no private project
+// reads no project.
+func roleProjectSeenSQL(keyExpr, viewerParam string) string {
+	return `not (` + access.ViewerFlag(viewerParam, "private") + ` and exists (
+		select 1 from projects hidden
+		where hidden.key = (` + keyExpr + `) and hidden.visibility = 'private'
+			and not ` + access.ProjectClause("hidden.key", viewerParam) + `
+		offset 0))`
+}
 
 // seenReferences answers the objects of named that who sees, in one statement over q. A reader
 // that sees every object (seesEveryObject) is answered named itself, with no read; a set that
@@ -157,8 +255,9 @@ func leaveOutHiddenFollowers(ctx context.Context, q queryer, who model.Actor, fo
 	return nil
 }
 
-// leaveOutHiddenReaches is reaches with every session who does not see null: a claimant, a route
-// to a session (with what that route reaches), and the session a route reaches.
+// leaveOutHiddenReaches is reaches with every session who does not see null: a claimant, and a
+// route as leaveOutRoute writes it - a route to a session, or to a role of a project, who does not
+// see is no route, and a route whose holder who does not see reaches nobody.
 func leaveOutHiddenReaches(ctx context.Context, q queryer, who model.Actor, reaches map[string]askReach) error {
 	if seesEveryObject(who) {
 		return nil
@@ -168,12 +267,7 @@ func leaveOutHiddenReaches(ctx context.Context, q queryer, who model.Actor, reac
 		if reach.Claimant != nil {
 			named.name(sessionReference, *reach.Claimant)
 		}
-		if reach.Route != nil {
-			named.name(sessionReference, routeSession(*reach.Route))
-		}
-		if reach.RouteHolder != nil {
-			named.name(sessionReference, *reach.RouteHolder)
-		}
+		named.nameRoute(reach.Route, &reach.IssueRouteReach)
 	}
 	seen, err := seenReferences(ctx, q, who, named)
 	if err != nil {
@@ -183,12 +277,7 @@ func leaveOutHiddenReaches(ctx context.Context, q queryer, who model.Actor, reac
 		if reach.Claimant != nil && !seen.holds(sessionReference, *reach.Claimant) {
 			reach.Claimant = nil
 		}
-		if reach.Route != nil && routeSession(*reach.Route) != "" && !seen.holds(sessionReference, routeSession(*reach.Route)) {
-			reach.Route, reach.IssueRouteReach = nil, model.IssueRouteReach{}
-		}
-		if reach.RouteHolder != nil && !seen.holds(sessionReference, *reach.RouteHolder) {
-			reach.RouteHolder = nil
-		}
+		seen.leaveOutRoute(&reach.Route, &reach.IssueRouteReach)
 		reaches[askID] = reach
 	}
 	return nil

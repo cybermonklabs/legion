@@ -13,6 +13,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -137,7 +138,8 @@ func priorityFrom(node prioritystore.Node) model.Priority {
 // two fault counts alone, which is what the navigation rail reads.
 //
 // The counts and the two fault lists are of the projects the caller sees (readPriorities binds
-// access.ProjectClause on every issue they count); the list of priorities stays whole.
+// access.ProjectClause on every issue they count); the list of priorities stays whole. A fault
+// row names no session or person the caller may not see (leaveOutHiddenPriorityReferences).
 //
 // A store holding no live priority is answered 200 with the empty list and the sentence saying
 // why (priorityNoneWritten): a deployment that has written no priority yet has nothing to list
@@ -159,7 +161,56 @@ func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	if err := leaveOutHiddenPriorityReferences(r.Context(), s.deps.Store.Pool, reader, &body); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	WriteJSON(w, http.StatusOK, body)
+}
+
+// leaveOutHiddenPriorityReferences writes the two fault lists' rows as who reads them (the rule of
+// references, references_seen.go), in one read, as the issue's own read and the listing answer
+// them: an assignee who does not see is null, and so is a claim whose holder, and the actor who
+// moved the issue into backlog or icebox, who does not see. A reader that sees every object, and
+// lists that name nobody, cost no read.
+func leaveOutHiddenPriorityReferences(ctx context.Context, q queryer, who model.Actor, body *model.Priorities) error {
+	if seesEveryObject(who) {
+		return nil
+	}
+	rows := [][]model.PriorityIssue{body.WorkUnderNoPriority.Issues, body.PriorityWorkParked.Issues}
+	named := references{}
+	for _, issues := range rows {
+		for _, issue := range issues {
+			if issue.Assignee != nil {
+				named.name(personReference, *issue.Assignee)
+			}
+			if issue.Claim != nil {
+				named.nameActor(issue.Claim.Actor)
+			}
+			if issue.MovedBy != nil {
+				named.nameActor(*issue.MovedBy)
+			}
+		}
+	}
+	seen, err := seenReferences(ctx, q, who, named)
+	if err != nil {
+		return err
+	}
+	for _, issues := range rows {
+		for index := range issues {
+			issue := &issues[index]
+			if issue.Assignee != nil && !seen.holds(personReference, *issue.Assignee) {
+				issue.Assignee = nil
+			}
+			if issue.Claim != nil && !seen.holdsActor(issue.Claim.Actor) {
+				issue.Claim = nil
+			}
+			if issue.MovedBy != nil && !seen.holdsActor(*issue.MovedBy) {
+				issue.MovedBy = nil
+			}
+		}
+	}
+	return nil
 }
 
 // createPriorityInput is the body of POST /api/v1/priorities.
