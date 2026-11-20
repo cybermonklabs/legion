@@ -102,8 +102,7 @@ Run the `goal-red-team` read your role prompt names. Accept only when a pass sta
 narrower than written: post a `dispatch comment` naming each check and its result, then
 `legion({ op: "sign_off", issue: "<KEY>" })`. Otherwise `request_backward_move` with `to`
 (`implementing` or `testing`) and a `reason` naming the check's block id. Wait for a `ci_check` run
-still going, except where a pass and a fail at the open head make a check not known: send the issue
-back at once. A name no run answers is yours to correct in the check. Finding asks, refusals and
+still going; a name no run answers is yours to correct in the check. Finding asks, refusals and
 what follows: `skill://legion-architect/references/acceptance.md`.
 
 ## 7. Close
