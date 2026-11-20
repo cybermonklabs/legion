@@ -319,7 +319,9 @@ func newDeleterReplies(replies io.Reader) *bufio.Reader {
 // than volumeDeleteReplyBytes. A longer one is kept to that many bytes and the rest of it read
 // and dropped up to its newline, so the reply after it is read from its own start. replies is a
 // reader made by newDeleterReplies, or one with a larger buffer: a smaller one would cut a reply
-// within the bound.
+// within the bound. The deleter is legion's own volume-trim-delete, whose replies are about the
+// paths it removes, and a path joined from a directory walk holds no "://", so the cut is made
+// here rather than by redact.Read, which would drop a long run that holds no byte ending a URL.
 func readReply(replies *bufio.Reader) (string, bool, error) {
 	chunk, err := replies.ReadSlice('\n')
 	if err == nil && len(chunk) <= volumeDeleteReplyBytes+1 {

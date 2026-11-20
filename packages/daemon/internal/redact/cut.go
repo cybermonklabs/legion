@@ -10,22 +10,27 @@ import "unicode/utf8"
 // character counts as one rune and is kept as it is.
 func Runes(text string, n int) string {
 	text = URLCredentials(text)
-	if len(text) <= n || utf8.RuneCountInString(text) <= n {
+	if len(text) <= n {
 		return text
 	}
-	cut := 0
-	for range n - 1 {
-		_, size := utf8.DecodeRuneInString(text[cut:])
-		cut += size
+	runes, end := 0, 0
+	for at := range text {
+		switch runes {
+		case n - 1:
+			end = at
+		case n:
+			return text[:end] + "…"
+		}
+		runes++
 	}
-	return text[:cut] + "…"
+	return text
 }
 
-// Bytes is text cut to at most n bytes, once URLCredentials has read it whole, and whether it was
-// cut: what the rule leaves of it when that is n bytes or fewer, and otherwise the longest start
-// of that of at most n bytes that ends where a rune starts, so a cut never leaves part of a valid
-// character behind. The rule reads first for the reason Runes gives. Bytes writes no ellipsis: a
-// caller that wants one appends it where cut is true.
+// Bytes is text cut to at most n bytes, n at least 0, once URLCredentials has read it whole, and
+// whether it was cut: what the rule leaves of it when that is n bytes or fewer, and otherwise the
+// longest start of that of at most n bytes that ends where a rune starts, so a cut never leaves
+// part of a valid character behind. The rule reads first for the reason Runes gives. Bytes writes
+// no ellipsis: a caller that wants one appends it where cut is true.
 func Bytes(text string, n int) (kept string, cut bool) {
 	text = URLCredentials(text)
 	if len(text) <= n {
@@ -38,13 +43,13 @@ func Bytes(text string, n int) (kept string, cut bool) {
 	return text[:end], true
 }
 
-// Tail is the end of text, at most n bytes of it, once URLCredentials has read it whole, and how
-// many bytes of what the rule leaves come before it, 0 when none do. The rule reads first because
-// a cut that keeps a text's end can start inside a URL's userinfo or its query, after the "://" or
-// the "?", where the rule then finds neither and keeps what the cut left of them. Where it cuts,
-// the start moves forward to where a rune starts, looking at most utf8.UTFMax bytes ahead and
-// staying put where none starts there, so a valid character is never split and a run of bytes
-// that start no character cannot take the whole tail.
+// Tail is the end of text, at most n bytes of it, n at least 0, once URLCredentials has read it
+// whole, and how many bytes of what the rule leaves come before it, 0 when none do. The rule reads
+// first because a cut that keeps a text's end can start inside a URL's userinfo or its query,
+// after the "://" or the "?", where the rule then finds neither and keeps what the cut left of
+// them. Where it cuts, the start moves forward to where a rune starts, looking at most
+// utf8.UTFMax bytes ahead and staying put where none starts there, so a valid character is never
+// split and a run of bytes that start no character cannot take the whole tail.
 func Tail(text string, n int) (tail string, cut int) {
 	text = URLCredentials(text)
 	if len(text) <= n {
@@ -69,7 +74,9 @@ func Tail(text string, n int) (tail string, cut int) {
 // what is left, which Read answers; with cut false, that is the whole text.
 //
 // A read tells whether its bound cut it by reading one byte past the bound: a caller reads limit+1
-// bytes and gives Read the first limit of them, with cut true where it read more than limit.
+// bytes and gives Read the first limit of them, with cut true where it read more than limit. A
+// read that ended on an error stopped where the error came, which is as unknown a place as the
+// bound's, so its caller gives cut true too.
 func Read(text string, cut bool) string {
 	if cut {
 		end := len(text)

@@ -18,14 +18,16 @@
 // child process's output, a frame from the daemon or the agent, a kubelet's message, an error that
 // wraps any of those. The order is the point: a cut made before the rule can stop inside a URL's
 // userinfo or its query and leave a part of either where the rule no longer finds it. Every such
-// cut in the legion binary, the daemon's and the pod's commands alike, is one of theirs but five,
-// each of which says where it cuts why it keeps no part of a URL's credential: the role log's cut
-// just after a byte that ends a URL (the launcher's logLineCut), a log read's drop of the line it
-// stopped inside (the sandbox's readLog), storetext.LogWhole's parts of a text the rule has read
-// whole, a detail whose own rules have masked every userinfo before its cut (capabilities'
-// cleanDetail), and the volume deleter's stderr, the words of legion's own subcommand about the
-// paths it removes (the launcher's saidBuffer). So what is cut and how is read from their callers
-// and those five rather than from every way Go shortens a string.
+// cut in the legion binary, the daemon's and the pod's commands alike, is one of theirs but those
+// named here, each of which says where it cuts why it keeps no part of a URL's credential: the
+// role log's cut just after a byte that ends a URL (the launcher's logLineCut); the sandbox's
+// drop of the head a cut log read starts inside, up to its first newline or else its first byte
+// that ends a URL (dropCutHead, which readLog and lastBytes share), and readLog's drop of the line
+// its read bound stopped inside; storetext.LogWhole's parts of a text the rule has read whole; a
+// detail whose own rules have masked every userinfo before its cut (capabilities' cleanDetail);
+// and the volume deleter's standard error and its reply, the words of legion's own subcommand
+// about the paths it removes (the launcher's saidBuffer and readReply). So what is cut and how is
+// read from their callers and those rather than from every way Go shortens a string.
 package redact
 
 import (

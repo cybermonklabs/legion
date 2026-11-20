@@ -1120,24 +1120,33 @@ func (r *Runtime) probeLog(ctx context.Context, name string) (string, error) {
 
 // lastBytes reads r to its end, keeping only the last keep bytes (tailBytes), and answers that
 // tail: with a leading … line when anything of r was cut, unchanged when r was keep bytes or
-// shorter. What the cut left of the line it fell inside is dropped, everything up to and
-// including the first \n, so what remains starts on its own line. A tail that holds no \n drops
-// everything up to and including its first byte that ends a URL (redact.EndsURLByte) instead, and
-// keeps nothing where no byte ends one: the cut can fall inside a URL, after its "://" or its "?",
-// where the URL rule no longer finds the userinfo or the query the cut left part of.
+// shorter. What the cut left of the line it fell inside is dropped (dropCutHead), so what remains
+// starts on its own line, or, in a tail that holds no \n, after a byte that ends a URL.
 func lastBytes(r io.Reader, keep int) (string, error) {
 	buf, dropped, err := tailBytes(r, keep)
 	if err != nil || !dropped {
 		return string(buf), err
 	}
-	cut := bytes.IndexByte(buf, '\n')
-	if cut < 0 {
-		cut = slices.IndexFunc(buf, redact.EndsURLByte)
+	rest, _ := dropCutHead(buf)
+	return "…\n" + string(rest), nil
+}
+
+// dropCutHead is kept, the newest bytes of a read that dropped older ones (tailBytes), with the
+// head its cut fell inside dropped, and whether what is left starts on a whole line. The head is
+// everything up to and including kept's first \n where it holds one, and what is left then starts
+// on a whole line; otherwise everything up to and including its first byte that ends a URL
+// (redact.EndsURLByte), and what is left starts inside a line; and where no byte ends a URL,
+// nothing is left. The cut can fall inside a URL, after its "://" or its "?", where the URL rule
+// no longer finds the userinfo or the query the cut left part of; a \n ends a URL too, so either
+// drop reaches the end of the URL the cut fell inside.
+func dropCutHead(kept []byte) (rest []byte, atLine bool) {
+	if newline := bytes.IndexByte(kept, '\n'); newline >= 0 {
+		return kept[newline+1:], true
 	}
-	if cut < 0 {
-		return "…\n", nil
+	if end := slices.IndexFunc(kept, redact.EndsURLByte); end >= 0 {
+		return kept[end+1:], false
 	}
-	return "…\n" + string(buf[cut+1:]), nil
+	return nil, false
 }
 
 // tailBytes reads r to its end and answers its last keep bytes, and whether it dropped any before

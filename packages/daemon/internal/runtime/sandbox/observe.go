@@ -620,12 +620,14 @@ func (r *Runtime) roleLog(ctx context.Context, pod, container string, role claim
 // the caller to say so in its quote. A second read that fails (its stream refused, or the shared
 // bound expiring) gives back the first read, still bounded, rather than losing what it held. tail
 // is the TailLines of the read text came from. When the byte bound dropped older bytes, the read
-// starts from the first whole line it kept, and whole says so: the text then starts just after a
-// newline of the log. Otherwise it starts where the kubelet's line count did, which may be inside
-// a line. A read the read bound cut ends with the last whole line it kept, the line it stopped
-// inside dropped (readLogOnce), and is empty when it kept no whole line: that line could end
-// inside a URL's userinfo, before its "@", and leave the start of a user name where the URL rule
-// a death cause is kept under (storetext.FarSideText) reads it as the URL's host.
+// drops the head that cut fell inside (dropCutHead): it starts from the first whole line it kept,
+// and whole says so, the text then starting just after a newline of the log; where it kept no
+// newline, it starts after its first byte that ends a URL, or is empty where none does, and whole
+// is false. Otherwise it starts where the kubelet's line count did, which may be inside a line,
+// and whole is false too. A read the read bound cut ends with the last whole line it kept, the
+// line it stopped inside dropped (readLogOnce), and is empty when it kept no whole line: that line
+// could end inside a URL's userinfo, before its "@", and leave the start of a user name where the
+// URL rule a death cause is kept under (storetext.FarSideText) reads it as the URL's host.
 func (r *Runtime) readLog(ctx context.Context, pod, container string, lines int64, limit, read int) (text string, tail int64, whole, bounded bool, err error) {
 	reading, cancel := call(ctx)
 	defer cancel()
@@ -647,8 +649,8 @@ func (r *Runtime) readLog(ctx context.Context, pod, container string, lines int6
 // readLogOnce is one read of readLog's: the text, whether it starts on a whole line, how many
 // newlines the read took off the API, and whether it stopped at read bytes. A read that stopped
 // there ends inside a line the stream goes on with, unless the last byte it took is a newline,
-// and the text drops that unfinished line, the bytes after the last newline, as it drops the
-// unfinished first line of a read whose older bytes tailBytes cut.
+// and the text drops that unfinished line, the bytes after the last newline, as it drops the head
+// of a read whose older bytes tailBytes cut (dropCutHead).
 func (r *Runtime) readLogOnce(ctx context.Context, pod, container string, lines int64, limit, read int) (text string, whole bool, seen int64, bounded bool, err error) {
 	stream, err := r.kube.CoreV1().Pods(r.namespace).GetLogs(pod, &corev1.PodLogOptions{Container: container, TailLines: &lines}).Stream(ctx)
 	if err != nil {
@@ -661,9 +663,7 @@ func (r *Runtime) readLogOnce(ctx context.Context, pod, container string, lines 
 		return "", false, 0, false, err
 	}
 	if cut {
-		if newline := bytes.IndexByte(kept, '\n'); newline >= 0 {
-			kept, whole = kept[newline+1:], true
-		}
+		kept, whole = dropCutHead(kept)
 	}
 	bounded = counted.n > int64(read)
 	if bounded {

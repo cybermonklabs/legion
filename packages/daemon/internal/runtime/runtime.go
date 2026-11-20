@@ -291,8 +291,9 @@ type WorkspaceBundleRestored func(ctx context.Context, issue string, release int
 // launcher cannot name another role, issue or pod.
 //
 // It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
-// of the daemon's own packages, so the import is acyclic, and a second copy of the report would
-// be one more shape to keep in step for no reader that needs it.
+// of the daemon's own packages but internal/redact, which imports nothing of the daemon's, so the
+// import is acyclic, and a second copy of the report would be one more shape to keep in step for
+// no reader that needs it.
 //
 // An error, a store that did not answer among them, is returned to the session, which logs it
 // and drops the report: nothing acknowledges the frame, so the launcher does not send it again,
@@ -308,9 +309,10 @@ type MemoryGuardKilled func(ctx context.Context, issue string, token claim.Token
 // roles container a new counting line for the daemon's notice bounds, is inside the report.
 //
 // It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
-// of the daemon's own packages, so this import is acyclic, and a third near-copy of the report —
-// the wire's, the runtime's and the record's — would be three shapes to keep in step where two
-// are already the price of a durable notice.
+// of the daemon's own packages but internal/redact, which imports nothing of the daemon's, so
+// this import is acyclic, and a third near-copy of the report — the wire's, the runtime's and the
+// record's — would be three shapes to keep in step where two are already the price of a durable
+// notice.
 //
 // A store that does not answer is logged and the report is dropped there. The launcher cannot
 // hold it again once the daemon has read it, and it is not asked to: the trimmer sweeps on, and

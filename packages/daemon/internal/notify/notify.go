@@ -490,22 +490,26 @@ func (e *RoleLookupRefused) Error() string {
 }
 
 // readBody reads body to its end or to limit bytes, and one byte more, so a body its bound cut is
-// told from one read whole: it answers the first limit bytes, whether there were more, and the
-// read's error.
+// told from one read whole: it answers the first limit bytes, whether they are cut, and the read's
+// error. A read that ended on an error is cut as well, where the error came: that can be inside a
+// URL before its "@", as the bound can, so a caller that quotes the body and drops the error still
+// gives the body to redact.Read as cut (excerpt).
 func readBody(body io.Reader, limit int) (read []byte, cut bool, err error) {
 	read, err = io.ReadAll(io.LimitReader(body, int64(limit)+1))
-	if len(read) > limit {
-		return read[:limit], true, err
-	}
-	return read, false, err
+	cut = len(read) > limit || err != nil
+	return read[:min(len(read), limit)], cut, err
 }
 
-// excerpt is body as an error names it, where cut says whether its read's bound cut it (readBody):
+// excerpt is body as an error names it, where cut says whether its read was cut (readBody):
 // trimmed, and no longer than refusalBodyLimit. The body is the listener's, so it is cut only once
-// the URL rule has read it: redact.Read drops the run a bound that cut the read stopped inside,
-// which can be a URL whose "@" was never read, and redact.Bytes cuts what the rule leaves.
+// the URL rule has read it: redact.Read drops the run a read that was cut stopped inside, which
+// can be a URL whose "@" was never read, and redact.Bytes cuts what the rule leaves where that is
+// longer than refusalBodyLimit, as only a 200's body read to answerBodyLimit can be.
 func excerpt(body []byte, cut bool) string {
-	text, _ := redact.Bytes(redact.Read(string(body), cut), refusalBodyLimit)
+	text := redact.Read(string(body), cut)
+	if len(text) > refusalBodyLimit {
+		text, _ = redact.Bytes(text, refusalBodyLimit)
+	}
 	return strings.TrimSpace(text)
 }
 

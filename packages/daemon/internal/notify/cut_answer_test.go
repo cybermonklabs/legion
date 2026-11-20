@@ -101,7 +101,9 @@ func heldPart(text, planted string) string {
 // before its "@", is named in the error with no part of that user name, by every reader: the read
 // knows its bound cut the body and drops the run it stopped inside before the URL rule reads it,
 // and a 200's body, read whole, is cut only after the rule. A cut made first leaves the user
-// name's start where the rule reads it as the URL's host.
+// name's start where the rule reads it as the URL's host. A body whose read ends on an error
+// inside the user name, short of the bound, is cut there as well, and a reader that quotes it
+// with its error dropped names no part of the user name either.
 func TestAnAnswerCutInsideAURLsUserNameNamesNoPartOfIt(t *testing.T) {
 	cutAt := " https://" + plantedUser[:len("qzv-plan")]
 	body := strings.Repeat("w", refusalBodyLimit-len(cutAt)) + " https://" + plantedUser + "@listener.example/v1/messages/publish was the listener asked"
@@ -150,4 +152,22 @@ func TestAnAnswerCutInsideAURLsUserNameNamesNoPartOfIt(t *testing.T) {
 			}
 		})
 	}
+	t.Run("ReadSessionRegistration's body ending on a read error", func(t *testing.T) {
+		// cutAnswer sends the first half of the body, which ends inside the user name, and
+		// then closes the connection.
+		half := strings.Repeat("w", 100) + cutAt
+		rest := plantedUser[len("qzv-plan"):] + "@listener.example/v1/registry/ses_s was the listener asked"
+		ended := half + rest + strings.Repeat("w", len(half)-len(rest))
+		if ended[:len(ended)/2] != half {
+			t.Fatalf("the served half of the body ends %q, not inside the user name", ended[len(ended)/2-len(cutAt):len(ended)/2])
+		}
+		_, err := New(cutAnswer(t, http.StatusInternalServerError, ended), "").ReadSessionRegistration(ctx, "ses_s")
+		if err == nil || !strings.Contains(err.Error(), "wwww") {
+			t.Fatalf("ReadSessionRegistration, its answer's body ending on a read error: %v; want an error naming the listener's answer", err)
+		}
+		if part := heldPart(err.Error(), plantedUser); part != "" {
+			t.Fatalf("ReadSessionRegistration, its answer's body ending on a read error: an error ending %q, which holds %q of the URL's user name",
+				err.Error()[max(0, len(err.Error())-40):], part)
+		}
+	})
 }

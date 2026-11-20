@@ -1844,6 +1844,35 @@ func TestLastBytesKeepsNoPartOfAURLItsCutFallsInside(t *testing.T) {
 	}
 }
 
+// A container's log tail whose byte cut falls inside a URL's user name, in a log of one line with
+// no newline, keeps no part of that user name: readLog drops the head of a read whose older bytes
+// it cut as lastBytes does (dropCutHead), after the first byte that ends a URL where the tail
+// holds no newline to start from. A tail kept whole from the cut leaves the user name's end with
+// no "://" before it, where the URL rule a death cause is kept under (storetext.FarSideText) finds
+// no userinfo.
+func TestALogTailWithNoNewlineKeepsNoPartOfAURLItsCutFallsInside(t *testing.T) {
+	g := newRig(t, nil, withoutController())
+	head := strings.Repeat("w", 100) + " https://legion-"
+	log := head + "reader@h.example/p?token=planted-query-token-9 the fetch said more " + strings.Repeat("z", logTailBytes)
+	log = log[:len(head)+logTailBytes]
+	g.kube.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
+		if action.GetSubresource() != "log" {
+			return false, nil, nil
+		}
+		return true, &k8sruntime.Unknown{Raw: []byte(log)}, nil
+	})
+	got := g.r.logTail(g.ctx, "legion-pod", fetchContainer)
+	ruled := redact.Read(got, false)
+	for _, part := range []string{"reader", "@h.example", "planted-query-token-9"} {
+		if strings.Contains(ruled, part) {
+			t.Fatalf("logTail, through the URL rule, starts %q, which holds %q of the URL", ruled[:min(len(ruled), 80)], part)
+		}
+	}
+	if !strings.HasPrefix(got, "the fetch said more") {
+		t.Fatalf("logTail = %q, want the words after the URL first", got[:min(len(got), 80)])
+	}
+}
+
 // tailBytes holds a log's newest keep bytes and no more, however long the log: a log of a hundred
 // times keep is read to its end, its last keep bytes come back with the cut reported, and the
 // buffer never grew past the 2×keep it started with, so a log's size never decides what the daemon
