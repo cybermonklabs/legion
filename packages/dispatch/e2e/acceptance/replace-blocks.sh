@@ -103,8 +103,8 @@ require_commands bun curl jq grep sed head mktemp date
 script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 readonly script_dir
 readonly repo_root="$script_dir/../../../.."
-# proc_group reads one process's group from its own /proc entry, where `ps -p` reads every process
-# on the host for that answer.
+# On a host with /proc, proc_group reads one process's group from its own /proc entry, where `ps -p`
+# reads every process on the host for that answer; elsewhere it asks ps.
 # shellcheck source-path=SCRIPTDIR source=../../../../scripts/e2e/lib/process-tree.sh
 . "$repo_root/scripts/e2e/lib/process-tree.sh"
 readonly cli_entry="$script_dir/../../../envoy-client/bin/dispatch.ts"
