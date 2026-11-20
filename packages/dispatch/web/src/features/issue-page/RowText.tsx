@@ -371,6 +371,14 @@ export function useOutOfTabOrder(
         else scroller.setAttribute(attribute, value);
       }
     };
+    // With `keepScrollers` a scroller's tab stop rests on whether its content runs past its box,
+    // which a change of its size, or of the box's width, can turn either way with no change to the
+    // box's children: the pass runs again on either.
+    const sized = new Set<HTMLElement>();
+    const sizes =
+      keepScrollers && typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => untab())
+        : undefined;
     const untab = (): void => {
       // Every style and every size is read before any tab index is written, so the reads cost
       // one style pass and one layout.
@@ -425,14 +433,6 @@ export function useOutOfTabOrder(
         sized.add(scroller);
       }
     };
-    // With `keepScrollers` a scroller's tab stop rests on whether its content runs past its box,
-    // which a change of its size, or of the box's width, can turn either way with no change to the
-    // box's children: the pass runs again on either.
-    const sized = new Set<HTMLElement>();
-    const sizes =
-      keepScrollers && typeof ResizeObserver !== "undefined"
-        ? new ResizeObserver(untab)
-        : undefined;
     sizes?.observe(element);
     untab();
     const watching = new MutationObserver(untab);
