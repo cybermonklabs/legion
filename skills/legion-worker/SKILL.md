@@ -10,11 +10,10 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 ## Every phase
 
 1. Read the issue, then its `open-items.md` where one exists (`dispatch doc-read --issue <issue> --artifact open-items-md`): the architect records decisions there that it does not message. Then read each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`). Before you read another phase's results with `dispatch results --issue <issue>`, read `skill://legion-worker/references/pr-body.md#what-a-result-is`, which defines a check and a result. Where a record disagrees with your memory or a transcript, the record wins: it is the copy that survived. At each later assignment read them again, your own included, since other phases may have recorded since.
-2. Before the turn's first `jj new` or commit, run the two path lists of `skill://legion-worker/references/foreign-path.md` and do what it says for a path you did not write.
-3. Commit only your phase's paths: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
-4. Before you write the handoff, run `jj -R "$LEGION_WORKSPACE" status` and remove or restore every file you copied in that is not your phase's work: the working copy is the next role's first commit.
-5. Before you run a build or a test suite in your pod, read `skill://legion-worker/references/tools.md`. Every role writes the one workspace, so a file can change under your check. Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`), which no sibling writes; run a check in the workspace only when it reads what a copy lacks, such as jj's state or the uncommitted working copy. Run `git diff --quiet <head> -- <files the check reads>` before you record a result. Before you report a script that failed in the workspace, or a run whose output you did not capture, read `skill://legion-worker/references/shared-workspace.md`.
-6. Record the handoff your role prompt names, push any work, then complete. A handoff is never a commit, and no handoff carries the evidence: what you ran is a result you record against one of the issue's checks with `dispatch result`, and `skill://legion-worker/references/pr-body.md#what-a-result-is` defines a check and a result. Before you record the handoff or complete, read `skill://legion-worker/references/handoff-and-completion.md`.
+2. Commit only your phase's paths: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
+3. Before you write the handoff, run `jj -R "$LEGION_WORKSPACE" status` and remove or restore every file you copied in that is not your phase's work: the working copy is the next role's first commit.
+4. Before you run a build or a test suite in your pod, read `skill://legion-worker/references/tools.md`. Every role writes the one workspace, so a file can change under your check. Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`), which no sibling writes; run a check in the workspace only when it reads what a copy lacks, such as jj's state or the uncommitted working copy. Run `git diff --quiet <head> -- <files the check reads>` before you record a result. Before you report a script that failed in the workspace, or a run whose output you did not capture, read `skill://legion-worker/references/shared-workspace.md`.
+5. Record the handoff your role prompt names, push any work, then complete. A handoff is never a commit, and no handoff carries the evidence: what you ran is a result you record against one of the issue's checks with `dispatch result`, and `skill://legion-worker/references/pr-body.md#what-a-result-is` defines a check and a result. Before you record the handoff or complete, read `skill://legion-worker/references/handoff-and-completion.md`.
 
 ## Stop rules
 
@@ -51,7 +50,7 @@ Read each by its `skill://` link: a read by path stops at 300 lines.
 | A problem outside your issue, or a failed production check | `skill://legion-worker/references/findings.md` |
 | Your text would reach a person outside the company: a comment, issue or pull request on a repository the company does not own, an email, a message to another project's maintainers | `skill://outside-message` |
 | A deployment instruction conflicts with this skill | `skill://legion-worker/references/deployment-instructions.md` |
-| Before a push, after the trailer check in `skill://legion-worker/references/default-branch-check.md`; before you cure a commit that lacks a trailer line or clone a repository; as a planner whose issue moved back from implementing | `skill://legion-worker/references/commits.md` |
+| Before a push; before you cure a commit that lacks a trailer line or clone a repository; as a planner whose issue moved back from implementing | `skill://legion-worker/references/commits.md` |
 
 ## Pull request and merge gate
 

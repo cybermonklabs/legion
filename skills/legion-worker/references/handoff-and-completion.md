@@ -1,6 +1,6 @@
 # The handoff, the completion, and a refused completion
 
-Read it before you record the handoff your role prompt names or complete (step 6 of `skill://legion-worker`), when your phase ends, and when `handoff_complete` refuses your completion.
+Read it before you record the handoff your role prompt names or complete (step 5 of `skill://legion-worker`), when your phase ends, and when `handoff_complete` refuses your completion.
 
 ## The handoff
 

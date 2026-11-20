@@ -1,6 +1,6 @@
 # A failure in the shared workspace
 
-Read it before you report a script that failed in the workspace, or a run whose output you did not capture (step 5 of `skill://legion-worker`).
+Read it before you report a script that failed in the workspace, or a run whose output you did not capture (step 4 of `skill://legion-worker`).
 
 A non-zero exit of a script in the shared workspace is not reportable until you run it again with `sha256sum <script>` just before and just after it, both lines kept beside the exit status:
 

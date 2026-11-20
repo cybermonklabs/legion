@@ -1,8 +1,7 @@
 # Commit messages, trailers, clones, and a planner's start
 
-Read it before a push, after the trailer check in `skill://legion-worker/references/default-branch-check.md`; before you cure a commit that lacks a trailer line or clone a repository; and as a planner whose issue moved back from implementing.
+Read it before a push; before you cure a commit that lacks a trailer line or clone a repository; and as a planner whose issue moved back from implementing.
 
-- With the `$default` the trailer check set, read your branch's full commit messages: `jj -R "$LEGION_WORKSPACE" log -r "${default}@origin..@" -T 'description ++ "\n"'`. Earlier phases' commits in it are expected; `description.first_line()` shows no trailer.
 - Write no trailer yourself. The pane's jj adds `Omp-Session:` and `Legion-Role:`, and `Dispatch: <KEY>` in a repository the deployment names; the git wrapper adds the first two to a `git commit`. Four kinds of commit get none of these lines added:
   - one that another process made outside the pane's shell with no overlay;
   - one that a git command made without `git commit` (a merge, a revert, a cherry-pick, a rebase);
