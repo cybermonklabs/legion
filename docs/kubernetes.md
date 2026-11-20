@@ -3737,7 +3737,8 @@ At boot an unreachable NATS or Dispatch delays the boot instead of exiting, retr
 transiently; waiting to run it again` with its `probe` (naming which:
 `repository mapping read`, the boot's first Dispatch read, `connect Envoy NATS`, `list Dispatch issues for admission`, or `catch up the roots that run or wait on a person`), `attempt`, `retryIn` and `detail`.
 A TLS alert from NATS or Dispatch, such as a server that demands a client certificate or speaks no TLS version the daemon does, is an answer and not an outage, so it refuses the boot at once (`tlsalert.In`, `packages/daemon/internal/tlsalert`).
-So does a certificate the daemon cannot verify, from NATS or Dispatch; a NATS URL whose port answers first with a line that is not INFO, such as an SSH server's; and an `https` Dispatch URL on a plain-HTTP port or on a port that answers in neither TLS nor HTTP (`dispatch.TransportRefusal`), at every boot read of Dispatch, the catch-up of the roots that run or wait on a person included, which stops rather than skip the root.
+So does a certificate the daemon cannot verify, from NATS or Dispatch; a NATS URL whose port answers first with a line that is not INFO, such as an SSH server's; and an `https` Dispatch URL on a plain-HTTP port or on a port that answers in neither TLS nor HTTP (`dispatch.TransportRefusal`), at every boot probe of Dispatch, the catch-up of the roots that run or wait on a person included, which stops rather than skip the root.
+The two NATS refusals hold for one `nats_urls` entry: with several, nats.go answers with the last server's error, so a refusal from an earlier server followed by a refused dial on the last one reads as no servers available, and the boot waits (the LEGION-580 limit below).
 
 The store opens outside the 30-second budget the boot's first steps share, and the steps after the open get a budget of their own.
 A connection error the next attempt can clear is tried again (`store.OpenRetryable`): a refused connection, a reset, a connection closed before an answer, a timeout, a host name that does not resolve, and the SQLSTATE codes of class 08, 53300, 57P01, 57P02 and 57P03.
@@ -3777,7 +3778,7 @@ Several shapes an operator should know wait forever rather than exit, none of th
 a Dispatch 401 or 403 (a bad or revoked bearer token);
 a NATS or Dispatch host that does not resolve (a typo in `nats_urls` or `dispatch_url`'s hostname);
 a non-Dispatch 4xx, such as an HTML 404 from a `dispatch_url` whose path is wrong but whose host answers;
-and a TLS handshake that stalls, or a `nats_urls` entry on a port that never speaks first, such as an HTTP or TLS port (no answer within the attempt), while a TLS alert, a certificate the daemon cannot verify, a NATS port whose first line is not INFO, and an `https` Dispatch URL on a port that answers in neither TLS nor HTTP stop the boot at once (above).
+and a TLS handshake that stalls, or a `nats_urls` entry on a port that never speaks first, such as an HTTP or TLS port (no answer within the attempt), while every TLS refusal named above stops the boot at once.
 Each of these waits silently: no line is logged beyond the generic `boot probe failed
 transiently` warn above, though its own `detail` carries the error's own text (`UNAUTHORIZED:
 ...`, `no such host`), not a separate line calling out the credential or configuration problem by name.
