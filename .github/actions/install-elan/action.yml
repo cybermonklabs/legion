@@ -1,7 +1,7 @@
 name: Install elan
 description: >-
   Installs elan, the Lean toolchain manager the airlock-lean job builds
-  packages/envoy/internal/broker/airlock/lean with, and puts ELAN_HOME and its bin on the job's
+  packages/envoy/internal/cipher/proxyrules/lean with, and puts ELAN_HOME and its bin on the job's
   environment for the later steps. ELAN_HOME is $RUNNER_TEMP/elan, which ci.yaml's airlock-lean job
   caches on the content of that project's lean-toolchain: with the cache restored this step finds
   elan and the Lean toolchain already there and downloads nothing, and with it missed `lake`

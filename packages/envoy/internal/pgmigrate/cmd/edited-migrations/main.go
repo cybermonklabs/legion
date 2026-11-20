@@ -30,10 +30,12 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
-// stores are the migration sets the check compares, each a directory of the repository.
-var stores = []struct{ name, dir string }{
-	{"dispatch", "packages/envoy/internal/dispatch/store/migrations"},
-	{"broker", "packages/envoy/internal/broker/store/migrations"},
+// stores are the migration sets the check compares, each a directory of the repository. former is
+// the directory a store's set had before it moved, which a base commit from before the move holds
+// it under; "" for a store that never moved.
+var stores = []struct{ name, dir, former string }{
+	{"dispatch", "packages/envoy/internal/dispatch/store/migrations", ""},
+	{"broker", "packages/envoy/internal/cipher/store/migrations", "packages/envoy/internal/broker/store/migrations"},
 }
 
 func main() {
@@ -59,7 +61,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	repository := strings.TrimSpace(string(root))
 	failed := false
 	for _, store := range stores {
-		check, err := checkStore(repository, *base, store.name, store.dir)
+		check, err := checkStore(repository, *base, store.name, store.dir, store.former)
 		if err != nil {
 			fmt.Fprintf(stderr, "edited-migrations: %s: %v\n", store.name, err)
 			return 2
@@ -78,16 +80,23 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 // checkStore loads the base's set of dir, every file of dir as the base commit holds it, and this
-// tree's, both with pgmigrate.Load, and compares them. The base's set was merged, so Load accepts
-// it; a refusal of it is reported, as a check that could not be taken.
-func checkStore(repository, base, store, dir string) (*pgmigrate.EditCheck, error) {
-	listing, err := git("-C", repository, "ls-tree", "-z", "--name-only", base+":"+dir)
+// tree's, both with pgmigrate.Load, and compares them. A base that has no dir but has former, the
+// store's directory before it moved, holds the set there. The base's set was merged, so Load
+// accepts it; a refusal of it is reported, as a check that could not be taken.
+func checkStore(repository, base, store, dir, former string) (*pgmigrate.EditCheck, error) {
+	baseDir := dir
+	if former != "" {
+		if _, err := git("-C", repository, "rev-parse", "--verify", "--quiet", base+":"+dir); err != nil {
+			baseDir = former
+		}
+	}
+	listing, err := git("-C", repository, "ls-tree", "-z", "--name-only", base+":"+baseDir)
 	if err != nil {
-		return nil, fmt.Errorf("list %s at %s: %w", dir, base, err)
+		return nil, fmt.Errorf("list %s at %s: %w", baseDir, base, err)
 	}
 	files := fstest.MapFS{}
 	for _, name := range strings.Split(strings.TrimRight(string(listing), "\x00"), "\x00") {
-		text, err := git("-C", repository, "cat-file", "blob", base+":"+path.Join(dir, name))
+		text, err := git("-C", repository, "cat-file", "blob", base+":"+path.Join(baseDir, name))
 		if err != nil {
 			return nil, fmt.Errorf("read %s at %s: %w", name, base, err)
 		}

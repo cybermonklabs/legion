@@ -118,16 +118,18 @@ func (m *Manager) exchange(ctx context.Context, jwt, installation string, permis
 		body := refusalBody(response)
 		failed := fmt.Errorf("GitHub App token exchange failed (%d): %s", response.StatusCode, strings.TrimSpace(string(body)))
 		if response.StatusCode == http.StatusNotFound {
-			return Lease{}, fmt.Errorf("%w: %w", errInstallationGone, failed)
+			return Lease{}, fmt.Errorf("%w: %w", errInstallationGone, m.answered(response, body, failed))
 		}
-		refused := transient(response, body, failed)
+		refused := m.transient(response, body, failed)
 		if response.StatusCode == http.StatusUnprocessableEntity {
 			// GitHub documents its rate limits on a 429 and a 403 (githubrest.RateLimited), but
 			// the headers or the secondary-limit text of a limit on a 422 are that limit too,
 			// and no verdict on what the request asked for: the same request may pass later, so
-			// it is GitHub's trouble and never the installation's permissions.
+			// it is GitHub's trouble and never the installation's permissions. Its answer is no
+			// rate limit githubrest names, so the daemon's start retries it as GitHub's trouble
+			// rather than waiting it out (internal/daemon's bootLimit).
 			if githubrest.RateLimitSignals(response, body) {
-				return Lease{}, &TransientError{Err: failed}
+				return Lease{}, &TransientError{Err: refused}
 			}
 			// Every other 422 is the permissions this request carried: the installation being
 			// granted less than the request asked for of one of them — which a mint asks for as

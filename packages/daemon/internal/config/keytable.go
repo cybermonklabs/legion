@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -255,6 +256,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readRepositoryRenames, func(f *fileConfig, v []ghrepo.Rename) { f.RepositoryRenames = v }),
 		},
 		{
+			Name: leakCheckKey, Default: "`LEGION_LEAK_CHECK_REPOSITORY` and `LEGION_LEAK_CHECK_MANIFEST_SHA256` in the daemon's environment; with neither, the deployment runs no shared leak check", RequiredBy: "no",
+			Description: "The deployment's shared public leak check: the repository it is published from by tag, which the daemon reads at the worker image's pin and pushes to every pod, and the check's manifest digest, one sha256 over every file it runs from; with no check named, role pods start without one and no write is refused for its absence.",
+			Read:        reads(readLeakCheck, func(f *fileConfig, v *fileLeakCheck) { f.LeakCheck = v }),
+		},
+		{
 			Name: hooksKey, Default: "one hook: every fifth move back of any kind puts the daemon's own words in front of the implementer, the tester and the reviewer", RequiredBy: "no",
 			Description: "The deployment's own prompts, each naming the event it stands on, the moves back it counts, how many of them fire it, the roles its words are put in front of and those words; `hooks: []` runs none, and a file that names the key runs what it names and no default.",
 			Read:        reads(readHooks, func(f *fileConfig, v *[]Hook) { f.Hooks = v }),
@@ -468,6 +474,12 @@ var nestedKeys = []memberGroup{
 		{Name: "to", Default: "none: a pair that names no `to` is refused", RequiredBy: "yes",
 			Description: "The repository it moved to, which GitHub's events name and which the daemon calls GitHub under; compared without case."},
 	}},
+	{Path: leakCheckKey, Members: []member{
+		{Name: "repository", Default: "`LEGION_LEAK_CHECK_REPOSITORY` in the daemon's environment", RequiredBy: "when `manifest_sha256` is set: the two are set together or not at all",
+			Description: "The repository the shared public leak check is published from, as `owner/name`: its `leak-check` directory at the tag the worker image pins (`LEGION_LEAK_CHECK_TAG`) is what the daemon reads, with a read-only token of its implement App, and pushes to every pod."},
+		{Name: "manifest_sha256", Default: "`LEGION_LEAK_CHECK_MANIFEST_SHA256` in the daemon's environment", RequiredBy: "when `repository` is set: the two are set together or not at all",
+			Description: "The check's manifest digest at that tag, 64 lowercase hex digits: the sha256 of the `sha256sum` lines of `public-leak-check.sh`, `public_leak_check.py`, `README.md` and `must-pass-lines.txt`, in that order, which `(cd leak-check && sha256sum public-leak-check.sh public_leak_check.py README.md must-pass-lines.txt) | sha256sum` prints. Every role is told it, a role pod starts no agent unless its install's manifest digest is it, and a role refuses every write for want of a check or under a check whose manifest digest is anything else, so a launcher script edited beside an unchanged program is refused. It does not decide which `legion gh` calls the check alone reads: a call that writes nothing is read so only where the check's program hashes to the digest the release's read rule was proven against, which the release compiles in."},
+	}},
 	{Path: hooksKey + "[]", Members: []member{
 		{Name: "name", Default: "none: a hook that names no `name` is refused", RequiredBy: "yes",
 			Description: "The hook's own name, which every prompt it publishes carries and which is named once in the file."},
@@ -680,7 +692,9 @@ var nestedKeys = []memberGroup{
 		{Name: "user", Default: "none: the block is refused without it", RequiredBy: "yes",
 			Description: "The IAM login each pod signs in to that database as."},
 		{Name: "impersonate_service_account", Default: "each pod signs in as itself", RequiredBy: "no",
-			Description: "The email of the Google service account that each pod's session proxy impersonates with the pod's own credentials and signs in as; `user` must then be that account's IAM login, its email without `.gserviceaccount.com`."},
+			Description: "The email of the Google service account that each pod's session proxy impersonates and signs in as, with the pod's own credentials or, where `writer_audience` is set, with the launcher's writer token; `user` must then be that account's IAM login, its email without `.gserviceaccount.com`."},
+		{Name: "writer_audience", Default: "the session proxy signs in with the pod's own credentials", RequiredBy: "no",
+			Description: "The audience of a projected ServiceAccount token that only each pod's launcher reads, which is a workload identity provider's full resource name, " + ompsessions.WriterAudienceForm + "; the session proxy exchanges that token at Google's security token service and impersonates `impersonate_service_account` with it in place of the pod's own credentials, so `impersonate_service_account` is required with it, and it must differ, in both its own form and its `https:` form, from `agent_secrets.audience` and `agent_secrets.exchange_audience`, whose tokens every role of a pod reads, and from the audience of every projected `service_account_token` of `pod.volumes`, mounted or not, since every pod carries the operator's pod volumes and a `volume_mounts` entry shows one to every role of the pod."},
 	}},
 	{Path: podKey, Members: []member{
 		{Name: "env", Default: "a pod's Oh My Pi is told only what the runtime tells it", RequiredBy: "no",

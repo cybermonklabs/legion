@@ -106,7 +106,7 @@ type Config struct {
 	Env []string
 	// ProviderEnv is NAME=value pairs for OMP's environment only (--provider-env-dir).
 	ProviderEnv []string
-	// AgentSecrets is the pod's enrollment with the secrets broker (agentsecrets.go); nil on a
+	// AgentSecrets is the pod's enrollment with the secrets broker (cipher.go); nil on a
 	// tmux pane, which is never enrolled.
 	AgentSecrets *AgentSecrets
 	// WarmCodegraph, when set, is started once with the workspace the shim's LEGION_WORKSPACE
@@ -126,8 +126,10 @@ type Config struct {
 	// spawnOnce reads (leakguard.Installed) before the wrapped process is started; empty is
 	// leakguard.InstallDir. The launcher installs the check the daemon served once for the pod,
 	// before any role starts, so the shim only reads it: with a pin in the environment
-	// (leakguard.TagVariable, which the worker image sets and a tmux pane does not) a role whose
-	// install is absent or of another tag runs no agent.
+	// (leakguard.TagVariable, which the worker image sets and a tmux pane does not) and the
+	// deployment's checker (leakguard.CheckerVar, which the runtime tells a role of a deployment
+	// that runs a shared leak check), a role whose install is absent or of another tag runs no
+	// agent.
 	//
 	// The installed check's path is what the shim names in PUBLIC_LEAK_CHECK for everything it
 	// starts, where the environment names none of its own (spawnOnce): the runtime's own value
@@ -259,7 +261,7 @@ type shim struct {
 	thumbprint  string // agent-secrets keygen's thumbprint, generated once per shim
 	renewing    bool   // the agent-secrets renewer goroutine has been started
 
-	// renewers is the agent-secrets renewer goroutine (agentsecrets.go's startRenewer), reaped by
+	// renewers is the agent-secrets renewer goroutine (cipher.go's startRenewer), reaped by
 	// Run's deferred Wait before it returns.
 	renewers sync.WaitGroup
 
@@ -430,9 +432,10 @@ func (s *shim) toDaemon(frame shimwire.Frame) {
 //
 // The pod's launcher installs the check the daemon served once for the pod, before it starts any
 // role, so the shim reads it and installs nothing (leakguard.Installed, at Config.LeakCheckDir).
-// With no pin in the environment, which is every tmux pane, nothing is read and nothing refused.
-// With a pin, an install that is absent or of another tag ends the shim with exit 1 and runs no
-// agent.
+// With no pin in the environment, which is every tmux pane, and with no deployment checker in it
+// (leakguard.CheckerVar), which is every role of a deployment that runs no shared leak check,
+// nothing is read and nothing refused. With both, an install that is absent or of another tag
+// ends the shim with exit 1 and runs no agent.
 //
 // The read is here, and before the start, for two orderings this placement guarantees. The
 // harness is started after it, so no turn of the agent reaches a write path before the check its

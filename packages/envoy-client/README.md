@@ -840,7 +840,7 @@ instead (`AGENT_SECRETS_URL` with `AGENT_SECRETS_MACHINE_IDENTITY`, `brokerCrede
 credential is then a DPoP-bound access token presented under the `DPoP` scheme rather than a
 bearer. Every bearer source above is resolved first and unchanged, so a session that has one
 behaves exactly as it did. The machine's identity is one of three (`machineIdentity` in
-`@legion/broker-client/environment`). `kubernetes` reads a pod's projected token from
+`@legion/cipher-client/environment`). `kubernetes` reads a pod's projected token from
 `AGENT_SECRETS_MACHINE_TOKEN_FILE`. `metadata` asks the metadata server for a Compute Engine
 machine's Google identity token, for the audience `AGENT_SECRETS_MACHINE_AUDIENCE`. `pool` mints
 a Google identity token through a workload identity pool, as the Go client's `PoolIdentity`
@@ -852,7 +852,7 @@ An identity with one of its variables missing is an error that names the variabl
 A pod writes under a session name only once its deployment has registered that name for the pod,
 and its trade can reach the broker first. The broker refuses that trade with a description
 beginning `pod_session_not_registered:`, and that refusal is never final (`podSessionUnregistered`
-in `@legion/broker-client/token-errors`).
+in `@legion/cipher-client/token-errors`).
 
 The client trades through one retry loop per session (`BrokerTokenClient.token`), and no caller
 starts a second one or cuts its wait short, so the broker sees one trade per slot of the loop's
