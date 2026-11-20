@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"os"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 	"unsafe"
@@ -14,12 +15,12 @@ import (
 )
 
 // xidThreadClocksAvailable reports whether this process can judge a window's gaps: whether it can
-// read an OS thread's scheduler clocks, and whether it can hold a thread out of NUMA balancing
-// (xidHoldThread). Linux does not promise either: gVisor, for example, exposes no
-// /proc/thread-self/schedstat, and a container's seccomp profile may refuse set_mempolicy. The
-// first caller probes once while locked to an OS thread, as a marked transaction's goroutine is;
-// every later caller reads that same fact, so a kernel that cannot give the rig either follows
-// the race build and judges window shape alone.
+// read an OS thread's scheduler clocks, and whether it can hold a thread, and the memory every
+// thread touches, out of NUMA balancing (xidHoldThread, xidHoldMemory). Linux does not promise
+// either: gVisor, for example, exposes no /proc/thread-self/schedstat, and a container's seccomp
+// profile may refuse set_mempolicy and mbind. The first caller probes once while locked to an OS
+// thread, as a marked transaction's goroutine is; every later caller reads that same fact, so a
+// kernel that cannot give the rig either follows the race build and judges window shape alone.
 //
 // xidThreadClockAvailability is a pointer so its readers and its once can be replaced together by
 // the test that proves an unreadable clock, or a thread NUMA balancing cannot be kept off, judges
@@ -43,7 +44,7 @@ func xidThreadClocksAvailable() bool {
 		}
 		release, held := probe.hold()
 		release()
-		probe.available = held
+		probe.available = held && xidHoldMemory()
 	})
 	return probe.available
 }
@@ -59,13 +60,24 @@ var (
 	xidAtCWD         int = unix.AT_FDCWD
 )
 
-// readXidThreadClock reads the calling OS thread's scheduler clocks: the CPU time it has run
-// (CLOCK_THREAD_CPUTIME_ID, which the kernel brings up to date as it is read), and the time it has
-// waited runnable on a run queue for a CPU (run_delay, the second field of
-// /proc/thread-self/schedstat). The kernel adds a wait to run_delay when the thread gets a CPU
-// back, so a reading the thread takes while it runs holds every wait it has had. It answers the
-// zero clock when either cannot be read, or when the goroutine moved to another thread between
-// the two reads.
+// xidClockTries is how many times readXidThreadClock tries to read the thread's clocks around its
+// stamp without the thread being switched out between: a switch out and back in takes the
+// scheduler microseconds at least, and the read pair takes about as long, so on a loaded machine
+// one try in many lands across one. Sixteen in a row would take a thread preempted in every one.
+const xidClockTries = 16
+
+// readXidThreadClock stamps the calling OS thread's present moment (at) and reads its scheduler
+// clocks at that moment: the CPU time it has run (CLOCK_THREAD_CPUTIME_ID, which the kernel brings
+// up to date as it is read), and the time it has waited runnable on a run queue for a CPU
+// (run_delay, the second field of /proc/thread-self/schedstat). The kernel adds a wait to run_delay
+// when the thread gets a CPU back, and counts each time it does (the file's third field), so the
+// file is read just before and just after the stamp, and a reading is kept only when both say the
+// same: then the thread was not switched out between them, and run_delay at the stamp is exactly
+// the value read. A tracer that took its stamp and read run_delay apart would read a wait between
+// the two on the wrong side of the stamp, and a gap would count it as time its thread spent off a
+// CPU of its own accord (traced at a load of 250 to 350 on a 288-CPU machine, 2026-11-20: 1.6 and
+// 2.1 ms). It answers the zero clock when the clocks cannot be read, when the goroutine moved to
+// another thread while it read them, or when no try of xidClockTries landed between two switches.
 //
 // It allocates nothing, so it touches no memory the process has not used before: the file is
 // opened by a path built once, read into a buffer on the stack and parsed in place. The tracer
@@ -74,44 +86,73 @@ var (
 // loaded machine, costs milliseconds of the thread's CPU in the kernel (runWithoutCollector).
 func readXidThreadClock() xidThreadClock {
 	thread := unix.Gettid()
-	var cpu unix.Timespec
-	if err := unix.ClockGettime(unix.CLOCK_THREAD_CPUTIME_ID, &cpu); err != nil {
-		return xidThreadClock{}
-	}
 	fd, _, errno := unix.Syscall6(unix.SYS_OPENAT, uintptr(xidAtCWD),
 		uintptr(unsafe.Pointer(&xidSchedstatPath[0])), uintptr(unix.O_RDONLY|unix.O_CLOEXEC), 0, 0, 0)
 	if errno != 0 {
 		return xidThreadClock{}
 	}
-	var raw [64]byte
-	n, _, errno := unix.Syscall(unix.SYS_READ, fd, uintptr(unsafe.Pointer(&raw[0])), uintptr(len(raw)))
-	unix.Syscall(unix.SYS_CLOSE, fd, 0, 0)
-	if errno != 0 || unix.Gettid() != thread {
-		return xidThreadClock{}
+	defer unix.Syscall(unix.SYS_CLOSE, fd, 0, 0)
+	for range xidClockTries {
+		before, ok := xidReadSchedstat(fd)
+		if !ok {
+			return xidThreadClock{}
+		}
+		at := time.Now()
+		var cpu unix.Timespec
+		if err := unix.ClockGettime(unix.CLOCK_THREAD_CPUTIME_ID, &cpu); err != nil {
+			return xidThreadClock{}
+		}
+		after, ok := xidReadSchedstat(fd)
+		if !ok || unix.Gettid() != thread {
+			return xidThreadClock{}
+		}
+		if before == after {
+			return xidThreadClock{thread: thread, at: at, ran: time.Duration(cpu.Nano()), waited: time.Duration(before.waited)}
+		}
 	}
-	waited, ok := xidSecondField(raw[:n])
-	if !ok {
-		return xidThreadClock{}
-	}
-	return xidThreadClock{thread: thread, ran: time.Duration(cpu.Nano()), waited: time.Duration(waited)}
+	return xidThreadClock{}
 }
 
-// xidSecondField parses the second space-separated decimal field of a schedstat line, in place.
-func xidSecondField(line []byte) (int64, bool) {
-	first := bytes.IndexByte(line, ' ')
-	if first < 0 {
-		return 0, false
+// xidSchedstat is the two fields of a thread's schedstat the rig reads: run_delay, and the number
+// of times the thread has been given a CPU.
+type xidSchedstat struct {
+	waited, runs int64
+}
+
+// xidReadSchedstat reads the schedstat file open on fd from its start, into a buffer on the stack.
+func xidReadSchedstat(fd uintptr) (xidSchedstat, bool) {
+	var raw [64]byte
+	n, _, errno := unix.Syscall6(unix.SYS_PREAD64, fd, uintptr(unsafe.Pointer(&raw[0])), uintptr(len(raw)), 0, 0, 0)
+	if errno != 0 {
+		return xidSchedstat{}, false
 	}
-	var value int64
+	var fields [3]int64
+	if !xidFields(raw[:n], fields[:]) {
+		return xidSchedstat{}, false
+	}
+	return xidSchedstat{waited: fields[1], runs: fields[2]}, true
+}
+
+// xidFields parses the first len(into) space-separated decimal fields of a schedstat line, in place.
+func xidFields(line []byte, into []int64) bool {
+	field := 0
 	digits := 0
-	for _, c := range line[first+1:] {
-		if c < '0' || c > '9' {
-			break
+	for _, c := range line {
+		if c >= '0' && c <= '9' {
+			into[field] = into[field]*10 + int64(c-'0')
+			digits++
+			continue
 		}
-		value = value*10 + int64(c-'0')
-		digits++
+		if digits == 0 {
+			return false
+		}
+		field++
+		digits = 0
+		if field == len(into) {
+			return true
+		}
 	}
-	return value, digits > 0
+	return field == len(into)-1 && digits > 0
 }
 
 // The mempolicy modes xidHoldThread sets and reads (linux/mempolicy.h): x/sys/unix names the
@@ -166,4 +207,50 @@ func xidHoldThread() (release func(), held bool) {
 		}
 		unix.Syscall(unix.SYS_SET_MEMPOLICY, uintptr(mode), uintptr(unsafe.Pointer(&nodes[0])), uintptr(len(nodes)*64))
 	}, true
+}
+
+// xidHoldMemory keeps NUMA balancing off every page the process has mapped private and writable -
+// its heap, its stacks, its data - by setting each such mapping's memory policy to MPOL_LOCAL
+// (mbind, which moves no page). A mapping with a policy of its own but no migrate-on-fault is one
+// NUMA balancing's scan passes over, and one no thread's fault moves a page of. xidHoldThread keeps
+// the measured thread from moving pages; this keeps every other thread from moving one under it:
+// a page another thread moves is unmapped while it is copied, and a thread that touches it
+// meanwhile sleeps until the move ends (migration_entry_wait), a sleep whose length is the
+// machine's - traced at a load of about 250 on a 288-CPU machine, 2026-11-20, inside a forced gap.
+// Measure holds the memory before each window (runWithoutCollector), since a mapping the process
+// made since the last window has no policy yet.
+//
+// It answers false when NUMA balancing is on and the kernel refuses mbind. A mapping that goes
+// away between the read of /proc/self/maps and its mbind is one there is nothing left to hold.
+func xidHoldMemory() bool {
+	if !xidNUMABalancing() {
+		return true
+	}
+	maps, err := os.ReadFile("/proc/self/maps")
+	if err != nil {
+		return false
+	}
+	for line := range bytes.Lines(maps) {
+		fields := bytes.Fields(line)
+		if len(fields) < 2 || len(fields[1]) < 4 || fields[1][1] != 'w' || fields[1][3] != 'p' {
+			continue
+		}
+		dash := bytes.IndexByte(fields[0], '-')
+		if dash < 0 {
+			continue
+		}
+		start, err := strconv.ParseUint(string(fields[0][:dash]), 16, 64)
+		if err != nil {
+			continue
+		}
+		end, err := strconv.ParseUint(string(fields[0][dash+1:]), 16, 64)
+		if err != nil || end <= start {
+			continue
+		}
+		_, _, errno := unix.Syscall6(unix.SYS_MBIND, uintptr(start), uintptr(end-start), xidMempolicyLocal, 0, 0, 0)
+		if errno == unix.EPERM || errno == unix.ENOSYS {
+			return false
+		}
+	}
+	return true
 }
