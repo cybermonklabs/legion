@@ -85,21 +85,33 @@ func TestACreditWhoseTurnIsRunningIsCountedByACorrectionMadeDuringTheTurn(t *tes
 // A credit its machine no longer holds for a refresh wake is taken back within one sweep: the
 // first correction after it was granted keeps it, as every credit granted since the correction
 // before is kept (RefreshGate.Correct), and the second asks the machine, finds the credit no
-// longer held for a wake, takes it back and says so. The loss is planted as a path no decision's
-// end reaches would make it: a locked section outside unlock ends the claim's refresh wake, so
-// endRefreshLane never sees the credit, and either lets the credit go without giving it back or
-// keeps it with no wake left to hold it for.
+// longer held for a wake, takes it back and says so. The loss is planted as a path that no
+// decision's end reaches would make it: a locked section outside unlock ends the claim's refresh
+// wake, so endRefreshLane never sees the credit, and either lets the credit go without giving it
+// back or keeps it with no wake left to hold it for. The case beside them plants nothing: a
+// machine between decisions that holds its credit for the refresh wake it waits on keeps it
+// through both corrections, and no line is written.
 //
 // The negative controls: a correction that asks no machine (reclaimCredit never called) leaves
-// the credit out at the second correction; and a correction that asks every machine, the credits
-// granted since the previous correction included, takes it back at the first.
+// the lost credit out at the second correction; a correction that asks every machine, the credits
+// granted since the previous correction included, takes it back at the first; and a probe that
+// does not read the refresh wake the machine waits on takes back the credit it still holds.
 func TestACreditItsMachineNoLongerHoldsIsTakenBackWithinOneSweep(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		letGo bool
+		name string
+		// plant is the path planted after the credited post parked its wake, nil for none.
+		plant func(m *Machine)
 	}{
-		{"the machine let it go without giving it back", true},
-		{"the machine kept it with no refresh wake of its own", false},
+		{"the machine let it go without giving it back", func(m *Machine) {
+			m.disarm(TimerWake)
+			m.wake = nil
+			m.refreshCredit = nil
+		}},
+		{"the machine kept it with no refresh wake of its own", func(m *Machine) {
+			m.disarm(TimerWake)
+			m.wake = nil
+		}},
+		{"the machine holds it for the refresh wake it waits on", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			gate := NewRefreshGate(wakeRate)
@@ -109,19 +121,20 @@ func TestACreditItsMachineNoLongerHoldsIsTakenBackWithinOneSweep(t *testing.T) {
 			h.must(StalePlugin{Claim: h.token, Trigger: "sweep", Credit: gate.Admit()})
 			h.wantWaitingWake(WakePluginRefresh)
 
-			h.m.mu.Lock()
-			h.m.disarm(TimerWake)
-			h.m.wake = nil
-			if tc.letGo {
-				h.m.refreshCredit = nil
-			}
-			h.m.publish()
-			h.m.mu.Unlock()
-			if w := h.m.View().WakeWaiting; w != nil {
-				t.Fatalf("the claim's view shows a %s wake after the planted path ended it, want none", w.Kind)
+			lost := tc.plant != nil
+			read := 1
+			if lost {
+				h.m.mu.Lock()
+				tc.plant(h.m)
+				h.m.publish()
+				h.m.mu.Unlock()
+				if w := h.m.View().WakeWaiting; w != nil {
+					t.Fatalf("the claim's view shows a %s wake after the planted path ended it, want none", w.Kind)
+				}
+				read = 0
 			}
 
-			gate.Correct(0)
+			gate.Correct(read)
 			if got := freeCredits(gate); got != wakeRate-1 {
 				t.Fatalf("the first correction after the credit was granted left the gate granting %d, want %d: a credit granted since the correction before is kept",
 					got, wakeRate-1)
@@ -129,19 +142,26 @@ func TestACreditItsMachineNoLongerHoldsIsTakenBackWithinOneSweep(t *testing.T) {
 			if got := len(h.records.of(creditTakenBackMessage)); got != 0 {
 				t.Fatalf("the first correction wrote %d lines of a credit taken back, want none", got)
 			}
-			gate.Correct(0)
-			if got := freeCredits(gate); got != wakeRate {
-				t.Fatalf("the second correction left the gate granting %d, want %d: a credit its machine no longer holds for a refresh wake is taken back",
-					got, wakeRate)
+			gate.Correct(read)
+			want, lines := wakeRate-1, 0
+			if lost {
+				want, lines = wakeRate, 1
 			}
-			if got := len(h.records.of(creditTakenBackMessage)); got != 1 {
-				t.Fatalf("the second correction wrote %d lines of a credit taken back, want 1", got)
+			if got := freeCredits(gate); got != want {
+				t.Fatalf("the second correction left the gate granting %d, want %d: a credit its machine no longer holds for a refresh wake is taken back, and one it holds is kept",
+					got, want)
+			}
+			if got := len(h.records.of(creditTakenBackMessage)); got != lines {
+				t.Fatalf("the second correction wrote %d lines of a credit taken back, want %d", got, lines)
 			}
 			h.m.mu.Lock()
 			held := h.m.refreshCredit
 			h.m.mu.Unlock()
-			if held != nil {
+			if lost && held != nil {
 				t.Fatal("the machine still holds the credit the correction took back, want it holding none, so its next relaunch asks the gate")
+			}
+			if !lost && held == nil {
+				t.Fatal("the machine lost the credit its waiting refresh wake holds, want it kept")
 			}
 		})
 	}
