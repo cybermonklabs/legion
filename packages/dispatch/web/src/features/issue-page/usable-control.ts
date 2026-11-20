@@ -1,4 +1,4 @@
-import { canHoldFocus, FOCUS_ATTRIBUTES, OUT_OF_REACH } from "./focus-keeper";
+import { canHoldFocus, FOCUS_ATTRIBUTES } from "./focus-keeper";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 
 /** A control that keeps the focus but refuses a press: the page's controls while they save. */
@@ -6,11 +6,6 @@ const BUSY = '[aria-disabled="true"]';
 
 /** An element a screen reader passes over, with everything under it. */
 const ARIA_HIDDEN = '[aria-hidden="true"]';
-
-/** What takes a control out of reach inside the closed Details drawer, where `canHoldFocus`
- *  refuses everything: what takes it out of the focus's reach (`canHoldFocus`'s own selector),
- *  and `aria-hidden`. */
-const SHUT = `${OUT_OF_REACH}, ${ARIA_HIDDEN}`;
 
 /** Every attribute whose change can change what `usableControl` answers: the ones `canHoldFocus`
  *  reads (`FOCUS_ATTRIBUTES`), the ones this rule adds, and `class` and `style`, which
@@ -24,25 +19,25 @@ export const USABLE_CONTROL_ATTRIBUTES = [
   "style",
 ] as const;
 
-/** Whether `control`, or an element around it short of `bound`, matches `selector`. With no
+/** Whether `control`, or an element around it short of `bound`, is `aria-hidden`. With no
  *  `bound`, every element around it is read. */
-function shutBelow(control: Element, bound: Element | null, selector: string): boolean {
+function ariaHiddenBelow(control: Element, bound: Element | null): boolean {
   for (
     let node: Element | null = control;
     node !== null && node !== bound;
     node = node.parentElement
   ) {
-    if (node.matches(selector)) return true;
+    if (node.matches(ARIA_HIDDEN)) return true;
   }
   return false;
 }
 
 /**
- * Whether `control` takes a press now: the one rule Add's entries and the key `l` read before
- * they list, offer or press a control another component draws, so what is offered is exactly
- * what a press opens. Details reads it wherever it hands a focus on through `firstUsable`
- * (`IssueMargin.tsx`, `BlockedByControl.tsx`), as does the opener of a row (`details-rows.ts`,
- * through `firstUsableIn`) for the control it focuses or presses.
+ * Whether `control` takes a press now: the one rule Add's entries, the key `l` and the header's
+ * keys (`useHeaderKeys.ts`) read before they list, offer or press a control another component
+ * draws, so what is offered is exactly what a press opens. Details reads it wherever it hands a
+ * focus on through `firstUsable` (`IssueMargin.tsx`, `BlockedByControl.tsx`), as does the opener
+ * of a row (`details-rows.ts`, through `firstUsableIn`) for the control it focuses or presses.
  *
  * It builds on `canHoldFocus` (`focus-keeper.ts`), whether an element can take the focus. A
  * control that can take the focus can still refuse a press, and an entry or a key that offered
@@ -54,31 +49,30 @@ function shutBelow(control: Element, bound: Element | null, selector: string): b
  * `aside`. And a control that is not drawn (`checkVisibility()`, with `visibility: hidden` read
  * too), which catches a box the stylesheet hides, since `canHoldFocus` reads no layout.
  *
- * The two rules answer differently in one place, on purpose: a control inside a closed Details.
- * Details' drawer is an `aside` that is `hidden` while Details is closed
- * (`features/margin/Margin.tsx`), so `canHoldFocus` refuses every control in it. This rule makes
- * `canHoldFocus`'s own tests on such a control, with its selector (`OUT_OF_REACH`), but reads the
- * elements around the control up to that `aside` only, which `canHoldFocus` cannot be told to do,
- * and does not ask whether the control is drawn, since nothing under a hidden `aside` is: it is
+ * The two rules answer differently in one place, on purpose: a control under a shut bound. The
+ * bound is `within` where the caller names one, else the Details drawer's `aside` around the
+ * control, and it is shut while it is `hidden`. `canHoldFocus` refuses every control under a
+ * hidden element, so there this rule reads `canHoldFocus` bounded by it, which leaves the bound
+ * and what is above it unread; it reads `aria-hidden` on the same elements, and does not ask
+ * whether the control is drawn, since nothing under a hidden element is. Such a control is
  * refused when it is off the page, disabled or busy, or when it or an element between it and the
- * `aside` is hidden, inert or `aria-hidden`, and taken otherwise. Two readers need this: a reach
- * that opens Details itself before it presses (the key `l`, through `useOpenDetailsAt`) must find
- * its control while Details is closed, or `l` would never open Details at Labels; and Add's list
- * must stay right while Details is closed, so Details does not open on an Add without the entries
- * whose controls are in Details, which the read its opening sets off must then put back.
+ * bound is hidden, inert or `aria-hidden`, and taken otherwise. Three readers need this. In a
+ * closed Details, whose `aside` is `hidden` (`features/margin/Margin.tsx`), a reach that opens
+ * Details itself before it presses (the key `l`, through `useOpenDetailsAt`) must find its
+ * control, or `l` would never open Details at Labels; and Add's list must stay right, so Details
+ * does not open on an Add without the entries whose controls are in Details, which the read its
+ * opening sets off must then put back. In a shut group its caller names, the header's `Shift+P`
+ * presses the pin, as a press on it in the open menu does: the header's keys name the actions
+ * menu's group, hidden while the menu is shut, as the pin's bound (`useHeaderKeys.ts`).
  */
-export function usableControl(control: Element | null): boolean {
+export function usableControl(control: Element | null, within?: Element | null): boolean {
   if (control === null || control.matches(BUSY)) return false;
   const details = control.closest(`aside[${DETAILS_ATTRIBUTE}]`);
-  if (details?.hasAttribute("hidden") === true) {
-    return (
-      control instanceof HTMLElement &&
-      control.isConnected &&
-      !control.matches(":disabled") &&
-      !shutBelow(control, details, SHUT)
-    );
+  const bound = within ?? details;
+  if (bound?.hasAttribute("hidden") === true) {
+    return canHoldFocus(control, bound) && !ariaHiddenBelow(control, bound);
   }
-  if (!canHoldFocus(control) || shutBelow(control, details, ARIA_HIDDEN)) return false;
+  if (!canHoldFocus(control) || ariaHiddenBelow(control, details)) return false;
   // `checkVisibility()` needs Safari 17.4, Chrome 105 or Firefox 106, and Dispatch still runs on
   // browsers without it (`shell/roving.ts`): there the attributes above are the whole rule. With
   // no options it does not read `visibility: hidden`, so the options ask for that too, by both of

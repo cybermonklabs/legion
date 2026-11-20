@@ -13,6 +13,13 @@ function closedDetails(inside: string): string {
   return `<aside ${DETAILS_ATTRIBUTE} hidden style="display: none">${inside}</aside>`;
 }
 
+/** A group its caller shuts on purpose and names as the bound, as the header's keys name the
+ *  actions menu's group that holds the pin: `hidden`, with the style a browser draws it with, as
+ *  `closedDetails` has. */
+function shutGroup(inside: string): string {
+  return `<div data-bound hidden style="display: none">${inside}</div>`;
+}
+
 /** What each case drew on the page, taken off again after it. */
 const drawn: HTMLElement[] = [];
 
@@ -44,6 +51,13 @@ function removedButton(html: string): Element {
   const button = drawButton(html);
   drawn.pop()?.remove();
   return button;
+}
+
+/** The element around `control`, itself included, that its case marks `data-${mark}`. */
+function marked(control: Element, mark: "bound" | "shut"): Element {
+  const found = control.closest(`[data-${mark}]`);
+  if (found === null) throw new Error(`the case marked no ${mark} around its control`);
+  return found;
 }
 
 // These show that the test's DOM refuses nothing by itself, so each refusal below comes from the
@@ -145,4 +159,94 @@ test.each([
   ["an SVG link in the closed Details drawer", () => drawControl(closedDetails(SVG_LINK), "svg a")],
 ] as const)("%s takes no press", (_element, draw) => {
   expect(usableControl(draw()), "the element takes a press").toBe(false);
+});
+
+// Told a bound, `canHoldFocus` does not read the bound or what is above it, which its caller may
+// have shut on purpose: a button there holds the focus that it holds with no bound.
+test.each([
+  ["a button in a hidden bound", `<div data-bound hidden>${SAVE}</div>`],
+  ["a button in an inert bound", `<div data-bound inert>${SAVE}</div>`],
+  ["a button in a bound under a hidden element", `<div hidden><div data-bound>${SAVE}</div></div>`],
+] as const)("%s can hold the focus within the bound", (_element, html) => {
+  const button = drawButton(html);
+  expect(canHoldFocus(button), "the button can hold the focus with no bound").toBe(false);
+  expect(
+    canHoldFocus(button, marked(button, "bound")),
+    "the button cannot hold the focus within the bound"
+  ).toBe(true);
+});
+
+// Below the bound every element is still read: a button that is hidden or inert, or that is under
+// an element that is, holds no focus within the bound, and holds it once that attribute is gone.
+test.each([
+  [
+    "a hidden button",
+    '<div data-bound hidden><button data-shut hidden type="button">Save</button></div>',
+  ],
+  [
+    "a button under a hidden element",
+    `<div data-bound hidden><div data-shut hidden>${SAVE}</div></div>`,
+  ],
+  [
+    "a button under an inert element",
+    `<div data-bound hidden><div data-shut inert>${SAVE}</div></div>`,
+  ],
+] as const)("%s in a hidden bound can hold no focus within it", (_element, html) => {
+  const button = drawButton(html);
+  const bound = marked(button, "bound");
+  expect(canHoldFocus(button, bound), "the button can hold the focus within the bound").toBe(false);
+  const shut = marked(button, "shut");
+  shut.removeAttribute("hidden");
+  shut.removeAttribute("inert");
+  expect(
+    canHoldFocus(button, bound),
+    "the button cannot hold the focus within the bound once nothing below it is shut"
+  ).toBe(true);
+});
+
+// A bound that does not hold the element bounds nothing: every element around it is read.
+test("a button under a hidden element can hold no focus within a bound beside it", () => {
+  const button = drawButton(`<div hidden><span data-beside></span>${SAVE}</div>`);
+  const beside = button.parentElement?.querySelector("[data-beside]") ?? null;
+  if (beside === null) throw new Error("the case drew nothing beside the button");
+  expect(canHoldFocus(button, beside), "the button can hold the focus").toBe(false);
+});
+
+// The press rule reads a group its caller names as the bound as it reads the closed Details: the
+// header's `Shift+P` presses the pin in the shut actions menu. Named by no caller, the same group
+// is one more hidden element, and nothing under it takes a press.
+test("a button in a shut group takes a press only where the group is named as its bound", () => {
+  const button = drawButton(shutGroup(SAVE));
+  expect(
+    usableControl(button, marked(button, "bound")),
+    "the button takes no press within the shut group named as its bound"
+  ).toBe(true);
+  expect(usableControl(button), "the button takes a press with no bound named").toBe(false);
+});
+
+// Within a shut group named as the bound, the control and each element between it and the group
+// are still read, as in the closed Details: each of these refuses there, and the button takes a
+// press once that attribute is taken off.
+test.each([
+  [
+    "an aria-disabled button",
+    '<button aria-disabled="true" data-shut type="button">Save</button>',
+    "aria-disabled",
+  ],
+  [
+    "a button under an aria-hidden element",
+    `<div aria-hidden="true" data-shut>${SAVE}</div>`,
+    "aria-hidden",
+  ],
+  ["a button under a hidden element", `<div data-shut hidden>${SAVE}</div>`, "hidden"],
+  ["a button under an inert element", `<div data-shut inert>${SAVE}</div>`, "inert"],
+] as const)("%s in a shut group named as its bound takes no press", (_element, inside, attribute) => {
+  const button = drawButton(shutGroup(inside));
+  const bound = marked(button, "bound");
+  expect(usableControl(button, bound), "the button takes a press").toBe(false);
+  marked(button, "shut").removeAttribute(attribute);
+  expect(
+    usableControl(button, bound),
+    `the button takes no press once its ${attribute} is taken off`
+  ).toBe(true);
 });
