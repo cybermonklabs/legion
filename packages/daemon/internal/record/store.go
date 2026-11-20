@@ -702,14 +702,24 @@ func (s *Postgres) PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*P
 // onePullRequest is the row query selects with what it remembers of its settled heads, nil for no
 // row.
 func onePullRequest(ctx context.Context, tx pgx.Tx, query string, args ...any) (*PullRequest, error) {
+	pr, err := queryPullRequestRow(ctx, tx, query, args...)
+	if err != nil || pr == nil {
+		return nil, err
+	}
+	if err := loadSettledHeads(ctx, tx, pr); err != nil {
+		return nil, err
+	}
+	return pr, nil
+}
+
+// queryPullRequestRow is the row query selects alone, with none of what it remembers of its
+// settled heads, nil for no row.
+func queryPullRequestRow(ctx context.Context, tx pgx.Tx, query string, args ...any) (*PullRequest, error) {
 	pr, err := scanPullRequest(tx.QueryRow(ctx, query, args...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
-	}
-	if err := loadSettledHeads(ctx, tx, pr); err != nil {
 		return nil, err
 	}
 	return pr, nil
@@ -723,7 +733,8 @@ func onePullRequest(ctx context.Context, tx pgx.Tx, query string, args ...any) (
 // another spelling names the same row. The exact match was the outlier, and it lost exactly the
 // row a configured rename exists to find — a pull request recorded under GitHub's spelling of the
 // name the repository moved from, read under the pair's spelling of it — leaving a recorded pull
-// request read as one the daemon does not record.
+// request read as one the daemon does not record. PullRequestRowByBranch and
+// PullRequestRowByNumber run the first two's queries (pullRequestByBranch, pullRequestByNumber).
 //
 // Each read is bounded by an index on the expression it writes: PullRequestByNumber and
 // PullRequestRecorded by pull_requests_lower_repo_number, PullRequestByBranch by
@@ -733,9 +744,13 @@ func onePullRequest(ctx context.Context, tx pgx.Tx, query string, args ...any) (
 // filters every row it reads, a cost that grows with the records of finished issues, which are
 // never deleted. 0004's unique pull_requests_repo_branch stays the table's uniqueness rule. No
 // other read of the table keys on the repository.
+const (
+	pullRequestByBranch = "select " + pullRequestColumns + " from pull_requests where lower(repo) = lower($1) and branch = $2"
+	pullRequestByNumber = "select " + pullRequestColumns + " from pull_requests where lower(repo) = lower($1) and number = $2"
+)
 
 func (s *Postgres) PullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error) {
-	pr, err := onePullRequest(ctx, tx, "select "+pullRequestColumns+" from pull_requests where lower(repo) = lower($1) and branch = $2", repo, branch)
+	pr, err := onePullRequest(ctx, tx, pullRequestByBranch, repo, branch)
 	if err != nil {
 		return nil, fmt.Errorf("read pull request for %s %s: %w", repo, branch, err)
 	}
@@ -746,9 +761,36 @@ func (s *Postgres) PullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, bra
 // listing every issue and reading each one's pull request — a read per issue for every check,
 // review and push event — and the row is one query away.
 func (s *Postgres) PullRequestByNumber(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequest, error) {
-	pr, err := onePullRequest(ctx, tx, "select "+pullRequestColumns+" from pull_requests where lower(repo) = lower($1) and number = $2", repo, number)
+	pr, err := onePullRequest(ctx, tx, pullRequestByNumber, repo, number)
 	if err != nil {
 		return nil, fmt.Errorf("read pull request %s#%d: %w", repo, number, err)
+	}
+	return pr, nil
+}
+
+// PullRequestRowByBranch and PullRequestRowByNumber read the pull request PullRequestByBranch and
+// PullRequestByNumber read, by the same query, as its row alone: with none of what it remembers of
+// its settled heads, and marked with the read that made it (PullRequest.listedBy), so
+// PutPullRequest refuses it. They are a reader's that never writes the record back and reads
+// neither its SettledHeads nor its head run's Settled, which the whole read would load for nothing.
+func (s *Postgres) PullRequestRowByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error) {
+	pr, err := queryPullRequestRow(ctx, tx, pullRequestByBranch, repo, branch)
+	if err != nil {
+		return nil, fmt.Errorf("read the row of the pull request for %s %s: %w", repo, branch, err)
+	}
+	if pr != nil {
+		pr.listedBy = "PullRequestRowByBranch"
+	}
+	return pr, nil
+}
+
+func (s *Postgres) PullRequestRowByNumber(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequest, error) {
+	pr, err := queryPullRequestRow(ctx, tx, pullRequestByNumber, repo, number)
+	if err != nil {
+		return nil, fmt.Errorf("read the row of pull request %s#%d: %w", repo, number, err)
+	}
+	if pr != nil {
+		pr.listedBy = "PullRequestRowByNumber"
 	}
 	return pr, nil
 }
@@ -843,9 +885,9 @@ func collectPullRequests(rows pgx.Rows, describe, listedBy string) ([]PullReques
 // that has stopped with its work already merged is exactly the tree that caller reports, and a
 // merged pull request is the fact its controller most needs to read. It reads none of what each
 // pull request remembers of its settled heads (PullRequest.SettledHeads), so a reader of one
-// pull request that never writes it reads it here too, as a list of one, and loads no memory it
-// would not use. An error names how many issues the read was of and the first of them, not every
-// key: the state's read asks for each issue of the project.
+// pull request that never writes it reads it here too, as a list of one (PullRequestRow), and
+// loads no memory it would not use. An error names how many issues the read was of and the first
+// of them, not every key: the state's read asks for each issue of the project.
 func (s *Postgres) PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string]PullRequest, error) {
 	if len(issues) == 0 {
 		return nil, nil
@@ -872,6 +914,21 @@ func (s *Postgres) PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []strin
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
 	return requests, nil
+}
+
+// PullRequestRow is the pull request store records for issue, nil for none, read as a list of one
+// (Store.PullRequestsOf): its row alone, with none of what it remembers of its settled heads, a
+// record PutPullRequest refuses. It is the read of one pull request by its issue for a reader that
+// never writes the record back and reads neither its SettledHeads nor its head run's Settled.
+func PullRequestRow(ctx context.Context, store Store, tx pgx.Tx, issue string) (*PullRequest, error) {
+	of, err := store.PullRequestsOf(ctx, tx, []string{issue})
+	if err != nil {
+		return nil, err
+	}
+	if pr, found := of[issue]; found {
+		return &pr, nil
+	}
+	return nil, nil
 }
 
 func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest) error {

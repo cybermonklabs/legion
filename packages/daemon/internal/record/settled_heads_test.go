@@ -164,11 +164,11 @@ func TestAStoredFenceNamesNotTheHeadOfItsRow(t *testing.T) {
 	}
 }
 
-// Only the three reads of one pull request load what it remembers of its settled heads
-// (PullRequest, PullRequestByNumber, PullRequestByBranch); a list read loads none of it. So a
-// record a list read made is refused by PutPullRequest, with an error that names the read, and
-// the memory the store holds is left as it was: written, it would have deleted every remembered
-// head.
+// Only the three whole reads of one pull request load what it remembers of its settled heads
+// (PullRequest, PullRequestByNumber, PullRequestByBranch); a list read, and a read of the row alone
+// by its number or its branch, loads none of it. So a record such a read made is refused by
+// PutPullRequest, with an error that names the read, and the memory the store holds is left as it
+// was: written, it would have deleted every remembered head.
 func TestAListedPullRequestIsRefusedByPutPullRequest(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -191,6 +191,14 @@ func TestAListedPullRequestIsRefusedByPutPullRequest(t *testing.T) {
 		{"PullRequestsOf", func(tx pgx.Tx) ([]PullRequest, error) {
 			of, err := records.PullRequestsOf(ctx, tx, []string{issue.Key})
 			return []PullRequest{of[issue.Key]}, err
+		}},
+		{"PullRequestRowByNumber", func(tx pgx.Tx) ([]PullRequest, error) {
+			row, err := records.PullRequestRowByNumber(ctx, tx, strings.ToUpper(pr.Repo), pr.Number)
+			return rowOf(row), err
+		}},
+		{"PullRequestRowByBranch", func(tx pgx.Tx) ([]PullRequest, error) {
+			row, err := records.PullRequestRowByBranch(ctx, tx, strings.ToUpper(pr.Repo), pr.Branch)
+			return rowOf(row), err
 		}},
 	} {
 		inTx(t, st, func(tx pgx.Tx) {
@@ -217,6 +225,14 @@ func TestAListedPullRequestIsRefusedByPutPullRequest(t *testing.T) {
 			t.Errorf("after the refused writes the store holds the remembered heads %v, want the five written", held)
 		}
 	})
+}
+
+// rowOf is the record a read of one row answered as a list of it, none for no row.
+func rowOf(pr *PullRequest) []PullRequest {
+	if pr == nil {
+		return nil
+	}
+	return []PullRequest{*pr}
 }
 
 // A write keeps exactly what the record remembers: an entry it no longer holds is deleted, the

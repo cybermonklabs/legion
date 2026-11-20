@@ -871,15 +871,17 @@ type PullRequest struct {
 	// (HeadRun.Settled), and a reopen and a new generation keep it, as the pull request's row is.
 	//
 	// The store keeps it in a table of its own, pull_request_settled_heads, one row for each head
-	// (migration 20261120144241 says why), which only the three reads of one pull request load:
-	// PullRequest, PullRequestByNumber and PullRequestByBranch. A list read loads none of it and
-	// marks its records (listedBy), which PutPullRequest refuses.
+	// (migration 20261120144241 says why), which only the three whole reads of one pull request
+	// load: PullRequest, PullRequestByNumber and PullRequestByBranch. A list read and a row read
+	// (PullRequestRowByNumber, PullRequestRowByBranch, PullRequestRow) load none of it and mark
+	// their records (listedBy), which PutPullRequest refuses.
 	SettledHeads []Settlement
-	// listedBy names the list read that made the record - OpenPullRequests,
-	// OpenPullRequestsOnBase or PullRequestsOf - and is "" for a record one of the three reads of
-	// one pull request made, or that no read made. A list read loads neither SettledHeads nor
-	// HeadRun.Settled, so a write of its record would delete every remembered head: PutPullRequest
-	// refuses it, naming the read.
+	// listedBy names the read that made the record with none of what it remembers - the list reads
+	// OpenPullRequests, OpenPullRequestsOnBase and PullRequestsOf, and the row reads
+	// PullRequestRowByNumber and PullRequestRowByBranch - and is "" for a record one of the three
+	// whole reads of one pull request made, or that no read made. Such a read loads neither
+	// SettledHeads nor HeadRun.Settled, so a write of its record would delete every remembered
+	// head: PutPullRequest refuses it, naming the read.
 	listedBy string
 	// Pushes are the branch's pushes the daemon still reads: every push whose own move, its two
 	// heads, the record has not made (Moves) - a push still on its way from the head, a link of a
@@ -1911,10 +1913,11 @@ type Store interface {
 	// or without a mirrored row of the issue: a claim event applied before the issue's first row is
 	// the newest claim Dispatch showed.
 	DispatchClaim(ctx context.Context, tx pgx.Tx, key string) (string, error)
-	// DispatchStatusChangedSeq is the sequence of the reading at which the copy last saw key's
-	// status change (PutDispatchIssue): a reading moves it only when it carries a status the copy
-	// takes that differs from the one the row held. It is 0 for no row, and for a row no reading
-	// carrying a status wrote.
+	// DispatchStatusChangedSeq is the latest sequence by which the copy knows key's status changed
+	// (PutDispatchIssue): a reading moves it to its own sequence when it carries a status the copy
+	// takes that differs from the one the row held, and a reading older than the row's status
+	// reading that carries another status raises it to that status reading's sequence. It is 0 for
+	// no row, and for a row no reading carrying a status wrote.
 	DispatchStatusChangedSeq(ctx context.Context, tx pgx.Tx, key string) (int64, error)
 	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error)
 	// PhaseEntries is the entry each phases row of issues names, the moment that entry was raised
@@ -1929,9 +1932,17 @@ type Store interface {
 	// transition has ever handed work on.
 	PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error)
 	PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error
+	// PullRequest, PullRequestByBranch and PullRequestByNumber read one pull request whole, what it
+	// remembers of its settled heads with it, for a fact's handling that may write the record back
+	// or weighs a settlement against that memory.
 	PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
 	PullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error)
 	PullRequestByNumber(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequest, error)
+	// PullRequestRowByBranch and PullRequestRowByNumber read what PullRequestByBranch and
+	// PullRequestByNumber read, by the same query, as the pull request's row alone: none of what
+	// it remembers of its settled heads, and a record PutPullRequest refuses, naming the read.
+	PullRequestRowByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error)
+	PullRequestRowByNumber(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequest, error)
 	// ClearedPullRequestClock is the clock (updated_at) of the newest lifecycle event pull request
 	// number of repo had applied when a new generation's clear deleted its row (ClearGeneration),
 	// repo compared without case as PullRequestByNumber compares it, and the zero time when no clear
@@ -1948,8 +1959,8 @@ type Store interface {
 	// issue of a tree and may make no read per issue (admit's tellStalledTrees). It answers a
 	// merged and a closed pull request as well as an open one, which OpenPullRequests cannot:
 	// a tree that has stopped with its work merged is exactly the tree such a caller reports. It
-	// loads no settled heads, so the state's build and every reader of one pull request that
-	// never writes it read here, and PutPullRequest refuses its records.
+	// loads no settled heads, so the state's build and every reader of one pull request by its
+	// issue that never writes it read here (PullRequestRow), and PutPullRequest refuses its records.
 	PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string]PullRequest, error)
 	// PutPullRequest writes pr whole, what it remembers of its settled heads with it, and refuses a
 	// record a list read made (PullRequest.SettledHeads says why).

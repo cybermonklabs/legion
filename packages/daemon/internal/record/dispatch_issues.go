@@ -35,12 +35,19 @@ func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading Disp
 	parent := ParentOf(carriedOr(reading.Parent, ""))
 	// Each value carried is inserted at the reading's sequence, and each one not carried at 0.
 	// Over a row that exists, each value the reading carries changes, with its sequence, only where
-	// no reading has written it (0) or an older one did; the where clause skips a reading that
-	// changes no value, so the project and the row's sequence move only with a value.
+	// no reading has written it (0) or an older one did (dispatchValueTakes), and the project moves
+	// only with such a value.
+	//
 	// status_changed_seq, the sequence at which the copy last saw the status change
-	// (DispatchStatusChangedSeq), starts where status_seq does and then moves to the reading's
-	// sequence only with a status the reading writes that differs from the one the row held, so a
-	// rename or a re-rank that carries the same status leaves it where the status last moved.
+	// (DispatchStatusChangedSeq), starts where status_seq does. A status the reading writes that
+	// differs from the one the row held moves it to the reading's sequence, so a rename or a
+	// re-rank that carries the same status leaves it where the status last moved. A reading older
+	// than the row's status_seq writes no status, but when its status differs from the one the row
+	// holds, the status changed between that reading and the one the row holds: the sequence rises
+	// to status_seq, and never falls. The where clause skips a reading that takes no value, except
+	// such an older reading while it raises the sequence. That reading changes no other column:
+	// each value's rule refuses an older value, the project moves only with a value, and
+	// dispatch_seq, which is never below status_seq, stays above the reading's sequence.
 	if _, err := tx.Exec(ctx, `insert into dispatch_issues as held (key, project, dispatch_seq,
 			status, status_seq, status_changed_seq, parent, parent_seq, blockers, blockers_seq, labels, labels_seq, rank, rank_seq)
 		values ($1, $2, $3::bigint,
@@ -49,12 +56,15 @@ func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading Disp
 			$8, case when $9 then $3 else 0 end,
 			$10, case when $11 then $3 else 0 end,
 			$12, case when $13 then $3 else 0 end)
-		on conflict (key) do update set project = excluded.project,
+		on conflict (key) do update set project = case when `+dispatchValueTakes+` then excluded.project else held.project end,
 			dispatch_seq = greatest(held.dispatch_seq, excluded.dispatch_seq),
 			status = case when $5 and (held.status_seq = 0 or held.status_seq < $3) then excluded.status else held.status end,
 			status_seq = case when $5 and (held.status_seq = 0 or held.status_seq < $3) then $3 else held.status_seq end,
-			status_changed_seq = case when $5 and (held.status_seq = 0 or held.status_seq < $3)
-				and held.status is distinct from excluded.status then $3 else held.status_changed_seq end,
+			status_changed_seq = case
+				when $5 and (held.status_seq = 0 or held.status_seq < $3) and held.status is distinct from excluded.status then $3
+				when $5 and held.status_seq > $3 and held.status is distinct from excluded.status
+					then greatest(held.status_changed_seq, held.status_seq)
+				else held.status_changed_seq end,
 			parent = case when $7 and (held.parent_seq = 0 or held.parent_seq < $3) then excluded.parent else held.parent end,
 			parent_seq = case when $7 and (held.parent_seq = 0 or held.parent_seq < $3) then $3 else held.parent_seq end,
 			blockers = case when $9 and (held.blockers_seq = 0 or held.blockers_seq < $3) then excluded.blockers else held.blockers end,
@@ -63,11 +73,9 @@ func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading Disp
 			labels_seq = case when $11 and (held.labels_seq = 0 or held.labels_seq < $3) then $3 else held.labels_seq end,
 			rank = case when $13 and (held.rank_seq = 0 or held.rank_seq < $3) then excluded.rank else held.rank end,
 			rank_seq = case when $13 and (held.rank_seq = 0 or held.rank_seq < $3) then $3 else held.rank_seq end
-		where ($5 and (held.status_seq = 0 or held.status_seq < $3))
-			or ($7 and (held.parent_seq = 0 or held.parent_seq < $3))
-			or ($9 and (held.blockers_seq = 0 or held.blockers_seq < $3))
-			or ($11 and (held.labels_seq = 0 or held.labels_seq < $3))
-			or ($13 and (held.rank_seq = 0 or held.rank_seq < $3))`,
+		where `+dispatchValueTakes+`
+			or ($5 and held.status_seq > $3 and held.status is distinct from excluded.status
+				and held.status_changed_seq < held.status_seq)`,
 		reading.Key, reading.Project, reading.Seq,
 		status, reading.Status.Carried,
 		parent, reading.Parent.Carried,
@@ -78,6 +86,17 @@ func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading Disp
 	}
 	return s.PutDispatchClaim(ctx, tx, reading.Key, reading.ClaimedBy, reading.ClaimSeq)
 }
+
+// dispatchValueTakes is PutDispatchIssue's test, over the row the copy holds (held), that the
+// reading takes at least one value: one it carries ($5, $7, $9, $11 and $13 for the status, the
+// parent, the blockers, the labels and the rank) that no reading has written yet (sequence 0) or
+// an older reading wrote ($3 is the reading's sequence). The statement's project and its where
+// clause both read it, so the project moves exactly when a value does.
+const dispatchValueTakes = `(($5 and (held.status_seq = 0 or held.status_seq < $3))
+			or ($7 and (held.parent_seq = 0 or held.parent_seq < $3))
+			or ($9 and (held.blockers_seq = 0 or held.blockers_seq < $3))
+			or ($11 and (held.labels_seq = 0 or held.labels_seq < $3))
+			or ($13 and (held.rank_seq = 0 or held.rank_seq < $3)))`
 
 // carriedOr is the value a reading carries, or none when it does not carry one.
 func carriedOr[T any](value Carried[T], none T) T {
@@ -135,8 +154,10 @@ func (s *Postgres) DispatchIssueSeq(ctx context.Context, tx pgx.Tx, key string) 
 	return seq, true, nil
 }
 
-// DispatchStatusChangedSeq is the sequence of the reading at which the copy last saw key's status
-// change (PutDispatchIssue): 0 for no row, and for a row no reading carrying a status wrote.
+// DispatchStatusChangedSeq is the latest sequence by which the copy knows key's status changed
+// (PutDispatchIssue): the reading that changed it, or the row's status reading when an older
+// reading of another status came after it. It is 0 for no row, and for a row no reading carrying
+// a status wrote.
 func (s *Postgres) DispatchStatusChangedSeq(ctx context.Context, tx pgx.Tx, key string) (int64, error) {
 	var seq int64
 	err := tx.QueryRow(ctx, `select status_changed_seq from dispatch_issues where key = $1`, key).Scan(&seq)

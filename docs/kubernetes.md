@@ -2218,6 +2218,9 @@ Its migration `20261120144241_intake_failures` adds three tables and one column,
 
 - `intake_failures` holds each message of a durable consumer whose handling failed, with its subject, its headers and its payload.
   A row is an open failure until a later delivery succeeds or the intake gives the message up, and from then on a given-up record, which a replay or a discard closes and which stays in the table after that.
+  A row is as large as its message, which the NATS server bounds at its `max_payload` (1 MB unless its configuration raises it): the 27 envelopes captured in `packages/daemon/internal/intake/testdata` are 369 to 1,231 bytes (`wc -c`), and a CI settlement grows with the checks it names.
+  A given-up record is kept for good, with no retention: a replay or a discard closes it and keeps it, as history.
+  The growth is an estimate from two measurements: the 30 days to 2026-11-19 gave 7,449 messages that this release would give up, 4,292 of them on one day from one defect since fixed (cybermonklabs/legion#4315), which at the largest captured envelope is about 9 MB.
 
 - `cleared_pull_requests` keeps, for each pull request whose row a new generation's clear deleted, the newest lifecycle clock the record applied (`head_updated_at`), so a late opened or reopened event of that pull request no newer than that clock records nothing, whatever its head.
 

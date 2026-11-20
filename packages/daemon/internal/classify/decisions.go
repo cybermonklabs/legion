@@ -751,8 +751,15 @@ func fenceEntry(pr record.PullRequest) record.Settlement {
 // withFence is pr with entry as its check fence, standing at entry's head: each field of the entry,
 // every list copied, so pr shares no list with the entry it remembers, and Failing and Cancelled
 // lists even where the entry holds none, as a fence a settlement applied to holds them. fenceEntry
-// is the copy the other way, so a field the fence gains is added to these two copies and to no
-// other.
+// is the copy the other way: these two copy the pull request's fence to and from what it
+// remembers of its settled heads. They are not the only copies of a settlement's fields, so a
+// field the fence gains reaches these two and each of the others: the settlement fact's candidate
+// (workflow's settlementCandidate), a head run's settlement step and its replay
+// (ApplyCheckSettlement's step, candidateOf, sameSettlement), the apply of a newer settlement
+// (ApplySettlement), the reopen step that empties the fence (applyStep), the judgement a head run
+// anchors and replays and the test of its change (judgementOf, withJudgement, JudgementChanged),
+// and the store's columns and memory rows of the fence (record's PutPullRequest, scanPullRequest,
+// storedFence and the clear of a new generation).
 func withFence(pr record.PullRequest, entry record.Settlement) record.PullRequest {
 	pr.CheckedHead = entry.Head
 	pr.Failing, pr.Cancelled = append([]string{}, entry.Failing...), append([]string{}, entry.Cancelled...)

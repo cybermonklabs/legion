@@ -243,8 +243,8 @@ func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 					t.Fatalf("carried gate = %#v, %v", gate, err)
 				}
 				pr, err := records.PullRequest(context.Background(), tx, child)
-				if err != nil || pr == nil || pr.HeadSHA != "head-42" || pr.State != tc.prState || pr.Generation != 2 {
-					t.Fatalf("carried pull request = %#v, %v", pr, err)
+				if err != nil || pr == nil || pr.HeadSHA != "head-42" || pr.State != tc.prState || pr.Generation != 1 {
+					t.Fatalf("carried pull request = %#v, %v; want it at head-42 with its settlement's generation 1 kept", pr, err)
 				}
 				handover, err := records.Handover(context.Background(), tx, child)
 				if err != nil || handover != nil {
@@ -318,8 +318,8 @@ func TestAHandedOverChildWithNoGateToCarryIsNotMarkedCarried(t *testing.T) {
 		if gates, err := records.GatesOf(context.Background(), tx, child); err != nil || len(gates) != 0 {
 			t.Fatalf("gates = %#v, %v; want none, since the old root had none", gates, err)
 		}
-		if pr, err := records.PullRequest(context.Background(), tx, child); err != nil || pr == nil || pr.HeadSHA != "head-42" || pr.Generation != 2 {
-			t.Fatalf("pull request = %#v, %v; want it carried at generation 2", pr, err)
+		if pr, err := records.PullRequest(context.Background(), tx, child); err != nil || pr == nil || pr.HeadSHA != "head-42" || pr.Generation != 1 {
+			t.Fatalf("pull request = %#v, %v; want it carried with its settlement's generation 1 kept", pr, err)
 		}
 		if handedRoot, err := records.HandedOverRoot(context.Background(), tx, child); err != nil || handedRoot == nil || handedRoot.Generation != 2 || handedRoot.GateCarried {
 			t.Fatalf("handed-over root = %#v, %v; want generation 2 with no gate carried", handedRoot, err)

@@ -1386,6 +1386,9 @@ func told(row record.PhaseRow, r round) bool {
 // walks the open pull requests recorded on the base once, and asks for each read inside that
 // walk (basePush), since the record it overwrites as it goes is what tells a redelivered push
 // from a first delivery.
+//
+// It reads the pull request's row alone (pullRequestRow, pullRequestRowByBranch): it writes
+// nothing of the record and reads none of what it remembers of its settled heads.
 func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact) error {
 	if e.cfg.ReadMergeState == nil {
 		return nil
@@ -1395,21 +1398,21 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 	kind := classify.MergeStateFactOther
 	switch fact := fact.(type) {
 	case intake.PullRequestOpened:
-		pr, err = e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
+		pr, err = e.pullRequestRowByBranch(ctx, tx, fact.Repo, fact.Branch)
 		kind = classify.MergeStateFactHeadMove
 	case intake.PullRequestSynchronized:
-		pr, err = e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
+		pr, err = e.pullRequestRowByBranch(ctx, tx, fact.Repo, fact.Branch)
 		kind = classify.MergeStateFactHeadMove
 	case intake.Push:
 		// The push moves no head of the record: its synchronize, from GitHub or from the per-issue
 		// read (daemon's followHead), is the fact that moves the head, and the one a head move is
 		// read for. So the push asks only as a review or a settlement does, for a round it leaves
 		// waiting on GitHub, and one push to a branch asks for no ladder beside its synchronize's.
-		pr, err = e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
+		pr, err = e.pullRequestRowByBranch(ctx, tx, fact.Repo, fact.Branch)
 	case intake.PullRequestChecks:
-		pr, err = e.pullRequest(ctx, tx, fact.Repo, fact.Number)
+		pr, err = e.pullRequestRow(ctx, tx, fact.Repo, fact.Number)
 	case intake.PullRequestReview:
-		pr, err = e.pullRequest(ctx, tx, fact.Repo, fact.Number)
+		pr, err = e.pullRequestRow(ctx, tx, fact.Repo, fact.Number)
 	case intake.BasePush:
 		// Asked for inside the walk that records the push, which is the last reader of what
 		// tells a redelivery from a first delivery (basePush).

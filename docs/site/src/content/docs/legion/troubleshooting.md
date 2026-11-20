@@ -1747,9 +1747,9 @@ keeps:
 - **`bound`**: JetStream has delivered the message 21 times, and its first failure is at least an
   hour old. With the waits above, both are true at the 21st delivery, about 64 minutes after the
   first.
-- **`did not end`**: the handling of one delivery never ended, because the daemon stopped or
-  crashed during it, and the bound is reached. The next delivery gives the message up before its
-  handler runs again.
+- **`did not end`**: one delivery ended in no recorded failure, because the daemon stopped or
+  crashed while it ran or because the record of its failure was not written, and the bound is
+  reached. The next delivery gives the message up before its handler runs again.
 - **`retention`**: the stream would delete the message before its next delivery.
 - **`undecodable`**: the message does not decode. The daemon gives it up at its first delivery.
 - **`consumer moved past`**: the consumer moved past the message without delivering it again,

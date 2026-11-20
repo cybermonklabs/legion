@@ -601,7 +601,7 @@ func (e *Engine) closed(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 // logged, as a read of GitHub's merge state for a head the record has moved past is
 // (mergeability): the record has moved on since GitHub reported it.
 func (e *Engine) dequeued(ctx context.Context, tx pgx.Tx, fact intake.PullRequestDequeued) (intake.Result, error) {
-	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
+	pr, err := e.pullRequestRow(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil {
 		return intake.Result{}, err
 	}
@@ -659,7 +659,9 @@ func (e *Engine) mergeQueueReadDone(ctx context.Context, tx pgx.Tx, fact intake.
 // nil issue, no pull request and no reason. The facts that write the read and the merger's
 // message (dequeued, mergeQueueReadDone) and the daemon's outbox rows that read the pull request
 // and deliver the message read the issue through this one read, so all four judge it from the
-// same records. It is exported for those outbox rows (the daemon's mergingAt).
+// same records. It is exported for those outbox rows (the daemon's mergingAt). The pull request
+// is its row alone (record.PullRequestRow): no caller writes it back, and none reads what it
+// remembers of its settled heads.
 func MergingAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, number int, head string) (*record.Issue, *record.PullRequest, string, error) {
 	issue, err := store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
@@ -669,7 +671,7 @@ func MergingAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, n
 	if err != nil {
 		return nil, nil, "", err
 	}
-	pr, err := store.PullRequest(ctx, tx, key)
+	pr, err := record.PullRequestRow(ctx, store, tx, key)
 	if err != nil {
 		return nil, nil, "", err
 	}
@@ -724,7 +726,7 @@ func (e *Engine) pullRequestMissing(ctx context.Context, tx pgx.Tx, fact intake.
 	if err != nil || row.HandoffCommit != fact.HandoffCommit {
 		return intake.Result{}, err
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := record.PullRequestRow(ctx, e.store, tx, issue.Key)
 	if err != nil || record.LetsImplementationMove(pr) {
 		return intake.Result{}, err
 	}

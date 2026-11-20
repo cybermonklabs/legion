@@ -40,8 +40,10 @@ type IntakeGiveUpReason string
 const (
 	// GiveUpBound is the count of deliveries and the hour since the first failure both reached.
 	GiveUpBound IntakeGiveUpReason = "bound"
-	// GiveUpDidNotEnd is a delivery whose handling never ended, found by the next delivery once the
-	// bound was reached, which gives the message up before its handler runs again.
+	// GiveUpDidNotEnd is a delivery that ended in no recorded failure, because the daemon stopped
+	// or crashed while it ran or because the record of its failure was not written, found by the
+	// next delivery once the bound was reached, which gives the message up before its handler runs
+	// again.
 	GiveUpDidNotEnd IntakeGiveUpReason = "did not end"
 	// GiveUpRetention is a message the stream would delete before its next delivery.
 	GiveUpRetention IntakeGiveUpReason = "retention"

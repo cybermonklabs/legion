@@ -193,10 +193,10 @@ func (w *workflowRuntime) tellMissing(ctx context.Context, issue record.Issue, p
 // issueRecord is key's issue record and its pull request record, both nil for what is not
 // recorded, read in one transaction: what the per-issue read and the merge-state ladder read
 // before they read GitHub (issuePullRequest, readMergeState), and what the second read of a
-// conflict reads before it acts (outbox's conflictConfirm). The pull request is read as the list
-// reads read a row (record.Store.PullRequestsOf), with none of what it remembers of its settled
-// heads: each caller reads its columns to decide what to read of GitHub and builds the facts it
-// applies from them, and none writes the record back.
+// conflict reads before it acts (outbox's conflictConfirm). The pull request is its row alone
+// (record.PullRequestRow), with none of what it remembers of its settled heads: each caller reads
+// its columns to decide what to read of GitHub and builds the facts it applies from them, and
+// none writes the record back.
 func issueRecord(ctx context.Context, pool *store.Pool, records record.Store, key string) (*record.Issue, *record.PullRequest, error) {
 	var issue *record.Issue
 	var pr *record.PullRequest
@@ -205,14 +205,8 @@ func issueRecord(ctx context.Context, pool *store.Pool, records record.Store, ke
 		if issue, err = records.Issue(ctx, tx, key); err != nil || issue == nil {
 			return err
 		}
-		of, err := records.PullRequestsOf(ctx, tx, []string{key})
-		if err != nil {
-			return err
-		}
-		if recorded, found := of[key]; found {
-			pr = &recorded
-		}
-		return nil
+		pr, err = record.PullRequestRow(ctx, records, tx, key)
+		return err
 	}); err != nil {
 		return nil, nil, fmt.Errorf("read the record of %s: %w", key, err)
 	}

@@ -102,10 +102,13 @@ func retentionEnds(stored, next time.Time, maxAge, margin time.Duration) bool {
 	return maxAge > 0 && stored.Add(maxAge-margin).Before(next)
 }
 
-// didNotEndError is the last error of a message given up because delivery did not end: the
-// daemon's own sentence, then the last error a delivery that ended recorded, where there is one.
+// didNotEndError is the last error of a message given up because delivery did not end in a
+// recorded failure: the daemon's own sentence, then the last error a delivery that ended recorded,
+// where there is one. The sentence names both ways it arises: the daemon stopped or crashed while
+// the delivery ran, or the delivery's failure was handled and its record not written (recordFailure
+// could not begin its transaction or note the failure, or noteRedelivery's give-up rolled back).
 func didNotEndError(delivery uint64, recorded string) string {
-	sentence := fmt.Sprintf("delivery %d did not end: the daemon stopped or crashed while it ran", delivery)
+	sentence := fmt.Sprintf("delivery %d did not end in a recorded failure: the daemon stopped or crashed while it ran, or the record of its failure was not written", delivery)
 	if recorded == "" {
 		return sentence
 	}

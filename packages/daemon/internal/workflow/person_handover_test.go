@@ -401,3 +401,90 @@ func TestALatePersonsApprovalQueuesNoRootAPersonParkedSince(t *testing.T) {
 		})
 	}
 }
+
+// A person's approval that a later change of its parked root's status keeps from queuing the root
+// is no silent drop. Once the fact commits the daemon logs one warning naming the approval's
+// sequence and the copy's status change sequence, and the controller gets one parked-decision of
+// the approval, whose reason says it is older than the root's newest status reading and that todo
+// on the root brings it back. The root's own gate records the approval quietly, so it writes no
+// design-approved notice that the outbox would relay as a second parked-decision. A root the
+// daemon does not record has no tree to relay for, and is told by the warning alone. An approval
+// no later status change refuses queues the handover and tells nobody, as before.
+func TestARefusedPersonsHandoverIsWarnedAndRelayedToTheControllerOnce(t *testing.T) {
+	event := func(seq int64, title string) intake.DispatchIssue {
+		return intake.DispatchIssue{Key: "LEGION-208", ResolvedRepo: "sjawhar/legion", Seq: seq, Type: "issue.updated", Status: "icebox",
+			Title: title, Rank: "U", HandedOver: true}
+	}
+	const warning = "workflow: a person's approval of a parked root is older than a change of the root's status; the root is not queued as their handover"
+	relayed := record.ControllerNotice{Kind: record.ParkedDecisionNotice, Decision: record.DecisionDesignApproved, Root: "LEGION-208",
+		Ref: "dispatch://LEGION-208/spec", Actor: askPerson.Name(), Version: 2}
+	for _, tc := range []struct {
+		name     string
+		recorded bool
+		// events are the root's issue events the daemon applied before the approval, which is at 9.
+		events []intake.DispatchIssue
+		queued bool
+		// warned is the copy's status change sequence the warning names, 0 for no warning.
+		warned float64
+		// told is every notice and controller notice the approval leaves, a relayed
+		// parked-decision's reason aside.
+		told []record.OutboxPayload
+	}{
+		{name: "a recorded root parked after the approval", recorded: true, events: []intake.DispatchIssue{event(10, "root")},
+			warned: 10, told: []record.OutboxPayload{relayed}},
+		{name: "an unrecorded root parked after the approval", events: []intake.DispatchIssue{event(10, "root")}, warned: 10},
+		{name: "a recorded root parked before the approval and renamed after it", recorded: true,
+			events: []intake.DispatchIssue{event(8, "root"), event(11, "the root, renamed")}, queued: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			if tc.recorded {
+				seedIssue(t, pool, lingeringRoot("icebox"))
+				// Closed at the version approved, so applyArtifact would open it and write the
+				// design-approved notice.
+				seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2})
+			}
+			var logged bytes.Buffer
+			engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewJSONHandler(&logged, nil)))
+			for _, fact := range tc.events {
+				applyMirrored(t, pool, engine, fmt.Sprintf("event-%d", fact.Seq), fact)
+			}
+
+			applyMirrored(t, pool, engine, "late-approval", approvalOf(askPerson, parkedRootView("icebox")))
+
+			if queued := slices.Contains(statusWrites(t, pool, "LEGION-208"), personHandoverWrite("icebox")); queued != tc.queued {
+				t.Fatalf("the approval at sequence 9 queued the person's handover = %v, want %v", queued, tc.queued)
+			}
+			var warnings []map[string]any
+			for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
+				var entry map[string]any
+				if json.Unmarshal([]byte(line), &entry) == nil && entry["msg"] == warning {
+					warnings = append(warnings, entry)
+				}
+			}
+			switch {
+			case tc.warned == 0 && len(warnings) != 0:
+				t.Fatalf("the approval logged the refusal %v, want no warning", warnings)
+			case tc.warned != 0 && (len(warnings) != 1 || warnings[0]["level"] != "WARN" || warnings[0]["issue"] != "LEGION-208" ||
+				warnings[0]["approval_seq"] != float64(9) || warnings[0]["status_changed_seq"] != tc.warned):
+				t.Fatalf("the refusal's warnings = %v, want one at WARN naming LEGION-208, the approval at 9 and the status change at %v; the engine logged:\n%s",
+					warnings, tc.warned, logged.String())
+			}
+			told := noticeRows(t, pool)
+			for i, payload := range told {
+				notice, ok := payload.(record.ControllerNotice)
+				if !ok || notice.Kind != record.ParkedDecisionNotice {
+					continue
+				}
+				if !strings.Contains(notice.Reason, "older than LEGION-208's newest status reading") || !strings.Contains(notice.Reason, "set LEGION-208 to todo") {
+					t.Errorf("the parked-decision's reason %q does not say the approval is older than the root's newest status reading and that todo brings it back", notice.Reason)
+				}
+				notice.Reason = ""
+				told[i] = notice
+			}
+			if !sameNotices(told, tc.told) {
+				t.Fatalf("the notices the approval left = %#v, want %#v", told, tc.told)
+			}
+		})
+	}
+}

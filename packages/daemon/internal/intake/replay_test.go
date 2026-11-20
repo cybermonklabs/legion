@@ -114,28 +114,18 @@ func replayIssueSubject(key string) string {
 	return "notifications.dispatch.issue." + key + ".issue.updated"
 }
 
-// replayedRecord is give-up id as the record keeps it after a replay or a discard: its error, its
-// claim, its latest close and its discard.
+// replayedRecord is give-up id as the record keeps it after a replay or a discard, read through the
+// record's own read (intakeRecords): its error, its claim, its latest close and its discard are
+// what the tests here read of it.
 func replayedRecord(t *testing.T, pool *pgxpool.Pool, id int64) record.IntakeFailure {
 	t.Helper()
-	f := record.IntakeFailure{ID: id}
-	var claimed, closed, discarded *time.Time
-	var how string
-	if err := pool.QueryRow(context.Background(), `select last_error, replay_claimed_at, closed_at, coalesce(closed_how, ''),
-		coalesce(closed_by, ''), discarded_at, coalesce(discarded_by, ''), coalesce(discard_reason, '') from intake_failures where id = $1`, id).
-		Scan(&f.LastError, &claimed, &closed, &how, &f.ClosedBy, &discarded, &f.DiscardedBy, &f.DiscardReason); err != nil {
-		t.Fatalf("read give-up %d: %v", id, err)
-	}
-	for _, at := range []struct {
-		column *time.Time
-		field  *time.Time
-	}{{claimed, &f.ReplayClaimedAt}, {closed, &f.ClosedAt}, {discarded, &f.DiscardedAt}} {
-		if at.column != nil {
-			*at.field = at.column.UTC()
+	for _, f := range intakeRecords(t, pool) {
+		if f.ID == id {
+			return f
 		}
 	}
-	f.ClosedHow = record.IntakeClosedHow(how)
-	return f
+	t.Fatalf("read give-up %d: the table holds no such record", id)
+	return record.IntakeFailure{}
 }
 
 // processedFacts is how many facts processed_events holds, and how many of source's eventID.

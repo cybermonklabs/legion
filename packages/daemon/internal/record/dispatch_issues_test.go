@@ -507,24 +507,36 @@ func TestTheCopyIndexesItsParentColumn(t *testing.T) {
 	})
 }
 
-// The copy keeps, beside a row's status, the sequence of the reading at which it last saw that
-// status change (DispatchStatusChangedSeq), which a person's late approval of a parked root is
-// weighed against. A new row starts at the reading that makes it when that reading carries the
-// status, and at 0 when it carries none; the first reading that carries a status fills it, at the
-// row's own sequence too, as it fills the status. After that only a reading whose status the copy
-// takes and that differs from the row's moves it: a rename or a re-rank at a higher sequence that
-// carries the same status leaves it where it was, as do an older reading and an equal one that
-// carry another status, which the copy does not take, and a reading that carries no status. The
-// rows a project's refill writes again are new rows and start at the listing's reading. A key the
-// copy holds no row of reads 0.
+// The copy keeps, beside a row's status, the latest sequence by which it knows that status changed
+// (DispatchStatusChangedSeq), which a person's late approval of a parked root is weighed against.
+// A new row starts at the reading that makes it when that reading carries the status, and at 0
+// when it carries none; the first reading that carries a status fills it, at the row's own
+// sequence too, as it fills the status. After that a reading whose status the copy takes and that
+// differs from the row's moves it to that reading: a rename or a re-rank at a higher sequence that
+// carries the same status leaves it where it was, as does a reading that carries no status. A
+// reading older than the row's status reading writes no status, and when it carries another
+// status than the row's, the status changed between it and the row's status reading, so the
+// sequence rises to that status reading and the row's other columns stay as they were, its
+// project included; one that carries the row's own status, or another status once the sequence
+// stands at the status reading already, leaves it, as does an equal reading that carries another
+// status. The rows a project's refill writes again are new rows and start at the listing's
+// reading. A key the copy holds no row of reads 0.
 func TestTheCopysStatusChangeSequenceMovesOnlyWithAChangedStatus(t *testing.T) {
 	st := migratedStore(t)
 	records := NewStore()
 	inTx(t, st, func(tx pgx.Tx) {
+		// held is every column of key's row but status_changed_seq, as one text.
+		held := func(key string) string {
+			var row string
+			must(t, tx.QueryRow(t.Context(), `select (to_jsonb(held) - 'status_changed_seq')::text from dispatch_issues held where key = $1`, key).Scan(&row))
+			return row
+		}
 		for _, step := range []struct {
 			name    string
 			reading DispatchReading
 			want    int64
+			// alone says the reading changes no column of the row but status_changed_seq.
+			alone bool
 		}{
 			{name: "a new row whose reading carries the status", reading: DispatchReading{Key: "LEGION-900", Seq: 10,
 				Status: Carry("backlog"), Parent: Carry(""), Blockers: Carry[[]string](nil), Rank: Carry("a0")}, want: 10},
@@ -534,23 +546,43 @@ func TestTheCopysStatusChangeSequenceMovesOnlyWithAChangedStatus(t *testing.T) {
 				Status: Carry("backlog"), Rank: Carry("a1")}, want: 10},
 			{name: "a reading at 13 that carries another status", reading: DispatchReading{Key: "LEGION-900", Seq: 13,
 				Status: Carry("icebox")}, want: 13},
-			{name: "an older reading that carries another status", reading: DispatchReading{Key: "LEGION-900", Seq: 12,
-				Status: Carry("todo")}, want: 13},
+			{name: "an older reading that carries another status once the sequence stands at the status reading", reading: DispatchReading{Key: "LEGION-900", Seq: 12,
+				Status: Carry("todo")}, want: 13, alone: true},
 			{name: "a reading at the status's own sequence that carries another status", reading: DispatchReading{Key: "LEGION-900", Seq: 13,
-				Status: Carry("todo")}, want: 13},
+				Status: Carry("todo")}, want: 13, alone: true},
 			{name: "a reading at 14 that carries no status", reading: DispatchReading{Key: "LEGION-900", Seq: 14,
 				Blockers: Carry([]string{"LEGION-901"})}, want: 13},
+			{name: "a re-rank at 16 that carries the same status", reading: DispatchReading{Key: "LEGION-900", Seq: 16,
+				Status: Carry("icebox"), Rank: Carry("a2")}, want: 13},
+			{name: "an older reading at 15 that carries the row's own status", reading: DispatchReading{Key: "LEGION-900", Seq: 15,
+				Status: Carry("icebox"), Rank: Carry("a9")}, want: 13, alone: true},
+			{name: "an older reading at 15 that carries another status", reading: DispatchReading{Key: "LEGION-900", Project: "OTHER", Seq: 15,
+				Status: Carry("todo"), Rank: Carry("a9")}, want: 16, alone: true},
+			{name: "a still older reading at 14 that carries yet another status", reading: DispatchReading{Key: "LEGION-900", Seq: 14,
+				Status: Carry("backlog")}, want: 16, alone: true},
 			{name: "a new row whose reading carries no status", reading: DispatchReading{Key: "LEGION-910", Seq: 20,
 				Blockers: Carry([]string{"LEGION-901"})}, want: 0},
 			{name: "that row's first reading of a status, at its own sequence", reading: DispatchReading{Key: "LEGION-910", Seq: 20,
 				Status: Carry("todo")}, want: 20},
 		} {
-			step.reading.Project = "LEGION"
+			if step.reading.Project == "" {
+				step.reading.Project = "LEGION"
+			}
+			var before string
+			if step.alone {
+				before = held(step.reading.Key)
+			}
 			must(t, records.PutDispatchIssue(t.Context(), tx, step.reading))
 			got, err := records.DispatchStatusChangedSeq(t.Context(), tx, step.reading.Key)
 			must(t, err)
 			if got != step.want {
 				t.Fatalf("after %s the status change sequence of %s = %d, want %d", step.name, step.reading.Key, got, step.want)
+			}
+			if !step.alone {
+				continue
+			}
+			if after := held(step.reading.Key); after != before {
+				t.Fatalf("after %s the other columns of %s are %s, want them as they were: %s", step.name, step.reading.Key, after, before)
 			}
 		}
 

@@ -190,7 +190,7 @@ func TestEveryIntakeFailuresStatementKeepsItsRow(t *testing.T) {
 		}},
 		{"GiveUpIntakeMessage", func(t *testing.T, st *store.Store) {
 			first := opened(t, st, failingMessage("LEGION", 41), 21, at)
-			const sentence = "delivery 22 did not end: the daemon stopped or crashed while it ran; " + failure
+			const sentence = "delivery 22 did not end in a recorded failure: the daemon stopped or crashed while it ran, or the record of its failure was not written; " + failure
 			var got IntakeFailure
 			inTx(t, st, func(tx pgx.Tx) {
 				var ok bool

@@ -11,9 +11,15 @@
 -- message's first failed delivery and deletes it when a later delivery succeeds. A row given up is
 -- a record the operator or the controller replays or discards; closed_* is its latest close, and
 -- discarded_* its discard, which a later replay's close keeps. A row is as large as its message,
--- which the NATS server bounds at its max_payload (1 MB unless its configuration raises it). The
--- failure path, the state and the controller's notice read no payload and no headers
--- (record's intakeGiveUpColumns); only a replay's claim of a record reads them.
+-- which the NATS server bounds at its max_payload (1 MB unless its configuration raises it): the
+-- 27 envelopes captured in internal/intake/testdata are 369 to 1,231 bytes (wc -c), and a CI
+-- settlement grows with the checks it names. A given-up record is kept for good, with no
+-- retention: a replay or a discard closes it and keeps it, as history. The growth is an estimate
+-- from two measurements: the 30 days to 2026-11-19 gave 7,449 messages that this change would give
+-- up, 4,292 of them on one day from one defect since fixed (cybermonklabs/legion#4315), which at
+-- the largest captured envelope is about 9 MB. The failure path, the state and the controller's
+-- notice read no payload and no headers (record's intakeGiveUpColumns); only a replay's claim of
+-- a record reads them.
 -- internal/record's intake_failures.go holds every statement on the table. Every row carries its
 -- project, because the daemons of several projects can share one database.
 --
@@ -44,23 +50,29 @@
 -- and 55,200 (228,736) in its 32 rows while a head run is open. As a column, every read of a pull
 -- request would load it - the state's read of each issue and the list reads among them - and every
 -- write would write it whole. Here the state and the list reads load none of it (the state reads
--- every issue's pull request with record's PullRequestsOf); only the three reads of one pull
--- request load it, up to 32 rows (record's loadSettledHeads), which is the cost that stays on the
--- reads a fact's handling makes; and a write sends it in one statement that writes only the rows
--- whose place or fence changed (record's putSettledHeads). An earlier daemon never reads or writes
--- the table: a pull request row it deletes takes that pull request's rows with it (on delete
--- cascade), and the way back keeps the rest.
+-- every issue's pull request with record's PullRequestsOf). Only the three whole reads of one pull
+-- request load it, up to 32 rows (record's loadSettledHeads), and only the reads a fact's handling
+-- may write back, or that weigh a settlement against the memory as the write would (workflow's
+-- wakeOnSettlement), make them: every other read of one pull request reads its row alone
+-- (record's PullRequestRow, PullRequestRowByNumber and PullRequestRowByBranch). A write sends the
+-- memory in one statement that writes only the rows whose place or fence changed (record's
+-- putSettledHeads). An earlier daemon never reads or writes the table: a pull request row it
+-- deletes takes that pull request's rows with it (on delete cascade), and the way back keeps the
+-- rest.
 --
--- dispatch_issues.status_changed_seq is the sequence of the reading of Dispatch at which the copy
--- last saw the issue's status change (record.Store.PutDispatchIssue). The status_seq of
+-- dispatch_issues.status_changed_seq is the latest sequence of a reading of Dispatch by which the
+-- copy knows the issue's status changed (record.Store.PutDispatchIssue). The status_seq of
 -- 20261120055717_dispatch_issue_value_sequences is another thing: the sequence of the newest
 -- reading that carried the status, changed or not, so a rename or a re-rank that carries the same
--- status moves it. A reading moves status_changed_seq to its own sequence only when it carries the
+-- status moves it. A reading moves status_changed_seq to its own sequence when it carries the
 -- status, the copy takes that status by status_seq's rule, and the status differs from the one the
--- row held; a new row starts at the sequence of the reading that makes it when that reading carries
--- the status, and at 0 when it carries none. A person's approval of a parked root's spec that
--- reaches the daemon late queues the root as their handover only when no status change came after
--- the approval (workflow's personHandoverQueues), and 0 is no change.
+-- row held. A reading older than status_seq, whose status that rule refuses, raises it to
+-- status_seq when its status differs from the one the row holds, since the status changed between
+-- that reading and the newer one the row holds; it never lowers it. A new row starts at the
+-- sequence of the reading that makes it when that reading carries the status, and at 0 when it
+-- carries none. A person's approval of a parked root's spec that reaches the daemon late queues the
+-- root as their handover only when no status change came after the approval (workflow's
+-- personHandoverQueues), and 0 is no change.
 --
 -- A row that exists at this migration starts at its status_seq, the sequence of the newest reading
 -- of its status the copy holds. The copy never kept when that status last changed, and the fence

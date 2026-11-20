@@ -149,7 +149,8 @@ func TestAMessageWhoseHandlingNeverEndsIsGivenUpWithoutRunningItAgain(t *testing
 			if got := calls.Load(); got != 3 {
 				t.Fatalf("the handler ran %d times, want the 3 deliveries that did not end and no more", got)
 			}
-			if given.GiveUpReason != record.GiveUpDidNotEnd || !strings.Contains(given.LastError, "did not end: the daemon stopped or crashed while it ran") {
+			if given.GiveUpReason != record.GiveUpDidNotEnd || !strings.Contains(given.LastError,
+				"did not end in a recorded failure: the daemon stopped or crashed while it ran, or the record of its failure was not written") {
 				t.Fatalf("the record = %+v, want it given up because a delivery did not end", given)
 			}
 		})

@@ -105,7 +105,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 			return err
 		}
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := record.PullRequestRow(ctx, e.store, tx, issue.Key)
 	if err != nil {
 		return err
 	}
@@ -222,7 +222,7 @@ func (e *Engine) LeaveUnslotted(ctx context.Context, tx pgx.Tx, root record.Issu
 // does a merged one of a project that checks nothing in production, whose openCheck opens no
 // record, queues no bound row and starts no look (Engine.checkRole).
 func (e *Engine) openCheckIfMerged(ctx context.Context, tx pgx.Tx, issue record.Issue, wake bool) error {
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := record.PullRequestRow(ctx, e.store, tx, issue.Key)
 	if err != nil || pr == nil || pr.State != record.PullRequestMerged {
 		return err
 	}
@@ -240,7 +240,7 @@ func (e *Engine) closeAwaitingMerge(ctx context.Context, tx pgx.Tx, merged recor
 	if !awaitsMerge(merged) {
 		return nil
 	}
-	pr, err := e.store.PullRequest(ctx, tx, merged.Key)
+	pr, err := record.PullRequestRow(ctx, e.store, tx, merged.Key)
 	if err != nil || pr == nil || pr.State != record.PullRequestMerged {
 		return err
 	}
@@ -412,11 +412,11 @@ func (e *Engine) unfinishedHandOvers(ctx context.Context, tx pgx.Tx, root record
 			if member.Phase != phase.Merging {
 				continue
 			}
-			of, err := e.store.PullRequestsOf(ctx, tx, []string{member.Key})
+			pr, err := record.PullRequestRow(ctx, e.store, tx, member.Key)
 			if err != nil {
 				return nil, err
 			}
-			if pr, found := of[member.Key]; !found || pr.State != record.PullRequestOpen {
+			if pr == nil || pr.State != record.PullRequestOpen {
 				continue
 			}
 		}
