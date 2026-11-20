@@ -510,6 +510,53 @@ func TestTokenModeACallerDeadlineNeitherKillsNorRepeatsTheCommand(t *testing.T) 
 	}
 }
 
+// A caller of InstalledOwners in token mode whose deadline ends while the App's token_command is
+// still releasing every installation is told the command is pending, as runTokenCommand tells its
+// own caller: ErrCommandPending in a TransientError, which wraps the deadline too. The boot's key
+// proof reads that as pending and spends no attempt on it (internal/daemon's appAttempt), so a
+// grant that waits on a person's approval holds the boot without ending it. A caller that joins
+// the read still in flight gets the release once the command prints it, and the command runs once.
+func TestTokenModeAnInstalledOwnersCallerPastItsDeadlineIsToldTheCommandIsPending(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	runs, gate := filepath.Join(dir, "runs"), filepath.Join(dir, "gate")
+	command := fmt.Sprintf(`echo run >>%q; while [ ! -e %q ]; do sleep 0.05; done; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_x","expires_at":"%s"}}}'`,
+		runs, gate, now.Add(time.Hour).Format(time.RFC3339))
+	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: command}}, Options{Now: func() time.Time { return now }})
+	defer tokens.Close()
+	short, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	var transient *TransientError
+	if _, err := tokens.InstalledOwners(short, Implement); !errors.Is(err, ErrCommandPending) || !errors.As(err, &transient) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("InstalledOwners past its deadline = %v, want a transient ErrCommandPending that wraps the deadline", err)
+	}
+	type answer struct {
+		owners []string
+		err    error
+	}
+	joined := make(chan answer, 1)
+	go func() {
+		owners, err := tokens.InstalledOwners(context.Background(), Implement)
+		joined <- answer{owners, err}
+	}()
+	// The second caller joins the read still in flight before the command may print.
+	time.Sleep(50 * time.Millisecond)
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-joined:
+		if got.err != nil || !slices.Equal(got.owners, []string{"acme"}) {
+			t.Fatalf("the caller that joined the read = %v, %v; want acme, the release of the command still running", got.owners, got.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the caller that joined the read was never answered")
+	}
+	if data, _ := os.ReadFile(runs); strings.Count(string(data), "run") != 1 {
+		t.Fatalf("the command ran %d times, want once", strings.Count(string(data), "run"))
+	}
+}
+
 // A caller whose deadline ended before the command finished, and who comes back only after it
 // finished, gets the finished run's release; the command does not run again.
 func TestTokenModeACallerAfterTheRunFinishedGetsItsResult(t *testing.T) {

@@ -84,11 +84,11 @@ func (e *TransientError) Unwrap() error { return e.Err }
 // Manager's base URL, the status, the body, and the rate-limit headers as GitHub sent them. Its
 // message is Err's, and it unwraps to Err alone: the answer is a field and no link of the chain, so
 // errors.As finds no *githubrest.Answer in an error of this package, and every caller that reads
-// one in the errors of its own GitHub reads (internal/daemon's defaultBranchLimit, answeredRefusal
-// and githubrest.RetryAfter among them) reads a mint's error as it did before. Only a caller that
-// asks for an *AnswerError reads the answer: the daemon's start, which waits out GitHub's rate limit
-// on its App calls (internal/daemon's bootLimit). Every answer other than 2xx this package reads
-// carries one, inside the TransientError where one is made.
+// one in the errors of its own GitHub reads (internal/daemon's defaultBranchLimit and
+// githubrest.RetryAfter among them) reads a mint's error as it did before. Only a caller that asks
+// for an *AnswerError reads the answer: the daemon's start, which waits out GitHub's rate limit on
+// its App calls, the App logins read and the key proof (internal/daemon's bootLimit). Every answer
+// other than 2xx this package reads carries one, inside the TransientError where one is made.
 type AnswerError struct {
 	Err    error
 	Answer *githubrest.Answer
@@ -730,6 +730,15 @@ type Source interface {
 // among them, waits for it under its own context. Run under the first caller's context, an API
 // request that a client cancelled would end the read and hand `context canceled` to a launch
 // that joined it, failing a bundle over nothing that happened to the launch or to GitHub.
+//
+// A caller whose own context ends before the read does gets an answer that depends on the App's
+// configuration (app). In token mode the read is the App's token_command, and the command goes on
+// after the caller stops waiting, as every run of it does (runTokenCommand). So the caller gets
+// what runTokenCommand gives its own caller in that case: ErrCommandPending in a TransientError,
+// which also wraps the context's error. The boot's key proof reads that answer as pending and
+// spends no attempt on it (internal/daemon's appAttempt), so a grant that waits on a person's
+// approval holds the boot without ending it. A read of GitHub under the App's JWT gets the
+// context's error alone: GitHub has not answered yet, and no person is waited on.
 func (m *Manager) InstalledOwners(ctx context.Context, role AppRole) ([]string, error) {
 	m.mu.Lock()
 	read, joined := m.pendingInstallations[role]
@@ -743,6 +752,10 @@ func (m *Manager) InstalledOwners(ctx context.Context, role AppRole) ([]string, 
 	case <-read.done:
 		return slices.Clone(read.owners), read.err
 	case <-ctx.Done():
+		if app, err := m.app(role); err == nil && app.TokenCommand != "" {
+			return nil, &TransientError{Err: fmt.Errorf("%s's release of every installation is still running after %w (a grant may wait on a person's approval): %w",
+				tokenCommandField(role), ctx.Err(), ErrCommandPending)}
+		}
 		return nil, ctx.Err()
 	}
 }

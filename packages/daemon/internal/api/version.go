@@ -2541,8 +2541,9 @@ package api
 // main's 189: 190 (#4578), 191 (#2230, #4049, #4495 and #4573), 192 (#3993, #4173, #4175,
 // #4182, #4193, #4273, #4392 and #4580), 193 (#3659, #3712, #4065, #4432, #4539 and #4553),
 // 194 (#3831 and #4030) and 195 (#4590). This entry stood at 167, 169, 173, 182, 189, 190, 191
-// and 195 before, each the number it took at an earlier census and no head's for good. Read main's own number and every open pull request's again at the next forward
-// merge rather than from this line, as
+// and 195 before, each the number it took at an earlier census and no head's for good. Read main's
+// own number and every open pull request's again at the next forward merge rather than from this
+// line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 const DaemonAPIVersion = 196

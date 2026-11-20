@@ -180,11 +180,6 @@ type workflowRuntime struct {
 	// the asked-for one as (repositories.serving), so a name recorded before a configured rename's
 	// transfer is read on the installation that holds the repository now.
 	defaultBranches *defaultBranches
-	// startWaits is the start's waits for GitHub's rate limit, one policy and one clock for every
-	// App call of the start (startRateLimits), which openWorkflow makes.
-	// A runtime a test builds as a literal leaves it nil: each wait then has the maximum and no
-	// end (startWaits.orUnbounded).
-	startWaits *startWaits
 	// repositories is the repository state: what GitHub answered for each repository the daemon
 	// prepared, and the repositories the live records name. installs answers each App's
 	// installation on a repository (prepareName). recovering is each repository,
@@ -342,48 +337,43 @@ func appTransient(err error) bool {
 	return errors.As(err, &transient)
 }
 
-// appAttempt is one attempt at the boot's App reads, call, bounded by appMintAttempt: pending when a
-// token_command is still running past the bound (appauth.ErrCommandPending, most often a grant
-// that waits on a person's approval), and otherwise startOutcome's, appTransient or the attempt's
-// own bound ended (below) its transient. A pending attempt spends no retry: the command goes on,
-// and the next attempt joins it, so the boot waits for the grant with one request and never kills
-// it. A rate limit spends none either: it says nothing about the App, and the start waits until
-// the time GitHub names, within the start's bound on such waits.
+// appAttempt is one attempt at call, an App call of the start (the App logins read or the key
+// proof), bounded by appMintAttempt. The error the attempt returns decides its outcome, in this
+// order. No error passes. A token_command still running past the bound (appauth.ErrCommandPending,
+// most often for a grant that waits on a person's approval) is pending, and a pending attempt
+// spends no retry: the command goes on, and the next attempt joins it, so the start waits for the
+// grant with one request and never kills it. GitHub's rate limit is a wait on the start's waits
+// until the time GitHub names, and spends no retry either, since it says nothing about the App;
+// once those waits reach the start's end, it is a refusal (limitOutcome). GitHub's own trouble
+// (appTransient) is transient. So is an attempt that failed because its own bound ended while the
+// start's ctx is still alive: a request GitHub has not answered is GitHub's trouble, not the
+// App's, and it runs again within appMintRetry rather than refusing the start (#1347). Any other
+// error is a refusal.
 //
-// An attempt that failed because its own bound ended while the boot's ctx is still alive is
-// transient too: a request GitHub has not answered is GitHub's trouble, not the App's, and is
-// run again within appMintRetry rather than refusing the boot (#1347). The next attempt of an
-// App's installation read joins the shared read still in flight (appauth.Manager.InstalledOwners),
-// which appauth drops at its installationReadLimit (1 min) when GitHub never answers it, inside
-// appMintRetry's worst case of 2 min 20 s, so an attempt after that asks GitHub afresh.
+// The next attempt of an App's installation read joins the shared read still in flight
+// (appauth.Manager.InstalledOwners), which appauth drops at its installationReadLimit (1 min) when
+// GitHub never answers it, inside appMintRetry's worst case of 2 min 20 s, so an attempt after that
+// asks GitHub afresh. In token mode that read is the App's token_command, and an attempt whose
+// bound ends while the command runs is pending (InstalledOwners answers ErrCommandPending).
 func appAttempt(waits *startWaits, call string, attempt func(context.Context) error) func(context.Context) bootprobe.Outcome {
 	return func(ctx context.Context) bootprobe.Outcome {
 		bounded, cancel := context.WithTimeout(ctx, appMintAttempt)
 		defer cancel()
 		err := attempt(bounded)
+		if err == nil {
+			return bootprobe.Outcome{Passed: true}
+		}
 		if errors.Is(err, appauth.ErrCommandPending) {
 			return bootprobe.Outcome{Pending: err.Error()}
 		}
-		return startOutcome(err, func(err error) bool {
-			return appTransient(err) || errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil
-		}, waits, call)
+		if outcome, limited := limitOutcome(err, waits, call); limited {
+			return outcome
+		}
+		if appTransient(err) || errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			return bootprobe.Outcome{Detail: err.Error()}
+		}
+		return bootprobe.Outcome{Refusal: err}
 	}
-}
-
-// startOutcome is the outcome of an attempt at the start's call that returned err: passed on nil;
-// a wait for GitHub's rate limit on the start's waits, or the refusal once they have ended
-// (limitOutcome); transient when transient recognizes err; refused otherwise.
-func startOutcome(err error, transient func(error) bool, waits *startWaits, call string) bootprobe.Outcome {
-	if err == nil {
-		return bootprobe.Outcome{Passed: true}
-	}
-	if outcome, limited := limitOutcome(err, waits, call); limited {
-		return outcome
-	}
-	if transient(err) {
-		return bootprobe.Outcome{Detail: err.Error()}
-	}
-	return bootprobe.Outcome{Refusal: err}
 }
 
 // limitOutcome is the outcome of an attempt at the start's call that failed with err, when err is
@@ -411,6 +401,106 @@ func limitSummary(answer *githubrest.Answer) string {
 	limit := answer.Limit
 	return fmt.Sprintf("%d (Retry-After %q, X-RateLimit-Remaining %q, X-RateLimit-Reset %q, X-RateLimit-Resource %q)",
 		answer.Status, limit.RetryAfter, limit.Remaining, limit.Reset, limit.Resource)
+}
+
+// bootLimit is GitHub's answer to an App call of the start that failed with err — the App logins
+// read or the key proof, whose error carries the answer appauth read (appauth.AnswerError) — when
+// that answer is GitHub's rate limit (answerLimit), with how long GitHub asks the start to wait.
+func bootLimit(err error) (*githubrest.Answer, time.Duration, bool) {
+	var refused *appauth.AnswerError
+	if !errors.As(err, &refused) {
+		return nil, 0, false
+	}
+	wait, limited := answerLimit(refused.Answer)
+	if !limited {
+		return nil, 0, false
+	}
+	return refused.Answer, wait, true
+}
+
+// rateLimitPolicy is how the start waits for GitHub's rate limit (dispatch://INFRA-2597/spec R4):
+// Max, the longest one wait lasts, whatever GitHub names; Bound, how long after the start's first
+// such wait every one of them ends, none ending at all when it is zero; and NoTime, the wait for a
+// call's first refusal that names no time, doubled for each further one of the same call.
+type rateLimitPolicy struct {
+	Max, Bound, NoTime time.Duration
+}
+
+// startRateLimits is the start's policy. A wait lasts at most an hour, the window of GitHub's REST
+// limit, so a spent counter is waited until its reset and a Retry-After longer than that is not
+// waited whole. All waits of one start end 70 minutes after the first, the hour and ten minutes
+// more: the refusals of 2026-11-14 and 2026-11-15 ended 5.6 to 13.9 minutes after the first exit.
+// A refusal that names no time waits a minute, the least GitHub's REST documentation gives. Tests
+// shorten its fields.
+var startRateLimits = rateLimitPolicy{Max: time.Hour, Bound: 70 * time.Minute, NoTime: time.Minute}
+
+// startWaits is one start's waits for GitHub's rate limit on one policy and one clock, now: the
+// App logins read and then the key proof, which openWorkflow runs one after the other (wait). end
+// is the start's end, zero until its first wait sets it Bound after that wait begins; noTime is the
+// last wait each App call took for a refusal that named no time; and waited is the time the start
+// has spent in its waits.
+type startWaits struct {
+	policy rateLimitPolicy
+	now    func() time.Time
+	end    time.Time
+	noTime map[string]time.Duration
+	waited time.Duration
+}
+
+// newStartWaits is one start's waits on policy and the clock now.
+func newStartWaits(policy rateLimitPolicy, now func() time.Time) *startWaits {
+	return &startWaits{policy: policy, now: now, noTime: map[string]time.Duration{}}
+}
+
+// wait is the wait for GitHub's rate limit on the start's App call call (the logins read, the key
+// proof), asked as soon as the call's attempt returned with answer, GitHub's refusal, from which
+// answerLimit read githubWait. Where GitHub named a time (namesTime), the wait is githubWait with
+// at most Max; where it named none, NoTime for the call's first such refusal of the start and two
+// times its wait before for each further one. It says until when, at the start's end at the
+// latest, and the time the start has waited so far, this wait included (register); or, once now is
+// at or past the start's end, ended, with no wait: the call then ends the start.
+func (s *startWaits) wait(call string, answer *githubrest.Answer, githubWait time.Duration) (until time.Time, waited time.Duration, ended bool) {
+	now := s.now()
+	if !s.end.IsZero() && !now.Before(s.end) {
+		return now, s.waited, true
+	}
+	wait := min(githubWait, s.policy.Max)
+	if !namesTime(answer.Limit, now) {
+		wait = s.policy.NoTime
+		if last, ok := s.noTime[call]; ok {
+			wait = 2 * last
+		}
+		s.noTime[call] = wait
+	}
+	until, waited = s.register(now, now.Add(wait))
+	return until, waited, false
+}
+
+// register counts a wait from begin until until, cut at the start's end, and says until and the
+// time the start has waited so far: the sum of its waits, each cut at the end. The start's calls
+// run one after the other, so no two of its waits overlap. The start's first wait sets its end,
+// Bound after that wait begins.
+func (s *startWaits) register(begin, until time.Time) (time.Time, time.Duration) {
+	if s.end.IsZero() && s.policy.Bound > 0 {
+		s.end = begin.Add(s.policy.Bound)
+	}
+	if !s.end.IsZero() && until.After(s.end) {
+		until = s.end
+	}
+	s.waited += until.Sub(begin)
+	return until, s.waited
+}
+
+// namesTime is whether limit, the rate-limit headers of GitHub's answer, names when the limit ends,
+// as GitHub's REST documentation reads them: a Retry-After of more than 0 seconds, or no call left
+// (X-RateLimit-Remaining 0) with an X-RateLimit-Reset still ahead of now. A 403 named by its body
+// alone, and a reset already past, name none.
+func namesTime(limit githubrest.LimitHeaders, now time.Time) bool {
+	if seconds, err := strconv.Atoi(limit.RetryAfter); err == nil && seconds > 0 {
+		return true
+	}
+	reset, err := strconv.ParseInt(limit.Reset, 10, 64)
+	return limit.Remaining == "0" && err == nil && time.Unix(reset, 0).After(now)
 }
 
 // appLoginsAtBoot reads each App's bot login under its own JWT (appauth.Logins), which needs no
@@ -565,19 +655,19 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		mergeStateRunning: map[string]*mergeStateRun{},
 		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock,
 		defaultBranches: newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
-		// One policy and one clock for every wait of the start for GitHub's rate limit: the App
-		// logins read and the key proof (startRateLimits).
-		startWaits: newStartWaits(startRateLimits, time.Now),
 	}
 	// A read of a default branch GitHub's rate limit refuses, answered from the branch held, is
 	// logged and read again once the limit has passed, wherever it is made.
 	w.defaultBranches.onHold = w.heldThroughLimit
 	log.Info("legion workflow boot stage", "stage", "appauth")
-	reviewAppLogin, err := appLoginsAtBoot(ctx, logins, w.startWaits, log)
+	// One policy and one clock for every wait of the start for GitHub's rate limit: the App logins
+	// read, then the key proof (startRateLimits).
+	waits := newStartWaits(startRateLimits, time.Now)
+	reviewAppLogin, err := appLoginsAtBoot(ctx, logins, waits, log)
 	if err != nil {
 		return nil, err
 	}
-	if err := proveAppKeys(ctx, tokens, installed, w.startWaits, log); err != nil {
+	if err := proveAppKeys(ctx, tokens, installed, waits, log); err != nil {
 		return nil, err
 	}
 	// The database is shared by every project's daemon: the workflow reads this project's issues.

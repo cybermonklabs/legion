@@ -14,6 +14,8 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -494,6 +496,13 @@ func loggedDuration(t *testing.T, line map[string]any, key string) time.Duration
 // asks answer first, as appTokensWith's does.
 func commandTokens(t *testing.T, answer func(w http.ResponseWriter, r *http.Request) bool) *appauth.Manager {
 	t.Helper()
+	return commandTokensWith(t, answer, func(appauth.AppRole) string { return "" })
+}
+
+// commandTokensWith is commandTokens whose token_command of each App role runs the shell that
+// before gives for the role first, then prints its release.
+func commandTokensWith(t *testing.T, answer func(w http.ResponseWriter, r *http.Request) bool, before func(role appauth.AppRole) string) *appauth.Manager {
+	t.Helper()
 	ids := map[string]string{string(appauth.Implement): "1", string(appauth.Review): "2"}
 	server := githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		if answer(w, r) {
@@ -515,13 +524,62 @@ func commandTokens(t *testing.T, answer func(w http.ResponseWriter, r *http.Requ
 		}
 	}})
 	command := func(role appauth.AppRole) string {
-		return fmt.Sprintf(`printf '{"installations":{"acme":{"installation_id":77,"token":"ghs_%s_%%s_%%s","expires_at":"%s"}}}' "${%s:-any}" "${%s:-write}"`,
+		return before(role) + fmt.Sprintf(`printf '{"installations":{"acme":{"installation_id":77,"token":"ghs_%s_%%s_%%s","expires_at":"%s"}}}' "${%s:-any}" "${%s:-write}"`,
 			role, time.Now().Add(time.Hour).UTC().Format(time.RFC3339), appauth.TokenCommandOwner, appauth.TokenCommandReadOnly)
 	}
 	return appauth.New(config.GitHubApps{
 		Implement: config.GitHubApp{AppID: ids[string(appauth.Implement)], TokenCommand: command(appauth.Implement)},
 		Review:    config.GitHubApp{AppID: ids[string(appauth.Review)], TokenCommand: command(appauth.Review)},
 	}, appauth.Options{BaseURL: server.URL, HTTPClient: server.Client(), Stderr: io.Discard})
+}
+
+// A token_command still running when an attempt of the boot's key proof ends holds the boot
+// without ending it, however many attempt bounds it outlasts: a grant may wait on a person's
+// approval. Each such attempt is pending and spends no attempt of appMintRetry
+// (appauth.ErrCommandPending, appAttempt), the next attempt joins the read still in flight
+// (appauth.Manager.InstalledOwners), and once the command prints its release the key proof passes
+// and the boot serves. Here each App's token_command answers the logins read at once, and holds
+// the key proof's release of every installation for twice the bounds of all appMintRetry's
+// attempts. Control: with InstalledOwners answering its caller's bare ctx.Err() in token mode too,
+// as it did before INFRA-4401's review 5996655281, each attempt the bound ends is transient, and
+// the boot refuses once the three are spent, naming the key proof's context deadline exceeded.
+func TestABootWaitsForATokenCommandThatOutlastsEveryAttemptOfTheKeyProof(t *testing.T) {
+	quickAppMints(t)
+	hold := 2 * time.Duration(appMintRetry.Attempts) * appMintAttempt
+	dir := t.TempDir()
+	tokens := commandTokensWith(t, func(http.ResponseWriter, *http.Request) bool { return false }, func(role appauth.AppRole) string {
+		// The runs that name no owner are the logins read's, then the key proof's, which holds.
+		runs := filepath.Join(dir, string(role)+".runs")
+		return fmt.Sprintf(`if [ -z "${%s}" ]; then echo run >>%q; [ "$(( $(wc -l <%q) ))" -ne 2 ] || sleep %.3f; fi; `,
+			appauth.TokenCommandOwner, runs, runs, hold.Seconds())
+	})
+	logs := &syncBuffer{}
+	started := time.Now()
+	if err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
+		t.Fatalf("boot = %v, want it to wait for the token_command past every attempt of the key proof and serve", err)
+	}
+	if took := time.Since(started); took < hold {
+		t.Errorf("the daemon served %s after it started, want after the key proof's command held %s", took, hold)
+	}
+	byProbe := func(lines []map[string]any, probe string) []map[string]any {
+		return slices.DeleteFunc(lines, func(line map[string]any) bool { return line["probe"] != probe })
+	}
+	pending := loggedMessages(t, logs.String(), "boot probe's work is still running")
+	if logins := byProbe(slices.Clone(pending), "GitHub App logins read"); len(logins) != 0 {
+		t.Errorf("the logins read was pending %d times, want never: its command answers at once", len(logins))
+	}
+	proof := byProbe(pending, "GitHub App key proof")
+	if len(proof) <= appMintRetry.Attempts {
+		t.Fatalf("the key proof was pending %d times, want more than appMintRetry's %d attempts", len(proof), appMintRetry.Attempts)
+	}
+	for _, line := range proof {
+		if detail, _ := line["detail"].(string); !strings.Contains(detail, "token_command's release of every installation is still running after") {
+			t.Errorf("a pending line's detail = %q, want the token_command's release of every installation still running", detail)
+		}
+	}
+	if transient := byProbe(loggedMessages(t, logs.String(), "boot probe failed transiently"), "GitHub App key proof"); len(transient) != 0 {
+		t.Errorf("the key proof failed transiently %d times, want never: each attempt the command outlasted is pending", len(transient))
+	}
 }
 
 // A start whose proof of an App's key GitHub refuses for a spent rate limit waits until the reset

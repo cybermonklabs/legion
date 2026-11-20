@@ -3779,7 +3779,8 @@ After the tenth attempt it exits naming the last error, with the host and never 
 Every other error refuses the boot at once, as before: a refused password (28P01), a connection `pg_hba.conf` does not admit (28000), a database that does not exist (3D000), a TLS failure, and a DSN the driver cannot parse.
 A stop during the attempts ends the boot at once.
 
-The boot makes no read of the repositories its records name: the refresher prepares them once the API serves, beside the boot, so GitHub's rate limit on a repository never holds the boot there.
+The boot prepares none of the repositories its records name: the refresher prepares them once the API serves, beside the boot, so GitHub's rate limit on a repository never holds the boot there.
+The boot's only reads of a repository are the fill of a record that lacks its repository columns and the one-time rename pass's reads of a configured pair's names, each read bounded at 15 s (both below).
 A GitHub rate limit on the boot's App logins read, or on its proof of each App's key (the App's `GET /app/installations` under its JWT), is waited out.
 The boot waits until the time GitHub names, its `Retry-After`, else the limit's reset, at most one hour each, and one minute where GitHub names no time, doubling for each further such refusal of the same call, and then makes the call again.
 It logs each wait at warn as `boot probe waits out GitHub's rate limit; it runs again at the time GitHub names` with `probe` (the call: `GitHub App logins read` or `GitHub App key proof`), `until`, `wait`, `waited` (the time the boot has waited for rate limits so far), `limit` and `detail`, and such a wait counts against no attempt.
