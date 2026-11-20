@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -19,7 +20,10 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/credentials/ssocreds"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/aws/aws-sdk-go-v2/service/sso"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/smithy-go"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
@@ -382,6 +386,145 @@ func TestTheAWSSDKsSignInFailurePrintsNoSetting(t *testing.T) {
 				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
 			}
 			wantNamedNotPrinted(t, "stderr", stderr, []string{row.want}, secret, user)
+		})
+	}
+}
+
+// failingList is a Secrets Manager whose ListSecrets fails with err, as the SDK's call returns it.
+type failingList struct {
+	*secrets.Local
+	err error
+}
+
+func (f failingList) ListSecrets(context.Context, *secretsmanager.ListSecretsInput, ...func(*secretsmanager.Options)) (*secretsmanager.ListSecretsOutput, error) {
+	return nil, f.err
+}
+
+// useSSOProfile signs in with the IAM Identity Center profile AWS_PROFILE=sso: a legacy one
+// (sso_start_url in the profile) with no cached token, or an sso_session one whose cached token
+// has the fields token gives, its SSO calls sent to ssoURL where it is set.
+func useSSOProfile(t *testing.T, legacy bool, token map[string]string, ssoURL string) {
+	t.Helper()
+	profile := "[profile sso]\nsso_session = corp\nsso_account_id = 111122223333\nsso_role_name = Agent\nregion = us-east-1\n" +
+		"[sso-session corp]\nsso_start_url = https://example.awsapps.com/start\nsso_region = us-east-1\n"
+	if legacy {
+		profile = "[profile sso]\nsso_start_url = https://example.awsapps.com/start\nsso_region = us-east-1\nsso_account_id = 111122223333\nsso_role_name = Agent\nregion = us-east-1\n"
+	}
+	configFile := filepath.Join(t.TempDir(), "config")
+	if err := os.WriteFile(configFile, []byte(profile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if token != nil {
+		cached, err := ssocreds.StandardCachedTokenFilepath("corp")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(cached), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		body, err := json.Marshal(token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cached, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	t.Setenv("AWS_CONFIG_FILE", configFile)
+	t.Setenv("AWS_PROFILE", "sso")
+	if ssoURL != "" {
+		t.Setenv("AWS_ENDPOINT_URL_SSO", ssoURL)
+	}
+}
+
+// TestAnIAMIdentityCenterFailureIsSaidOnlyWhereTheSDKOrIAMIdentityCenterSaysIt: an IAM Identity
+// Center sign-in reads as an expired session only where the SDK's own error says so - a legacy
+// profile with no cached token, an sso_session token it cannot refresh - or IAM Identity Center
+// refused the session's token; a role or account IAM Identity Center does not find prints as its
+// refusal by its code, in the sign-in and in a store call alike; and the SDK's own words inside
+// STS's message, which whoever answers there writes, read as STS's refusal, neither as an expired
+// session nor as a sign-in with no role. Each server writes a made-up secret in its message. The
+// expired rows are the controls: the check sees an expired session where there is one.
+func TestAnIAMIdentityCenterFailureIsSaidOnlyWhereTheSDKOrIAMIdentityCenterSaysIt(t *testing.T) {
+	planted := "hunter2pw-" + "ssoecho-" + "2b7e"
+	const expired = "the IAM Identity Center (SSO) session has expired or is invalid"
+	cachedToken := func(expiresAt string) map[string]string {
+		return map[string]string{"access" + "Token": "made-up-access-1", "expiresAt": expiresAt, "region": "us-east-1", "startUrl": "https://example.awsapps.com/start"}
+	}
+	ssoRefusing := func(t *testing.T, code string, status int) string {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Amzn-Errortype", code)
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"message":"echo: ` + planted + `"}`))
+		}))
+		t.Cleanup(srv.Close)
+		return srv.URL
+	}
+	stsRefusing := func(t *testing.T, message string) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/xml")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`<ErrorResponse><Error><Type>Sender</Type><Code>AccessDenied</Code><Message>` + message + `; echo: ` + planted + `</Message></Error><RequestId>r3</RequestId></ErrorResponse>`))
+		}))
+		t.Cleanup(srv.Close)
+		t.Setenv("AWS_ENDPOINT_URL_STS", srv.URL)
+	}
+	for _, row := range []struct {
+		name string
+		set  func(t *testing.T)
+		want string
+	}{
+		{"control: a legacy profile with no cached token", func(t *testing.T) { useSSOProfile(t, true, nil, "") },
+			expired + ": run `aws sso login` again"},
+		{"control: an sso_session token the SDK cannot refresh", func(t *testing.T) { useSSOProfile(t, false, cachedToken("2020-01-01T00:00:00Z"), "") },
+			expired + ": run `aws sso login` again"},
+		{"control: a session token IAM Identity Center refuses", func(t *testing.T) {
+			useSSOProfile(t, false, cachedToken("2099-01-01T00:00:00Z"), ssoRefusing(t, "UnauthorizedException", http.StatusUnauthorized))
+		}, expired + " (IAM Identity Center answered UnauthorizedException): run `aws sso login` again"},
+		{"a role IAM Identity Center does not find", func(t *testing.T) {
+			useSSOProfile(t, false, cachedToken("2099-01-01T00:00:00Z"), ssoRefusing(t, "ResourceNotFoundException", http.StatusNotFound))
+		}, "read your AWS sign-in: IAM Identity Center refused it: ResourceNotFoundException (its message is not printed); check the profile's sso_account_id and sso_role_name"},
+		{"STS's message holding the SDK's words for a token it cannot refresh", func(t *testing.T) {
+			stsRefusing(t, "cached SSO token is expired, or not present, and cannot be refreshed")
+		}, "read your AWS sign-in: AWS refused it: AccessDenied (AWS's message is not printed)"},
+		{"STS's message holding the SDK's words for a sign-in with no role", func(t *testing.T) { stsRefusing(t, "role ARN is not set") },
+			"read your AWS sign-in: AWS refused it: AccessDenied (AWS's message is not printed)"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+			startSecretBroker(t, servedBy(local))
+			awsSignInOnly(t)
+			row.set(t)
+			_, stderr, code := runSecret("list")
+			if code != 1 {
+				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
+			}
+			wantNamedNotPrinted(t, "stderr", stderr, []string{row.want}, planted)
+		})
+	}
+	// A store call's credential refresh that IAM Identity Center refused, as the SDK chains it.
+	refresh := func(code string) error {
+		sso := &smithy.OperationError{ServiceID: sso.ServiceID, OperationName: "GetRoleCredentials", Err: &smithy.GenericAPIError{Code: code, Message: "echo: " + planted}}
+		return &smithy.OperationError{ServiceID: secretsmanager.ServiceID, OperationName: "ListSecrets", Err: fmt.Errorf("failed to refresh cached credentials, %w", sso)}
+	}
+	for _, row := range []struct{ name, code, want string }{
+		{"control: a store call whose session token IAM Identity Center refuses", "UnauthorizedException",
+			"Secrets Manager ListSecrets failed: " + expired + " (IAM Identity Center answered UnauthorizedException): run `aws sso login` again"},
+		{"a store call whose role IAM Identity Center does not find", "ResourceNotFoundException",
+			"Secrets Manager ListSecrets failed: IAM Identity Center refused it: ResourceNotFoundException (its message is not printed); check the profile's sso_account_id and sso_role_name"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+			startSecretBroker(t, servedBy(local))
+			useAWS(t, failingList{Local: local, err: refresh(row.code)}, testAccount, adaSignIn)
+			_, stderr, code := runSecret("list")
+			if code != 1 {
+				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
+			}
+			wantNamedNotPrinted(t, "stderr", stderr, []string{row.want}, planted)
 		})
 	}
 }

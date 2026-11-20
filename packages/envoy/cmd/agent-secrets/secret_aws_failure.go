@@ -21,6 +21,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials/ssocreds"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/aws/aws-sdk-go-v2/service/sso"
+	"github.com/aws/aws-sdk-go-v2/service/ssooidc"
 	"github.com/aws/smithy-go"
 
 	"github.com/sjawhar/envoy/internal/redact"
@@ -158,8 +160,8 @@ func awsStoreFailure(operation string, err error) error {
 		return nil
 	}
 	call := "Secrets Manager " + operation
-	if expired, answered := awsSSOSession(err); expired {
-		return redact.Masked(err, call+" failed: the IAM Identity Center (SSO) session has expired or is invalid"+answered+": run `aws sso login` again")
+	if words, ok := awsSSOWords(err); ok {
+		return redact.Masked(err, call+" failed: "+words)
 	}
 	if words, ok := awsAPIWords(err); ok {
 		return redact.Masked(err, call+": "+words)
@@ -261,11 +263,11 @@ var awsCodes = func() map[string]bool {
 // parse uri" where it does not parse), the value of a setting it cannot read (AWS_MAX_ATTEMPTS),
 // and a service's own message, which the service writes what it likes in. So it prints, in this
 // order, so an IAM Identity Center refusal is said as the session it is, not as AWS's code:
-//   - an IAM Identity Center session that has expired or is refused (awsSSOSession) as the SDK's
-//     own fixed words, with the code IAM Identity Center answered where it is one this client
-//     names;
-//   - a web identity sign-in with no role as the setting it lacks (the SDK's "role ARN is not
-//     set");
+//   - an IAM Identity Center sign-in the SDK could not use (awsSSOWords): a session that has
+//     expired or is invalid, or IAM Identity Center's refusal by its code where it is one this
+//     client names;
+//   - a web identity sign-in with no role as the setting it lacks (the SDK's own "role ARN is not
+//     set", sdkSaid);
 //   - an AWS API error by its code alone, where it is one this client names (awsAPIWords);
 //   - a file call by the setting that names the file, and the call's operation and the system's
 //     reason (redact.File): the SDK formats a file's error with %v, which drops the file call's
@@ -276,10 +278,10 @@ var awsCodes = func() map[string]bool {
 //   - anything else in fixed words that say where to look: the AWS settings the SDK's text names
 //     and the address settings that are set (awsSettingsNamed), else the AWS_* variables.
 func awsSDKWords(err error) string {
-	if expired, answered := awsSSOSession(err); expired {
-		return "the IAM Identity Center (SSO) session has expired or is invalid" + answered + ": run `aws sso login` again"
+	if words, ok := awsSSOWords(err); ok {
+		return words
 	}
-	if strings.Contains(err.Error(), "role ARN is not set") {
+	if sdkSaid(err, "role ARN is not set") {
 		return "the web identity sign-in names no role to assume: set AWS_ROLE_ARN, or role_arn in the profile, beside its token file"
 	}
 	if words, ok := awsAPIWords(err); ok {
@@ -308,34 +310,72 @@ func awsSDKWords(err error) string {
 	return "the AWS SDK could not sign in from this environment (its message is not printed: it can quote an AWS setting's value); check " + check + " and ~/.aws/config"
 }
 
-// awsSSOSession reports whether err is an IAM Identity Center sign-in the SDK could not use: a
-// legacy profile's expired or unreadable token (ssocreds.InvalidTokenError), an sso_session
-// profile's token it cannot refresh (the SDK's own "cannot be refreshed"), or IAM Identity
-// Center's refusal of the refresh or of the role's credentials (an API error of the SSO OIDC or
-// SSO service: InvalidGrantException, ExpiredTokenException, UnauthorizedException), which the
-// chain holds beneath the operation that needed the credential (STS's, or a store call's).
-// answered is " (IAM Identity Center answered <code>)" for a refusal whose code this client
-// names, else "".
-func awsSSOSession(err error) (expired bool, answered string) {
+// ssoCannotRefresh is the AWS SDK's own words for an sso_session profile's cached token it cannot
+// refresh (ssocreds' token provider).
+const ssoCannotRefresh = "cached SSO token is expired, or not present, and cannot be refreshed"
+
+// ssoSessionCodes are the codes of IAM Identity Center's refusals that say the session itself is
+// no longer good: SSO OIDC's refusal of a refresh (InvalidGrantException, ExpiredTokenException,
+// InvalidClientException, UnauthorizedClientException) and SSO's refusal of the session's token
+// (UnauthorizedException).
+var ssoSessionCodes = map[string]bool{
+	"InvalidGrantException": true, "ExpiredTokenException": true, "InvalidClientException": true,
+	"UnauthorizedClientException": true, "UnauthorizedException": true,
+}
+
+// awsSSOWords is err as a message prints it where it is an IAM Identity Center sign-in the SDK
+// could not use, and whether it is one. A session that has expired or is invalid says so and names
+// `aws sso login`: a legacy profile's expired or unreadable token (ssocreds.InvalidTokenError), an
+// sso_session profile's token the SDK cannot refresh (ssoCannotRefresh, an error the SDK makes
+// itself: sdkSaid), or IAM Identity Center's refusal of the refresh or of the role's credentials
+// with a code that says the session is no longer good (ssoSessionCodes). Any other refusal of an
+// SSO OIDC or SSO call - a role or account the profile names that the session may not take
+// (ResourceNotFoundException) among them - prints as IAM Identity Center's refusal, by its code
+// where it is one this client names (awsCodes), never its message. The chain holds the SSO call
+// beneath the operation that needed the credential (STS's, or a store call's); a phrase in another
+// service's message is no IAM Identity Center failure.
+func awsSSOWords(err error) (string, bool) {
+	const expired, login = "the IAM Identity Center (SSO) session has expired or is invalid", ": run `aws sso login` again"
+	const check = "; check the profile's sso_account_id and sso_role_name"
 	var invalid *ssocreds.InvalidTokenError
-	if errors.As(err, &invalid) || strings.Contains(err.Error(), "cached SSO token is expired, or not present, and cannot be refreshed") {
-		return true, ""
+	if errors.As(err, &invalid) || sdkSaid(err, ssoCannotRefresh) {
+		return expired + login, true
 	}
 	for _, link := range errorChain(err) {
 		op, ok := link.(*smithy.OperationError)
-		if !ok || (op.Service() != "SSO OIDC" && op.Service() != "SSO") {
+		if !ok || (op.Service() != ssooidc.ServiceID && op.Service() != sso.ServiceID) {
 			continue
 		}
 		var api smithy.APIError
 		if !errors.As(op, &api) {
-			return false, ""
+			return "", false
 		}
-		if code := api.ErrorCode(); awsCodes[code] {
-			return true, " (IAM Identity Center answered " + code + ")"
+		switch code := api.ErrorCode(); {
+		case ssoSessionCodes[code]:
+			return expired + " (IAM Identity Center answered " + code + ")" + login, true
+		case awsCodes[code]:
+			return "IAM Identity Center refused it: " + code + " (its message is not printed)" + check, true
 		}
-		return true, ""
+		return "IAM Identity Center refused it: an AWS error (its code is none this client names, and its message is not printed)" + check, true
 	}
-	return false, ""
+	return "", false
+}
+
+// sdkSaid reports whether err's chain holds an error the AWS SDK made itself with words as its
+// whole text: a link that wraps no error and is no API error. An API error's message is the
+// answering server's text, and a wrapping link's text quotes what it wraps, so words inside
+// either are not the SDK saying them.
+func sdkSaid(err error, words string) bool {
+	for _, link := range errorChain(err) {
+		switch link.(type) {
+		case smithy.APIError, interface{ Unwrap() error }, interface{ Unwrap() []error }:
+			continue
+		}
+		if link.Error() == words {
+			return true
+		}
+	}
+	return false
 }
 
 // errorChain is err and every error it wraps, depth first, through Unwrap() error and
