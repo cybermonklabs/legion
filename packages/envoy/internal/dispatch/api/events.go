@@ -59,6 +59,13 @@ const eventSelect = `select e.id, e.issue_key, e.artifact_id::text, coalesce(e.p
 // acceptance are the session's, so to a viewer the session is hidden from they are absent, as the
 // session is (references_seen.go). An open viewer sees every session but one that acted in a
 // project it does not see.
+//
+// A claim write's event (claimWriteEvents) passes only when the viewer sees the holder of the claim it
+// left and of the one it replaced or cleared, each a session (access.SessionClause) or a person
+// (access.PersonClause) (claimHolderSeenSQL): its actor is the claimant, so to a viewer that holder
+// is hidden from the event is absent, as the claim is from every read of the issue. Every other
+// issue event carries the claim in its payload, which the payload filter leaves out
+// (payloadReferenceKeys).
 func eventReadableSQL(eventAlias, viewerParam string) string {
 	e := eventAlias
 	project := `coalesce(` + e + `.project_key,
@@ -76,13 +83,30 @@ func eventReadableSQL(eventAlias, viewerParam string) string {
 	end) and (` + e + `.type not in (` + sessionSubjectEvents + `)
 		or ((` + e + `.payload->>'session_id' is null or ` + access.SessionClause(e+`.payload->>'session_id'`, viewerParam) + `)
 			and (coalesce(` + e + `.payload->>'target', '') not like 'session:%' or ` +
-		access.SessionClause(`substr(`+e+`.payload->>'target', 9)`, viewerParam) + `))))`
+		access.SessionClause(`substr(`+e+`.payload->>'target', 9)`, viewerParam) + `)))
+		and (case when ` + e + `.type in (` + claimWriteEvents + `)
+			then ` + claimHolderSeenSQL(e+`.payload->'claim'`, viewerParam) + `
+				and ` + claimHolderSeenSQL(e+`.payload->'previous_claim'`, viewerParam) + `
+			else true end))`
 }
 
 // sessionSubjectEvents is every event type whose one subject is the session its payload names,
 // by session_id or by a `session:<id>` target, as SQL literals.
 const sessionSubjectEvents = `'ask.follower_added', 'ask.follower_removed', 'subscription.remove_requested',
 	'subscription.removed', 'comment.delivery', 'message.delivery', 'message.accepted'`
+
+// claimWriteEvents is every event type a claim write appends, whose payload names the claim it left
+// (claim) and the one it replaced or cleared (previous_claim), as SQL literals.
+const claimWriteEvents = `'issue.claimed', 'issue.released'`
+
+// claimHolderSeenSQL passes the claim {actor, at} claimExpr gives, as jsonb, when the viewer bound
+// at viewerParam sees its holder: a session by access.SessionClause, a person by
+// access.PersonClause. No claim, and a holder of any other kind, passes.
+func claimHolderSeenSQL(claimExpr, viewerParam string) string {
+	kind, id := `(`+claimExpr+`->'actor'->>'kind')`, `(`+claimExpr+`->'actor'->>'id')`
+	return `((` + kind + ` is distinct from 'session' or ` + access.SessionClause(id, viewerParam) + `)
+				and (` + kind + ` is distinct from 'user' or ` + access.PersonClause(id, viewerParam) + `))`
+}
 
 // readableEvents is eventReadableSQL for who as the events and delivery packages' statements bind
 // a read rule (events.Readable): over the events row named events, the viewer at $2.
