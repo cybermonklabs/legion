@@ -88,15 +88,20 @@
 # tree's largest total. Under gVisor a file two processes map is charged once, where the tree's
 # total counts it in each, so the charge differs from the total. A push or a fetch talks to the
 # git daemon, which runs in the pod outside the measured tree, so those rows also sample the
-# daemon's tree and report its largest total. Each verdict of a git or jj row prints the pod's
-# charge after the row's figures, with the daemon's total beside it for a row the daemon served;
-# no verdict reads either. Every verdict prints one `CHECK <name>: got [x] want [y]` line,
-# followed by ` MISMATCH` when it failed and ` VOID` when a control did not reach its bound; the
-# last line is `JOB-RESULT pass`, when no verdict failed, or `JOB-RESULT fail`. A row of the
-# image's jj or of the role's settings holds when it exits 0 and both GNU time's figure and the
-# sampled total are under 2 GiB (2,097,152 KiB). A control row must reach its bound, by either
-# figure, or its line is VOID: 2 GiB for a git row, and for a jj row the size of the pack, read
-# from that copy's clone.
+# daemon's tree and report its largest total. The sampler stops the measured tree (SIGSTOP, and
+# SIGCONT once read) while it reads each sample, the git daemon's tree aside: a jj that drops one
+# chunk and maps the next thousands of times a second, read running over the milliseconds one
+# smaps read takes, is counted holding both. It reports how many samples it stopped the tree in,
+# the summed, median and longest time the tree was stopped, and how many samples held a process
+# that did not stop in time; the wall time includes the stops. Each verdict of a git or jj row
+# prints the stopped time beside the wall time, and the pod's charge after the row's figures,
+# with the daemon's total beside it for a row the daemon served; no verdict reads any of them.
+# Every verdict prints one `CHECK <name>: got [x] want [y]` line, followed by ` MISMATCH` when it
+# failed and ` VOID` when a control did not reach its bound; the last line is `JOB-RESULT pass`,
+# when no verdict failed, or `JOB-RESULT fail`. A row of the image's jj or of the role's settings
+# holds when it exits 0 and both GNU time's figure and the sampled total are under 2 GiB
+# (2,097,152 KiB). A control row must reach its bound, by either figure, or its line is VOID:
+# 2 GiB for a git row, and for a jj row the size of the pack, read from that copy's clone.
 #
 # R10's rows are judged by their pack figure: the larger of the row's largest sampled pack Rss and
 # GNU time's figure less its largest sampled anonymous memory and other-file Rss, so a sample that
@@ -343,11 +348,18 @@ field() { # field <label> <jq path>: the value in the label's last result, "null
 has_result() { [ -n "$(field "$1" .label)" ]; }
 
 figures() { # figures <label>: one line of a row's figures, for a verdict's got
-  printf 'exit %s, GNU time %s KiB, sampled %s KiB (pack %s KiB, anonymous %s KiB, %s pack mappings, %s resident, of %s files), wall %s s; %s' \
+  printf 'exit %s, GNU time %s KiB, sampled %s KiB (pack %s KiB, anonymous %s KiB, %s pack mappings, %s resident, of %s files), wall %s s (%s); %s' \
     "$(field "$1" .exit)" "$(group "$(field "$1" .maxrss_kib)")" "$(group "$(field "$1" .sampled_total_kib)")" \
     "$(group "$(field "$1" .sampled_pack_kib)")" "$(group "$(field "$1" .sampled_anon_kib)")" \
     "$(field "$1" .pack_mappings)" "$(field "$1" .pack_mappings_resident)" "$(field "$1" .pack_files)" "$(field "$1" .wall_s)" \
-    "$(charge "$1")"
+    "$(stops "$1")" "$(charge "$1")"
+}
+
+# stops <label>: the time the sampler held a row's tree stopped to read it, which its wall time
+# includes, for a verdict's got beside that wall time. No verdict reads it.
+stops() {
+  printf '%s ms of it stopped, in %s samples, %s of them with a process not stopped in time' \
+    "$(field "$1" .stop_ms_total)" "$(field "$1" .samples_stopped)" "$(field "$1" .samples_not_stopped_in_time)"
 }
 
 # charge <label>: the pod's charge of a row, for a verdict's got after its figures: the cgroup's
@@ -519,11 +531,11 @@ pack_figure() {
 }
 
 r10_figures() { # r10_figures <label> <pack figure>: one line of an R10 row's figures, for a verdict's got
-  printf 'exit %s, pack figure %s KiB, the larger of sampled pack %s KiB and GNU time %s KiB less anonymous %s KiB and other file %s KiB; %s mappings of its largest pack file; wall %s s; %s' \
+  printf 'exit %s, pack figure %s KiB, the larger of sampled pack %s KiB and GNU time %s KiB less anonymous %s KiB and other file %s KiB; %s mappings of its largest pack file; wall %s s (%s); %s' \
     "$(field "$1" .exit)" "$(group "${2:-unread}")" "$(group "$(field "$1" .max_pack_kib)")" \
     "$(group "$(field "$1" .maxrss_kib)")" "$(group "$(field "$1" .max_anon_kib)")" \
     "$(group "$(field "$1" .max_other_file_kib)")" "$(field "$1" .largest_pack_file_mappings)" "$(field "$1" .wall_s)" \
-    "$(charge "$1")"
+    "$(stops "$1")" "$(charge "$1")"
 }
 
 # same_output <label> <control label>: 0 when both rows ran and their stdout is the same bytes, 1
@@ -541,7 +553,7 @@ r10_result() {
     --arg budget "${copy_budget[$2]:-unset}" --arg figure "$5" --arg stores "$6" --arg bound "$7" \
     'select(.label == $label) | {r10: $command, copy: $copy, jj: .argv[0], budget: $budget, label,
       exit, outputs_equal: $equal, max_pack_kib, max_other_file_kib, max_anon_kib, maxrss_kib, wall_s,
-      cgroup_peak_less_baseline_kib,
+      stop_ms_total, cgroup_peak_less_baseline_kib,
       pack_figure_kib: ($figure | tonumber? // null), stores: ($stores | tonumber? // null),
       bound_kib: ($bound | tonumber? // null)}' "$results" 2> /dev/null | tail -n 1)
   [ -n "$line" ] || line="{\"r10\": \"$1\", \"copy\": \"$2\", \"label\": \"$3\", \"ran\": false}"
@@ -653,8 +665,8 @@ finish() {
   echo
   echo "======== the rows"
   if [ -s "$results" ]; then
-    printf 'label\texit\twall_s\tgnu_time_kib\tsampled_kib\tpack_kib\tanonymous_kib\tpack_mappings\tpack_files\tmax_pack_kib\tmax_other_file_kib\tmax_anonymous_kib\tlargest_pack_file_mappings\tcgroup_peak_less_baseline_kib\tdaemon_tree_peak_kib\n'
-    jq -r '[.label, .exit, .wall_s, .maxrss_kib, .sampled_total_kib, .sampled_pack_kib, .sampled_anon_kib, .pack_mappings, .pack_files, .max_pack_kib, .max_other_file_kib, .max_anon_kib, .largest_pack_file_mappings, .cgroup_peak_less_baseline_kib, .daemon_tree_peak_kib] | @tsv' "$results"
+    printf 'label\texit\twall_s\tgnu_time_kib\tsampled_kib\tpack_kib\tanonymous_kib\tpack_mappings\tpack_files\tmax_pack_kib\tmax_other_file_kib\tmax_anonymous_kib\tlargest_pack_file_mappings\tcgroup_peak_less_baseline_kib\tdaemon_tree_peak_kib\tsamples_stopped\tstop_ms_total\tstop_ms_median\tstop_ms_max\tsamples_not_stopped_in_time\n'
+    jq -r '[.label, .exit, .wall_s, .maxrss_kib, .sampled_total_kib, .sampled_pack_kib, .sampled_anon_kib, .pack_mappings, .pack_files, .max_pack_kib, .max_other_file_kib, .max_anon_kib, .largest_pack_file_mappings, .cgroup_peak_less_baseline_kib, .daemon_tree_peak_kib, .samples_stopped, .stop_ms_total, .stop_ms_median, .stop_ms_max, .samples_not_stopped_in_time] | @tsv' "$results"
   else
     echo "no row was measured"
   fi

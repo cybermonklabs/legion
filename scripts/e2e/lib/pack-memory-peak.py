@@ -27,6 +27,35 @@ path, however many mappings or processes share it (pack_files). A peak shorter t
 can fall between two samples; GNU time's figure, the largest resident set of any one process of
 the tree, is the one that sees it, which is why the probe bounds a row by both.
 
+The tree is stopped while a sample reads it, so a sample is one instant: the sampler lists the
+tree, sends each of its processes SIGSTOP, waits up to 50 ms for every thread of each to reach the
+stop (state T in /proc/<pid>/task/<tid>/stat, or gone), lists the tree again for a process forked
+meanwhile and stops that too, reads every smaps and the cgroup charge, and then sends SIGCONT to
+every process it stopped: always, after a read that failed too, and also when this process gets
+SIGTERM, SIGINT or SIGHUP or exits. One smaps read walks hundreds of mappings over milliseconds,
+and a jj that drops one chunk of a pack and maps the next thousands of times a second, left
+running while it is read, is counted holding both, more than any instant held. A process that
+does not reach the stop in time is read anyway and its sample counted
+(samples_not_stopped_in_time; largest_sample_stopped_in_time says it of the sample the figures
+come from). It never stops itself, its parent or the --daemon tree, which it only reads, and a
+process that something else had stopped it leaves as it found it. It reports the samples it
+stopped the tree in (samples_stopped) and how long the tree was stopped in each, from the first
+SIGSTOP to the last SIGCONT: their sum, median and longest (stop_ms_total, stop_ms_median,
+stop_ms_max). The wall time (wall_s) is the time COMMAND ran, its stops included. A SIGKILL of
+this process, which no handler sees, leaves a tree it had stopped stopped.
+
+The tree runs in a process group that is never orphaned while it runs, since gVisor hangs up a
+group that is orphaned while a member is stopped (SIGHUP, then SIGCONT, to every member). This
+process leads that group, its own parent outside it, and is the tree's child subreaper, so every
+orphan of the tree, such as the daemon `git maintenance run --auto --detach` leaves behind each
+`git fetch`, is reparented inside the group: gVisor's count of a group's members whose parent is
+outside it is not updated when a member is reparented. With GNU time leading a group of its own
+beside a sampler in the probe's group instead, four of five `jj git fetch` rows of one octocat run
+were hung up at their one stopped sample (exit 129, no GNU time report). Where its parent started
+it in a group of its own, as provisioning's procgroup does, it keeps that group, so the parent's
+stop of the group still reaches the whole tree. A process that leads a session of its own starts
+GNU time in a group of its own instead, whose orphans go to a reaper in another session.
+
 Beside that sample it reports, over every sample, the largest pack Rss, anonymous memory and
 other-file Rss (max_pack_kib, max_anon_kib, max_other_file_kib), each its own largest and not one
 instant's, which R10's pack figure is made of; and, for each path under /objects/pack/, the most
@@ -61,10 +90,13 @@ This process exits with COMMAND's status, 128 plus the signal for a COMMAND a si
 124 for a COMMAND it killed, whole tree, at --timeout. A usage error exits 2 before anything runs.
 """
 
+import atexit
+import ctypes
 import json
 import os
 import re
 import signal
+import statistics
 import subprocess
 import sys
 import time
@@ -76,6 +108,23 @@ TAIL = 400
 # The pod's cgroup memory charge: cgroup v1's file, then cgroup v2's.
 CGROUP_FILES = ("/sys/fs/cgroup/memory/memory.usage_in_bytes", "/sys/fs/cgroup/memory.current")
 CGROUP_FIGURES = ("cgroup_baseline_kib", "cgroup_peak_kib", "cgroup_peak_less_baseline_kib", "cgroup_at_largest_sample_kib")
+# How long a sample waits for every thread of the tree to reach its SIGSTOP, how often it looks,
+# and how many times it lists the tree for a process forked while the rest was being stopped.
+STOP_BOUND = 0.05
+STOP_POLL = 0.001
+STOP_ROUNDS = 3
+# The processes stop_tree stopped and resume has not continued yet.
+STOPPED = []
+PR_SET_CHILD_SUBREAPER = 36
+
+
+def child_subreaper():
+    """Make this process the child subreaper of every process it starts, so an orphan of the tree
+    is reparented to it rather than to init (prctl(2), PR_SET_CHILD_SUBREAPER)."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, f"prctl(PR_SET_CHILD_SUBREAPER): {os.strerror(error)}")
 
 
 def refuse(message):
@@ -129,9 +178,9 @@ def parse(argv):
     return opts, argv
 
 
-def tree(root):
-    """root and every process below it, read from each process's parent in /proc/<pid>/stat."""
-    children = {}
+def children():
+    """Each process's children, read from each process's parent in /proc/<pid>/stat."""
+    found = {}
     for entry in os.listdir("/proc"):
         if not entry.isdigit():
             continue
@@ -141,13 +190,96 @@ def tree(root):
             parent = int(stat.rsplit(")", 1)[1].split()[1])
         except (OSError, IndexError, ValueError):
             continue
-        children.setdefault(parent, []).append(int(entry))
+        found.setdefault(parent, []).append(int(entry))
+    return found
+
+
+def tree(root):
+    """root and every process below it, by each process's parent as it stands now."""
+    kids = children()
     found, stack = [], [root]
     while stack:
         pid = stack.pop()
         found.append(pid)
-        stack.extend(children.get(pid, []))
+        stack.extend(kids.get(pid, []))
     return found
+
+
+def state(path):
+    """The state letter a /proc/<pid>/stat or /proc/<pid>/task/<tid>/stat holds, None when gone."""
+    try:
+        with open(path) as f:
+            return f.read().rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        return None
+
+
+def halted(pid):
+    """Whether every thread of pid is stopped, in a tracing stop, a zombie or gone."""
+    try:
+        threads = os.listdir(f"/proc/{pid}/task")
+    except OSError:
+        return True
+    return all(state(f"/proc/{pid}/task/{tid}/stat") in (None, "T", "t", "Z", "X") for tid in threads)
+
+
+def stop_tree(root, spared):
+    """Stop the tree under root for one sample, sparing the pids in spared. Each round lists the
+    tree, sends SIGSTOP to each process it had not listed, and waits up to STOP_BOUND for every
+    thread of each to halt; a round that lists no new process ends it, and a process still new
+    after STOP_ROUNDS rounds is read unstopped. Answers the processes to read, those that did not
+    halt in time or were never stopped, and the monotonic time of the first SIGSTOP (None when it
+    sent none)."""
+    listed, late, first = [], [], None
+    for _ in range(STOP_ROUNDS):
+        new = [pid for pid in tree(root) if pid not in listed and pid not in spared]
+        if not new:
+            break
+        listed.extend(new)
+        sent = []
+        for pid in new:
+            if state(f"/proc/{pid}/stat") in ("T", "t"):
+                continue  # something else stopped it, and only that continues it
+            STOPPED.append(pid)  # before the signal: a handler that runs between them continues it
+            try:
+                os.kill(pid, signal.SIGSTOP)
+            except OSError:
+                continue
+            if first is None:
+                first = time.monotonic()
+            sent.append(pid)
+        deadline = time.monotonic() + STOP_BOUND
+        while True:
+            sent = [pid for pid in sent if not halted(pid)]
+            if not sent or time.monotonic() >= deadline:
+                break
+            time.sleep(STOP_POLL)
+        late.extend(sent)
+    else:
+        unstopped = [pid for pid in tree(root) if pid not in listed and pid not in spared]
+        listed.extend(unstopped)
+        late.extend(unstopped)
+    return listed, late, first
+
+
+def resume():
+    """SIGCONT every process stop_tree stopped. The list is cleared only once each was sent one, so
+    a signal handler that runs midway sends every one again rather than skipping one."""
+    for pid in list(STOPPED):
+        try:
+            os.kill(pid, signal.SIGCONT)
+        except OSError:
+            pass
+    STOPPED.clear()
+
+
+def leave(signum, frame):
+    """SIGTERM, SIGINT or SIGHUP: continue every stopped process, then end as that signal ends a
+    process, as this one did before it stopped any."""
+    resume()
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+    os._exit(128 + signum)
 
 
 def empty():
@@ -155,11 +287,11 @@ def empty():
     return {"total": 0, "pack": 0, "anon": 0, "other": 0, "mappings": 0, "resident": 0, "files": 0}
 
 
-def sample(root):
-    """One instant of the tree under root: its totals, and the mappings of each pack path."""
+def sample(pids):
+    """One instant of the processes pids: their totals, and the mappings of each pack path."""
     totals = empty()
     per_file = {}
-    for pid in tree(root):
+    for pid in pids:
         try:
             with open(f"/proc/{pid}/smaps") as f:
                 path = ""
@@ -268,15 +400,34 @@ def main():
     streams = {}
     if not opts["inherit"]:
         streams = {"stdout": open(out_file, "wb"), "stderr": open(err_file, "wb")}
+    # A stop of the tree must always be undone: on these signals and at exit as well as after each
+    # read. A signal that was ignored when this started stays ignored, as it was before.
+    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        if signal.getsignal(signum) is not signal.SIG_IGN:
+            signal.signal(signum, leave)
+    atexit.register(resume)
+    # The tree's process group must never become orphaned while it runs (the docstring says why):
+    # this process leads it, its own parent outside it, and is the tree's child subreaper, so an
+    # orphan of the tree is reparented inside the group, and that orphan leaving the group counts
+    # nothing. A session leader cannot lead a new group, so there GNU time leads one instead.
+    session_leader = os.getsid(0) == os.getpid()
+    if not session_leader:
+        if os.getpgrp() != os.getpid():
+            os.setpgid(0, 0)
+        child_subreaper()
+    never = {os.getpid(), os.getppid()}
     charged = cgroup_file()
     baseline = None if charged is None else charge(charged)
     started = time.monotonic()
-    proc = subprocess.Popen([opts["time_bin"], "-v", "-o", time_file] + command, env=env, **streams)
+    proc = subprocess.Popen([opts["time_bin"], "-v", "-o", time_file] + command, env=env,
+                            process_group=0 if session_leader else None, **streams)
     for stream in streams.values():
         stream.close()
 
     largest = None
     samples = 0
+    stops = []
+    late_samples = 0
     charge_peak = None
     daemon_peak = 0
     timed_out = False
@@ -284,13 +435,22 @@ def main():
     file_mappings = {}
     file_sizes = {}
     while proc.poll() is None:
-        now, per_file = sample(proc.pid)
-        now["charge"] = None if charged is None else charge(charged)
+        daemon_pids = [] if opts["daemon"] is None else tree(opts["daemon"])
+        try:
+            pids, late, first = stop_tree(proc.pid, never | set(daemon_pids))
+            now, per_file = sample(pids)
+            now["charge"] = None if charged is None else charge(charged)
+        finally:
+            resume()
+        if first is not None:
+            stops.append((time.monotonic() - first) * 1000)
+        now["stopped_in_time"] = not late
+        late_samples += 1 if late else 0
         samples += 1
         if now["charge"] is not None and (charge_peak is None or now["charge"] > charge_peak):
             charge_peak = now["charge"]
-        if opts["daemon"] is not None:
-            daemon_peak = max(daemon_peak, sample(opts["daemon"])[0]["total"])
+        if daemon_pids:
+            daemon_peak = max(daemon_peak, sample(daemon_pids)[0]["total"])
         if largest is None or now["total"] > largest["total"]:
             largest = now
             largest["at"] = time.monotonic() - started
@@ -306,7 +466,7 @@ def main():
         time.sleep(INTERVAL)
     wall = time.monotonic() - started
     if largest is None:
-        largest = {**empty(), "at": None, "charge": None}
+        largest = {**empty(), "at": None, "charge": None, "stopped_in_time": None}
     packs = [path for path in file_mappings if path.removesuffix(" (deleted)").endswith(".pack")]
     largest_pack = max(packs, key=lambda path: file_sizes[path] or 0, default=None)
 
@@ -340,6 +500,12 @@ def main():
         "pack_files": largest["files"],
         "largest_sample_at_s": None if largest["at"] is None else round(largest["at"], 1),
         "samples": samples,
+        "samples_stopped": len(stops),
+        "samples_not_stopped_in_time": late_samples,
+        "largest_sample_stopped_in_time": largest["stopped_in_time"],
+        "stop_ms_total": round(sum(stops), 1),
+        "stop_ms_median": round(statistics.median(stops), 1) if stops else None,
+        "stop_ms_max": round(max(stops), 1) if stops else None,
         "max_pack_kib": peaks["pack"],
         "max_anon_kib": peaks["anon"],
         "max_other_file_kib": peaks["other"],
