@@ -166,9 +166,9 @@ func TestAStoredFenceNamesNotTheHeadOfItsRow(t *testing.T) {
 
 // Only the three whole reads of one pull request load what it remembers of its settled heads
 // (PullRequest, PullRequestByNumber, PullRequestByBranch); a list read, and a read of the row alone
-// by its number or its branch, loads none of it. So a record such a read made is refused by
-// PutPullRequest, with an error that names the read, and the memory the store holds is left as it
-// was: written, it would have deleted every remembered head.
+// by its issue, its number or its branch, loads none of it. So a record such a read made is refused
+// by PutPullRequest, with an error that names the read, and the memory the store holds is left as
+// it was: written, it would have deleted every remembered head.
 func TestAListedPullRequestIsRefusedByPutPullRequest(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -191,6 +191,10 @@ func TestAListedPullRequestIsRefusedByPutPullRequest(t *testing.T) {
 		{"PullRequestsOf", func(tx pgx.Tx) ([]PullRequest, error) {
 			of, err := records.PullRequestsOf(ctx, tx, []string{issue.Key})
 			return []PullRequest{of[issue.Key]}, err
+		}},
+		{"PullRequestRow", func(tx pgx.Tx) ([]PullRequest, error) {
+			row, err := records.PullRequestRow(ctx, tx, issue.Key)
+			return rowOf(row), err
 		}},
 		{"PullRequestRowByNumber", func(tx pgx.Tx) ([]PullRequest, error) {
 			row, err := records.PullRequestRowByNumber(ctx, tx, strings.ToUpper(pr.Repo), pr.Number)

@@ -692,17 +692,21 @@ const pullRequestColumns = `issue, repo, number, branch, base, base_moved, head_
 // what it remembers of its settled heads (loadSettledHeads), so each record they answer is one a
 // write may keep (PutPullRequest).
 func (s *Postgres) PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error) {
-	pr, err := onePullRequest(ctx, tx, "select "+pullRequestColumns+" from pull_requests where issue = $1", issue)
+	pr, err := onePullRequest(ctx, tx, pullRequestByIssue, issue)
 	if err != nil {
 		return nil, fmt.Errorf("read pull request for %s: %w", issue, err)
 	}
 	return pr, nil
 }
 
+// pullRequestByIssue is the query of the two reads of one pull request by its issue: PullRequest
+// reads it whole, PullRequestRow its row alone.
+const pullRequestByIssue = "select " + pullRequestColumns + " from pull_requests where issue = $1"
+
 // onePullRequest is the row query selects with what it remembers of its settled heads, nil for no
 // row.
 func onePullRequest(ctx context.Context, tx pgx.Tx, query string, args ...any) (*PullRequest, error) {
-	pr, err := queryPullRequestRow(ctx, tx, query, args...)
+	pr, err := queryPullRequestRow(ctx, tx, "", query, args...)
 	if err != nil || pr == nil {
 		return nil, err
 	}
@@ -713,8 +717,9 @@ func onePullRequest(ctx context.Context, tx pgx.Tx, query string, args ...any) (
 }
 
 // queryPullRequestRow is the row query selects alone, with none of what it remembers of its
-// settled heads, nil for no row.
-func queryPullRequestRow(ctx context.Context, tx pgx.Tx, query string, args ...any) (*PullRequest, error) {
+// settled heads, nil for no row, marked with readBy, the read that made it (PullRequest.readBy):
+// "" for onePullRequest, which loads that memory next.
+func queryPullRequestRow(ctx context.Context, tx pgx.Tx, readBy, query string, args ...any) (*PullRequest, error) {
 	pr, err := scanPullRequest(tx.QueryRow(ctx, query, args...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -722,6 +727,7 @@ func queryPullRequestRow(ctx context.Context, tx pgx.Tx, query string, args ...a
 	if err != nil {
 		return nil, err
 	}
+	pr.readBy = readBy
 	return pr, nil
 }
 
@@ -768,29 +774,32 @@ func (s *Postgres) PullRequestByNumber(ctx context.Context, tx pgx.Tx, repo stri
 	return pr, nil
 }
 
-// PullRequestRowByBranch and PullRequestRowByNumber read the pull request PullRequestByBranch and
-// PullRequestByNumber read, by the same query, as its row alone: with none of what it remembers of
-// its settled heads, and marked with the read that made it (PullRequest.listedBy), so
-// PutPullRequest refuses it. They are a reader's that never writes the record back and reads
-// neither its SettledHeads nor its head run's Settled, which the whole read would load for nothing.
+// PullRequestRow, PullRequestRowByBranch and PullRequestRowByNumber read the pull request
+// PullRequest, PullRequestByBranch and PullRequestByNumber read, by the same query, as its row
+// alone: with none of what it remembers of its settled heads, and marked with the read that made
+// it (PullRequest.readBy), so PutPullRequest refuses it. They are a reader's that never writes the
+// record back and reads neither its SettledHeads nor its head run's Settled, which the whole read
+// would load for nothing.
+func (s *Postgres) PullRequestRow(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error) {
+	pr, err := queryPullRequestRow(ctx, tx, "PullRequestRow", pullRequestByIssue, issue)
+	if err != nil {
+		return nil, fmt.Errorf("read the pull request of %s: %w", issue, err)
+	}
+	return pr, nil
+}
+
 func (s *Postgres) PullRequestRowByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error) {
-	pr, err := queryPullRequestRow(ctx, tx, pullRequestByBranch, repo, branch)
+	pr, err := queryPullRequestRow(ctx, tx, "PullRequestRowByBranch", pullRequestByBranch, repo, branch)
 	if err != nil {
 		return nil, fmt.Errorf("read the row of the pull request for %s %s: %w", repo, branch, err)
-	}
-	if pr != nil {
-		pr.listedBy = "PullRequestRowByBranch"
 	}
 	return pr, nil
 }
 
 func (s *Postgres) PullRequestRowByNumber(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequest, error) {
-	pr, err := queryPullRequestRow(ctx, tx, pullRequestByNumber, repo, number)
+	pr, err := queryPullRequestRow(ctx, tx, "PullRequestRowByNumber", pullRequestByNumber, repo, number)
 	if err != nil {
 		return nil, fmt.Errorf("read the row of pull request %s#%d: %w", repo, number, err)
-	}
-	if pr != nil {
-		pr.listedBy = "PullRequestRowByNumber"
 	}
 	return pr, nil
 }
@@ -856,8 +865,8 @@ func (s *Postgres) OpenPullRequestsOnBase(ctx context.Context, tx pgx.Tx, repo, 
 }
 
 // collectPullRequests reads every row of a pull request listing, naming the listing in any failure
-// as describe, and marks each record with listedBy, the read that made it (PullRequest.listedBy).
-func collectPullRequests(rows pgx.Rows, describe, listedBy string) ([]PullRequest, error) {
+// as describe, and marks each record with readBy, the read that made it (PullRequest.readBy).
+func collectPullRequests(rows pgx.Rows, describe, readBy string) ([]PullRequest, error) {
 	defer rows.Close()
 	open := []PullRequest{}
 	for rows.Next() {
@@ -865,7 +874,7 @@ func collectPullRequests(rows pgx.Rows, describe, listedBy string) ([]PullReques
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", describe, err)
 		}
-		pr.listedBy = listedBy
+		pr.readBy = readBy
 		open = append(open, *pr)
 	}
 	if err := rows.Err(); err != nil {
@@ -884,10 +893,9 @@ func collectPullRequests(rows pgx.Rows, describe, listedBy string) ([]PullReques
 // several of this table, answers the open ones alone and could not serve this caller: a tree
 // that has stopped with its work already merged is exactly the tree that caller reports, and a
 // merged pull request is the fact its controller most needs to read. It reads none of what each
-// pull request remembers of its settled heads (PullRequest.SettledHeads), so a reader of one
-// pull request that never writes it reads it here too, as a list of one (PullRequestRow), and
-// loads no memory it would not use. An error names how many issues the read was of and the first
-// of them, not every key: the state's read asks for each issue of the project.
+// pull request remembers of its settled heads (PullRequest.SettledHeads). An error names how many
+// issues the read was of and the first of them, not every key: the state's read asks for each
+// issue of the project.
 func (s *Postgres) PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string]PullRequest, error) {
 	if len(issues) == 0 {
 		return nil, nil
@@ -907,7 +915,7 @@ func (s *Postgres) PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []strin
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", describe, err)
 		}
-		pr.listedBy = "PullRequestsOf"
+		pr.readBy = "PullRequestsOf"
 		requests[pr.Issue] = *pr
 	}
 	if err := rows.Err(); err != nil {
@@ -916,25 +924,10 @@ func (s *Postgres) PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []strin
 	return requests, nil
 }
 
-// PullRequestRow is the pull request store records for issue, nil for none, read as a list of one
-// (Store.PullRequestsOf): its row alone, with none of what it remembers of its settled heads, a
-// record PutPullRequest refuses. It is the read of one pull request by its issue for a reader that
-// never writes the record back and reads neither its SettledHeads nor its head run's Settled.
-func PullRequestRow(ctx context.Context, store Store, tx pgx.Tx, issue string) (*PullRequest, error) {
-	of, err := store.PullRequestsOf(ctx, tx, []string{issue})
-	if err != nil {
-		return nil, err
-	}
-	if pr, found := of[issue]; found {
-		return &pr, nil
-	}
-	return nil, nil
-}
-
 func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest) error {
-	if pr.listedBy != "" {
+	if pr.readBy != "" {
 		return fmt.Errorf("put pull request for %s: the record was read by %s, which loads none of what the pull request remembers of its settled heads; "+
-			"only PullRequest, PullRequestByNumber and PullRequestByBranch load the fence memory a write keeps", pr.Issue, pr.listedBy)
+			"only PullRequest, PullRequestByNumber and PullRequestByBranch load the fence memory a write keeps", pr.Issue, pr.readBy)
 	}
 	failing, err := json.Marshal(pr.Failing)
 	if err != nil {

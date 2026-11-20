@@ -223,7 +223,7 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 // rule is kept beside mergeForward and mergeForwardLanded, which write the rows, and
 // clearMergeForward, which drops the ask they are about, since it restates their states for a row
 // already queued. It is exported for that executor. The pull request is its row alone
-// (record.PullRequestRow): the executor names its repository and writes nothing of it.
+// (record.Store.PullRequestRow): the executor names its repository and writes nothing of it.
 func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, step record.MergeForwardStep, head string) (*record.Issue, *record.PullRequest, string, error) {
 	issue, err := store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
@@ -233,7 +233,7 @@ func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, key stri
 	if err != nil {
 		return nil, nil, "", err
 	}
-	pr, err := record.PullRequestRow(ctx, store, tx, key)
+	pr, err := store.PullRequestRow(ctx, tx, key)
 	if err != nil {
 		return nil, nil, "", err
 	}

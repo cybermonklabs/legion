@@ -873,16 +873,16 @@ type PullRequest struct {
 	// The store keeps it in a table of its own, pull_request_settled_heads, one row for each head
 	// (migration 20261120144241 says why), which only the three whole reads of one pull request
 	// load: PullRequest, PullRequestByNumber and PullRequestByBranch. A list read and a row read
-	// (PullRequestRowByNumber, PullRequestRowByBranch, PullRequestRow) load none of it and mark
-	// their records (listedBy), which PutPullRequest refuses.
+	// (PullRequestRow, PullRequestRowByNumber, PullRequestRowByBranch) load none of it and mark
+	// their records (readBy), which PutPullRequest refuses.
 	SettledHeads []Settlement
-	// listedBy names the read that made the record with none of what it remembers - the list reads
+	// readBy names the read that made the record with none of what it remembers - the list reads
 	// OpenPullRequests, OpenPullRequestsOnBase and PullRequestsOf, and the row reads
-	// PullRequestRowByNumber and PullRequestRowByBranch - and is "" for a record one of the three
-	// whole reads of one pull request made, or that no read made. Such a read loads neither
-	// SettledHeads nor HeadRun.Settled, so a write of its record would delete every remembered
-	// head: PutPullRequest refuses it, naming the read.
-	listedBy string
+	// PullRequestRow, PullRequestRowByNumber and PullRequestRowByBranch - and is "" for a record
+	// one of the three whole reads of one pull request made, or that no read made. Such a read
+	// loads neither SettledHeads nor HeadRun.Settled, so a write of its record would delete every
+	// remembered head: PutPullRequest refuses it, naming the read.
+	readBy string
 	// Pushes are the branch's pushes the daemon still reads: every push whose own move, its two
 	// heads, the record has not made (Moves) - a push still on its way from the head, a link of a
 	// chain still to complete, or one that returns the branch to a commit it held before
@@ -1938,9 +1938,12 @@ type Store interface {
 	PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
 	PullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error)
 	PullRequestByNumber(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequest, error)
-	// PullRequestRowByBranch and PullRequestRowByNumber read what PullRequestByBranch and
-	// PullRequestByNumber read, by the same query, as the pull request's row alone: none of what
-	// it remembers of its settled heads, and a record PutPullRequest refuses, naming the read.
+	// PullRequestRow, PullRequestRowByBranch and PullRequestRowByNumber read what PullRequest,
+	// PullRequestByBranch and PullRequestByNumber read, by the same query, as the pull request's
+	// row alone: none of what it remembers of its settled heads, and a record PutPullRequest
+	// refuses, naming the read. PullRequestRow is the read of one pull request by its issue for
+	// every reader that never writes the record back.
+	PullRequestRow(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
 	PullRequestRowByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error)
 	PullRequestRowByNumber(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequest, error)
 	// ClearedPullRequestClock is the clock (updated_at) of the newest lifecycle event pull request
@@ -1959,11 +1962,11 @@ type Store interface {
 	// issue of a tree and may make no read per issue (admit's tellStalledTrees). It answers a
 	// merged and a closed pull request as well as an open one, which OpenPullRequests cannot:
 	// a tree that has stopped with its work merged is exactly the tree such a caller reports. It
-	// loads no settled heads, so the state's build and every reader of one pull request by its
-	// issue that never writes it read here (PullRequestRow), and PutPullRequest refuses its records.
+	// loads no settled heads, and PutPullRequest refuses its records.
 	PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string]PullRequest, error)
 	// PutPullRequest writes pr whole, what it remembers of its settled heads with it, and refuses a
-	// record a list read made (PullRequest.SettledHeads says why).
+	// record that a list read or a row read made, which loads none of that memory
+	// (PullRequest.SettledHeads says why).
 	PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest) error
 	// SetPullRequestBaseMoved writes issue's pull request's BaseMoved, after, and no other field:
 	// the one write a list read's record calls for (workflow's basePush), which PutPullRequest

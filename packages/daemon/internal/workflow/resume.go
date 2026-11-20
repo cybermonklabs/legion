@@ -259,7 +259,7 @@ func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {
 		if !awaitsMerge(listed) {
 			continue
 		}
-		pr, err := record.PullRequestRow(ctx, e.store, tx, listed.Key)
+		pr, err := e.store.PullRequestRow(ctx, tx, listed.Key)
 		if err != nil || pr == nil || pr.State != record.PullRequestMerged {
 			if err != nil {
 				return err

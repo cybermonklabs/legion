@@ -320,12 +320,13 @@ func (e *Engine) generationStarted(ctx context.Context, tx pgx.Tx, issue record.
 // still land there: while the linger runs and no fact has closed it, while its pull request is open,
 // or where the close of root's linger handed it over, whose re-admission ends the merge's run
 // instead. The pull request's state is all it reads, so it reads the row alone
-// (record.PullRequestRow), with none of what the pull request remembers of its settled heads.
+// (record.Store.PullRequestRow), with none of what the pull request remembers of its settled
+// heads.
 func (e *Engine) mergeCanLand(ctx context.Context, tx pgx.Tx, runs *factRuns, member, root record.Issue) (bool, error) {
 	if record.Lingering(root, e.now()) && !runs.closed[root.Tree] {
 		return true, nil
 	}
-	pr, err := record.PullRequestRow(ctx, e.store, tx, member.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, member.Key)
 	if err != nil {
 		return false, err
 	}

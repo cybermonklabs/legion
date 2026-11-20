@@ -38,7 +38,7 @@ func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading Disp
 	// no reading has written it (0) or an older one did (dispatchValueTakes), and the project moves
 	// only with such a value.
 	//
-	// status_changed_seq, the sequence at which the copy last saw the status change
+	// status_changed_seq, the latest sequence by which the copy knows the issue's status changed
 	// (DispatchStatusChangedSeq), starts where status_seq does. A status the reading writes that
 	// differs from the one the row held moves it to the reading's sequence, so a rename or a
 	// re-rank that carries the same status leaves it where the status last moved. A reading older
@@ -62,7 +62,7 @@ func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading Disp
 			status_seq = case when $5 and (held.status_seq = 0 or held.status_seq < $3) then $3 else held.status_seq end,
 			status_changed_seq = case
 				when $5 and (held.status_seq = 0 or held.status_seq < $3) and held.status is distinct from excluded.status then $3
-				when $5 and held.status_seq > $3 and held.status is distinct from excluded.status
+				when `+dispatchOlderStatusDiffers+`
 					then greatest(held.status_changed_seq, held.status_seq)
 				else held.status_changed_seq end,
 			parent = case when $7 and (held.parent_seq = 0 or held.parent_seq < $3) then excluded.parent else held.parent end,
@@ -74,7 +74,7 @@ func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading Disp
 			rank = case when $13 and (held.rank_seq = 0 or held.rank_seq < $3) then excluded.rank else held.rank end,
 			rank_seq = case when $13 and (held.rank_seq = 0 or held.rank_seq < $3) then $3 else held.rank_seq end
 		where `+dispatchValueTakes+`
-			or ($5 and held.status_seq > $3 and held.status is distinct from excluded.status
+			or (`+dispatchOlderStatusDiffers+`
 				and held.status_changed_seq < held.status_seq)`,
 		reading.Key, reading.Project, reading.Seq,
 		status, reading.Status.Carried,
@@ -97,6 +97,13 @@ const dispatchValueTakes = `(($5 and (held.status_seq = 0 or held.status_seq < $
 			or ($9 and (held.blockers_seq = 0 or held.blockers_seq < $3))
 			or ($11 and (held.labels_seq = 0 or held.labels_seq < $3))
 			or ($13 and (held.rank_seq = 0 or held.rank_seq < $3)))`
+
+// dispatchOlderStatusDiffers is PutDispatchIssue's test, over the row the copy holds (held), that
+// the reading carries a status ($5), is older than the row's status reading ($3 is the reading's
+// sequence), and carries another status than the row holds: the status changed between the two
+// readings. status_changed_seq's case raises the sequence to status_seq on it, and the where
+// clause lets such a reading through while it raises the sequence.
+const dispatchOlderStatusDiffers = `$5 and held.status_seq > $3 and held.status is distinct from excluded.status`
 
 // carriedOr is the value a reading carries, or none when it does not carry one.
 func carriedOr[T any](value Carried[T], none T) T {

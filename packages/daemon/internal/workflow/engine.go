@@ -896,7 +896,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	if err != nil {
 		return intake.Result{}, err
 	}
-	pr, err := record.PullRequestRow(ctx, e.store, tx, fact.Issue)
+	pr, err := e.store.PullRequestRow(ctx, tx, fact.Issue)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -1919,7 +1919,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// below: the hold is gone either way, and the reason is the one the restarted role's task
 	// carries.
 	e.logOnCommit(ctx, "workflow: a held phase is released", "issue", issue.Key, "phase", from, "reason", reason)
-	pr, err := record.PullRequestRow(ctx, e.store, tx, issue.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil {
 		return "", err
 	}
@@ -2008,7 +2008,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if err != nil {
 		return intake.Result{}, err
 	}
-	pr, err := record.PullRequestRow(ctx, e.store, tx, issue.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -2054,7 +2054,7 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	if err != nil {
 		return intake.Result{}, err
 	}
-	pr, err := record.PullRequestRow(ctx, e.store, tx, issue.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil {
 		return intake.Result{}, err
 	}

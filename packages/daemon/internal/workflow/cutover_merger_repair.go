@@ -138,7 +138,7 @@ func (e *Engine) cutoverStoppedMerger(ctx context.Context, tx pgx.Tx, owner susp
 	if issue.Phase != phase.Merging || owner.run.Claim.SuspendedBy != supervise.SuspendedByReleased {
 		return false, nil
 	}
-	pr, err := record.PullRequestRow(ctx, e.store, tx, issue.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil || pr == nil || pr.State != record.PullRequestOpen {
 		return false, err
 	}

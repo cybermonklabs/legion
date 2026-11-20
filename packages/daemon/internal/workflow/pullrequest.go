@@ -43,23 +43,23 @@ import (
 // The row the record holds is read first, by its own key in the caller's transaction, so the
 // test has both sides. That read is the cost of never mistaking a repeat for news: GitHub
 // redelivers a webhook, and the daemon's own passes rebuild a push or a settlement whose webhook
-// was lost, so the same fact reaches this code twice as a matter of course. It is read as the list
-// reads read a row (record.Store.PullRequestsOf), with none of what the pull request remembers of
-// its settled heads: the test reads none of that, and the record written is pr, never this one.
+// was lost, so the same fact reaches this code twice as a matter of course. It is read as its
+// row alone (record.Store.PullRequestRow), with none of what the pull request remembers of its
+// settled heads: the test reads none of that, and the record written is pr, never this one.
 //
 // The issue is the row's own (record.PullRequest.Issue), so the helper needs no second argument
 // and cannot be handed the wrong key. The moment is the engine's clock, as every other site's
 // is: the fact is being applied now, whatever clock GitHub stamped it with, and the mark says
 // when the daemon saw the issue move.
 func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRequest) error {
-	of, err := e.store.PullRequestsOf(ctx, tx, []string{pr.Issue})
+	recorded, err := e.store.PullRequestRow(ctx, tx, pr.Issue)
 	if err != nil {
 		return err
 	}
 	if err := e.store.PutPullRequest(ctx, tx, pr); err != nil {
 		return err
 	}
-	if recorded, found := of[pr.Issue]; found && !pullRequestNews(recorded, pr) {
+	if recorded != nil && !pullRequestNews(*recorded, pr) {
 		return nil
 	}
 	return e.store.MarkIssueMoved(ctx, tx, pr.Issue, e.now())
@@ -660,8 +660,8 @@ func (e *Engine) mergeQueueReadDone(ctx context.Context, tx pgx.Tx, fact intake.
 // message (dequeued, mergeQueueReadDone) and the daemon's outbox rows that read the pull request
 // and deliver the message read the issue through this one read, so all four judge it from the
 // same records. It is exported for those outbox rows (the daemon's mergingAt). The pull request
-// is its row alone (record.PullRequestRow): no caller writes it back, and none reads what it
-// remembers of its settled heads.
+// is its row alone (record.Store.PullRequestRow): no caller writes it back, and none reads
+// what it remembers of its settled heads.
 func MergingAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, number int, head string) (*record.Issue, *record.PullRequest, string, error) {
 	issue, err := store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
@@ -671,7 +671,7 @@ func MergingAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, n
 	if err != nil {
 		return nil, nil, "", err
 	}
-	pr, err := record.PullRequestRow(ctx, store, tx, key)
+	pr, err := store.PullRequestRow(ctx, tx, key)
 	if err != nil {
 		return nil, nil, "", err
 	}
@@ -726,7 +726,7 @@ func (e *Engine) pullRequestMissing(ctx context.Context, tx pgx.Tx, fact intake.
 	if err != nil || row.HandoffCommit != fact.HandoffCommit {
 		return intake.Result{}, err
 	}
-	pr, err := record.PullRequestRow(ctx, e.store, tx, issue.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil || record.LetsImplementationMove(pr) {
 		return intake.Result{}, err
 	}

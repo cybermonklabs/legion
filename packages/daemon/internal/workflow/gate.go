@@ -656,7 +656,7 @@ func (e *Engine) dispatchArtifact(ctx context.Context, tx pgx.Tx, fact intake.Di
 	var step record.DesignStep
 	for _, gate := range gates {
 		carried := gate.Issue != fact.Key
-		if handover.parkedRoot() && !carried {
+		if handover.parked && !carried {
 			step = gate.Step
 			if err := e.recordHandover(ctx, tx, gate, fact); err != nil {
 				return intake.Result{}, err
@@ -673,7 +673,7 @@ func (e *Engine) dispatchArtifact(ctx context.Context, tx pgx.Tx, fact intake.Di
 	if handover.refusedAt > 0 {
 		return intake.Result{}, e.refuseHandover(ctx, tx, fact, handover, step)
 	}
-	if !handover.queues {
+	if !handover.parked {
 		return intake.Result{}, nil
 	}
 	pending, err := e.store.PersonHandoverPending(ctx, tx, fact.Key)
@@ -824,24 +824,22 @@ func (e *Engine) personHandoverQueues(ctx context.Context, tx pgx.Tx, fact intak
 	if err != nil {
 		return handoverDecision{}, err
 	}
-	return handoverDecision{queues: moved == 0, refusedAt: moved, root: stored}, nil
+	return handoverDecision{parked: true, refusedAt: moved, root: stored}, nil
 }
 
 // handoverDecision is what a person's approval comes to as the handover of its parked root
 // (personHandoverQueues). The zero value is an approval that is no such handover.
 type handoverDecision struct {
-	// queues says the approval queues the root as the person's handover.
-	queues bool
+	// parked says the approval is of a parked labelled root whose tree is not live, whose own gate
+	// takes it quietly (recordHandover): it queues the root as the person's handover unless
+	// refusedAt says a change of the root's status after it kept it from doing so.
+	parked bool
 	// refusedAt is the copy's status change sequence when a change of the root's status after the
 	// approval kept it from queuing the root (statusMovedSince), 0 otherwise.
 	refusedAt int64
 	// root is the root's record, nil for a root the daemon does not record.
 	root *record.Issue
 }
-
-// parkedRoot says whether the approval is of a parked root whose tree is not live, queued or
-// refused, whose own gate takes it quietly (recordHandover).
-func (h handoverDecision) parkedRoot() bool { return h.queues || h.refusedAt > 0 }
 
 // statusMovedSince is the sequence by which the copy of Dispatch's issues, which every issue event
 // the daemon applies writes first (blockers.Mirror), last knows the issue key's status changed

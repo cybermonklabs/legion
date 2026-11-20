@@ -25,12 +25,12 @@ import (
 // records it, so an issue standing in accepting is always still waiting for it; every other
 // phase ends with its worker's completion, which moves the issue too. A recorded completion
 // answers nothing here: the merger's is recorded and moves no issue. The pull request's state is
-// all it reads, so it reads the row alone (record.PullRequestRow).
+// all it reads, so it reads the row alone (record.Store.PullRequestRow).
 func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (bool, error) {
 	if issue.Phase != phase.Merging {
 		return false, nil
 	}
-	pr, err := record.PullRequestRow(ctx, store, tx, issue.Key)
+	pr, err := store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil || pr == nil {
 		return false, err
 	}
