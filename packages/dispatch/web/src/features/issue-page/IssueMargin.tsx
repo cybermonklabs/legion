@@ -1,10 +1,4 @@
-import {
-  hashKey,
-  type QueryClient,
-  type QueryKey,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query";
+import { type QueryClient, type QueryKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, type RefCallback, useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -41,6 +35,7 @@ import {
   retryRead,
   useRetryHandOff,
   useSaidFailure,
+  useTitlesRetry,
 } from "./details-error";
 import {
   CIRCLED_DOT,
@@ -127,35 +122,6 @@ function issueTitleIn(read: ReferenceTargets | undefined, key: string): string |
 function keptUntilFailed(queryClient: QueryClient, queryKey: QueryKey) {
   return <T,>(before: T | undefined): T | undefined =>
     (queryClient.getQueryState(queryKey)?.errorUpdateCount ?? 0) > 0 ? undefined : before;
-}
-
-/** The Retry of a row's names read of titles, spread on its line (`DetailsErrorLine`): it sends
- *  the read under `queryKey` again (`retryRead`) and notes that key as the read it was pressed
- *  for; as Retry leaves the page with the focus after that press (`useRetryHandOff`), it hands the
- *  focus on to what `to` returns only where the read now drawn is that read and has answered after
- *  it failed (`isSuccess`, with an `errorUpdateCount` above 0). The counts alone would not tell:
- *  the cache keeps them for each set and never resets them, so a set whose read failed once and
- *  answered later, then changed away and back in another session while Retry's read of another set
- *  is out, holds them though nothing answered the press. */
-function useTitlesRetry(
-  read: Parameters<typeof retryRead>[0] & {
-    readonly errorUpdateCount: number;
-    readonly isSuccess: boolean;
-  },
-  queryKey: QueryKey,
-  to: () => HTMLElement | null | undefined
-) {
-  const pressedFor = useRef<string | null>(null);
-  const handOff = useRetryHandOff(() =>
-    read.isSuccess && read.errorUpdateCount > 0 && pressedFor.current === hashKey(queryKey)
-      ? to()
-      : null
-  );
-  const onRetry = () => {
-    pressedFor.current = hashKey(queryKey);
-    retryRead(read)();
-  };
-  return { ...handOff, onRetry };
 }
 
 /**
@@ -400,20 +366,21 @@ export function IssueMarginPanel({
   // it failed: the read the press sent, or a read of the same issues an event sent while it was
   // out, which reached what the press asked for, so the row takes it for the press's answer. The
   // answer of another set is not: one changed in another session to a set not read yet, whose
-  // read is not sent or not started, or back to one already read, whose answer is cached, even
-  // where that read failed before it answered. A line that goes with no press of its Retry - a
-  // read answering on an event or a window focus - or before that answer - the set changed or
-  // emptied in another session while the read is out, or the other line of Blocks drawn in its
-  // place - leaves the focus on the page's body. In Blocked by the focus goes to the row's
-  // control, found by its name as the add menu finds it (`blockedByControlName`), and where the
-  // row draws none - on a closed issue, or while its editor is open - to the first issue the row
-  // waits on, each passing over a control that takes no press (`usableControl`). The row draws
-  // that issue whenever the read has answered, since the titles are read only for a set that
-  // holds one. In Blocks, which has no control, the focus of the Retry of what waits on the issue
-  // goes to the first issue the row draws, or else to the None it says, which the row draws only
-  // once that read has answered; and that of the Retry of their titles goes to the first issue
-  // the row draws, which a failed read of what waits on the issue, drawn in the list's place,
-  // takes away, and the focus then stays on the page's body.
+  // read is out while the row draws the titles of the set before, or emptied, whose read is not
+  // sent, or back to one already read, whose answer is cached, even where that read failed before
+  // it answered. A line that goes with no press of its Retry - a read answering on an event or a
+  // window focus - or before that answer - the set changed or emptied in another session while
+  // the read is out, or the other line of Blocks drawn in its place - leaves the focus on the
+  // page's body. In Blocked by the focus goes to the row's control, found by its name as the add
+  // menu finds it (`blockedByControlName`), and where the row draws none - on a closed issue, or
+  // while its editor is open - to the first issue the row waits on, each passing over a control
+  // that takes no press (`usableControl`). The row draws that issue whenever the read has
+  // answered, since the titles are read only for a set that holds one. In Blocks, which has no
+  // control, the focus of the Retry of what waits on the issue goes to the first issue the row
+  // draws, or else to the None it says, which the row draws only once that read has answered;
+  // and that of the Retry of their titles goes to the first issue the row draws, which a failed
+  // read of what waits on the issue, drawn in the list's place, takes away, and the focus then
+  // stays on the page's body.
   const blockedByValue = useRef<HTMLDivElement>(null);
   const titlesRetry = useTitlesRetry(blockerTitles, blockerRead.queryKey, () =>
     firstUsable(
@@ -425,12 +392,9 @@ export function IssueMarginPanel({
   );
   const blocksValue = useRef<HTMLDivElement>(null);
   const blocksNone = useRef<HTMLSpanElement>(null);
-  const blockingRetry = useRetryHandOff(
-    () => blocksValue.current?.querySelector<HTMLElement>("a[href]") ?? blocksNone.current
-  );
-  const waitingRetry = useTitlesRetry(waitingTitles, waitingRead.queryKey, () =>
-    blocksValue.current?.querySelector<HTMLElement>("a[href]")
-  );
+  const firstWaiting = () => blocksValue.current?.querySelector<HTMLElement>("a[href]");
+  const blockingRetry = useRetryHandOff(() => firstWaiting() ?? blocksNone.current);
+  const waitingRetry = useTitlesRetry(waitingTitles, waitingRead.queryKey, firstWaiting);
   const priority = usePriorityHandOffs(issue, developmentHeading);
   // The Repository row's control draws its own failed read of the mappings and its own refused
   // write, and hands each to the row to say (`sayFailure`), as Details says its own. A read's

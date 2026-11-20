@@ -49,7 +49,7 @@ import { conversationItemId, pinnedItemMarker, stateForIssue } from "../issue/pi
 import { repoControlName, repoTextControlName } from "../issue/RepoControl";
 import { type DocumentBridge, MarginProvider, useMargin } from "../margin/margin-context";
 import { issue as marginIssue, specArtifact } from "../margin/margin-fixture";
-import { addPriorityControlName } from "../priorities/IssuePriorityLine";
+import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { buildDispatchReference } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -137,6 +137,29 @@ const WAITER_REFERENCES: GraphReferences = {
   ...NOTHING_REFERENCES,
   edges: [waitingEdge("CORE-5", "Ship the release")],
 };
+
+/** What references CORE-1 once another session changes which issue waits on it: CORE-6 in place
+ *  of CORE-5. */
+const OTHER_WAITER_REFERENCES: GraphReferences = {
+  ...NOTHING_REFERENCES,
+  edges: [waitingEdge("CORE-6", "Write the notes")],
+};
+
+/** Reads what waits on CORE-1 again, the Blocks row's read, as an event of its references reads
+ *  it: `getReferences` answers `answer` from then on, or, where `answer` is a failure, fails this
+ *  read alone. */
+async function readWhatWaits(
+  queryClient: QueryClient,
+  getReferences: Mock<typeof api.getReferences>,
+  answer: GraphReferences | ApiError
+): Promise<void> {
+  if (answer instanceof ApiError) getReferences.mockRejectedValueOnce(answer);
+  else getReferences.mockResolvedValue(answer);
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  await act(() =>
+    queryClient.refetchQueries({ queryKey: ["references", "to", reference, "blocked_by"] })
+  );
+}
 
 /** The failure a read of Details meets in the cases below. */
 function readFailure(): ApiError {
@@ -1892,7 +1915,6 @@ test("Blocks read again on an event, not by its Retry, leaves the focus its Retr
 test("Blocks' titles Retry, taken away by a failed read of what waits on the issue, leaves its focus on the page's body", async () => {
   const user = userEvent.setup();
   const { restore } = stubIssueApi();
-  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(WAITER_REFERENCES);
   const titles = spyOn(api, "getReferenceTargets").mockRejectedValueOnce(readFailure());
   const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
@@ -1908,10 +1930,7 @@ test("Blocks' titles Retry, taken away by a failed read of what waits on the iss
     await user.keyboard("{Enter}");
     await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
 
-    getReferences.mockRejectedValueOnce(readFailure());
-    await act(() =>
-      queryClient.refetchQueries({ queryKey: ["references", "to", reference, "blocked_by"] })
-    );
+    await readWhatWaits(queryClient, getReferences, readFailure());
     await waitFor(() =>
       expect(blocksRow().getByRole("alert")).toHaveTextContent(
         "Could not read what this issue blocks."
@@ -2287,7 +2306,6 @@ test("the titles' Retry taken away by blockers changed back elsewhere to a set w
 test("Blocks' titles Retry taken away by what waits on the issue changed elsewhere while its read is out leaves its focus on the page's body", async () => {
   const user = userEvent.setup();
   const { restore } = stubIssueApi();
-  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(WAITER_REFERENCES);
   const titles = spyOn(api, "getReferenceTargets").mockRejectedValueOnce(readFailure());
   const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
@@ -2302,13 +2320,7 @@ test("Blocks' titles Retry taken away by what waits on the issue changed elsewhe
     await user.keyboard("{Enter}");
     await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
 
-    getReferences.mockResolvedValue({
-      ...NOTHING_REFERENCES,
-      edges: [waitingEdge("CORE-6", "Write the notes")],
-    });
-    await act(() =>
-      queryClient.refetchQueries({ queryKey: ["references", "to", reference, "blocked_by"] })
-    );
+    await readWhatWaits(queryClient, getReferences, OTHER_WAITER_REFERENCES);
     await blocksRow().findByRole("link", { name: "CORE-6" });
     await waitFor(() =>
       expect(
@@ -2337,37 +2349,26 @@ test("Blocks' titles Retry taken away by what waits on the issue changed elsewhe
 test("Blocks' titles Retry taken away by what waits on the issue changed back elsewhere to a set already read leaves its focus on the page's body", async () => {
   const user = userEvent.setup();
   const { restore } = stubIssueApi();
-  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(WAITER_REFERENCES);
   const titles = spyOn(api, "getReferenceTargets").mockImplementation(async (refs) =>
     issueNames(refs, { "CORE-5": "Ship the release" })
   );
   const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
   const blocksRow = () => within(detailsRow(PROPERTY_LABELS.blocks));
-  // What waits on the issue, read again as an event of its references reads it.
-  const readWhatWaits = (answer: GraphReferences) => {
-    getReferences.mockResolvedValue(answer);
-    return act(() =>
-      queryClient.refetchQueries({ queryKey: ["references", "to", reference, "blocked_by"] })
-    );
-  };
 
   try {
     await waitFor(() =>
       expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent("Ship the release")
     );
     titles.mockRejectedValueOnce(readFailure());
-    await readWhatWaits({
-      ...NOTHING_REFERENCES,
-      edges: [waitingEdge("CORE-6", "Write the notes")],
-    });
+    await readWhatWaits(queryClient, getReferences, OTHER_WAITER_REFERENCES);
     const retry = await blocksRow().findByRole("button", { name: CONTROL_LABELS.retry });
     titles.mockImplementationOnce(() => new Promise(() => undefined));
     act(() => retry.focus());
     await user.keyboard("{Enter}");
     await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
 
-    await readWhatWaits(WAITER_REFERENCES);
+    await readWhatWaits(queryClient, getReferences, WAITER_REFERENCES);
     await waitFor(() =>
       expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent("Ship the release")
     );
@@ -2397,20 +2398,12 @@ test("Blocks' titles Retry taken away by what waits on the issue changed back el
 test("Blocks' titles Retry taken away by what waits on the issue changed back elsewhere to a set whose read failed and then answered leaves its focus on the page's body", async () => {
   const user = userEvent.setup();
   const { restore } = stubIssueApi();
-  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(WAITER_REFERENCES);
   const titles = spyOn(api, "getReferenceTargets")
     .mockImplementation(async (refs) => issueNames(refs, { "CORE-5": "Ship the release" }))
     .mockRejectedValueOnce(readFailure());
   const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
   const blocksRow = () => within(detailsRow(PROPERTY_LABELS.blocks));
-  // What waits on the issue, read again as an event of its references reads it.
-  const readWhatWaits = (answer: GraphReferences) => {
-    getReferences.mockResolvedValue(answer);
-    return act(() =>
-      queryClient.refetchQueries({ queryKey: ["references", "to", reference, "blocked_by"] })
-    );
-  };
 
   try {
     await waitFor(() =>
@@ -2421,17 +2414,14 @@ test("Blocks' titles Retry taken away by what waits on the issue changed back el
       expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent("Ship the release")
     );
     titles.mockRejectedValueOnce(readFailure());
-    await readWhatWaits({
-      ...NOTHING_REFERENCES,
-      edges: [waitingEdge("CORE-6", "Write the notes")],
-    });
+    await readWhatWaits(queryClient, getReferences, OTHER_WAITER_REFERENCES);
     const retry = await blocksRow().findByRole("button", { name: CONTROL_LABELS.retry });
     titles.mockImplementationOnce(() => new Promise(() => undefined));
     act(() => retry.focus());
     await user.keyboard("{Enter}");
     await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
 
-    await readWhatWaits(WAITER_REFERENCES);
+    await readWhatWaits(queryClient, getReferences, WAITER_REFERENCES);
     await waitFor(() =>
       expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent("Ship the release")
     );
@@ -3765,6 +3755,60 @@ test("the last priority removed hands the focus from its Remove to the add contr
   }
 });
 
+// The reader's removal of the last priority lands with no answer to give (Dispatch answers its key
+// `KEY_COMMITTED`), and the write and the read of the issue it sets off as it settles both end
+// while Details still draws the issue before it, so the Advances row leaves only later. With no
+// answer there is no revision to match, so the set the write sent, which the issue now drawn
+// holds, tells the move is the reader's own: the focus Remove held goes on to the add control
+// beside Add rather than to the page's body.
+test("the last priority removed with no answer hands the focus from its Remove to the add control beside Add when the row leaves after the write settled", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
+  getIssue.mockResolvedValue(advancingEvals(4));
+  patchIssue.mockRejectedValueOnce(
+    new ApiError(409, { code: "KEY_COMMITTED", error: "already made" })
+  );
+  const { queryClient, unmount } = renderDetails();
+  try {
+    const remove = await waitFor(() =>
+      within(detailsRow(PROPERTY_LABELS.advances)).getByRole("button", { name: /^Remove / })
+    );
+    act(() => remove.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(remove, "Remove still refuses a press after its write settled").not.toHaveAttribute(
+        "aria-disabled"
+      )
+    );
+    const write = queryClient.getMutationCache().getAll().at(-1)?.state;
+    expect(write?.status, "the removal answered KEY_COMMITTED did not land").toBe("success");
+    expect(write?.data, "the removal answered KEY_COMMITTED landed with an answer").toBeNull();
+    expect(document.activeElement, "Remove lost the focus before the row left").toBe(remove);
+
+    drawIssue(getIssue, queryClient, { ...advancesOnly, advances_revision: 5 });
+    await waitFor(() =>
+      expect(
+        screen.queryByText(PROPERTY_LABELS.advances, {
+          exact: true,
+          selector: "[data-page-chrome]",
+        }),
+        "the issue advances nothing, and Details still draws the Advances row"
+      ).toBeNull()
+    );
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "the reader's own removal, landed with no answer, moved the line after its write settled, and the focus fell to the page rather than to the add control beside Add"
+    ).toBe(screen.getByRole("button", { name: addPriorityControlName("CORE-1") }));
+  } finally {
+    unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
 // After the reader's removal of the last priority has landed, other sessions add a priority and
 // take it away again, with the focus on its Remove: the row leaves, and the issue holds the set the
 // reader's write sent, but at a newer revision than Dispatch answered that write with. That move is
@@ -3870,6 +3914,68 @@ test("the line moved into the Advances row by a priority an issue above gains af
   }
 });
 
+// The reader adds a priority to another issue, on that issue's page, and the write lands with that
+// issue's answer. On this issue's page the focus is then on the add control beside Add, and another
+// session gives this issue the set that write sent, at the revision Dispatch answered it with: the
+// line moves into the Advances row. The newest priority write sent that set and landed with that
+// revision, but on another issue, so the move is not the reader's, and the focus stays on the
+// page's body.
+test("the line moved into the Advances row elsewhere after the reader's own add to another issue landed leaves the focus on the page's body", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
+  getIssue.mockResolvedValue(advancesOnly);
+  patchIssue.mockImplementationOnce(async (_key, input) =>
+    patchAnswer({ ...advancingEvals(5), key: "CORE-9" }, input)
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
+  });
+  // The other issue's page, whose priority line is the one the page draws.
+  const otherPage = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <NoTooltips>
+          <IssuePriorityLine disabled={false} issue={{ ...advancesOnly, key: "CORE-9" }} />
+        </NoTooltips>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  let unmount = otherPage.unmount;
+  try {
+    await user.click(await screen.findByRole("button", { name: addPriorityControlName("CORE-9") }));
+    const picker = await screen.findByRole("combobox", {
+      name: CONTROL_LABELS.priority_to_advance,
+    });
+    await within(picker).findByRole("option", { name: /Evals collecting data now$/ });
+    await user.selectOptions(picker, "evals-now");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.add }));
+    await waitFor(() =>
+      expect(
+        queryClient.getMutationCache().getAll().at(-1)?.state.status,
+        "the reader's add to CORE-9 did not land"
+      ).toBe("success")
+    );
+    expect(patchIssue.mock.calls.map(([key]) => key)).toEqual(["CORE-9"]);
+    otherPage.unmount();
+
+    unmount = renderDetails(undefined, undefined, queryClient).unmount;
+    const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
+    act(() => control.focus());
+    drawIssue(getIssue, queryClient, advancingEvals(5));
+    await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "another session moved the line after the reader's add to another issue landed, and the focus left the page's body though no write to this issue moved it"
+    ).toBe(document.body);
+  } finally {
+    unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
 /** Adds the priority "Evals collecting data now" from the add control beside Add, by keyboard,
  *  and returns once the form's Add is pressed: the line gives the focus back to its add control
  *  beside Add while the write is out. */
@@ -3961,6 +4067,54 @@ test("an event's read of another session's first priority while the reader's is 
     expect(
       document.activeElement,
       "an event's read moved the line while the reader's write was out, and the focus left the page's body"
+    ).toBe(document.body);
+  } finally {
+    unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// The reader's first priority is refused (409 ADVANCES_REVISION), and the read of the issue the
+// refusal sets off still draws none, so the line stays beside Add with the focus on its add
+// control. Once the write has ended, an event's read draws the very priority it sent, which
+// another session added: the line moves into the Advances row. The reader's write saved nothing,
+// so the move is not theirs, and the focus stays on the page's body.
+test("a refused first priority whose set an event's read draws after the write ended leaves the focus on the page's body", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
+  getIssue.mockResolvedValue(advancesOnly);
+  patchIssue.mockImplementationOnce(() =>
+    Promise.reject(
+      new ApiError(409, { code: "ADVANCES_REVISION", error: "the priorities moved meanwhile" })
+    )
+  );
+  const { queryClient, unmount } = renderDetails();
+  try {
+    await addFirstPriority(user);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    const control = screen.getByRole("button", { name: addPriorityControlName("CORE-1") });
+    await waitFor(() =>
+      expect(
+        control,
+        "the add control still refuses a press after the refused write ended"
+      ).not.toHaveAttribute("aria-disabled")
+    );
+    expect(
+      document.activeElement,
+      "the add control beside Add lost the focus as the write was refused"
+    ).toBe(control);
+
+    drawIssue(getIssue, queryClient, {
+      ...advancesOnly,
+      advances: [{ id: "evals-now", inherited: false }],
+    });
+    await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "an event's read drew the set of the reader's refused write after it ended, and the focus left the page's body though that write saved nothing"
     ).toBe(document.body);
   } finally {
     unmount();

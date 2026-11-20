@@ -821,6 +821,36 @@ test("a release whose claim was taken again elsewhere before it landed moves no 
   }
 });
 
+// The reader pressed Release by keyboard, and while the release is out a read of the issue finds
+// the claim gone: the release's own event, which can arrive before its answer. That reached what
+// the press asked for, so the row takes it for the press's answer, and the focus Release held goes
+// to the row's None rather than to the page's body.
+test("a claim read gone while the reader's release is out hands Release's focus to the row's None", async () => {
+  const { release, restore, view } = twoSessionClaimRow();
+  const stopBlurring = emulateChromiumFocusFixup();
+  try {
+    release.mockReset();
+    // The reader's release is held out for the whole case.
+    release.mockImplementationOnce(() => new Promise(() => undefined));
+    const control = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
+    act(() => control.focus());
+    await view.user.keyboard("{Enter}");
+    await waitFor(() => expect(control).toHaveTextContent(ANSWER_LINES.saving_release));
+
+    view.drawClaim(null);
+    const none = await screen.findByText(CONTROL_LABELS.none);
+    await waitFor(() =>
+      expect(
+        document.activeElement,
+        "the claim was read gone while the reader's release was out, and the focus did not go to the row's None"
+      ).toBe(none)
+    );
+  } finally {
+    stopBlurring();
+    restore();
+  }
+});
+
 test("the claim shows the holder's live title, not the one stamped on the claim", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([

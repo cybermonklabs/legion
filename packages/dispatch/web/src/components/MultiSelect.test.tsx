@@ -223,12 +223,15 @@ test("a row's detail reads after its label and a comma, spoken with its own word
 /** A host that keeps the popover open as the search box's Tab asks it to close, so Tab goes on
  *  from the search box to the rows, the Create row and Clear: buttons, which a screen reader's
  *  cursor focuses too. With `pickedFirst` it orders the rows as the labels' and the components'
- *  hosts do (`IssueLabels`, `ComponentPicker`): the picked ones first, each part by its name. */
+ *  hosts do (`IssueLabels`, `ComponentPicker`): the picked ones first, each part by its name. With
+ *  `dropPicked` it lists only the values not yet picked, so a row goes as it is picked. */
 function OpenHost({
+  dropPicked = false,
   onCreate,
   options,
   pickedFirst = false,
 }: {
+  dropPicked?: boolean;
   onCreate?: (value: string) => void;
   options: string[];
   pickedFirst?: boolean;
@@ -250,7 +253,7 @@ function OpenHost({
         onCreate={onCreate}
         onOpenChange={() => undefined}
         open
-        options={ordered}
+        options={dropPicked ? ordered.filter((option) => !selected.includes(option)) : ordered}
         searchLabel="Search labels"
         selected={selected}
       />
@@ -373,14 +376,38 @@ test("a pointer press of Clear answers no later loss: a Create row new options t
   }
 });
 
-// A host that orders the rows by the pick moves a row as the reader unpicks it, and React's move
-// drops a focus on that row to the page's body. A row that holds the focus, as a screen reader's
-// cursor puts it there, gives it to the search box as it is pressed.
-test("a focused row that moves as the reader unpicks it gives the focus to the search box", async () => {
+/** Makes `parent` drop the focus of a child it moves, as Chromium does: a node taken out of the
+ *  document to be put back elsewhere loses the focus to the body, where happy-dom keeps it on the
+ *  node. React moves a keyed child with `insertBefore`, or with `appendChild` to the end. The
+ *  patch is on `parent` alone, so it goes with that element. */
+function dropFocusOnMove(parent: HTMLElement): void {
+  const { appendChild, insertBefore } = parent;
+  const blurMoved = (node: Node) => {
+    const focused = document.activeElement;
+    if (node.parentNode === parent && focused instanceof HTMLElement && node.contains(focused)) {
+      focused.blur();
+    }
+  };
+  parent.insertBefore = <T extends Node>(node: T, child: Node | null): T => {
+    blurMoved(node);
+    return insertBefore.call(parent, node, child) as T;
+  };
+  parent.appendChild = <T extends Node>(node: T): T => {
+    blurMoved(node);
+    return appendChild.call(parent, node) as T;
+  };
+}
+
+// A host that orders the rows by the pick moves a row as the reader unpicks it. Chromium drops the
+// focus of a node it moves to the page's body (`dropFocusOnMove` does that here), and React gives
+// it back to the row as it ends the commit, since the row is still on the page. So a row that held
+// the focus as it was pressed, as a screen reader's cursor puts it there, keeps it in its new
+// place, and nothing takes it to the search box.
+test("a focused row that moves as the reader unpicks it keeps the focus", async () => {
   const user = userEvent.setup();
   const view = render(<OpenHost options={["api", "bug", "docs"]} pickedFirst />);
   try {
-    const search = screen.getByRole("combobox", { name: "Search labels" });
+    dropFocusOnMove(screen.getByRole("listbox", { name: "Labels options" }));
     await user.keyboard("{Enter}");
     await user.keyboard("{ArrowDown}");
     await user.keyboard("{Enter}");
@@ -391,7 +418,51 @@ test("a focused row that moves as the reader unpicks it gives the focus to the s
     await user.click(api);
     expect(screen.getByTestId("selected").textContent).toBe("bug");
     expect(screen.getAllByRole("option")[1], "the unpicked row did not move").toBe(api);
-    expect(search, "the row moved, and the focus did not go to the search box").toHaveFocus();
+    expect(api, "React keeps a moved row's focus, and the row lost it").toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A host that does not order the rows by the pick leaves each row in its place as it is pressed,
+// so a row that holds the focus keeps it, and the reader goes on from that row rather than from
+// the search box.
+test("a focused row that stays in its place as it is pressed keeps the focus", async () => {
+  const user = userEvent.setup();
+  const view = render(<OpenHost options={["api", "bug", "docs"]} />);
+  try {
+    const bug = screen.getByRole("option", { name: "bug" });
+    bug.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("selected").textContent).toBe("bug");
+    expect(screen.getAllByRole("option")[1], "the picked row left its place").toBe(bug);
+    expect(bug, "the row stayed in its place, and its pick took the focus off it").toHaveFocus();
+    await user.keyboard(" ");
+    expect(screen.getByTestId("selected").textContent).toBe("");
+    expect(bug, "the row stayed in its place, and its unpick took the focus off it").toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A host that lists only the values not yet picked takes a row off the page as the reader picks
+// it, and the focus on that row falls to the page's body, where Escape no longer reaches the
+// popover: React has no row to give it back to. A row that held the focus as it was pressed has
+// that focus given to the search box once the press is drawn.
+test("a focused row that its pick takes off the page gives the focus to the search box", async () => {
+  const user = userEvent.setup();
+  const view = render(<OpenHost dropPicked options={["api", "bug", "docs"]} />);
+  try {
+    const search = screen.getByRole("combobox", { name: "Search labels" });
+    const bug = screen.getByRole("option", { name: "bug" });
+    bug.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("selected").textContent).toBe("bug");
+    expect(bug.isConnected, "the picked row is still on the page").toBe(false);
+    expect(
+      search,
+      "the pick took the row off the page, and the focus did not go to the search box"
+    ).toHaveFocus();
   } finally {
     view.unmount();
   }

@@ -13,7 +13,10 @@ import {
  * save of theirs that lands, a Retry, an editor they close - is handed on to the control that
  * answers it. A loss they did not cause - another session's change, a live update, an event, a
  * read answering - leaves the focus on the page's body, as every page of Dispatch does, and moves
- * nothing. So `to` answers a loss of the first kind and returns none for one of the second. An
+ * nothing. So `to` answers a loss of the first kind and returns none for one of the second. The
+ * one exception is a change that reaches what the reader's press asked for while that press is
+ * still out, whoever made it - the route set to their draft, the claim released, the read
+ * answered: it is taken for the press's answer, and `to` hands it on as it would that answer. An
  * element only the reader's press takes away needs no more than a target; one a change made
  * elsewhere can take away too is handed `pressed`, which its press sets, or has `to` read what
  * the element said as it left: `to` is handed it as its last commit drew it.

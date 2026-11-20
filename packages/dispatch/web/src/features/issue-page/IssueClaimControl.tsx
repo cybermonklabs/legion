@@ -72,17 +72,18 @@ export function IssueClaimControl({
   const failure = onHeld ? said : null;
   const releaseControl = useRef<HTMLButtonElement>(null);
   const none = useRef<HTMLSpanElement>(null);
-  // The reader's press of Retry, which the line notes as it is pressed (`useRetryHandOff`), and
-  // of Release or Retry, noted as it sends the release and forgotten as that release fails. Each
-  // is forgotten as its element leaves the page, with the focus or not (`useFocusHandOff`'s
-  // `pressed`), so a later loss no press caused moves nothing.
+  // The reader's press of Release or Retry, noted as it sends the release and forgotten as that
+  // release fails, or as the claim's box leaves the page, with the focus or not
+  // (`useFocusHandOff`'s `pressed`), so a later loss no press caused moves nothing.
   const released = useRef(false);
   // A claim drawn in place of the one the release was pressed on is another session's: the claim's
   // going after it is no answer of the reader's press.
   useLayoutEffect(() => {
     if (held !== null && held !== pressedOn) released.current = false;
   }, [held, pressedOn]);
-  // The line goes too when the issue is claimed again in another session, which no Retry did.
+  // The reader's press of Retry, which the line notes as it is pressed (`useRetryHandOff`) and
+  // forgets as Retry leaves the page, with the focus or not, so a later loss moves nothing. The
+  // line goes too when the issue is claimed again in another session, which no Retry did.
   const retry = useRetryHandOff(() => (onHeld ? releaseControl.current : null));
   const claimLeft = useFocusHandOff(() => none.current, released);
   // Release and Retry send the one release, and a press while it is out sends nothing: the guard
