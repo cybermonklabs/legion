@@ -4115,6 +4115,25 @@ sed -i '0,/^Input: dispatch:\/\/INFRA-3134$/s//Input: dispatch:\/\/INFRA-3134\nI
 case_result "a test file whose second Input line names a project fixture fails --replay, naming the file" \
     'our-data-input: concord\.md' "$(fixture_run "$dir" --replay)"
 
+# 136. A page whose first step is one engineer-day or less states whether it is landed (test
+# round 40). The reading of R12 and of c-landed-steps recorded beside the spec
+# (dispatch://INFRA-3134/comment/de485c44-6b40-4018-8ac5-9cde3e5cdd65) holds each page whose
+# first step is one engineer-day or less to "landed" with its commit and its proof, or "not
+# landed" with the R12 condition that stops it and its record. At a4e9fb5a --landed holds only
+# the steps sources.json's landed list names, so a page whose Cost is 1 engineer-day and that
+# carries no Landed, Refuted by or Not landed line passed every assertion (judgement v17 with
+# the refusal page's cost written 'about 1 engineer-day' passed all 5). The case writes the
+# fixture's Envoy page's Cost as 1 engineer-day, leaves the page with no state line, and runs
+# --landed, which must fail, naming the page.
+dir="$(fresh one-day-no-state)"
+sed -i '0,/^- \*\*Cost:\*\* 2 engineer-days$/s//- **Cost:** 1 engineer-day/' "$dir/judgement.md"
+awk '/^### Structured metadata on an Envoy message/{f=1; next} /^### /{f=0} f && /\*\*(Landed|Not landed|Refuted by|Proven by):\*\*/{n++} f && /^- \*\*Cost:\*\* 1 engineer-day$/{c++} END{exit !(c == 1 && n == 0)}' "$dir/judgement.md" || {
+    printf 'FAIL the fixture Envoy page could not be given a one-day first step with no state line\n'
+    exit 1
+}
+case_result "a page whose first step is 1 engineer-day and that states no landing fails --landed, naming the page" \
+    "landed-[a-z-]+: .*Structured metadata on an Envoy message" "$(fixture_run "$dir" --landed)"
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
