@@ -713,10 +713,10 @@ func volatileStatement(statement string) bool {
 // request it is sent in calls.
 func walkListener(t *testing.T, topics *[]string, calls *listenerCalls) *httptest.Server {
 	t.Helper()
-	const s1 = `{"session_id":"s1","title":"planner","dir":"/w/legion","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"last_seen":42}`
+	const s1 = `{"session_id":"s1","title":"planner","dir":"/w/legion","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"projects":[],"last_seen":42}`
 	// s-pub is live too, so a delivery a caller may not make to it would reach it: the person and
 	// session walk holds a delivery to it to the failure one to a session nobody holds records.
-	const sPub = `{"session_id":"s-pub","title":"pub worker","dir":"/w/pub","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"last_seen":42}`
+	const sPub = `{"session_id":"s-pub","title":"pub worker","dir":"/w/pub","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"projects":[],"last_seen":42}`
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.add(r)
 		switch {
@@ -816,10 +816,11 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	// every caller that sees PRIV alone.
 	createdID(t, seed.request(t, callerSharedToken, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPublic]+"/comments",
 		map[string]any{"body": "s-pub works on PUB.", "actor": map[string]any{"kind": "session", "id": "s-pub"}}))
-	// Dispatch holds the listener's record of s1 and s-pub, neither naming a project, as it does
-	// once any list of the sessions has read them (the route_roster row): while a project is
-	// private, an open viewer reaches a session that has acted in no project only through that
-	// record (access.SessionClause). No call of the walk reads the list again.
+	// Dispatch holds the listener's record of s1 and s-pub, each with a credential that lists no
+	// project ("projects":[]), as it does once any list of the sessions has read them (the
+	// route_roster row): while a project is private, an open viewer reaches a session that has acted
+	// in no project only through that record, and a record with no projects key reaches none
+	// (access.SessionClause). No call of the walk reads the list again.
 	seed.mustRequest(t, callerCarol, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)
 	// dana is a full member no list of PRIV names: hidden from every caller that sees PRIV alone.
 	seedPeople(t, seed.database, hiddenPerson)
