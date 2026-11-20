@@ -130,9 +130,17 @@ func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string
 
 // tokenAuthStyle is how the client sends its secret to the token endpoint, from the issuer's
 // token_endpoint_auth_methods_supported (RFC 8414 section 2): HTTP Basic when the list names
-// client_secret_basic, whatever else it names (Basic is RFC 8414's default and the method RFC 6749
-// section 2.3.1 requires of every issuer); else the form when it names client_secret_post. Either
+// client_secret_basic, whatever else it names (Basic is RFC 8414's default, and RFC 6749 section
+// 2.3.1 has every issuer support it); else the form when it names client_secret_post. Either
 // makes every grant one request.
+//
+// The list says what the issuer supports, not what it lets each client use: an issuer that
+// registers each client for one token_endpoint_auth_method (RFC 7591 section 2) and holds it to
+// that method refuses a client registered for client_secret_post alone at every grant, with
+// invalid_client and no second request in the form, so its exchanges fail, its refreshes read as
+// the issuer unavailable, and CheckClient reports the client rejected. Dispatch signs in through a
+// Cognito sign-in pool or Google, and the broker through Google, and each of them takes either
+// style from any client it issued a secret, so none of them is such an issuer.
 //
 // With no list, or a list naming neither, the style stays x/oauth2's AuthStyleAutoDetect: the
 // issuer behind such a document may take the form alone. AutoDetect asks by HTTP Basic and, on

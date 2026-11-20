@@ -12,8 +12,12 @@ body: |-
   method, or no such list, is asked as before, and the style its first successful grant used is
   now kept for every later grant. A document whose `token_endpoint_auth_methods_supported` is not
   a list of strings now fails discovery, as one whose `revocation_endpoint` is not a string
-  already did. A sign-in started while the process made its first refresh no longer races with
-  that refresh.
+  already did. The list says what the issuer supports, not what it lets each client use: at an
+  issuer whose list names `client_secret_basic` and that holds a client to `client_secret_post`
+  alone (a per-client method, RFC 7591 section 2), that client is now refused `invalid_client` at
+  every grant, with no second request in the form. Neither Cognito nor Google, the issuers
+  Dispatch and the broker sign in through, holds a client to one method. A sign-in started while
+  the process made its first refresh no longer races with that refresh.
 time: 2026-11-20T12:01:25Z
 custom:
     Issue: pr4616
