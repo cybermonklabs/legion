@@ -1023,6 +1023,7 @@ done
 # origin written `x$$y` in the .env, which Compose reads as `x$y`, is the origin the login check
 # expects, with one `$`.
 fresh_env
+# shellcheck disable=SC2016
 with_line DISPATCH_SERVER_URL 'DISPATCH_SERVER_URL=http://browser.test:8766/x$$y'
 output=$(deploy_once) || true
 [[ "$output" == *"expected 'http://browser.test:8766/x\$y/auth/callback'"* ]] ||
