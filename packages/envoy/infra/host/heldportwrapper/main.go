@@ -59,7 +59,7 @@ func run(port string) error {
 	if n, err := strconv.ParseUint(port, 10, 16); err != nil || n == 0 {
 		return fmt.Errorf("PORT=%q is not a port number 1-65535, which names the socket to ask", port)
 	}
-	fd, err := receive(socketPrefix + port)
+	fd, err := receive(socketPrefix+port, receiveTimeout)
 	if err != nil {
 		return err
 	}
@@ -84,7 +84,7 @@ func run(port string) error {
 }
 
 // receive connects to the abstract unix socket (its name starts with @) and returns the one
-// descriptor the server sends by SCM_RIGHTS, received close-on-exec.
+// descriptor the server sends by SCM_RIGHTS within bound, received close-on-exec.
 //
 // It uses raw system calls rather than package net, which would start the Go runtime's network
 // poller: inheritAsListenFD then replaces whatever descriptor 3 is, and that must never be the
@@ -95,7 +95,7 @@ func run(port string) error {
 // its threads with SIGURG to preempt goroutines, so the call is tried again on EINTR for the time
 // that remains of the bound. The connect needs no such loop: it is bounded by no timeout, so the
 // kernel restarts it after a handler with SA_RESTART, which every handler of the runtime has.
-func receive(socket string) (int, error) {
+func receive(socket string, bound time.Duration) (int, error) {
 	conn, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return -1, fmt.Errorf("open a unix socket: %w", err)
@@ -107,9 +107,9 @@ func receive(socket string) (int, error) {
 	}
 	data := make([]byte, 1)
 	oob := make([]byte, syscall.CmsgSpace(4))
-	oobn, flags, err := receiveBefore(conn, data, oob, time.Now().Add(receiveTimeout))
+	oobn, flags, err := receiveBefore(conn, data, oob, time.Now().Add(bound))
 	if err != nil {
-		return -1, fmt.Errorf("receive the listening socket within %s: %w", receiveTimeout, err)
+		return -1, fmt.Errorf("receive the listening socket within %s: %w", bound, err)
 	}
 	messages, err := syscall.ParseSocketControlMessage(oob[:oobn])
 	if err != nil {
@@ -143,8 +143,9 @@ func receiveBefore(conn int, data, oob []byte, deadline time.Time) (oobn, flags 
 		if left <= 0 {
 			return 0, 0, syscall.EAGAIN
 		}
-		// SO_RCVTIMEO 0 means no bound at all, so a bound below its microsecond is one microsecond.
-		timeout := syscall.NsecToTimeval(max(left, time.Microsecond).Nanoseconds())
+		// NsecToTimeval rounds up to the microsecond, so a positive time left never becomes
+		// SO_RCVTIMEO 0, which would mean no bound at all.
+		timeout := syscall.NsecToTimeval(left.Nanoseconds())
 		if err := syscall.SetsockoptTimeval(conn, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &timeout); err != nil {
 			return 0, 0, fmt.Errorf("bound the receive: %w", err)
 		}
