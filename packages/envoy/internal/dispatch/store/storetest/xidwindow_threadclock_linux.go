@@ -235,22 +235,40 @@ func xidHoldMemory() bool {
 		if len(fields) < 2 || len(fields[1]) < 4 || fields[1][1] != 'w' || fields[1][3] != 'p' {
 			continue
 		}
-		dash := bytes.IndexByte(fields[0], '-')
-		if dash < 0 {
+		start, end, ok := xidMappingRange(fields[0])
+		if !ok {
 			continue
 		}
-		start, err := strconv.ParseUint(string(fields[0][:dash]), 16, 64)
-		if err != nil {
-			continue
-		}
-		end, err := strconv.ParseUint(string(fields[0][dash+1:]), 16, 64)
-		if err != nil || end <= start {
-			continue
-		}
-		_, _, errno := unix.Syscall6(unix.SYS_MBIND, uintptr(start), uintptr(end-start), xidMempolicyLocal, 0, 0, 0)
+		_, _, errno := unix.Syscall6(unix.SYS_MBIND, start, end-start, xidMempolicyLocal, 0, 0, 0)
 		if errno == unix.EPERM || errno == unix.ENOSYS {
 			return false
 		}
 	}
 	return true
+}
+
+// xidMappingRange reads a /proc/self/maps address range, "start-end" in hex, as the addresses
+// mbind takes, at the platform's integer size (strconv.IntSize, the size of a uintptr).
+func xidMappingRange(field []byte) (start, end uintptr, ok bool) {
+	return xidMappingRangeAt(field, strconv.IntSize)
+}
+
+// xidMappingRangeAt reads an address range as xidMappingRange does, with each address parsed at
+// bitSize bits, so an address that does not fit is refused rather than cut short; a range that is
+// empty or runs backwards is refused too. bitSize is strconv.IntSize but in the test that holds a
+// 32-bit platform's bound (TestAMappingRangeIsReadAtThePlatformsIntegerSize).
+func xidMappingRangeAt(field []byte, bitSize int) (start, end uintptr, ok bool) {
+	dash := bytes.IndexByte(field, '-')
+	if dash < 0 {
+		return 0, 0, false
+	}
+	first, err := strconv.ParseUint(string(field[:dash]), 16, bitSize)
+	if err != nil {
+		return 0, 0, false
+	}
+	last, err := strconv.ParseUint(string(field[dash+1:]), 16, bitSize)
+	if err != nil || last <= first {
+		return 0, 0, false
+	}
+	return uintptr(first), uintptr(last), true
 }

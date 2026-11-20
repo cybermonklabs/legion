@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"runtime/metrics"
+	"strconv"
 	"testing"
 	"time"
 	"unsafe"
@@ -199,6 +200,41 @@ func mappingMempolicy(t *testing.T, address unsafe.Pointer) int {
 		t.Fatalf("read the memory policy at %p: %v", address, errno)
 	}
 	return mode
+}
+
+// A /proc/self/maps address range is read as the addresses mbind takes, each parsed at the
+// platform's integer size (xidMappingRange, xidMappingRangeAt). An address that does not fit is
+// refused, not cut short: given a 32-bit platform's size, the range just above 4 GiB is refused,
+// where parsing at 64 bits and converting, as before, would read it on a 32-bit build as the range
+// at address 0. At 64 bits it is read whole, and only a range past 64 bits is refused. The module
+// cannot be built for a 32-bit platform, so the 32-bit rows give the parser that size directly.
+func TestAMappingRangeIsReadAtThePlatformsIntegerSize(t *testing.T) {
+	for _, test := range []struct {
+		field      string
+		bits       int
+		start, end uint64
+	}{
+		{field: "7f00-7f80", bits: 32, start: 0x7f00, end: 0x7f80},
+		{field: "ffff0000-ffff1000", bits: 32, start: 0xffff0000, end: 0xffff1000},
+		{field: "100000000-100001000", bits: 32},
+		{field: "ffff0000-100000000", bits: 32},
+		{field: "100000000-100001000", bits: 64, start: 0x100000000, end: 0x100001000},
+		{field: "10000000000000000-10000000000001000", bits: 64},
+		{field: "7f80-7f00", bits: 64},
+		{field: "7f00", bits: 64},
+		{field: "-7f00", bits: 64},
+	} {
+		start, end, ok := xidMappingRangeAt([]byte(test.field), test.bits)
+		want := test.end != 0
+		if ok != want || uint64(start) != test.start || uint64(end) != test.end {
+			t.Errorf("xidMappingRangeAt(%q, %d) = %#x, %#x, %t, want %#x, %#x, %t",
+				test.field, test.bits, start, end, ok, test.start, test.end, want)
+		}
+	}
+	start, end, ok := xidMappingRange([]byte("100000000-100001000"))
+	if fits := strconv.IntSize == 64; ok != fits || (fits && (start != 0x100000000 || end != 0x100001000)) {
+		t.Errorf("at strconv.IntSize %d, xidMappingRange of the range above 4 GiB = %#x, %#x, %t", strconv.IntSize, start, end, ok)
+	}
 }
 
 // The rig reads a schedstat line's fields in place (xidFields): the first three decimal fields,
