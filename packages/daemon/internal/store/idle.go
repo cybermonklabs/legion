@@ -415,11 +415,6 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 			return err
 		}
 		cancelled.SuspendsNoRole = kind == releaseKindUnowned
-		if paused.Hold != nil {
-			if err := RecordPodHoldTx(ctx, tx, *paused.Hold); err != nil {
-				return err
-			}
-		}
 		// The bundle this release saved goes with the mark, in this transaction. The pod it was
 		// taken off is the pod the roles resume in, with that work in its own workspace, so the
 		// row holds a copy of work a live disk has; left behind it would hold the issue's pod
@@ -493,7 +488,6 @@ type ReleaseCancelPause struct {
 	At            time.Time
 	Backstop      time.Duration
 	OpenPhaseRole func(phase.Phase) claim.Role
-	Hold          *PodHold
 }
 
 // ReleaseCancelled is what one cancel of a release did (CancelIssueRelease). Resumed are the roles

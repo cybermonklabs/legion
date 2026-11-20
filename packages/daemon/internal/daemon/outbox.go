@@ -3284,17 +3284,22 @@ func (r *outbox) issueSandboxName(issue string) string {
 // idle release's own (outbox.backstop), and the open phase's worker is the workflow's rule
 // (workflow.OpenPhaseRole).
 //
-// The hold the cancel records (store.ReleaseCancelPause's Hold) commits in the cancel's own
-// transaction, under its lifecycle serializer, so it is ordered with every other hold record: a
-// record written after the commit, late, would end the streak a newer pass opened. A hold that
-// cannot be recorded fails the cancel, and the row's lane runs it again. The line is the commit's
-// hook, so a cancel whose reply is lost and that the store says committed still says so.
+// The hold the cancel records (store.RecordPodHoldTx) commits in the cancel's own transaction,
+// which CancelIssueRelease joins under its lifecycle serializer, so it is ordered with every other
+// hold record: a record written after the commit, late, would end the streak a newer pass opened.
+// A hold that cannot be recorded fails the cancel, and the row's lane runs it again. The line is
+// the commit's hook, so a cancel whose reply is lost and that the store says committed still says
+// so.
 func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold workflow.IdleHold, why string) error {
 	return store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		cancelled, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow,
-			store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole,
-				Hold: &store.PodHold{Project: r.project, Issue: issue, Reason: hold.String(), At: r.now().UTC()}})
+			store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole})
 		if err != nil {
+			return err
+		}
+		// The teardown reads a hold and not the view behind it, so its holds carry no detail.
+		if err := store.RecordPodHoldTx(ctx, tx, store.PodHold{Project: r.project, Issue: issue,
+			Reason: hold.String(), At: r.now().UTC()}); err != nil {
 			return err
 		}
 		store.OnCommit(ctx, func() {
