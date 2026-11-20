@@ -17,7 +17,7 @@ func TestMentionDeliveryPersistsPendingBeforeSendAndRetryCompletesIt(t *testing.
 	var database *store.Store
 	pendingDuringSend := "not observed"
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	listener := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
 			writeSessionRecord(t, w, sessions, "s1")
@@ -56,7 +56,9 @@ func TestMentionDeliveryPersistsPendingBeforeSendAndRetryCompletesIt(t *testing.
 	}))
 	defer listener.Close()
 	var handler http.Handler
-	handler, database = newTargetedMessageHandler(t, listener.URL)
+	// The listener serves only once handler and database hold what its handler reads.
+	handler, database = newTargetedMessageHandler(t, "http://"+listener.Listener.Addr().String())
+	listener.Start()
 	issue := createInteractionIssue(t, handler, "TEST", "Durable pending mention", "before")
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "This delivery must be durable before its send.", "mentions": []map[string]any{{"target": "session:s1"}},

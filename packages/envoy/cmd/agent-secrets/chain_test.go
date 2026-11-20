@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -39,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // chainValue is the value chainBroker releases for TEST_KEY. The use command's child prints its
@@ -165,12 +165,15 @@ func newChainBroker(t *testing.T, settings map[string]any) *chainBroker {
 	mux.HandleFunc("POST /v1/grants/grant-chain/values", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, map[string]any{"values": map[string]string{"TEST_KEY": chainValue}, "expires_at": time.Now().Add(time.Hour)})
 	})
-	b.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// The server starts only once b.server holds it: the POST /v1/requests handler reads
+	// b.server.URL (b.URL()), and httptest.NewServer would serve before the assignment landed.
+	b.server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
 		b.calls++
 		b.mu.Unlock()
 		mux.ServeHTTP(w, r)
 	}))
+	b.server.Start()
 	t.Cleanup(b.server.Close)
 	return b
 }
@@ -275,16 +278,12 @@ func (m *metadataServer) metadataIdentityRequests() int {
 	return m.requests["/computeMetadata/v1/instance/service-accounts/default/identity"]
 }
 
-// closedAddress is a loopback address nothing listens on: a metadata server that is not there.
+// closedAddress is a loopback address nothing listens on: a metadata server that is not there. It
+// is a port the test holds and never listens on (testport.Refused), not a listener it closed: a
+// freed port is any other program's to take and answer at.
 func closedAddress(t *testing.T) string {
 	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := lis.Addr().String()
-	lis.Close()
-	return addr
+	return testport.Refused(t)
 }
 
 // chainBinary builds agent-secrets.

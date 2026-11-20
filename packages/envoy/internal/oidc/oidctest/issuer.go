@@ -217,9 +217,16 @@ func New(t TB) *Issuer {
 	mux.HandleFunc("POST /device_authorization", issuer.handleDeviceAuthorization)
 	mux.HandleFunc("POST /token", issuer.handleToken)
 	mux.HandleFunc("POST /revoke", issuer.handleRevoke)
-	issuer.server = httptest.NewServer(mux)
+	// The server starts only once issuer.server holds it, since handleDiscovery and
+	// handleDeviceAuthorization read issuer.server.URL; httptest.NewServer would serve before the
+	// assignment landed. issuerClaim takes the URL, known only once the server listens, under the
+	// lock its readers take.
+	issuer.server = httptest.NewUnstartedServer(mux)
+	issuer.server.Start()
 	t.Cleanup(issuer.server.Close)
+	issuer.mu.Lock()
 	issuer.issuerClaim = issuer.server.URL
+	issuer.mu.Unlock()
 	return issuer
 }
 

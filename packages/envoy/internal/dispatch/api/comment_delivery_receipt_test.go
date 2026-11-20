@@ -244,7 +244,7 @@ func TestASenderPastItsLeaseLeavesTheResumedAttemptsReceiptAlone(t *testing.T) {
 	var handler http.Handler
 	answerTheSend := false
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	listener := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
 			writeSessionRecord(t, w, sessions, "s1")
@@ -282,7 +282,9 @@ func TestASenderPastItsLeaseLeavesTheResumedAttemptsReceiptAlone(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+	// The listener serves only once handler holds what its handler reads.
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: "http://" + listener.Listener.Addr().String()})
+	listener.Start()
 	issue := createInteractionIssue(t, handler, "TEST", "Mention answered under a resumed claim", "before")
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "Answer this while a lapsed sender is still out there.", "mentions": []map[string]any{{"target": "session:s1"}},
@@ -365,7 +367,7 @@ func TestReplyDuringAMentionRetrySendStillRecordsTheDeliveryReceipt(t *testing.T
 	answerTheSend := false
 	replies := []int{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	listener := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
 			writeSessionRecord(t, w, sessions, "s1")
@@ -401,7 +403,9 @@ func TestReplyDuringAMentionRetrySendStillRecordsTheDeliveryReceipt(t *testing.T
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// The listener serves only once handler holds what its handler reads.
+	handler, database := newTargetedMessageHandler(t, "http://"+listener.Listener.Addr().String())
+	listener.Start()
 	issue := createInteractionIssue(t, handler, "TEST", "Mention retry answered mid-send", "before")
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "The first send goes unanswered.", "mentions": []map[string]any{{"target": "session:s1"}},

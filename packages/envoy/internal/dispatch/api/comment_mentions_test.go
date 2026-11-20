@@ -698,7 +698,7 @@ func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 	lookups := []string{}
 	moveRouteTo := ""
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["btw","steer"]}]`
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	listener := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/v1/roles/"):
 			role := strings.TrimPrefix(r.URL.Path, "/v1/roles/")
@@ -726,7 +726,9 @@ func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 	}))
 	defer listener.Close()
 	var handler http.Handler
-	handler, database = newTargetedMessageHandler(t, listener.URL)
+	// The listener serves only once handler and database hold what its handler reads.
+	handler, database = newTargetedMessageHandler(t, "http://"+listener.Listener.Addr().String())
+	listener.Start()
 	issue := createInteractionIssue(t, handler, "TEST", "Route moves mid-resolution", "before")
 	issueKey = issue.Key
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
@@ -854,7 +856,7 @@ func TestReplyDuringAMentionSendStillRecordsTheDeliveryReceipt(t *testing.T) {
 	var handler http.Handler
 	replied := 0
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["btw","steer"]}]`
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	listener := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
 			writeSessionRecord(t, w, sessions, "s1")
@@ -892,7 +894,9 @@ func TestReplyDuringAMentionSendStillRecordsTheDeliveryReceipt(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// The listener serves only once handler holds what its handler reads.
+	handler, database := newTargetedMessageHandler(t, "http://"+listener.Listener.Addr().String())
+	listener.Start()
 	issue := createInteractionIssue(t, handler, "TEST", "Mention answered mid-send", "before")
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "Answer this while it is still in flight.", "mentions": []map[string]any{{"target": "session:s1"}},

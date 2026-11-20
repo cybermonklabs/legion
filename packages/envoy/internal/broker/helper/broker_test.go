@@ -496,7 +496,10 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		f.retired = append(f.retired, r.PathValue("id"))
 		w.WriteHeader(http.StatusNoContent)
 	})
-	f.srv = httptest.NewServer(mux)
+	// The server starts only once f.srv holds it: the handlers above read f.srv.URL, and
+	// httptest.NewServer would serve before the assignment landed.
+	f.srv = httptest.NewUnstartedServer(mux)
+	f.srv.Start()
 	t.Cleanup(f.srv.Close)
 	return f
 }

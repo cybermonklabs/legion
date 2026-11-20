@@ -11,7 +11,6 @@ package brokerclient
 import (
 	"context"
 	"encoding/json"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -21,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // testAudience is the broker's Google exchange audience in these rows, which a metadata or an
@@ -48,16 +48,12 @@ func startDetectMetadata(t *testing.T) *detectMetadata {
 	return m
 }
 
-// closedAddress is a loopback address nothing listens on.
+// closedAddress is a loopback address nothing listens on: a port the test holds and never listens
+// on (testport.Refused), not a listener it closed, since a freed port is any other program's to
+// take and answer at.
 func closedAddress(t *testing.T) string {
 	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := lis.Addr().String()
-	lis.Close()
-	return addr
+	return testport.Refused(t)
 }
 
 // externalAccountFile writes an external_account credentials file whose subject token is in a

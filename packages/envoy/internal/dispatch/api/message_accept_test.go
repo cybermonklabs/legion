@@ -596,7 +596,7 @@ func TestAcceptDuringTheSendLeavesTheSettleItsReceipt(t *testing.T) {
 	var handler http.Handler
 	accepts := []acceptedAttempt{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["aside","btw","steer"]}]`
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	listener := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
 			writeSessionRecord(t, w, sessions, "s1")
@@ -636,7 +636,9 @@ func TestAcceptDuringTheSendLeavesTheSettleItsReceipt(t *testing.T) {
 	}))
 	defer listener.Close()
 	var database *store.Store
-	handler, database = newTargetedMessageHandler(t, listener.URL)
+	// The listener serves only once handler and database hold what its handler reads.
+	handler, database = newTargetedMessageHandler(t, "http://"+listener.Listener.Addr().String())
+	listener.Start()
 
 	created := postAgentMessage(t, handler, "s1", map[string]any{
 		"body": "Take this as typed.", "delivery": "steer",
