@@ -37,6 +37,7 @@ import { RepoControl, type RepoControlFailure } from "../issue/RepoControl";
 import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName } from "../refs/AgentName";
 import { ReferencedBy } from "../refs/ReferencedBy";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import {
@@ -269,8 +270,11 @@ export function IssueMarginPanel({
   const readingDevelopment = reading && sections.isOpen("development");
   const readingReferences = reading && sections.isOpen("references");
   const blockers = issue.blocked_by ?? [];
+  // Read again by the event of an issue whose title changes (`api/event-refresh.ts`'s names
+  // reads), so never by its age or a window focus (`EVENT_FRESH`).
   const blockerTitles = useQuery({
     ...referenceTargetsQuery(blockers.map((key) => buildDispatchReference({ key, kind: "issue" }))),
+    ...EVENT_FRESH,
     enabled: readingDevelopment && blockers.length > 0,
   });
   const titleOf = (key: string) => {
@@ -281,11 +285,13 @@ export function IssueMarginPanel({
   // kind that point at it, each issue's title the head of its text that the edge carries as its
   // excerpt (the issue's node itself carries no text). It is kept under the backlink panels'
   // `["references", "to", <reference>]`, so the event that starts or stops an issue waiting on
-  // this one reads it again (`api/event-refresh.ts`'s rule for `blocked_by`).
+  // this one reads it again (`api/event-refresh.ts`'s rule for `blocked_by`), and neither its age
+  // nor a window focus does (`EVENT_FRESH`).
   const blocking = useQuery({
     enabled: readingDevelopment,
     queryFn: () => api.getReferences(issueReference, { kind: "blocked_by" }),
     queryKey: ["references", "to", issueReference, "blocked_by"],
+    ...EVENT_FRESH,
   });
   const blocks = (blocking.data?.edges ?? []).flatMap((edge) =>
     edge.kind !== "blocked_by" || edge.node.issue_key === undefined
@@ -384,15 +390,18 @@ export function IssueMarginPanel({
     ) : null;
   // Another session's close disables some of Development's controls - the route's control and
   // its editor's box, the labels' control, the priority's line, the Repository row, the parent's
-  // editor's box - and takes others off the page - Set or Edit parent issue, Blocked by's control,
-  // Add and its menu - and each takes the focus it held with it to the page's body. No hand-off
-  // above answers that, since each acts only as an element it holds leaves the page or as an
-  // editor closes. So the panel keeps the element the focus last went to in Development, which a
-  // focus anywhere else forgets, as does the reader's leaving it while it still takes a press;
-  // and as the issue closes, where that element takes no press now (`usableControl`) and the
-  // focus is still on it or on the body, the focus goes to Development's heading, where every
-  // other hand-off of the section ends. A focus a hand-off already moved to a control that takes
-  // it stays there. An issue closed as the panel is drawn moves nothing.
+  // editor's box, each `disabled` on a closed issue - and takes others off the page - Set or Edit
+  // parent issue, Blocked by's control, Add and its menu - and each takes the focus it held with
+  // it to the page's body. No hand-off above answers that, since each acts only as an element it
+  // holds leaves the page or as an editor closes. So the panel keeps the element the focus last
+  // went to in Development, which a focus anywhere else forgets, as does the reader's leaving it
+  // while it still takes a press; and as the issue closes, where the close took that element - it
+  // has left the page, or is `disabled` now - and the focus is still on it or on the body, the
+  // focus goes to Development's heading, where every other hand-off of the section ends. A
+  // control that only refuses a press (`aria-disabled`: an editor's Save and Cancel while its save
+  // is out, and the parent's and the route's Save on a closed issue) keeps the focus, so a close
+  // took nothing from it and the focus stays there, as a focus a hand-off already moved to a
+  // control that takes it does. An issue closed as the panel is drawn moves nothing.
   const developmentFocus = useRef<HTMLElement | null>(null);
   const noteDevelopmentFocus: FocusEventHandler<HTMLElement> = (event) => {
     developmentFocus.current = event.target;
@@ -422,13 +431,17 @@ export function IssueMarginPanel({
     return () => document.removeEventListener("focusin", forget, true);
   }, []);
   const wasClosed = useRef(isClosed);
-  // A layout effect, so it runs in the commit that closes the issue, after the hand-offs above,
-  // and before a browser that moves the focus off a disabled control only later does so.
+  // A layout effect, so it runs in the commit that closes the issue, after the layout effects of
+  // the `useFocusHandOff`s above in that same commit (an editor's close hands its focus on in a
+  // passive effect, which runs after this one), and before a browser that moves the focus off a
+  // disabled control only later does so.
   useLayoutEffect(() => {
     const closing = isClosed && !wasClosed.current;
     wasClosed.current = isClosed;
     const left = developmentFocus.current;
-    if (!closing || left === null || usableControl(left)) return;
+    if (!closing || left === null) return;
+    // The close took the element only where it took it off the page or disabled it.
+    if (left.isConnected && !left.matches(":disabled")) return;
     if (document.activeElement !== left && !focusOnDocument()) return;
     developmentHeading.current?.focus({ preventScroll: true });
   }, [isClosed]);
@@ -769,7 +782,7 @@ export function IssueMarginPanel({
             <span
               className={`inline-flex min-h-11 items-center text-sm md:min-h-0 ${pageQuietText}`}
             >
-              Referenced by (0)
+              {`${PROPERTY_LABELS.referenced_by} (0)`}
             </span>
           ) : (
             <button
@@ -779,7 +792,7 @@ export function IssueMarginPanel({
               onClick={() => setReferencesOpen((open) => !open)}
               type="button"
             >
-              {`Referenced by (${issue.referenced_by_count})`}
+              {`${PROPERTY_LABELS.referenced_by} (${issue.referenced_by_count})`}
             </button>
           )}
           {/* The list reads what references the issue, and reads it again on each event about

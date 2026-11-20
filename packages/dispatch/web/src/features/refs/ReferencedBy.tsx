@@ -11,9 +11,10 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { compiledBlockSchema } from "../doc/schema";
+import { useMarginDrawer } from "../issue-page/margin-slot";
 import { blockFragment, isBlockItemKind } from "./block-reference";
 import { referenceTriggerProps } from "./RefPreview";
-import { referencesQuery } from "./reference-target";
+import { EVENT_FRESH, referencesQuery } from "./reference-target";
 import type { DispatchReferenceRoute } from "./routes";
 import { buildReferencePath, parseNodeReference } from "./routes";
 import { Timestamp } from "./Timestamp";
@@ -251,7 +252,15 @@ export function ReferencedBy({
    *  and then the panel is its own heading. */
   toggle?: { id: string };
 }): ReactNode {
-  const query = useQuery(referencesQuery(reference));
+  // The Details drawer is the new issue page's alone, where events keep this read fresh
+  // (`api/event-refresh.ts`'s rules for references): there a window focus 30 s after the read,
+  // the app's staleness, would read it again for nothing. Every other page keeps the app's
+  // defaults.
+  const drawer = useMarginDrawer();
+  const query = useQuery({
+    ...referencesQuery(reference),
+    ...(drawer === undefined ? undefined : EVENT_FRESH),
+  });
   // During a release a newer Dispatch can answer with an edge kind, or a node kind at the other
   // end, that this page does not know; the page leaves such an edge out rather than draw it under
   // another edge's label.

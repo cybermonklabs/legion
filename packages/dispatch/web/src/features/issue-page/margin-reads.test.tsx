@@ -1,12 +1,12 @@
 import { afterEach, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { focusManager, type QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
-import { DispatchQueryClient } from "../../api/query-client";
 import { type MarginOwner, type MarkPlacement, useMarginItems } from "../margin/useMarginItems";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
+import { appClient, focusPastStaleness } from "./window-focus-fixture";
 
 const OWNER: MarginOwner = { key: "CORE-1", kind: "issue" };
 
@@ -49,14 +49,6 @@ function stubMarginReads(): MarginReads {
   return reads;
 }
 
-/** The app's client with the defaults `main.tsx` gives every read: stale 30 s after it answered,
- *  and fetched again on window focus once stale. No retry, so a stub's answer is the read's. */
-function appClient(): QueryClient {
-  return new DispatchQueryClient({
-    defaultOptions: { queries: { refetchOnWindowFocus: true, retry: false, staleTime: 30_000 } },
-  });
-}
-
 /** The margin's reads of the issue (`useMarginItems`, which reads the asks through
  *  `useAnsweredAsks`): in the Details drawer where `inDrawer` is given, as the new page's shell
  *  draws the margin, and with no drawer otherwise, as every other page draws it. */
@@ -78,18 +70,6 @@ async function firstAnswers(client: QueryClient, reads: MarginReads): Promise<vo
   await waitFor(() => {
     for (const read of Object.values(reads)) expect(read).toHaveBeenCalledTimes(1);
     expect(client.isFetching()).toBe(0);
-  });
-}
-
-/** The reader comes back to the tab 31 s after the reads answered, past the app's staleness.
- *  The client's focus listener awaits `resumePausedMutations` before it fetches again, so
- *  awaiting the same call after it finds any read the focus sends already started. */
-async function focusPastStaleness(client: QueryClient): Promise<void> {
-  setSystemTime(Date.now() + 31_000);
-  await act(async () => {
-    focusManager.setFocused(false);
-    focusManager.setFocused(true);
-    await client.resumePausedMutations();
   });
 }
 

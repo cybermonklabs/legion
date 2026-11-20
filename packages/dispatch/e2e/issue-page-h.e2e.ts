@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { assigneeControlName } from "../web/src/features/issue/AssigneeControl";
 import { labelsControlName } from "../web/src/features/issue/IssueLabels";
 import { repoControlName, repoTextControlName } from "../web/src/features/issue/RepoControl";
+import { blockedByControlName } from "../web/src/features/issue-page/BlockedByControl";
 import { DETAILS_ROW_REQUEST_EVENT } from "../web/src/features/issue-page/details-rows";
 import {
   MARGIN_SECTION_ORDER,
@@ -444,7 +445,7 @@ test("Details opens on the properties and holds no conversation @phone", async (
     await openDetails(page);
     // Escape in the blocked-by box leaves the box's editor and goes no further: the sheet stays.
     const blockedBy = detailsRow(page, PROPERTY_LABELS.blocked_by);
-    await blockedBy.getByRole("button", { name: `Edit issues ${one} waits on` }).click();
+    await blockedBy.getByRole("button", { name: blockedByControlName(one, 1) }).click();
     const blockersBox = blockedBy.getByLabel(`Issues ${one} waits on`, { exact: true });
     await expect(blockersBox).toBeFocused();
     await blockersBox.press("Escape");
@@ -684,7 +685,7 @@ test("every property with a value is visible in Details at every width @phone", 
           "Referenced by's count",
           marginSection(page, "references").getByRole("button", {
             exact: true,
-            name: `Referenced by (${oneRead.referenced_by_count})`,
+            name: `${PROPERTY_LABELS.referenced_by} (${oneRead.referenced_by_count})`,
           }),
         ],
         [
@@ -994,9 +995,9 @@ test("every property with a value is visible in Details at every width @phone", 
  *  break it at. */
 const LONGEST_LABEL = "a-label-of-forty-characters-and-no-space";
 
-// Step (5) above, for the longest label: the Labels row lists every label, none cut. Found by the
-// tester on the preview of d4344116: on an issue there a 40-character label ran 39 px past
-// Details' edge at 1440 px and was cut, at 390 px as well.
+// Step (5) above, for the longest label: the Labels row lists every label, none cut. A
+// 40-character label with no space ran 39 px past Details' edge at 1440 px and was cut, at 390 px
+// as well.
 test("a label of the most characters Dispatch takes is whole in Details at every width @phone", async ({
   browser,
 }) => {
@@ -1030,9 +1031,9 @@ test("a label of the most characters Dispatch takes is whole in Details at every
  *  already runs 14 px past the row at 1440 px. */
 const LONG_REPOSITORY = "acme/a-repository-name-of-exactly-forty-chars";
 
-// Step (5) above, for a long repository: the repository is visible in its row, whole. Found by
-// the tester on the preview of 962ec632: on an issue there a repository of 44 characters ran
-// 101 px past Details' Repository row at 1440 px and was cut at Details' edge, at 390 px as well.
+// Step (5) above, for a long repository: the repository is visible in its row, whole. A
+// repository of 44 characters ran 101 px past Details' Repository row at 1440 px and was cut at
+// Details' edge, at 390 px as well.
 test("a repository of a long name is whole in Details at every width @phone", async ({
   browser,
 }) => {
@@ -1074,8 +1075,7 @@ function detailsHeadBottom(page: Page): Promise<number> {
 // Add opens the control of the property it lists. In a short window the Labels row has
 // scrolled up under Details' head by the time Add, at the end of Development, is in view; Add
 // brings the control into view before it presses it, since the control's popover is placed from
-// where the control is on the screen. Found by the implementer's c-use at cf4dd251 (the popover
-// opened over the head at 390 px), fixed in 29c83c9b; the tester pins it here.
+// where the control is on the screen; without that the popover opened over the head at 390 px.
 test("Add brings a control it reaches into view, so its popover opens under Details' head @phone", async ({
   browser,
 }) => {
@@ -1308,7 +1308,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
 
     // (11) TWO's blockers: a refused key keeps the editor open, then THREE.
     const blockedBy = detailsRow(page, PROPERTY_LABELS.blocked_by);
-    await blockedBy.getByRole("button", { name: `Add issues ${two} waits on` }).click();
+    await blockedBy.getByRole("button", { name: blockedByControlName(two, 0) }).click();
     const keys = blockedBy.getByLabel(`Issues ${two} waits on`, { exact: true });
     await keys.fill(`${PROJECT}-9999`);
     await blockedBy.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }).click();
@@ -1698,7 +1698,7 @@ test.describe("the shared controls of Details keep the focus while their write l
       await gotoIssue(page, `/issues/${two}`);
       await openDetails(page);
       const row = detailsRow(page, PROPERTY_LABELS.blocked_by);
-      const open = row.getByRole("button", { name: `Add issues ${two} waits on` });
+      const open = row.getByRole("button", { name: blockedByControlName(two, 0) });
       await open.focus();
       await page.keyboard.press("Enter");
       await expect(row.getByLabel(`Issues ${two} waits on`, { exact: true })).toBeFocused();
@@ -1738,7 +1738,7 @@ test.describe("the shared controls of Details keep the focus while their write l
       await gotoIssue(page, `/issues/${two}`);
       await openDetails(page);
       const row = detailsRow(page, PROPERTY_LABELS.blocked_by);
-      const open = row.getByRole("button", { name: `Add issues ${two} waits on` });
+      const open = row.getByRole("button", { name: blockedByControlName(two, 0) });
       await open.focus();
       await page.keyboard.press("Enter");
       await expect(row.getByLabel(`Issues ${two} waits on`, { exact: true })).toBeFocused();

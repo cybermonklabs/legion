@@ -19,6 +19,7 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { focusOnDocument } from "../shell/roving";
 import { pickLook } from "./issue-field-looks";
 import { useIssueRepo } from "./useIssueRepo";
@@ -247,6 +248,10 @@ export function RepoControl({
     enabled: wanted || resolvedRepo === null,
     queryKey: ["repo-projects"],
     queryFn: () => api.listRepoProjects(),
+    // Inside `NoTooltips`, the new issue page, the mappings are read again by the event of a
+    // mapping's write (`api/event-refresh.ts`), so a window focus 30 s after the read, the app's
+    // staleness, would read them again for nothing. Every other page keeps the app's defaults.
+    ...(page === null ? undefined : EVENT_FRESH),
   });
   const want = () => setWanted(true);
   const descriptionId = useId();

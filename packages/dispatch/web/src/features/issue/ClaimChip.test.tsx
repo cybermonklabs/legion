@@ -8,49 +8,14 @@ import { MemoryRouter } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { api } from "../../api/client";
-import type { ClaimHolderLiveness, Issue, IssueClaim, IssueDetails } from "../../api/types";
+import type { ClaimHolderLiveness, Issue, IssueDetails } from "../../api/types";
 import { runningAgent } from "../credentials/agent-fixture";
+import { claimIssue as base, sessionClaim as claim } from "../issue-page/issue-fixtures";
 import { MarginProvider } from "../margin/margin-context";
 import { claimIsTakeable } from "./ClaimChip";
 import { IssueHeader } from "./IssueHeader";
 import { stateForIssue } from "./pins";
 import type { IssuePriorityWrite } from "./useIssuePriority";
-
-const claim: IssueClaim = {
-  actor: { kind: "session", id: "session-one", origin: { session_title: "Implementer" } },
-  at: "2026-09-24T06:00:00Z",
-};
-
-const base: Issue = {
-  advances: [],
-  advances_revision: 0,
-  assignee: "alice",
-  claim: null,
-  components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
-  closed_at: null,
-  created_at: "2026-09-24T05:00:00Z",
-  created_by: { id: "alice", kind: "user" },
-  external_links: [],
-  key: "CORE-1",
-  labels: [],
-  last_seq: 1,
-  number: 1,
-  parent: null,
-  blocked_by: [],
-  plan_artifact_id: "",
-  decisions_artifact_id: "",
-  primary_artifact_id: "artifact-1",
-  verification_artifact_id: "",
-  priority: null,
-  project: "CORE",
-  rank: "U",
-  route: null,
-  repo: null,
-  resolved_repo: null,
-  status: "in_progress",
-  title: "Claim the issue before working it",
-  updated_at: "2026-09-24T06:00:00Z",
-};
 
 /** These rows are about the claim chip, not the priority: the header's write never runs, and it
  *  draws no priority, as `base` has none. */

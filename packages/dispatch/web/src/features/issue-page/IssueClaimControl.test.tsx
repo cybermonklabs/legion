@@ -9,52 +9,17 @@ import { MemoryRouter } from "react-router-dom";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
-import type { ClaimHolderLiveness, Issue, IssueClaim, IssueDetails } from "../../api/types";
+import type { ClaimHolderLiveness, Issue, IssueDetails } from "../../api/types";
 import { dangerText, pageFailedText, pageHeaderControl } from "../../theme/classes";
 import { runningAgent } from "../credentials/agent-fixture";
 import { stateForIssue } from "../issue/pins";
 import { MarginProvider } from "../margin/margin-context";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { IssueClaimControl } from "./IssueClaimControl";
+import { claimIssue as base, sessionClaim as claim } from "./issue-fixtures";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
-
-const claim: IssueClaim = {
-  actor: { kind: "session", id: "session-one", origin: { session_title: "Implementer" } },
-  at: "2026-09-24T06:00:00Z",
-};
-
-const base: Issue = {
-  advances: [],
-  advances_revision: 0,
-  assignee: "alice",
-  claim: null,
-  components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
-  closed_at: null,
-  created_at: "2026-09-24T05:00:00Z",
-  created_by: { id: "alice", kind: "user" },
-  external_links: [],
-  key: "CORE-1",
-  labels: [],
-  last_seq: 1,
-  number: 1,
-  parent: null,
-  blocked_by: [],
-  plan_artifact_id: "",
-  decisions_artifact_id: "",
-  primary_artifact_id: "artifact-1",
-  verification_artifact_id: "",
-  priority: null,
-  project: "CORE",
-  rank: "U",
-  route: null,
-  repo: null,
-  resolved_repo: null,
-  status: "in_progress",
-  title: "Claim the issue before working it",
-  updated_at: "2026-09-24T06:00:00Z",
-};
 
 /** The claim's row of Details, over the page's own writes, as `IssueMargin.tsx` draws it: on the
  *  cached issue, as the details slot reads it, so a release that lands is what the row draws

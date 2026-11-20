@@ -1,4 +1,4 @@
-import type { Issue, IssueDetails, UpdateIssueInput } from "../../api/types";
+import type { Issue, IssueClaim, IssueDetails, UpdateIssueInput } from "../../api/types";
 
 /** The answer the tests of the page's writes (`shared-writes.test.ts`, `IssueMargin.test.tsx`,
  *  `issue-writes.test.tsx`) give a PATCH of the issue. */
@@ -31,3 +31,43 @@ export function patchAnswer(issue: IssueDetails, input: UpdateIssueInput): Issue
     title: title ?? issue.title,
   });
 }
+
+/** The claim the tests of the claim's chip and of its row of Details (`ClaimChip.test.tsx`,
+ *  `IssueClaimControl.test.tsx`) put on `claimIssue`: a session's, which the agent list names. */
+export const sessionClaim: IssueClaim = {
+  actor: { kind: "session", id: "session-one", origin: { session_title: "Implementer" } },
+  at: "2026-09-24T06:00:00Z",
+};
+
+/** The issue those tests claim and release: open, in progress and claimed by no one, with no
+ *  priority, so the header draws none. */
+export const claimIssue: Issue = {
+  advances: [],
+  advances_revision: 0,
+  assignee: "alice",
+  claim: null,
+  components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+  closed_at: null,
+  created_at: "2026-09-24T05:00:00Z",
+  created_by: { id: "alice", kind: "user" },
+  external_links: [],
+  key: "CORE-1",
+  labels: [],
+  last_seq: 1,
+  number: 1,
+  parent: null,
+  blocked_by: [],
+  plan_artifact_id: "",
+  decisions_artifact_id: "",
+  primary_artifact_id: "artifact-1",
+  verification_artifact_id: "",
+  priority: null,
+  project: "CORE",
+  rank: "U",
+  route: null,
+  repo: null,
+  resolved_repo: null,
+  status: "in_progress",
+  title: "Claim the issue before working it",
+  updated_at: "2026-09-24T06:00:00Z",
+};

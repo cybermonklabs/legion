@@ -70,7 +70,8 @@ export { refetchFailedOnFocus };
  * The options of a read that events keep fresh, spread into its query: window focus fetches it
  * again only while it is in error (`refetchFailedOnFocus`), and it is never stale by its age, so
  * neither a focus nor a mount reads it again while it holds an answer. What reads it again is an
- * event whose refresh rule names its key (`api/event-refresh.ts`), or a gap in the feed.
+ * event whose refresh rule names its key (`api/event-refresh.ts`), a gap in the feed, or a write
+ * that invalidates its key.
  */
 export const EVENT_FRESH = {
   refetchOnWindowFocus: refetchFailedOnFocus,

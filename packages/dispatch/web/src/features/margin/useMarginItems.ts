@@ -494,7 +494,12 @@ export function useMarginItems(
   // once that spec is on screen, since the issue page keeps it mounted under the Conversation.
   const showsDecisions =
     owner?.kind === "issue" && visibleArtifact?.primary === true && documentShown;
-  const decisionsView = useQuery(issueDecisionsQuery(issueKey ?? "", showsDecisions));
+  // In the drawer the outline reads these decisions under this key and keeps them fresh by
+  // events (`useIssueTree.ts`), as it does the comments above, so the same options hold here.
+  const decisionsView = useQuery({
+    ...issueDecisionsQuery(issueKey ?? "", showsDecisions),
+    ...(drawer === undefined ? undefined : EVENT_FRESH),
+  });
   const decisions = useMemo<DecisionMarginItem[]>(() => {
     if (!showsDecisions) return [];
     const decisionItems = (decisionsView.data?.decisions ?? []).flatMap((decision) => {

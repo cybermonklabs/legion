@@ -16,12 +16,14 @@ import {
   pinnedEventIds,
 } from "../issue/pins";
 import { AgentParts } from "../refs/AgentName";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import { drawnLine, firstLineOf } from "./issue-tree";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES } from "./page-words";
 import { ROW_LINK } from "./row-references";
+import { issueAsksQuery } from "./useIssueTree";
 
 /**
  * The reader's pins, as links to what they pinned: each pinned ask, comment and message by its
@@ -33,13 +35,16 @@ import { ROW_LINK } from "./row-references";
  * line says, with a link that opens the history and its Unpin. The pin of a row itself is the
  * focused row's, in its facts (`FocusedNodeFacts.tsx`).
  *
- * The words come from the reads the outline and the history are drawn from, under their keys, so
- * the list costs no request of its own: a record's words from the server's reading of its text,
- * as its row draws them, and its first line whole, wrapping rather than cut. Where a read has
- * not answered, has failed, or holds no words for a pin - a handoff, an event older than the
- * history has read - the pin is drawn by the page's word for its kind and never by its id.
- * Until the reader's own state has answered, which pins there are is not known: the section
- * draws its heading alone, and says None only once that state holds no pin.
+ * The words come from the reads the outline and the history are drawn from, so the list costs no
+ * request of its own: each read here is the outline's, under its key and with its options
+ * (`useIssueTree.ts`: kept fresh by events, never read again by its age or a window focus,
+ * `EVENT_FRESH`), so it shares the outline's answer and is read again only when the outline's
+ * is. A record's words are the server's reading of its text, as its row draws them, and its
+ * first line is drawn whole, wrapping rather than cut. Where a read has not answered, has
+ * failed, or holds no words for a pin - a handoff, an event older than the history has read -
+ * the pin is drawn by the page's word for its kind and never by its id. Until the reader's own
+ * state has answered, which pins there are is not known: the section draws its heading alone,
+ * and says None only once that state holds no pin.
  */
 export function IssuePins({
   dismissed,
@@ -54,20 +59,18 @@ export function IssuePins({
   const pins = pinnedConversations([...(dismissed ?? [])]);
   const eventPins = pinnedEventIds([...(dismissed ?? [])]);
   const reading = pins.length > 0;
-  const asks = useQuery({
-    enabled: reading,
-    queryFn: () => api.listIssueAsks(issueKey, "all"),
-    queryKey: ["asks", issueKey],
-  });
+  const asks = useQuery({ ...issueAsksQuery(issueKey), ...EVENT_FRESH, enabled: reading });
   const comments = useQuery({
     enabled: reading,
     queryFn: () => api.listComments(issueKey),
     queryKey: ["comments", issueKey],
+    ...EVENT_FRESH,
   });
   const messages = useQuery({
     enabled: reading,
     queryFn: () => api.listIssueMessages(issueKey),
     queryKey: ["issue-messages", issueKey],
+    ...EVENT_FRESH,
   });
   // The history's own log, under its key (`IssueHistory.tsx`), which the history under this list
   // reads: watched here and never asked for, so a pinned line is drawn from the pages it holds.

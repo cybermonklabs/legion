@@ -36,10 +36,10 @@ import { USABLE_CONTROL_ATTRIBUTES, usableControl } from "./usable-control";
  * `blockedByControlName`, `repoControlName` and `repoTextControlName`, `componentsControlName`,
  * `addPriorityControlName` - so the two sides cannot drift apart, and lists one only while that
  * control takes a press (`usableControl`). A press on an entry opens that property's control, and
- * a control that takes no press opens nothing: while the priorities' save was out, Add listed
- * Advances beside the disabled "Add a priority to CORE-1", and a press on it left the form shut
- * and the focus on the body (the tester, on 8a8f3f6b). A control of Details still takes a press
- * while Details is closed, since the reach opens Details first.
+ * a control that takes no press opens nothing: while the priorities' save is out, "Add a priority
+ * to CORE-1" takes no press, and an Advances listed then would leave the form shut and the focus
+ * on the body when pressed. A control of Details still takes a press while Details is closed,
+ * since the reach opens Details first.
  *
  * Which entries can be reached - which decides whether Add is drawn at all, and what its open
  * menu lists - is read from the page, never while the menu renders: during a render the page
@@ -54,9 +54,8 @@ import { USABLE_CONTROL_ATTRIBUTES, usableControl } from "./usable-control";
  * own commits only, Add went when it opened the priorities' form, which replaces "Add a
  * priority to CORE-1", and stayed gone once Cancel drew that control again in a commit of
  * `IssuePriorityLine` alone; the repository's select and the components' picker, each drawn
- * then once its own read answered, were never seen either (the review of 5906c38b). The
- * repository's row still swaps its text - "None" or the repository - and its box in commits of
- * its own control alone.
+ * then once its own read answered, were never seen either. The repository's row still swaps its
+ * text - "None" or the repository - and its box in commits of its own control alone.
  */
 export function IssueAddMenu({
   drawerBox,

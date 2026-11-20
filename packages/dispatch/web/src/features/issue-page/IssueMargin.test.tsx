@@ -1,6 +1,6 @@
-import { expect, type Mock, spyOn, test } from "bun:test";
+import { expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { MAX_ISSUE_ADVANCES, MAX_ISSUE_BLOCKERS } from "@legion/contracts";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { focusManager, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import {
   act,
   // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for an Escape that ends an IME composition, which user-event has no form for
@@ -77,6 +77,7 @@ import { DetailsSlot } from "./slots/details";
 import { firstUsableIn, usableControl } from "./usable-control";
 import { blockedByRefusal } from "./useIssueBlockedBy";
 import { type IssueHeaderWrites, useIssueHeaderWrites } from "./useIssueHeaderWrites";
+import { appClient, focusPastStaleness } from "./window-focus-fixture";
 
 const issue: IssueDetails = { ...marginIssue, last_seq: 250, status: "todo" };
 
@@ -100,11 +101,15 @@ const CONTROL_NAME_WORDS = { ANSWER_LINES, CONTROL_LABELS };
  *  is what the panel draws next. `beside` is drawn above it, over writes of its own. `drawer` is
  *  the Details drawer it is drawn in; with none, Details makes none of the reads it makes only
  *  while open. `redraw` draws the same Details in the drawer it is handed, as a drawer that
- *  opens or closes does. */
-function renderDetails(beside?: (issue: IssueDetails) => ReactNode, drawer?: MarginDrawer) {
-  const queryClient = new QueryClient({
+ *  opens or closes does. `queryClient` is the client every read goes through: by default one
+ *  whose reads are never stale, so none is read again by its age or a window focus. */
+function renderDetails(
+  beside?: (issue: IssueDetails) => ReactNode,
+  drawer?: MarginDrawer,
+  queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
-  });
+  })
+) {
   const tree = (inDrawer: MarginDrawer | undefined) => (
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
       <QueryClientProvider client={queryClient}>
@@ -232,6 +237,14 @@ function rowAt(row: DetailsRow): HTMLElement {
   return found;
 }
 
+/** How many times `getReferences` read what waits on `reference`, the Blocks row's read: the
+ *  references of kind `blocked_by` that point at it. */
+function blocksReads(getReferences: Mock<typeof api.getReferences>, reference: string): number {
+  return getReferences.mock.calls.filter(
+    ([to, options]) => to === reference && options?.kind === "blocked_by"
+  ).length;
+}
+
 /** Every Escape that reaches the window from now on, by whether a control marked it taken: the
  *  page's keys pass over a taken press (`shell/keymap.ts`), and the phone's Details sheet closes
  *  on an Escape no control took (`shell/useDialog.ts`). */
@@ -255,7 +268,9 @@ test("the blocked-by editor stays open on a refusal and says what Dispatch refus
   const { unmount } = renderDetails();
 
   try {
-    await user.click(await screen.findByRole("button", { name: "Add issues CORE-1 waits on" }));
+    await user.click(
+      await screen.findByRole("button", { name: blockedByControlName("CORE-1", 0) })
+    );
     const keys = (await screen.findByLabelText("Issues CORE-1 waits on")) as HTMLInputElement;
     await user.click(keys);
     await user.paste("CORE-9");
@@ -292,7 +307,9 @@ test("a blocked-by that is set can be changed and cleared from the panel", async
 
   try {
     expect(await screen.findByRole("link", { name: "CORE-2" })).toBeInTheDocument();
-    await user.click(await screen.findByRole("button", { name: "Edit issues CORE-1 waits on" }));
+    await user.click(
+      await screen.findByRole("button", { name: blockedByControlName("CORE-1", 1) })
+    );
     const keys = (await screen.findByLabelText("Issues CORE-1 waits on")) as HTMLInputElement;
     expect(keys.value).toBe("CORE-2");
 
@@ -312,7 +329,9 @@ test("a blocked-by that is set can be changed and cleared from the panel", async
     );
     expect(await screen.findByRole("link", { name: "CORE-3" })).toBeInTheDocument();
 
-    await user.click(await screen.findByRole("button", { name: "Edit issues CORE-1 waits on" }));
+    await user.click(
+      await screen.findByRole("button", { name: blockedByControlName("CORE-1", 1) })
+    );
     await user.clear(await screen.findByLabelText("Issues CORE-1 waits on"));
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
     await waitFor(() =>
@@ -564,10 +583,6 @@ test("Details open with Development closed reads no GitHub link, title or Blocks
     edges: [],
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
   });
-  const blocksReads = () =>
-    getReferences.mock.calls.filter(
-      ([to, options]) => to === reference && options?.kind === "blocked_by"
-    ).length;
   const kept = userPreferenceStorageKey("alice", "issue.margin-sections");
   window.localStorage.setItem(kept, "development");
   const shut: MarginDrawer = { ...OPEN_DRAWER, open: false };
@@ -589,7 +604,10 @@ test("Details open with Development closed reads no GitHub link, title or Blocks
       titleReads(),
       "Details read the titles of the issues a closed Development's Blocked by waits on"
     ).toBe(0);
-    expect(blocksReads(), "Details read what waits on the issue for a closed Development").toBe(0);
+    expect(
+      blocksReads(getReferences, reference),
+      "Details read what waits on the issue for a closed Development"
+    ).toBe(0);
 
     await user.click(development);
     await waitFor(() =>
@@ -604,7 +622,7 @@ test("Details open with Development closed reads no GitHub link, title or Blocks
         "opening Development did not read the titles of the issues it waits on"
       ).toBeGreaterThan(0);
       expect(
-        blocksReads(),
+        blocksReads(getReferences, reference),
         "opening Development did not read what waits on the issue"
       ).toBeGreaterThan(0);
     });
@@ -958,14 +976,10 @@ test("Details' Blocks is read again when another issue starts waiting on this on
     edges,
     node,
   }));
-  const blocksReads = () =>
-    getReferences.mock.calls.filter(
-      ([to, options]) => to === reference && options?.kind === "blocked_by"
-    ).length;
   const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
-    await waitFor(() => expect(blocksReads()).toBe(1));
+    await waitFor(() => expect(blocksReads(getReferences, reference)).toBe(1));
     await waitFor(() =>
       expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent(CONTROL_LABELS.none)
     );
@@ -1016,7 +1030,10 @@ test("Details' Blocks is read again when another issue starts waiting on this on
     refreshQueries(queryClient, eventRefreshTargets(waits, "alice"));
 
     await waitFor(() =>
-      expect(blocksReads(), "Blocks was not read again on CORE-5's event").toBe(2)
+      expect(
+        blocksReads(getReferences, reference),
+        "Blocks was not read again on CORE-5's event"
+      ).toBe(2)
     );
     const row = detailsRow(PROPERTY_LABELS.blocks);
     expect(
@@ -1615,7 +1632,9 @@ test("Referenced by's control is in the page's ink, opens the list and reads the
   const { unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
-    const toggle = await screen.findByRole("button", { name: "Referenced by (3)" });
+    const toggle = await screen.findByRole("button", {
+      name: `${PROPERTY_LABELS.referenced_by} (3)`,
+    });
     expect(toggle, "Referenced by's control is not in the page's ink").toHaveClass(pageInkText);
     for (const token of linkText.split(" ")) {
       expect(toggle, "Referenced by's control is in the application's link blue").not.toHaveClass(
@@ -1663,7 +1682,9 @@ test("closing References or Details takes an open Referenced by list, and its re
       ?.getObserversCount() ?? 0;
 
   try {
-    await user.click(await screen.findByRole("button", { name: "Referenced by (3)" }));
+    await user.click(
+      await screen.findByRole("button", { name: `${PROPERTY_LABELS.referenced_by} (3)` })
+    );
     const list = await screen.findByRole("region", { name: "Referenced by" });
     expect(listReaders(), "the open Referenced by list does not read what references it").toBe(1);
 
@@ -1697,6 +1718,66 @@ test("closing References or Details takes an open Referenced by list, and its re
     getReferences.mockRestore();
     restore();
     window.localStorage.removeItem(userPreferenceStorageKey("alice", "issue.margin-sections"));
+  }
+});
+
+// Details' reads of the titles of the issues this one waits on, of what waits on it, of what
+// references it and of the project's repository mappings are each read again by the events that
+// change them (`api/event-refresh.ts`), so in Details a window focus past the app's 30 s
+// staleness reads none of them again. The reader's state keeps the app's defaults, so its second
+// read shows the focus was handled.
+test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Referenced by or repository mapping again", async () => {
+  const user = userEvent.setup();
+  const { getIssue, getMyState, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"], referenced_by_count: 3 });
+  const blocker = buildDispatchReference({ key: "CORE-3", kind: "issue" });
+  const titles = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] });
+  const titleReads = () => titles.mock.calls.filter(([refs]) => refs.includes(blocker)).length;
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  // The Referenced by list's read, which names no kind of reference (`referencesQuery`).
+  const listReads = () =>
+    getReferences.mock.calls.filter(([to, options]) => to === reference && options === undefined)
+      .length;
+  const client = appClient();
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER, client);
+
+  try {
+    await user.click(
+      await screen.findByRole("button", { name: `${PROPERTY_LABELS.referenced_by} (3)` })
+    );
+    await waitFor(() => {
+      expect(titleReads()).toBe(1);
+      expect(blocksReads(getReferences, reference)).toBe(1);
+      expect(listReads()).toBe(1);
+      expect(api.listRepoProjects).toHaveBeenCalledTimes(1);
+      expect(client.isFetching()).toBe(0);
+    });
+    await focusPastStaleness(client);
+    await waitFor(() => expect(getMyState).toHaveBeenCalledTimes(2));
+    expect(
+      titleReads(),
+      "a window focus read the titles of the issues this one waits on again"
+    ).toBe(1);
+    expect(
+      blocksReads(getReferences, reference),
+      "a window focus read what waits on the issue again"
+    ).toBe(1);
+    expect(listReads(), "a window focus read what references the issue again").toBe(1);
+    expect(
+      api.listRepoProjects,
+      "a window focus read the project's repository mappings again"
+    ).toHaveBeenCalledTimes(1);
+  } finally {
+    unmount();
+    titles.mockRestore();
+    getReferences.mockRestore();
+    restore();
+    setSystemTime();
+    focusManager.setFocused(undefined);
   }
 });
 
@@ -1859,11 +1940,11 @@ test("the add control is not drawn on a closed issue, nor when every property ha
   }
 });
 
-// Found in the review of 5f46a483: Add is drawn while a property it lists has no value and its
-// control is on the page. An issue with a value for every other property loses its last label;
-// while the save is out the labels' control is named "Saving labels of CORE-1", and in the render
-// where the save landed Add looked for "Add a label to CORE-1", which that render's commit had not
-// drawn yet, so it drew nothing and nothing drew it again.
+// Add is drawn while a property it lists has no value and its control is on the page. An issue
+// with a value for every other property loses its last label; while the save is out the labels'
+// control is named "Saving labels of CORE-1", and in the render where the save landed Add looked
+// for "Add a label to CORE-1", which that render's commit had not drawn yet, so it drew nothing
+// and nothing drew it again.
 test("removing the last label draws Add, whose Labels the row's control now answers", async () => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
@@ -1896,7 +1977,15 @@ test("removing the last label draws Add, whose Labels the row's control now answ
     await screen.findByRole("link", { name: "CORE-3" });
     await waitFor(() => expect(priorities).toHaveBeenCalled());
     expect(screen.queryByRole("button", { name: CONTROL_LABELS.add })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Edit labels" }));
+    await user.click(
+      screen.getByRole("button", {
+        name: labelsControlName("CORE-1", {
+          labels: ["bug"],
+          saving: false,
+          words: CONTROL_NAME_WORDS,
+        }),
+      })
+    );
     await user.click(await screen.findByRole("option", { name: "bug" }));
     await user.keyboard("{Escape}");
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
@@ -1929,12 +2018,12 @@ test("removing the last label draws Add, whose Labels the row's control now answ
   }
 });
 
-// Found in the review of 5906c38b: Add is drawn again when a control it reaches comes back in a
-// commit of the component that draws it. On an issue with a value for every property but the
-// priorities it advances, Add lists Advances alone. Picking it presses "Add a priority to
-// CORE-1", whose form replaces that control in the same commit, so Add, finding no control, went;
-// Cancel drew the control again in a commit of the priority line alone, which Add never read, so
-// Add stayed gone beside the control it reaches.
+// Add is drawn again when a control it reaches comes back in a commit of the component that
+// draws it. On an issue with a value for every property but the priorities it advances, Add
+// lists Advances alone. Picking it presses "Add a priority to CORE-1", whose form replaces that
+// control in the same commit, so Add, finding no control, went; Cancel drew the control again in
+// a commit of the priority line alone, which Add never read, so Add stayed gone beside the
+// control it reaches.
 test("Add is drawn again after the Advances form it opened is cancelled", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
@@ -1990,11 +2079,10 @@ function addMenuControl(): Element | null {
 }
 
 // A press on an entry of Add opens that property's control. While the priorities' save is out,
-// "Add a priority to CORE-1" takes no press (it was drawn disabled when this was found, and is
-// `aria-disabled` now), so a press on Add's Advances opened nothing. Found by the tester on the
-// preview of 8a8f3f6b, with the save held for six seconds: Add listed Advances, and pressing it
-// left the menu closed, the form shut and the focus on the body. Add lists an entry only while its
-// control can be pressed, and lists it again once a refused save gives that control back.
+// "Add a priority to CORE-1" takes no press, so a press on Add's Advances opened nothing: with
+// the save held out, Add listed Advances, and pressing it left the menu closed, the form shut and
+// the focus on the body. Add lists an entry only while its control can be pressed, and lists it
+// again once a refused save gives that control back.
 test("Add lists no entry whose control is disabled, and lists it again once it is enabled", async () => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
@@ -2028,13 +2116,12 @@ test("Add lists no entry whose control is disabled, and lists it again once it i
     await user.selectOptions(await within(form).findByRole("combobox"), "evals-now");
     await user.click(within(form).getByRole("button", { name: CONTROL_LABELS.add }));
     const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
-    // Refused while its write is out: `disabled`, or `aria-disabled` where the shared control
-    // stays focusable while it is busy. Add reads both (`usableControl`).
+    // Refused while its write is out, by the rule Add reads (`usableControl`): `disabled`, or
+    // `aria-disabled` where the shared control stays focusable while it is busy.
     await waitFor(() =>
-      expect(
-        control.matches(':disabled, [aria-disabled="true"]'),
-        "the control still takes a press while its write is out"
-      ).toBe(true)
+      expect(usableControl(control), "the control still takes a press while its write is out").toBe(
+        false
+      )
     );
     expect(
       addMenuControl(),
@@ -2045,11 +2132,9 @@ test("Add lists no entry whose control is disabled, and lists it again once it i
     );
     await waitFor(() =>
       expect(
-        screen
-          .getByRole("button", { name: addPriorityControlName("CORE-1") })
-          .matches(':disabled, [aria-disabled="true"]'),
+        usableControl(screen.getByRole("button", { name: addPriorityControlName("CORE-1") })),
         "the control still takes no press"
-      ).toBe(false)
+      ).toBe(true)
     );
     await waitFor(() =>
       expect(
@@ -2578,14 +2663,14 @@ test("Add lists Assignee once a header drawn after it draws the assignee's contr
   }
 });
 
-// The review of 5906c38b: with Details open, the repository's control drew its select only once
-// its own read of the project's mappings answered, in a commit of that control alone, and Add,
-// read after its own commits only, never saw it, so on an issue with a value for every other
-// property Details drew no Add beside the control it would press. The control is drawn at once
-// now, whatever that read answers: on an issue that resolves to no repository the row reads
-// "None", a button whose press draws the box in its place. So nothing here waits on the read,
-// which is held out throughout; what the case still holds is that Add is drawn beside that one
-// control, lists Repository, and that choosing it reaches the box.
+// With Details open, the repository's control drew its select only once its own read of the
+// project's mappings answered, in a commit of that control alone, and Add, read after its own
+// commits only, never saw it, so on an issue with a value for every other property Details drew
+// no Add beside the control it would press. The control is drawn at once, whatever that read
+// answers: on an issue that resolves to no repository the row reads "None", a button whose press
+// draws the box in its place. So nothing here waits on the read, which is held out throughout;
+// what the case still holds is that Add is drawn beside that one control, lists Repository, and
+// that choosing it reaches the box.
 test("Add lists Repository on an empty repository row and presses None, which opens the box", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
@@ -3276,8 +3361,7 @@ test("a request for the Labels row opens a closed Development in the drawer that
 
 // Each row draws its name one time. The Labels row of an issue with no label reads its name,
 // None, and a control that adds the first label; that control's visible word is not the row's
-// name again (found by the tester on the preview of d4344116, where an issue's row read "Labels
-// None Labels").
+// name again, which would read "Labels None Labels".
 test("the Labels row of an issue with no label draws its name one time", async () => {
   const { restore } = stubIssueApi();
   const { unmount } = renderDetails();
@@ -4248,6 +4332,49 @@ test("a close made elsewhere leaves the focus on the parent's link, which still 
   }
 });
 
+// A control busy with its own write refuses a press (`aria-disabled`) but keeps the focus, and a
+// close made elsewhere takes nothing from it: the blocked-by editor stays open on a closed issue
+// while its save is out, and the focus a reader had on its Save stays there. Read as a control
+// that takes no press (`usableControl`), the busy Save passed for one the close had disabled,
+// and the close moved its focus to Development's heading.
+test("a close made elsewhere leaves the focus on the blocked-by editor's Save while its save is out", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  // The save is held out for the whole case.
+  patchIssue.mockImplementationOnce(() => new Promise(() => undefined));
+  const { queryClient, unmount } = renderDetails();
+  const stopBlurring = emulateChromiumFocusFixup();
+
+  try {
+    await user.click(
+      await screen.findByRole("button", { name: blockedByControlName("CORE-1", 0) })
+    );
+    await user.click(await screen.findByLabelText("Issues CORE-1 waits on"));
+    await user.paste("CORE-3");
+    const save = screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by });
+    await user.click(save);
+    await waitFor(() =>
+      expect(save, "Save takes a press while its save is out").toHaveAttribute(
+        "aria-disabled",
+        "true"
+      )
+    );
+    expect(document.activeElement, "the save moved the focus off Save").toBe(save);
+    drawIssue(getIssue, queryClient, closedIssue);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Messages default to no route" }),
+        "the close left the route's control enabled"
+      ).toBeDisabled()
+    );
+    expect(document.activeElement, "the close moved the focus off the busy Save").toBe(save);
+  } finally {
+    stopBlurring();
+    unmount();
+    restore();
+  }
+});
+
 // The pins are read for their words only where there is a pin, so an issue with none costs no
 // request of the questions, comments and messages.
 test("with no pin, Pinned reads None and sends no request", async () => {
@@ -4302,6 +4429,40 @@ test("Pinned says no None until the reader's state has answered, and None once i
   } finally {
     unmount();
     restore();
+  }
+});
+
+// The outline reads the questions, the comments and the messages under the keys Pinned reads
+// them by, and keeps them fresh by events (`useIssueTree.ts`), so Pinned reads them with the same
+// options: a window focus past the app's 30 s staleness reads none of them again. The reader's
+// state keeps the app's defaults, so its second read shows the focus was handled.
+test("with a pin, a window focus past 30 s reads none of Pinned's questions, comments and messages again", async () => {
+  const { getMyState, pinReads, restore } = stubIssueApi();
+  getMyState.mockResolvedValue(
+    pinnedState(conversationItemId("comment", "4a7c2e19-8b3d-4f60-a1e5-6c9d0b2f3e47"))
+  );
+  const client = appClient();
+  const { unmount } = renderDetails(undefined, undefined, client);
+
+  try {
+    await waitFor(() => {
+      for (const read of Object.values(pinReads)) expect(read).toHaveBeenCalledTimes(1);
+      expect(client.isFetching()).toBe(0);
+    });
+    await focusPastStaleness(client);
+    await waitFor(() => expect(getMyState).toHaveBeenCalledTimes(2));
+    expect(pinReads.asks, "a window focus read Pinned's questions again").toHaveBeenCalledTimes(1);
+    expect(pinReads.comments, "a window focus read Pinned's comments again").toHaveBeenCalledTimes(
+      1
+    );
+    expect(pinReads.messages, "a window focus read Pinned's messages again").toHaveBeenCalledTimes(
+      1
+    );
+  } finally {
+    unmount();
+    restore();
+    setSystemTime();
+    focusManager.setFocused(undefined);
   }
 });
 
