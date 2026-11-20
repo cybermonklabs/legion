@@ -185,8 +185,11 @@ func TestTLSServerServesTheVendoredChainsItCannotSignFor(t *testing.T) {
 				t.Errorf("the vendored %s served %q at %d, want the vendored %q", host, served[position].Subject, position, want[position].Subject)
 			}
 		}
+		// The client's clock is pinned inside the vendored leaf's validity: Go checks a leaf's dates
+		// before it builds a chain, so after the leaf's end the refusal would be an expiry.
 		var unknown x509.UnknownAuthorityError
-		if _, err := tls.Dial("tcp", site.via, &tls.Config{ServerName: host, RootCAs: x509.NewCertPool()}); !errors.As(err, &unknown) {
+		atLeafIssue := func() time.Time { return want[0].NotBefore.Add(time.Hour) }
+		if _, err := tls.Dial("tcp", site.via, &tls.Config{ServerName: host, RootCAs: x509.NewCertPool(), Time: atLeafIssue}); !errors.As(err, &unknown) {
 			t.Errorf("TLS to the vendored %s trusting no root = %v, want an unknown authority", host, err)
 		}
 		if got := site.seen.Load(); got != before+2 {

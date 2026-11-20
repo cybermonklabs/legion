@@ -745,12 +745,14 @@ func tlsCertificateError(detail string) bool {
 //     CLI, python3, bq, gcloud, az, node, CodeGraph's node, bun and omp, the last four also with
 //     the code CERT_SIGNATURE_FAILURE; "BadSignature" from uv's and mise's rustls; Go's "possibly
 //     because of … while trying to verify candidate authority certificate" from gh, go and
-//     kubectl; and "provider signature failure", the handshake error curl 8.14 and socat gave for
-//     the ECDSA emSign root. For the RSA AAA root curl gave "rsa routines::invalid padding", which
-//     is no certificate error, so it fails the probe as no verdict, and socat that line before
-//     "certificate verify failed", which reads as a refusal; git (GnuTLS) gave "certificate error,
-//     no details available" and redis-cli "certificate verify failed" for both, which no marker
-//     here reads, and wget and Chromium read no setting that adds a root;
+//     kubectl; "provider signature failure", the handshake error curl 8.14 and socat gave for the
+//     ECDSA emSign root; and "certificate error, no details available" from git, whose libcurl
+//     8.14 GnuTLS build names four causes of an invalid certificate and prints that for any other
+//     (lib/vtls/gtls.c), where at no root of the name it prints "certificate signer not trusted".
+//     For the RSA AAA root curl gave "rsa routines::invalid padding", which is no certificate
+//     error, so it fails the probe as no verdict, and socat that line before "certificate verify
+//     failed", which reads as a refusal; redis-cli gave "certificate verify failed" for both,
+//     which no marker here reads, and wget and Chromium read no setting that adds a root;
 //   - at the vendored chains: OpenSSL's "bad signature" from the AWS CLI, python3, gcloud, bq, az,
 //     redis-cli and socat; "provider signature failure" from curl; Go's "invalid signature by the
 //     server certificate" from gh and kubectl; and "BadSignature" from mise. go refused the chain
@@ -766,6 +768,7 @@ func tlsSignatureFailure(detail string) bool {
 		"provider signature failure",
 		"bad signature",
 		"invalid signature by the server certificate",
+		"certificate error, no details available",
 	} {
 		if strings.Contains(lower, marker) {
 			return true
@@ -1074,25 +1077,25 @@ func googleCloudTLSEnvironment(stateDir, client string) []string {
 //     open no connection.
 var workerTLSClients = []tlsClientSpec{
 	{
-		name: "node", program: "node", timeout: tlsDefaultProbeTimeout, chainAfterHandshake: true,
+		name: "node", program: "node", timeout: tlsDefaultProbeTimeout, chainAfterHandshake: true, applicationSeen: tlsFetchHTTPError.MatchString,
 		command: func(site tlsSite, _, _ string) ([]string, []string) {
 			return []string{"--input-type=module", "--eval", tlsFetchProgram}, tlsTrustSetting(site, "NODE_EXTRA_CA_CERTS")
 		},
 	},
 	{
-		name: "bun", program: "bun", timeout: tlsDefaultProbeTimeout,
+		name: "bun", program: "bun", timeout: tlsDefaultProbeTimeout, applicationSeen: tlsFetchHTTPError.MatchString,
 		command: func(site tlsSite, _, _ string) ([]string, []string) {
 			return []string{"--eval", tlsFetchProgram}, tlsTrustSetting(site, "NODE_EXTRA_CA_CERTS")
 		},
 	},
 	{
-		name: "omp", program: "sh", timeout: tlsDefaultProbeTimeout,
+		name: "omp", program: "sh", timeout: tlsDefaultProbeTimeout, applicationSeen: tlsFetchHTTPError.MatchString,
 		command: func(site tlsSite, _, invocation string) ([]string, []string) {
 			return []string{"-c", "exec " + invocation + " --eval \"$1\"", "sh", tlsFetchProgram}, append([]string{"BUN_BE_BUN=1"}, tlsTrustSetting(site, "NODE_EXTRA_CA_CERTS")...)
 		},
 	},
 	{
-		name: "codegraph-node", program: "/opt/codegraph/node", timeout: tlsDefaultProbeTimeout, chainAfterHandshake: true,
+		name: "codegraph-node", program: "/opt/codegraph/node", timeout: tlsDefaultProbeTimeout, chainAfterHandshake: true, applicationSeen: tlsFetchHTTPError.MatchString,
 		command: func(site tlsSite, _, _ string) ([]string, []string) {
 			return []string{"--input-type=module", "--eval", tlsFetchProgram}, tlsTrustSetting(site, "NODE_EXTRA_CA_CERTS")
 		},
@@ -1152,9 +1155,10 @@ var workerTLSClients = []tlsClientSpec{
 		},
 	},
 	// --no-hsts keeps wget from writing ~/.wget-hsts into the runtime user's home. wget exits 0 on
-	// the control's page, so, as curl, it needs no response marker.
+	// the control's page, and names a status the site answered ("ERROR 503: Service Unavailable.",
+	// measured on 2026-11-20 with GNU wget in the image of 1c7c825367), which reads as accepted.
 	{
-		name: "wget", program: "wget", timeout: tlsDefaultProbeTimeout, chainAfterHandshake: true,
+		name: "wget", program: "wget", timeout: tlsDefaultProbeTimeout, chainAfterHandshake: true, applicationSeen: wgetHTTPError.MatchString,
 		command: func(site tlsSite, _, _ string) ([]string, []string) {
 			return slices.Concat([]string{"--no-verbose", "--no-hsts", "--tries=1", "--output-document=/dev/null"}, tlsTrustArgs(site, "--ca-certificate="), []string{site.url}), nil
 		},
@@ -1472,12 +1476,26 @@ var bqResponseSeen = tlsAnyMarker("response from discovery url", "discovery doc"
 var miseHTTPStatus = regexp.MustCompile(`\bGET \S+ [1-5][0-9][0-9]\b`)
 
 // gitSiteAnswer is how git's ls-remote names a site that answered but serves no repository: a
-// 404 ("fatal: repository 'https://example.com/' not found", the control) or a page that is no
+// 404 ("fatal: repository 'https://example.com/' not found", the control), a page that is no
 // ref advertisement ("fatal: https://<host>/info/refs not valid: is this a git repository?", the
-// emSign and AAA sites' answer, measured on 2026-11-18 with GIT_SSL_NO_VERIFY=true). A refused
-// chain is "unable to access" the URL instead. Reading both answers keeps a git that accepted a
-// compromised chain reported as accepting it rather than as unavailable.
-var gitSiteAnswer = regexp.MustCompile(`repository '\S+' not found|/info/refs not valid`)
+// emSign and AAA sites' answer, measured on 2026-11-18 with GIT_SSL_NO_VERIFY=true), or another
+// status ("fatal: unable to access 'https://<host>/': The requested URL returned error: 503",
+// measured on 2026-11-20 with a 403 and a 503 in the image of 1c7c825367). A refused chain is
+// "unable to access" the URL with a certificate error instead. Reading every answer keeps a git
+// that accepted a compromised chain reported as accepting it rather than as unavailable, which at
+// a public site reads as UNKNOWN.
+var gitSiteAnswer = regexp.MustCompile(`repository '\S+' not found|/info/refs not valid|The requested URL returned error: [1-5][0-9][0-9]\b`)
+
+// wgetHTTPError is how wget names a status the site answered ("ERROR 503: Service Unavailable.").
+// Its refusal of a chain is "ERROR: The certificate of '<host>' is not trusted", with no status.
+var wgetHTTPError = regexp.MustCompile(`\bERROR [1-5][0-9][0-9]: `)
+
+// tlsFetchHTTPError is how node, CodeGraph's node, bun and omp report a status the site answered,
+// the error tlsFetchProgram throws: "Error: HTTP 503" from node, "error: HTTP 503" from bun
+// (measured on 2026-11-20 with a 403 and a 503 in the image of 1c7c825367). Each also prints the
+// program's own source line, whose `new Error("HTTP " + response.status)` reads `Error("HTTP "`, so
+// the source line never matches, and a refusal, which prints it too, stays a refusal.
+var tlsFetchHTTPError = regexp.MustCompile(`(?i)\berror: HTTP [1-5][0-9][0-9]\b`)
 
 // goGetAnswer is how go names the page a site served at its go-get=1 fetch: its status
 // ("reading https://example.com/legion-tls-probe?go-get=1: 404 Not Found", the control), or a page

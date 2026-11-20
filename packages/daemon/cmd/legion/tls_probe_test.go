@@ -556,6 +556,43 @@ func TestImageFloorTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
 	}
 }
 
+// A client that accepted the chain and then got an error status names it, and that reads as an
+// acceptance, never as unavailable: at a public site unavailable reads as UNKNOWN and fails nothing,
+// so an acceptance a 403 or a 5xx followed would pass. Each output is the client's at a server of
+// 127.0.0.1 answering 503 with a certificate the client trusted, measured on 2026-11-20 in the
+// image of 1c7c825367 (a 403 read the same with its own status). The refusals beside them, which
+// name no status, still read as refusals.
+func TestImageTLSClientsReadAnHTTPErrorAfterTheHandshakeAsAnAcceptance(t *testing.T) {
+	fetchSource := `file:///home/legion/[eval1]:1 const response = await fetch(process.env.LEGION_TLS_URL); if (!response.ok) throw new Error("HTTP " + response.status); ^ `
+	bunSource := `1 | const response = await fetch(process.env.LEGION_TLS_URL); if (!response.ok) throw new Error("HTTP " + response.status); ^ `
+	clients := imageTLSClientsOf[tlsCommandClient](t, nil, t.TempDir(), "node", "codegraph-node", "bun", "omp", "wget", "git")
+	for _, testCase := range []struct {
+		client, name, stderr, exit string
+		want                       tlsStatus
+	}{
+		{client: "node", name: "503", exit: "1", stderr: fetchSource + `Error: HTTP 503 at file:///home/legion/[eval1]:1:83`, want: tlsConnectionAccepted},
+		{client: "codegraph-node", name: "503", exit: "1", stderr: fetchSource + `Error: HTTP 503 at file:///home/legion/[eval1]:1:83`, want: tlsConnectionAccepted},
+		{client: "bun", name: "503", exit: "1", stderr: bunSource + `error: HTTP 503 at /home/legion/[eval]:1:87 Bun v1.4.4 (Linux x64)`, want: tlsConnectionAccepted},
+		{client: "omp", name: "503", exit: "1", stderr: bunSource + `error: HTTP 503 at /home/legion/[eval]:1:87 Bun v1.4.5 (Linux x64)`, want: tlsConnectionAccepted},
+		{client: "wget", name: "503", exit: "8", stderr: `https://127.0.0.1:8443/: 2026-11-20 14:46:52 ERROR 503: Service Unavailable.`, want: tlsConnectionAccepted},
+		{client: "git", name: "503", exit: "128", stderr: `fatal: unable to access 'https://127.0.0.1:8443/': The requested URL returned error: 503`, want: tlsConnectionAccepted},
+		{client: "node", name: "refusal, its source line printed", exit: "1", stderr: fetchSource + tlsRefusalRows[0].public, want: tlsCertificateRefused},
+		{client: "bun", name: "refusal, its source line printed", exit: "1", stderr: bunSource + tlsRefusalRows[1].public, want: tlsCertificateRefused},
+		{client: "wget", name: "refusal", exit: "5", stderr: wgetEmSignRefusal, want: tlsCertificateRefused},
+		{client: "git", name: "refusal", exit: "128", stderr: gitEmSignRefusal, want: tlsCertificateRefused},
+	} {
+		t.Run(testCase.client+" "+testCase.name, func(t *testing.T) {
+			client := clients[testCase.client]
+			client.command = func(tlsSite) (string, []string, []string) {
+				return "sh", []string{"-c", `printf %s "$1" >&2; exit "$2"`, "sh", testCase.stderr, testCase.exit}, nil
+			}
+			if outcome := client.probe(context.Background(), publicEmSignTLSSite); outcome.status != testCase.want {
+				t.Fatalf("%s at the public emSign site = %+v, want status %q", testCase.client, outcome, testCase.want)
+			}
+		})
+	}
+}
+
 // tlsRefusalRow is what one client wrote at the public emSign site and at the probe's own emSign
 // chain, measured on 2026-11-20 in the image of 1c7c825367
 // (ghcr.io/cybermonklabs/legion-worker@sha256:36c4d8ea…), each with the command workerTLSClients
@@ -714,9 +751,11 @@ func TestImageTLSClientsAtTheVendoredChains(t *testing.T) {
 // the probe exists to keep out. Each output below is a client's at the probe's emSign chain on
 // 2026-11-20 in the image of 1c7c825367, with the CA-published roots added to the store it reads
 // (SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, AWS_CA_BUNDLE, REQUESTS_CA_BUNDLE, UV_SYSTEM_CERTS and
-// CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE naming a bundle holding them). Where a client's output there
-// was its ordinary refusal (git, redis-cli, socat at the RSA root), the rule is blind to it, and
-// only the public sites can show it trusting the root.
+// CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE and GIT_SSL_CAINFO naming a bundle holding them). Where a
+// client's output there was its ordinary refusal (redis-cli, socat at the RSA root), the rule is
+// blind to it, and only the vendored chains or the public sites can show it trusting the root. git
+// with no root of the name refused the fixture with "certificate signer not trusted"
+// (gitEmSignRefusal), so its "no details" refusal is the root's failed signature.
 func TestTLSProbeFailsAClientWhoseStoreHoldsTheDistrustedRoot(t *testing.T) {
 	held := map[string]string{
 		"node":    `node:internal/modules/run_main:107 triggerUncaughtException( ^ [TypeError: fetch failed] { [cause]: Error: certificate signature failure at TLSSocket.onConnectSecure (node:internal/tls/wrap:1788:34) { code: 'CERT_SIGNATURE_FAILURE' } } Node.js v24.22.1`,
@@ -729,10 +768,11 @@ func TestTLSProbeFailsAClientWhoseStoreHoldsTheDistrustedRoot(t *testing.T) {
 		"mise":    `ERROR failed to verify TLS certificate: invalid peer certificate: BadSignature Error: 0: Failed to install http:legion-tls-probe@1: error sending request: client error (Connect): invalid peer certificate: BadSignature`,
 		"socat":   `2026/11/20 11:26:39 socat[1153] W SSL_connect(): error:030000EA:digital envelope routines::provider signature failure 2026/11/20 11:26:39 socat[1153] W SSL_connect(): error:0A000086:SSL routines::certificate verify failed`,
 		"kubectl": `Unable to connect to the server: tls: failed to verify certificate: x509: certificate signed by unknown authority (possibly because of "crypto/rsa: verification error" while trying to verify candidate authority certificate "AAA Certificate Services")`,
+		"git":     `fatal: unable to access 'https://dv-g3b-emudhra.we-have-a-problem.com/': server verification failed: certificate error, no details available. (CAfile: /planted/real.pem CRLfile: none)`,
 	}
 	blind := map[string]string{
-		"git":       `fatal: unable to access 'https://dv-g3b-emudhra.we-have-a-problem.com/': server verification failed: certificate error, no details available. (CAfile: /planted/real.pem CRLfile: none)`,
 		"redis-cli": `Could not connect to Redis at 127.0.0.1:35193: SSL_connect failed: certificate verify failed`,
+		"git":       gitEmSignRefusal,
 	}
 	sites := testTLSSites(t.TempDir())
 	emSign := sites[0]
