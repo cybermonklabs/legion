@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -21,7 +22,8 @@ import (
 //     (supervise's Machine.supersedes), carrying that news itself;
 //   - the second stall arm's reading of the daemon's next move for a failed claim
 //     (ArchitectRelaunchOf) counts no start of news alone, which finishes without acting at a
-//     failed claim (the daemon's newsOnlyRefusal) and so relaunches nothing.
+//     failed claim (the daemon's newsOnlyRefusal) and so relaunches nothing. The project has
+//     ended no pause, so the zero floor bounds no start's age.
 //
 // A start or a task that brings the architect work is still read as one, as the controls show.
 // The root stands at generation 2, and its architect's row names entry 3.
@@ -88,7 +90,7 @@ func TestNewsAloneHoldsNoRootArchitectStartBack(t *testing.T) {
 		t.Run("a failed claim with "+tc.name, func(t *testing.T) {
 			failed := record.RoleRun{Queued: []record.QueuedSupervise{tc.queued},
 				Claim: &record.RoleClaim{State: supervise.StateFailed, Tree: root.Key, GivenEntry: rowEntry}}
-			if got := ArchitectRelaunchOf(failed, root); got != tc.want {
+			if got := ArchitectRelaunchOf(failed, root, time.Time{}, time.Now()); got != tc.want {
 				t.Fatalf("ArchitectRelaunchOf = %d, want %d: %s", got, tc.want, tc.why)
 			}
 		})

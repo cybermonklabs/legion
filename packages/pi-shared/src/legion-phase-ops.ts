@@ -292,7 +292,8 @@ export const PHASE_OP_SENTENCES = {
     "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
     "every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no " +
     "role, of resumes by wake kind and of holds by reason, the pod-hours released, the share of releases woken again within ten minutes, and " +
-    "the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. A release that suspended no role is woken by " +
+    "the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. A wake that a project pause held is " +
+    "counted as `heldByPause` and left out of those seconds, since its wait measures the pause. A release that suspended no role is woken by " +
     "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. ",
   requestBackwardMove:
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
@@ -602,18 +603,29 @@ const percentile = (sorted: readonly number[], share: number): number | null =>
  * `counts.releases` counts every release and `counts.releasesSuspendingNoRole` counts these.
  *
  * `podHoursReleased` is how long the released pods were gone: from each release that suspended a
- * role to the first resume of it, and to `asOf` for one the daemon has not resumed yet, since
- * that pod is gone now. A pod's roles wake one resume each, so the first of them ends the
- * release. A release that suspended no role is charged nothing, because charging it that way
- * would bill the fleet from its moment to the moment of every later read, for ever, though an
- * operator's retry may have rebuilt the pod a minute later.
- * `wokenWithinTenMinutes` counts the releases a wake followed that soon, the churn of releasing
- * a pod that was wanted again at once, over the releases that suspended a role alone: a release
- * no wake can reach belongs in neither half of that share, which it would otherwise lower for
- * ever. `wakeToFirstTurnSeconds` measures each resume the daemon has seen a first turn for,
- * `withoutFirstTurn` counting the rest, and reports the nearest-rank median and 90th percentile
- * and the maximum; it reads the resume rows, of which a release that suspended no role has none,
- * so it leaves those releases out by its own shape.
+ * role to the first wake of its pod, and to `asOf` for one nothing has woken yet, since that pod
+ * is gone now. A pod's roles wake one resume each, so the first of them ends the release. A
+ * resume names the release it ended, except a wake a project pause held, which names none
+ * (`release` 0, `PodRecords.TakePodWake` in `packages/daemon/internal/store/wake.go`). A held wake
+ * therefore ends every release of its issue that came before it, where no resume that names the
+ * release came sooner: a pod released before a pause and woken during it would otherwise be
+ * charged to `asOf` at every read, for ever. The release ends at the wake's own moment, which is
+ * when the pod was wanted again. The pod stays gone from there until the project runs again, and
+ * that time is the pause's, as the wake's seconds to its first turn are. A release that
+ * suspended no role is charged nothing, because charging it that way would bill the fleet from
+ * its moment to the moment of every later read, for ever, though an operator's retry may have
+ * rebuilt the pod a minute later.
+ * `wokenWithinTenMinutes` counts the releases a wake followed that soon, a held wake as any
+ * other, the churn of releasing a pod that was wanted again at once, over the releases that
+ * suspended a role alone: a release no wake can reach belongs in neither half of that share,
+ * which it would otherwise lower for ever. `wakeToFirstTurnSeconds` measures each resume no pause
+ * held that the daemon has seen a first turn for, `withoutFirstTurn` counting the rest of the
+ * resumes no pause held, and reports the nearest-rank median and 90th percentile and the
+ * maximum; it reads the resume rows, of which a release that suspended no role has none, so it
+ * leaves those releases out by its own shape. A resume that carries `pause` is a wake a project
+ * pause held (`api.ResumeRecord`): it waited until the project ran again, so its seconds to the
+ * first turn would measure the pause and not the pod's return. `heldByPause` counts those
+ * resumes, and they are in neither `measured` nor `withoutFirstTurn`.
  */
 async function releaseRecords(
   runtime: PhaseOpRuntime,
@@ -627,9 +639,18 @@ async function releaseRecords(
   });
   const asOf = runtime.now?.() ?? new Date();
   const wokenAt = new Map<number, number>();
+  const heldWakes = new Map<string, number[]>();
   for (const resume of records.resumes) {
-    if (resume.release === 0) continue;
     const at = Date.parse(resume.at);
+    // A wake a pause held names no release, so it is kept under its issue for the releases of
+    // that issue below.
+    if (resume.pause !== undefined) {
+      const held = heldWakes.get(resume.issue);
+      if (held === undefined) heldWakes.set(resume.issue, [at]);
+      else held.push(at);
+      continue;
+    }
+    if (resume.release === 0) continue;
     const first = wokenAt.get(resume.release);
     if (first === undefined || at < first) wokenAt.set(resume.release, at);
   }
@@ -644,18 +665,25 @@ async function releaseRecords(
       continue;
     }
     const from = Date.parse(release.at);
-    const woken = wokenAt.get(release.id);
+    let woken = wokenAt.get(release.id);
+    for (const at of heldWakes.get(release.issue) ?? []) {
+      if (at >= from && (woken === undefined || at < woken)) woken = at;
+    }
     releasedMs += Math.max((woken ?? asOf.getTime()) - from, 0);
     if (woken !== undefined && woken - from <= WOKEN_SOON_MS) wokenSoon += 1;
   }
   const wakeable = records.releases.length - suspendedNoRole;
-  const waits = records.resumes
-    .flatMap((resume) =>
-      resume.firstTurnAt === undefined
-        ? []
-        : [(Date.parse(resume.firstTurnAt) - Date.parse(resume.at)) / 1000]
-    )
-    .sort((one, other) => one - other);
+  let heldByPause = 0;
+  let withoutFirstTurn = 0;
+  const waits: number[] = [];
+  for (const resume of records.resumes) {
+    // A wake a project pause held is counted here and measured nowhere, whether or not its
+    // first turn has come: its wait is the pause's.
+    if (resume.pause !== undefined) heldByPause += 1;
+    else if (resume.firstTurnAt === undefined) withoutFirstTurn += 1;
+    else waits.push((Date.parse(resume.firstTurnAt) - Date.parse(resume.at)) / 1000);
+  }
+  waits.sort((one, other) => one - other);
   const whole = (value: number | null) => (value === null ? null : Math.round(value));
   return {
     since,
@@ -678,7 +706,8 @@ async function releaseRecords(
     },
     wakeToFirstTurnSeconds: {
       measured: waits.length,
-      withoutFirstTurn: records.resumes.length - waits.length,
+      withoutFirstTurn,
+      heldByPause,
       median: whole(percentile(waits, 0.5)),
       p90: whole(percentile(waits, 0.9)),
       max: whole(waits.at(-1) ?? null),

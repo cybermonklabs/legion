@@ -46,15 +46,21 @@ func openRunningTree(t *testing.T, store *Store) {
 // release's own stops have suspended so far.
 func markRelease(t *testing.T, store *Store, first, boundary, last, started int64, suspended ...claim.Role) {
 	t.Helper()
+	markReleaseOf(t, store, rootIssue, first, boundary, last, started, suspended...)
+}
+
+// markReleaseOf is markRelease for the pod of issue.
+func markReleaseOf(t *testing.T, store *Store, issue string, first, boundary, last, started int64, suspended ...claim.Role) {
+	t.Helper()
 	roles := make([]string, 0, len(suspended))
 	for _, role := range suspended {
 		roles = append(roles, string(role))
 	}
 	_, err := store.Pool().Exec(context.Background(), `insert into issue_releases
 		(project, issue, generation, first_row, boundary_row, last_row, started_row, role, suspended, marked_at)
-		values ('legion', $1, 1, $2, $3, $4, $5, 'architect', $6, now())`, rootIssue, first, boundary, last, started, roles)
+		values ('legion', $1, 1, $2, $3, $4, $5, 'architect', $6, now())`, issue, first, boundary, last, started, roles)
 	if err != nil {
-		t.Fatalf("mark the release of %s: %v", rootIssue, err)
+		t.Fatalf("mark the release of %s: %v", issue, err)
 	}
 }
 
@@ -329,25 +335,26 @@ func TestTheReleasesBoundaryCancelsOnWorkThePodWasGivenAfterTheMark(t *testing.T
 	}
 }
 
-// releaseThroughTheStore marks a release of the root issue the way the idle tick does — the three
-// rows in one transaction with the mark that records them (ReleaseIdleIssue) — and answers the
-// ids the mark holds: the save, the role stop that is its boundary, and the teardown.
-func releaseThroughTheStore(t *testing.T, st *Store) (first, boundary, last int64) {
+// releaseThroughTheStore marks a release of issue's pod under project legion the way the idle
+// tick does — the three rows in one transaction with the mark that records them
+// (ReleaseIdleIssue) — and answers the ids the mark holds: the save, the role stop that is its
+// boundary, and the teardown.
+func releaseThroughTheStore(t *testing.T, st *Store, issue string) (first, boundary, last int64) {
 	t.Helper()
 	ctx := context.Background()
-	marked, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(pods.IdleView) (IdleReleaseMark, error) {
+	marked, err := st.ReleaseIdleIssue(ctx, "legion", issue, func(pods.IdleView) (IdleReleaseMark, error) {
 		return IdleReleaseMark{Generation: 1, Role: claim.RoleArchitect, Rows: []IdleReleaseRow{
-			{Kind: "issue_bundle", Payload: []byte(`{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"architect"}`)},
-			{Kind: "supervise", Payload: []byte(`{"op":"release","tree":"LEGION-208","role":"architect","generation":1}`), Boundary: true},
-			{Kind: "issue_release", Payload: []byte(`{"tree":"LEGION-208","generation":1,"treeGeneration":1}`)},
+			{Kind: "issue_bundle", Payload: []byte(fmt.Sprintf(`{"tree":%q,"generation":1,"treeGeneration":1,"role":"architect"}`, issue))},
+			{Kind: "supervise", Payload: []byte(fmt.Sprintf(`{"op":"release","tree":%q,"role":"architect","generation":1}`, issue)), Boundary: true},
+			{Kind: "issue_release", Payload: []byte(fmt.Sprintf(`{"tree":%q,"generation":1,"treeGeneration":1}`, issue))},
 		}}, nil
 	})
 	if err != nil || !marked {
-		t.Fatalf("ReleaseIdleIssue = %t, %v; want the release marked", marked, err)
+		t.Fatalf("ReleaseIdleIssue of %s = %t, %v; want the release marked", issue, marked, err)
 	}
 	if err := st.Pool().QueryRow(ctx, `select first_row, boundary_row, last_row from issue_releases
-		where project = 'legion' and issue = $1`, rootIssue).Scan(&first, &boundary, &last); err != nil {
-		t.Fatalf("read the release's mark: %v", err)
+		where project = 'legion' and issue = $1`, issue).Scan(&first, &boundary, &last); err != nil {
+		t.Fatalf("read the mark of the release of %s: %v", issue, err)
 	}
 	return first, boundary, last
 }
@@ -382,7 +389,7 @@ func TestWorkThePodIsGivenAfterTheMarkCancelsTheReleaseAtItsBoundary(t *testing.
 			if err := st.PutClaim(ctx, live); err != nil {
 				t.Fatal(err)
 			}
-			_, boundary, _ := releaseThroughTheStore(t, st)
+			_, boundary, _ := releaseThroughTheStore(t, st, rootIssue)
 
 			// The delivery takes its id from the outbox's own sequence, as every writer of the
 			// outbox does, so it lands above every row the release queued.
@@ -411,7 +418,7 @@ func TestWorkThePodIsGivenAfterTheMarkCancelsTheReleaseAtItsBoundary(t *testing.
 			if !releaseMarked(t, st) {
 				t.Fatal("the cancel was decided and the mark was already gone; a cancel that fails would be unreadable")
 			}
-			if _, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow); err != nil {
+			if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); err != nil {
 				t.Fatalf("carry the cancel out: %v", err)
 			}
 			if releaseMarked(t, st) {
@@ -435,7 +442,7 @@ func TestARowOfACancelledReleaseNeitherActsNorCancelsTheReleaseRunningNow(t *tes
 		t.Fatal(err)
 	}
 
-	firstA, boundaryA, lastA := releaseThroughTheStore(t, st)
+	firstA, boundaryA, lastA := releaseThroughTheStore(t, st, rootIssue)
 	if _, err := st.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
 		values ('notice', $1, '{"kind":"todo","reason":"r"}', 0, now(), '')`, rootIssue); err != nil {
 		t.Fatal(err)
@@ -443,7 +450,7 @@ func TestARowOfACancelledReleaseNeitherActsNorCancelsTheReleaseRunningNow(t *tes
 	if decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundaryA); err != nil || decision.Act != ReleaseCancel {
 		t.Fatalf("the first release's boundary = %s, %v; want it cancelled", decision.Act, err)
 	}
-	if _, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow); err != nil {
+	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); err != nil {
 		t.Fatalf("carry the first release's cancel out: %v", err)
 	}
 	// The notice is delivered and the pod goes quiet again, so a second release is marked. Its
@@ -451,7 +458,7 @@ func TestARowOfACancelledReleaseNeitherActsNorCancelsTheReleaseRunningNow(t *tes
 	if _, err := st.Pool().Exec(ctx, `delete from outbox where issue = $1`, rootIssue); err != nil {
 		t.Fatal(err)
 	}
-	firstB, boundaryB, lastB := releaseThroughTheStore(t, st)
+	firstB, boundaryB, lastB := releaseThroughTheStore(t, st, rootIssue)
 	if firstB <= lastA {
 		t.Fatalf("the second release's rows are %d..%d, want them above the first's %d..%d", firstB, lastB, firstA, lastA)
 	}
@@ -564,9 +571,9 @@ func TestACancelKeepsTheMarkUntilItsResumesAreQueued(t *testing.T) {
 	}
 
 	refused := errors.New("the resume could not be encoded")
-	if _, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Role, uint64) (IdleReleaseRow, error) {
+	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Role, uint64) (IdleReleaseRow, error) {
 		return IdleReleaseRow{}, refused
-	}, record.OutOfWorkflow); !errors.Is(err, refused) {
+	}, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); !errors.Is(err, refused) {
 		t.Fatalf("a cancel whose resume could not be built = %v, want %v", err, refused)
 	}
 	if !releaseMarked(t, st) {
@@ -576,11 +583,11 @@ func TestACancelKeepsTheMarkUntilItsResumesAreQueued(t *testing.T) {
 		t.Fatalf("starts queued by the refused cancel = %v, want none", queued)
 	}
 
-	resumed, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow)
+	cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()})
 	if err != nil {
 		t.Fatalf("carry the cancel out: %v", err)
 	}
-	if len(resumed) != 1 || resumed[0] != claim.RoleArchitect {
+	if resumed := cancelled.Resumed; len(resumed) != 1 || resumed[0] != claim.RoleArchitect {
 		t.Fatalf("resumed = %v, want the one claim the release suspended", resumed)
 	}
 	if queued := startRows(t, st); len(queued) != 1 || queued[0] != string(claim.RoleArchitect) {
@@ -619,16 +626,16 @@ func TestACancelDeletesTheBundleItsReleaseSavedInTheSameTransaction(t *testing.T
 	}
 
 	refused := errors.New("the resume could not be encoded")
-	if _, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Role, uint64) (IdleReleaseRow, error) {
+	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Role, uint64) (IdleReleaseRow, error) {
 		return IdleReleaseRow{}, refused
-	}, record.OutOfWorkflow); !errors.Is(err, refused) {
+	}, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); !errors.Is(err, refused) {
 		t.Fatalf("a cancel whose resume could not be built = %v, want %v", err, refused)
 	}
 	if _, held, err := st.WorkspaceBundleSize(ctx, rootIssue); err != nil || !held {
 		t.Fatalf("after a cancel that failed the store holds the bundle = %t (%v), want it kept with the mark", held, err)
 	}
 
-	if _, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow); err != nil {
+	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); err != nil {
 		t.Fatalf("carry the cancel out: %v", err)
 	}
 	if _, held, err := st.WorkspaceBundleSize(ctx, rootIssue); err != nil || held {
@@ -709,11 +716,11 @@ func TestACancelResumesNoClaimAnEarlierReleaseSuspended(t *testing.T) {
 	releasedClaim(t, st, claim.RoleArchitect)
 	markRelease(t, st, first, boundary, last, 0, claim.RoleArchitect)
 
-	resumed, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow)
+	cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()})
 	if err != nil {
 		t.Fatalf("cancel the release: %v", err)
 	}
-	if len(resumed) != 1 || resumed[0] != claim.RoleArchitect {
+	if resumed := cancelled.Resumed; len(resumed) != 1 || resumed[0] != claim.RoleArchitect {
 		t.Fatalf("resumed = %v, want the architect alone: the implementer belongs to the release before this one", resumed)
 	}
 	if queued := startRows(t, st); len(queued) != 1 || queued[0] != string(claim.RoleArchitect) {
@@ -806,12 +813,12 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 			// records its own row as the lane does (outbox.recordPodRelease), because a resume
 			// is recorded against the release it ends and a wake reads the newest one.
 			recordRelease(t, st, at.Add(-2*time.Hour))
-			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, claim.RoleArchitect,
-				pods.WakeDelivery, at.Add(-time.Hour)); err != nil || !taken {
+			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, "legion-legion-legion-208-architect",
+				pods.WakeDelivery, at.Add(-time.Hour), 0); err != nil || !taken {
 				t.Fatalf("take the wake before the mark = %t, %v; want it taken", taken, err)
 			}
 
-			first, boundary, last := releaseThroughTheStore(t, st)
+			first, boundary, last := releaseThroughTheStore(t, st, rootIssue)
 			if !tc.late && !tc.unrecorded {
 				recordRelease(t, st, at)
 			}
@@ -819,8 +826,8 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 				t.Fatalf("record the implementer's suspension: %v", err)
 			}
 			if tc.woken {
-				if taken, err := st.TakePodWake(ctx, "legion", rootIssue, claim.RoleArchitect,
-					pods.WakeDelivery, at); err != nil || !taken {
+				if taken, err := st.TakePodWake(ctx, "legion", rootIssue, "legion-legion-legion-208-architect",
+					pods.WakeDelivery, at, 0); err != nil || !taken {
 					t.Fatalf("take the wake after the mark = %t, %v; want it taken", taken, err)
 				}
 			}
@@ -867,7 +874,7 @@ func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing
 	ctx := context.Background()
 	openRunningTree(t, st)
 	releasedClaim(t, st, claim.RoleImplementer)
-	first, boundary, last := releaseThroughTheStore(t, st)
+	first, boundary, last := releaseThroughTheStore(t, st, rootIssue)
 	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, claim.RoleImplementer, boundary); err != nil {
 		t.Fatalf("record the implementer's suspension: %v", err)
 	}
@@ -891,12 +898,12 @@ func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing
 		t.Fatalf("the teardown = %s for %s, %v; want %s for %s", teardown.Act, teardown.Cause, err,
 			ReleaseCancel, ReleaseCauseUnauthorized)
 	}
-	resumed, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow)
+	cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()})
 	if err != nil {
 		t.Fatalf("carry the cancel out: %v", err)
 	}
-	if len(resumed) != 0 {
-		t.Fatalf("resumed = %v, want none: the claims of an issue that has left are its close's", resumed)
+	if len(cancelled.Resumed) != 0 {
+		t.Fatalf("resumed = %v, want none: the claims of an issue that has left are its close's", cancelled.Resumed)
 	}
 	if queued := startRows(t, st); len(queued) != 0 {
 		t.Fatalf("starts queued by the cancel = %v, want none", queued)

@@ -527,8 +527,8 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 				Claim: c.claim, DeliveryID: delivery, AgentInvoked: frame.AgentInvoked, Error: frame.Reason(),
 			}
 			if frame.Error != nil {
-				// The whole of Oh My Pi's error object, not the message alone: the structured
-				// members are what a failure is judged on.
+				// Oh My Pi's error object, not the message alone: the structured members are what
+				// a failure is judged on. Code, its class of the failure, is left: no decision reads it.
 				event.Retryable = frame.Error.Retryable
 				event.HTTPStatus = frame.Error.HTTPStatus
 				event.Provider = frame.Error.Provider

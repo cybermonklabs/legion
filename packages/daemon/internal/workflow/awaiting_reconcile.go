@@ -23,12 +23,13 @@ import (
 // design gate is open (answerOpenGates). It reads only the record, so the same record gives the
 // same decision, and admission calls it on every pass (Admission.promoteHolds): a guard that
 // clears on any path — a member leaving, a claim released, the label put back, the architect's
-// start taken — is seen at the next fact. issues is the caller's snapshot of the record, and
-// held names each root the caller still holds for the Dispatch consumer to catch up (nil holds
-// none): a root whose listing is ahead of the record decides nothing until the consumer has
-// reached it, so a question already answered on Dispatch does not start a wait here first. It
-// returns the roots that entered awaiting_person, which keep the slots they hold, and whether
-// it wrote any issue of the snapshot, which the caller then reads again.
+// start taken — is seen at the next fact. issues is the caller's snapshot of project's records
+// (admission's LiveIssues, which names the project), and held names each root the caller still
+// holds for the Dispatch consumer to catch up (nil holds none): a root whose listing is ahead of
+// the record decides nothing until the consumer has reached it, so a question already answered on
+// Dispatch does not start a wait here first. It returns the roots that entered awaiting_person,
+// which keep the slots they hold, and whether it wrote any issue of the snapshot, which the caller
+// then reads again.
 //
 // It reads the slot rows once for the pass, because a root waits on a person only while the
 // daemon has started it, which is what its slot row says (record.CanWaitOnPerson,
@@ -37,7 +38,7 @@ import (
 // the design gate first opens. That is the spec's own condition, and the boot's catch-up reads
 // the roots this pass can move (the daemon's catchesUp) by that same predicate.
 func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project string, issues []record.Issue, held func(string) bool) ([]string, bool, error) {
-	changed, err := e.answerOpenGates(ctx, tx, project, issues, held)
+	changed, err := e.answerOpenGates(ctx, tx, issues, held)
 	if err != nil {
 		return nil, false, err
 	}
@@ -46,7 +47,7 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 		if held != nil && held(issue.Key) {
 			continue
 		}
-		if issue.Project == project && claim.IsTreeRoot(issue.Key, issue.Tree) &&
+		if claim.IsTreeRoot(issue.Key, issue.Tree) &&
 			issue.Phase == phase.Admitted && issue.DeclaredSeq != 0 {
 			roots = append(roots, issue)
 		}
@@ -135,7 +136,7 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 	return entered, changed, nil
 }
 
-// answerOpenGates answers each unanswered root of project waiting on a person whose design gate
+// answerOpenGates answers each unanswered root of issues waiting on a person whose design gate
 // is open, whatever opened it and whenever: a person's approval Dispatch recorded before the wait
 // began but applied after it, a registration's read of an approval, or a registration of a step
 // the deployment does not gate. The gate it reads is the one the wait's own document names, since
@@ -150,10 +151,10 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 // counts then (gateRequestArtifact): the wait moves to a question of the tree still with the
 // person, and is otherwise answered, so the architect resumes and registers its spec, which
 // opens the gate. It reports whether it answered or moved any root's wait.
-func (e *Engine) answerOpenGates(ctx context.Context, tx pgx.Tx, project string, issues []record.Issue, held func(string) bool) (bool, error) {
+func (e *Engine) answerOpenGates(ctx context.Context, tx pgx.Tx, issues []record.Issue, held func(string) bool) (bool, error) {
 	answered := false
 	for _, root := range issues {
-		if (held != nil && held(root.Key)) || root.Project != project || !claim.IsTreeRoot(root.Key, root.Tree) ||
+		if (held != nil && held(root.Key)) || !claim.IsTreeRoot(root.Key, root.Tree) ||
 			!root.AwaitingPerson() || root.Awaiting.AnsweredAt != nil {
 			continue
 		}

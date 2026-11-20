@@ -1605,3 +1605,33 @@ func TestTheSweepQueuesTheReconcileOfATreeOwedNewsAndOfNoOther(t *testing.T) {
 		}
 	}
 }
+
+// While the project is paused, the sweep's backstop queues no reconcile (queueOwedDesignNews), as
+// the entry sweep's gate answers no then (admit's OwesEntryWork): the pause holds every news-only
+// start a reconcile queues, so the tree stays owed for the whole pause, and a reconcile queued at
+// every tick would ask Dispatch again to send nothing. The first tick after the resume queues the
+// reconcile of the tree still owed.
+func TestTheSweepQueuesNoReconcileWhileTheProjectIsPaused(t *testing.T) {
+	r := newNewsReconcileRig(t)
+	r.told(reconcileRoot, record.AudienceHolder, 4)
+	sweeper := &workflowRuntime{pool: r.pool, records: r.records, gatedSteps: config.DesignGateRootIssues.Steps(), dispatchProject: "LEGION",
+		log: quietLogger()}
+	pause := openLegionPause(t, r.pool, time.Now())
+
+	for tick := range 2 {
+		if err := sweeper.queueOwedDesignNews(r.ctx); err != nil {
+			t.Fatalf("tick %d of the sweep while paused: %v", tick+1, err)
+		}
+		if queued := r.reconcilesQueued(); queued != 0 {
+			t.Fatalf("design_changes rows after tick %d while paused = %d, want none: every start the reconcile queues waits for the resume", tick+1, queued)
+		}
+	}
+
+	endLegionPause(t, r.pool, pause, time.Now())
+	if err := sweeper.queueOwedDesignNews(r.ctx); err != nil {
+		t.Fatalf("the sweep's first tick after the resume: %v", err)
+	}
+	if queued := r.reconcilesQueued(); queued != 1 {
+		t.Fatalf("design_changes rows after the first tick after the resume = %d, want 1: the tree is still owed its news", queued)
+	}
+}

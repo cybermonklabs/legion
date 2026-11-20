@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -734,14 +735,28 @@ func (r *outbox) mergerNewsUnrecorded(ctx context.Context, issue record.Issue) (
 // than took a new one (the outbox's keepsStartTask), and a told row that moved under a running
 // reconcile. What each tree owes is read in one read transaction outside the fact lock; the rows
 // are queued in one transaction that takes it, as every other writer of the row does.
+//
+// While the project is paused it queues nothing, as the entry sweep's gate answers no then
+// (admit's OwesEntryWork, decision 11 of dispatch://INFRA-3759). The pause holds every start a
+// reconcile queues (record's pauseHolds), so a tree owed news stays owed until the resume, and
+// the backstop would queue a reconcile of each such tree at every tick of the pause, each of
+// which asks Dispatch again what an earlier one could not read, to send nothing. A reconcile a
+// fact queues still runs while the project is paused: it records what changed, and its news-only
+// starts wait with the other held rows. The first tick after the resume asks again. The pause is
+// read in the same read transaction (store.OpenOrLastPauseTx), the table and the key the
+// outbox's own hold reads (record's outboxPauseFree), as admit's readStallFloor reads it.
 func (w *workflowRuntime) queueOwedDesignNews(ctx context.Context) error {
 	var owed []string
 	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		owed = nil
+		pause, found, err := store.OpenOrLastPauseTx(ctx, tx, w.dispatchProject)
+		if err != nil || (found && !pause.Ended()) {
+			return err
+		}
 		roots, err := w.records.GatedIssues(ctx, tx, w.dispatchProject)
 		if err != nil {
 			return err
 		}
-		owed = nil
 		for _, root := range roots {
 			facts, err := record.TreeNewsFacts(ctx, w.records, tx, w.gatedSteps, root)
 			if err != nil {

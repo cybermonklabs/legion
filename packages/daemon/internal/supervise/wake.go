@@ -162,6 +162,12 @@ type wake struct {
 	// and nothing of the relaunch it held is written, which is right — that relaunch never
 	// replaced anything.
 	pluginMark *pluginIntent
+	// pause is the project pause whose gate holds this launch (pauseGate), 0 for a wake the
+	// pacing holds. A held launch has no moment to run and took no token: it waits on the machine
+	// with no timer, is published as no waiting wake (publish), and leaves only by the claim's
+	// stop for the pause (pauseStopDue) or by its let-out into the pacing once that pause has
+	// ended (letOutHeldLaunch), which gives it at and reserved.
+	pause int64
 }
 
 // reserveWake is the wake gate: it asks the pacing when this wake may run and, when that moment
@@ -213,10 +219,21 @@ type wake struct {
 // the pacing, which is the whole of what the gate counts. A wake of this lane that parks keeps
 // the credit on the machine for as long as it waits, and the turn that takes that wake off the
 // machine is what gives it back (parkWake, wakeNow, runWake).
+//
+// The project's pause is checked first, before the exempt return (decision 7 of
+// dispatch://INFRA-3759's plan): while the project is paused a launch of any claim but the
+// controller's runs nothing, takes no token and arms no retry, and is held by the pause's gate
+// instead (pauseHolds, pauseGate), whoever raised it. Every reservation this gate takes is told
+// to the daemon as the moment the pacing lets the launch out (wakeLetOut, decision 14), the one
+// that lets it out now included.
 func (m *Machine) reserveWake(ctx context.Context, exempt bool, run, again func(context.Context) error) error {
 	kind := WakeLaunch
 	if intent := m.pluginRelaunch; intent != nil {
 		kind = intent.kind
+	}
+	if pause, holds := m.pauseHolds(); holds {
+		return m.pauseGate(ctx, &wake{reserved: m.deps.Clock.Now(), kind: kind, state: m.claim.State, run: run, again: again,
+			pluginMark: m.takePluginRelaunch()}, pause)
 	}
 	exempt = exempt || claim.IsController(m.claim.Role, m.claim.Issue, m.claim.Tree)
 	reserve := m.deps.WakePace.Reserve
@@ -233,6 +250,7 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, run, again func(
 	// it is read for the line alone.
 	now := m.deps.Clock.Now()
 	at := reserve(now)
+	m.wakeLetOut(at)
 	if !at.After(now) {
 		m.wakeRan(kind, true, 0)
 		return run(ctx)
@@ -245,24 +263,9 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, run, again func(
 		pluginMark: m.takePluginRelaunch()}, at.Sub(now))
 }
 
-// parkWake is the park the gate and the re-park share (reserveWake, reparkWake): waiting waits on
-// the machine, TimerWake is armed for after — what is left of its wait — and a claim that records
-// no process is written launching and persisted, which is what reserveWake states. A claim that
-// still records its process is left exactly as it stands.
-//
-// What that claim does not keep is the four timers that watch the process this wake replaces: its
-// boot interval and its registration deadline (armBoot, armRegistration), the probe interval an
-// uncertain answer armed (judge), and the wait for the turn an acknowledged prompt began (acked).
-// The process is kept until the turn, so every one of those timers would otherwise fire into the
-// wait — the boot interval of a process that died while it booted charging a launch failure of
-// its own at each one, which is a claim failing before launch_failure_limit real failures
-// (judge's own guard answers what they report, and this keeps them from reporting, as probe's
-// own guard keeps the probe interval from being armed again inside the wait). The turn replaces
-// the process and arms the new one's timers (launchNow, armBoot), a turn whose own lifecycle
-// recheck refuses keeps the process and arms these again for it (runWake, watchAgain),
-// and the runtime's sweep observes the process throughout. TimerSuspend is kept: a suspension
-// held over this claim is still bounded by the deadline its arrival set (holdSuspension), which
-// the wake's turn does not run.
+// parkWake is the park the gate and the re-park share (reserveWake, reparkWake): TimerWake is
+// armed for after — what is left of the wait — and waiting waits on the machine (waitOnMachine),
+// which is what reserveWake states.
 //
 // The credit of the refresh gate this machine may hold outlives a park of this lane's own kind
 // and no other (endRefreshLane, dispatch://INFRA-2712 R1): that wake is the one the credit was
@@ -280,8 +283,30 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, run, again func(
 // raises one later is held to the rule by ending its decision, with nothing for this park to
 // remember (endRefreshLane).
 func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Duration) error {
-	m.wake = waiting
 	m.arm(TimerWake, after, "")
+	return m.waitOnMachine(ctx, waiting)
+}
+
+// waitOnMachine is the tail a parked wake and a launch the pause's gate holds share (parkWake,
+// pauseGate), each having armed its own timer first: waiting waits on the machine (Machine.wake),
+// and a claim that records no process is written launching and persisted. A claim that still
+// records its process is left exactly as it stands.
+//
+// What that claim does not keep is the four timers that watch the process this wake replaces: its
+// boot interval and its registration deadline (armBoot, armRegistration), the probe interval an
+// uncertain answer armed (judge), and the wait for the turn an acknowledged prompt began (acked).
+// The process is kept until the turn, so every one of those timers would otherwise fire into the
+// wait — the boot interval of a process that died while it booted charging a launch failure of
+// its own at each one, which is a claim failing before launch_failure_limit real failures
+// (judge's own guard answers what they report, and this keeps them from reporting, as probe's
+// own guard keeps the probe interval from being armed again inside the wait). The turn replaces
+// the process and arms the new one's timers (launchNow, armBoot), a turn whose own lifecycle
+// recheck refuses keeps the process and arms these again for it (runWake, watchAgain),
+// and the runtime's sweep observes the process throughout. TimerSuspend is kept: a suspension
+// held over this claim is still bounded by the deadline its arrival set (holdSuspension), which
+// the wake's turn does not run.
+func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
+	m.wake = waiting
 	if m.claim.Locator != nil {
 		for _, kind := range []TimerKind{TimerBoot, TimerRegistration, TimerProbe, TimerTurn} {
 			m.disarm(kind)
@@ -338,6 +363,14 @@ func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Durati
 //     though no turn of it ever finished (retirePending). The other half of that race is a
 //     delivery sent inside the wait, which sendPending holds back for as long as a launch waits
 //     over the process it would reach (launchWaits, delivery.go).
+//
+// A turn that comes while the project is paused launches nothing (decision 7 of
+// dispatch://INFRA-3759's plan): the wake is held by the pause's gate instead, and the claim is
+// stopped for the pause (pauseGate). The gate is asked after the held suspension, because a held
+// suspension ends the claim here without a launch, for its own source — the pause's own hold
+// among them, whose stop then owes the role this launch (endHeld) — and a pause's hold whose pause
+// has ended is gone before this row runs, as it is at the start of every decision
+// (dropEndedPauseHold).
 func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 	waiting := m.wake
 	m.wake = nil
@@ -355,7 +388,10 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 			// decision (endRefreshLane).
 			return nil
 		}
-		return m.endHeld(ctx, stopOwed)
+		return m.endHeld(ctx, true, stopOwed)
+	}
+	if pause, holds := m.pauseHolds(); holds {
+		return m.pauseGate(ctx, waiting, pause)
 	}
 	return m.runWake(ctx, waiting, true)
 }
@@ -631,8 +667,12 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // The launch takes no second token — the reservation was taken once, at the gate — so the wakes
 // behind it keep the turns they already hold, and the line it writes says the pacing did not
 // decide when it ran (wakeRan, runWake).
+//
+// A launch the project pause's gate holds (wake.pause) is not run for the operator's task either:
+// nothing but the controller launches while the project is paused (pauseGate), so the task is
+// queued and kept, and goes where every task held for a launch goes once the claim runs again.
 func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
-	if !operatorDelivery(ev) || !m.launchWaits() || m.claim.Locator == nil || m.held != nil {
+	if !operatorDelivery(ev) || !m.launchWaits() || m.wake.pause != 0 || m.claim.Locator == nil || m.held != nil {
 		return nil
 	}
 	if r, ok := table[key{m.claim.State, kindOf(ev)}]; !ok || r.act == nil {
@@ -675,13 +715,23 @@ func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
 // A write that fails is logged and changes no verdict: the request is answered as the table
 // answered it, and the claim stands as that answer left it, which is what a refusal leaves today.
 // The wake still waits in memory, and a restart loses it as it loses any other.
+//
+// A launch the project pause's gate held goes back to that gate, as it was held, rather than to a
+// moment of the pacing it never had (pauseGate): the gate's own stop is posted again, and it reads
+// then whether that pause still holds the claim (pauseStopDue).
 func (m *Machine) reparkWake(ctx context.Context, dropped *wake) {
 	if dropped == nil || m.wake != nil || m.claim.Locator != nil || m.claim.State != dropped.state {
 		return
 	}
 	m.log.Info("supervise: the request launched nothing; the wake the pacing holds keeps its turn",
-		"kind", dropped.kind, "due", dropped.at, "state", dropped.state)
-	if err := m.parkWake(ctx, dropped, max(dropped.at.Sub(m.deps.Clock.Now()), 0)); err != nil {
+		"kind", dropped.kind, "due", dropped.at, "state", dropped.state, "pause", dropped.pause)
+	var err error
+	if dropped.pause != 0 {
+		err = m.pauseGate(ctx, dropped, dropped.pause)
+	} else {
+		err = m.parkWake(ctx, dropped, max(dropped.at.Sub(m.deps.Clock.Now()), 0))
+	}
+	if err != nil {
 		m.log.Warn("supervise: the wake that keeps its turn could not be written; it waits in memory alone",
 			"kind", dropped.kind, "due", dropped.at, "error", err)
 	}

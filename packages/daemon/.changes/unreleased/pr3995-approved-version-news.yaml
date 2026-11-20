@@ -93,6 +93,13 @@ body: |-
   back, and this release tells that news again after the roll forward. That section also says why
   each statement is needed.
 
+  While the project is paused, news waits as every task does: a start queued for news alone is held
+  with the other starts, and the resume lets it out through the wake pacing. The reconcile that
+  reads the change set from Dispatch still runs, so the news is recorded when the project resumes,
+  and the entry sweep queues no reconcile until the pause ends. A rollback that also goes past the
+  project pause takes the first two steps of "Rolling back the project pause" while this release
+  still runs, then these four statements, and then that section's three statements.
+
   A reviewer's task that carries news still ends with the daemon's two sentences of its review
   round (`Last reviewed commit: …. Review entry: ….`): the news goes before them, and a task of news
   alone names the round the record holds, the reviewed commit and the entry, so the reviewer reads
