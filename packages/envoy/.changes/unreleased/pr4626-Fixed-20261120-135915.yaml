@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A role message whose envelope the listener cannot decode no longer reaches a session that does
+  not hold the role. When the role's claim names another session, or none, the session relay now
+  acknowledges such a message, logs `listener session relay ended a role message that cannot be
+  decoded` once with the session, the role, the holder, the stream sequence and the decode error,
+  and counts it in `envoy_role_kept_undecodable_total{path="relay"}`. A session that holds the
+  role still receives its role messages as before.
+time: 2026-11-20T13:59:15.526158537Z
+custom:
+    Issue: pr4626
