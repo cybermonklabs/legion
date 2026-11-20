@@ -1011,10 +1011,11 @@ the `url` output and the app's `DISPATCH_SERVER_URL`. It is refused beside the t
 front door's name is then Dispatch's origin; a second origin beside that one is `outsideOrigin`.
 With it the component builds what the sandbox builds and requires `natsInCluster`, refuses
 `frontDoorReplicas` and `frontDoorPdbMinAvailable`, as the sandbox does, and takes the sign-in
-group, `signInOutside`, `outsideOrigin` and `signInPasskey` as it takes them beside the front
-door; with the sign-in group its host must be one Google takes in a redirect URI, as
-`outsideOrigin`'s must, and the Google client lists `<publicOrigin>/auth/callback`.
-`allowedNamespaces` is optional there: the entrance forwards to the app's Service `<hostname>` on
+group, `signInWorkspaceDomains`, `signInOutside`, `outsideOrigin` and `signInPasskey` as it takes
+them beside the front door; with the sign-in group its host must be one Google takes in a
+redirect URI, as `outsideOrigin`'s must, and the Google client lists
+`<publicOrigin>/auth/callback`. `allowedNamespaces` is optional there: the entrance forwards to
+the app's Service `<hostname>` on
 port 8766, or straight to the app's pods, labelled `app=<hostname>`, through a network endpoint
 group of that Service.
 
@@ -1049,11 +1050,12 @@ come from another resource or stack, such as one built from the backend service'
 resolves, a value of any other form is refused naming `iapAudience`, and one holding an nkey seed
 is refused without echoing it. It needs `publicOrigin`, the origin that load balancer serves, and
 `signInDomain`, the Workspace domain whose accounts may use Dispatch, which Dispatch holds the
-token's `hd` claim to; it refuses `signInClientId`, `signInClientSecret`, `signInOutside`,
-`signInPasskey` and `outsideOrigin`, since IAP signs a person in and a browser reaches Dispatch
-through it alone. It renders `DISPATCH_IDENTITY=iap`, `DISPATCH_IAP_AUDIENCE=<iapAudience>` and
-`DISPATCH_SIGNIN_DOMAIN=<signInDomain>` on the app's container, in the place the sign-in variables
-hold, right before `DISPATCH_SERVER_URL`, and no other `DISPATCH_SIGNIN_*` variable; the Secret
+token's `hd` claim to; it refuses `signInClientId`, `signInClientSecret`, `signInWorkspaceDomains`,
+`signInOutside`, `signInPasskey` and `outsideOrigin`, since IAP signs a person in and a browser
+reaches Dispatch through it alone. It renders `DISPATCH_IDENTITY=iap`,
+`DISPATCH_IAP_AUDIENCE=<iapAudience>` and `DISPATCH_SIGNIN_DOMAIN=<signInDomain>` on the app's
+container, in the place the sign-in variables hold, right before `DISPATCH_SERVER_URL`, and no
+other `DISPATCH_SIGNIN_*` variable; the Secret
 holds no client secret. Its `envoyImage` must be built from a cybermonklabs/legion `main` commit
 whose `envoy-dispatch` takes `DISPATCH_IDENTITY=iap`: an older one refuses that identity mode at
 boot, so the app's pods never start. With `iapAudience` unset none of the three variables
@@ -1115,6 +1117,21 @@ name, as it refuses `outsideOrigin`, and so does `iapAudience`, since IAP signs 
 it unset the component renders exactly what it rendered before it existed. An `envoyImage` whose
 `envoy-dispatch` predates the setting ignores it, as it ignores every variable its settings table
 does not list.
+
+`signInWorkspaceDomains`, unset by default, lists the other domains the Google Workspace owns
+beside `signInDomain`. It renders `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` on the app's container, the
+entries comma-joined in the order given, right after `DISPATCH_SIGNIN_DOMAIN`, or after
+`DISPATCH_SIGNIN_OUTSIDE` when `signInOutside` is set. Dispatch treats an address on `signInDomain`,
+on one of these domains, or on a subdomain of either as a Workspace address, which no invitation
+or outside sign-in may use, so list every domain the Workspace owns. Dispatch reads the setting
+only with Google sign-in, so the input needs the sign-in group, though it is not in that group. It
+is refused without that group, with the clause naming each sign-in input still unset; the sandbox
+and `iapAudience` refuse it by name. Each entry must be one Dispatch takes: lowercase, taken by
+IDNA lookup, written in Unicode (`bücher.example`) or as its A-labels (`xn--bcher-kva.example`),
+and then a DNS name of two labels or more, each of at most 63 characters, at most 253 characters
+in all. An empty entry, or any other, is refused naming its index. With it unset the component
+renders exactly what it rendered before it existed. An `envoyImage` whose `envoy-dispatch`
+predates the setting ignores it.
 
 `databaseVersion` defaults to `POSTGRES_18`; envoy-infra v2.9.1 and every release before this
 change defaulted to `POSTGRES_16`. A stack that leaves `databaseVersion` unset is upgraded in place
@@ -1547,7 +1564,8 @@ tailnet inputs, an `iapAudience` without `publicOrigin` or `signInDomain` or bes
 `signInClientId`, `signInClientSecret`, `signInOutside`, `signInPasskey` or `outsideOrigin`, and,
 once it resolves, an `iapAudience` of another form than a backend service's, a `signInOutside`
 without the sign-in inputs, a `signInPasskey` without `outsideOrigin` or the sign-in inputs or
-beside `signInOutside`, an
+beside `signInOutside`, a `signInWorkspaceDomains` without the sign-in inputs or with an entry
+Dispatch would refuse, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` outside
@@ -2230,7 +2248,14 @@ Its app then carries `DISPATCH_OUTSIDE_ORIGIN=https://dispatch-outside.example.c
 `DISPATCH_SIGNIN_OUTSIDE=1` ([Inputs](#inputs-1)). A deployment that signs them in with a passkey
 instead sets `signInPasskey: true` in place of `signInOutside: true`; the component refuses the
 two together. Its app then carries `DISPATCH_SIGNIN_PASSKEY=1` right after
-`DISPATCH_OUTSIDE_ORIGIN`, and no `DISPATCH_SIGNIN_OUTSIDE`.
+`DISPATCH_OUTSIDE_ORIGIN`, and no `DISPATCH_SIGNIN_OUTSIDE`. Either deployment lists the other
+domains its Workspace owns, so that Dispatch treats an address on any of them as the Workspace's:
+
+```yaml
+      signInWorkspaceDomains: [example.net, example.org]
+```
+
+Its app then also carries `DISPATCH_SIGNIN_WORKSPACE_DOMAINS=example.net,example.org`.
 
 A sandbox stack sets neither the tailnet group nor the sign-in group, and sets the two inputs the
 mode then requires: `natsInCluster`, since no front door runs a proxy to a tailnet hub, and

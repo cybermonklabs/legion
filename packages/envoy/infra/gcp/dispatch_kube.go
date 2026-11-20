@@ -687,10 +687,12 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// a deployment with sign-in on renders what it always rendered (gcp/testdata/dispatch-pod.golden)
 	// and one without it names no client, no issuer and no domain: Dispatch then asks nobody to
 	// sign in. DISPATCH_SIGNIN_OUTSIDE follows the domain only with signInOutside, which needs
-	// sign-in on. The IAP door's three variables take that same place, since the resolver refuses
-	// the Google client beside it, and render only with iapAudience: the identity mode, the
-	// audience, and the domain whose accounts may use Dispatch, which Dispatch holds the signed
-	// header's hd claim to. A deployment without it names no identity mode, and Dispatch keeps its
+	// sign-in on, and DISPATCH_SIGNIN_WORKSPACE_DOMAINS follows them only with signInWorkspaceDomains,
+	// which needs sign-in on too: the entries comma-joined, as Dispatch splits them. The IAP door's
+	// three variables take that same place, since the resolver refuses the Google client beside it,
+	// and render only with iapAudience: the identity mode, the audience, and the domain whose
+	// accounts may use Dispatch, which Dispatch holds the signed header's hd claim to. A deployment
+	// without it names no identity mode, and Dispatch keeps its
 	// default. DISPATCH_SERVER_URL is the address a reader is sent back to, so it is the url
 	// output's own derivation (serverURL) and never a second spelling of it.
 	// DISPATCH_OUTSIDE_ORIGIN follows it only with outsideOrigin, and DISPATCH_SIGNIN_PASSKEY follows
@@ -701,6 +703,9 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 			valueEnv("DISPATCH_SIGNIN_ISSUER", "https://accounts.google.com"), valueEnv("DISPATCH_SIGNIN_CLIENT_ID", s.signIn.clientID), valueEnv("DISPATCH_SIGNIN_DOMAIN", s.signIn.domain))
 		if s.signInOutside {
 			appEnv = append(appEnv, valueEnv("DISPATCH_SIGNIN_OUTSIDE", "1"))
+		}
+		if len(s.signInWorkspaceDomains) > 0 {
+			appEnv = append(appEnv, valueEnv("DISPATCH_SIGNIN_WORKSPACE_DOMAINS", strings.Join(s.signInWorkspaceDomains, ",")))
 		}
 	}
 	if s.iap {
