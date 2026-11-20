@@ -2,7 +2,7 @@ import { expect, jest, test } from "bun:test";
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { settle } from "../../__tests__/fake-clock";
 import { keyMinted } from "../../__tests__/kept-sends-harness";
-import { ApiError, NetworkError } from "../../api/client";
+import { ApiError, NetworkError, type WriteMethod } from "../../api/client";
 import {
   keyExpired,
   keySpent,
@@ -107,8 +107,12 @@ test("a key spent before the write began carries its first attempt and stops the
 
 /** Whether the error a write ends with is Dispatch's verdict that it made nothing
  *  (`refusedByDispatch`), where its attempts end with `failures` in order, each after the page's
- *  wait, for a person still signed in, so a second `401` is Dispatch's refusal. */
-async function verdictAfter(failures: readonly Error[]): Promise<boolean> {
+ *  wait, for a person still signed in, so a second `401` is Dispatch's refusal. `carried` is what
+ *  an earlier try of the write sent under its key (`KeyedWriteOptions.carried`). */
+async function verdictAfter(
+  failures: readonly Error[],
+  carried: WriteMethod | null = null
+): Promise<boolean> {
   jest.useFakeTimers();
   try {
     let attempts = 0;
@@ -119,7 +123,7 @@ async function verdictAfter(failures: readonly Error[]): Promise<boolean> {
         return Promise.reject(failure);
       },
       keyMinted(Date.now()),
-      { carried: null, unauthorized: async () => true }
+      { carried, unauthorized: async () => true }
     ).catch((error: unknown) => error);
     for (let wait = 1; wait < failures.length; wait += 1) {
       await settle();
@@ -157,6 +161,21 @@ test("a refusal after an attempt the page had no answer to is no verdict that no
     ])
   ).toBe(false);
   expect(await verdictAfter([lost(), lapsed(), lapsed()])).toBe(false);
+});
+
+// A write can be tried more than once: a lapse stops its try, and the page takes it up in a try
+// of its own once the same person signs in again. An attempt of the earlier try may have landed
+// with its answer lost, so a refusal in the later try says nothing of it either, whether it comes
+// first in that try or as a second `401`.
+test("a refusal in a try after an earlier try sent under the key is no verdict that nothing was made", async () => {
+  const lapsed = () => new ApiError(401, { code: "UNAUTHORIZED", error: "sign in" });
+  expect(
+    await verdictAfter(
+      [new ApiError(400, { code: "SNOOZE_INPUT", error: "snoozed_until is in the past" })],
+      "PUT"
+    )
+  ).toBe(false);
+  expect(await verdictAfter([lapsed(), lapsed()], "PUT")).toBe(false);
 });
 
 // The key stops only the write that sends it. A `PUT` or a `DELETE` sends none, so Dispatch

@@ -16,6 +16,7 @@ import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type { AskSnooze, DispatchEvent, InboxRow } from "../../api/types";
 import { FIRST_BACKOFF_MS, SEND_DEADLINE_MS } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import { issueAsk } from "./inbox-fixture";
 import { type AskSnoozeFailure, useAskSnooze, useAskSnoozeMany } from "./useAskSnooze";
 
@@ -672,86 +673,111 @@ test("a snooze Dispatch refuses waits for no event, and the next snooze event en
   }
 });
 
-// A snooze is a `PUT`, which sends no key, so the page's retry of it runs Dispatch's handler
-// again. Here Dispatch takes the first snooze, its answer is lost on the way back, and Dispatch
-// refuses the retry, the snooze's moment having passed. That refusal says nothing of the attempt
-// the page had no answer to: the first snooze's hold still waits for its event, which comes, and
-// ends no hold of the snooze pressed after it.
+/**
+ * Has Dispatch take a first snooze whose answer is lost on the way back, and refuse the page's
+ * retry of it, the snooze's moment having passed: a snooze is a `PUT`, which sends no key, so the
+ * retry runs Dispatch's handler again. `retry` is how the page comes to try it again. A second
+ * snooze is pressed meanwhile and stays out. That refusal says nothing of the attempt the page had
+ * no answer to, so the first snooze's hold still waits for its event, which comes and ends no
+ * hold of the second: a read of the Inbox waits for the second's own event.
+ */
+async function snoozeRefusedAfterLostAnswer(
+  retry: (client: DispatchQueryClient) => Promise<void>
+): Promise<void> {
+  const served = { rows: [issueAsk({ id: "ask-1" }), issueAsk({ id: "ask-2" })] };
+  const verdicts = heldSnoozeVerdicts();
+  const { client, getInbox, hook } = renderBesideInbox(served, () => ({
+    first: useAskSnooze("ask-1"),
+    second: useAskSnooze("ask-2"),
+  }));
+  const readInboxAgain = () => {
+    void client.invalidateQueries({ queryKey: inboxQuery().queryKey });
+  };
+  try {
+    // Signed in as the app's shell signs in on each load of the page.
+    act(() => writesOf(client).signedIn("alice"));
+    await waitFor(() => expect(snoozedUntil(hook.result.current.inbox)).toEqual([null, null]));
+    act(() => hook.result.current.write.first.submit(UNTIL));
+    await waitFor(() => expect([...verdicts.keys()]).toEqual(["ask-1"]));
+    const firstAttempt = verdicts.get("ask-1");
+
+    // Dispatch takes the first snooze, and its answer is lost on the way back.
+    served.rows = [issueAsk({ id: "ask-1", snoozed_until: UNTIL }), issueAsk({ id: "ask-2" })];
+    await act(async () => {
+      firstAttempt?.reject(
+        new NetworkError("/api/v1/asks/ask-1/snooze", new TypeError("Failed to fetch"))
+      );
+      await settle();
+    });
+    // The reader snoozes the second ask, which stays out.
+    act(() => hook.result.current.write.second.submit(UNTIL));
+    await waitFor(() => expect(verdicts.has("ask-2")).toBe(true));
+
+    // The page tries the first again, and Dispatch refuses the retry. The read the first asks as
+    // it settles waits for the second.
+    await retry(client);
+    await waitFor(() => expect(verdicts.get("ask-1")).not.toBe(firstAttempt));
+    await act(async () => {
+      verdicts.get("ask-1")?.reject(refusal());
+      await settle();
+    });
+    await waitFor(() => expect(hook.result.current.write.first.failed).toBe(true));
+    expect(getInbox).toHaveBeenCalledTimes(1);
+
+    // The first snooze's event comes. It is the first's, and the read waits still.
+    await act(async () => {
+      hearLiveEvent(client, userStateEvent("alice", ["snoozed"]), "alice");
+      readInboxAgain();
+      await settle();
+    });
+    expect(getInbox).toHaveBeenCalledTimes(1);
+
+    // Dispatch takes the second, whose event comes, and somebody asks another question
+    // meanwhile: the read goes.
+    served.rows = [
+      issueAsk({ id: "ask-1", snoozed_until: UNTIL }),
+      issueAsk({ id: "ask-2", snoozed_until: UNTIL }),
+      issueAsk({ id: "ask-3" }),
+    ];
+    await act(async () => {
+      hearLiveEvent(client, userStateEvent("alice", ["snoozed"]), "alice");
+      readInboxAgain();
+      await settle();
+    });
+    expect(getInbox.mock.calls.length).toBeGreaterThan(1);
+    await waitFor(() => expect(hook.result.current.inbox).toEqual(served.rows));
+
+    await act(async () => {
+      verdicts.get("ask-2")?.resolve({ snoozed_until: UNTIL });
+      await settle();
+    });
+    await waitFor(() => expect(hook.result.current.write.second.pending).toBe(false));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(hook.result.current.inbox).toEqual(served.rows);
+  } finally {
+    hook.unmount();
+    getInbox.mockRestore();
+  }
+}
+
+// The page's own backoff tries the snooze again, in the same try.
 test("a snooze refused after an attempt it had no answer to takes its own event, and a read of the Inbox waits for the event of the snooze pressed after it", async () => {
-  await onFakeClock(async () => {
-    const served = { rows: [issueAsk({ id: "ask-1" }), issueAsk({ id: "ask-2" })] };
-    const verdicts = heldSnoozeVerdicts();
-    const { client, getInbox, hook } = renderBesideInbox(served, () => ({
-      first: useAskSnooze("ask-1"),
-      second: useAskSnooze("ask-2"),
-    }));
-    const readInboxAgain = () => {
-      void client.invalidateQueries({ queryKey: inboxQuery().queryKey });
-    };
-    try {
-      await waitFor(() => expect(snoozedUntil(hook.result.current.inbox)).toEqual([null, null]));
-      act(() => hook.result.current.write.first.submit(UNTIL));
-      await waitFor(() => expect([...verdicts.keys()]).toEqual(["ask-1"]));
-      const firstAttempt = verdicts.get("ask-1");
+  await onFakeClock(() => snoozeRefusedAfterLostAnswer(() => jump(FIRST_BACKOFF_MS)));
+});
 
-      // Dispatch takes the first snooze, and its answer is lost on the way back.
-      served.rows = [issueAsk({ id: "ask-1", snoozed_until: UNTIL }), issueAsk({ id: "ask-2" })];
-      await act(async () => {
-        firstAttempt?.reject(
-          new NetworkError("/api/v1/asks/ask-1/snooze", new TypeError("Failed to fetch"))
-        );
-        await settle();
-      });
-      // The reader snoozes the second ask, which stays out.
-      act(() => hook.result.current.write.second.submit(UNTIL));
-      await waitFor(() => expect(verdicts.has("ask-2")).toBe(true));
-
-      // The page tries the first again, and Dispatch refuses the retry. The read the first asks as
-      // it settles waits for the second.
-      await jump(FIRST_BACKOFF_MS);
-      await waitFor(() => expect(verdicts.get("ask-1")).not.toBe(firstAttempt));
-      await act(async () => {
-        verdicts.get("ask-1")?.reject(refusal());
-        await settle();
-      });
-      await waitFor(() => expect(hook.result.current.write.first.failed).toBe(true));
-      expect(getInbox).toHaveBeenCalledTimes(1);
-
-      // The first snooze's event comes. It is the first's, and the read waits still.
-      await act(async () => {
-        hearLiveEvent(client, userStateEvent("alice", ["snoozed"]), "alice");
-        readInboxAgain();
-        await settle();
-      });
-      expect(getInbox).toHaveBeenCalledTimes(1);
-
-      // Dispatch takes the second, whose event comes, and somebody asks another question
-      // meanwhile: the read goes.
-      served.rows = [
-        issueAsk({ id: "ask-1", snoozed_until: UNTIL }),
-        issueAsk({ id: "ask-2", snoozed_until: UNTIL }),
-        issueAsk({ id: "ask-3" }),
-      ];
-      await act(async () => {
-        hearLiveEvent(client, userStateEvent("alice", ["snoozed"]), "alice");
-        readInboxAgain();
-        await settle();
-      });
-      expect(getInbox.mock.calls.length).toBeGreaterThan(1);
-      await waitFor(() => expect(hook.result.current.inbox).toEqual(served.rows));
-
-      await act(async () => {
-        verdicts.get("ask-2")?.resolve({ snoozed_until: UNTIL });
-        await settle();
-      });
-      await waitFor(() => expect(hook.result.current.write.second.pending).toBe(false));
-      await waitFor(() => expect(client.isFetching()).toBe(0));
-      expect(hook.result.current.inbox).toEqual(served.rows);
-    } finally {
-      hook.unmount();
-      getInbox.mockRestore();
-    }
-  });
+// The session lapses while the page waits to try the snooze again, which stops that try, and the
+// same person signs in again: the page takes the snooze up in a try of its own, whose first attempt
+// is the one Dispatch refuses. The attempt it had no answer to was the earlier try's, and the
+// refusal still says nothing of it.
+test("a snooze refused after a lapse and a sign-in, its first attempt unanswered before the lapse, takes its own event, and a read of the Inbox waits for the event of the snooze pressed after it", async () => {
+  await onFakeClock(() =>
+    snoozeRefusedAfterLostAnswer(async (client) => {
+      act(() => writesOf(client).signedIn(undefined));
+      await settle();
+      act(() => writesOf(client).signedIn("alice"));
+      await settle();
+    })
+  );
 });
 
 // A bulk snooze waits for one snooze event for each ask, and Dispatch publishes none for an ask it
