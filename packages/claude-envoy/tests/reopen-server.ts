@@ -17,6 +17,7 @@ import {
 import { SERVER_START_MS, waitFor } from "./channel-session-harness"
 import { FakeNatsServer } from "./fake-nats-server"
 import { type NatsGate, natsGate } from "./nats-gate"
+import { socketOwner } from "./socket-owner"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
@@ -62,21 +63,6 @@ export function codexSession(sessionId: string): (stateDirectory: string) => Pro
       transcript_path: null,
     })
   }
-}
-
-/**
- * The process that owns the TCP socket bound to local `port`, as `ss` names it (`bun pid=123`):
- * what tells this row's server from any other process on the machine that dialed a port this row
- * now holds.
- */
-async function socketOwner(port: number): Promise<string> {
-  const ss = Bun.spawn(["ss", "-tnpH", `( sport = :${port} )`], {
-    stdout: "pipe",
-    stderr: "ignore",
-  })
-  const text = await new Response(ss.stdout).text()
-  const owner = /users:\(\("([^"]+)",pid=(\d+)/.exec(text)
-  return owner === null ? `unknown (${text.trim() || "no socket"})` : `${owner[1]} pid=${owner[2]}`
 }
 
 /** A secrets broker stand-in for a session that presents its broker token (`sessionBroker`). */
