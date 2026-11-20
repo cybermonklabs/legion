@@ -10,6 +10,7 @@ package brokertest
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -19,6 +20,9 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
@@ -136,17 +140,24 @@ type Rig struct {
 	// signing key they are minted under.
 	podIssuer *oidctest.Issuer
 	podKey    *oidctest.Key
-	// serviceLogins is the broker's live BROKER_SERVICE_LOGINS: DaemonAccount, as legion-daemon.
+	// serviceLogins is the broker's live BROKER_SERVICE_LOGINS: DaemonAccount, as legion-daemon,
+	// and each account WithPersonPod names, as the service it names.
 	serviceLogins map[string]string
+	// podOperators is the broker's live BROKER_POD_OPERATORS: each account WithPersonPod names,
+	// answering its person, and no account by default. It is one map, which the enroll.Service
+	// and the requests.Machine share, and which the machine.Service reads through that
+	// enroll.Service. So a change SetPodOperator makes reaches all three.
+	podOperators map[string]string
 }
 
 // Option changes how NewRig wires its broker.
 type Option func(*rigConfig)
 
 type rigConfig struct {
-	lease    time.Duration
-	maxConns int
-	minters  map[string]requests.Minter
+	lease      time.Duration
+	maxConns   int
+	minters    map[string]requests.Minter
+	personPods []personPod
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -166,6 +177,22 @@ func WithPoolMaxConns(n int) Option {
 // upstream; none by default.
 func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
+}
+
+// personPod is one WithPersonPod: an account that BROKER_POD_OPERATORS maps to person, and the
+// service the account logs in as.
+type personPod struct {
+	account, service, person string
+}
+
+// WithPersonPod maps account to person, as a BROKER_POD_OPERATORS entry does, and lets account
+// log in as service with its own token, as the BROKER_SERVICE_LOGINS entry does that the setting
+// needs for each account it maps. Without the second entry, a token login of account is refused
+// ACCOUNT_NOT_LISTED before any rule of the mapping applies. Give the option once for each account
+// to map. config.Load refuses a mapped account that BROKER_SERVICES binds, or whose service it
+// names, so give an account other than WorkerAccount and a service other than legion-daemon.
+func WithPersonPod(account, service, person string) Option {
+	return func(c *rigConfig) { c.personPods = append(c.personPods, personPod{account, service, person}) }
 }
 
 // NewRig holds two secrets the person ada@example.com owns: TEST_SECRET, human-tier, which a
@@ -211,6 +238,15 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	}
 
 	serviceLogins := map[string]string{DaemonAccount: "legion-daemon"}
+	// BROKER_POD_OPERATORS: one map, empty unless WithPersonPod names an account. An empty map
+	// maps no account, as nil does, so a Rig without the option decides as a broker with the
+	// setting unset does. Each mapped account logs in with its own token as its service, as
+	// config.Load requires.
+	podOperators := map[string]string{}
+	for _, pod := range config.personPods {
+		serviceLogins[pod.account] = pod.service
+		podOperators[pod.account] = pod.person
+	}
 	// BROKER_SERVICES: the account every pod MintPodToken mints a token for runs as, bound to the
 	// service DaemonAccount logs in as, which is what lets that login enrol those pods
 	// (enroll.Service.podUnderTokenLogin).
@@ -224,7 +260,10 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	for _, pod := range []string{WorkerAccount, ExchangeRolesAccount, ExchangeAccount} {
 		podRegistrars[api.PodRegistrar{Registrar: DaemonAccount, Pod: pod}] = struct{}{}
 	}
-	enr := &enroll.Service{Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier}, ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount}
+	enr := &enroll.Service{
+		Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier},
+		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount, PodOperators: podOperators,
+	}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	// A session name is held here as the real broker holds one with no account paired
 	// (oauthstore.Store.SetSessionPairs never called, BROKER_SESSION_ACCOUNT_PAIRS unset), so it
@@ -236,6 +275,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
+		PodOperators: podOperators,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	provider := NewOAuthProvider(t, st, issuer)
@@ -273,7 +313,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Registry:  registry,
 		Policy:    cur,
 		podIssuer: issuer, podKey: podKey,
-		serviceLogins: serviceLogins,
+		serviceLogins: serviceLogins, podOperators: podOperators,
 	}
 	rig.UIToken = rig.MintAccountToken(t, APIAccount, time.Hour)
 	rig.ListenerToken = rig.MintAccountToken(t, ListenerAccount, time.Hour)
@@ -405,6 +445,65 @@ func (r *Rig) Req(t *testing.T, method, path string, headers map[string]string, 
 func (r *Rig) UI(t *testing.T, method, path string, body any) (int, []byte) {
 	t.Helper()
 	return r.Req(t, method, path, map[string]string{"Authorization": "Bearer " + r.UIToken}, body)
+}
+
+// NewSession inserts a live session enrollment of operator's, under a launcher credential of its
+// own, straight into the Rig's store (InsertSession), and answers it with its key: a session for a
+// row that needs a session's proof and not the enrollment route that makes one.
+func (r *Rig) NewSession(t *testing.T, operator string) (enrollmentID string, key *ecdsa.PrivateKey) {
+	t.Helper()
+	return InsertSession(t, r.Store.Pool, operator)
+}
+
+// Execer is what InsertSession writes through: a *pgxpool.Pool or a *pgx.Conn on a broker's own
+// database.
+type Execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// InsertSession writes a live session enrollment of operator's, under a launcher credential of its
+// own, through db, and answers it with its key: the one session insert for a row that needs a
+// session's proof, on a Rig (NewSession) or on a real broker binary's database, and not the
+// enrollment route that makes one.
+func InsertSession(t *testing.T, db Execer, operator string) (enrollmentID string, key *ecdsa.PrivateKey) {
+	t.Helper()
+	key = NewSigningKey(t)
+	thumbprint, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, credentialID := context.Background(), uuid.New()
+	enrollmentID = uuid.NewString()
+	if _, err := db.Exec(ctx, `insert into launcher_credentials (id, operator, host, key_thumbprint, public_jwk, expires_at)
+		values ($1,$2,'test-host',$3,'{}'::jsonb, now() + interval '30 days')`, credentialID, operator, thumbprint); err != nil {
+		t.Fatalf("insert launcher_credentials: %v", err)
+	}
+	if _, err := db.Exec(ctx, `insert into enrollments (id, kind, runtime_id, operator, thumbprint, launcher_credential_id, lease_expires_at)
+		values ($1,'session',$2,$3,$4,$5, now() + interval '1 hour')`, enrollmentID, "session-"+enrollmentID, operator, thumbprint, credentialID); err != nil {
+		t.Fatalf("insert enrollments: %v", err)
+	}
+	return enrollmentID, key
+}
+
+// RereaderOperator is the operator of a session a row makes only to read what a reread answers a
+// session: a login of its own, so that no row reading an approver's or an operator's sessions meets
+// one of them.
+const RereaderOperator = "rereader@example.com"
+
+// Reread asks the broker to reread name as a session of its own (NewSession), the caller the
+// reread route answers once the reread is done: whether the broker now serves the name, why not,
+// and as which type. A caller with no proof is answered 202 at once, before the reread reads the
+// store, so a row that reads what the broker serves, or goes on to ask for the secret, rereads
+// this way.
+func (r *Rig) Reread(t *testing.T, name string) (int, []byte) {
+	t.Helper()
+	enrollmentID, key := r.NewSession(t, RereaderOperator)
+	path := "/v1/secrets/" + name + "/reread"
+	signed, err := proof.Sign(key, enrollmentID, http.MethodPost, r.URL+path, time.Now())
+	if err != nil {
+		t.Fatalf("proof.Sign: %v", err)
+	}
+	return r.Req(t, http.MethodPost, path, map[string]string{"Proof": signed}, nil)
 }
 
 // uiCall is the UI-route caller a machine-login decision goes out through: Rig.UI or Client.UI,
@@ -559,4 +658,17 @@ func (r *Rig) MintWorkflowToken(t *testing.T, repository, workflow, ref, runID s
 // line and redeploying the broker does.
 func (r *Rig) DropServiceLogin(account string) {
 	delete(r.serviceLogins, account)
+}
+
+// SetPodOperator changes account's entry in this Rig's BROKER_POD_OPERATORS, as an operator
+// editing that entry and redeploying the broker does: a person maps account to that person, and
+// "" drops the entry. The broker reads the setting at each decision, so the next call that reads
+// it sees the change. A login that a pod made before the change keeps its operator until the pod
+// logs in again. account stays in BROKER_SERVICE_LOGINS.
+func (r *Rig) SetPodOperator(account, person string) {
+	if person == "" {
+		delete(r.podOperators, account)
+		return
+	}
+	r.podOperators[account] = person
 }

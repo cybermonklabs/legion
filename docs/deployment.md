@@ -70,13 +70,12 @@ With no key, the daemon reads each App's bot login from GraphQL's `viewer` under
 tokens, refuses a token whose `GET /apps/<slug>` names an id other than `app_id`, and reads whether
 the App is installed on a repository from that owner's installation's repository list.
 A read-only token holds what the command's read-only release gives: the broker's holds
-`contents: read`, `metadata: read`, `pull_requests: read` and `actions: read`, and the first three
-alone where the App's installation has not been granted Actions.
+`contents: read`, `metadata: read`, `pull_requests: read`, `actions: read`, `checks: read` and
+`statuses: read`, less each of the last three the App's installation has not been granted.
 A configured key asks for a set that differs from the broker's: `contents`, `metadata`,
 `pull_requests`, `issues`, `actions`, `checks`, `statuses` and `attestations`, each at `read`
-(`readPermissions` in `packages/daemon/internal/appauth`), so a controller reads an issue, a check
-run, a commit status or an attestation through a key-minted read-only token and not through the
-broker's.
+(`readPermissions` in `packages/daemon/internal/appauth`), so a controller reads an issue or an
+attestation through a key-minted read-only token and not through the broker's.
 A configured key reads what the installation is granted before each mint and asks for its set
 cut down to it.
 The daemon passes the command's stderr through as it runs, with every GitHub token in it redacted,
@@ -273,7 +272,14 @@ the saved help is the pin's).
 The shared clone's `credential.helper` is `!legion git-credential` with `credential.useHttpPath`
 on, so a pane's `git` and `jj git push` read the hosts.yml of the owner of the repository in the
 path git asks about — of the owner a configured rename moved that repository to where a pair
-names it — and nothing else.
+names it — and nothing else, but for a repository of an owner the bundle holds no directory
+for. The helper reads such a repository from GitHub once, with the token of the directory
+`GH_CONFIG_DIR` names where that is a directory of the bundle. Where GitHub answers that it is a
+fork, the helper answers the token it would answer for the fork's `parent`, or else for its
+`source`, where the bundle holds that owner's directory. That repository is usually the base of
+the fork's pull requests, whose token GitHub takes for a maintainer's commit to the branch of such
+a pull request from a fork in a personal account, and GitHub decides which branch of the fork
+that token may update. Every other repository of such an owner gets nothing.
 Every provision, a pane's and a pod's, also writes `remote.origin.gh-resolved base`, gh's own
 default-repository marker, into the clone's own configuration where that configuration holds no
 `gh-resolved` line, so a worker who adds an `upstream` remote keeps gh's choice, and `legion gh`'s,

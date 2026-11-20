@@ -354,7 +354,11 @@ Dispatch read them, delete the files, then install every App from
   deletes it when the pod goes, so an issue's clone, workspace and caches live as long as its pod
   and no longer. What outlives a pod is what was pushed to the issue's branch and each agent's
   conversation, which the session database holds. The daemon-launched controller's pod has a
-  volume of its own, which its Sandbox owns and which does outlive its pods.
+  volume of its own, which its Sandbox owns and which does outlive its pods. A microVM issue pod
+  under `runtime.kubernetes.sandbox.microvm.keep_volume: true` is the exception: its volume is a
+  claim that the issue's Sandbox owns, so it outlives the pod, and it goes when the issue leaves
+  the workflow or when the daemon resets it after a failed init container (`docs/kubernetes.md`
+  in the repository, "A kept volume on a microVM pod").
 - **Pod Security.** Pods run under the `restricted` profile: user 1000, no privilege escalation, all
   capabilities dropped, the `RuntimeDefault` seccomp profile, and no automounted API token.
 - **A ServiceAccount for the agents' pods**, named in `runtime.kubernetes.pod.service_account`
@@ -711,7 +715,8 @@ What each part is for:
   omitted `session_store` and `pvc`, the file store of earlier releases, are refused with the same
   line and its reason: an issue pod's disk is deleted with the pod, so a conversation kept as a
   file on it dies with the pod and the next launch's resume fails on the missing file, retiring the
-  claim after three failures. Name the store and its key, and have the database reachable from the
+  claim after three failures. A kept volume does not change this: a reset or a suspension of the
+  issue deletes that volume. Name the store and its key, and have the database reachable from the
   pods, before the daemon boots.
 - **`nats_nkey_seed_file`** and **`nats_daemon_nkey_seed_file`** (optional) are the NATS nkey user
   seeds for the agents and for the daemon's own connection, each in a file only its owner can read.
@@ -849,9 +854,9 @@ What each part is for:
   under tmux, can read every role's overlay file, so never put a secret in one. Adding the mount
   to a running deployment replaces every affected issue pod at the restart: each of its running
   roles, named or not, loses its turn and resumes its session uncharged in a new pod, and the old
-  pod's disk goes with it, unpushed work included (a pod with no role running is replaced at the
-  first launch into it). Add it when no role of an affected issue is mid-turn and every role has
-  pushed. The repository's `docs/kubernetes.md` ("Operator
+  pod's disk goes with it, unpushed work included, unless the disk is a kept volume (a pod with no
+  role running is replaced at the first launch into it). Add it when no role of an affected issue
+  is mid-turn and every role has pushed. The repository's `docs/kubernetes.md` ("Operator
   configuration") shows the overlay and its mount.
 - **`worker_stall_backstop_hours`** (optional) is the daemon's own backstop under a worker whose
   turn has stopped: how long after a role's last recorded step the daemon ends the turn that step

@@ -568,8 +568,8 @@ func TestKubernetesSetupReachesTheSandboxRuntime(t *testing.T) {
 
 // runtime.kubernetes.sandbox reaches sandbox.Options member for member: the type, the canary list
 // and the microvm block with its ComputeClass, its storage class (the one the loader settled,
-// runtime.kubernetes.storage_class where the file names none) and its metadata endpoint, while
-// leaving the block out runs every pod in gVisor.
+// runtime.kubernetes.storage_class where the file names none), its keep_volume and its metadata
+// endpoint, while leaving the block out runs every pod in gVisor.
 func TestKubernetesSandboxReachesTheSandboxRuntime(t *testing.T) {
 	cfg := config.Config{Project: "TEST", Projects: map[string]config.Project{"TEST": {}}}
 	k := config.Kubernetes{
@@ -578,7 +578,7 @@ func TestKubernetesSandboxReachesTheSandboxRuntime(t *testing.T) {
 	}
 	k.Sandbox = config.SandboxConfig{
 		Type: config.SandboxMicroVM, CanaryIssues: []string{"TEST-7"},
-		MicroVM: &config.MicroVMConfig{ComputeClass: "example-microvm", StorageClass: "gp2", Metadata: &config.MetadataConfig{
+		MicroVM: &config.MicroVMConfig{ComputeClass: "example-microvm", StorageClass: "gp2", KeepVolume: true, Metadata: &config.MetadataConfig{
 			WorkloadPool:     "example-project.svc.id.goog",
 			IdentityProvider: "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster",
 		}},
@@ -589,7 +589,7 @@ func TestKubernetesSandboxReachesTheSandboxRuntime(t *testing.T) {
 	}
 	want := sandbox.SandboxConfig{
 		Type: sandbox.SandboxMicroVM, CanaryIssues: []string{"TEST-7"},
-		MicroVM: &sandbox.MicroVM{ComputeClass: "example-microvm", StorageClass: "gp2", Metadata: &sandbox.MetadataEndpoint{
+		MicroVM: &sandbox.MicroVM{ComputeClass: "example-microvm", StorageClass: "gp2", KeepVolume: true, Metadata: &sandbox.MetadataEndpoint{
 			WorkloadPool:     "example-project.svc.id.goog",
 			IdentityProvider: "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster",
 		}},
@@ -1106,12 +1106,10 @@ func TestNewSecretsLoginLogsInWithTheDaemonsToken(t *testing.T) {
 	if enroller == nil || client == nil {
 		t.Fatal("want an enroller and a client")
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for !strings.Contains(logged.String(), "agent-secrets: logged in with the daemon's ServiceAccount token") || client.LoginStatus().State != "issued" {
-		if time.Now().After(deadline) {
-			t.Fatalf("log = %s, state %q; want the token login logged and issued", logged.String(), client.LoginStatus().State)
-		}
-		time.Sleep(time.Millisecond)
+	if !testwait.Holds(2*time.Second, time.Millisecond, func() bool {
+		return strings.Contains(logged.String(), "agent-secrets: logged in with the daemon's ServiceAccount token") && client.LoginStatus().State == "issued"
+	}) {
+		t.Fatalf("log = %s, state %q; want the token login logged and issued", logged.String(), client.LoginStatus().State)
 	}
 	mu.Lock()
 	defer mu.Unlock()

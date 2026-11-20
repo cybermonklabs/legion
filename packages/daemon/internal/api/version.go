@@ -14,16 +14,18 @@ package api
 // number it was built against as `legion.daemonApiVersion` in its `package.json`, and the boot
 // gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
 //
-// Bump rule: a change to any of these surfaces bumps this constant. The same commit writes the
-// number in every other file that holds it: `legion.daemonApiVersion` in
-// `packages/pi-legion/package.json` and `packages/claude-envoy/package.json`, and the two fixtures
+// Bump rule: a change to any of these surfaces raises this constant above the number its base
+// carries. The same commit writes the number in every other file that holds it:
+// `legion.daemonApiVersion` in `packages/pi-legion/package.json` and
+// `packages/claude-envoy/package.json`, and the two fixtures
 // that this package's golden tests write, `packages/contracts/fixtures/daemon-api/version.json`
 // and `packages/contracts/fixtures/daemon-api/state.json`. In `packages/daemon`,
 // `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes
 // the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
 // and the plugin's field together.
 // `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
-// disagrees with this constant.
+// disagrees with this constant, and, naming a free number, a change that touches the contract
+// below (that script's header says which edits do) and declares no number above its base's.
 //
 // 8: secrets broker enrollment -- AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR on an enrolled pod's worker
 // container, and the shim's hello2.
@@ -2453,7 +2455,7 @@ package api
 // between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
 // and none declaring 178.)
 //
-// 182: INFRA-4401 -- the daemon reads no repository mapping from Dispatch, and the `repositories`
+// 190: INFRA-4401 -- the daemon reads no repository mapping from Dispatch, and the `repositories`
 // block of `GET /legion/v1/state` becomes the repositories the project's live records name, read
 // in the state's own snapshot. The block is `{live, caches, withoutWebhookApp}`. `live` holds one
 // entry for each repository a live record names, under the name the records keep, sorted by its
@@ -2471,7 +2473,7 @@ package api
 // the live records hold. `owners`, `mapped` and `refused` are gone, and with them each entry's
 // `default`, which the daemon no longer knows. A plugin of 152 reads the block with a schema that
 // requires those three keys and would refuse the whole state without them, so a caller in a pod
-// whose claims record a contract below 182 is served the block in 152's shape, written from the
+// whose claims record a contract below 190 is served the block in 152's shape, written from the
 // same entries (api's repositoriesLiveContract and withoutRepositoriesLive): `owners` and `mapped`
 // are the entries both role Apps are installed on, under the name each is served under, every
 // `default` false; `refused` is each other entry with its `readError`, the App not installed on
@@ -2480,14 +2482,17 @@ package api
 // controller start`, a tmux pane — is served the new block whatever its plugin, and the boot gate
 // and `legion probe-image` keep a tmux pane's plugin at this contract.
 // `packages/contracts/src/legion-api.ts` mirrors the new block, and the fixture
-// `state-narrowed-repositories.json` is the body a pod at 181 is served.
-// (This change takes 182, the lowest number above main's 178 that no open pull request declared
-// at the census of `const DaemonAPIVersion` at refs/pull/<n>/head over the 241 open pull requests
-// of cybermonklabs/legion, taken from 2026-11-20T01:09:39Z to 01:20:55Z, which named above main's
-// 178: 179 (#4392 and #4540), 180 (#4049 and #4175) and 181 (#4553). This entry stood at 167, 169
-// and 173 before, each the number it took at an earlier census and no head's for good. Read
-// main's own number and every open pull request's again at the next forward merge rather than
-// from this line, as
+// `state-narrowed-repositories.json` is the body a pod at 189 is served: a pod from 178 to 189 is
+// served the pause and the block in 152's shape.
+// (This change takes 190, the lowest number above main's 178 that no open pull request declared
+// at the census of `const DaemonAPIVersion` at refs/pull/<n>/head over the 257 open pull requests
+// of cybermonklabs/legion, taken from 2026-11-20T09:01:25Z to 09:09:03Z, which named above main's
+// 178: 179 (#4540), 180 (#4049), 181 (#4273), 182 (#4173, #4180, #4193 and #4392), 183 (#2230,
+// #3712, #4030, #4432 and #4539), 184 (#3659, #4065, #4553 and #4590), 185 (#4175), 186 (#4495
+// and #4573), 187 (#3993 and #4580), 188 (#4543 and #4581) and 189 (#3831, #4592 and #4596).
+// This entry stood at 167, 169, 173 and 182 before, each the number it took at an earlier census
+// and no head's for good. Read main's own number and every open pull request's again at the next
+// forward merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 182
+const DaemonAPIVersion = 190

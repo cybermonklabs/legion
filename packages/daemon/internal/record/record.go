@@ -25,31 +25,48 @@ import (
 // because the fence is merged per check name over the settlements of the head it stands at
 // (classify's mergeAttemptSets): each name keeps its highest run id, so the head and the
 // conclusion must be the ones of that run and never a mixture of two runs'. What they answer is
-// which names are red (classify.ApplySettlement derives Failing and Cancelled from them) and
-// whether GitHub has reported a check run on the pull request's current head itself
-// (classify.ChecksConcludedOnHead).
+// which names are red (classify.ApplySettlement derives Failing and Cancelled from them), which
+// names are green on the pull request's current head (classify.GreenContexts), and whether GitHub
+// has reported a check run on that head itself (classify.ChecksConcludedOnHead). A skipped run
+// answers each of them exactly as a succeeded one does (RunConclusion says why).
 //
 // Both are optional in the stored JSON, so a row written before dispatch://INFRA-714 added them
 // still parses, and such a row carries neither. It fails closed on both readings: an empty Head
 // is no head, so the run is never one on the current head, and an empty Conclusion is no
 // conclusion, so it never makes its name red. The names of such a row come to what the stored
 // Failing and Cancelled lists say of them, which is what they came to before.
+//
+// GitHubConclusion is the word GitHub gave the run (success, neutral, skipped, timed_out, or one
+// GitHub adds later), as the listener's settlement carried it, and only once intake's decoder
+// took it for a word (decodeChecks). It decides nothing: every decision reads Conclusion, so two
+// runs that differ only in their word decide alike. It is kept so the texts the roles read name a
+// run by GitHub's own word rather than by the coarser conclusion. It is optional in the stored
+// JSON too: a row written before dispatch://INFRA-4135 added it carries no word and reads as it
+// did, a run named by its conclusion, and a daemon of the release before this one ignores it.
 type AttemptRun struct {
-	Name       string        `json:"name"`
-	ID         int64         `json:"id"`
-	Head       string        `json:"head,omitempty"`
-	Conclusion RunConclusion `json:"conclusion,omitempty"`
+	Name             string        `json:"name"`
+	ID               int64         `json:"id"`
+	Head             string        `json:"head,omitempty"`
+	Conclusion       RunConclusion `json:"conclusion,omitempty"`
+	GitHubConclusion string        `json:"githubConclusion,omitempty"`
 }
 
 // RunConclusion is what one check run concluded, as the settlement reporting it said: the
 // listener names a run that failed and a run that was cancelled, and a run it reports as neither
 // succeeded, since it settles a commit only once every check it has seen there is terminal
-// (classify.ApplySettlement, which reads a candidate's Failing and Cancelled lists for it). ""
-// is a run recorded before the conclusion was kept beside the id.
+// (classify.ApplySettlement, which reads a candidate's Failing and Cancelled lists for it). A run
+// the settlement's skipped group names is skipped: GitHub concluded it skipped, so it ran nothing
+// on that head. Every decision takes a skipped run exactly as a succeeded one
+// (dispatch://INFRA-4135 R2): neither makes its name red, each is a run on the head GitHub
+// reported it on, and each makes its name green there (classify.GreenContexts), since GitHub's
+// branch protection takes a skipped required check as passing. Only the texts the roles read name
+// it differently, so no role is told that a check which never ran passed. "" is a run recorded
+// before the conclusion was kept beside the id.
 type RunConclusion string
 
 const (
 	RunSucceeded RunConclusion = "succeeded"
+	RunSkipped   RunConclusion = "skipped"
 	RunFailed    RunConclusion = "failed"
 	RunCancelled RunConclusion = "cancelled"
 )

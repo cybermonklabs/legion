@@ -367,7 +367,8 @@ func populatedState(t *testing.T) State {
 							},
 							// The pod's update round, which every claim of that pod shares: the round
 							// asks each role, and the daemon replaces the pod once every asked role has
-							// answered and no turn runs, or at the round's bound
+							// answered, no turn runs and no claim's activity report holds it
+							// (internal/daemon's roundEnd.holding), or at the round's bound
 							// (pod_update_grace_minutes) whatever the roles answered, an operator's
 							// suspension excepted. This one has answered, and reported the head it
 							// pushed. The reasons are the round's own, so every claim of the pod
@@ -1077,8 +1078,9 @@ func TestStateGolden(t *testing.T) {
 // repositoriesLiveContract: the state golden's own state, asked through the route itself, with its
 // `repositories` block in the shape contract 152 gave it, written from the same entries
 // (withoutRepositoriesLive), and every other key as a caller at this contract is served it, since
-// no other row of stateNarrowings stands above the caller's 181: pauseContract's row (178) stands
-// below it, which is why the golden carries `paused`. `packages/contracts/src/legion-api.test.ts`
+// no other row of stateNarrowings stands above the caller's 189: pauseContract's row (178) stands
+// below it, which is why the golden carries `paused`, as every pod from 178 to 189 is served the
+// pause and the block in contract 152's shape. `packages/contracts/src/legion-api.test.ts`
 // parses it with a copy of contract 152's schema of the block, so the narrowing is held to the
 // reader it is written for, and its drift gate holds every key of the file to that copy.
 func TestStateNarrowedRepositoriesGolden(t *testing.T) {

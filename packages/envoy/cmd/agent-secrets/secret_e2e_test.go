@@ -10,6 +10,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // secretsLocalWithoutValue is an agent-tier secret owner holds with no value, which the broker
@@ -25,11 +27,21 @@ func secretsLocalWithoutValue(name, owner string) secrets.LocalSecret {
 	return policytest.Secret(name, owner, policy.TierAgent, "")
 }
 
+// useRigSession makes a session the rig holds this process's broker identity for the rest of t:
+// its key and enrollment in a key directory (AGENT_SECRETS_KEY_DIR), as a launcher leaves them, so
+// the secret forms sign their rereads with it and the rig answers them in full.
+func useRigSession(t *testing.T, rig *brokertest.Rig) {
+	t.Helper()
+	enrollmentID, key := rig.NewSession(t, rig.Operator)
+	t.Setenv("AGENT_SECRETS_KEY_DIR", writeKeyDir(t, key, enrollmentID))
+}
+
 // TestSecretCreateIsServedByTheBrokerAtOnce drives a create end to end: the CLI writes to (fake)
 // AWS and the broker serves the secret on its very next read, no reload.
 func TestSecretCreateIsServedByTheBrokerAtOnce(t *testing.T) {
 	rig := brokertest.NewRig(t)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
+	useRigSession(t, rig)
 	restore := awsClients
 	awsClients = func(context.Context, string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
 		return rig.Secrets, fakeSTS{account: "111122223333", arn: "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc/" + rig.Operator}, nil, nil
@@ -53,6 +65,7 @@ func TestSecretCreateIsServedByTheBrokerAtOnce(t *testing.T) {
 func TestSecretDeleteAndRestoreAreServedByTheBrokerAtOnce(t *testing.T) {
 	rig := brokertest.NewRig(t)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
+	useRigSession(t, rig)
 	useAWS(t, rig.Secrets, testAccount, "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc/"+rig.Operator)
 	for _, step := range []struct {
 		args []string
@@ -74,5 +87,28 @@ func TestSecretDeleteAndRestoreAreServedByTheBrokerAtOnce(t *testing.T) {
 	stdout, stderr, code := runSecret("retag", "NO_VALUE_KEY", "--tier", "human")
 	if code != 1 || !strings.Contains(stdout, "broker: refusing NO_VALUE_KEY from ") || !strings.Contains(stdout, "(reason=no-current-value)") {
 		t.Fatalf("retag of a secret with no value: exit %d, stdout %q, stderr %q; want 1 with the broker's refusal", code, stdout, stderr)
+	}
+}
+
+// TestASecretWriteWithNoBrokerIdentityIsStillServedAtOnce: a create run where this process has no
+// broker identity at all sends its reread with no proof, which the real broker answers 202 at
+// once and says nothing more of. The form exits 0, the write standing, and the broker still
+// rereads the name after that answer and serves the new secret, with no reload. The line it
+// prints about the unchecked view is TestASecretFormWithNoBrokerIdentitySendsItsRereadUnsigned's.
+func TestASecretWriteWithNoBrokerIdentityIsStillServedAtOnce(t *testing.T) {
+	rig := brokertest.NewRig(t)
+	t.Setenv("AGENT_SECRETS_URL", rig.URL)
+	withNoBrokerIdentity(t)
+	useAWS(t, rig.Secrets, testAccount, "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc/"+rig.Operator)
+	useStdin(t, "fresh-v1")
+	stdout, stderr, code := runSecret("create", "FRESH_KEY", "--owner", "me", "--tier", "agent")
+	if code != 0 || !strings.Contains(stdout, "broker: rereading FRESH_KEY from ") || strings.Contains(stdout, "broker: serving") {
+		t.Fatalf("create with no broker identity: exit %d, stdout %q, stderr %q; want 0 and the reread sent with no proof", code, stdout, stderr)
+	}
+	if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool {
+		_, served := rig.Policy.Get().Secrets["FRESH_KEY"]
+		return served
+	}) {
+		t.Fatal("the broker does not serve FRESH_KEY within 5s of the create's reread; want the reread a call with no proof asked for run after its answer")
 	}
 }

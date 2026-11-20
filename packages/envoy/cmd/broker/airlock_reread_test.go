@@ -16,7 +16,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
@@ -203,17 +202,8 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 		t.Fatalf("the proxy read the grant's values %d times for two requests; want once: the answer is held", reads)
 	}
 
-	answer, err := http.Post("http://"+broker.Addr+"/v1/secrets/"+secretName+"/reread", "application/json", nil)
-	if err != nil {
-		t.Fatalf("POST /v1/secrets/%s/reread: %v", secretName, err)
-	}
-	defer answer.Body.Close()
-	var reread struct {
-		Served bool   `json:"served"`
-		Reason string `json:"reason"`
-	}
-	if err := json.NewDecoder(answer.Body).Decode(&reread); err != nil || answer.StatusCode != http.StatusOK || !reread.Served {
-		t.Fatalf("reread %s = status %d, %+v, %v; want 200 and served", secretName, answer.StatusCode, reread, err)
+	if status, _, reread := broker.sessionReread(t, databaseURL, secretName); status != http.StatusOK || reread["served"] != true {
+		t.Fatalf("a session's reread of %s = status %d, %v; want 200 and served", secretName, status, reread)
 	}
 
 	call("/v1/third")

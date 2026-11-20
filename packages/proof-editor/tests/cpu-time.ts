@@ -61,8 +61,8 @@ const parseCpuBudgetMs = 12_000;
 // between windows, which 1.4 times of room, the bound a slack of 3 gives, does not cover. 3 times
 // the worst healthy reading is 10,710 ms, still inside the budget, and a constant factor leaves a
 // ratio where it was, so a parse 3 times slower and still linear passes both. Besides that, and
-// the two patches and the shapes no row holds (packages/proof-editor/AGENTS.md, "Parser patches
-// and bounds"), the rows do not catch: a cost inside the slack, which is the room a healthy ratio
+// the two patches and the shapes no row holds (packages/proof-editor/docs/upstream.md, "Parser
+// patches"), the rows do not catch: a cost inside the slack, which is the room a healthy ratio
 // needs rather than a tight bound; a break of the six instances `parseCpuBudgetMs` alone keeps
 // (`a plain list of 8,000 items`, `49 items nested by indentation then blank lines` and `100 items
 // nested by indentation then blank lines`, each in both modes), whose worst break measured stays

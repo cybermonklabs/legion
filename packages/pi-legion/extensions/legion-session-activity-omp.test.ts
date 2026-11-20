@@ -37,10 +37,11 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 //     `subagent`;
 //   - a named `bash` service — it is *not* reported, and this case pins that it is not. A service
 //     runs outside the session's job manager, so `getAsyncJobSnapshot()` never names it and the
-//     daemon cannot know it is there. That is what skills/legion-worker/SKILL.md tells a worker
-//     ("A named Oh My Pi `bash` service goes with the pod too … your session reports nothing about
-//     it"), and the case fails if a pin starts reporting one, because the skill would then be
-//     telling a worker to throw away work the daemon could have kept.
+//     daemon cannot know it is there. That is what the worker prompt tells a worker
+//     (packages/daemon/internal/prompts/go/worker-common.md: "A named Oh My Pi `bash` service
+//     does not keep the pod: it runs outside your session's job manager, so your session reports
+//     nothing about it"), and the case fails if a pin starts reporting one, because the prompt
+//     would then be telling a worker to throw away work the daemon could have kept.
 //
 // The pane is a role session as a pod runs one: pi-envoy's extension and this package's root (the
 // root, not extensions/legion.ts, so Oh My Pi discovers the `agents/` beside it), the role's

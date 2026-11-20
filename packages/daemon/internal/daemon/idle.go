@@ -453,7 +453,8 @@ func (r *outbox) recordPodHold(ctx context.Context, issue string, hold workflow.
 //     the first role process of the pod — which is what R4's cancel is read against, so a
 //     delivery queued while the save ran is still below it and cancels the whole release;
 //  3. the teardown (record.IssueRelease): it deletes the pod, its disk and its Sandbox, and
-//     records the release with the size the save stored.
+//     records the release with the size the save stored. A Sandbox that owns the issue's kept
+//     volume stays, Suspended, with that volume: its pod and its Secrets go (runtime.IssueReleaser).
 func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
 	mark := store.IdleReleaseMark{Generation: view.Generation, Role: decision.Roles[0]}
 	rows := make([]store.IdleReleaseRow, 0, len(decision.Roles)+2)
@@ -484,11 +485,12 @@ func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now tim
 }
 
 // unownedReleaseRows is the release of a pod no claim owns as outbox rows: one act and one row,
-// the teardown (record.IssueRelease), which deletes the pod, its disk and its Sandbox. The two
-// acts the idle release runs before its own teardown have nothing to do here. There is no save,
-// because no shim is left to build a bundle and no role is coming back to a workspace that
-// would need one, and there are no role stops, because every claim of the issue is already
-// failed, retired or suspended.
+// the teardown (record.IssueRelease), which deletes the pod, its disk and its Sandbox, or, for a
+// Sandbox that owns the issue's kept volume, the pod and the Secrets alone
+// (runtime.IssueReleaser). The two acts the idle release runs before its own teardown have
+// nothing to do here. There is no save, because no shim is left to build a bundle and no role is
+// coming back to a workspace that would need one, and there are no role stops, because every
+// claim of the issue is already failed, retired or suspended.
 //
 // That one row carries the release's boundary flag. The store requires some row of a release to
 // be its boundary (store.ReleaseIdleIssue), and no reader of this release reads it: the

@@ -257,9 +257,11 @@ session_dsn_key=SESSION_DSN
 daemon_log=$evidence/logs/daemon.log
 # The daemon's container under bridge (daemon_run_args): its name, whose prefix and trailing pid
 # refuse_leftovers reads as it reads the other containers', and its image, busybox pinned by digest
-# and pulled through the mirror (AGENTS.md). The daemon is a static binary and needs nothing of an
-# image; the image is there for the `sh`, `tr` and `cat` the Apps' credential commands run under
-# bridge (lib/github-apps.sh's write_github_apps --token-dir, after mint_app_tokens).
+# and pulled through the mirror (no CI job runs this script, the ground on which
+# .github/scripts/check-ci-images.sh's exception list admits it). The daemon is a static binary
+# and needs nothing of an image; the image is there for the `sh`, `tr` and `cat` the Apps'
+# credential commands run under bridge (lib/github-apps.sh's write_github_apps --token-dir, after
+# mint_app_tokens).
 daemon_container="legion-e2eccs-daemon-$$"
 daemon_image=mirror.gcr.io/library/busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
 # app_tokens_dir is the directory under XDG_RUNTIME_DIR that prerequisites mints the implement

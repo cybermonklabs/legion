@@ -1,9 +1,10 @@
 name: CI (main bypass check)
 
 # The backstop for a commit that reached main without the merge queue: an administrator's merge, a
-# direct push, a ruleset bypass. ci.yaml runs on no push (its header says why), so nothing else in
-# this repository would test such a commit at all. On every push to main this workflow reads the
-# push's head alone, decides whether the merge queue tested it
+# direct push, a ruleset bypass. ci.yaml runs on no push
+# (.github/ci-notes/ci.md#why-the-router-runs-on-these-events-and-no-others says why), so nothing
+# else in this repository would test such a commit at all. On every push to main this workflow
+# reads the push's head alone, decides whether the merge queue tested it
 # (.github/scripts/main-bypass-check.sh), and when it did not, starts ci.yaml on main by
 # workflow_dispatch, where `changes` selects every job. That one run tests main's tip, which
 # contains the head, so one run answers for the whole push; the job summary holds what the check

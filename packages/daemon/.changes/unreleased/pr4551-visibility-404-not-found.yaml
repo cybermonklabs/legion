@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    A 404 on the leak guard's REST visibility read, through gh or through the curl read the guard
+    makes after gh cannot reach GitHub, no longer prints `LEAK CHECK SETUP ERROR`, which names a
+    broken pod. The write is still refused, exit 2 through `legion gh` and `legion leak-check`, with
+    `<the write>: GitHub answers 404 for <owner>/<name>, so the repository does not exist or this
+    credential cannot read it`. A 500 and every other failure of the read keep their words.
+time: 2026-11-20T00:17:27Z
+custom:
+    Issue: pr4551

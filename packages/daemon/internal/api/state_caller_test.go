@@ -1058,7 +1058,7 @@ func TestTheStateServedToAPodBeforeTheRepositoriesContractLeavesTheNextCallersSt
 // is either number moved: a constant left at 152, or renumbered without its entry, fails the
 // first check, and a DaemonAPIVersion renumbered below it fails the second.
 func TestTheRepositoriesContractIsTheContractThatChangedTheBlock(t *testing.T) {
-	const changedTheBlock = 182
+	const changedTheBlock = 190
 	if repositoriesLiveContract != changedTheBlock {
 		t.Fatalf("repositoriesLiveContract = %d, want %d, the contract whose entry in version.go made the block `live`, `caches` and `withoutWebhookApp`",
 			repositoriesLiveContract, changedTheBlock)
