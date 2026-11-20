@@ -1998,6 +1998,9 @@ test("the labels' count names every label the line does not draw whole after the
 // `onFocus` put back, the editor that focus opened was closed again by that second focus, and
 // row (8) passed. Here the page gives the heading its focus back once, as a return to the window
 // does, and nothing focuses it again.
+// SLOW(>=2s): 1,477 to 1,896 ms in six one-worker runs, Jobs e2e-rows-2chx9 at 2e3f0319 and
+// e2e-rows-9whgn at 4d06932a: one load, an edit opened by e and ended by Enter, the focus taken and
+// given back with two frames waited, a key typed, and the title read back from the server.
 test("a focus given back to the title's heading opens no editor", async ({ browser }) => {
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
@@ -2402,6 +2405,9 @@ async function expectFocusInSight(page: Page, menuId: string, message: string): 
 // the two the open menu covers at 390 px, and reads the focus in sight at every control it stops
 // on. It sets 390 px for every project before it reads anything, so the phone project would only
 // repeat it.
+// SLOW(>=2s): 1,333 to 1,941 ms in six one-worker runs, Jobs e2e-rows-2chx9 at 2e3f0319 and
+// e2e-rows-9whgn at 4d06932a: one load at 390 px, the menu opened by Enter, a Tab to each of its
+// actions with the menu's state read at each, and one Tab more with the focus read in sight.
 test("the header's menu closes once Tab takes the focus out of it, leaving the focus in sight", async ({
   browser,
 }) => {
@@ -2591,6 +2597,10 @@ test("Details closed after a write removed the parent link leaves the focus in t
 // action, and the box that keeps the two together goes with them. The keeper reads the elements
 // around Approve as the focus leaves it, so it still finds that document's chip and gives it the
 // focus, as after an approval made from the header, rather than going on to "Issue actions".
+// SLOW(>=2s): 1,670 to 1,999 ms in six one-worker runs, Jobs e2e-rows-2chx9 at 2e3f0319 and
+// e2e-rows-9whgn at 4d06932a: one load after an approval request, Details opened by Shift+M,
+// another reader's approval written and polled until the header draws no action, and Details closed
+// by Escape before the focus is read.
 test("Details closed after an answer elsewhere removed Approve leaves the focus on the document's chip", async ({
   browser,
 }) => {
@@ -2645,6 +2655,10 @@ function reviewsSent(page: Page): string[] {
 // focus on another of the header's controls, the title's heading, `a` is not the approval's: it
 // sends no review and the request still waits. Nor is it on the chip once the document is
 // approved, which draws no Approve.
+// SLOW(>=2s): 1,510 to 1,960 ms in six one-worker runs, Jobs e2e-rows-2chx9 at 2e3f0319 and
+// e2e-rows-9whgn at 4d06932a: one load after an approval request, a pressed on the title's heading
+// and two frames waited, then a pressed on the chip and polled until Dispatch records the approval,
+// and a pressed again on the approved chip with two frames waited.
 test("the approval chip's a approves the document whose request waits, and a elsewhere approves nothing", async ({
   browser,
 }) => {
@@ -2699,6 +2713,10 @@ test("the approval chip's a approves the document whose request waits, and a els
 // With the focus on the chip whose request waits, or on its Approve, Shift+R presses its Request
 // changes, which opens the Request changes dialog, and Escape closes the dialog and gives the
 // focus back. With the focus on the title's heading it opens nothing.
+// SLOW(>=2s): 1,473 to 1,875 ms in six one-worker runs, Jobs e2e-rows-2chx9 at 2e3f0319 and
+// e2e-rows-9whgn at 4d06932a: one load after an approval request, Shift+R on the title's heading
+// with two frames waited, then the Request changes dialog opened by Shift+R and closed by Escape
+// twice, from the chip and from its Approve.
 test("the approval chip's Shift+R opens Request changes, from the chip and from its Approve", async ({
   browser,
 }) => {
