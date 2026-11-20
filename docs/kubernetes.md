@@ -6276,7 +6276,7 @@ A claim the daemon itself suspended — by its own rule, at a root's exit, at an
 An ask would reach no session, and a wake or a resume would override the reason the daemon stopped the claim; for an idle release, that reason is the decision of dispatch://INFRA-2981 that a released pod is not woken to be asked, since it holds no turn to interrupt.
 An ask that the sweep queued before such a suspension finishes without a publish (`UpdateAskSuspended`, `supervise.Machine.PublishUpdateAsk`), because the Envoy listener wakes a role for each publish to a role with no holder.
 A `failed` claim is left out the same way: it runs no turn on the pod, so the round neither asks it nor waits for it, and a retry brings it back into the round as any other claim.
-A role that a project's pause stopped is suspended `released` too, but while the pause keeps its pod the role is the pause's and not this rule's: the round waits for it and asks it once its agent is ready (`roundClock.passesOver`, `podHolds.keeping`, [Pausing a project](#pausing-a-project)).
+A role that a project's pause stopped is suspended `released` too, but while the pause still owes that role a launch the role is the pause's and not this rule's: the round waits for it and asks it once its agent is ready (`roundClock.passesOver`, `podHolds.owes`, [Pausing a project](#pausing-a-project)).
 An operator's suspension is never passed over: the round waits for the operator whatever its bound (below).
 No claim is left out of a round for the contract its plugin records:
 a role whose `legion` tool has no `ready_for_update` operation is told to do the first three steps and end its turn, since its round ends at the bound whatever it does.
@@ -6416,7 +6416,7 @@ Four things hold it:
 
 - a hold of a project's pause on the pod, at any time ([Pausing a project](#pausing-a-project));
 
-- before the round's bound, a claim the round waits for that records no process, while a project's pause still keeps the pod (`podHolds.keeping`): a role the pause stopped, still suspended or with its launch parked in the wake pacing; until the wake pacing lets out the last launch that the pause held for a role of the pod, the work on the disk is the pause's, whether or not an ask of the round reached that claim;
+- before the round's bound, a claim the round waits for whose role a project's pause still owes a launch, read for each role (the role has not run in the pod since the pause stopped it, `PausePodHold.Owed`), while that claim is still suspended by the pause or its launch waits in the wake pacing (`podHolds.owes`): the work on the disk is the pause's, whether or not an ask of the round reached that claim, and the launch of another role of the pod does not end that keep;
 
 - before the round's bound, a claim the round waits for that holds an ask of the round that reached its session and that it has not answered: its process went while it held the ask, so its unpushed work may be on the disk.
 
@@ -6430,8 +6430,8 @@ A launch reads the same rule when it runs (`roundPodEndsAtLaunch`, the Sandbox r
 Under the pod's launch turn, a launch that would keep the live pod of its issue asks the daemon whether the round over that pod ends by this rule, so the round's bound is read when the launch runs and not when its claim was resumed.
 Where no role process runs in the pod and nothing holds it, the launch replaces the pod as the round's own replacement and starts its role in a new pod, so the role is launched once.
 Before the bound, the launch also keeps the pod where the launching claim itself holds the round's ask and has not answered it.
-Before the bound, the launch keeps the pod as well where it is the launch that a project's pause held for its claim on this pod: the claim's open resume names a pause that has a hold on the pod that no deletion ended (`pod_resumes.pause_id`).
-The pause kept the pod for that role's work, so the role's own launch at its let-out does not replace it.
+Before the bound, the launch keeps the pod as well where it is the launch that a project's pause held for its claim on this pod: a hold of the pause on the pod that no deletion ended still owes the claim's role a launch (`podHolds.pauseHeldLaunch`, `pod_resumes.pause_id`).
+The pause kept the pod for that role's work, so the role's own launch at its let-out does not replace it, although the let-out is then no longer ahead and the pause no longer keeps the claim in the round's sets.
 The next sweep reads the replaced pod gone, or another pod in its place, and ends the round with the line and the message of a replacement by issue (`endRoundALaunchReplaced`).
 In every other case the launch goes into the kept pod: a launching claim that holds the ask is not asked again, any other launching claim is asked once its agent is ready, and before its bound the round waits for their answers and their turns, as for any claim.
 Once the round replaces that pod, each role launched into it is launched a second time, through the wake pacing: that is what keeping the pod for an unanswered ask, an operator's hold or a pause's hold costs.

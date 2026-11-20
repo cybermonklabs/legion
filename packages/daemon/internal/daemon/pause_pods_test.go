@@ -309,7 +309,7 @@ func TestPodUpdateRoundWaitsForARoleThePauseStoppedUntilTheLetOutOfItsHeldLaunch
 	rig := newPodUpdateRigWith(t, podUpdateRigOptions{wakePace: pacedUntil(letOut)},
 		readyWorker(claim.RoleImplementer), suspendedRole(stopped, supervise.SuspendedByReleased))
 	rig.drifts(podUpdateDrift)
-	rig.recordPause(stopped, store.PausePodHoldResumed)
+	rig.recordPause(store.PausePodHoldResumed, stopped)
 	rig.parkPauseHeldLaunch(stopped, letOut)
 
 	rig.tick()
@@ -336,11 +336,8 @@ func TestPodUpdateRoundWaitsForARoleThePauseStoppedUntilTheLetOutOfItsHeldLaunch
 		t.Fatalf("the round wrote %d update-ask rows for the %s while its launch was parked, want none: a publish to a role with no holder wakes it", n, stopped)
 	}
 
-	rig.clockAt(letOut)
 	rig.intoRoundPod(stopped)
-	if fired := rig.clock.fire(letOut.Sub(podUpdateStart)); fired != 1 {
-		t.Fatalf("the wake pacing ran %d launches at its turn, want the %s's one", fired, stopped)
-	}
+	rig.runParkedLaunch(stopped, podUpdateStart, letOut)
 	rig.launchedIntoRoundPod(stopped)
 	rig.registerInto(stopped, podUpdatePod)
 	if calls := rig.replacements(); len(calls) != 0 {
@@ -360,4 +357,210 @@ func TestPodUpdateRoundWaitsForARoleThePauseStoppedUntilTheLetOutOfItsHeldLaunch
 	if n := rig.askedOf(stopped); n != 1 {
 		t.Fatalf("the round wrote %d update-ask rows for the %s, want the one once it was ready", n, stopped)
 	}
+}
+
+// launchKeptLine is what the launch hook logs where it keeps the pod of a round for a launch
+// (keepAtLaunch), with the reason it keeps it.
+const launchKeptLine = "supervise: a launch goes into the pod of an update round that keeps its pod"
+
+// launchKeptBecause is each reason the launch hook logged for keeping the round's pod for role's
+// launch (launchKeptLine), oldest first.
+func (r *podUpdateRig) launchKeptBecause(role claim.Role) []string {
+	r.t.Helper()
+	var reasons []string
+	for _, line := range loggedLines(r.t, r.logs.String(), launchKeptLine) {
+		if line["claim"] == string(r.tokens[role]) {
+			reasons = append(reasons, fmt.Sprint(line["reason"]))
+		}
+	}
+	return reasons
+}
+
+// dispatch://INFRA-4109 R1 with the project pause carried, as its architect set the rule in
+// review round 3: the round keeps the pod while the pause still owes a launch to any role it
+// stopped on the pod, read for each role from the store (store.PausePodHold.Owed, podHolds.owes),
+// never from the latest let-out of all the roles. The pause stopped the reviewer and the
+// implementer, suspended released, and held the launch of each. Its resume ended the hold a minute
+// before the round opened (recordPause). The tester answered the round, and the daemon then
+// suspended it. The wake pacing lets each launch out at the moment it reserves it.
+//
+// The reviewer's held start runs first, and the pacing lets its launch out at once, after the
+// hold's end. The reviewer comes up in the round's pod, the round asks it, and it answers. The
+// daemon then suspends it, so no process runs in the pod. The implementer's held start has not run
+// yet: it is still suspended released, and the pause still owes it a launch. So the round does not
+// pass over the implementer, and it waits for it. The pod is not replaced through the reviewer's
+// process once the reviewer has answered, and it is not replaced by issue once no process runs in
+// it. Then, in the first case, the tester's launch keeps the pod for the implementer's work, and
+// the hook's reason names the implementer. In the second case, the implementer's held launch runs
+// five minutes into the round, as a start row that failed and backed off runs. It comes up in the
+// round's pod with one launch, and the round replaces the pod once the implementer has answered.
+//
+// Where the keep is read from the latest let-out of the pause, the reviewer's let-out ends the
+// keep of both roles. The round then passes over the implementer, and it replaces the pod through
+// the reviewer's process once the reviewer has answered, before the implementer's launch.
+func TestPodUpdateRoundKeepsThePodForEachRoleThePauseStillOwesALaunch(t *testing.T) {
+	const first, second = claim.RoleReviewer, pauseStoppedRole
+	// letsOutAtOnce is a wake pacing that lets every paced launch out at the moment it reserves it.
+	letsOutAtOnce := supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now }}
+	waitsFor := fmt.Sprintf("the held launch of the %s", second)
+	// firstRanSecondWaits is a rig of its own, taken to the moment where first's held launch has
+	// run and first has answered and has been suspended, and second's held start has not run.
+	firstRanSecondWaits := func(t *testing.T) *podUpdateRig {
+		t.Helper()
+		rig := newPodUpdateRigWith(t, podUpdateRigOptions{wakePace: letsOutAtOnce},
+			releasedUnasked(first), releasedUnasked(second), answeredThenSuspended(claim.RoleTester))
+		rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
+		rig.stampsResumes()
+		rig.recordPause(store.PausePodHoldResumed, first, second)
+
+		// The daemon writes the let-out on a goroutine of its own when it reserves the launch
+		// (projectPause.wakeLetOut), so the write can land on either side of the launch.
+		rig.intoRoundPod(first)
+		rig.heldStart(first)
+		rig.writeLetOut(first, podUpdateStart)
+		rig.launchedIntoRoundPod(first)
+		rig.registerInto(first, podUpdatePod)
+		rig.awaitResumeReady(first)
+		rig.awaitAsked(first, podUpdateRound)
+		rig.signal(first, "a1b2c3d")
+		rig.wantPodKept(waitsFor)
+
+		rig.handle(first, supervise.RequestSuspend{Claim: rig.tokens[first], Reason: "its phase ended", By: supervise.SuspendedByDaemon})
+		rig.awaitClaim(first, "the daemon's suspension to let its process go", func(c supervise.Claim) bool {
+			return c.State == supervise.StateSuspended && c.Locator == nil
+		})
+		rig.wantPodKept(waitsFor)
+		if c := rig.claimOf(second); c.State != supervise.StateSuspended || c.SuspendedBy != supervise.SuspendedByReleased ||
+			c.UpdateRound != podUpdateRound {
+			t.Fatalf("the %s is %s by %q in round %q, want it suspended released in the open round", second, c.State, c.SuspendedBy, c.UpdateRound)
+		}
+		return rig
+	}
+
+	t.Run("a sibling's launch keeps the pod", func(t *testing.T) {
+		const sibling = claim.RoleTester
+		rig := firstRanSecondWaits(t)
+		rig.intoRoundPod(sibling)
+		rig.handle(sibling, supervise.RequestResume{Claim: rig.tokens[sibling]})
+		rig.launchedIntoRoundPod(sibling)
+		if reasons := rig.launchKeptBecause(sibling); len(reasons) != 1 || !strings.Contains(reasons[0], fmt.Sprintf("owes the %s a launch", second)) {
+			t.Fatalf("the launch of the %s kept the pod because %q, want once because the pause owes the %s a launch", sibling, reasons, second)
+		}
+		rig.registerInto(sibling, podUpdatePod)
+		rig.wantPodKept(waitsFor)
+	})
+
+	t.Run("the held launch comes up in the round's pod", func(t *testing.T) {
+		rig := firstRanSecondWaits(t)
+		rig.clockAt(podUpdateStart.Add(5 * time.Minute))
+		rig.intoRoundPod(second)
+		rig.heldStart(second)
+		rig.writeLetOut(second, rig.clock.Now())
+		rig.launchedIntoRoundPod(second)
+		rig.registerInto(second, podUpdatePod)
+		rig.awaitAsked(second, podUpdateRound)
+		rig.signal(second, "e4f5a6b")
+		rig.awaitReplacement(1, fmt.Sprintf("once the %s answered", second))
+		lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
+		if len(lines) != 1 {
+			t.Fatalf("the replacement was logged %d times, want once: %+v", len(lines), lines)
+		}
+		if lines[0]["atTheBound"] != false {
+			t.Errorf("the replacement's line says atTheBound=%v, want false: the %s answered before the bound", lines[0]["atTheBound"], second)
+		}
+		wantField(t, lines[0], "notWaitedFor")
+		if asked := rig.byIssueAsks(); len(asked) != 0 {
+			t.Errorf("the runtime was asked to replace the pod by issue %+v, want the replacement through the %s's process", asked, second)
+		}
+	})
+}
+
+// dispatch://INFRA-4109 R1 and R7 with the project pause carried, as its architect set the rule
+// in review round 3: an open resume of the pause whose role has come up keeps nothing. The pause
+// stopped the implementer, suspended released, and held its launch. Its resume ended the hold a
+// minute before the round opened (recordPause). The wake pacing is off. The reviewer was released
+// by an idle release before the pause, and the round never asked it (releasedUnasked). The tester
+// answered the round, and the daemon then suspended it.
+//
+// The implementer's held start runs. Its launch comes up in the round's pod, which the pause kept
+// for it (podHolds.pauseHeldLaunch), and its ready is stamped on its resume as the daemon stamps it
+// (stampsResumes). The round asks it. The daemon then suspends it before its first turn, as a
+// root's exit does, so no process runs in the pod, and its resume stays open. The implementer has
+// run in the pod since the pause stopped it, so the pause owes it nothing more
+// (store.PausePodHold.Owed), and the hold, which ended before the round opened, is not read at
+// all. So the round passes over the implementer, whose ask holds nothing, and the reviewer (R1).
+// In the first case, the sweep replaces the pod by issue before the bound. In the second case, a
+// launch of the reviewer comes first. The pause does not keep the pod for it: the launch replaces
+// the pod as the round's own replacement and starts the reviewer in the pod in its place, so the
+// reviewer is launched once (R7).
+//
+// Where the open resume is read as owed whatever its ready, the pause keeps the pod until the
+// round's bound for each member that records no process. The sweep then replaces nothing, and the
+// reviewer's launch goes into the round's pod, which the round replaces later under the reviewer's
+// first turn.
+func TestAPodlessRoundIsNotKeptForAPauseResumeWhoseRoleCameUp(t *testing.T) {
+	const stopped, idle = pauseStoppedRole, claim.RoleReviewer
+	members := []claim.Role{stopped, idle, claim.RoleTester}
+	// cameUpThenSuspended is a rig of its own, taken to the moment where the daemon has suspended
+	// stopped after it came up, with its resume open.
+	cameUpThenSuspended := func(t *testing.T) *podUpdateRig {
+		t.Helper()
+		rig := newPodUpdateRig(t, releasedUnasked(stopped), releasedUnasked(idle), answeredThenSuspended(claim.RoleTester))
+		rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
+		rig.stampsResumes()
+		rig.recordPause(store.PausePodHoldResumed, stopped)
+
+		rig.intoRoundPod(stopped)
+		rig.heldStart(stopped)
+		rig.launchedIntoRoundPod(stopped)
+		rig.registerInto(stopped, podUpdatePod)
+		rig.awaitResumeReady(stopped)
+		rig.awaitAsked(stopped, podUpdateRound)
+		rig.handle(stopped, supervise.RequestSuspend{Claim: rig.tokens[stopped], Reason: "the root of its tree exited", By: supervise.SuspendedByDaemon})
+		rig.awaitClaim(stopped, "the daemon's suspension to let its process go", func(c supervise.Claim) bool {
+			return c.State == supervise.StateSuspended && c.Locator == nil
+		})
+		if _, _, open, err := rig.st.OpenPodResume(rig.ctx, podUpdateProject, podUpdateIssue, stopped); err != nil || !open {
+			t.Fatalf("the %s's resume is open = %t, %v; want it open: no first turn stamped it and nothing closed it", stopped, open, err)
+		}
+		return rig
+	}
+
+	t.Run("the sweep replaces the pod by issue", func(t *testing.T) {
+		rig := cameUpThenSuspended(t)
+		replaced := rig.awaitIssueReplacement("once nothing holds it")
+		if replaced.Issue != podUpdateIssue || replaced.PodUID != podUpdatePod {
+			t.Errorf("the pod was replaced by issue as %+v, want issue %s and the round's pod %s", replaced, podUpdateIssue, podUpdatePod)
+		}
+		for _, role := range members {
+			rig.awaitClaim(role, "its round to end with the replacement by issue", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+		}
+		wantPodlessEnd(t, rig, false, []claim.Role{stopped, idle}, claim.RoleTester)
+	})
+
+	t.Run("a launch into the pod replaces it", func(t *testing.T) {
+		rig := cameUpThenSuspended(t)
+		rig.intoRoundPod(idle)
+		rig.handle(idle, rig.lookStart(idle))
+		c := rig.awaitClaim(idle, "its launch to record its process", func(c supervise.Claim) bool { return c.Locator != nil })
+		pod := podOf(c.Locator)
+		if pod == podUpdatePod {
+			t.Fatalf("the %s was launched into the round's pod %s, which the round replaces later under its first turn (R7), want the pod in its place; the hook kept the pod because %q",
+				idle, pod, rig.launchKeptBecause(idle))
+		}
+		if replaced := rig.rt.CallsOf("ReplaceRoundPodAtLaunch"); len(replaced) != 1 || replaced[0].PodUID != podUpdatePod {
+			t.Fatalf("the launch replaced %+v, want the round's pod %s once", replaced, podUpdatePod)
+		}
+		rig.registerInto(idle, pod)
+		for _, role := range members {
+			rig.awaitSwept(role, "its round to end as the launch's replacement", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+		}
+		wantRoundPodEnd(t, rig, "atLaunch", false, []claim.Role{stopped, idle}, claim.RoleTester)
+		if launches := rig.launchesOf(idle); len(launches) != 1 {
+			t.Errorf("the %s was launched %d times, want once", idle, len(launches))
+		}
+		if asked := rig.byIssueAsks(); len(asked) != 0 {
+			t.Errorf("the runtime was asked to replace the pod by issue %+v, want the launch's replacement alone", asked)
+		}
+	})
 }

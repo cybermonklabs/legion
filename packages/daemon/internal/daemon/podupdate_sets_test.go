@@ -43,12 +43,14 @@ type roundShape struct {
 // dispatch://INFRA-2981 R5 made it.
 //
 // A claim a project's pause stopped is suspended released, and it is the pause's, not R1's,
-// while the pause keeps the issue's pod: the pause kept the pod for the work on its disk (decision
-// 12 of dispatch://INFRA-3759). So it is in both sets under a hold that stands, and under a hold
-// that ended at the resume while the let-out of the launch the pause held for it is still ahead.
-// Once that let-out has passed, a claim still suspended released is R1's again, in neither set.
-// The pause keeps no other source in the round: a claim the daemon's own rule suspended is in
-// neither set under a hold that stands too.
+// while the pause still owes its role a launch: the pause kept the pod for the work on its disk
+// (decision 12 of dispatch://INFRA-3759). The store reads what the pause owes role by role
+// (store.PausePodHold.Owed), and the daemon reads it for the claim's own role (podHolds.owes). So
+// the claim is in both sets under a hold that stands, and under a hold that ended at the resume,
+// wherever the hold owes its role a launch. A hold that owes its role nothing keeps it in neither
+// set, whatever the latest let-out of the pause: the role became ready since the pause stopped it,
+// or the pause held no launch of it. The pause keeps no other source in the round: a claim the
+// daemon's own rule suspended is in neither set under a hold that stands too.
 //
 // Each row is one shape of claim, with the membership the rule gives it, read at the round's
 // clock over the pause's holds the row names. The ask side is roundAsks: a claim the round asks,
@@ -97,6 +99,13 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 			hold.EndedAt, hold.End, hold.LetOut = opened.Add(-time.Minute), store.PausePodHoldResumed, letOut
 		}
 	}
+	// owingTheClaim is a hold whose pause still owes the row's claim's role, the implementer, a
+	// launch, let out at letOut (store.PausePodHold.Owed).
+	owingTheClaim := func(letOut time.Time) func(*store.PausePodHold) {
+		return func(hold *store.PausePodHold) {
+			hold.Owed = []store.OwedLaunch{{Role: claim.RoleImplementer, LetOut: letOut}}
+		}
+	}
 
 	rows := []roundShape{
 		{name: "queued", claim: member(supervise.StateQueued), want: inBoth},
@@ -114,26 +123,34 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 		{name: "suspended by exit", claim: suspendedBy(supervise.SuspendedByExit), want: inNeither},
 		{name: "suspended by released", claim: suspendedBy(supervise.SuspendedByReleased), want: inNeither},
 		{name: "suspended by unknown", claim: suspendedBy(supervise.SuspendedByUnknown), want: inNeither},
+		// The pause's stop takes a held wake of each role it stops (store.PodRecords.TakePodWake,
+		// pods.WakePause), so while its hold stands the stopped role has an open resume of that
+		// pause, whose clock is the moment of the stop.
 		{name: "suspended by released under a pause hold that stands", claim: suspendedBy(supervise.SuspendedByReleased),
-			holds: pauseHold(), want: inBoth},
+			holds: pauseHold(owingTheClaim(opened.Add(-time.Hour))), want: inBoth},
 		{name: "suspended by released under a pause hold that ended with its let-out ahead", claim: suspendedBy(supervise.SuspendedByReleased),
-			holds: pauseHold(resumedWithLetOut(now.Add(10 * time.Minute))), want: inBoth},
+			holds: pauseHold(resumedWithLetOut(now.Add(10*time.Minute)), owingTheClaim(now.Add(10*time.Minute))), want: inBoth},
 		{name: "suspended by released under a pause hold that ended with its let-out passed", claim: suspendedBy(supervise.SuspendedByReleased),
 			holds: pauseHold(resumedWithLetOut(opened.Add(30 * time.Second))), want: inNeither},
 		// The resume set the held launch's stuck clock to its own moment, the hold's end, and the
 		// wake pacing has not reserved the launch yet: the stopped role still waits for its owed
 		// launch, so it is the pause's.
 		{name: "suspended by released under a pause hold whose held launch is not let out yet", claim: suspendedBy(supervise.SuspendedByReleased),
-			holds: pauseHold(resumedWithLetOut(opened.Add(-time.Minute))), want: inBoth},
+			holds: pauseHold(resumedWithLetOut(opened.Add(-time.Minute)), owingTheClaim(opened.Add(-time.Minute))), want: inBoth},
+		// The role became ready since the pause stopped it, and its resume stays open, as a role
+		// the daemon suspends before its first turn leaves it: the store reads it as owed nothing
+		// (store.PausePodHold.Owed), so the latest let-out still ahead keeps nothing of the claim.
+		{name: "suspended by released under a pause hold whose owed role became ready", claim: suspendedBy(supervise.SuspendedByReleased),
+			holds: pauseHold(resumedWithLetOut(now.Add(10 * time.Minute))), want: inNeither},
 		// The pause held no launch of the pod: nothing of the pause is left to wait for.
 		{name: "suspended by released under a pause hold that ended with no launch held", claim: suspendedBy(supervise.SuspendedByReleased),
 			holds: pauseHold(resumedWithLetOut(time.Time{})), want: inNeither},
 		{name: "suspended by released under a pause hold its pod's deletion ended", claim: suspendedBy(supervise.SuspendedByReleased),
 			holds: pauseHold(func(hold *store.PausePodHold) {
 				hold.EndedAt, hold.End, hold.LetOut = opened.Add(-time.Minute), store.PausePodHoldDeleted, opened.Add(-time.Minute)
-			}), want: inNeither},
+			}, owingTheClaim(opened.Add(-time.Minute))), want: inNeither},
 		{name: "suspended by daemon under a pause hold that stands", claim: suspendedBy(supervise.SuspendedByDaemon),
-			holds: pauseHold(), want: inNeither},
+			holds: pauseHold(owingTheClaim(opened.Add(-time.Hour))), want: inNeither},
 		{name: "an operator suspension held over a running turn", claim: member(supervise.StateWorking, func(c *supervise.Claim) {
 			c.SuspensionHeld, c.SuspensionHeldBy = true, supervise.SuspendedByOperator
 		}), want: inBoth},

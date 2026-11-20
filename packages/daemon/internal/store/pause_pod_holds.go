@@ -75,7 +75,29 @@ type PausePodHold struct {
 	// resumes that pause held (pod_resumes.pause_id), which the resume starts at its own moment
 	// (SetProjectResumeClocksTx) and the reservation of each launch moves to the moment the wake
 	// pacing lets that launch out (SetResumeClock). It is zero where the pause held no launch of
-	// the pod, and every other read of a hold leaves it zero.
+	// the pod, and every other read of a hold leaves it zero. An update round's bound is the one
+	// reader that wants the latest let-out of all the roles (internal/daemon's heldUntil). Whether
+	// the pause still keeps the pod for one role is read from Owed, never from LetOut.
+	LetOut time.Time
+	// Owed is, as PausePodHoldsSince reads it, each role of the pod that the hold's pause still
+	// owes a launch, by role: the role has a resume of that pause for the issue that no first turn
+	// stamped, nothing closed, and whose pod no ready stamped (pod_resumes.first_turn_at,
+	// closed_at and pod_ready_at). A role that became ready has run in the pod again since the
+	// pause stopped it, so the pause owes it nothing more, even where its resume stays open
+	// because the daemon suspended it, or it failed or retired, before its first turn. A role
+	// whose held launch failed before it became ready has not run since the pause stopped it, so
+	// its work is still the pause's, and it stays owed. A role has one open resume at most
+	// (pod_resumes_one_open_per_role), so it is named once. Every other read of a hold leaves
+	// Owed nil.
+	Owed []OwedLaunch
+}
+
+// OwedLaunch is one launch that a pause still owes a role of a pod (PausePodHold.Owed): the role,
+// and the let-out of that role's own launch, which is the stuck clock of its resume
+// (pod_resumes.clock_at). That clock is the moment of the project's resume until the wake pacing
+// lets the launch out (SetProjectResumeClocksTx, SetResumeClock).
+type OwedLaunch struct {
+	Role   claim.Role
 	LetOut time.Time
 }
 
@@ -179,26 +201,34 @@ func (s *Store) OpenPausePodHolds(ctx context.Context, project string) ([]PauseP
 }
 
 // PausePodHoldsSince is every hold of project's pods that stands, that ended after since, whose
-// pause let out a launch of the pod after since, or whose pause still owes a launch of the pod, by
-// issue and then by when it began, each with its latest let-out (PausePodHold.LetOut), read in the
-// one statement: what one sweep of the update rounds reads (decision 12 of dispatch://INFRA-3759).
-// A round waits over a pod a hold stands on, and its bound moves by the time a hold kept its pod
-// after the round opened, which runs on to the let-out of the last launch its pause held for a
-// role of the pod, so since is the opening of the oldest round the sweep reads.
+// pause let out a launch of the pod after since, or whose pause still owes a role of the pod a
+// launch, by issue and then by when it began, each with its latest let-out (PausePodHold.LetOut)
+// and each launch its pause still owes (PausePodHold.Owed), read in the one statement: what one
+// sweep of the update rounds reads (decision 12 of dispatch://INFRA-3759). A round waits over a
+// pod a hold stands on, and its bound moves by the time a hold kept its pod after the round
+// opened, which runs on to the let-out of the last launch its pause held for a role of the pod,
+// so since is the opening of the oldest round the sweep reads.
 //
-// A launch the pause still owes is an open resume of that pause for the issue: no first turn
-// stamped it and nothing closed it (OpenPodResume). Its stuck clock is the moment of the project's
-// resume (SetProjectResumeClocksTx) until the wake pacing lets the launch out (SetResumeClock).
-// That moment can be before since: a round can open after the hold ended and before the launch is
-// let out. The pause keeps the pod for that launch until its let-out, so the read returns such a
-// hold whatever since. project is the Dispatch key.
+// A launch the pause still owes a role is a resume of that pause for the issue and that role that
+// no first turn stamped, nothing closed (OpenPodResume), and whose pod no ready stamped
+// (MarkPodResumeReady). It is read for each role, with that role's own stuck clock, which is the
+// moment of the project's resume (SetProjectResumeClocksTx) until the wake pacing lets the launch
+// out (SetResumeClock). That moment can be before since: a round can open after the hold ended
+// and before the launch is let out. The pause keeps the pod for that role's work until the role
+// runs in the pod again, so the read returns such a hold whatever since. A resume that a ready
+// stamped and that stays open owes nothing, so it brings no hold into the read. project is the
+// Dispatch key.
 func (s *Store) PausePodHoldsSince(ctx context.Context, project string, since time.Time) ([]PausePodHold, error) {
-	rows, err := s.pool.Query(ctx, `select h.id, h.pause_id, h.project, h.issue, h.held_at, h.ended_at, coalesce(h.ended_why, ''), l.let_out
+	rows, err := s.pool.Query(ctx, `select h.id, h.pause_id, h.project, h.issue, h.held_at, h.ended_at, coalesce(h.ended_why, ''),
+			l.let_out, l.owed_roles, l.owed_let_outs
 		from project_pause_pod_holds h
-		left join lateral (select max(r.clock_at) as let_out, bool_or(r.first_turn_at is null and r.closed_at is null) as owed
+		left join lateral (select max(r.clock_at) as let_out,
+				coalesce(array_agg(r.role order by r.role) filter (where r.first_turn_at is null and r.closed_at is null and r.pod_ready_at is null), '{}') as owed_roles,
+				coalesce(array_agg(r.clock_at order by r.role) filter (where r.first_turn_at is null and r.closed_at is null and r.pod_ready_at is null), '{}') as owed_let_outs
 			from pod_resumes r
 			where r.project = lower(h.project) and r.issue = h.issue and r.pause_id = h.pause_id) l on true
-		where h.project = $1 and (h.ended_at is null or h.ended_at > $2 or l.let_out > $2 or l.owed) order by h.issue, h.held_at`, project, since)
+		where h.project = $1 and (h.ended_at is null or h.ended_at > $2 or l.let_out > $2 or cardinality(l.owed_roles) > 0)
+		order by h.issue, h.held_at`, project, since)
 	if err != nil {
 		return nil, fmt.Errorf("read the pod holds of %s since %s: %w", project, since.Format(time.RFC3339), err)
 	}
@@ -208,10 +238,18 @@ func (s *Store) PausePodHoldsSince(ctx context.Context, project string, since ti
 		var h PausePodHold
 		var end string
 		var ended, letOut *time.Time
-		if err := rows.Scan(&h.ID, &h.Pause, &h.Project, &h.Issue, &h.HeldAt, &ended, &end, &letOut); err != nil {
+		var owedRoles []string
+		var owedLetOuts []time.Time
+		if err := rows.Scan(&h.ID, &h.Pause, &h.Project, &h.Issue, &h.HeldAt, &ended, &end, &letOut, &owedRoles, &owedLetOuts); err != nil {
 			return nil, fmt.Errorf("read the pod holds of %s since %s: %w", project, since.Format(time.RFC3339), err)
 		}
 		h.End, h.EndedAt, h.LetOut = PausePodHoldEnd(end), orZero(ended), orZero(letOut)
+		if len(owedRoles) > 0 {
+			h.Owed = make([]OwedLaunch, len(owedRoles))
+			for i, role := range owedRoles {
+				h.Owed[i] = OwedLaunch{Role: claim.Role(role), LetOut: owedLetOuts[i]}
+			}
+		}
 		holds = append(holds, h)
 	}
 	if err := rows.Err(); err != nil {
