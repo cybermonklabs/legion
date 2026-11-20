@@ -1,6 +1,6 @@
 # PR body, recorded results, and the simplify pass
 
-Read it before you edit the pull request body, record or read a check's result, or run the simplify pass.
+Read it before you edit the pull request body, record or read a check's result, or run the simplify pass. Every path it cites is in cybermonklabs/legion.
 
 ## The pull request body template
 
@@ -47,29 +47,27 @@ GitHub refuses a body over 65,536 characters: past about 48,000, link evidence r
 
 ## The brief for the human
 
-The implementer keeps `Outcome`, `Why`, `Change`, `Proven by` and `Size` true after every push. At each round the reviewer writes `Look at first`, and `Not proven / risk`, copying word for word every claim recorded as unproven (the tester's `failures`, its own review, a proof-check comment). A requirement there is unmet, unless only the deploy can show it and the plan names its observation. A stale `Outcome` is a finding against the implementer; the merger rewrites nothing.
+The implementer keeps `Outcome`, `Why`, `Change`, `Proven by` and `Size` true after every push. At each round the reviewer writes `Look at first`, and `Not proven / risk`, copying word for word every claim recorded as unproven (the tester's `failures`, its own review, a proof-check comment). A requirement there is unmet, unless only the deploy can show it and the plan names its observation. The merger reads `Outcome` and `Not proven / risk` from the body at the head it merges, and a stale `Outcome` that no longer describes the diff is a finding against the implementer, not a line the merger rewrites.
 
 ## What a result is
 
-- **A check** is a `check` block of the issue's Verification document: what it `serves`, its `surface` (`browser`, `cli` or `api`), its `run`, its `when` (`before_merge`, `after_merge` or `default_branch`) and its `negative_control`. The architect writes the checks; one carrying `ci_check` is CI's (`skill://legion-worker/references/ci-checks.md`).
+- **A check** is a `check` block of the issue's Verification document: what it `serves`, its `surface` (`browser`, `cli` or `api`), its `run`, its `when` (`before_merge`, `after_merge` or `default_branch`) and its `negative_control`. The architect writes the checks; nothing else decides what must be proved. One carrying `ci_check` is CI's (`skill://legion-worker/references/ci-checks.md`).
 - **A result** is one run of one check: `dispatch result --issue <issue> --check <block id> --role <your role> --verdict pass --commit <sha>`, with `--surface`, `--run`, `--observed` and `--negative-control`. These refuse a bare `-`: use `--run-file` and its kin, one reading stdin per call. Put the printed line into the body unchanged.
-- The surface is production-like (the real-process harness, a sandbox repository, a real browser, a development stack, staging) and has the resource the change touches; `--run` or `--observed` links to the run. A unit or integration test is a regression lock, never a result, except as the job a `ci_check` names.
+- The surface is production-like (the real-process test harness and fixtures, a sandbox repository, a real browser, a development stack, staging, or a local stack with real migrations) and has the resource the change touches; `--run` or `--observed` links to that run, screenshot or e2e. Human review does not replace user-facing verification, and a green unit suite is not it. A unit or integration test is a regression lock, never a result, except as the job a `ci_check` names.
 - Record a result only after its commit is pushed (`400 RESULT_COMMIT_UNKNOWN`).
-- **A check that cannot fail is not a result.** The negative control shows it failing on a deliberately wrong input. A documented procedure counts only when it ran: reading it is not a run.
+- **A check that cannot fail is not a result.** The negative control shows it failing on a deliberately wrong input. A documented procedure counts only when it ran: reading it is not a run, and a procedure no surface available to you can run is reported under *When no surface reaches the changed path* below, never passed.
 - A `before_merge` result stands while its commit is the head of an open pull request Dispatch attributes to the check's issue (`packages/envoy/internal/dispatch/delivery/attribution.go`), or the final head of a merged one, and while no part of the check's block has changed. So after a push, record each check with no `ci_check` again.
+- `dispatch results --issue <issue>` prints each check with the results recorded against it and the commit each one was recorded at; `dispatch read --issue <issue>` names each requirement of the spec no check serves.
+- Read `skill://legion-worker/references/pr-body-standing.md` when you judge whether a result stands: an `after_merge` or `default_branch` result, a result at none of the compared commits, or a child's result against a root's check.
 
 ## The rules every phase's evidence follows
 
-- The tester tries to break the changed surface (wrong and boundary inputs, the second and the concurrent run, the party it must refuse) and writes the red test for a way no test would catch. Lint, types and the unit and integration suites are CI's: read them on GitHub at the head, rerun no lane as evidence, and wait for none.
-- After a forward merge, the tester reruns each check the merge can reach (`skill://legion-worker/references/conflicts-and-rewrites.md`) and records each other check with no `ci_check` at the new head unrun, its `--observed` naming the earlier pass and why the merge misses it. A class search that finds an instance, or a parent's last round, takes a full test round.
-- The implementer runs `skill://simplify-settled-diff` once per pull request, in its first implementing round, after its own results and before it completes, whatever the diff touches, a docs-only diff included. Applied: rerun the fast local checks and the issue's checks the simplify diff touches, and record them at the applied head. A defect the pass reports is fixed outside the pass and the results recorded again, never dropped as out of scope; the `Thermo` line names the count and the fixing commit.
-- The reviewer's pair runs at the head each round reviews, over the diff that round reads, when that diff touches runtime code; the `Thermo` line records the range it read, and earlier rounds' pair halves stay beside it.
+Read `skill://legion-worker/references/pr-body-evidence.md` before you test a change, record the checks after a forward merge, run the simplify pass, or run the reviewer's pair.
 
 ## Never waiting on CI
 
-- A red check that failed on its own is re-run once with `gh run rerun <run-id> --failed`, and its settlement waited for as `skill://envoy` says, never by sleeping. A merge-group run is never re-run.
-- A required check missing at the head: read `gh pr view <n> --json mergeStateStatus` first. `DIRTY` means the head conflicts with its base, so no `pull_request` run starts and a body edit re-judges nothing: merge the base forward. A green `pull_request_target` run beside it proves nothing.
+Read `skill://legion-worker/references/pr-body-ci.md` when a check is red at the head of your pull request, a merge-group run fails, or a required check is missing at the head: it says which red is re-run, which is fixed and how its settlement is waited for.
 
 ## When no surface reaches the changed path
 
-Report it to the architect with `envoy_publish`, naming the missing surface and what it would have to do (a rig, a sandbox holding the resource, a credential, a command), and do not complete. The architect builds it and resumes you. A code path that first runs after the merge (a deploy workflow's inline step, a post-merge helper, a production-only resource) is an `after_merge` check instead, recorded after the merge by the role the project's `production_check` names (under `off` nothing records it), unless the implementer can run it against a development stack before then.
+Report it to the architect with `envoy_publish`, naming the missing surface and what it would have to do (a rig, a sandbox holding the resource, a credential, a command), and do not complete. A check with no surface yet is this report, never a check left unrecorded. The architect builds it and resumes you. A code path that first runs after the merge (a deploy workflow's inline step, a post-merge helper, a production-only resource) is an `after_merge` check instead, recorded once the merge reaches production, on a look of the production check, by the role the project's `production_check` names (under `off` nothing records it), unless the implementer can run it against a development stack before then. It is no reason to leave a `before_merge` check unrecorded.
