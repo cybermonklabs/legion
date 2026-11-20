@@ -501,9 +501,9 @@ type ReleaseRecordsResponse struct {
 // siblings do. `since` is required and must be an RFC 3339 instant: a window nobody named is not
 // a window, and the whole table is not an answer.
 //
-// The records are written with the claims that place a caller that states no contract by its pod
-// (placingClaims): a resume's `pause` leaves the body below pauseContract (shapeAnswer), and a
-// plugin below shapedAnswersContract states no contract, so its pod is what places it.
+// placedByPod places a caller that states no contract by its pod on the records: a resume's
+// `pause` leaves the body below pauseContract (shapeAnswer), and a plugin below
+// shapedAnswersContract states no contract, so its pod is what places it.
 func (s *server) releaseRecords(w http.ResponseWriter, r *http.Request) {
 	var req ReleaseRecordsRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !s.requireFields(w, r,
@@ -535,7 +535,7 @@ func (s *server) releaseRecords(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, http.StatusInternalServerError, "read the release records: "+err.Error())
 		return
 	}
-	s.writeAnswerFrom(w, r, AnswerReleaseRecords, http.StatusOK, releaseRecordsBody(records), s.placingClaims(r))
+	s.writeAnswer(w, r, AnswerReleaseRecords, http.StatusOK, releaseRecordsBody(records))
 }
 
 // releaseRecordsBody is store.PodReleaseRecords on the wire: every time as RFC 3339 in UTC, an
@@ -748,9 +748,9 @@ func (s *server) logStaleRefusal(r *http.Request, identityKey, identityValue str
 		"route", r.URL.Path, identityKey, identityValue, "pluginContract", got, "daemonApiVersion", DaemonAPIVersion)
 }
 
-// refuseIfStaleClaim is the claim-route refusal shape (ready, exit): errorBody naming both
-// contracts, by way of claim.Refusal, which a claim route already answers with on any other
-// refusal.
+// refuseIfStaleClaim is the claim-route refusal shape (ready, exit): the sentence-only refusal
+// naming both contracts, by way of claim.Refusal, which a claim route already answers with on any
+// other refusal.
 func (s *server) refuseIfStaleClaim(w http.ResponseWriter, r *http.Request, c supervise.Claim) bool {
 	got, stale := s.staleClaim(c)
 	if !stale {
@@ -815,8 +815,3 @@ func (s *server) requireGeneration(w http.ResponseWriter, r *http.Request, gener
 	}
 	return true
 }
-
-// errorBody is the sentence-only refusal refuse writes, claim.Refusal's wire shape, so the
-// refusal's row of shapeAnswer reads one type for every sentence-only refusal. Its status rides
-// beside it, as refuse's own argument.
-func errorBody(message string) claim.Refusal { return claim.Refusal{Message: message} }

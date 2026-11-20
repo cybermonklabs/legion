@@ -900,22 +900,15 @@ const (
 // contractsFor) and not strip. What moved at processReadContract is what one answer means, and
 // no key of it, so the decision follows restore as a value strip does (followsRestore).
 //
-// It reads the header before it reads the store. A caller that states its contract in
-// pluginContractHeader is placed by the header alone, so no claim is read for it. A plugin below
-// shapedAnswersContract sends no header, so only its pod places it, and the pod is read from the
-// project's claims. `legion` sends no header either, so it is placed like any such caller: run
-// from no pod, it is placed at this daemon's own contract and gets the 200, and run from a pod
-// below processReadContract, as the worker image's `legion` can be, it gets the failure. If the
-// store does not give the claims, the caller is placed as one in no pod, as every answer that
-// writeAnswer writes places it.
+// It reads the claims through placingClaims, which reads the header before the store, and reads
+// nothing where no caller's pod is known or there is no supervisor. A caller that states its
+// contract in pluginContractHeader is placed by the header alone, so no claim is read for it. A
+// plugin below shapedAnswersContract sends no header, so only its pod places it, and the pod is
+// read from the project's claims. `legion` sends no header either, so it is placed like any such
+// caller: run from no pod, it is placed at this daemon's own contract and gets the 200, and run
+// from a pod below processReadContract, as the worker image's `legion` can be, it gets the
+// failure. If the store does not give the claims, the caller is placed as one in no pod.
 func (s *server) readsTheStopAsAFailure(r *http.Request) (placement, bool) {
-	var claims []supervise.Claim
-	if _, stated := statedContract(r); !stated {
-		var err error
-		if claims, err = s.supervisor.Claims(r.Context()); err != nil {
-			s.logRequestFailure(r, err, "api: read the claims that place the caller of a fresh session")
-		}
-	}
-	at := s.contractsFor(r, claims)
+	at := s.contractsFor(r, s.placingClaims(r))
 	return at, at.restore < processReadContract
 }

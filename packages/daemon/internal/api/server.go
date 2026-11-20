@@ -780,7 +780,7 @@ func (s *server) refusedWhilePaused(w http.ResponseWriter, r *http.Request, requ
 	body.Error = fmt.Sprintf("%s of %s refused: the project is paused (%s), and a paused project starts no turn of a role but the controller's; nothing of %s changed. Resume the project first",
 		request, c.Token, named, c.Token)
 	s.log.Info("api: refused a request: the project is paused", "request", request, "claim", c.Token, "pause", id)
-	s.writePauseFailure(w, r, http.StatusConflict, body)
+	s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, body)
 	return true
 }
 

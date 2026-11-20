@@ -108,8 +108,8 @@ func (s *server) contractsFor(r *http.Request, claims []supervise.Claim) placeme
 	// runtime the reading lists every cached pod and scans it, which every answer written with
 	// no claims would pay for — each plain refusal, each grant, the catch-all's 404 and `GET
 	// /healthz` (writeAnswer). The two routes that answer from the state's own snapshot hand their
-	// claims in and are placed by their pod as before, and so are the release records and every
-	// PauseFailure, whose writers read the claims for them (writeAnswerFrom, placingClaims).
+	// claims in and are placed by their pod as before, and so is every answer placedByPod names,
+	// whose claims writeAnswer reads for it (placingClaims).
 	if len(claims) == 0 {
 		return ownBody
 	}
@@ -236,10 +236,9 @@ func recordedContractAtOrBelow(n int) int {
 // state and the record: the release records' row serves every resume without its `pause`
 // (withoutResumePauses), and the refusal's row serves a PauseFailure as its Failure alone, with
 // no `setting`, `pause` or `lastPause`. Both follow strip, as every band of stateNarrowings
-// does, and the writers of both hand in the claims that place a caller by its pod
-// (placingClaims), so a band here reaches the caller of a pod as the state's do. A plain
-// refusal, a claim.Refusal or a Failure, carries no key of that contract and is the identity at
-// every contract.
+// does, and placedByPod places the caller of both by its pod, so a band here reaches the caller
+// of a pod as the state's do. A plain refusal, a claim.Refusal or a Failure, carries no key of
+// that contract and is the identity at every contract.
 //
 // On the other side, a caller below fixAttemptsContract is served the two keys that contract
 // removed, each as a stand-in (withFixAttempts, withMaxFixAttempts). A settings key no reader
@@ -1703,31 +1702,50 @@ var answerWritten func(pattern string, id AnswerID)
 // reads at (contractsFor, shapeAnswer). Every body this package writes goes through it or through
 // writeAnswerFrom, which it stands on.
 //
-// It hands contractsFor no claims, which costs a caller nothing: a caller that states its own
-// contract is placed by its header alone, and the answers whose shape has moved since
-// ServingFloor are written by writeAnswerFrom. The state and the record hand in the claims of
-// the very snapshot each answers; the release records and every PauseFailure, whose shape moved
-// at pauseContract, hand in the claims placingClaims reads for them. Every other
-// answer is the identity at every contract this daemon serves, and so is a plain refusal (a
-// claim.Refusal or a Failure), so a read of the claims for one of them would decide nothing:
-// such an answer is written without one, and contractsFor reads no pod for it either. A
-// serving-down added to one of them therefore needs its route to hand in its claims through
-// writeAnswerFrom.
+// It places a caller that states no contract by its pod on an answer placedByPod names, with the
+// claims placingClaims reads, and hands contractsFor no claims for any other, which costs a
+// caller nothing: a caller that states its own contract is placed by its header alone, and
+// contractsFor reads no pod for an answer written with none. The state and the record are
+// written by writeAnswerFrom with the claims of the very snapshot each answers.
 func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID, status int, body any) {
-	s.writeAnswerFrom(w, r, id, status, body, nil)
+	var claims []supervise.Claim
+	if placedByPod(id, body) {
+		claims = s.placingClaims(r)
+	}
+	s.writeAnswerFrom(w, r, id, status, body, claims)
 }
 
-// placingClaims is the project's claims for a writer whose answer has moved since ServingFloor
-// and that answers from no snapshot of its own: the release records, and every PauseFailure
-// (writePauseFailure). Their writers hand these to writeAnswerFrom, so a caller that states no
-// contract is placed by its pod there as on the state.
+// placedByPod is whether the answer id, written as body, places a caller that states no contract
+// by the claims of its pod: true for the release records and for a refusal whose body is a
+// PauseFailure, and false for every other answer. Those two answers' shapes moved at
+// pauseContract, and their writers answer from no snapshot of their own, so writeAnswer reads the
+// claims for them (placingClaims). Every other answer writeAnswer writes is the identity at every
+// contract, and so is a plain refusal (a claim.Refusal or a Failure), so a read of the claims for
+// one of them would decide nothing. A serving-down added to one of them reaches the caller of a
+// pod only once this answers true for it. The state and the record are no question for it: their
+// routes hand in their own snapshot's claims (writeAnswerFrom).
+func placedByPod(id AnswerID, body any) bool {
+	switch id {
+	case AnswerReleaseRecords:
+		return true
+	case AnswerRefusal:
+		_, pause := body.(PauseFailure)
+		return pause
+	default:
+		return false
+	}
+}
+
+// placingClaims is the project's claims, read for a writer that answers from no snapshot of its
+// own: writeAnswer's, for an answer placedByPod names, and readsTheStopAsAFailure's. A caller that
+// states no contract is placed by its pod there as on the state.
 //
 // It reads the store only where the reading can place the caller. It answers nil, and reads
 // nothing, for a daemon that knows no caller's pod (Options.CallerPod is nil, as under the tmux
 // runtime), for a caller that states its contract (pluginContractHeader), whom its header alone
 // places, and for a server with no supervisor to read from. A read that fails is logged and
 // answers nil too, which serves this daemon's own body, as a caller with no claims is served
-// (contractsFor), as readsTheStopAsAFailure places a caller whose claims it could not read.
+// (contractsFor).
 func (s *server) placingClaims(r *http.Request) []supervise.Claim {
 	if s.callerPod == nil || s.supervisor == nil {
 		return nil
@@ -1743,11 +1761,12 @@ func (s *server) placingClaims(r *http.Request) []supervise.Claim {
 	return claims
 }
 
-// writeAnswerFrom is writeAnswer for an answer whose own claims place the caller: claims are the
-// project's claims as the body being answered holds them, which the state route reads through
-// the transaction it projected that state in. It places the caller (contractsFor), shapes the
-// body once (shapeAnswer), and writes to the log what that shaping reported it took off
-// (recordShaping) before it writes the body.
+// writeAnswerFrom is writeAnswer with the claims that place the caller handed in: the state and
+// the record hand in the project's claims as the body being answered holds them, which each route
+// reads through the transaction it projected that body in, and writeAnswer hands in what
+// placingClaims reads for an answer placedByPod names, and none for any other. It places the
+// caller (contractsFor), shapes the body once (shapeAnswer), and writes to the log what that
+// shaping reported it took off (recordShaping) before it writes the body.
 //
 // It is the one writer of a response body in this package: the encoding and the write are its
 // own, and no other function of the package writes a body, so a body written around it is one

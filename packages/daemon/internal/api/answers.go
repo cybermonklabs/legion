@@ -16,10 +16,9 @@ import (
 // written back as at the floor (restoreContract) and keeps every strip the daemon applies below
 // the floor today (stripContract keeps its own number), so no key a strip takes from it today
 // comes back, and it is served less than a caller at the floor; the daemon logs a line for it. A
-// caller that states no contract is placed by the claims of its pod on the state and the record,
-// on the release records and on every PauseFailure, the refusal of a pause, of a resume and of a
-// turn while the project is paused (placingClaims). On every other answer, and on every answer
-// when it asks from no pod, it is served this daemon's own shape (contractsFor, writeAnswer).
+// caller that states no contract is placed by the claims of its pod on the state, on the record
+// and on every answer placedByPod names. On every other answer, and on every answer when it asks
+// from no pod, it is served this daemon's own shape (contractsFor, writeAnswer).
 //
 // 46 is the reading this change records: no claim holding a process recorded a contract below 46.
 // The 50 claims at contracts 36 to 43 are all suspended, so they call nothing.
@@ -523,22 +522,16 @@ var claimViewStates = valuesFrom(ServingFloor,
 // claimRoles is every role a claim can hold, which four rows share: the stranded report's, the
 // registration's, the wake's and the pause stop's, those last two at their own arrivals
 // (wakeRoles, pauseStopRoles). The list has not moved since the floor.
-var claimRoles = valuesFrom(ServingFloor,
-	claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
-	claim.RoleReviewer, claim.RoleMerger)
+var claimRoles = valuesFrom(ServingFloor, claim.Roles...)
 
 // wakeRoles is the same list of roles at the contract `wakesWaiting` arrived at: no wake of that
 // array is served below it at all (shaping.go's withoutWakesWaiting).
-var wakeRoles = valuesFrom(wakesWaitingContract,
-	claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
-	claim.RoleReviewer, claim.RoleMerger)
+var wakeRoles = valuesFrom(wakesWaitingContract, claim.Roles...)
 
 // pauseStopRoles is the same list of roles at the contract `paused` arrived at, which the role of
 // each claim the open pause waits on takes (api.PauseStopView.Role): no `paused` is served below
 // that contract at all (shaping.go's withoutPause).
-var pauseStopRoles = valuesFrom(pauseContract,
-	claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
-	claim.RoleReviewer, claim.RoleMerger)
+var pauseStopRoles = valuesFrom(pauseContract, claim.Roles...)
 
 // updateStates is every value of a claim view's `updateState`, recorded at the contract this
 // change adds the key under. The words are the four the package declares (updatestate.go), so a

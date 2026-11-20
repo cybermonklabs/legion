@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
-	"net/netip"
 	"reflect"
 	"slices"
 	"strconv"
@@ -16,7 +15,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -27,21 +25,13 @@ import (
 // nil, and no caller there is in any pod.
 func shapedServer(t *testing.T, state State, claims []supervise.Claim, logs *bytes.Buffer, placesCallers bool) http.Handler {
 	t.Helper()
-	options := Options{
-		Steps: config.DesignGateRootIssues.Steps(),
-		State: fakeSource{state: state, claims: claims}, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}},
-		// Warnings alone, which are the two edge lines servedContracts writes and what every
-		// row below counts. The record of each band the shaping leaves out of a state is an
-		// info line of its own, and narrowing_test.go is what reads those (recordShaping).
-		Log: slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn})),
-	}
-	if placesCallers {
-		options.CallerPod = func(addr netip.Addr) (string, bool) {
-			if addr == netip.MustParseAddr(statePodAddr) {
-				return statePodUID, true
-			}
-			return "", false
-		}
+	options := stateOptions(state, claims)
+	// Warnings alone, which are the two edge lines servedContracts writes and what every row
+	// below counts. The record of each band the shaping leaves out of a state is an info line of
+	// its own, and narrowing_test.go is what reads those (recordShaping).
+	options.Log = slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	if !placesCallers {
+		options.CallerPod = nil
 	}
 	return NewServer("127.0.0.1", 8437, options).Handler
 }

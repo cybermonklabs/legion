@@ -2558,13 +2558,12 @@ package api
 // (`withoutPause`, the band of `pauseContract`); a resume's `pause` on the release records is
 // taken off by that answer's row of shapeAnswer; and a refusal's `setting`, `pause` and
 // `lastPause` (`api.PauseFailure`) are taken off by the refusal's row, which serves a caller
-// below 178 the `Failure` alone. The release-records route and every writer of a PauseFailure
-// hand in the project's claims (writeAnswerFrom), so a caller that states no contract is placed
-// by its pod there as on the state. `PROJECT_PAUSED` and the pause's other codes are values of
-// the refusal's `code`, which no reader enumerates, so no value is held back. The answers of the
-// controller's pause and resume arrived with their routes at 178, so no contract below records
-// them, and the operator's two routes answer the `legion` command, which is built from the
-// daemon's own commit.
+// below 178 the `Failure` alone. placedByPod places a caller that states no contract by its pod
+// on both of those bodies, as on the state. `PROJECT_PAUSED` and the pause's other codes are
+// values of the refusal's `code`, which no reader enumerates, so no value is held back. The
+// answers of the controller's pause and resume arrived with their routes at 178, so no contract
+// below records them, and the operator's two routes answer the `legion` command, which is built
+// from the daemon's own commit.
 // Contract 146 is one of the contracts served down here too, by its row of shaping.go's
 // stateNarrowings, and this contract is served above it: a caller below 146 is served every
 // issue without `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (`withoutEntryTimes`,

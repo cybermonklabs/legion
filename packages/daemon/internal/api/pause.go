@@ -212,13 +212,13 @@ func (s *server) pauseProject(w http.ResponseWriter, r *http.Request, answer Ans
 		s.writeFailure(w, r, http.StatusBadRequest, pause.CodeReasonRequired,
 			"a pause needs a reason: say in reason why the project is paused; nothing was paused")
 	case errors.As(err, &unavailable):
-		s.writePauseFailure(w, r, http.StatusConflict, PauseFailure{
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, PauseFailure{
 			Failure: Failure{Code: pause.CodeUnavailable, Error: unavailable.Error() + "; nothing was paused"},
 			Setting: string(unavailable.Setting),
 		})
 	case errors.As(err, &standing):
 		view := pauseViewOf(standing.Standing)
-		s.writePauseFailure(w, r, http.StatusConflict, PauseFailure{
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, PauseFailure{
 			Failure: Failure{Code: pause.CodeAlreadyPaused, Error: fmt.Sprintf(
 				"the project is already paused (%s); this pause changed nothing", describePause(standing.Standing))},
 			Pause: &view,
@@ -260,7 +260,7 @@ func (s *server) resumeProject(w http.ResponseWriter, r *http.Request, answer An
 			body.Error = fmt.Sprintf("the project is not paused: its last pause (%s) ended %s by %s; this resume changed nothing",
 				describePause(last), last.EndedAt.UTC().Format(time.RFC3339), describeActor(last.EndedBy))
 		}
-		s.writePauseFailure(w, r, http.StatusConflict, body)
+		s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, body)
 	default:
 		s.logRequestFailure(r, err, "api: the project's resume failed", "by", string(by.Kind), "by_session", by.Session)
 		s.writeFailure(w, r, http.StatusInternalServerError, "RESUME_FAILED", "the project's resume failed: "+err.Error())
@@ -271,19 +271,9 @@ func (s *server) resumeProject(w http.ResponseWriter, r *http.Request, answer An
 // workflow (the daemon's openWorkflow answers none without a dispatch_url), which has no outbox to
 // stop the project's roles or to hold their work.
 func (s *server) refuseWithoutPause(w http.ResponseWriter, r *http.Request, act string) {
-	s.writePauseFailure(w, r, http.StatusConflict, PauseFailure{Failure: Failure{Code: pause.CodeUnavailable, Error: fmt.Sprintf(
+	s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, PauseFailure{Failure: Failure{Code: pause.CodeUnavailable, Error: fmt.Sprintf(
 		"this daemon cannot %s its project: it runs no workflow (legion.yaml names no dispatch_url), and a pause stops the project's roles and holds their work through the workflow's outbox; nothing changed",
 		act)}})
-}
-
-// writePauseFailure is the one writer of a PauseFailure: the refusal of a pause, of a resume, and
-// of a turn while the project is paused (refusedWhilePaused). A refusal is AnswerRefusal, whose
-// row serves a caller below pauseContract the Failure alone, with no `setting`, `pause` or
-// `lastPause` (shapeAnswer). So this writer hands in the claims that place a caller that states
-// no contract by its pod (placingClaims), as the state route hands in its snapshot's, where
-// writeFailure, whose body every contract reads as written, hands in none.
-func (s *server) writePauseFailure(w http.ResponseWriter, r *http.Request, status int, body PauseFailure) {
-	s.writeAnswerFrom(w, r, AnswerRefusal, status, body, s.placingClaims(r))
 }
 
 // PauseStateTx is the state's `paused` and `lastPause` (decision 25), read through tx, the state's
