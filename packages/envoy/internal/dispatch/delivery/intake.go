@@ -359,20 +359,22 @@ func consumerGenerationMetadata() map[string]string {
 // handlePullRequestEnvelope): no reconcile pass catches that up, because the passes read the
 // rows that exist (ListStalePullRequestHeads), so an acknowledged envelope loses that pull
 // request's head for good and with it every `before_merge` result measured against it. It is
-// handed back with a delay (redeliverAfter), and handed back now rather than at the stop: this
-// message wants redelivering to this same process, which still holds the durable's hold and
-// still routes that key to the one goroutine it is on. The delay is what keeps a failure that
-// repeats from spinning: the write is the same write each time, so asking again within the
-// second would buy nothing. The write is idempotent (both its statements are `on conflict … do
-// update`), so a redelivery of an envelope whose write had in fact landed writes the same pair
-// again.
+// handed back with a delay (intakeDelivery.handBackOwn), and handed back now rather than at the
+// stop: this message wants redelivering to this same process, which still holds the durable's
+// hold and still routes that key to the one goroutine it is on. The delay is what keeps a
+// failure that repeats from spinning: the write is the same write each time, so asking again
+// within the second would buy nothing. The write is idempotent (both its statements are `on
+// conflict … do update`), so a redelivery of an envelope whose write had in fact landed writes
+// the same pair again.
 //
 // That hand-back is this process's own answer to the durable, and it is made only while the
 // hold still covers it (intakeDelivery.mayAnswer): a hand-back a process makes after its hold
 // has lapsed reaches the durable a take-over recreated under the same name, where it would move
 // the new holder's pending entry for that message and have it delivered a second time. Withheld,
 // the message is not lost: it stays outstanding, and the take-over's recreate at the durable's
-// ack floor hands it to the new holder once.
+// ack floor hands it to the new holder once. Outside any stop, the hand-back is published;
+// on a reconnecting link between attempts it is refused at once, and while an
+// attempt holds nats.go's lock it waits until the attempt ends (intakeDelivery.handBackOwn).
 //
 // It is handed back a bounded number of times and then acknowledged, with an Error naming the
 // envelope and the deliveries it spent (headWriteMaxDeliveries): a message handed back with a
@@ -399,15 +401,10 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 			return
 		}
 		if headNotStored {
-			if !d.mayAnswer() {
-				slog.Warn("dispatch delivery: the hold no longer covers this delivery, so the envelope whose head row was not stored is left with the durable for the next holder's take-over",
-					"subject", msg.Subject)
-				return
-			}
-			redeliverAfter(msg, headWriteRedeliverAfter)
+			d.handBackOwn(msg, headWriteRedeliverAfter)
 			return
 		}
-		acknowledge(msg)
+		d.acknowledge(msg)
 	}()
 	ctx, cancel := context.WithTimeout(handling, intakeMessageTimeout)
 	defer cancel()
@@ -523,29 +520,6 @@ func headWriteDeliveriesSpent(msg *natsgo.Msg) (delivered uint64, spent bool) {
 		return 0, false
 	}
 	return meta.NumDelivered, meta.NumDelivered >= headWriteMaxDeliveries
-}
-
-// redeliverAfter hands msg back to the server for redelivery in after — at once where after is
-// zero, which is the same message to the server, since nats.go adds a delay to the negative
-// acknowledgement only for a delay above zero (Msg.NakWithDelay, js.go) — and logs a hand-back
-// the server refused: the ack wait (intakeAckWait) then redelivers it, later than asked but
-// not never.
-func redeliverAfter(msg *natsgo.Msg, after time.Duration) {
-	if err := msg.NakWithDelay(after); err != nil {
-		slog.Error("dispatch delivery: hand a message back for redelivery",
-			"subject", msg.Subject, "delay", after, "error", err)
-	}
-}
-
-// acknowledge acks msg. An acknowledgement that does not reach the server is never discarded: it
-// leaves the message outstanding, and intakeMaxAckPending of those stop the consumer being given
-// anything until the ack wait expires. The Nak gives the slot back at once; when it fails too (the
-// connection is down, which is why the ack failed), the ack wait is the backstop.
-func acknowledge(msg *natsgo.Msg) {
-	if err := msg.Ack(); err != nil {
-		slog.Error("dispatch delivery: acknowledge message", "subject", msg.Subject, "error", err)
-		redeliverAfter(msg, 0)
-	}
 }
 
 // handlePullRequestEnvelope processes one `kind:"pr"` envelope. Every action — opened,
