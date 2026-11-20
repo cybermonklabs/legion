@@ -707,7 +707,7 @@ logs_hold_own_writes() {
 # pairs by \x1e (read_probe). A field the Probe does not hold is empty.
 route_rows() {
   jq -r --slurpfile probes "$work/probes.json" "$1"' | . as $row
-    | ($probes[0] | map(select(.method == $row.method and .pattern == $row.path))[0]) as $entry
+    | (first($probes[0][] | select(.method == $row.method and .pattern == $row.path)) // null) as $entry
     | [$row.method, $row.path,
        (if $entry == null then "" else "1" end),
        ($entry.test_hook // false | tostring),

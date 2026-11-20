@@ -311,11 +311,6 @@ decisions_linked() {
   [ "$status" = 200 ] && jq -e 'any(.decisions[]; (.links | length > 0) and (.asks | length > 0))' "$work/body" >/dev/null
 }
 
-# map_repository BUILD REPOSITORY PROJECT writes on BUILD the repository mapping of REPOSITORY
-# (owner/name) to PROJECT, the one row GET /api/v1/settings/repo-projects answers for it. It writes
-# through PUT /api/v1/settings/repo-projects/{owner}/{repo} while both builds have that route; once
-# the write route goes, this helper writes the same row into repo_projects on each build's own
-# database, and the change that removes the route changes it.
 map_repository() {
   send "$1" carol PUT "/api/v1/settings/repo-projects/$2" "$(jq -cn --arg p "$3" '{project: $p}')"
   created "$1" "carol maps $2 to $3"
