@@ -209,7 +209,7 @@ func TestACredentialThatListsProjectsRevokesNoGrantOrSignIn(t *testing.T) {
 		{ownSignInRevoke, "signin-alice", "signin-erin"},
 	} {
 		t.Run(row.row, func(t *testing.T) {
-			want := `{"code":"PROJECT_SCOPE_DEPLOYMENT","error":"` + row.row + ` belongs to the deployment rather than to a project, which only a caller that sees every public project writes: this request's credential may write project ACC and nothing else"}`
+			want := `{"code":"PROJECT_SCOPE_DEPLOYMENT","error":"this request's credential may write project ACC and nothing else; ` + row.row + ` belongs to the deployment rather than to a project"}`
 			before := broker.revokes()
 			for login, id := range map[string]string{"alice": row.alices, accessErin: row.erins} {
 				refused := agentRequest(t, handler, http.MethodPost, revokePath(row.row, id), nil, tokens[login])

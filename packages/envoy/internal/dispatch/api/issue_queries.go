@@ -1050,10 +1050,10 @@ func (s *server) loadIssue(ctx context.Context, q queryer, who model.Actor, key 
 // is dropped; an assignee, and a claim whose holder (a session or a person), who does not see are
 // null, so the issue reads as one nobody claims; a child's claim whose holder who does not see is
 // left out; and a route to a session, or to a role of a project, who does not see is no route
-// (leaveOutRoute). The issue page runs it before it reads the roster (getIssue), so the read is at a
-// fixed cost (seenReferencesAtFixedCost): an issue claimed by a hidden holder, or routed to a role
-// of a hidden project, costs what an unclaimed, unrouted one costs. A reader that sees every object
-// is answered the issue as it stands, with no read.
+// (leaveOutRoute). The issue page runs it before it reads the roster (getIssue), and its one
+// statement is made whatever the issue names (seenReferences), so an issue claimed by a hidden
+// holder, or routed to a role of a hidden project, costs what an unclaimed, unrouted one costs. A
+// reader that sees every object is answered the issue as it stands, with no read.
 func leaveOutHiddenIssueReferences(ctx context.Context, q queryer, who model.Actor, issue *model.Issue, children []model.IssueChild) error {
 	if seesEveryObject(who) {
 		return nil
@@ -1074,7 +1074,7 @@ func leaveOutHiddenIssueReferences(ctx context.Context, q queryer, who model.Act
 		}
 	}
 	named.nameRoute(issue.Route)
-	seen, err := seenReferencesAtFixedCost(ctx, q, who, named)
+	seen, err := seenReferences(ctx, q, who, named)
 	if err != nil {
 		return err
 	}
@@ -1097,10 +1097,10 @@ func leaveOutHiddenIssueReferences(ctx context.Context, q queryer, who model.Act
 }
 
 // leaveOutHiddenSummaryReferences writes each listing row as who reads it, as
-// leaveOutHiddenIssueReferences writes one issue, before the listing reads the roster and at a
-// fixed cost: an assignee, a claim and the actor who moved the issue (?moved=true), that who does
-// not see, are null, and so is a route to a session, or to a role of a project, who does not see. A
-// row's blockers are left out in its statement (issueSummaryJoins). One read answers every row.
+// leaveOutHiddenIssueReferences writes one issue, before the listing reads the roster and in one
+// statement whatever the rows name: an assignee, a claim and the actor who moved the issue
+// (?moved=true), that who does not see, are null, and so is a route to a session, or to a role of a
+// project, who does not see. A row's blockers are left out in its statement (issueSummaryJoins).
 func leaveOutHiddenSummaryReferences(ctx context.Context, q queryer, who model.Actor, issues []model.IssueSummary) error {
 	if seesEveryObject(who) || len(issues) == 0 {
 		return nil
@@ -1119,7 +1119,7 @@ func leaveOutHiddenSummaryReferences(ctx context.Context, q queryer, who model.A
 		}
 		named.nameRoute(issue.Route)
 	}
-	seen, err := seenReferencesAtFixedCost(ctx, q, who, named)
+	seen, err := seenReferences(ctx, q, who, named)
 	if err != nil {
 		return err
 	}

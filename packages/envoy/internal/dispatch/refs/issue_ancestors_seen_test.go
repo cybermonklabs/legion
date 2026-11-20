@@ -4,7 +4,10 @@ import (
 	"context"
 	"slices"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -31,6 +34,12 @@ func TestAnAncestorWalkAsSeenCostsAHiddenParentWhatAMissingOneCosts(t *testing.T
 	`); err != nil {
 		t.Fatalf("seed PRIV's chain: %v", err)
 	}
+	carol := model.Actor{Kind: "user", ID: seededCarol}
+	writeSeedNodes(t, tx, []graphstore.Node{
+		graphstore.IssueNode("PRIV-1", seededPrivate, carol, time.Now()),
+		graphstore.IssueNode("PRIV-2", seededPrivate, carol, time.Now()),
+		graphstore.IssueNode("PRIV-3", seededPrivate, carol, time.Now()),
+	}, nil)
 	whole, err := IssueAncestors(ctx, tx, "PRIV-3")
 	if err != nil || !slices.Equal(whole, []string{"PRIV-2", "PRIV-1"}) {
 		t.Fatalf("IssueAncestors(PRIV-3) = %v, %v; want [PRIV-2 PRIV-1]", whole, err)

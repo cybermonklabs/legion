@@ -255,8 +255,8 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	// replaces run one after the other: the second reads the rows that the first committed, and each
 	// answers the set that it stored. The lock and the second read are one batch, and the reads are
 	// plain selects, so while no earlier build is in the fleet the transaction takes no row lock of
-	// an owner table and holds no transaction id until its first write (INFRA-636; beside an earlier
-	// build LockOwnerAndRead also takes the issue's row, as that build's writers do); it does not
+	// an owner table and holds no transaction id until its first write (beside an earlier build
+	// LockOwnerAndRead also takes the issue's row, as that build's writers do); it does not
 	// stop a reader.
 	var issue string
 	if err := lockOwnerOnceFound(r.Context(), tx, store.IssueOwner(key), `

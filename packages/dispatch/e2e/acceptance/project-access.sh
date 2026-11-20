@@ -883,10 +883,18 @@ walk_rows() {
       fi
       hidden=${hidden//"{$wildcard}"/$(jq -rn --arg v "$object" '$v|@uri')}
       none=${none//"{$wildcard}"/$(jq -rn --arg v "${missing[$kind]}" '$v|@uri')}
-      # A fill that is the same on both sides is no difference to mask.
+      # A fill that is the same on both sides is no difference to mask. An issue's key names its
+      # project up to its first -, which a refusal built from the key the caller sent names
+      # (ROLE_HOLDER_FORBIDDEN): it is masked too, after the key, so a hidden answer naming the
+      # project and a missing one naming ZZNONE read alike, and an answer naming another object
+      # of PRIV still differs.
       if [ "$object" != "${missing[$kind]}" ]; then
         printf '%s\t%s\n' "$wildcard" "$object" >>"$work/fill-hidden"
         printf '%s\t%s\n' "$wildcard" "${missing[$kind]}" >>"$work/fill-missing"
+        if [ "$kind" = issue ]; then
+          printf '%s project\t%s\n' "$wildcard" "${object%%-*}" >>"$work/fill-hidden"
+          printf '%s project\t%s\n' "$wildcard" "${missing[$kind]%%-*}" >>"$work/fill-missing"
+        fi
       fi
     done
     [ -z "$skip" ] || continue

@@ -248,7 +248,7 @@ A service whose verifier does not set the switch, the Envoy listener among them,
 A credential carries a list of the projects it may use (`model.Credential.Projects`), and what its caller sees follows from its person and that list (`access.Resolve`, one read of `access.VisibleProjectsSQL`).
 A personal token's list is its row's `projects`, which Settings and `POST` and `PATCH /api/v1/me/agent-tokens` write:
 at most 16, each a project the caller sees (`400 TOKEN_PROJECTS_INPUT` otherwise), defaulting to the list of the caller's own credential, so a credential that lists projects gives a token only some of its own.
-A broker-issued token's list is the one project the broker scoped it to, and every other credential lists none.
+A broker-issued token's list is the one project the broker scoped it to, and a broker token acting as its person carries its person's trade list too; every other credential lists none. While no project is private a broker token's list holds no read, and a person-scope token's no write, as before projects could be private; once one is private it holds both.
 
 - A person at a browser sees every project they own, that lists them or a group they are a full member of, or that is public while they are a full member.
 
@@ -261,11 +261,11 @@ A broker-issued token's list is the one project the broker scoped it to, and eve
 A caller is an open viewer when its person is not a restricted member and its credential lists nothing.
 An open viewer reads every person and every row of the whole deployment, and every session and role but those below (`access.SessionClause`, `access.RoleClause`).
 No caller but the server reads a session that has acted in a private project it does not see (a `session_projects` pair), whatever else the session did, a role of such a project (a `legion-<project>-…` name, `contracts.RoleProject`), held or not, or a role that a session it may not read holds now.
-A session that has acted in no project is judged, while a project is private, by the projects the listener names for it in Dispatch's stored copy of the listener's sessions (the `route_roster` row): an open viewer reads it only when the listener lists it and names no project the viewer does not see.
+A session that has acted in no project is judged, while a project is private, by the projects the listener names for it in Dispatch's stored copy of the listener's sessions (the `route_roster` row): a session the listener sends no projects for is read by no caller but itself, and an open viewer reads one whose list names only projects it sees, an empty list included.
 While a project is private and `session_projects_filled` holds no row, an open viewer reads no session but its own (Filling the sessions' projects, below).
-Any other caller reads, of what belongs to no project, only the people of the projects it sees, the sessions that have acted in one of them (or, while a project is private, have acted in none and are listed with one), its own, and the roles those sessions hold (`access.PersonClause`, `access.SessionClause`, `access.RoleClause`);
+Any other caller reads, of what belongs to no project, only the people of the projects it sees, the sessions that have acted in one of them (or, while a project is private, have acted in none and are listed with a list that is not empty and names only projects it sees), its own, and the roles those sessions hold (`access.PersonClause`, `access.SessionClause`, `access.RoleClause`);
 every read of the whole deployment (`readclass.Deployment`: the priorities, the Pipeline page and a delivery run's jobs, the CI reconcile passes, the broadcasts, the delivery and new-issue settings, the credential requests, the machine logins and the groups) is `403 DEPLOYMENT_READ_REFUSED` to it (`api.withinReadScope`), while the delivery timeline and measures answer it the pull requests whose issue it sees and the deploy runs that shipped one of them.
-A direct conversation is read by its parties and by an open viewer, each only when it may read every session in the conversation (`access.PartyClause`), so a restricted member or a credential that lists projects reads only its own, and only with sessions of its projects.
+A direct conversation is read by its parties and by an open viewer, each only when it may read every session in the conversation (`access.PartyClause`), so a restricted member or a credential that lists projects reads only its own, and only with sessions of its projects. While a project is private, a direct conversation that names no party (no node, or a node with none) is read by no caller but the server, and the switch to private refuses while one exists.
 A project the caller does not see, and every object in it, answers exactly as one no row holds.
 With no private project in the deployment, a credential that lists nothing sees every project its person sees.
 A private project's Legion daemon therefore presents, in its `dispatch_token_file`, a `dsp_` token that lists the project and every other project the daemon runs, minted by a person who sees them:
@@ -288,7 +288,7 @@ A credential that lists projects sees no project outside its list, so this is wh
 A person or a session a body names is read the same way for a viewer that is not open: an assignee, an `asked_of`, a default assignee or a new owner it may not see is refused as a login that has not signed in,
 a message's or a mention's `session:` target it may not see is recorded as `no live session <id>`, and a `role:` target whose holder it may not see as `no holder for role <role>`, the listener's words for a role nobody claims;
 an open viewer sees every person, and every session `access.SessionClause` passes it, so with no private project it is answered as before (`TestNoBodyNamesAHiddenPersonOrSession`).
-A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT` to a credential that lists projects and `403 RESTRICTED_MEMBER` to a restricted member, naming the route and the credential's list:
+A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT` to a credential whose writes are held to a list (`this request's credential may write <list> and nothing else; <METHOD> <PATTERN> belongs to the deployment rather than to a project`, the words a broker token scoped to one project has always been refused in) and `403 RESTRICTED_MEMBER` to a restricted member:
 what it writes belongs to no project such a viewer could be held to.
 A restricted member still revokes their own credential grants and ends their own sign-ins (`POST /api/v1/credential-grants/{id}/revoke`, `POST /api/v1/signins/{id}/revoke`): the secrets broker decides whose each one is, as it does for a full member, and only a credential that lists projects is refused those two.
 `POST /api/v1/issues` and `POST /api/v1/going/requests` take their project from the body, so a credential that lists projects is refused one outside its list, `403 PROJECT_SCOPE`, naming its list and the project the body named, before anything is read.
@@ -4260,8 +4260,8 @@ Each item below names a path with its method and identity, then its purpose.
   and a repository the App is not installed on, or no App key, `503 GITHUB_TOKEN_UNAVAILABLE`.
   A GitHub rate limit is `503 GITHUB_RATE_LIMITED` with `Retry-After` the whole seconds GitHub asked for (at least one), never `502 GITHUB_UPSTREAM` or GitHub's own `403`:
   GitHub's answer to the token mint or to the read, or a limit any process already met under the App or the installation, when GitHub is not asked at all (Running more than one process, above).
-  A person reads a repository only when an issue the person sees resolves to it (its own repository, its nearest parent's, else its project's default, whether it is open or done), or when the person is an open viewer and no issue of a project the person does not see resolves to it (`refs.RepositoryClause`);
-  every other repository answers, step for step, what one the App is not installed on answers, and GitHub is not read for it: no App key still answers that, and a rate limit still answers the rate limit.
+  A person reads a repository unless a private project the person does not see owns it: an issue of that project resolves to it (its own repository, its nearest parent's, else its project's default, whether open or done), or the project maps it, under any name a recorded rename gives it (`refs.ProjectRepositoriesSQL`, `refs.RepositoryClause`). A person who is not an open viewer reads only a repository a project the person sees owns.
+  Every other repository answers, step for step, what one the App is not installed on answers, and GitHub is asked nothing for it: no App key still answers that, and a rate limit already held still answers the rate limit.
 
 - `/healthz` (GET; none)
 

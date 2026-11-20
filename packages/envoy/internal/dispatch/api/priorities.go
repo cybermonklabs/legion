@@ -171,10 +171,11 @@ func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 // leaveOutHiddenPriorityReferences writes the two fault lists' rows as who reads them (the rule of
 // references, references_seen.go), in one read, as the issue's own read and the listing answer
 // them: an assignee who does not see is null, and so is a claim whose holder, and the actor who
-// moved the issue into backlog or icebox, who does not see. A reader that sees every object, and
-// lists that name nobody, cost no read.
+// moved the issue into backlog or icebox, who does not see. The read is made whatever the rows name
+// (seenReferences), so a row claimed or moved by a hidden holder costs what one nobody claimed
+// costs. A reader that sees every object, and lists with no row, cost no read.
 func leaveOutHiddenPriorityReferences(ctx context.Context, q queryer, who model.Actor, body *model.Priorities) error {
-	if seesEveryObject(who) {
+	if seesEveryObject(who) || len(body.WorkUnderNoPriority.Issues)+len(body.PriorityWorkParked.Issues) == 0 {
 		return nil
 	}
 	rows := [][]model.PriorityIssue{body.WorkUnderNoPriority.Issues, body.PriorityWorkParked.Issues}

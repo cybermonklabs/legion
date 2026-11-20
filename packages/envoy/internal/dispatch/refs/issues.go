@@ -8,7 +8,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -73,7 +72,7 @@ func IssueAncestorsAsSeen(ctx context.Context, q Queryer, who model.Actor, key s
 		with recursive ancestors as (
 			select p.key, p.parent_key, 1 as depth
 			from issues i join issues p on p.key = i.parent_key
-			where i.key = $1 and `+access.ProjectClause("i.project_key", "$3")+`
+			where i.key = $1 and `+VisibleKind("issue", "i.key", "$3")+`
 			union
 			select i.key, i.parent_key, a.depth + 1
 			from issues i join ancestors a on i.key = a.parent_key

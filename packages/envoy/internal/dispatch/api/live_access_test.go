@@ -100,7 +100,7 @@ func (s privateSeed) markAgentState(t *testing.T, login, session string) {
 	t.Helper()
 	if _, err := s.database.Pool.Exec(t.Context(), `
 		insert into route_roster (answered, sessions, sent_at, expires_at)
-		values (true, jsonb_build_array(jsonb_build_object('session_id', $1::text)), now(), now())
+		values (true, jsonb_build_array(jsonb_build_object('session_id', $1::text, 'projects', '[]'::jsonb)), now(), now())
 		on conflict (id) do update
 		set answered = true, sessions = case when route_roster.sessions @> excluded.sessions then route_roster.sessions
 			else route_roster.sessions || excluded.sessions end`, session); err != nil {

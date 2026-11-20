@@ -64,7 +64,13 @@ const (
 // ships P2 and R2 could ship nothing of it; P5, a second pull request of PRIV-1, is R2's.
 func seedDeliveryReads(t *testing.T, public, private bool) privateSeed {
 	t.Helper()
-	seed := seedPrivateProject(t)
+	return seedDeliveryReadsWith(t, testServerOptions{}, public, private)
+}
+
+// seedDeliveryReadsWith is seedDeliveryReads on a server built with options, a traced store's.
+func seedDeliveryReadsWith(t *testing.T, options testServerOptions, public, private bool) privateSeed {
+	t.Helper()
+	seed := seedPrivateProjectWith(t, options)
 	ctx, pool := t.Context(), seed.database.Pool
 	if _, err := delivery.PutSettings(ctx, pool, delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",

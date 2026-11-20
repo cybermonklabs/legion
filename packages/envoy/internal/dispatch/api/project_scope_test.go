@@ -246,11 +246,14 @@ func hyphenatedEveryFour(id string) string {
 	return spelled.String()
 }
 
-// TestAProjectScopedTokenWritesOnlyItsOwnProject: one real token, two projects. A credential that
-// lists one project sees no other, so every addressing kind of the other project's is answered
-// exactly as an object nobody holds - the same status and the same bytes, ids aside - and the same
-// call against the token's own project is answered by the handler. Each id-addressed kind runs
-// under both spellings of its uuid, since the loader and the prefix layer read a path one way.
+// TestAProjectScopedTokenWritesOnlyItsOwnProject: one real token, two projects, in a deployment
+// that holds a private project. A credential that lists one project then sees no other, so every
+// addressing kind of the other project's is answered exactly as an object nobody holds - the same
+// status and the same bytes, ids aside - and the same call against the token's own project is
+// answered by the handler. Each id-addressed kind runs under both spellings of its uuid, since the
+// loader and the prefix layer read a path one way. With no private project such a token is refused
+// as it was before projects could be private
+// (TestABrokerTokenScopedToOneProjectAnswersAsBeforeWhileNoProjectIsPrivate).
 func TestAProjectScopedTokenWritesOnlyItsOwnProject(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
@@ -258,6 +261,8 @@ func TestAProjectScopedTokenWritesOnlyItsOwnProject(t *testing.T) {
 	rig.broker.Says(token, liveNamedToken(caller.jkt))
 	own := seedProject(t, rig, brokerTestProject, "Broker")
 	other := seedProject(t, rig, "OTH", "Other")
+	seedProject(t, rig, "HIDE", "Hidden")
+	makePrivate(t, rig.database, "HIDE")
 	nobodys := projectFixture{key: "NOPE", issue: "NOPE-1", document: uuid.NewString(), ask: uuid.NewString(),
 		comment: uuid.NewString(), message: uuid.NewString()}
 
@@ -294,17 +299,21 @@ func TestAProjectScopedTokenWritesOnlyItsOwnProject(t *testing.T) {
 	}
 }
 
-// TestATargetNobodyHoldsAnswersAProjectScopedTokenAsItAnswersAPerson: a target that resolves to
-// nothing - an id nobody has, an id that is no uuid in any spelling, a key no project holds - is
-// the handler's to answer, and it answers a credential scoped to one project exactly as it answers
-// a person, the same status and the same bytes, so the scope tells the caller nothing more about
-// what exists. No answer is the project scope's refusal.
+// TestATargetNobodyHoldsAnswersAProjectScopedTokenAsItAnswersAPerson: in a deployment that holds a
+// private project, a target that resolves to nothing - an id nobody has, an id that is no uuid in
+// any spelling, a key no project holds - is the handler's to answer, and it answers a credential
+// scoped to one project exactly as it answers a person, the same status and the same bytes, so the
+// scope tells the caller nothing more about what exists. No answer is the project scope's
+// refusal. With no private project such a token is answered 403 PROJECT_SCOPE, as before projects
+// could be private (TestABrokerTokenScopedToOneProjectAnswersAsBeforeWhileNoProjectIsPrivate).
 func TestATargetNobodyHoldsAnswersAProjectScopedTokenAsItAnswersAPerson(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-addressing-nothing"
 	rig.broker.Says(token, liveNamedToken(caller.jkt))
 	seedProject(t, rig, brokerTestProject, "Broker")
+	seedProject(t, rig, "HIDE", "Hidden")
+	makePrivate(t, rig.database, "HIDE")
 
 	const unknownUUID = "5d4a3b2c-1e0f-4a9b-8c7d-6e5f4a3b2c1d"
 	for name, request := range map[string]struct {

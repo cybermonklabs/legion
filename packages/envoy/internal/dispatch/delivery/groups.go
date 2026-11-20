@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -191,14 +192,22 @@ func refuseTakenName(ctx context.Context, tx pgx.Tx, groupID *string, name strin
 
 // sessionsTitled lists, by id, every session a population pull request names whose latest title
 // (the one ResolveSessionTitles shows) is name without regard to case and that members does not
-// hold. ResolveSessionTitles is the one latest-title query; this function only scopes its ids to
-// the delivery population and applies the group rule.
-func sessionsTitled(ctx context.Context, tx pgx.Tx, name string, members []string) ([]string, error) {
+// hold, as the writer whose read rule readable is sees them: only the sessions its viewer sees
+// (sessionsSeen), each by the newest title among the events it reads. A rule that binds no viewer
+// (events.EveryEvent) reads every session by every title. ResolveSessionTitles is the one
+// latest-title query; this function only scopes its ids to the delivery population and applies
+// the group rule.
+func sessionsTitled(ctx context.Context, tx pgx.Tx, name string, members []string, readable events.Readable) ([]string, error) {
 	sessionIDs, err := ListPopulationSessionIDs(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
-	titles, err := ResolveSessionTitles(ctx, tx, sessionIDs, events.EveryEvent)
+	if readable.Viewer != nil {
+		if sessionIDs, err = sessionsSeen(ctx, tx, sessionIDs, readable.Viewer); err != nil {
+			return nil, err
+		}
+	}
+	titles, err := ResolveSessionTitles(ctx, tx, sessionIDs, readable)
 	if err != nil {
 		return nil, err
 	}
@@ -212,6 +221,22 @@ func sessionsTitled(ctx context.Context, tx pgx.Tx, name string, members []strin
 	return outside, nil
 }
 
+// sessionsSeen is the sessions of ids the viewer bound as viewer sees (access.SessionClause), read
+// in one statement on q whatever ids holds, so a writer's refusal costs the same work whichever
+// sessions the population names.
+func sessionsSeen(ctx context.Context, q Querier, ids []string, viewer any) ([]string, error) {
+	rows, err := q.Query(ctx, `select named.id from unnest($1::text[]) as named(id)
+		where `+access.SessionClause("named.id", "$2")+` order by 1`, ids, viewer)
+	if err != nil {
+		return nil, fmt.Errorf("read which sessions the group's writer sees: %w", err)
+	}
+	seen, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read which sessions the group's writer sees: %w", err)
+	}
+	return seen, nil
+}
+
 // refuseTitleClash holds a group's name to the title rule: a name may be a session's title only
 // while the group holds every session the population names under that title, so a Parent agent
 // label means one thing. A write that sets the name (a create or a rename) is refused for any
@@ -219,8 +244,10 @@ func sessionsTitled(ctx context.Context, tx pgx.Tx, name string, members []strin
 // session it removes: a session that took the group's name as its title after the group was
 // named is already outside it, and the timeline tells the two apart by showing that session's id
 // beside its title (api/delivery.go), so it does not block edits that change nothing about it.
-func refuseTitleClash(ctx context.Context, tx pgx.Tx, name string, members, removed []string, setsName bool) error {
-	outside, err := sessionsTitled(ctx, tx, name, members)
+// The rule reads the sessions and the titles its writer sees (sessionsTitled), so no refusal names
+// a session, or answers a title, the writer may not see.
+func refuseTitleClash(ctx context.Context, tx pgx.Tx, name string, members, removed []string, setsName bool, readable events.Readable) error {
+	outside, err := sessionsTitled(ctx, tx, name, members, readable)
 	if err != nil {
 		return err
 	}
@@ -234,8 +261,9 @@ func refuseTitleClash(ctx context.Context, tx pgx.Tx, name string, members, remo
 
 // CreateSessionGroup writes a new group named name holding sessions, in tx, after refusing a
 // session another group holds, a name another group has, and a name that is the title of a
-// session outside the group. name is already trimmed and sessions de-duplicated and non-empty.
-func CreateSessionGroup(ctx context.Context, tx pgx.Tx, name string, sessions []string, actor model.Actor) (SessionGroup, error) {
+// session outside the group, as the writer's read rule readable sees the sessions and their titles
+// (refuseTitleClash). name is already trimmed and sessions de-duplicated and non-empty.
+func CreateSessionGroup(ctx context.Context, tx pgx.Tx, name string, sessions []string, actor model.Actor, readable events.Readable) (SessionGroup, error) {
 	if len(sessions) == 0 {
 		return SessionGroup{}, ErrSessionGroupEmpty
 	}
@@ -248,7 +276,7 @@ func CreateSessionGroup(ctx context.Context, tx pgx.Tx, name string, sessions []
 	if err := refuseTakenName(ctx, tx, nil, name); err != nil {
 		return SessionGroup{}, err
 	}
-	if err := refuseTitleClash(ctx, tx, name, sessions, nil, true); err != nil {
+	if err := refuseTitleClash(ctx, tx, name, sessions, nil, true, readable); err != nil {
 		return SessionGroup{}, err
 	}
 	actorJSON, err := json.Marshal(actor)
@@ -280,9 +308,9 @@ type SessionGroupUpdate struct {
 }
 
 // UpdateSessionGroup applies update to the group id in tx, after the same refusals as
-// CreateSessionGroup for what it adds and names, and ErrSessionGroupEmpty for an edit that
-// removes every session.
-func UpdateSessionGroup(ctx context.Context, tx pgx.Tx, id string, update SessionGroupUpdate, actor model.Actor) (SessionGroup, error) {
+// CreateSessionGroup for what it adds and names, under the same read rule readable, and
+// ErrSessionGroupEmpty for an edit that removes every session.
+func UpdateSessionGroup(ctx context.Context, tx pgx.Tx, id string, update SessionGroupUpdate, actor model.Actor, readable events.Readable) (SessionGroup, error) {
 	if err := lockSessionGroups(ctx, tx); err != nil {
 		return SessionGroup{}, err
 	}
@@ -322,7 +350,7 @@ func UpdateSessionGroup(ctx context.Context, tx pgx.Tx, id string, update Sessio
 			return SessionGroup{}, err
 		}
 	}
-	if err := refuseTitleClash(ctx, tx, name, members, removed, setsName); err != nil {
+	if err := refuseTitleClash(ctx, tx, name, members, removed, setsName, readable); err != nil {
 		return SessionGroup{}, err
 	}
 	actorJSON, err := json.Marshal(actor)

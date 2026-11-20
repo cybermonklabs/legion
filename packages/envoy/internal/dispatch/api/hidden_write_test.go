@@ -12,12 +12,14 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -572,6 +574,99 @@ func TestWithNoPrivateProjectASessionGroupWriteAnswersAsToday(t *testing.T) {
 		}
 		if slices.ContainsFunc(statements, sessionVisibilityRead.MatchString) {
 			t.Errorf("PRIV public: alice's group of %s read a session's visibility, which every session passes for her: %v", call.session, statements)
+		}
+	}
+}
+
+// stampSessionTitle gives session title the way Dispatch learns one, an event the session wrote on
+// issue carrying its origin's session_title, and names the session in a delivery pull request, as
+// the title rule reads the sessions population pull requests name (delivery.ListPopulationSessionIDs).
+// The event is written to the store, so it records no session_projects pair.
+func stampSessionTitle(t *testing.T, walk hiddenWriteSeed, issue, session, title string) {
+	t.Helper()
+	ctx := t.Context()
+	if _, err := walk.database.Pool.Exec(ctx, `
+		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		select $1::text, coalesce(max(seq), 0) + 1, 'message.created',
+			jsonb_build_object('kind', 'session', 'id', $2::text, 'origin', jsonb_build_object('session_title', $3::text)),
+			'{}', false, now()
+		from events where issue_key = $1::text`, issue, session, title); err != nil {
+		t.Fatalf("stamp %s's title on %s: %v", session, issue, err)
+	}
+	var number int
+	if err := walk.database.Pool.QueryRow(ctx, `select coalesce(max(number), 0) + 1 from delivery_pull_requests where repo = 'acme/titles'`).Scan(&number); err != nil {
+		t.Fatalf("the next titles pull request: %v", err)
+	}
+	merged := time.Now()
+	if err := delivery.UpsertPullRequest(ctx, walk.database.Pool, delivery.DeliveryPullRequest{
+		Repo: "acme/titles", Number: number, Title: "work by " + session, URL: fmt.Sprintf("https://github.com/acme/titles/pull/%d", number),
+		Author: "octocat", MergedAt: &merged, CreatedAt: &merged, Sessions: []string{session},
+	}); err != nil {
+		t.Fatalf("a pull request naming %s: %v", session, err)
+	}
+}
+
+// TestAGroupNameIsHeldOnlyToTheSessionsAndTitlesItsWriterSees: the title rule holds a group's name
+// only to the sessions its writer sees, each by the titles it reads, so no refusal names a session,
+// or answers a title, the writer may not see. privateSession, which has acted in PRIV and so is
+// hidden from alice, took the title "priv worker" on an event of PUB's issue; s-pub, which alice
+// sees, took "pub codename" on an event of PRIV's issue, which she does not read. A pull request
+// names each. carol, who sees both, is refused a rename of the seed's group of s1 to either title,
+// naming the session that holds it: the titles stand. alice's rename of that group to each answers
+// as her rename to a title no session holds: 200, the same bytes but for the name and the times,
+// and the same statements.
+func TestAGroupNameIsHeldOnlyToTheSessionsAndTitlesItsWriterSees(t *testing.T) {
+	walk := seedHiddenWrites(t)
+	stampSessionTitle(t, walk, walk.issue[seedPublic], privateSession, "priv worker")
+	stampSessionTitle(t, walk, walk.issue[seedPrivate], "s-pub", "pub codename")
+	path := "/api/v1/delivery/session-groups/" + walk.fills[probeSessionGroup].hidden
+	for index, title := range []struct{ name, session string }{{"priv worker", privateSession}, {"pub codename", "s-pub"}} {
+		refused := walk.request(t, callerCarol, http.MethodPatch, path, map[string]any{"name": title.name})
+		var refusal refusalAnswer
+		_ = json.Unmarshal(refused.Body.Bytes(), &refusal)
+		if refused.Code != http.StatusConflict || refusal.Code != "SESSION_GROUP_NAME_IS_SESSION_TITLE" || !strings.Contains(refusal.Error, title.session) {
+			t.Fatalf("carol renames the group %q: %d %s, want 409 SESSION_GROUP_NAME_IS_SESSION_TITLE naming %s: the row holds no title",
+				title.name, refused.Code, strings.TrimSpace(refused.Body.String()), title.session)
+		}
+		untitled := fmt.Sprintf("a title no session holds %d", index)
+		missing, missingStatements, _ := walk.recorded(t, callerAlice, http.MethodPatch, path, map[string]any{"name": untitled})
+		hidden, hiddenStatements, _ := walk.recorded(t, callerAlice, http.MethodPatch, path, map[string]any{"name": title.name})
+		want := maskTimes(strings.ReplaceAll(missing.Body.String(), untitled, title.name))
+		if hidden.Code != missing.Code || maskTimes(hidden.Body.String()) != want {
+			t.Errorf("alice renames the group %q, %s's title: %d %s, and to %q: %d %s", title.name, title.session,
+				hidden.Code, strings.TrimSpace(hidden.Body.String()), untitled, missing.Code, strings.TrimSpace(missing.Body.String()))
+		}
+		if missing.Code != http.StatusOK {
+			t.Errorf("alice renames the group %q: %d %s, want 200", untitled, missing.Code, strings.TrimSpace(missing.Body.String()))
+		}
+		if !slices.Equal(hiddenStatements, missingStatements) {
+			t.Errorf("alice's rename to %q did other work than her rename to %q, %s", title.name, untitled,
+				firstDifference(hiddenStatements, missingStatements))
+		}
+	}
+}
+
+// TestWithNoPrivateProjectAGroupNameIsHeldToEveryTitleAsToday (R9): with PRIV made public alice
+// sees every session and reads every event, so the title rule holds a name of hers to every title
+// as before and reads nothing of whether she sees a session (sessionVisibilityRead): her rename of
+// the seed's group to each title of TestAGroupNameIsHeldOnlyToTheSessionsAndTitlesItsWriterSees is
+// refused naming the session that holds it.
+func TestWithNoPrivateProjectAGroupNameIsHeldToEveryTitleAsToday(t *testing.T) {
+	walk := seedHiddenWrites(t)
+	stampSessionTitle(t, walk, walk.issue[seedPublic], privateSession, "priv worker")
+	stampSessionTitle(t, walk, walk.issue[seedPrivate], "s-pub", "pub codename")
+	walk.setVisibility(t, seedPrivate, model.ProjectPublic)
+	path := "/api/v1/delivery/session-groups/" + walk.fills[probeSessionGroup].hidden
+	for _, title := range []struct{ name, session string }{{"priv worker", privateSession}, {"pub codename", "s-pub"}} {
+		answer, statements, _ := walk.recorded(t, callerAlice, http.MethodPatch, path, map[string]any{"name": title.name})
+		var refusal refusalAnswer
+		_ = json.Unmarshal(answer.Body.Bytes(), &refusal)
+		if answer.Code != http.StatusConflict || refusal.Code != "SESSION_GROUP_NAME_IS_SESSION_TITLE" || !strings.Contains(refusal.Error, title.session) {
+			t.Errorf("PRIV public: alice renames the group %q: %d %s, want 409 SESSION_GROUP_NAME_IS_SESSION_TITLE naming %s, as before",
+				title.name, answer.Code, strings.TrimSpace(answer.Body.String()), title.session)
+		}
+		if slices.ContainsFunc(statements, sessionVisibilityRead.MatchString) {
+			t.Errorf("PRIV public: alice's rename to %q read a session's visibility, which every session passes for her: %v", title.name, statements)
 		}
 	}
 }
