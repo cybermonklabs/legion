@@ -55,11 +55,24 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 
 // TakeWorkspaceBundleForRestore answers the bundle issue's last release saved for the pod of
 // podUID, created at podCreated, whose launcher it is about to be sent to, and records in the
-// same statement what that ask did to the bundle. It answers runtime.WorkspaceBundleNone, having
-// recorded nothing, when the issue has no bundle — one never released, one whose restore the
-// launcher confirmed, one whose release a wake cancelled, one that a pod's kept volume held
-// (DropHeldWorkspaceBundle) — when the row already carries an attempt, and when the pod asking is
-// the pod the work came off (source_pod_uid).
+// same statement what that ask did to the bundle. project is the token of the daemon whose pod
+// asks (claim.ProjectToken). It answers runtime.WorkspaceBundleNone, having recorded nothing, when
+// the issue has no bundle of project's — one never released, one whose restore the launcher
+// confirmed, one whose release a wake cancelled, one that a pod's kept volume held
+// (DropHeldWorkspaceBundle), one of an issue project does not record — when the row already
+// carries an attempt, and when the pod asking is the pod the work came off (source_pod_uid).
+//
+// A bundle is project's only where project records its issue (issues.project, the Dispatch key
+// the token lowercases). The row names no project, and its release's mark, which does, is gone
+// once the release has finished, so the issue's record stands in for it. That holds because
+// the one writer of a bundle is the save of an idle release (PutWorkspaceBundle, run by
+// internal/daemon's bundleIssueWorkspace from the release's save row). A daemon's outbox runs
+// only the rows of its own project's keys (record's DueRows), and a release only marks a pod
+// whose issue its project records (ReleaseIdleIssue, readIdleView). So a bundle of an issue this
+// project does not record was saved by another project's daemon on a database the two share,
+// for that daemon's own pod. The operator's spawn makes a claim of such an issue under this
+// project's token, and a new pod of that claim would otherwise spend the other daemon's one
+// attempt and leave that daemon's pod nothing to restore.
 //
 // One attempt per bundle is the rule, and this statement is where it is kept. The launcher's own
 // record of the restore it ran lives in the process that ran it: a roles container that restarts
@@ -99,7 +112,10 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 // The row stays. A bundle nothing restored holds the issue's pod (workflow.IdleHoldBundleUnrestored)
 // and keeps the work in the database until the issue's own work is over (outbox's
 // dropReleasedWork), which is what the launcher's notice tells the roles.
-func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
+func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, project, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
+	if project == "" {
+		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("the restore attempt of the workspace bundle of %s needs the project whose pod asks", issue)
+	}
 	if podUID == "" {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("the restore attempt of the workspace bundle of %s needs the pod it is sent to", issue)
 	}
@@ -115,9 +131,10 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID
 		set attempt_pod_uid = $2, attempt_at = now(),
 			attempt_outcome = case when date_trunc('second', at) <= $3 then 'sent' else 'refused_older' end
 		where issue = $1 and attempt_pod_uid is null and source_pod_uid <> $2
+			and exists (select 1 from issues i where i.key = $1 and lower(i.project) = $4)
 		returning attempt_outcome, case when attempt_outcome = 'sent' then bundle end,
 			at, head, tips, bookmarks, release_id, source_pod_uid`,
-		issue, podUID, podCreated).Scan(&outcome, &b.Bundle, &b.At, &b.Head, &tips, &bookmarks, &b.Release, &b.PodUID)
+		issue, podUID, podCreated, project).Scan(&outcome, &b.Bundle, &b.At, &b.Head, &tips, &bookmarks, &b.Release, &b.PodUID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, nil
 	}
@@ -182,17 +199,21 @@ func (s *Store) DeleteRestoredWorkspaceBundle(ctx context.Context, issue string,
 
 // DropHeldWorkspaceBundle deletes the bundle issue's last release saved where the pod of podUID
 // holds that work already: the pod's Sandbox owns the issue's kept volume and was created at
-// keptSince, before the save, so the pod mounts the volume the work was taken off. It answers the
-// release and the time of the bundle it deleted, and true. It answers false, having deleted
-// nothing, when the issue has no bundle, when the bundle had its one attempt already, when the pod
-// is the pod the work came off (source_pod_uid), and when the Sandbox was not created before the
-// save's own second.
+// keptSince, before the save, so the pod mounts the volume the work was taken off. project is the
+// token of the daemon whose pod asks (claim.ProjectToken). It answers the release and the time of
+// the bundle it deleted, and true. It answers false, having deleted nothing, when the issue has no
+// bundle of project's, when the bundle had its one attempt already, when the pod is the pod the
+// work came off (source_pod_uid), and when the Sandbox was not created before the save's own
+// second.
 //
 // It deletes the row a confirmed restore deletes (DeleteRestoredWorkspaceBundle), under the take's
 // own conditions (TakeWorkspaceBundleForRestore), and it reads none of the body: a bundle runs to
-// tens of megabytes, and the volume holds the work. The take's two rules stand. The pod the work
+// tens of megabytes, and the volume holds the work. The take's three rules stand. The pod the work
 // came off is a role relaunched in the pod being released, and the attempt stays for the pod that
-// replaces it. A row whose attempt is spent is the record of that attempt, and it stays.
+// replaces it. A row whose attempt is spent is the record of that attempt, and it stays. A bundle
+// is project's only where project records its issue (issues.project), with the take's own test of
+// that record. A bundle of an issue that project does not record was saved by another project's
+// daemon for that daemon's own pod, and it stays for that pod.
 //
 // The comparison reads the save to its own second, as the take does, and drops the bundle only
 // when that second is after keptSince. A creationTimestamp has one-second resolution, so a Sandbox
@@ -203,9 +224,13 @@ func (s *Store) DeleteRestoredWorkspaceBundle(ctx context.Context, issue string,
 // idle period after the Sandbox's first pod, and a reset makes its Sandbox after a later pod's
 // init container failed, so a skew of seconds does not change the answer.
 //
-// A zero keptSince would read as older than every save, and an empty podUID would never be the
-// pod the work came off, so the drop refuses each.
-func (s *Store) DropHeldWorkspaceBundle(ctx context.Context, issue, podUID string, keptSince time.Time) (runtime.WorkspaceBundle, bool, error) {
+// The drop refuses an empty project, as the take does. It also refuses a zero keptSince, which
+// would read as older than every save, and an empty podUID, which would never be the pod the work
+// came off.
+func (s *Store) DropHeldWorkspaceBundle(ctx context.Context, project, issue, podUID string, keptSince time.Time) (runtime.WorkspaceBundle, bool, error) {
+	if project == "" {
+		return runtime.WorkspaceBundle{}, false, fmt.Errorf("the drop of the workspace bundle of %s that a kept volume holds needs the project whose pod asks", issue)
+	}
 	if podUID == "" {
 		return runtime.WorkspaceBundle{}, false, fmt.Errorf("the drop of the workspace bundle of %s that a kept volume holds needs the pod that mounts it", issue)
 	}
@@ -215,8 +240,9 @@ func (s *Store) DropHeldWorkspaceBundle(ctx context.Context, issue, podUID strin
 	var held runtime.WorkspaceBundle
 	err := s.pool.QueryRow(ctx, `delete from workspace_bundles
 		where issue = $1 and attempt_pod_uid is null and source_pod_uid <> $2 and date_trunc('second', at) > $3
+			and exists (select 1 from issues i where i.key = $1 and lower(i.project) = $4)
 		returning release_id, at`,
-		issue, podUID, keptSince).Scan(&held.Release, &held.At)
+		issue, podUID, keptSince, project).Scan(&held.Release, &held.At)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return runtime.WorkspaceBundle{}, false, nil
 	}

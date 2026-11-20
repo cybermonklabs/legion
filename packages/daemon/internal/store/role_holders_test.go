@@ -177,6 +177,61 @@ func TestAClaimOfNoIssueRoleQueuesNoPublication(t *testing.T) {
 	}
 }
 
+// A claim of another project's issue — the operator's spawn of it, which runs under this project's
+// token — holds no role this store publishes (queuesRoleHolders, claim.KeyOfProject): a row keyed
+// by that issue is run only by the other project's daemon, against that daemon's own claims. So no
+// write of the claim queues a publication, and each leaves the row that daemon holds of the issue
+// as it stands, its lease and its due time unchanged. The same writes of a claim of this project's
+// issue queue its own.
+func TestAClaimOfAnotherProjectsIssueQueuesNoPublication(t *testing.T) {
+	ctx := context.Background()
+	s := publishingStore(t)
+	const theirs = "OTHERPROJECT-9"
+	spawn := func(state supervise.ClaimState, session string) supervise.Claim {
+		return supervise.Claim{Token: "legion-legion-otherproject-9-architect", Project: "legion", Tree: theirs, Issue: theirs,
+			Role: claim.RoleArchitect, Generation: 1, State: state, Session: session}
+	}
+	// The other project's daemon is sending its issue's publication: it holds the row's lease.
+	if _, err := s.pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token, lease_until)
+		values ($1, $2, jsonb_build_object('issue', $2::text), 0, now() + interval '1 minute', '', 'otherproject-lease', now() + interval '5 minutes')`,
+		roleHoldersPublishKind, theirs); err != nil {
+		t.Fatalf("queue the other project's daemon's publication of %s: %v", theirs, err)
+	}
+	held := func() string {
+		t.Helper()
+		var row string
+		if err := s.pool.QueryRow(ctx, `select string_agg(concat_ws(' ', id, next_at, attempts, lease_token, lease_until), '; ')
+			from outbox where kind = $1 and issue = $2`, roleHoldersPublishKind, theirs).Scan(&row); err != nil {
+			t.Fatalf("read the publication rows of %s: %v", theirs, err)
+		}
+		return row
+	}
+	before := held()
+	for _, c := range []supervise.Claim{
+		spawn(supervise.StateRegistered, "ses-1"), spawn(supervise.StateSuspended, "ses-1"),
+		spawn(supervise.StateRegistered, "ses-2"), spawn(supervise.StateRetired, "ses-2"),
+	} {
+		if err := s.PutClaim(ctx, c); err != nil {
+			t.Fatalf("write the %s claim of %s: %v", c.State, theirs, err)
+		}
+		if after := held(); after != before {
+			t.Errorf("after the %s write of the claim of %s its publication rows are %q, want the other project's daemon's row as it stood, %q",
+				c.State, theirs, after, before)
+		}
+	}
+
+	openHolderTree(t, s)
+	if _, err := s.AdmitClaim(ctx, holderClaim(supervise.StateLaunching, "")); err != nil {
+		t.Fatalf("admit the claim of %s: %v", holderIssue, err)
+	}
+	if err := s.PutClaim(ctx, holderClaim(supervise.StateRegistered, "ses-1")); err != nil {
+		t.Fatalf("the registration of the claim of %s: %v", holderIssue, err)
+	}
+	if got, want := queuedRoleHolders(t, s), []string{theirs, holderIssue}; !slices.Equal(got, want) {
+		t.Fatalf("the outbox holds the role-holder publications of %v, want %v: the other project's daemon's, and the one this project's registration queued", got, want)
+	}
+}
+
 // A store the daemon has not turned the publication on for queues nothing, whatever its claim
 // writes change: a daemon with no dispatch_url opens no workflow and so runs no outbox, and a row
 // queued there would be neither sent nor deleted. The same writes on a store that publishes queue
@@ -242,10 +297,11 @@ func tracedStore(t *testing.T, s *Store, publishes bool) (*Store, *transactionsB
 // A claim write that can queue no publication is one statement on the pool, as PutClaim was before
 // the publication, with no BEGIN and no COMMIT around it. Two conditions make such a write, and
 // both are read before a transaction opens: a store the daemon has not turned the publication on
-// for (each claim write of a daemon with no dispatch_url), and a claim that holds no role of an
-// issue (each write of the project's controller, and of a claim on no issue). The last row is the
-// control that the count sees a transaction when one opens: a retirement on a store that publishes
-// can queue, so it runs in one transaction with the row it queues.
+// for (each claim write of a daemon with no dispatch_url), and a claim that holds no role this
+// store publishes (each write of the project's controller, of a claim on no issue, and of a claim
+// of another project's issue). The last row is the control that the count sees a transaction when
+// one opens: a retirement on a store that publishes can queue, so it runs in one transaction with
+// the row it queues.
 func TestAClaimWriteThatCanQueueNothingOpensNoTransaction(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
@@ -255,6 +311,8 @@ func TestAClaimWriteThatCanQueueNothingOpensNoTransaction(t *testing.T) {
 		Generation: 1, State: supervise.StateRegistered, Session: "ses-controller"}
 	noIssue := supervise.Claim{Token: "legion-operator-tree-implementer", Project: "legion", Tree: "operator-tree",
 		Role: claim.RoleImplementer, Generation: 1, State: supervise.StateRegistered, Session: "ses-operator"}
+	otherProject := supervise.Claim{Token: "legion-legion-otherproject-9-architect", Project: "legion", Tree: "OTHERPROJECT-9",
+		Issue: "OTHERPROJECT-9", Role: claim.RoleArchitect, Generation: 1, State: supervise.StateRegistered, Session: "ses-spawn"}
 	for _, write := range []struct {
 		name  string
 		store *Store
@@ -265,6 +323,7 @@ func TestAClaimWriteThatCanQueueNothingOpensNoTransaction(t *testing.T) {
 		{"the tester's registration on a store that does not publish", quiet, quietBegun, holderClaim(supervise.StateRegistered, "ses-1"), 0},
 		{"the controller's registration on a store that publishes", publishing, publishingBegun, controller, 0},
 		{"the registration of a claim on no issue on a store that publishes", publishing, publishingBegun, noIssue, 0},
+		{"the registration of a claim of another project's issue on a store that publishes", publishing, publishingBegun, otherProject, 0},
 		{"the tester's retirement on a store that publishes", publishing, publishingBegun, holderClaim(supervise.StateRetired, "ses-1"), 1},
 	} {
 		before := write.begun.begun.Load()

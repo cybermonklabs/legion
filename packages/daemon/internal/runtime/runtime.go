@@ -266,13 +266,15 @@ type WorkspaceBundler interface {
 
 // SavedWorkspaceBundle answers the bundle an issue's last release saved for the pod of podUID,
 // created at podCreated, to restore, and what that ask did to the bundle. It is the other half
-// of WorkspaceBundler: the save's own store (store.Store.TakeWorkspaceBundleForRestore), handed
-// to the runtime so that the runtime, which alone knows when a replacement pod's launcher is up,
-// can carry the saved work back into the new workspace before any role of that pod starts.
+// of WorkspaceBundler: the save's own store (store.Store.TakeWorkspaceBundleForRestore, bound to
+// the daemon's project where the daemon wires it), handed to the runtime so that the runtime,
+// which alone knows when a replacement pod's launcher is up, can carry the saved work back into
+// the new workspace before any role of that pod starts.
 //
 // WorkspaceBundleNone is nothing to send and nothing recorded: an issue never released, one
 // whose restore the launcher confirmed, one whose release a wake cancelled, one whose bundle has
-// had its one attempt already, and the pod the work was taken off asking for its own workspace's
+// had its one attempt already, one the daemon's project does not record, whose bundle another
+// project's daemon saved, and the pod the work was taken off asking for its own workspace's
 // work back. The runtime calls this at every start of every role, and a release stops the roles
 // of the pod it is releasing, so a role relaunched in that pod before the teardown deletes it is
 // one of those calls; the store knows that pod by the uid the save recorded
@@ -312,10 +314,12 @@ type WorkspaceBundleRestored func(ctx context.Context, issue string, release int
 // issue's pod (workflow.IdleHoldBundleUnrestored). The drop answers the release and the time of
 // the bundle it dropped, never its body, and true. False is nothing dropped, and the runtime then
 // takes the bundle as SavedWorkspaceBundle answers it. It deletes the row a confirmed restore
-// deletes (store.Store.DropHeldWorkspaceBundle), under the take's own rules: the pod the work came
-// off drops nothing, and neither does a bundle whose one attempt is spent. A Sandbox created after
-// the save holds a new volume, which a reset made, and its pod restores the bundle. So does a
-// Sandbox created in the save's own second, which the rule cannot order against the save.
+// deletes (store.Store.DropHeldWorkspaceBundle, bound to the daemon's project where the daemon
+// wires it), under the take's own rules: the pod the work came off drops nothing, a bundle whose
+// one attempt is spent drops nothing, and a bundle of an issue the daemon's project does not
+// record drops nothing. A Sandbox created after the save holds a new volume, which a reset made,
+// and its pod restores the bundle. So does a Sandbox created in the save's own second, which the
+// rule cannot order against the save.
 type HeldWorkspaceBundleDrop func(ctx context.Context, issue, podUID string, keptSince time.Time) (WorkspaceBundle, bool, error)
 
 // MemoryGuardKilled is the daemon's reading of one process an issue pod's launcher ended with
