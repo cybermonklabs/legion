@@ -207,9 +207,12 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	// controller carrying one for a controller the daemon launched (`controller: daemon`). So are
 	// the Slack channels the daemon tells its own controller (LEGION_SLACK_CHANNELS): only that
 	// controller hears a project's mentions, and an inherited list is no project's word for this
-	// one. A machine that holds its Dispatch credential at the broker drops the operator's own
-	// Dispatch bearer and pointer as well: either would be presented in place of the traded token
-	// as a bearer Dispatch refuses (controllerDispatchBroker). The drop is not the whole of it — the
+	// one. So is OMP_SESSION_EXCLUSIVE (runtime.SessionExclusiveVariable), which a resumed pane is
+	// told: this controller resumes no recorded session, and an inherited value would stop it where
+	// Oh My Pi would otherwise move a held session to a new id. A machine that holds its Dispatch
+	// credential at the broker drops the operator's own Dispatch bearer and pointer as well: either
+	// would be presented in place of the traded token as a bearer Dispatch refuses
+	// (controllerDispatchBroker). The drop is not the whole of it — the
 	// operator's HOME is the controller's, and the envoy.json there holds that person's
 	// `dispatch.token`, which no delete here reaches — so the controller's set carries
 	// DISPATCH_TOKEN_BROKER, the session's word that its Dispatch credential is this machine's
@@ -228,6 +231,7 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	delete(env, "LEGION_BOOT_TOKEN")
 	delete(env, "LEGION_BOOT_TOKEN_FILE")
 	delete(env, "LEGION_SLACK_CHANNELS")
+	delete(env, runtime.SessionExclusiveVariable)
 	if cfg.DispatchTokenBroker {
 		delete(env, "DISPATCH_TOKEN")
 		delete(env, "DISPATCH_TOKEN_FILE")
@@ -486,7 +490,8 @@ func probeAndMint(ctx context.Context, daemonURL string, probe daemon.Controller
 // An empty or all-refused mapping is never a refusal: this route cannot tell a daemon with no
 // workflow (which always serves that shape) from a workflow whose mapping a refresh emptied, and
 // refusing either would block the operator action that recovers the project (admitting work,
-// AGENTS.md "Handover"). It refuses only an unusable read: a body without a `repositories` object
+// docs/site/src/content/docs/legion/concepts.md, "Admission and the `legion` label"). It refuses
+// only an unusable read: a body without a `repositories` object
 // (absent or null, a shape no conforming daemon serves) and a mapped entry that is not
 // `owner/name`.
 func checkControllerRepositories(ctx context.Context, daemonURL string) error {

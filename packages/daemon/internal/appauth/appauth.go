@@ -183,8 +183,8 @@ type Tokens interface {
 	// directories hold that owner's own lease at the role's permissions instead (Token,
 	// GitHubCredential, INFRA-2543). An App on token_command gets what its command's read-only
 	// release holds instead, which the command decides: the secrets broker's holds the broker's
-	// own set, contents, metadata, pull requests and Actions read (its readOnlyPermissions), which
-	// differs from readPermissions, so such a lease reads no issue, check run, commit status or
+	// own set, contents, metadata, pull requests, Actions, checks and statuses read (its
+	// readOnlyPermissions), which differs from readPermissions, so such a lease reads no issue or
 	// attestation. With a key of its own the mint asks for what the installation is granted of
 	// readPermissions and leaves the rest out (exchangeGranted), so an installation whose account
 	// has not granted the App issues, Actions, checks, commit statuses or attestations gets a
@@ -349,9 +349,9 @@ func (m *Manager) Token(ctx context.Context, role AppRole, owner string) (Lease,
 // is asked for at read where the installation is granted it, and one it is granted none of is
 // left out (exchangeGranted). In token mode it is the command's read-only release
 // (TokenCommandReadOnly) instead, which the command decides; the secrets broker's holds the
-// broker's own set, contents, metadata, pull requests and Actions, which differs from
-// readPermissions, so its holder reads no issue, check run, commit status or attestation through
-// it. A write request of the same owner is a run of its own either way: it asks for no read-only
+// broker's own set, contents, metadata, pull requests, Actions, checks and statuses, which
+// differs from readPermissions, so its holder reads no issue or attestation through it. A write
+// request of the same owner is a run of its own either way: it asks for no read-only
 // release, so the two never stand in for each other. An owner with no name is refused, and
 // nothing is minted.
 func (m *Manager) ReadToken(ctx context.Context, role AppRole, owner string) (Lease, error) {

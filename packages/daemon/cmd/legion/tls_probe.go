@@ -620,6 +620,13 @@ func tlsCertificateError(detail string) bool {
 		"certificate revoked",
 		"certificate verify failed",
 		"invalid peer certificate",
+		// git's https transport through libcurl built with GnuTLS words its refusal of a
+		// certificate by libcurl's version (curl's lib/vtls/gtls.c): "SSL certificate
+		// verification failed: <reason>" from 8.17.0, as git on libcurl 8.18 prints it on Ubuntu
+		// 26.04; "server verification failed: <reason>" from 8.10.0 to 8.16.0, as on Debian 13's
+		// libcurl 8.14; and "server certificate verification failed" in 8.9.1 and older. This
+		// marker reads the first wording alone, and no marker of this list reads the last.
+		"ssl certificate verification failed",
 		// curl before 8.18 says "SSL certificate problem: <reason>"; 8.18 says "SSL certificate
 		// OpenSSL verify result: <reason> (<code>)" for the same refusal (exit 60).
 		"ssl certificate problem",

@@ -118,9 +118,11 @@ func TestTLSCertificateErrorRecognizesClientRefusals(t *testing.T) {
 	}
 }
 
-// curl names one refusal in two ways, by version, and an image may carry either: an image built
-// on another distribution keeps that distribution's curl. Read as no certificate error, a positive
-// control's refusal is "unavailable" and the probe fails an image that is safe.
+// curl names one refusal in several ways, by version and by TLS backend, and an image may carry
+// any of them: an image built on another distribution keeps that distribution's curl. git 2.53.0's
+// https transport, through libcurl's GnuTLS build, printed the Ubuntu row in the image probe of a
+// worker image built on Ubuntu 26.04 on 2026-11-19. Read as no certificate error, a refusal is
+// "unavailable" and the probe fails an image that is safe.
 func TestTLSCertificateErrorRecognizesEachCurlRefusal(t *testing.T) {
 	for _, testCase := range []struct {
 		name, detail string
@@ -128,7 +130,9 @@ func TestTLSCertificateErrorRecognizesEachCurlRefusal(t *testing.T) {
 	}{
 		{"curl 8.14", "curl: (60) SSL certificate problem: unable to get local issuer certificate", true},
 		{"curl 8.18", "curl: (60) SSL certificate OpenSSL verify result: unable to get local issuer certificate (20)", true},
+		{"git 2.53.0 on Ubuntu 26.04", `fatal: unable to access 'https://dv-g3b-emudhra.we-have-a-problem.com/': SSL certificate verification failed: certificate signer not trusted. (CAfile: /etc/ssl/certs/ca-certificates.crt CRLfile: none)`, true},
 		{"no route", "curl: (7) Failed to connect to example.com port 443 after 3 ms: Could not connect to server", false},
+		{"no such host", `fatal: unable to access 'https://dv-g3b-emudhra.we-have-a-problem.com/': Could not resolve host: dv-g3b-emudhra.we-have-a-problem.com`, false},
 		{"timeout", "curl: (28) SSL connection timeout", false},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {

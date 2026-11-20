@@ -118,6 +118,9 @@ const podUser = 1000
 // prompt it or name another session for its launcher to keep would be undoing the launch
 // (claudelaunch.Environment). CLAUDE_CODE_DISABLE_BACKGROUND_TASKS, CLAUDE_CODE_USE_FOUNDRY and
 // the rest of Claude Code's own variables are not here, and stay the operator's to set.
+// runtime.SessionExclusiveVariable is told a launch that resumes a recorded Oh My Pi session alone,
+// and owned in every pod: an operator that could set it could turn off what holds a resumed role
+// to the session the daemon recorded.
 var runtimeOwned = func() map[string]bool {
 	owned := map[string]bool{
 		"LEGION_TREE": true, "LEGION_ISSUE": true, "LEGION_ISSUE_TRAILER": true, "LEGION_ROLE": true, "LEGION_CONTROLLER": true,
@@ -137,6 +140,8 @@ var runtimeOwned = func() map[string]bool {
 		// serves one (runtime.kubernetes.test_postgres): owned in every pod, since a spec or an
 		// operator's pod env naming another server would point every test of the pod at it.
 		launcher.TestPGVariable: true,
+		// What holds a resumed Oh My Pi to the session it resumes (mainEnvironment).
+		runtime.SessionExclusiveVariable: true,
 	}
 	// GIT_CONFIG_COUNT and each GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> gitConfigEnv sets.
 	for _, entry := range gitConfigEnv() {
@@ -377,11 +382,11 @@ type launch struct {
 // keptPod is what a live pod a launch keeps was built with, for the one role that launch starts in
 // it: the facets of the pod the role's own start command names, which a pod cannot be changed to
 // carry (INFRA-484). A pod that has drifted from the configuration is replaced by an update round,
-// which first asks every role in it to push its work and answer, and not by the launch that
-// finds it; so the launch starts its role as that pod was built, and the role runs degraded —
-// without the secrets broker, without an overlay added since — until the round replaces the pod.
-// It can still push its work and answer the round, which a process that refused to start could
-// not.
+// which first asks every role in it to do the steps of its update message (supervise.UpdateTask)
+// and answer, and not by the launch that finds it; so the launch starts its role as that pod was
+// built, and the role runs degraded — without the secrets broker, without an overlay added
+// since — until the round replaces the pod. It can still do those steps and answer the round,
+// which a process that refused to start could not.
 type keptPod struct {
 	// enrolled is the enrollment decision (Runtime.enrollsIn) read of this pod when the launch
 	// began: the runtime enrols its pods and the pod carries that enrollment for the role, both
@@ -428,7 +433,8 @@ type keptPod struct {
 // it cannot reach rather than a secrets grant it never had, and its generation is recorded as
 // carrying no broker URL, so moving the broker's URL never reads as StaleAddress and never
 // repoints that role mid-turn: the update round replaces its pod once every worker has answered,
-// or at the round's bound.
+// no turn runs and no claim's activity report holds it (internal/daemon's roundEnd.holding), or
+// at the round's bound.
 //
 // The launch reads the pod from the Sandbox's stored template, the pod's own build (keptBy), and
 // an observation from the live pod; neither a kubelet nor an admission webhook takes a volume off
@@ -1519,7 +1525,9 @@ func (r *Runtime) LaunchBound() time.Duration {
 // would run a program another role planted in the clone, the fsmonitor and the hooks, turned off
 // (gitConfigEnv); other settings of the shared clone can still run one. A Claude Code role, and no
 // other, is also told Claude Code's own three (claudelaunch.Environment, runsClaude) and the
-// session its launcher keeps (claudelaunch.SessionVariable).
+// session its launcher keeps (claudelaunch.SessionVariable). An Oh My Pi role that resumes a
+// recorded session, and no other launch, is told last that the session is its alone
+// (runtime.SessionExclusiveVariable=1).
 func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	spec := l.spec
 	env := l.kind.agentEnv(l)
@@ -1636,6 +1644,16 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	if store := l.sessionStore(r); store.InDatabase() {
 		add(ompsessions.StorageVariable, ompsessions.SQLStorage)
 		add(ompsessions.DSNFileVariable, r.sessionDSNFile(l))
+	}
+	// A launch that resumes a recorded Oh My Pi session holds its Oh My Pi to that session
+	// (runtime.SessionExclusiveVariable): a resume of a session another live process still holds
+	// exits non-zero after the lease wait rather than moving the role onto a session id the daemon
+	// never recorded. A fresh launch is told nothing of it, and neither is a Claude role, whose
+	// resume is Claude Code's. The name is the runtime's (runtimeOwned), so neither a spec nor an
+	// operator's pod env may set it, and it comes after both. It is plain, so it travels in the
+	// start command alone (launchEnvironment) and changes nothing of the pod.
+	if !l.runsClaude() && spec.ResumeSessionFile != "" {
+		add(runtime.SessionExclusiveVariable, runtime.SessionExclusiveValue)
 	}
 	return env
 }

@@ -1,10 +1,14 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
 
-import type { WriteBounds } from "../../api/client";
+import type { WriteBounds, WriteMethod } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
-import type { InboxRow } from "../../api/types";
-import { type KeyedWriteResult, useKeyedWrite } from "../writes/useKeyedWrite";
+import type { Ask, InboxRow } from "../../api/types";
+import {
+  type KeyedWriteResult,
+  livePress,
+  useKeyedWrite,
+  useLiveRegistration,
+} from "../writes/useKeyedWrite";
 
 /**
  * The asks whose answer the reader has sent and the server has not decided, by ask id: the write
@@ -52,20 +56,29 @@ export function resetOutstandingAnswers(): void {
  *  server has already recorded, whose ask has no open row there - and so kept nothing. */
 type InboxRowsBefore = { readonly rows: InboxRow[] | undefined } | undefined;
 
+/** What every press of an answer or a decline carries: the ask it is of. `retry()` runs the
+ *  newest render's `write` and callbacks with the press's own values (`useKeyedWrite`), and a
+ *  host may draw one card for one ask after another, so the ask a write is sent to, the row it
+ *  takes out of the Inbox and the ask it holds are the press's, whichever ask the card shows. */
+export interface AskPress {
+  readonly ask: Ask;
+}
+
 /** What an answer or a decline is written with, beyond what the hold itself does. */
-export interface OutstandingAnswerWriteOptions<TData, TVariables> {
-  readonly askId: string;
+export interface OutstandingAnswerWriteOptions<TData, TVariables extends AskPress> {
   /** What the shell's pending-writes indicator names this write, in the reader's words. */
   readonly label: (variables: TVariables) => string;
+  /** The method of the request `write` makes (`KeyedWriteMade`). */
+  readonly method: WriteMethod;
   readonly write: (variables: TVariables, bounds: WriteBounds) => Promise<TData>;
-  /** Whether this write takes the ask's row out of the Inbox and holds the ask: false for one
-   *  that leaves both alone. Read once, as the write goes, so a refusal restores exactly what
-   *  that press took out. Every write does by default. */
-  readonly removesRow?: () => boolean;
+  /** Whether a press takes its ask's row out of the Inbox and holds the ask: false for one that
+   *  leaves both alone. Read as each press goes, so a refusal restores exactly what that press
+   *  took out. Every press does by default. */
+  readonly removesRow?: (variables: TVariables) => boolean;
   /** Called after the row is back, so a refusal the surface reads is read on the restored list. */
   readonly onError?: (error: Error, variables: TVariables, before: InboxRowsBefore) => void;
   readonly onSettled?: () => void;
-  readonly onSuccess?: (data: TData | null) => void;
+  readonly onSuccess?: (data: TData | null, variables: TVariables) => void;
 }
 
 /**
@@ -84,9 +97,9 @@ export interface OutstandingAnswerWriteOptions<TData, TVariables> {
  * (`SnoozeControl`), let go when the server decides the answer, when the form is reset, and when
  * the card goes.
  */
-export function useOutstandingAnswerWrite<TData, TVariables>({
-  askId,
+export function useOutstandingAnswerWrite<TData, TVariables extends AskPress>({
   label,
+  method,
   onError,
   onSettled,
   onSuccess,
@@ -101,14 +114,15 @@ export function useOutstandingAnswerWrite<TData, TVariables>({
   const mutation = useKeyedWrite<TData, TVariables, InboxRowsBefore>({
     inline: true,
     label,
+    method,
     write,
-    onMutate: async () => {
-      if (removesRow !== undefined && !removesRow()) return undefined;
-      markAnswerOutstanding(askId, true);
+    onMutate: async (press) => {
+      if (removesRow !== undefined && !removesRow(press)) return undefined;
+      markAnswerOutstanding(press.ask.id, true);
       await queryClient.cancelQueries({ queryKey: inboxQuery().queryKey });
       const rows = queryClient.getQueryData<InboxRow[]>(inboxQuery().queryKey);
       queryClient.setQueryData<InboxRow[]>(inboxQuery().queryKey, (current) =>
-        current?.filter((row) => row.id !== askId)
+        current?.filter((row) => row.id !== press.ask.id)
       );
       return { rows };
     },
@@ -122,11 +136,7 @@ export function useOutstandingAnswerWrite<TData, TVariables>({
     onSettled,
     onSuccess,
   });
-  const live = mutation.isPending || mutation.isError;
-  useEffect(() => {
-    if (!live) return;
-    markAnswerOutstanding(askId, true);
-    return () => markAnswerOutstanding(askId, false);
-  }, [askId, live]);
+  // The ask held is the newest press's, the one whose answer is still out or refused.
+  useLiveRegistration(livePress(mutation)?.ask.id, markAnswerOutstanding);
   return mutation;
 }

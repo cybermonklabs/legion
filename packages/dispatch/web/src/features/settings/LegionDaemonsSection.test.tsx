@@ -1,11 +1,15 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { AuthenticatedUser, LegionSetting } from "../../api/types";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LegionDaemonsSection } from "./LegionDaemonsSection";
 
 /** Every spy a test installed, put back when it ends, so one test's identity or answers are
@@ -58,12 +62,17 @@ function legionServer(initial: readonly LegionSetting[]): LegionServer {
   };
 }
 
-/** Renders the section against `server`, over a deployment of two projects, ACME and CORE.
+/** Renders the section against `server`, over a deployment of two projects, ACME and CORE, in
+ *  `queryClient`, which a case that stops a late write reaches as the shell's indicator does.
  *  `human` is what `/auth/whoami` says: a person is offered the field and the Remove, a bearer is
  *  not. A bearer's answer names a kind the browser's own contract does not — the SPA types the
  *  route by the one answer it is meant to get — so this writes the answer a bearer really
  *  receives. */
-async function renderSection(server: LegionServer, human = true) {
+async function renderSection(
+  server: LegionServer,
+  human = true,
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+) {
   const whoAmI = spyOn(api, "whoAmI").mockResolvedValue(
     human
       ? { event_head: "0", kind: "user", login: "alice" }
@@ -80,7 +89,6 @@ async function renderSection(server: LegionServer, human = true) {
     }))
   );
   spies.push(whoAmI, getLegionDaemon, listProjects);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   spies.push({ mockRestore: () => queryClient.clear() });
   render(
     <QueryClientProvider client={queryClient}>
@@ -204,6 +212,69 @@ test("a URL with a path is refused by the field, in the words the route uses", a
   // No Retry: the URL has to change first.
   expect(section.queryByRole("button", { name: "Retry" })).toBeNull();
   expect(putLegionDaemon).not.toHaveBeenCalled();
+});
+
+// A daemon's save the reader stopped may have been made: the section says so, and that its Retry
+// sends the same `PUT` again, which is the same however often it is made. The section is drawn on
+// the real clock, so every read it makes has answered before the clock is held for the save.
+test("a daemon save the reader stopped says Retry sends it again, not that it failed", async () => {
+  const putLegionDaemon = spyOn(api, "putLegionDaemon").mockRejectedValue(
+    new NetworkError("/api/v1/projects/ACME/legion/daemon", new TypeError("Failed to fetch"))
+  );
+  spies.push(putLegionDaemon);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const section = await renderSection(legionServer([]), true, queryClient);
+  const projectField = await section.findByLabelText("Legion project");
+
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await user.selectOptions(projectField, "ACME");
+    await user.click(section.getByLabelText("Legion daemon state URL"));
+    await user.paste("http://127.0.0.1:9731");
+    await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
+    await stopTheLateWrite(queryClient);
+
+    // The alert's paragraph, without its Retry button's name.
+    expect(section.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the Legion daemon of ACME", "saved", {
+        method: "PUT",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+  }
+});
+
+// A daemon's removal the reader stopped may have been made. The section keeps what it says of a
+// failed write from the write's own error handler (`onError`), so a stopped one is told apart
+// there: the section says what Retry does with it, not that the removal failed.
+test("a daemon removal the reader stopped says Retry makes it again, not that it failed", async () => {
+  const deleteLegionDaemon = spyOn(api, "deleteLegionDaemon").mockRejectedValue(
+    new NetworkError("/api/v1/projects/ACME/legion/daemon", new TypeError("Failed to fetch"))
+  );
+  spies.push(deleteLegionDaemon);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const section = await renderSection(legionServer([setting]), true, queryClient);
+  const remove = await section.findByRole("button", { name: "Remove the Legion daemon of ACME" });
+
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await user.click(remove);
+    await stopTheLateWrite(queryClient);
+
+    // The alert's paragraph, without its Retry button's name.
+    expect(section.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the removal of ACME's Legion daemon", "made", {
+        method: "DELETE",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+  }
 });
 
 test("a reader who is not a person is shown the daemons and offered no control", async () => {
