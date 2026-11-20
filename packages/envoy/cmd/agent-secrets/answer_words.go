@@ -8,7 +8,9 @@ package main
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/brokeraddr"
@@ -89,28 +91,48 @@ func printDetail(stdout io.Writer, base brokeraddr.Address, detail *string) {
 	fmt.Fprintf(stdout, "detail: %s\n", base.Words(*detail))
 }
 
-// brokerIDShape is the shape of an id the broker makes: answer.NewID's 32 lower-case hex digits,
-// a request's and a grant's, or a UUID, an enrollment's and a launcher credential's.
-var brokerIDShape = regexp.MustCompile(`^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$`)
+// brokerIDShape is the shape of an id the broker makes: a lower-case UUID, which it gives every
+// request, grant and enrollment (uuid.NewString, uuid.New) and every launcher credential.
+var brokerIDShape = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
-// idWords is id, a request's, grant's or enrollment's id the broker answered, as a message prints
-// it: as base lets the broker's words print (brokeraddr.Address.Words), and beside an address that
-// does not let them print, still whole where it has the shape of an id the broker makes
-// (brokerIDShape). Such an id is no credential, and a person needs it to follow the request
-// (statusHint): base can be no credential's place at all, only an address Clean refuses, such as a
-// host with an underscore.
+// idWords is id, a request's, grant's, enrollment's or launcher credential's id the broker
+// answered, as a message prints it: as base lets the broker's words print
+// (brokeraddr.Address.Words), and beside an address that does not let them print, still whole where
+// it has the shape of an id the broker makes (brokerIDShape) and the address does not hold it
+// (addressHolds). Such an id is no credential, and a person needs it to follow the request
+// (statusHint) beside an address Clean refuses with no credential in it, such as a host with an
+// underscore. An id the address holds is the one value an answerer there could echo to have it
+// print - a password that is a UUID, as many API tokens are - so it prints as Words.
 func idWords(base brokeraddr.Address, id string) string {
-	if !base.Clean() && brokerIDShape.MatchString(id) {
+	if !base.Clean() && brokerIDShape.MatchString(id) && !addressHolds(base, id) {
 		return id
 	}
 	return base.Words(id)
 }
 
+// addressHolds reports whether id, a UUID, occurs in the address's own text (base.Raw: its user,
+// password, path and query), as written or percent-decoded, in any case, and with or without its
+// dashes: the forms in which an answerer there could echo the address's password as an id.
+func addressHolds(base brokeraddr.Address, id string) bool {
+	raw := base.Raw()
+	forms := []string{raw}
+	if decoded, err := url.PathUnescape(raw); err == nil {
+		forms = append(forms, decoded)
+	}
+	bare := strings.ReplaceAll(id, "-", "")
+	for _, form := range forms {
+		if strings.Contains(strings.ReplaceAll(strings.ToLower(form), "-", ""), bare) {
+			return true
+		}
+	}
+	return false
+}
+
 // statusHint is the command that reads requestID's state again, as a person pastes it: agent-secrets
 // status and the id, quoted for the shell, where the id prints as it is (idWords); beside a clean
 // address, an id with a control character in it Go-quoted, as the lines before it print it; and
-// beside an address that is not clean, for an id not of the broker's shape, the form to run and
-// that its id is not printed, since a command with no id would not run.
+// beside an address that is not clean, for an id that does not print, the form to run and that
+// its id is not printed, since a command with no id would not run.
 func statusHint(base brokeraddr.Address, requestID string) string {
 	shown := idWords(base, requestID)
 	switch {
@@ -119,5 +141,5 @@ func statusHint(base brokeraddr.Address, requestID string) string {
 	case base.Clean():
 		return "Check it with: agent-secrets status " + shown
 	}
-	return "Check it with agent-secrets status and the request's id, which is not printed: the broker's address is not clean, and the id is not one of the shape the broker makes"
+	return "Check it with agent-secrets status and the request's id, which is not printed: the broker's address is not clean, and the id is no UUID the broker makes apart from the address's own text"
 }

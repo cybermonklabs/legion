@@ -13,9 +13,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -334,11 +336,13 @@ func TestTheEnrollmentIDsPrintOnOneLine(t *testing.T) {
 
 // TestTheExecFormNamesARequestItLeavesWaitingBesideAnUncleanAddress: beside an AGENT_SECRETS_URL
 // that Clean refuses and that carries no credential - a host name with a trailing dot - the exec
-// form that stops while its request waits still prints the request's id where it has the shape
-// of an id the broker makes, and the command that reads it again, which runs when pasted. An id
-// of another shape is not printed, and the hint says so in place of a command that would not run.
+// form that stops while its request waits still prints the request's id where it is a UUID, the
+// shape of every id the broker makes, and the command that reads it again, which runs when pasted.
+// An id of another shape, 32 hex digits among them, is not printed, and the hint says so in place
+// of a command that would not run.
 func TestTheExecFormNamesARequestItLeavesWaitingBesideAnUncleanAddress(t *testing.T) {
-	const shaped = "0123456789abcdef0123456789abcdef"
+	const shaped = "0f3b6c2e-5a1d-4e7f-9b80-2c4d6e8f0a1b"
+	const hex32 = "0123456789abcdef0123456789abcdef"
 	planted := "hunter2pw-" + "execid-" + "4c2d"
 	for _, row := range []struct {
 		name, id string
@@ -347,6 +351,8 @@ func TestTheExecFormNamesARequestItLeavesWaitingBesideAnUncleanAddress(t *testin
 	}{
 		{"an id of the broker's shape", shaped,
 			[]string{"request " + shaped + " to ", "nothing was run. Check it with: agent-secrets status " + shaped}, nil},
+		{"32 hex digits, which no id the broker makes is", hex32,
+			[]string{"request " + brokeraddr.WordsNotPrinted, "Check it with agent-secrets status and the request's id, which is not printed"}, []string{hex32}},
 		{"an id of another shape", planted,
 			[]string{"request " + brokeraddr.WordsNotPrinted, "Check it with agent-secrets status and the request's id, which is not printed"}, []string{planted}},
 	} {
@@ -364,4 +370,101 @@ func TestTheExecFormNamesARequestItLeavesWaitingBesideAnUncleanAddress(t *testin
 			wantNamedNotPrinted(t, "stderr", stderr.String(), row.says, row.hidden...)
 		})
 	}
+}
+
+// TestAUUIDTheAddressHoldsIsNotPrinted: beside an AGENT_SECRETS_URL whose password is a UUID, as
+// many API tokens are, an answerer that echoes the password as the request's id has it printed
+// nowhere: not on the request form's request_id line, nor in the exec form's lines and status
+// hint, where an id of the broker's shape prints beside an unclean address; nor a 32-hex password
+// it echoes with a UUID's dashes put in; nor a grant or machine table's id cell that is the
+// password. Controls: each echo reached the answer (the answerer saw the password as Basic auth);
+// a UUID the address does not hold prints beside the same address, in the exec form and in both
+// tables, which print a grant's id by the same rule as self; and a UUID prints beside a clean
+// address.
+func TestAUUIDTheAddressHoldsIsNotPrinted(t *testing.T) {
+	uuidPassword := "3f1c9a2b" + "-7d4e-4a6b-9c21-" + "0e8f5d7a6b42"
+	hexPassword := "9b2e41c0" + "7d5f8a3e6b10" + "29c4d7e0f5a8"
+	dashed := func(pw string) string {
+		return pw[:8] + "-" + pw[8:12] + "-" + pw[12:16] + "-" + pw[16:20] + "-" + pw[20:]
+	}
+	same := func(pw string) string { return pw }
+	const other = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
+	request := []string{"request", "--reason", "need it", "SOME_SECRET"}
+	exec := []string{"--reason", "need it", "--wait", "0s", "SOME_SECRET", "--", "true"}
+	for _, row := range []struct {
+		name, password string
+		echo           func(string) string
+		args           []string
+		code           int
+		clean          bool
+		says           []string
+	}{
+		{"the request form, a UUID password echoed", uuidPassword, same, request, exitPending, false,
+			[]string{"request_id: " + brokeraddr.WordsNotPrinted}},
+		{"the exec form, a UUID password echoed", uuidPassword, same, exec, exitPending, false,
+			[]string{"request " + brokeraddr.WordsNotPrinted, "Check it with agent-secrets status and the request's id, which is not printed"}},
+		{"the request form, a 32-hex password echoed as a UUID", hexPassword, dashed, request, exitPending, false,
+			[]string{"request_id: " + brokeraddr.WordsNotPrinted}},
+		{"control: the exec form, a UUID the address does not hold", uuidPassword, nil, exec, exitPending, false,
+			[]string{"request " + other + " to ", "Check it with: agent-secrets status " + other}},
+		{"control: the request form beside a clean address", "", nil, request, exitPending, true,
+			[]string{"request_id: " + other}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			var echoed atomic.Bool
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodPost && r.URL.Path == "/v1/requests" {
+					id := other
+					if _, pw, ok := r.BasicAuth(); ok && row.echo != nil {
+						echoed.Store(pw == row.password)
+						id = row.echo(pw)
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"request_id": id, "state": "pending"})
+					return
+				}
+				w.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(w).Encode(map[string]string{"code": "NOT_FOUND", "error": "not found"})
+			}))
+			t.Cleanup(srv.Close)
+			address := srv.URL
+			if !row.clean {
+				parsed, err := url.Parse(srv.URL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				parsed.User = url.UserPassword("tokuser", row.password)
+				address = parsed.String()
+			}
+			t.Setenv("AGENT_SECRETS_URL", address)
+			t.Setenv("AGENT_SECRETS_KEY_DIR", newKeyDir(t))
+			t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
+			t.Setenv("AGENT_SECRETS_WAIT", "")
+			var stdout, stderr bytes.Buffer
+			if code := run(row.args, &stdout, &stderr); code != row.code {
+				t.Fatalf("exit %d, stderr %q; want %d", code, stderr.String(), row.code)
+			}
+			if row.echo != nil && !echoed.Load() {
+				t.Fatal("control: the answerer did not receive the address's password as Basic auth, so the row is blind")
+			}
+			var hidden []string
+			if row.echo != nil {
+				hidden = []string{row.password, row.echo(row.password)}
+			}
+			wantNamedNotPrinted(t, "the output", stdout.String()+stderr.String(), row.says, hidden...)
+		})
+	}
+	t.Run("the grant and machine tables", func(t *testing.T) {
+		base := brokeraddr.New("http://tokuser:" + uuidPassword + "@broker.example")
+		at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+		cells := func(id string) string {
+			grant := grantRow(base, OperatorGrant{GrantID: id, Names: []string{"SOME_SECRET"}, ExpiresAt: &at})
+			machine := machineRow(base, OperatorMachine{CredentialID: id, IssuedAt: at, ExpiresAt: at})
+			return grant[0] + "|" + machine[0]
+		}
+		wantNamedNotPrinted(t, "the id cells of the password", cells(uuidPassword), []string{brokeraddr.WordsNotPrinted + "|" + brokeraddr.WordsNotPrinted}, uuidPassword)
+		if got := cells(other); got != other+"|"+other {
+			t.Errorf("control: the id cells of a UUID the address does not hold are %q, want it whole in both, as self prints a grant's id", got)
+		}
+	})
 }

@@ -250,13 +250,14 @@ func cmdMachineList(args []string, stdout, stderr io.Writer) int {
 // three are the broker's, so each prints as the broker's address base lets its answer print
 // (brokeraddr.Address.Words): as it came on one line, Go-quoted where a control character in it,
 // a tab among them, would start a line of its own or split the cell, and not at all beside an
-// address that carries a credential.
+// address that carries a credential; the credential id, as every id the broker answers prints
+// (idWords), still whole there where it is a UUID the address does not hold.
 func machineRow(base brokeraddr.Address, m OperatorMachine) []string {
 	state := "ok"
 	if m.Expired {
 		state = "expired"
 	}
-	return []string{base.Words(m.CredentialID), base.Words(m.Host), base.Words(orDash(m.ApprovedBy)),
+	return []string{idWords(base, m.CredentialID), base.Words(m.Host), base.Words(orDash(m.ApprovedBy)),
 		m.IssuedAt.UTC().Format(time.RFC3339), m.ExpiresAt.UTC().Format(time.RFC3339), state}
 }
 

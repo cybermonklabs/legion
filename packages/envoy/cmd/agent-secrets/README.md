@@ -45,8 +45,9 @@ decided it and the broker's sentence about it, whom and where a pending request 
 `self`'s lines, the cells of `machine list` and `grant list`, and the broker's settings - prints
 as the broker's address lets it print: beside a URL that prints, on one line, as it came where it
 holds no control character and Go-quoted where it holds one; beside one that does not, as
-`(not printed: …)`, except a request, grant or enrollment id of the shape the broker makes (32
-hex digits, or a UUID), which is no credential and prints whole, so `agent-secrets status <id>`
+`(not printed: …)`, except a request, grant, enrollment or machine login id that is a UUID, the
+shape of every id the broker makes, and that the URL does not hold, in any case or form: such an
+id is no credential and prints whole, in every form and table alike, so `agent-secrets status <id>`
 can follow a request. `--json` writes a 2xx body verbatim, every field, since it asks for the body
 by name. Of a machine login the helper relays, the `user_code` prints on one line, and the
 `verification_uri` as the URL above prints: whole where it is a plain http(s) URL, `(not printed:

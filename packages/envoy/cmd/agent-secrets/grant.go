@@ -82,7 +82,8 @@ var grantColumns = []string{"GRANT_ID", "SECRETS", "GRANTED", "APPROVER", "DECID
 // such value. Each cell is the broker's, so it prints as the broker's address base lets its answer
 // print (brokeraddr.Address.Words): as it came on one line, Go-quoted where a control character in
 // it, a tab among them, would start a line of its own or split the cell, and not at all beside an
-// address that carries a credential.
+// address that carries a credential; the grant id, as every id the broker answers prints
+// (idWords), still whole there where it is a UUID the address does not hold.
 //
 // APPROVER and DECIDED_BY sit side by side because they differ for one kind of grant: one the
 // model judge approved, which records the record's own approver — the secret's owner, or anyone
@@ -101,6 +102,7 @@ func grantRow(base brokeraddr.Address, g OperatorGrant) []string {
 	for i, cell := range cells {
 		cells[i] = base.Words(cell)
 	}
+	cells[0] = idWords(base, g.GrantID)
 	return cells
 }
 
