@@ -26,7 +26,8 @@ const (
 	UpdateStateAsked UpdateState = "asked"
 	// UpdateStateAnswered is a claim whose worker answered the round that is open over it. The
 	// daemon holds the claim's next task from this moment. The round ends when every claim of
-	// the round has answered and no turn runs, or at its bound, whichever comes first. Then the
+	// the round has answered, no turn runs and no claim's activity report holds it
+	// (internal/daemon's roundEnd.holding), or at its bound, whichever comes first. Then the
 	// daemon replaces the process.
 	UpdateStateAnswered UpdateState = "answered"
 )
