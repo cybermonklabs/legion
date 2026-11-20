@@ -170,10 +170,14 @@ check "nor a step that would say whether a row failed" \
   "$(is "$(contains "$(error_line)" 'verdict step')" false)"
 check "the notice does not say the legs printed 0 rows" \
   "$(is "$(contains "$(notice_line)" 'against 0 printed')" false)"
-check "it says no count was read" \
-  "$(contains "$(notice_line)" "against no count of the legs', since this job read none of them")"
-check "and names each leg as not read" \
-  "$(contains "$(notice_line)" '(shard-1 not read, shard-2 not read, shard-3 not read, shard-4 not read)')"
+check "the notice says this job has no merged report, rather than one holding unknown rows" \
+  "$(contains "$(notice_line)" "rows::this job has no merged report to hold against the legs' counts: ")"
+check "and does not say a merged report holds rows" \
+  "$(is "$(contains "$(notice_line)" 'merged report holds')" false)"
+check "and names each leg's count as not read" \
+  "$(contains "$(notice_line)" 'counts: shard-1 not read, shard-2 not read, shard-3 not read, shard-4 not read$')"
+check "the summary says the same" \
+  "$(contains "$(cat "$root/summary.md")" "^This job has no merged report to hold against the legs' counts in the table above\.$")"
 check "the summary table says neither each leg's count nor its blob was read" \
   "$(is "$(table_rows "$root" '| not read | not read |$')" 4)"
 check "and holds no MISSING, which is the word for a blob the selection did not find" \
@@ -263,8 +267,8 @@ check "and shard 2's blob without its count" \
   "$(is "$(table_rows "$root" '^| shard-2 | not read | yes |$')" 1)"
 check "and neither for shards 3 and 4" "$(is "$(table_rows "$root" '| not read | not read |$')" 2)"
 check "and no MISSING" "$(is "$(table_rows "$root" 'MISSING')" 0)"
-check "the notice counts the one leg read, as one leg" \
-  "$(contains "$(notice_line)" 'against 30 printed by the 1 leg whose count this job read (shard-1 30, shard-2 not read, shard-3 not read, shard-4 not read)')"
+check "the notice says this job has no merged report, with each leg's count as read" \
+  "$(contains "$(notice_line)" "rows::this job has no merged report to hold against the legs' counts: shard-1 30, shard-2 not read, shard-3 not read, shard-4 not read$")"
 
 echo "case: the selection was cancelled after it had copied every leg"
 # Every blob and count is in front of this reading, but the merge step after the selection never
@@ -385,7 +389,7 @@ check "naming the leg whose count it did not read" \
 check "and not saying the merge dropped rows" \
   "$(is "$(contains "$(error_line)" 'the merge dropped rows')" false)"
 
-echo "case: every owed blob arrived and two legs' count files hold no number"
+echo "case: every owed blob arrived and three legs' count files hold no number"
 # The legs' suite scripts write the count file from the log's last "Running N tests" line, so a
 # count file that holds no number is a log that printed no such line this job could read.
 root=$(fixture count-empty)
@@ -395,14 +399,18 @@ leg "$root" shard-3 50
 leg "$root" shard-4 60
 : > "$root/temp/selected-blobs/rows/shard-2.txt"
 : > "$root/temp/selected-blobs/rows/shard-3.txt"
+: > "$root/temp/selected-blobs/rows/shard-4.txt"
 merged "$root" 180 0 0 0
 run_rows "$root" success success
 check "fails the step" "$(is "$status" 1)"
-check "naming those legs as unread" "$(contains "$(error_line)" 'read no row count of: shard-2, shard-3, so')"
+check "naming those legs as unread" \
+  "$(contains "$(error_line)" 'read no row count of: shard-2, shard-3, shard-4, so')"
 check "and sending the reader to their own logs for the line the count comes from" \
   "$(contains "$(error_line)" "A leg's count is the N of the last \"Running N tests\" line its own log printed; the log of each leg named here shows whether it printed one\.$")"
 check "and the table calls their counts not read, not 0" \
-  "$(is "$(table_rows "$root" '^| shard-[23] | not read | yes |$')" 2)"
+  "$(is "$(table_rows "$root" '^| shard-[234] | not read | yes |$')" 3)"
+check "the notice counts the one leg read, as one leg" \
+  "$(contains "$(notice_line)" 'holds 180 rows, against 30 printed by the 1 leg whose count this job read (shard-1 30, shard-2 not read, shard-3 not read, shard-4 not read)$')"
 
 echo "case: every owed blob arrived and the merge step made no merged report"
 # The merge step's own failure names that. This reading has nothing to hold the counts against,
@@ -415,8 +423,8 @@ leg "$root" shard-4 60
 run_rows "$root" success success
 check "exits 0" "$(is "$status" 0)"
 check "prints no ::error:: line" "$(is "$(errors)" 0)"
-check "the notice holds the legs' counts against no number" \
-  "$(contains "$(notice_line)" 'holds unknown rows, against 180 printed by the legs')"
+check "the notice says this job has no merged report, with the legs' counts" \
+  "$(contains "$(notice_line)" "rows::this job has no merged report to hold against the legs' counts: shard-1 30, shard-2 40, shard-3 50, shard-4 60$")"
 
 echo "case: every owed blob arrived and the merged report is not JSON"
 root=$(fixture report-not-json)
@@ -430,6 +438,8 @@ check "fails the step" "$(is "$status" 1)"
 check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
 check "naming the report jq could not read" \
   "$(contains "$(error_line)" "the merged report $root/temp/report.json is not JSON that jq can read")"
+check "the notice says this job could not read the merged report" \
+  "$(contains "$(notice_line)" "rows::this job could not read the merged report to hold against the legs' counts: shard-1 30, ")"
 
 echo "case: every owed blob arrived and the merged report's stats hold no number"
 # A test on `null` fails inside the comparison's `if`, where `set -e` does not reach, so the

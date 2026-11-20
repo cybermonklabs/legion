@@ -198,8 +198,7 @@ while IFS= read -r leg; do
 done <<< "$legs"
 # `unknown` where there is no merged report: the merge step did not run or failed, and this
 # reading still names the legs that owed a blob, which is what says why. A report jq cannot read
-# is `unknown` too, and is named as unreadable below; jq's own message says what it could not
-# read.
+# is `unknown` too, and is named as unreadable; jq's own message says what it could not read.
 merged=unknown
 unreadable_report=""
 sum='.stats.expected + .stats.unexpected + .stats.flaky + .stats.skipped'
@@ -207,21 +206,35 @@ if [ -f "$report" ] && ! merged=$(jq "$sum" "$report"); then
   merged=unknown
   unreadable_report=yes
 fi
-if [ -z "$unread_legs" ]; then
-  printed_words="$printed_total printed by the legs"
-elif [ "$counted" -eq 0 ]; then
-  printed_words="no count of the legs', since this job read none of them"
-elif [ "$counted" -eq 1 ]; then
-  printed_words="$printed_total printed by the 1 leg whose count this job read"
+# With no merged report there is no row count to hold against the legs', so the notice and the
+# summary say what this job saw instead - no merged report, or one it could not read - and give
+# each leg's count as this job read it.
+if [ "$merged" = unknown ]; then
+  if [ -n "$unreadable_report" ]; then
+    seen="this job could not read the merged report"
+  else
+    seen="this job has no merged report"
+  fi
+  summary_line="${seen^} to hold against the legs' counts in the table above."
+  notice="$seen to hold against the legs' counts: ${line%, }"
 else
-  printed_words="$printed_total printed by the $counted legs whose count this job read"
+  if [ -z "$unread_legs" ]; then
+    printed_words="$printed_total printed by the legs"
+  elif [ "$counted" -eq 0 ]; then
+    printed_words="no count of the legs', since this job read none of them"
+  elif [ "$counted" -eq 1 ]; then
+    printed_words="$printed_total printed by the 1 leg whose count this job read"
+  else
+    printed_words="$printed_total printed by the $counted legs whose count this job read"
+  fi
+  summary_line="The merged report holds $merged rows, against $printed_words."
+  notice="the merged report holds $merged rows, against $printed_words (${line%, })"
 fi
 {
   echo
-  echo "The merged report holds $merged rows, against $printed_words."
+  echo "$summary_line"
 } >> "$GITHUB_STEP_SUMMARY"
-echo "::notice title=dispatch-browser rows::the merged report holds $merged rows," \
-  "against $printed_words (${line%, })"
+echo "::notice title=dispatch-browser rows::$notice"
 case "$input" in
   refused)
     # Where the download was refused, this step runs anyway - its `if:` is `always()` -
