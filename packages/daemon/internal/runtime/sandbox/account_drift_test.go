@@ -27,17 +27,18 @@ func onAccount(account string) func(*corev1.Pod) {
 // is reached only by replacing the pod, and which replacement that is follows the pod's kind
 // (accountDrift, roundCovers). A launch into a pod an update round covers — every issue pod —
 // keeps it for the account as for every other kind of drift, and leaves the replacement to that
-// round, which has every worker in the pod push its work first. A launch into a pod no round
-// covers — the daemon-launched controller's — replaces it for the account whatever it is
-// installing, since no round will ever come for such a pod: that is the one place the account
-// still beats the stale-plugin exemption, which otherwise keeps a drifted pod and installs into
-// it. A replaced Sandbox is kept under its new pod (an issue pod's disk is the pod's own
-// ephemeral volume and goes with it, as for image drift). An issue pod is kept here whatever
-// account it runs as, so the rows that hold the launch's own reading of the account are the
-// controller's: its pod is kept where it already runs as the configured account — including a
-// pod on `default` under a configuration naming no account, which is that same account spelled
-// the other way — and replaced where it does not. What an issue pod's account reaches instead
-// is its round's reasons (TestPodDriftNamesTheServiceAccountThePodRunsAs).
+// round, which first has every worker in the pod do the steps of its update message
+// (supervise.UpdateTask). A launch into a pod no round covers — the daemon-launched controller's
+// — replaces it for the account whatever it is installing, since no round will ever come for such
+// a pod: that is the one place the account still beats the stale-plugin exemption, which
+// otherwise keeps a drifted pod and installs into it. A replaced Sandbox is kept under its new
+// pod (an issue pod's disk is the pod's own ephemeral volume and goes with it, as for image
+// drift). An issue pod is kept here whatever account it runs as, so the rows that hold the
+// launch's own reading of the account are the controller's: its pod is kept where it already
+// runs as the configured account — including a pod on `default` under a configuration naming no
+// account, which is that same account spelled the other way — and replaced where it does not.
+// What an issue pod's account reaches instead is its round's reasons
+// (TestPodDriftNamesTheServiceAccountThePodRunsAs).
 func TestALaunchKeepsAnAccountDriftedPodARoundCoversAndReplacesOneNoRoundCovers(t *testing.T) {
 	plugins := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: 24}
 	for name, tc := range map[string]struct {

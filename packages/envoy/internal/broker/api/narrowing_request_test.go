@@ -66,7 +66,7 @@ func newNarrowingRequestServer(t *testing.T, answer airlocktest.GitHubAnswer, ai
 		}
 	})
 	s.Secrets.Put(policytest.TypeSecret("NARROW_APP_KEY", testApprover, policy.TierHuman, policy.TypeGitHubApp, standInAppValue(t)))
-	if status, body := s.req(t, http.MethodPost, "/v1/secrets/NARROW_APP_KEY/reread", nil, nil); status != http.StatusOK {
+	if status, body := s.sessionReread(t, "NARROW_APP_KEY"); status != http.StatusOK {
 		t.Fatalf("reread NARROW_APP_KEY = %d %s", status, body)
 	}
 	s.enrollmentID, s.key = s.newSessionEnrollment(t, "session-"+t.Name(), testApprover)

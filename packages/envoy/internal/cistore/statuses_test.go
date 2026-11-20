@@ -393,11 +393,13 @@ func todaysHead() State {
 }
 
 // todaysPayload and todaysLine are the payload and the one line the listener of the release before
-// commit statuses settled todaysHead in, byte for byte: its renderSummary and
-// settledPayloadSummary, run on that head.
+// commit statuses settled todaysHead in, byte for byte, with each check_runs entry carrying its
+// run's conclusion word as this listener adds it: its renderSummary and settledPayloadSummary, run
+// on that head.
 const (
 	todaysPayload = `{"kind":"checks","repo":"acme/widgets","number":"7","sha":"0123456789abcdef0123456789abcdef01234567",` +
-		`"check_runs":[{"name":"build","id":11},{"name":"docs","id":14},{"name":"image","id":13},{"name":"lint","id":12}],` +
+		`"check_runs":[{"name":"build","id":11,"conclusion":"success"},{"name":"docs","id":14,"conclusion":"skipped"},` +
+		`{"name":"image","id":13,"conclusion":"cancelled"},{"name":"lint","id":12,"conclusion":"failure"}],` +
 		`"generation":3,"snapshot":"8a05685f026c9caa16161a227de93b41bd04ed7de085ba044b495754afd55bdf","superseded_settlement":"true",` +
 		`"failed":{"count":1,"checks":["lint"]},"running":{"count":0,"checks":[]},"passed":{"count":1,"checks":["build"]},` +
 		`"queued":{"count":0,"checks":[]},"cancelled":{"count":1,"checks":["image"]},"skipped":{"count":1,"checks":["docs"]},` +
