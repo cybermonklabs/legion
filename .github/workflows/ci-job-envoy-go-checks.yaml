@@ -65,7 +65,8 @@ jobs:
       # another repository relies on it: its setup-go, its removal of setup-go's `go` problem
       # matcher, its path resolved against the workspace, its cache restore, and its count output,
       # which the next step reads. In a pull request and a merge group it restores its cache and
-      # saves nothing (ci.yaml's header, "Caches"). It runs right after the checkout, before this
+      # saves nothing (.github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs,
+      # "Caches"). It runs right after the checkout, before this
       # job's own setup-go, which adds setup-go's `go` problem matcher back for every later step
       # of the job: the placement "before the Go setup of the job" of the action's README.md, "The
       # Go toolchain". The checkout removes the problem matcher it adds before it ends, so no

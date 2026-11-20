@@ -1,6 +1,10 @@
 package contracts
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -61,6 +65,118 @@ func TestGithubCIObservationsExtractCheckSuite(t *testing.T) {
 	if observation.ObservedAt != "2026-09-07T03:01:00Z" {
 		t.Errorf("check suite observation timestamp = %q", observation.ObservedAt)
 	}
+}
+
+// A check_suite webhook gives its suite's latest_check_runs_count, which the webhook's mapping
+// keeps as CheckRunCount: a count of 0 as 0, not as none, and an event that gives no whole number
+// as none. The two suites are this repository's, each captured with
+//
+//	gh api repos/cybermonklabs/legion/check-suites/<id> --jq '{id, status, conclusion, latest_check_runs_count, head_sha, head_branch, updated_at, app: {id: .app.id}, pull_requests: [.pull_requests[] | {number}]}'
+//
+// for 120620537894 (testdata/check_suite_queued_no_runs.json: an App's suite queued with no check
+// run) and 120620605808 (testdata/check_suite_completed.json: GitHub Actions' suite completed with
+// 48 runs). The API answers each with no pull request and the branch's name as head_branch, so the
+// test wraps each in a check_suite webhook body whose suite names pull request 4464, as GitHub's
+// event names an open pull request at that head. GithubCIObservation, which Dispatch's CI
+// reconcile shares, reads no count.
+func TestGithubCIObservationsReadsASuitesRunCount(t *testing.T) {
+	const sha = "4198cda5fd0ae76e055089846f40f7be0d10dcf4"
+	captured := func(t *testing.T, file string) map[string]any {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join("testdata", file))
+		if err != nil {
+			t.Fatalf("read fixture: %v", err)
+		}
+		suite := map[string]any{}
+		if err := json.Unmarshal(raw, &suite); err != nil {
+			t.Fatalf("decode fixture: %v", err)
+		}
+		return suite
+	}
+	webhook := func(action string, suite map[string]any) map[string]any {
+		suite["pull_requests"] = []any{map[string]any{"number": float64(4464)}}
+		return map[string]any{
+			"action":      action,
+			"check_suite": suite,
+			"repository": map[string]any{
+				"full_name": "cybermonklabs/legion",
+				"name":      "legion",
+				"owner":     map[string]any{"login": "cybermonklabs"},
+			},
+		}
+	}
+	// countText names a count in a failure message.
+	countText := func(n *int) string {
+		if n == nil {
+			return "none"
+		}
+		return strconv.Itoa(*n)
+	}
+	// mapsTo fails unless the webhook body maps to the one observation want, the count compared by
+	// value.
+	mapsTo := func(t *testing.T, body map[string]any, want CIObservation) {
+		t.Helper()
+		observations := GithubCIObservations("check_suite", body)
+		if len(observations) != 1 {
+			t.Fatalf("observations = %+v, want one", observations)
+		}
+		got := observations[0]
+		gotCount, wantCount := got.CheckRunCount, want.CheckRunCount
+		got.CheckRunCount, want.CheckRunCount = nil, nil
+		if got != want {
+			t.Fatalf("observation = %+v, want %+v", got, want)
+		}
+		if (gotCount == nil) != (wantCount == nil) || gotCount != nil && *gotCount != *wantCount {
+			t.Fatalf("CheckRunCount = %s, want %s", countText(gotCount), countText(wantCount))
+		}
+	}
+
+	t.Run("a queued suite with no check run counts 0", func(t *testing.T) {
+		mapsTo(t, webhook("requested", captured(t, "check_suite_queued_no_runs.json")), CIObservation{
+			Owner: "cybermonklabs", Repo: "legion", Number: "4464", SHA: sha,
+			AppID: "5341243", SuiteID: "120620537894", Status: "queued",
+			ObservedAt: "2026-11-19T15:56:07Z", CheckRunCount: new(0),
+		})
+	})
+	t.Run("a completed suite counts its 48 runs", func(t *testing.T) {
+		mapsTo(t, webhook("completed", captured(t, "check_suite_completed.json")), CIObservation{
+			Owner: "cybermonklabs", Repo: "legion", Number: "4464", SHA: sha,
+			AppID: "15368", SuiteID: "120620605808", Status: "completed", Conclusion: "success",
+			ObservedAt: "2026-11-19T16:20:04Z", CheckRunCount: new(48),
+		})
+	})
+	for _, tc := range []struct {
+		name   string
+		absent bool
+		value  any
+	}{
+		{name: "absent", absent: true},
+		{name: "null", value: nil},
+		{name: "negative", value: float64(-1)},
+		{name: "fractional", value: 2.5},
+		{name: "a string", value: "3"},
+		{name: "past any count GitHub gives", value: float64(1 << 40)},
+	} {
+		t.Run("a count that is "+tc.name+" is none", func(t *testing.T) {
+			suite := captured(t, "check_suite_queued_no_runs.json")
+			if tc.absent {
+				delete(suite, "latest_check_runs_count")
+			} else {
+				suite["latest_check_runs_count"] = tc.value
+			}
+			mapsTo(t, webhook("requested", suite), CIObservation{
+				Owner: "cybermonklabs", Repo: "legion", Number: "4464", SHA: sha,
+				AppID: "5341243", SuiteID: "120620537894", Status: "queued",
+				ObservedAt: "2026-11-19T15:56:07Z",
+			})
+		})
+	}
+	t.Run("the shared mapping of a bare suite reads no count", func(t *testing.T) {
+		obs, ok := GithubCIObservation("check_suite", captured(t, "check_suite_completed.json"), "cybermonklabs", "legion", "4464")
+		if !ok || obs.SuiteID != "120620605808" || obs.CheckRunCount != nil {
+			t.Fatalf("GithubCIObservation = %+v (ok=%v), want suite 120620605808 with no count", obs, ok)
+		}
+	})
 }
 
 // A commit status maps from the shape GitHub's REST answer lists it in, and the reconcile maps a

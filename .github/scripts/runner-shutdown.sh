@@ -34,12 +34,12 @@
 #     job itself on run 43168566331 and printed `INFRA-1413 cause
 #     probe: jobs-anonymous=200 jobs-with-token=200 secrets-with-token=403`, so the jobs route
 #     answers from that job with no token at all — this repository is public, exactly as
-#     ci.yaml:121-123 already records for the `changes` job's read of the pull request's file
-#     list — while the `403` on the secrets route is the control showing that same token is
-#     restricted. What reading the check runs buys is that this reading rests on a scope the
-#     job declares rather than on the repository staying public. `filter=all` because the
-#     default, `latest`, keeps one check run per name, and a head can carry an earlier
-#     attempt's as well.
+#     .github/ci-notes/ci.md#why-the-routers-permissions-block-holds-those-two-scopes already
+#     records for the `changes` job's read of the pull request's file list — while the `403` on the
+#     secrets route is the control showing that same token is restricted. What reading the check
+#     runs buys is that this reading rests on a scope the job declares rather than on the repository
+#     staying public. `filter=all` because the default, `latest`, keeps one check run per name, and
+#     a head can carry an earlier attempt's as well.
 #   GET {url}/annotations?per_page=100
 #     `annotation_level` and `message` of every annotation of that check run. `checks: read`,
 #     which the `checks: write` of both callers' jobs carries.
@@ -90,7 +90,7 @@
 # runner_shutdown_kills <job>...: prints those of the named jobs this run's data shows a runner
 # shutdown killed, one per line, and returns 0. It reads the commit's check runs on its first
 # question and keeps them in a variable for the rest of that shell, but both callers take its
-# output through `$(…)`, which is a subshell: ci-ok.sh:134 in one call naming every failed job,
+# output through `$(…)`, which is a subshell: ci-ok.sh in one call naming its `failed` jobs,
 # ci-ok-report.sh:122 one job per call. The variable dies with the subshell, so a call made
 # that way reads the route again and the keeping saves nothing across such calls — asking job
 # by job costs one read of the check runs per job. It returns 1, having warned, when GitHub
