@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -492,6 +494,53 @@ func TestABroadcastLeavesOutASessionItsSenderMayNotSeeAsOneNobodyHolds(t *testin
 	}
 	send(privateSession)
 	send("s-nobody")
+}
+
+// A viewer that is not open - a restricted member, or a credential that lists projects - reads its
+// own direct messages alone (R4), so a broadcast is one to it only when its person sent it. bob, a
+// restricted member PRIV's list names, sees session-priv, which has acted in PRIV, and is no party
+// to carol's broadcast to it: the read GET /api/v1/broadcasts/{id} and a repeat of the send make
+// (readBroadcast) finds no broadcast for him, as for an id nobody holds. carol's token that lists
+// PRIV, not open either, reads it as its person's, and so does carol. Both GET routes refuse a
+// viewer that is not open before they read anything (deploymentReadRefusal), so the rule is read
+// here, beneath that gate.
+func TestABroadcastIsReadByAViewerThatIsNotOpenOnlyAsItsAuthors(t *testing.T) {
+	listener, _ := newBroadcastListener(t, privateRoster)
+	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
+	seedSessionWork(t, seed)
+	sent := keyedRequest(t, seed.handler, http.MethodPost, "/api/v1/broadcasts", map[string]any{
+		"body": "Status?", "delivery": "btw", "session_ids": []string{sessionOfPrivate},
+	}, seedCarol, uuid.NewString())
+	if sent.Code != http.StatusCreated {
+		t.Fatalf("carol broadcasts to %s: %d %s", sessionOfPrivate, sent.Code, sent.Body.String())
+	}
+	id := decodeBody[broadcastResponse](t, sent).ID
+	for _, test := range []struct {
+		caller privateCaller
+		reads  bool
+	}{
+		{callerBob, false},
+		{callerCarol, true},
+		{callerCarolPrivToken, true},
+	} {
+		recorder := httptest.NewRecorder()
+		reader, ok := seed.server.readerOf(recorder, seed.readerRequest(t, test.caller))
+		if !ok {
+			t.Fatalf("resolve %s: %d %s", test.caller, recorder.Code, recorder.Body.String())
+		}
+		// What makes the row able to fail: the caller sees every recipient, so only the rule of
+		// direct messages keeps the broadcast from it.
+		if hidden, err := seed.server.sessionHiddenFrom(t.Context(), reader, sessionOfPrivate); err != nil || hidden {
+			t.Fatalf("%s may not see %s (%v): the row holds the broadcast from no caller that sees its recipient", test.caller, sessionOfPrivate, err)
+		}
+		read, err := seed.server.readBroadcast(t.Context(), reader, id, false)
+		switch {
+		case test.reads && (err != nil || read.ID != id || len(read.Recipients) != 1):
+			t.Errorf("%s reads carol's broadcast to %s as %+v, %v; want it, with its one recipient", test.caller, sessionOfPrivate, read, err)
+		case !test.reads && !errors.Is(err, pgx.ErrNoRows):
+			t.Errorf("%s, no party to carol's broadcast to %s, reads it as %+v, %v; want a broadcast nobody sent (pgx.ErrNoRows)", test.caller, sessionOfPrivate, read, err)
+		}
+	}
 }
 
 // INFRA-249. The live list is the listener's in-memory cache of the registry, and a session
