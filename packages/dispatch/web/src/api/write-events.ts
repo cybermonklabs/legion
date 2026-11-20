@@ -7,12 +7,17 @@ import type { DispatchEvent } from "./types";
  * (`ReadHold.endsOn`). Dispatch writes a write's event in the write's own transaction and the
  * feed reads it back only once committed, so the event says the write is in: a read asked after
  * it answers the write, and every change anyone made since. No write's answer names its event and
- * no event names a tab, so each predicate matches the entity the write changed and, where the
- * event names no entity, the viewer whose state it is.
+ * no event names a tab, so each predicate matches the entity the write changed, where the event
+ * names one, and the viewer whose write it is. One event of the viewer's can still match the holds
+ * of several writes of one kind still out, and it says only that one of them is in, so it ends
+ * one hold alone (`hearLiveEvent`).
  */
 type WriteEvent = NonNullable<ReadHold["endsOn"]>;
 
-/** An agent's pin (`PUT /api/v1/me/agents/{session}/state`): that session's state, the viewer's. */
+/** An agent's pin (`PUT /api/v1/me/agents/{session}/state`): that session's state, the viewer's.
+ *  The event names the session, so a pin of another session leaves the hold; a read mark of the
+ *  same session (the live view's, or Mark all read's on an Agent row) publishes the same event,
+ *  and can end it. */
 export function agentStateWritten(sessionId: string): WriteEvent {
   return (event, viewer) =>
     event.type === "user_agent_state.updated" &&
@@ -40,31 +45,22 @@ export function askWritten(
     byViewer(event, viewer);
 }
 
-/** Whether `event` is a snooze or an un-snooze of the viewer's: the event names no ask. */
-function isSnooze(event: DispatchEvent, viewer: string | undefined): boolean {
-  return (
-    event.type === "user_state.updated" &&
-    isViewer(event.payload.login, viewer) &&
-    event.payload.changed?.includes("snoozed") === true
-  );
-}
-
-/** `count` snoozes of the viewer's (`PUT`/`DELETE /api/v1/me/asks/{id}/snooze`), one event each:
- *  the event names no ask, so a set of them ends its hold on as many. A snooze that moves nothing
- *  publishes nothing, and its hold ends with the writes instead. */
-export function snoozesWritten(count: number): WriteEvent {
-  let heard = 0;
-  return (event, viewer) => {
-    if (!isSnooze(event, viewer)) return false;
-    heard += 1;
-    return heard >= count;
-  };
-}
+/** A snooze or an un-snooze of the viewer's (`PUT`/`DELETE /api/v1/me/asks/{id}/snooze`): its
+ *  `user_state.updated` names `snoozed` and no ask, since Dispatch replays it to every signed-in
+ *  feed (`askSnoozeEvent`, `ask_snooze.go`). So it matches every snooze of the viewer's, and two
+ *  snoozes out each wait for one of these (`ReadHold.events` for a bulk snooze, one for each ask).
+ *  A snooze that moves nothing publishes nothing, and its hold lets its reads go at its answer. */
+export const snoozeWritten: WriteEvent = (event, viewer) =>
+  event.type === "user_state.updated" &&
+  isViewer(event.payload.login, viewer) &&
+  event.payload.changed?.includes("snoozed") === true;
 
 /** A Mark all read or a dismiss of the viewer's Inbox threads (`POST /api/v1/me/inbox/read`,
  *  `POST /api/v1/me/inbox/dismiss`): one thread-state event with no thread for each project it
- *  moved. It publishes an agent-state event for each session too, but so does an agent's pin or a
- *  read in the live view, so a press that moves only Agent rows ends its hold with its answer. */
+ *  moved, since one event stands for every thread it marked there. So it matches every such press
+ *  of the viewer's. It publishes an agent-state event for each session too, but so does an agent's
+ *  pin or a read in the live view, so a press that moves only Agent rows lets its reads go at its
+ *  answer. */
 export const inboxThreadsWritten: WriteEvent = (event, viewer) =>
   event.type === "user_thread_state.updated" &&
   event.payload.thread_id === undefined &&
@@ -95,9 +91,10 @@ export function commentWritten(
 }
 
 /** A components save by the viewer (`PATCH /api/v1/issues/{key}` with `components`): its
- *  `issue.updated` names `components` among what it changed. One that changed none ends its hold
- *  with its answer; an earlier write of the issue's other fields, which goes out before it, does
- *  not end it. */
+ *  `issue.updated` names the issue and `components` among what it changed. One that changed none
+ *  lets its reads go at its answer; an earlier write of the issue's other fields, which goes out
+ *  before it, does not end it. Two saves of one issue go out in press order (`issue:<KEY>`), so the
+ *  first such event is the older save's. */
 export function componentsWritten(issueKey: string): WriteEvent {
   return (event, viewer) =>
     event.type === "issue.updated" &&

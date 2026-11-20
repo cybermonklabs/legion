@@ -223,20 +223,32 @@ export function replaceQueryData<T>(
  *  taken the write. */
 export interface ReadHold {
   readonly keys: readonly QueryKey[];
-  /** Whether `event`, delivered to `viewer`'s feed, is the write's own: Dispatch publishes it once
-   *  the write has committed, so a read asked after it answers the write too. */
+  /** Whether `event`, delivered to `viewer`'s feed, is one the write publishes: Dispatch publishes
+   *  it once the write has committed, so a read asked after it answers the write too. */
   readonly endsOn?: (event: DispatchEvent, viewer: string | undefined) => boolean;
+  /** How many such events the hold waits for: one, unless it stands for several writes that each
+   *  publish their own (a bulk snooze, one for each ask). */
+  readonly events?: number;
 }
 
-/** One hold in force: the hashes of the queries it holds, its event, and how it ends. */
+/** One hold: the hashes of the queries it holds back while `holding`, and the events of its write
+ *  it still waits for. */
 interface HeldReads {
   readonly hashes: ReadonlySet<string>;
   readonly endsOn: ReadHold["endsOn"];
-  readonly end: () => void;
+  /** How many of its write's events have still to come (`ReadHold.events`): none for a hold that
+   *  ends on no event. */
+  eventsDue: number;
+  /** Whether it holds back its queries' reads still: not once its write's answer or refusal is
+   *  in, though it may wait for its write's events after that. */
+  holding: boolean;
+  /** Ends it whole: it lets the reads it held go, and waits for no event any more. */
+  readonly drop: () => void;
 }
 
-/** The holds a client's writes keep on its reads (`holdBackReads`), the reads waiting for one to
- *  end, and the queries whose held read was given up while it waited, by their keys' hashes. */
+/** The holds a client's writes keep on its reads (`holdBackReads`), in the order they began, the
+ *  reads waiting for one to end, and the queries whose held read was given up while it waited, by
+ *  their keys' hashes. */
 interface ReadHolds {
   readonly held: Set<HeldReads>;
   readonly waiting: Set<() => void>;
@@ -245,13 +257,27 @@ interface ReadHolds {
 
 const readHolds = new WeakMap<QueryClient, ReadHolds>();
 
-/** Whether one of `holds` names the query `queryKey`, by its exact key. */
+/** Whether one of `holds` still holds back the query `queryKey`, by its exact key. */
 function holdsRead(holds: ReadHolds, queryKey: QueryKey): boolean {
   const hash = hashKey(queryKey);
   for (const hold of holds.held) {
-    if (hold.hashes.has(hash)) return true;
+    if (hold.holding && hold.hashes.has(hash)) return true;
   }
   return false;
+}
+
+/** Lets go the reads `hold` holds back, once: each read waiting that no other hold names asks,
+ *  and each query whose held read was given up, and that no hold names now, is read again. */
+function letReadsGo(client: QueryClient, holds: ReadHolds, hold: HeldReads): void {
+  if (!hold.holding) return;
+  hold.holding = false;
+  for (const check of [...holds.waiting]) check();
+  for (const [hash, queryKey] of holds.givenUp) {
+    if (holdsRead(holds, queryKey)) continue;
+    holds.givenUp.delete(hash);
+    if ((client.getQueryState(queryKey)?.fetchStatus ?? "idle") !== "idle") continue;
+    void client.invalidateQueries({ exact: true, queryKey, refetchType: "active" });
+  }
 }
 
 /** Resolves once no hold names the read's query; rejects if the read is cancelled first, and
@@ -295,18 +321,24 @@ function holdEnded(
  * A held read keeps back more than the old state: whatever anybody else changed in those queries
  * meanwhile shows only once it asks. So a hold is short. It ends at the first of: the function this
  * answers, which the write calls once its answer or refusal is in; the write's own live event
- * (`hold.endsOn`, heard through `hearLiveEvent`), published once Dispatch has committed the write,
- * so a read asked after it answers the write and every change since; and `SEND_DEADLINE_MS` after
- * the hold began, by when its write is late at the latest (a write goes late that long after it is
- * sent, and it is sent at the press or after it), so no read waits longer than that for a write
- * that may not reach Dispatch soon.
+ * (`hold.endsOn`, heard through `hearLiveEvent`), or as many of them as `hold.events` says,
+ * published once Dispatch has committed the write, so a read asked after it answers the write and
+ * every change since; and `SEND_DEADLINE_MS` after the hold began, by when its write is late at the
+ * latest (a write goes late that long after it is sent, and it is sent at the press or after it),
+ * so no read waits longer than that for a write that may not reach Dispatch soon.
+ *
+ * An event says that one write is in, and no event names a tab, so each event ends one hold at
+ * most (`hearLiveEvent`): a second write of the same kind may still be out, and its hold must not
+ * end on the first one's event. A hold whose answer comes before its event lets its reads go at
+ * the answer, and waits for that event still, until it comes or the deadline passes, ahead of
+ * every hold still out, so the event ends no later write's hold when it comes.
  *
  * The write's answer, put in over the reads still out, cancels a held read too, though it has
  * asked nothing yet, and what it was asked for - news of another change, a view mounting - would
  * go unread: such a query is read again once no hold names it, if anything still shows it and no
  * read of it is out already (the one `replaceQueryData` asks). `DispatchQueryClient` holds a read
  * back in its query's function, after `onAttempt` is told, so a plain `QueryClient` lets every read
- * go. The function this answers ends the hold once; called again, it does nothing.
+ * go. The function this answers lets the hold's reads go once; called again, it does nothing.
  */
 export function holdBackReads(client: QueryClient, hold: ReadHold): () => void {
   let holds = readHolds.get(client);
@@ -315,30 +347,45 @@ export function holdBackReads(client: QueryClient, hold: ReadHold): () => void {
     readHolds.set(client, holds);
   }
   const ours = holds;
-  const end = () => {
-    if (!ours.held.delete(held)) return;
-    clearTimeout(deadline);
-    for (const check of [...ours.waiting]) check();
-    for (const [hash, queryKey] of ours.givenUp) {
-      if (holdsRead(ours, queryKey)) continue;
-      ours.givenUp.delete(hash);
-      if ((client.getQueryState(queryKey)?.fetchStatus ?? "idle") !== "idle") continue;
-      void client.invalidateQueries({ exact: true, queryKey, refetchType: "active" });
-    }
-  };
   const held: HeldReads = {
-    end,
+    drop: () => {
+      ours.held.delete(held);
+      clearTimeout(deadline);
+      letReadsGo(client, ours, held);
+    },
     endsOn: hold.endsOn,
+    eventsDue: hold.endsOn === undefined ? 0 : (hold.events ?? 1),
     hashes: new Set(hold.keys.map((key) => hashKey(key))),
+    holding: true,
   };
   ours.held.add(held);
-  const deadline = setTimeout(end, SEND_DEADLINE_MS);
-  return end;
+  const deadline = setTimeout(held.drop, SEND_DEADLINE_MS);
+  return () => {
+    if (held.eventsDue === 0) held.drop();
+    else letReadsGo(client, ours, held);
+  };
 }
 
-/** Ends each hold whose write `event` says Dispatch has taken (`ReadHold.endsOn`): the live
- *  feed's every event comes here (`useEventFeed`), before the refresh it asks for, which then
- *  reads past the holds it ended. `viewer` is the login signed in. */
+/**
+ * Gives `event` to one hold that waits for an event it matches (`ReadHold.endsOn`), and to no
+ * other; the event ends that hold once it has had as many as it waits for. The live feed's every
+ * event comes here (`useEventFeed`), before the refresh it asks for, which then reads past the hold
+ * it ended. `viewer` is the login signed in.
+ *
+ * One event is one write's, and no event names a tab. The hold that takes it is the oldest whose
+ * write's answer is in, since that write is in and its event is due, or else the oldest whose
+ * write is still out. Where the event names the entity written, a hold matches that entity's
+ * events alone, and of two writes of one entity - two components saves of an issue, which go out
+ * in press order on the issue's line - the older one's event comes first. Where it names none (a
+ * snooze's names no ask, a Mark all read's no thread), a hold may take another write's event in
+ * place of its own, and that write's hold then takes the first one's event when it comes. Such a
+ * hold ends early only where Dispatch takes two writes still out in the other order than their
+ * presses, which no event can tell apart. Every other misreading ends a hold later, never sooner:
+ * a write that publishes no such event (it moved nothing, or Dispatch refused it) waits for one
+ * until its deadline, and may take a later write's, whose hold then ends at its own answer. One
+ * limit stands: a Mark all read or a dismiss that moves threads of several projects publishes one
+ * event for each, so its later ones count toward the next such hold still out.
+ */
 export function hearLiveEvent(
   client: QueryClient,
   event: DispatchEvent,
@@ -346,7 +393,16 @@ export function hearLiveEvent(
 ): void {
   const holds = readHolds.get(client);
   if (holds === undefined) return;
-  for (const hold of [...holds.held]) {
-    if (hold.endsOn?.(event, viewer) === true) hold.end();
+  let taker: HeldReads | undefined;
+  for (const hold of holds.held) {
+    if (hold.eventsDue === 0 || hold.endsOn?.(event, viewer) !== true) continue;
+    if (!hold.holding) {
+      taker = hold;
+      break;
+    }
+    taker ??= hold;
   }
+  if (taker === undefined) return;
+  taker.eventsDue -= 1;
+  if (taker.eventsDue === 0) taker.drop();
 }

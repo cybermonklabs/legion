@@ -5,7 +5,7 @@ import { api, askSnoozeRequest } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import { holdBackReads } from "../../api/query-client";
 import type { InboxRow } from "../../api/types";
-import { snoozesWritten } from "../../api/write-events";
+import { snoozeWritten } from "../../api/write-events";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { plainWrite, useWrites } from "../writes/write-store";
 
@@ -39,7 +39,7 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
   // asked while the snooze is out waits until Dispatch has taken it (its answer or the viewer's
   // snooze event): Dispatch can answer it before, with the row's moment from before the press.
   const mutation = useKeyedWrite({
-    holds: () => ({ endsOn: snoozesWritten(1), keys: [inboxKey] }),
+    holds: () => ({ endsOn: snoozeWritten, keys: [inboxKey] }),
     write: (until: string | null, bounds) =>
       until === null
         ? api.unsnoozeAsk(askId, bounds)
@@ -118,7 +118,8 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
       const writeOf = ids.map((id) => ({ id, request: askSnoozeRequest(id, until) }));
       setPending((count) => count + 1);
       const release = holdBackReads(queryClient, {
-        endsOn: snoozesWritten(ids.length),
+        endsOn: snoozeWritten,
+        events: ids.length,
         keys: [inboxKey],
       });
       let failed: AskSnoozeFailure[];
