@@ -4276,6 +4276,32 @@ awk '/^### Structured metadata on an Envoy message/{f=1; next} /^### /{f=0} f &&
 case_result "a page whose Cost is about one engineer-day in words and that states no landing fails --landed, naming the page" \
     "landed-[a-z-]+: .*Structured metadata on an Envoy message" "$(fixture_run "$dir" --landed)"
 
+# 143. A page gives its first step a cost in engineer-days (test round 42). R9 gives each
+# page "the cost in engineer-days", and case 142's fix reads one written in digits or in
+# words, and fails a Cost line that names engineer-days with a figure it cannot read. A Cost
+# line that names no engineer-days at all, as "about half a day" or "about 4 hours", reads as
+# no cost: --landed passed such a page with no state line, its PASS line saying "1 give their
+# cost in no engineer-days on their Cost line", and --shape passed it too (judgement v22 with
+# the refusal page's Cost written 'about half a day, by our estimate' passed both). An author
+# can write that by accident, and the page then holds neither R9's cost nor, for a step of
+# half a day, the state R12 asks of it. The case writes the fixture's Envoy page's Cost as
+# "about half a day", leaves the page with no state line, and runs --shape and then --landed:
+# one of them must fail, naming the page.
+dir="$(fresh cost-in-no-engineer-days)"
+sed -i '0,/^- \*\*Cost:\*\* 2 engineer-days$/s//- **Cost:** about half a day/' "$dir/judgement.md"
+awk '/^### Structured metadata on an Envoy message/{f=1; next} /^### /{f=0} f && /\*\*(Landed|Not landed|Refuted by|Proven by):\*\*/{n++} f && /^- \*\*Cost:\*\* about half a day$/{c++} END{exit !(c == 1 && n == 0)}' "$dir/judgement.md" || {
+    printf 'FAIL the fixture Envoy page could not be given a cost in no engineer-days with no state line\n'
+    exit 1
+}
+no_unit_case="a page whose Cost names no engineer-days fails --shape or --landed, naming the page"
+shape_out="$(fixture_run "$dir" --shape)"
+landed_out="$(fixture_run "$dir" --landed)"
+if grep -qE '^FAIL (page-[a-z-]+|landed-[a-z-]+): .*Structured metadata on an Envoy message' "$shape_out/text" "$landed_out/text"; then
+    case_passed "$no_unit_case"
+else
+    case_failed "$no_unit_case" "the gate passed it: --shape $(tail -1 "$shape_out/text"), --landed $(tail -1 "$landed_out/text")"
+fi
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
