@@ -149,17 +149,21 @@ test("of the sockets on one local port, the owner is the connection's, not a hig
   expect(await socketOwner(54321, 443, proc)).toBe("unknown (no connection)")
 })
 
-test("a holder whose pid is below every pid of the scan's first batches is found", async () => {
-  // Processes this user cannot read, which the scan reads and passes over, as many as fill more
-  // than two of its batches.
-  const others = Array.from({ length: 600 }, (_, index) => ({ pid: 1000 + index, comm: "other" }))
-  const proc = await standInProc({ tcp: TABLE, tcp6: EMPTY }, [
-    ...others,
-    { pid: 3, comm: "bash", fds: { "3": "socket:[111]" } },
-    { pid: 9, comm: "sleep", fds: { "3": "socket:[111]" } },
-  ])
-  expect(await socketOwner(54321, 4222, proc)).toBe("sleep pid=9")
-}, ROW_TIMEOUT_MS)
+test(
+  "a holder whose pid is below every pid of the scan's first batches is found",
+  async () => {
+    // Processes this user cannot read, which the scan reads and passes over, as many as fill more
+    // than two of its batches.
+    const others = Array.from({ length: 600 }, (_, index) => ({ pid: 1000 + index, comm: "other" }))
+    const proc = await standInProc({ tcp: TABLE, tcp6: EMPTY }, [
+      ...others,
+      { pid: 3, comm: "bash", fds: { "3": "socket:[111]" } },
+      { pid: 9, comm: "sleep", fds: { "3": "socket:[111]" } },
+    ])
+    expect(await socketOwner(54321, 4222, proc)).toBe("sleep pid=9")
+  },
+  ROW_TIMEOUT_MS,
+)
 
 test("a connection on /proc/net/tcp6 has its owner named too", async () => {
   const tcp6 = [
@@ -202,40 +206,44 @@ test("a table that cannot be read is named in the unknown, never read as no conn
   expect(owner).toContain("ENOENT")
 })
 
-test("a live connection's owner is named from this machine's /proc, with no ss on PATH", async () => {
-  const { promise: clientPort, resolve: accepted } = Promise.withResolvers<number>()
-  const listener = Bun.listen({
-    hostname: "127.0.0.1",
-    port: 0,
-    socket: {
-      open(socket) {
-        accepted(socket.remotePort)
+test(
+  "a live connection's owner is named from this machine's /proc, with no ss on PATH",
+  async () => {
+    const { promise: clientPort, resolve: accepted } = Promise.withResolvers<number>()
+    const listener = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: {
+        open(socket) {
+          accepted(socket.remotePort)
+        },
+        data() {},
       },
-      data() {},
-    },
-  })
-  // Another process dials and holds its socket until its stdin ends: the owner to tell from this
-  // one, which holds the accepted end, and from any other socket that shares the client's port.
-  const client = Bun.spawn(
-    [
-      process.execPath,
-      "-e",
-      `await Bun.connect({ hostname: "127.0.0.1", port: ${listener.port}, socket: { data() {} } }); await Bun.stdin.text()`,
-    ],
-    { stdin: "pipe", stdout: "ignore", stderr: "inherit" },
-  )
-  const path = process.env["PATH"]
-  try {
-    const port = await clientPort
-    process.env["PATH"] = ""
-    // The kernel names a process by the first 15 bytes of the file it executed.
-    expect(await socketOwner(port, listener.port)).toBe(
-      `${basename(process.execPath).slice(0, 15)} pid=${client.pid}`,
+    })
+    // Another process dials and holds its socket until its stdin ends: the owner to tell from this
+    // one, which holds the accepted end, and from any other socket that shares the client's port.
+    const client = Bun.spawn(
+      [
+        process.execPath,
+        "-e",
+        `await Bun.connect({ hostname: "127.0.0.1", port: ${listener.port}, socket: { data() {} } }); await Bun.stdin.text()`,
+      ],
+      { stdin: "pipe", stdout: "ignore", stderr: "inherit" },
     )
-  } finally {
-    process.env["PATH"] = path
-    client.kill("SIGKILL")
-    await client.exited
-    listener.stop(true)
-  }
-}, ROW_TIMEOUT_MS)
+    const path = process.env["PATH"]
+    try {
+      const port = await clientPort
+      process.env["PATH"] = ""
+      // The kernel names a process by the first 15 bytes of the file it executed.
+      expect(await socketOwner(port, listener.port)).toBe(
+        `${basename(process.execPath).slice(0, 15)} pid=${client.pid}`,
+      )
+    } finally {
+      process.env["PATH"] = path
+      client.kill("SIGKILL")
+      await client.exited
+      listener.stop(true)
+    }
+  },
+  ROW_TIMEOUT_MS,
+)
