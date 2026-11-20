@@ -66,7 +66,7 @@ func newGrantGuardRig(t *testing.T) *grantGuardRig {
 	}
 	t.Cleanup(sessions.StopWatch)
 	waitForSessions(t, sessions)
-	deps := withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client)})
+	deps := withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client, registry, sessions)})
 	logs := &cmdtest.LockedBuffer{}
 	logger := logging.NewWithWriter("test", logs)
 	rig := &grantGuardRig{

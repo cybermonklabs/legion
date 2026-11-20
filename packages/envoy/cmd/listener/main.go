@@ -1327,6 +1327,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// The hub's ping_interval and ping_max, which the listener cannot ask the server for: the
+	// settle loop watches a consumer that a write lost with its connection may still land on for
+	// as long as the server goes on reading that connection (bus.StaleConnectionLimit,
+	// sessionDelivery.staleLimit).
+	pingInterval, pingMax, err := envconf.ServerPings(logger.Slog(), os.LookupEnv)
+	if err != nil {
+		log.Fatal(err)
+	}
 	// The session consumer sweep's period, the bound on how long a session that ended without
 	// deregistering keeps its consumer (startSessionConsumerSweep, session_consumer_sweep.go).
 	// It is neither reaper's: what it waits for is the state the session registry answers, and a
@@ -1569,12 +1577,13 @@ func main() {
 	// consumer the listener's own delete had not reached, and with it the only record of where
 	// that session's delivery stopped (inactiveThresholdFor, bus.ConnectSessionConsumers).
 	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval)
-	delivery, err := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, client, logger)
+	delivery, err := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, client, registry, sessions, logger)
 	if err != nil {
 		logger.Error("session consumer connection failed: every session is delivered through a consumer of its own", slog.String("error", err.Error()))
 		client.Conn.Close()
 		os.Exit(1)
 	}
+	delivery.staleLimit = bus.StaleConnectionLimit(pingInterval, pingMax)
 	// The relay hears registrations from the moment /v1 opens, and relays once this task holds its
 	// machine's durable binding (below).
 	relays, err := startSessionRelays(delivery, deliveryConfig)
@@ -1962,12 +1971,13 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	if err := parts.server.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("http shutdown error", slog.String("error", err.Error()))
 	}
-	// A deregistration answers before its session consumer is deleted and leaves that delete
-	// running behind it (sessionDelivery.deleteAfterAnswer), so the stop waits for those still
-	// in flight once the server has stopped serving: a delete cut off here would leave its
-	// consumer for the sweep, and one started after the drain below would reach a closed
-	// connection.
-	parts.delivery.awaitDeletes(shutdownCtx)
+	// A deregistration answers before its session consumer is deleted, and a registration this
+	// listener answered 503 before its consumer's filter is settled, and each leaves that work
+	// running behind it (sessionDelivery.runAfterAnswer), so the stop waits for the work still in
+	// flight once the server has stopped serving: a delete cut off here would leave its consumer
+	// for the sweep, a settle cut off would leave the filter to the session's next registration,
+	// and work started after the drain below would reach a closed connection.
+	parts.delivery.awaitAfterAnswer(shutdownCtx)
 	// The session-consumer connection carries the consumer calls registrations make, which the HTTP
 	// server has stopped serving, and the relays' acks, which its drain lets reach the server,
 	// within what is left of the HTTP stop's budget.

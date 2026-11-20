@@ -167,7 +167,7 @@ type SessionConsumers struct {
 	// logger is the logger the connection was opened with (ConnectSessionConsumers),
 	// slog.Default() where that was nil: where create and recordResumeFloorAt write their lines.
 	logger *slog.Logger
-	// pendingMu guards pending and createFault.
+	// pendingMu guards pending, createFault and updateFault.
 	pendingMu sync.Mutex
 	// pending holds, by consumer name, the start of each consumer a restart (RestartAtFloor) read
 	// the floor of and may have deleted, until a create at that start is confirmed: the position
@@ -176,6 +176,13 @@ type SessionConsumers struct {
 	// createFault, when not nil, runs before each consumer create is sent, and an error it returns
 	// fails the create unsent. It is nil outside tests (SetCreateFault).
 	createFault func(consumer string) error
+	// updateFault is createFault for each consumer update (SetUpdateFault).
+	updateFault func(consumer string) error
+
+	// unansweredMu guards onUnanswered, the function each create or update whose caller stopped
+	// waiting for its answer is handed to (OnUnansweredWrite, writeRequest).
+	unansweredMu sync.Mutex
+	onUnanswered func(*UnansweredWrite)
 
 	// streamMu guards streamNext and streamReading (streamState).
 	streamMu sync.Mutex
@@ -256,6 +263,15 @@ func (s *SessionConsumers) SetCreateFault(fault func(consumer string) error) {
 	s.createFault = fault
 }
 
+// SetUpdateFault makes every consumer update call fault(consumer name) first and fail, unsent,
+// with the error it returns; nil removes it. It is a seam for tests, which refuse the filter
+// writes of a listener's settle as a bus that does not answer them would; nothing else sets it.
+func (s *SessionConsumers) SetUpdateFault(fault func(consumer string) error) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	s.updateFault = fault
+}
+
 // Drain drains the connection, letting acks already sent reach the server, within timeout.
 func (s *SessionConsumers) Drain(timeout time.Duration) error { return s.client.Drain(timeout) }
 
@@ -293,6 +309,9 @@ type SessionConsumerStart struct {
 	// (RestartAtFloor, KeepListed) reports neither: what it did to a consumer it kept is the
 	// start it answers.
 	Updated bool
+	// Rewound is EnsureAfter's report that it took the consumer back to an earlier position, for a
+	// late write that may have made it skip messages (LateWrite); Created is set with it.
+	Rewound bool
 	// StartSeq is the stream sequence the consumer starts at: the one a consumer the call created
 	// starts at, and, for one it found and updated, the one it was created at (an update may not
 	// change it, and a restart that recreated it reports where it started again). Every message at
@@ -342,9 +361,21 @@ type SessionConsumerStart struct {
 // to the stream's first sequence, so no consumer is created past the stream's end, and a start
 // the record lowered or the clamp moved is logged once the create is confirmed (create).
 func (s *SessionConsumers) Ensure(ctx context.Context, sessionID string, subjects []string, startSeq uint64) (SessionConsumerStart, error) {
+	start, _, err := s.EnsureAfter(ctx, sessionID, subjects, startSeq, nil)
+	return start, err
+}
+
+// EnsureAfter is Ensure for a session's consumer that writes whose answers did not come back may
+// have set to filters that lack one of subjects' (late). Where such a write may have landed and
+// the consumer has examined a message on a missing filter since that write's Before, it deletes
+// the consumer and creates it again at the first such message, or after its ack floor when that
+// is lower, so every message the late filter made it skip is delivered (rewindPoint, rewind), and
+// the answer's Rewound is set. Otherwise it is Ensure. It also reports, for each of late, whether
+// the consumer it read stood on that write's filters where subjects ask for others.
+func (s *SessionConsumers) EnsureAfter(ctx context.Context, sessionID string, subjects []string, startSeq uint64, late []LateWrite) (SessionConsumerStart, []bool, error) {
 	name, filters, err := sessionConsumerTarget(sessionID, subjects)
 	if err != nil {
-		return SessionConsumerStart{}, err
+		return SessionConsumerStart{}, nil, err
 	}
 	for attempt := 0; ; attempt++ {
 		info, err := s.info(ctx, name)
@@ -361,17 +392,25 @@ func (s *SessionConsumers) Ensure(ctx context.Context, sessionID string, subject
 			if err == nil {
 				s.setPendingStart(name, 0)
 			}
-			return created, err
+			return created, nil, err
 		}
 		if err != nil {
-			return SessionConsumerStart{}, err
+			return SessionConsumerStart{}, nil, err
+		}
+		point, rewound, seen, err := s.rewindPoint(ctx, info, filters, late)
+		if err != nil {
+			return SessionConsumerStart{}, seen, err
+		}
+		if rewound {
+			start, err := s.rewind(ctx, sessionID, name, info, filters, point)
+			return start, seen, err
 		}
 		// The consumer exists, so it holds its own position: the delete of a restart's call that
 		// failed never reached the server, or its create did. Its start is the sequence it was
 		// created at, which the caller records for the durable path (SessionConsumerStart).
 		s.setPendingStart(name, 0)
-		changed, err := s.update(ctx, name, info.Config, filters)
-		return SessionConsumerStart{StartSeq: info.Config.OptStartSeq, AckFloor: ackFloor(info), Updated: changed}, err
+		changed, err := s.update(ctx, sessionID, name, info, filters)
+		return SessionConsumerStart{StartSeq: info.Config.OptStartSeq, AckFloor: ackFloor(info), Updated: changed}, seen, err
 	}
 }
 
@@ -386,7 +425,7 @@ func (s *SessionConsumers) UpdateFilter(ctx context.Context, sessionID string, s
 	if err != nil {
 		return err
 	}
-	_, err = s.update(ctx, name, info.Config, filters)
+	_, err = s.update(ctx, sessionID, name, info, filters)
 	return err
 }
 
@@ -471,7 +510,7 @@ func (s *SessionConsumers) RestartAtFloor(ctx context.Context, sessionID string,
 	if err == nil && info.NumAckPending == 0 {
 		// A consumer keepAtFloor does not keep, its next sequence past the stream's end, is
 		// restarted below at that sequence, as one awaiting an ack is.
-		if start, kept, err := s.keepAtFloor(ctx, name, info, filters, stream); err != nil || kept {
+		if start, kept, err := s.keepAtFloor(ctx, sessionID, name, info, filters, stream); err != nil || kept {
 			return start, err
 		}
 	}
@@ -522,7 +561,7 @@ func (s *SessionConsumers) RestartAtFloor(ctx context.Context, sessionID string,
 // v2.10.29, which has no such reconcile and reports an ack floor of 0 for a consumer that has acked
 // nothing, a consumer with that floor of 0 whose start is past the end reaches the check too,
 // through ackFloor's OptStartSeq - 1 term, as one an earlier build created there does.
-func (s *SessionConsumers) keepAtFloor(ctx context.Context, name string, info *jetstream.ConsumerInfo, filters []string, stream *streamRead) (SessionConsumerStart, bool, error) {
+func (s *SessionConsumers) keepAtFloor(ctx context.Context, sessionID, name string, info *jetstream.ConsumerInfo, filters []string, stream *streamRead) (SessionConsumerStart, bool, error) {
 	state, err := stream.wait(ctx)
 	if err != nil {
 		return SessionConsumerStart{}, false, err
@@ -535,7 +574,7 @@ func (s *SessionConsumers) keepAtFloor(ctx context.Context, name string, info *j
 	if past {
 		return SessionConsumerStart{}, false, nil
 	}
-	if _, err := s.update(ctx, name, info.Config, filters); err != nil {
+	if _, err := s.update(ctx, sessionID, name, info, filters); err != nil {
 		return SessionConsumerStart{}, false, err
 	}
 	s.setPendingStart(name, 0)
@@ -933,14 +972,23 @@ func (s *SessionConsumers) applySettings(config *jetstream.ConsumerConfig, filte
 	config.FilterSubjects = filters
 }
 
-// update sends consumer name's current configuration with the session consumer settings and
-// filters applied, when that changes anything, and reports whether it sent it.
-func (s *SessionConsumers) update(ctx context.Context, name string, current jetstream.ConsumerConfig, filters []string) (bool, error) {
-	next, changed := s.updated(current, filters)
+// update sends consumer name's configuration, as read in info, with the session consumer settings
+// and filters applied, when that changes anything, and reports whether it sent it. An update
+// fault (SetUpdateFault) fails it unsent.
+func (s *SessionConsumers) update(ctx context.Context, sessionID, name string, info *jetstream.ConsumerInfo, filters []string) (bool, error) {
+	next, changed := s.updated(info.Config, filters)
 	if !changed {
 		return false, nil
 	}
-	_, err := s.upsert(ctx, name, next, "update")
+	s.pendingMu.Lock()
+	fault := s.updateFault
+	s.pendingMu.Unlock()
+	if fault != nil {
+		if err := fault(name); err != nil {
+			return false, err
+		}
+	}
+	_, err := s.upsert(ctx, sessionID, name, next, "update", info.Delivered.Stream)
 	return err == nil, err
 }
 
@@ -1069,7 +1117,7 @@ func (s *SessionConsumers) create(ctx context.Context, sessionID, name string, f
 			return SessionConsumerStart{}, err
 		}
 	}
-	if _, err := s.upsert(ctx, name, config, "create"); err != nil {
+	if _, err := s.upsert(ctx, sessionID, name, config, "create", startSeq-1); err != nil {
 		return SessionConsumerStart{}, err
 	}
 	if lowered {
@@ -1120,16 +1168,32 @@ type consumerResponse struct {
 	Error *jetstream.APIError `json:"error"`
 }
 
-// upsert sends config to the server as consumer name's create or update (action).
-func (s *SessionConsumers) upsert(ctx context.Context, name string, config jetstream.ConsumerConfig, action string) (*jetstream.ConsumerInfo, error) {
+// upsert sends config to the server as consumer name's create or update (action), for sessionID's
+// consumer. It goes through writeRequest and not consumerRequest, so a write whose answer its
+// caller stopped waiting for is handed on with its answer still to come (UnansweredWrite), with
+// config's filters and before, the consumer's position before the write (LateWrite); a write the
+// connection's grant may not make is ErrConsumerNotGranted, as every consumer call is.
+func (s *SessionConsumers) upsert(ctx context.Context, sessionID, name string, config jetstream.ConsumerConfig, action string, before uint64) (*jetstream.ConsumerInfo, error) {
 	request := struct {
 		Stream string                    `json:"stream_name"`
 		Config *jetstream.ConsumerConfig `json:"config"`
 		Action string                    `json:"action"`
 	}{Stream: Stream, Config: &config, Action: action}
-	var response consumerResponse
-	if err := s.consumerRequest(ctx, consumerAPI("CREATE", name), request, &response); err != nil {
+	data, err := json.Marshal(request)
+	if err != nil {
 		return nil, err
+	}
+	subject := consumerAPI("CREATE", name)
+	reply, err := s.writeRequest(ctx, sessionID, subject, data, LateWrite{Filters: config.FilterSubjects, Before: before})
+	if errors.Is(err, ErrPublishDenied) {
+		return nil, fmt.Errorf("%w: %w", ErrConsumerNotGranted, err)
+	}
+	if err != nil {
+		return nil, err
+	}
+	var response consumerResponse
+	if err := json.Unmarshal(reply.Data, &response); err != nil {
+		return nil, fmt.Errorf("bus: read the answer of %s: %w", subject, err)
 	}
 	if response.Error != nil {
 		// The server refuses a create once the stream holds its max_consumers, and that refusal is

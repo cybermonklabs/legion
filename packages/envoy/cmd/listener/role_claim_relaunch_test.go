@@ -34,7 +34,7 @@ func newRoleClaimRelaunchRig(t *testing.T, sessionID, role string) *roleClaimRel
 	t.Helper()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	client := setupPublishTestClient(t)
-	deps := withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client)})
+	deps := withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client, registry, sessions)})
 	routes := http.NewServeMux()
 	registerV1Routes(routes, deps, "test-machine", logging.New("test"))
 	return &roleClaimRelaunchRig{

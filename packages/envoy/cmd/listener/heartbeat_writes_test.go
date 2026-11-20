@@ -57,7 +57,7 @@ func TestHeartbeatKVWritesPerHeartbeat(t *testing.T) {
 	// hands it the kept lane of the role whose claim record it read (runKeptRoleDrain). That
 	// handover reads the empty lane and writes no bucket, and the heartbeats counted below, of
 	// sessions live already, start none.
-	registerV1Routes(routes, withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}), "test-machine", logging.NewWithWriter("test", io.Discard))
+	registerV1Routes(routes, withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil, registry, sessions)}), "test-machine", logging.NewWithWriter("test", io.Discard))
 
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)

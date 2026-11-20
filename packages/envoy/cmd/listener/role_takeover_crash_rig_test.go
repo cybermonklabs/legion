@@ -80,7 +80,7 @@ func newCrashRig(t *testing.T) *crashRig {
 	*cfg = wireTestRoleForwarder(t, *cfg)
 	delivery, err := connectSessionDelivery([]string{url},
 		inactiveThresholdFor(rig.harness.sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval),
-		client, cfg.logger)
+		client, rig.harness.registry, rig.harness.sessions, cfg.logger)
 	if err != nil {
 		t.Fatalf("the session-consumer connection did not open: %v", err)
 	}

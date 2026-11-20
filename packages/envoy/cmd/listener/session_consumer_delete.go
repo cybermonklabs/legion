@@ -1,8 +1,7 @@
 // The delete of a session's consumer: the one body every delete this listener makes goes
-// through (deleteConsumer), the goroutine a deregistration hands its own delete to
-// (deleteAfterAnswer), and the shutdown's wait for those goroutines (awaitDeletes). The fields
-// that wait counts and holds off (deleteMu, deletes, deletesOff) stay where the type they
-// belong to is declared (sessionDelivery, session_delivery.go).
+// through (deleteConsumer), and the goroutine a deregistration hands its own delete to
+// (deleteAfterAnswer), which the shutdown waits for with every other piece of work a handler
+// leaves behind its answer (awaitAfterAnswer, session_after_answer.go).
 //
 // Three callers reach deleteConsumer, and each gives it the consumer's info when it holds one:
 //   - the deregistration, through deleteAfterAnswer, off the goroutine that answered the client
@@ -28,31 +27,6 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// awaitDeletes stops starting consumer deletes off a handler's goroutine and waits, within ctx,
-// for those already running (deleteAfterAnswer). The shutdown calls it once the HTTP server has
-// stopped and before it drains the session-consumer connection those deletes run on, so a
-// deregistration that answered a moment before the stop still frees its session's slot of the
-// stream's consumer cap. A delete still running when ctx ends is left where it is and said so:
-// the connection's drain ends it, and the sweep deletes the consumer it did not.
-func (m *sessionDelivery) awaitDeletes(ctx context.Context) {
-	if m == nil {
-		return
-	}
-	m.deleteMu.Lock()
-	m.deletesOff = true
-	m.deleteMu.Unlock()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		m.deletes.Wait()
-	}()
-	select {
-	case <-done:
-	case <-ctx.Done():
-		m.logger.Warn("a session consumer delete was still running at shutdown; the sweep deletes that consumer")
-	}
-}
-
 // deleteAfterAnswer deletes sessionID's consumer (deleteConsumer) off the goroutine that asked
 // for it, so a deregistration answers its caller first: a handler holds its written response
 // until it returns, and this work waits on the session's lock with no bound of its own and then
@@ -63,26 +37,17 @@ func (m *sessionDelivery) awaitDeletes(ctx context.Context) {
 // (context.WithoutCancel), since the registration is gone whatever the caller does next.
 //
 // The shutdown waits for every delete started here before it drains the connection they run on
-// (awaitDeletes). One that is not started because the listener is stopping is logged rather
+// (awaitAfterAnswer). One that is not started because the listener is stopping is logged rather
 // than lost silently: the sweep deletes the consumer of every session the registry judges gone,
 // and it is the backstop for this one.
 func (m *sessionDelivery) deleteAfterAnswer(ctx context.Context, d *listenerDeps, sessionID string) {
 	if m == nil || m.consumers == nil {
 		return
 	}
-	m.deleteMu.Lock()
-	if m.deletesOff {
-		m.deleteMu.Unlock()
+	if !m.runAfterAnswer(func() { m.deleteConsumer(ctx, d, sessionID, nil) }) {
 		m.logger.Warn("session consumer delete not started: the listener is stopping; the sweep deletes that consumer",
 			slog.String("session_id", sessionID))
-		return
 	}
-	m.deletes.Add(1)
-	m.deleteMu.Unlock()
-	go func() {
-		defer m.deletes.Done()
-		m.deleteConsumer(ctx, d, sessionID, nil)
-	}()
 }
 
 // deleteConsumer removes sessionID's consumer once the session's registration is gone, so the
@@ -153,8 +118,17 @@ func (m *sessionDelivery) deleteAfterAnswer(ctx context.Context, d *listenerDeps
 // nothing, and the registration's own read, which is after that entry write and so after this
 // delete took the consumer, finds the consumer gone and creates it again itself.
 //
-// One budget covers the record read, the delete and the resume record it writes first, and the
-// record read and create that may follow them, as one budget covers a registration's whole pass.
+// One budget covers the record read, the delete and the resume record it writes first, as one
+// budget covers a registration's consumer call. The repair after them runs on a budget of its
+// own (fenceFilterWrite, fenceBudget) and not on that budget: the read and the delete may have
+// spent it, which on a loaded bus is when a registration on another listener lands between them,
+// and a repair made on what they left would give that session no consumer until its next
+// heartbeat. Its stop is ctx, the caller's own context, which holds no deadline (fenceStop), so a
+// stop of the caller (the reaper's or the sweep's loop) still ends the repair. A ctx that holds
+// one is refused, and the settle loop repairs the consumer instead (stopRefused). So a delete
+// holds the session's lock for its own calls' budget and then for the repair's first attempt,
+// sessionConsumerCallTimeout each; a repair that attempt could not make is the settle loop's,
+// which holds the lock for each attempt alone (settleAgain).
 //
 // A listener whose NATS user may not manage session consumers deletes nothing while its refusal
 // episode stands (grantRefused): the delete would be refused, and the episode's one warning has
@@ -171,9 +145,9 @@ func (m *sessionDelivery) deleteConsumer(ctx context.Context, d *listenerDeps, s
 	// to the sweep.
 	unlock := m.locks.lock(sessionID)
 	defer unlock()
-	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
+	callCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
-	switch _, err := d.sessions.RefreshFromLeader(ctx, sessionID); {
+	switch _, err := d.sessions.RefreshFromLeader(callCtx, sessionID); {
 	case errors.Is(err, nats.ErrKeyNotFound):
 	case err != nil:
 		m.logger.Warn("session consumer kept: the session's record could not be read",
@@ -184,7 +158,7 @@ func (m *sessionDelivery) deleteConsumer(ctx context.Context, d *listenerDeps, s
 			slog.String("session_id", sessionID))
 		return false
 	}
-	floor, err := m.consumers.Delete(ctx, sessionID, listed)
+	floor, err := m.consumers.Delete(callCtx, sessionID, listed)
 	if err != nil {
 		if !m.grantRefusal("delete a session consumer", sessionID, err) {
 			m.logger.Warn("session consumer delete failed", slog.String("session_id", sessionID), slog.String("error", err.Error()))
@@ -192,11 +166,19 @@ func (m *sessionDelivery) deleteConsumer(ctx context.Context, d *listenerDeps, s
 		return false
 	}
 	m.granted()
+	if m.afterOwnCalls != nil {
+		m.afterOwnCalls()
+	}
 	// The repair. A record the bucket holds now that this session's consumer is gone was
 	// written by a registration that landed between the read above and this delete, and that
 	// registration was answered 200 with consumer delivery, so the consumer comes back on the
 	// filter and the start the record and the bucket's newest row ask for (registeredTarget),
 	// at the floor the delete recorded.
-	m.repairRegistered(ctx, d, sessionID, floor, repairAfterDelete)
+	stop, err := newFenceStop(ctx)
+	if err != nil {
+		m.stopRefused(sessionID, repairAfterDelete, floor, err)
+		return true
+	}
+	m.repairRegistered(stop, d, sessionID, floor, repairAfterDelete)
 	return true
 }

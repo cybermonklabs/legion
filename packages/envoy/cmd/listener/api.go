@@ -906,7 +906,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 // have spent sendRequestBudget, so a deregistration that succeeded would read as failed to a
 // caller whose attempt ends at 5 s (LISTENER_CALL_TIMEOUT_MS). The shutdown waits for a delete
 // still running before it drains the connection it runs on, and one the listener was too late to
-// start is logged and left to the sweep (sessionDelivery.awaitDeletes).
+// start is logged and left to the sweep (sessionDelivery.awaitAfterAnswer).
 //
 // Which consumer that delete removes is settled under the session's lock rather than by the
 // outcome above: it reads the session bucket again there, from the leader of that bucket's
@@ -2591,11 +2591,12 @@ func (e *sessionEntryWriteError) Unwrap() error { return e.cause }
 // (sessionDelivery.confirmRegistered): the plan it filtered on may be one nothing stored - every
 // plan outrun, the row written and the entry refused - while the registration that won the row
 // was answered 200 for topics the filter leaves out. So every exit that answers no registration
-// holds the filter to the row the bucket holds first (sessionDelivery.storedFilterWrite), on a
-// context the client's own cannot cancel but this registration's store budget bounds, since the
-// answer waits on it. One deferred settle behind an answered flag is what makes that true of
-// every exit, an exit added later included. A registration refused before any consumer call was
-// sent has set no filter and settles nothing (deliveryRefusal.filtered).
+// holds the filter to the row the bucket holds (sessionDelivery.settleAfterAnswer), off the
+// goroutine that answers and on a budget of its own, which neither the client nor what this
+// registration's plans left of its store budget bounds. One deferred settle behind an answered
+// flag is what makes that true of every exit, an exit added later included. A registration
+// refused before any consumer call was sent has set no filter and settles nothing
+// (deliveryRefusal.filtered).
 //
 // ctx bounds the store work (sendRequestBudget) and registerCtx the consumer calls, which take
 // the request's own context as they always have.
@@ -2623,15 +2624,18 @@ func (d *listenerDeps) registerSession(
 	// over the filter the registration that won the row set: that session is answered 200 for a
 	// topic its consumer does not filter on, at the cost fenceFilterWrite's doc states.
 	//
-	// It writes the filter alone and creates no consumer, where the repair of an answered
-	// registration creates one: this registration was answered nothing, so it promises no
-	// consumer, and a session whose consumer a delete took away has one again at its next
+	// Its first attempt writes the filter alone and creates no consumer, where the repair of an
+	// answered registration creates one: this registration was answered nothing, so it promises
+	// no consumer, and a session whose consumer a delete took away has one again at its next
 	// registration. A session the bucket holds no row for is left filtering on its own agent
-	// subject alone, which is every topic such a row would name.
+	// subject alone, which is every topic such a row would name. What that attempt could not
+	// settle is the settle loop's, whose repair creates a consumer only for a session whose
+	// record asks for one, answered 200 by some registration (settleAgain).
 	//
-	// The session's lock, the call budget and the listener that holds no session consumers at
-	// all are sessionDelivery.storedFilterWrite's, as they are every caller of it; nothing here
-	// holds that lock, since the pass that set the filter released it by then (registerPass).
+	// The session's lock and the listener that holds no session consumers at all are
+	// sessionDelivery.storedFilterWrite's, and the budget is the fence's own
+	// (fenceFilterWrite, fenceBudget), as they are every caller's; nothing here holds that lock,
+	// since the pass that set the filter released it by then (registerPass).
 	//
 	// It is deferred rather than written at each exit that answers no registration because an
 	// exit added later would otherwise leave the filter of a plan nothing stored on the
@@ -2640,20 +2644,12 @@ func (d *listenerDeps) registerSession(
 		if answered || !filtered {
 			return
 		}
-		// The settle outlives the client's own context, as the confirm of an answered
-		// registration does: the filter it holds to the bucket's row stands whatever the client
-		// does with this answer. It does not outlive the budget this registration's store work
-		// had (sendRequestBudget), because the answer waits on it: a bucket that stopped
-		// answering has spent that budget already, and a fence that cannot read the bucket can
-		// judge nothing anyway (fenceFilterWrite), so holding the 503 for it would only spend
-		// the caller's attempt (write_routes_frozen_bus_test.go).
-		settleCtx := context.WithoutCancel(ctx)
-		if deadline, ok := ctx.Deadline(); ok {
-			var cancel context.CancelFunc
-			settleCtx, cancel = context.WithDeadline(settleCtx, deadline)
-			defer cancel()
-		}
-		d.consumers.storedFilterWrite(settleCtx, d.registry, body.SessionID, filterAfterUnansweredRegistration)
+		// The settle starts here, as this function returns and before the handler writes the
+		// 503, and runs beside that answer on a budget of its own, which the answer does not
+		// wait for (sessionDelivery.settleAfterAnswer says why): the plans before it can have
+		// spent this registration's store budget, which is when they were outrun, and a settle
+		// given what they left would give up before its first call.
+		d.consumers.settleAfterAnswer(ctx, d.registry, body.SessionID)
 	}()
 	for attempt := 1; attempt <= registrationPlanAttempts; attempt++ {
 		plan := store.InterestPlan{}

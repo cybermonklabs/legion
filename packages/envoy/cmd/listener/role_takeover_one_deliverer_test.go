@@ -644,7 +644,7 @@ func newRelayBench(b *testing.B) *relayBench {
 	})
 	delivery, err := connectSessionDelivery([]string{url},
 		inactiveThresholdFor(sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval),
-		client, logger)
+		client, registry, sessions, logger)
 	if err != nil {
 		b.Fatalf("open the session-consumer connection: %v", err)
 	}

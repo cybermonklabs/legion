@@ -14,6 +14,12 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ReconnectWait is how long a connection of this package waits between its attempts to reach a
+// server it lost (nats.Options.ReconnectWait): the soonest a connection that lost its server can
+// answer again. A caller that retries work a bus did not answer waits it out before it tries again
+// (cmd/listener's filterSettlePause).
+const ReconnectWait = time.Second
+
 // reconnectErrEvery is how often one connection reports a failed reconnect attempt. nats.go
 // retries about once a second forever (ReconnectWait, MaxReconnect -1), so an outage of an hour
 // would be thousands of identical lines; one a minute still names the outage in every log window
@@ -263,7 +269,7 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 	opts.MaxReconnect = -1
 	// A publish while reconnecting waits for the reconnect (ensureConnWithContext), so the wait
 	// between attempts is how long it waits after NATS is back.
-	opts.ReconnectWait = time.Second
+	opts.ReconnectWait = ReconnectWait
 	opts.ReconnectBufSize = -1
 	opts.DisconnectedErrCB = func(_ *nats.Conn, err error) {
 		if err != nil {

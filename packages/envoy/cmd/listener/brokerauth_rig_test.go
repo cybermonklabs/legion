@@ -78,7 +78,7 @@ func newBrokerRig(t *testing.T) *brokerRig {
 		client:       client,
 		registry:     registry,
 		sessions:     sessions,
-		consumers:    setupSessionConsumers(t, client),
+		consumers:    setupSessionConsumers(t, client, registry, sessions),
 		legionAgents: newLegionAgentRegistry(agents),
 	})
 

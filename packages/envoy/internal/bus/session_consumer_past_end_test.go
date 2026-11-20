@@ -160,7 +160,7 @@ func createAsAnEarlierBuild(t *testing.T, consumers *SessionConsumers, sessionID
 		OptStartSeq:   lastSeq + past,
 	}
 	consumers.applySettings(&config, filters)
-	if _, err := consumers.upsert(ctx, name, config, "create"); err != nil {
+	if _, err := consumers.upsert(ctx, sessionID, name, config, "create", config.OptStartSeq-1); err != nil {
 		t.Fatalf("create the consumer of %s at %d: %v", sessionID, lastSeq+past, err)
 	}
 	info, err := consumers.Info(ctx, sessionID)

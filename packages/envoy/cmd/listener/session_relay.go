@@ -851,6 +851,21 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 	// then starts its calls' timeout, so the time it waited in line times nothing out. A
 	// registration takes no turn, only the lock, so its consumer calls never wait behind the
 	// restarts waiting for one.
+	//
+	// What the restart holds, and for how long, is what it waits for under them: its own read
+	// and restart call, which wait for the bus within callCtx (sessionConsumerCallTimeout from
+	// when it holds both), and then the first attempt of its corrections (settleFilter), which
+	// waits for the bus within the fence's own budget, another sessionConsumerCallTimeout
+	// (fenceBudget). So a restart on a bus that stops answering holds the session's lock for up to
+	// twice sessionConsumerCallTimeout, 10 s, where its corrections used to end with callCtx at
+	// 5 s, and its turn for that and for its wait for the lock before it, which only the lock's
+	// holders before it bound; on a bus that answers it holds them for a few round trips. Behind
+	// the lock wait the same session's calls: its registrations (whose consumer budget starts
+	// before that wait, so one held there the whole 10 s answers 503), its refollows, the settle
+	// of a registration not answered, its delete and the settle loop's attempts; behind the turn
+	// wait the restarts of the listener's other sessions once all relayRestartLimit turns are
+	// held. A correction the first attempt could not make is the settle loop's, which holds neither
+	// the turn nor the lock between its attempts (settleAgain).
 	select {
 	case m.restarts <- struct{}{}:
 	case <-ctx.Done():
@@ -867,11 +882,21 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 		return bus.SessionConsumerStart{}, nil, relayRetry
 	}
 	start, err := m.delivery.consumers.RestartAtFloor(callCtx, sessionID, filter)
+	if m.delivery.afterOwnCalls != nil {
+		m.delivery.afterOwnCalls()
+	}
 	// A restart the server answered with a refusal left no filter of this row on the consumer; a
 	// restart whose answer did not come back may have created it on that filter, so it is settled
-	// against the bucket's newest row like one that answered (consumerCallAnswered).
+	// against the bucket's newest row too, its first pass the restart's own write unanswered
+	// (consumerCallAnswered, filterWriteUnanswered). The corrections' stop is the run's own
+	// context and not callCtx: the run's cancellation ends them, and nothing of callCtx's deadline
+	// reaches them (fenceStop).
 	if err == nil || !consumerCallAnswered(err) {
-		m.settleFilter(callCtx, sessionID, revision)
+		if stop, stopErr := newFenceStop(ctx); stopErr != nil {
+			m.delivery.stopRefused(sessionID, filterAfterRestart, 0, stopErr)
+		} else {
+			m.settleFilter(stop, sessionID, revision, err == nil)
+		}
 	}
 	unlock()
 	if err == nil {
@@ -918,14 +943,28 @@ func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]s
 // by the time a correction is sent is left to the session's next registration, as the restart
 // itself leaves it. A restart whose answer did not come back is settled here too, since it may
 // have created the consumer on the filter it carried (restart, consumerCallAnswered).
-func (m *sessionRelays) settleFilter(ctx context.Context, sessionID string, wrote uint64) {
+//
+// The corrections run on the fence's own budget (fenceBudget) and not on what the restart's own
+// read and call left of its budget: a restart slow enough to spend that is one a registration on
+// another listener had time to land under, and a fence made on the rest would give up at its
+// first read and leave the restart's older row's filter on a consumer the relay then pulls. stop
+// is the run's own cancellation (restart), so a run cancelled at any point - before or after the
+// restart's own budget passed - ends them. answered says the restart's own write answered; one
+// that did not is a first pass whose answer did not come back (filterWriteUnanswered), which
+// ends the attempt. What their first attempt could not settle is the settle loop's
+// (sessionDelivery.fence), which holds no turn and no lock between its attempts.
+func (m *sessionRelays) settleFilter(stop fenceStop, sessionID string, wrote uint64, answered bool) {
 	// The restart's own write is this fence's first pass: it is made, or may have been made,
-	// before the fence runs, so that pass answers it as the write it is (filterWriteLanded) and
-	// sends nothing, and the passes after it correct it from the bucket's newest row.
+	// before the fence runs, so that pass answers it as the write it is (filterWriteLanded, or
+	// filterWriteUnanswered) and sends nothing, and the passes after it correct it from the
+	// bucket's newest row.
 	restart := true
-	fenceFilterWrite(ctx, m.logger, m.registry, sessionID, filterAfterRestart, func() (uint64, filterWriteOutcome) {
+	m.delivery.fence(stop, m.registry, sessionID, filterAfterRestart, 0, func(ctx context.Context) (uint64, filterWriteOutcome) {
 		if restart {
 			restart = false
+			if !answered {
+				return wrote, filterWriteUnanswered
+			}
 			return wrote, filterWriteLanded
 		}
 		return m.delivery.storedFilterStep(ctx, m.registry, sessionID, filterAfterRestart)

@@ -12,8 +12,10 @@ package envconf
 import (
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/session"
 )
 
@@ -80,4 +82,27 @@ func SessionWindows(logger *slog.Logger, environment func(string) (string, bool)
 		return 0, 0, err
 	}
 	return live, horizon, nil
+}
+
+// ServerPings reads the NATS hub's own ping settings, which the listener cannot ask the server
+// for: ENVOY_NATS_PING_INTERVAL, the hub's ping_interval, read as PositiveDuration reads a period,
+// and ENVOY_NATS_PING_MAX, its ping_max, a positive whole number. Each defaults to nats-server's
+// own value for a configuration that sets neither (bus.ServerPingInterval, bus.ServerPingMax). A
+// ping_max that is not a positive whole number is refused by name and the value. The listener
+// takes from them how long the server goes on reading a connection it lost
+// (bus.StaleConnectionLimit).
+func ServerPings(logger *slog.Logger, environment func(string) (string, bool)) (interval time.Duration, pingMax int, err error) {
+	interval, err = PositiveDuration(logger, environment, "ENVOY_NATS_PING_INTERVAL", bus.ServerPingInterval)
+	if err != nil {
+		return 0, 0, err
+	}
+	value, _ := environment("ENVOY_NATS_PING_MAX")
+	if value == "" {
+		return interval, bus.ServerPingMax, nil
+	}
+	pingMax, err = strconv.Atoi(value)
+	if err != nil || pingMax <= 0 {
+		return 0, 0, fmt.Errorf("invalid ENVOY_NATS_PING_MAX %q: want the hub's ping_max, a positive whole number such as 2", value)
+	}
+	return interval, pingMax, nil
 }

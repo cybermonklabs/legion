@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/envconf"
 	"github.com/sjawhar/envoy/internal/session"
 )
@@ -114,5 +115,28 @@ func TestSessionWindowsReadsTheTwoWindowsBothProgramsCarry(t *testing.T) {
 				t.Fatalf("SessionWindows with %s=0s = %s, %s, %v; want a refusal naming %s", name, live, horizon, err, name)
 			}
 		})
+	}
+}
+
+// The hub's ping settings default to nats-server's own (bus.ServerPingInterval,
+// bus.ServerPingMax), take the hub's values when set, and refuse a ping_max that is no positive
+// whole number, and a ping_interval that is not positive, by name.
+func TestServerPingsReadsTheHubsPingSettings(t *testing.T) {
+	logger, _ := logged()
+	interval, pingMax, err := envconf.ServerPings(logger, environment(nil))
+	if err != nil || interval != bus.ServerPingInterval || pingMax != bus.ServerPingMax {
+		t.Fatalf("unset: %v, %d, %v; want %v, %d and no error", interval, pingMax, err, bus.ServerPingInterval, bus.ServerPingMax)
+	}
+	interval, pingMax, err = envconf.ServerPings(logger, environment(map[string]string{"ENVOY_NATS_PING_INTERVAL": "20s", "ENVOY_NATS_PING_MAX": "3"}))
+	if err != nil || interval != 20*time.Second || pingMax != 3 {
+		t.Fatalf("set: %v, %d, %v; want 20s, 3 and no error", interval, pingMax, err)
+	}
+	for name, value := range map[string]string{"ENVOY_NATS_PING_MAX": "0", "ENVOY_NATS_PING_INTERVAL": "0s"} {
+		if _, _, err := envconf.ServerPings(logger, environment(map[string]string{name: value})); err == nil || !strings.Contains(err.Error(), "invalid "+name) {
+			t.Errorf("%s=%s: %v, want a refusal naming %s", name, value, err, name)
+		}
+	}
+	if _, _, err := envconf.ServerPings(logger, environment(map[string]string{"ENVOY_NATS_PING_MAX": "two"})); err == nil || !strings.Contains(err.Error(), `invalid ENVOY_NATS_PING_MAX "two"`) {
+		t.Errorf("ENVOY_NATS_PING_MAX=two: %v, want a refusal naming the setting and the value", err)
 	}
 }

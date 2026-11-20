@@ -53,7 +53,7 @@ func newSessionConsumerRigOn(t *testing.T, client *bus.Client, url string, sessi
 	// deployment with these windows would give it.
 	delivery, err := connectSessionDelivery([]string{url},
 		inactiveThresholdFor(harness.sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval),
-		client, harness.config.logger)
+		client, harness.registry, harness.sessions, harness.config.logger)
 	if err != nil {
 		t.Fatalf("the session-consumer connection did not open: %v", err)
 	}
@@ -475,6 +475,10 @@ func TestSessionConsumerRefusesARegistrationEveryPlanOfWhichIsOutrun(t *testing.
 	recorder := httptest.NewRecorder()
 	rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe",
 		strings.NewReader(`{"session_id":"`+sessionID+`","self_subscribed":true,"topics":["notifications.team.outrun"],"delivery":{"consumer":true,"epoch":"e"}}`)))
+	// The 503 leaves the settle of the consumer's filter running behind it
+	// (sessionDelivery.settleAfterAnswer); the case ends only once it has run, so no settle of
+	// this rig outlives the case.
+	awaitSettled(rig)
 	rig.deps.consumers.beforeRegister = nil
 
 	if recorder.Code != http.StatusServiceUnavailable {
@@ -1002,6 +1006,65 @@ func TestSessionConsumerUnsubscribeWritesTheTopicsStoredWhenItHoldsTheLock(t *te
 	}
 
 	requireFilters(t, rig, sessionID, followed)
+}
+
+// An unsubscribe's refollow starts its budget once it holds the session's lock (storedFilterWrite,
+// fenceBudget), so a wait behind another call of the same session - a registration's pass, a
+// relay restart or a consumer delete, each of which holds that lock over calls of its own - spends
+// none of it. Here the test holds the lock for a whole budget (sessionConsumerCallTimeout) while
+// the refollow waits, and the filter still leaves out the topic the unsubscribe removed. A
+// refollow whose budget started before that wait meets its deadline at its first read, and the
+// consumer goes on delivering the removed topic until the session's next heartbeat.
+func TestAnUnsubscribeThatWaitsAWholeBudgetForTheSessionsLockStillNarrowsTheFilter(t *testing.T) {
+	rig := newSessionConsumerRig(t)
+	const sessionID = "ses_refollow_waits"
+	const kept = "notifications.dispatch.issue.REFOLLOWWAITSKEPT.>"
+	const dropped = "notifications.dispatch.issue.REFOLLOWWAITSDROPPED.>"
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, dropped))
+
+	unlock := rig.deps.consumers.locks.lock(sessionID)
+	answered := postAsync(rig, "/v1/interests/unsubscribe", `{"session_id":"`+sessionID+`","topics":["`+dropped+`"]}`)
+	// The unsubscribe has removed its topic and waits for the lock to write the filter.
+	awaitLockUsers(t, &rig.deps.consumers.locks, sessionID, 2)
+	time.Sleep(sessionConsumerCallTimeout)
+	unlock()
+	if status := <-answered; status != http.StatusOK {
+		t.Fatalf("the unsubscribe answered %d, want 200", status)
+	}
+
+	requireFilters(t, rig, sessionID, kept)
+}
+
+// An unsubscribe's refollow outlives its client: the row has lost the topic whatever the client
+// does with the answer, so a client whose attempt ended - which cancels its request - must not
+// leave the consumer delivering that topic (storedFilterWrite). Here the request is cancelled
+// while its refollow waits for the session's lock, and the filter still leaves the topic out.
+func TestAnUnsubscribeWhoseClientGaveUpStillNarrowsTheFilter(t *testing.T) {
+	rig := newSessionConsumerRig(t)
+	const sessionID = "ses_refollow_abandoned"
+	const kept = "notifications.dispatch.issue.REFOLLOWABANDONEDKEPT.>"
+	const dropped = "notifications.dispatch.issue.REFOLLOWABANDONEDDROPPED.>"
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, dropped))
+
+	unlock := rig.deps.consumers.locks.lock(sessionID)
+	client, gaveUp := context.WithCancel(context.Background())
+	defer gaveUp()
+	answered := make(chan int, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/v1/interests/unsubscribe",
+			strings.NewReader(`{"session_id":"`+sessionID+`","topics":["`+dropped+`"]}`)).WithContext(client)
+		rig.mux.ServeHTTP(recorder, request)
+		answered <- recorder.Code
+	}()
+	awaitLockUsers(t, &rig.deps.consumers.locks, sessionID, 2)
+	gaveUp()
+	unlock()
+	if status := <-answered; status != http.StatusOK {
+		t.Fatalf("the unsubscribe answered %d, want 200: its removal was made before the client gave up", status)
+	}
+
+	requireFilters(t, rig, sessionID, kept)
 }
 
 // A relay restart that begins while a registration is between its filter and its interest row

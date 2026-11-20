@@ -310,9 +310,7 @@ func TestAStoredOldFormTopicIsCountedEachTimeTheRowIsReadIntoTheFilter(t *testin
 	if got := counter.counted(); !slices.Equal(got, []string{"interest"}) {
 		t.Fatalf("a write of the stored row's filter counted %q, want one interest", got)
 	}
-	deps := *rig.deps
-	deps.registry = counting
-	if _, finding := rig.deps.consumers.registeredTarget(context.Background(), &deps, sessionID, 0); finding != registeredTargetBuilt {
+	if _, finding := rig.deps.consumers.registeredTarget(context.Background(), rig.deps.sessions, counting, sessionID, 0); finding != registeredTargetBuilt {
 		t.Fatalf("the repair's target = %v, want it built", finding)
 	}
 	if got := counter.counted(); !slices.Equal(got, []string{"interest", "interest"}) {

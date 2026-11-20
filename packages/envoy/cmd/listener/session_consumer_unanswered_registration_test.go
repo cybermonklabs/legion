@@ -6,9 +6,14 @@ package main
 // reaches no entry runs neither: it leaves the filter of a plan nothing stored on the consumer,
 // over the filter the registration that won the row set. Both exits are here - every plan
 // outrun, and the session entry's write failing - and each ends with the consumer filtered on
-// the row the bucket holds (registerSession's deferred settle). That settle is a fenced write
-// like the other four, so the last case holds one open over a row stored under its own write,
-// which only a pass planned from the bucket's newest row takes back (fenceFilterWrite).
+// the row the bucket holds (registerSession's deferred settle). That settle starts as
+// registerSession returns, before the handler writes the 503, and runs beside it, off the
+// handler's goroutine and on a budget of its own (sessionDelivery.settleAfterAnswer): the answer
+// does not wait for it. So every case here waits for it (awaitSettled) before it reads the
+// consumer or takes its hooks away, save the one whose settle can never settle, which stops it
+// (stopSettling). It is a fenced write like the other four, so the last case but one holds one
+// open over a row stored under its own write, which only a pass planned from the bucket's newest
+// row takes back (fenceFilterWrite).
 
 import (
 	"context"
@@ -19,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -30,7 +36,7 @@ import (
 // bus-unavailable 503, and the last plan it filtered the consumer on is one it never stored:
 // the writer that won the row holds topics that filter leaves out, and a message stored on one
 // of them would be lost at the cost fenceFilterWrite's doc states. The registration sets the
-// filter back to the row the bucket holds before it answers.
+// filter back to the row the bucket holds once it has answered.
 func TestARegistrationEveryPlanOfWhichIsOutrunLeavesTheConsumerFilteredOnTheStoredRow(t *testing.T) {
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_outrun_filter"
@@ -48,6 +54,7 @@ func TestARegistrationEveryPlanOfWhichIsOutrunLeavesTheConsumerFilteredOnTheStor
 	recorder := httptest.NewRecorder()
 	rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe",
 		strings.NewReader(consumerRegistration(sessionID, "epoch-1", "notifications.team.outrunfilter"))))
+	awaitSettled(rig)
 	rig.deps.consumers.beforeRegister = nil
 
 	if recorder.Code != http.StatusServiceUnavailable {
@@ -61,11 +68,53 @@ func TestARegistrationEveryPlanOfWhichIsOutrunLeavesTheConsumerFilteredOnTheStor
 	rig.awaitPending(t, sessionID, 1)
 }
 
+// The settle's budget is its own, and not what the registration's plans left of theirs: here the
+// last plan is outrun only once the registration's whole store budget (sendRequestBudget) has
+// passed, which is three contested plans on a bus slow to answer them, and the settle still holds
+// the consumer to the row the bucket holds. A settle given what the plans left of that budget
+// meets its deadline at its first read and leaves the last plan's filter, which lacks the topic
+// the winning writer stored, until the session's next heartbeat: the defect this case was written
+// for, found in CI as a settle of the case above that met its deadline after three plans under
+// the race detector.
+func TestARegistrationWhosePlansSpendItsStoreBudgetStillSettlesTheConsumerOnTheStoredRow(t *testing.T) {
+	rig := newSessionConsumerRig(t)
+	const sessionID = "ses_outrun_budget"
+	passes := 0
+	rig.deps.consumers.beforeRegister = func() {
+		passes++
+		topic := fmt.Sprintf("notifications.dispatch.issue.OUTRUNBUDGET-%d.>", passes)
+		if _, err := rig.harness.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "test-machine"}, []string{topic}); err != nil {
+			t.Errorf("store %s under the registration's plan: %v", topic, err)
+		}
+		// The last plan outlasts the store budget the registration started with, so whatever
+		// the passes before it took, none of that budget is left when the settle starts.
+		if passes == registrationPlanAttempts {
+			time.Sleep(sendRequestBudget)
+		}
+	}
+	recorder := httptest.NewRecorder()
+	rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe",
+		strings.NewReader(consumerRegistration(sessionID, "epoch-1", "notifications.team.outrunbudget"))))
+	awaitSettled(rig)
+	rig.deps.consumers.beforeRegister = nil
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body = %s", recorder.Code, recorder.Body.String())
+	}
+	if passes != registrationPlanAttempts {
+		t.Fatalf("the registration made %d plans, want %d", passes, registrationPlanAttempts)
+	}
+	requireFilteredOnStoredRow(t, rig, sessionID)
+	rig.store(t, "notifications.dispatch.issue.OUTRUNBUDGET-3.comment")
+	rig.store(t, "notifications.team.outrunbudget")
+	rig.awaitPending(t, sessionID, 1)
+}
+
 // A registration whose session entry could not be written leaves its interest row stored and
 // nothing telling another reader the session is here, so the repair that reads that record
 // makes none: the filter it set stands over whatever row landed after it. It holds that filter
-// to the row the bucket holds before it answers, as the confirm of an answered registration
-// does.
+// to the row the bucket holds once it has answered, as the confirm of an answered registration
+// does before it answers.
 func TestARegistrationWhoseEntryWriteFailsLeavesTheConsumerFilteredOnTheStoredRow(t *testing.T) {
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_entry_write_filter"
@@ -98,6 +147,7 @@ func TestARegistrationWhoseEntryWriteFailsLeavesTheConsumerFilteredOnTheStoredRo
 	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "session registry unavailable") {
 		t.Fatalf("status = %d, body = %s; want the 503 of a session entry that could not be written", recorder.Code, recorder.Body.String())
 	}
+	awaitSettled(rig)
 
 	requireFilteredOnStoredRow(t, rig, sessionID)
 	rig.store(t, "notifications.dispatch.issue.ENTRYFAILADD.comment")
@@ -145,6 +195,7 @@ func TestARegistrationThisListenerDidNotAnswerSettlesOnTheRowStoredUnderItsWrite
 	recorder := httptest.NewRecorder()
 	rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe",
 		strings.NewReader(consumerRegistration(sessionID, "epoch-1", followed))))
+	awaitSettled(rig)
 	rig.deps.consumers.afterStoredRowRead = nil
 	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "session registry unavailable") {
 		t.Fatalf("status = %d, body = %s; want the 503 of a session entry that could not be written", recorder.Code, recorder.Body.String())
@@ -200,6 +251,10 @@ func TestARegistrationThisListenerDidNotAnswerSettlesOnTheBucketsRowWhereTheFenc
 	recorder := httptest.NewRecorder()
 	rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe",
 		strings.NewReader(consumerRegistration(sessionID, "epoch-1", followed))))
+	// The settle loop behind that attempt reads through the same closed connection and can
+	// never settle, so the case stops the work behind the answer rather than waiting for it:
+	// the stop waits for the settle's own attempt, and ends the loop's pause.
+	stopSettling(t, rig)
 	rig.deps.consumers.afterStoredRowRead = nil
 	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "session registry unavailable") {
 		t.Fatalf("status = %d, body = %s; want the 503 of a session entry that could not be written", recorder.Code, recorder.Body.String())
@@ -226,6 +281,12 @@ func (kv refusingEntryKV) Put(string, []byte) (uint64, error) {
 	kv.before()
 	return 0, fmt.Errorf("injected session entry write failure")
 }
+
+// awaitSettled waits for the settle a registration this listener did not answer leaves running
+// behind its 503 (sessionDelivery.settleAfterAnswer), with every other piece of work a handler of
+// the rig left behind its answer: the settle loop's attempts (settleAgain) and the wait for a
+// consumer write's late answer (unansweredWrite) among them.
+func awaitSettled(rig *sessionConsumerRig) { rig.deps.consumers.afterAnswer.Wait() }
 
 // requireFilteredOnStoredRow fails the test unless sessionID's consumer filters on exactly what
 // the row the bucket holds builds (sessionConsumerFilter, every form of which the consumer

@@ -212,7 +212,7 @@ func (r *hourRig) claim(l *hourListener, sessionID, role string, entry session.S
 // session renews nothing of the claim the process before it made (store.Registry.RenewRoleClaims).
 func (r *hourRig) register(l *hourListener, sessionID, instance string) {
 	r.t.Helper()
-	l.route.consumers = setupSessionConsumers(r.t, l.harness.client)
+	l.route.consumers = setupSessionConsumers(r.t, l.harness.client, l.route.registry, l.route.sessions)
 	registerThrough(r.t, subscribeHandler(l.route, "test-machine", logging.New("test")), sessionID, instance)
 }
 

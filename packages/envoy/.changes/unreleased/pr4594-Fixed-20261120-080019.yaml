@@ -1,0 +1,42 @@
+kind: Fixed
+body: |-
+  A registration the listener answers `503`, because another writer outran every plan it made or
+  because its session entry could not be written, now sets the session's consumer filter back to
+  the topics the bucket holds, even when its plans spent the registration's 3.5 s store budget.
+  The listener made that write before the `503` and within that budget. On a loaded bus the
+  write met the budget's deadline (`session consumer filter update failed`, `context deadline
+  exceeded`), and the consumer kept the filter of a plan nothing stored until the session's next
+  heartbeat. That is up to 90 s without the topic the other writer stored. The write now starts
+  beside the `503`, which does not wait for it, and the listener's stop waits for it.
+
+  Each write of a session consumer's filter that the listener checks against the stored row - the
+  check after a registration, the repair after a consumer delete, the correction after a relay
+  restart, an unsubscribe's refollow, and the write above - now has a budget of its own, 5 s from
+  when it holds the session's lock, whatever the call before it left; its caller's stop still
+  ends it. When that attempt leaves the filter on a row the bucket does not hold, or cannot
+  judge it, the listener tries again after 1 s, with a `WARN` line each time, until the filter is
+  the stored row's or the session is gone, holding the session's lock for each attempt alone.
+  A consumer write whose answer comes back after its caller stopped waiting for it is followed by
+  another check once it lands, so a late write no longer leaves a filter nothing stored. A client
+  that gives up on an unsubscribe no longer leaves the consumer filtered on the topics it removed.
+
+  A consumer write whose answer was lost with its connection can still reach the server after
+  the reconnect, until the server closes the old connection as stale. The listener now checks
+  that session's consumer every second for that long and 16 s more: `(ping_max + 2) ×
+  ping_interval` of the hub, read from `ENVOY_NATS_PING_INTERVAL` and `ENVOY_NATS_PING_MAX`, whose
+  defaults are nats-server's own (2m and 2: 8 minutes). A late write that lands a filter without a
+  topic of the stored row, on a consumer that went past a message on that topic, no longer loses
+  that message: the listener creates the consumer again at it, and the session's plugin drops the
+  messages it was handed before. A check whose write did not answer no longer counts as settled.
+  A write the server dropped unanswered (past its API queue limit) holds one goroutine and one
+  subscription until the connection's next reconnect or the listener's stop.
+
+  Three waits are longer. A registration's retry can wait up to 5 s behind such a write for the
+  same session. A consumer delete, and a relay restart, can each hold the session's lock for up to
+  10 s: 5 s for their own calls and 5 s for the first check after them. Behind that lock wait the
+  same session's registrations, unsubscribes, its relay restart and its delete. A restart also
+  holds one of the listener's 32 restart turns from before its wait for the session's lock: that
+  wait, then up to 10 s. The restarts of other sessions wait for a turn once all are taken.
+time: 2026-11-20T08:00:19Z
+custom:
+    Issue: pr4594

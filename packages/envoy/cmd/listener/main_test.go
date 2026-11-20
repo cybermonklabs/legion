@@ -347,10 +347,11 @@ func setupPublishTestClient(t *testing.T, options ...bus.ConnectOption) *bus.Cli
 // what it is told and relays nothing, since no test here reads a frame. client is the rig's
 // listener client, whose read of the deployed stream's subjects both the registration's stored
 // topics and its consumer filter are judged on (sessionDelivery.stream), as main's listener
-// judges them.
-func setupSessionConsumers(t *testing.T, client *bus.Client) *sessionDelivery {
+// judges them; registry and sessions are the rig's buckets, which the settle loop's repair reads
+// (sessionDelivery.registry, sessionDelivery.sessions), as main hands it its own.
+func setupSessionConsumers(t *testing.T, client *bus.Client, registry *store.Registry, sessions *session.SessionRegistry) *sessionDelivery {
 	t.Helper()
-	delivery, err := connectSessionDelivery([]string{testnats.URL(t)}, bus.SessionConsumerInactiveThreshold, client, logging.NewWithWriter("test", io.Discard))
+	delivery, err := connectSessionDelivery([]string{testnats.URL(t)}, bus.SessionConsumerInactiveThreshold, client, registry, sessions, logging.NewWithWriter("test", io.Discard))
 	if err != nil {
 		t.Fatalf("open the session-consumer connection: %v", err)
 	}
@@ -1950,7 +1951,7 @@ func TestSubscribeHandler_RejectsEmptySessionID(t *testing.T) {
 func TestSubscribeHandler_StoresSelfSubscribedSessionWithoutPort(t *testing.T) {
 	// Given
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	state := &listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}
+	state := &listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil, registry, sessions)}
 	handler := subscribeHandler(state, "test-machine", logging.New("test"))
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(
