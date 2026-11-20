@@ -522,10 +522,13 @@ func (r *Runtime) awaitGone(ctx context.Context, loc runtime.Locator) error {
 // fresh agent in its place, charged nothing and reported (supervise's start), which is also what a
 // taken-over runtime's session gets, since nothing tells it from this host's own (sessionfile.go).
 // A search that fails — a recorded path it cannot check, a pane sessions directory it cannot
-// resolve, a sessions directory or one of its folders it cannot read, or a matching file it cannot
-// check — opens no pane either, and its error wraps no runtime.ErrSessionFileMissing: what it
-// could not read may hold the session, so the caller keeps the session, charges the launch
-// failure and tries again.
+// resolve, or a searched sessions directory itself it cannot read — opens no pane either, and its
+// error wraps no runtime.ErrSessionFileMissing: what it could not read may hold the session, so
+// the caller keeps the session, charges the launch failure and tries again. A folder of a
+// sessions directory it cannot read, or a matching file in one it cannot check, is no failure:
+// the search runs as the user Oh My Pi runs as, so what that user cannot read holds no session Oh
+// My Pi could resume, and the search skips it as holding none (newestOneFolderDown). Whenever it
+// skipped any, whatever it found, the launch names each one it skipped, with why, in one warning.
 func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	if err := validateSpawnSpec(spec, r.providerKeys, r.operatorEnv); err != nil {
 		return runtime.Locator{}, err
@@ -554,9 +557,16 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 		}
 		return dir, nil
 	}
+	warnSkipped := func(skipped []string) {
+		if len(skipped) != 0 {
+			r.log.Warn("tmux runtime: the session search skipped what it could not read",
+				"claim", spec.Claim, "backend", backend, "skipped", skipped)
+		}
+	}
 	switch {
 	case spec.ResumeSessionFile != "":
-		found, searched, err := sessionFileOf(spec.ResumeSessionFile, paneSessions)
+		found, searched, skipped, err := sessionFileOf(spec.ResumeSessionFile, paneSessions)
+		warnSkipped(skipped)
 		switch {
 		case err != nil:
 			return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
@@ -574,7 +584,8 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 		if err != nil {
 			return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 		}
-		found, err := sessionFileByID(sessions, spec.ResumeSession)
+		found, skipped, err := sessionFileByID(sessions, spec.ResumeSession)
+		warnSkipped(skipped)
 		switch {
 		case err != nil:
 			return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)

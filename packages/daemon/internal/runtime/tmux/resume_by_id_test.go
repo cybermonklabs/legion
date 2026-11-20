@@ -8,6 +8,7 @@ package tmux
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,11 +121,11 @@ func TestTheLookupByIDMatchesTheSessionsDirectoryAndTheIDAsWritten(t *testing.T)
 	sessions := filepath.Join(t.TempDir(), "home*[legion?", ".omp", "agent", "sessions")
 	file := filepath.Join(sessions, resumeFolder, "2026-11-19T22-12-27-829Z_"+resumeSessionID+".jsonl")
 	writeSession(t, file, time.Now())
-	if got, err := sessionFileByID(sessions, resumeSessionID); err != nil || got != file {
+	if got, _, err := sessionFileByID(sessions, resumeSessionID); err != nil || got != file {
 		t.Errorf("sessionFileByID in %s of session %s = %q, %v; want %s", sessions, resumeSessionID, got, err, file)
 	}
 	for _, id := range []string{resumeSessionID[:9] + "*", "*"} {
-		if got, err := sessionFileByID(sessions, id); err != nil || got != "" {
+		if got, _, err := sessionFileByID(sessions, id); err != nil || got != "" {
 			t.Errorf("sessionFileByID of the id %s, beside the file of session %s = %q, %v; want nothing", id, resumeSessionID, got, err)
 		}
 	}
@@ -149,6 +150,61 @@ func TestAResumeByIDThatCannotReadThePanesSessionsDirectoryIsNoMissingSession(t 
 	}
 	if opened(f.argvs) {
 		t.Error("a resume whose sessions directory cannot be read opened a pane")
+	}
+}
+
+// A folder of the pane's sessions directory that the search cannot read holds no session Oh My Pi
+// could resume, since the search runs as the user Oh My Pi runs as, so the search skips it and
+// the launch goes on as it would without the folder, whether it names the session by its id or by
+// a recorded file that is gone: it resumes the session's file from another, readable folder, or,
+// with the session nowhere else, answers runtime.ErrSessionFileMissing and opens no pane. Either
+// way it logs one warning naming the claim and the folder it skipped, with why.
+func TestAResumeWhoseSearchSkipsAFolderItCannotReadNamesItInAWarning(t *testing.T) {
+	name := "2026-11-19T22-12-27-829Z_" + resumeSessionID + ".jsonl"
+	for by, set := range map[string]func(t *testing.T, spec *runtime.SpawnSpec){
+		"by its id": func(_ *testing.T, spec *runtime.SpawnSpec) { spec.ResumeSession = resumeSessionID },
+		"by a recorded file that is gone": func(t *testing.T, spec *runtime.SpawnSpec) {
+			spec.ResumeSessionFile = filepath.Join(t.TempDir(), "sessions", resumeFolder, name)
+		},
+	} {
+		for where, elsewhere := range map[string]bool{"the session in another folder": true, "the session nowhere else": false} {
+			t.Run(by+", "+where, func(t *testing.T) {
+				var logs strings.Builder
+				f := newFakeServerRuntimeWith(t, staticCredential, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})),
+					func(o *Options) { o.Environ = append(o.Environ, "HOME="+filepath.Join(o.StateDir, "home")) })
+				shut := filepath.Join(paneSessions(f), resumeFolder)
+				writeSession(t, filepath.Join(shut, name), time.Now())
+				readable := filepath.Join(paneSessions(f), "--state-workspaces-acme-widgets-legion-43--", name)
+				if elsewhere {
+					writeSession(t, readable, time.Now().Add(-time.Hour))
+				}
+				unreadable(t, shut)
+				spec := f.spec(t, claim.RoleTester)
+				set(t, &spec)
+
+				_, err := f.Resume(context.Background(), nil, spec)
+
+				if elsewhere {
+					if err != nil {
+						t.Fatalf("Resume beside the unreadable %s = %v, want it to resume %s", shut, err, readable)
+					}
+					if command := openedCommand(f); !strings.Contains(command, "--resume="+readable) {
+						t.Errorf("the pane's command = %q, want it to resume %s", command, readable)
+					}
+				} else {
+					if !errors.Is(err, runtime.ErrSessionFileMissing) {
+						t.Errorf("Resume with the session only in the unreadable %s = %v, want runtime.ErrSessionFileMissing", shut, err)
+					}
+					if opened(f.argvs) {
+						t.Error("a resume of a session found nowhere opened a pane")
+					}
+				}
+				warned := logLines(logs.String(), "tmux runtime: the session search skipped what it could not read")
+				if len(warned) != 1 || !strings.Contains(warned[0], "claim="+string(spec.Claim)) || !strings.Contains(warned[0], denied(shut)) {
+					t.Errorf("the launch warned %q, want one line naming claim %s and %q; log: %s", warned, spec.Claim, denied(shut), logs.String())
+				}
+			})
+		}
 	}
 }
 
