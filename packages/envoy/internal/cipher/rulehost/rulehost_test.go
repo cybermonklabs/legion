@@ -31,7 +31,7 @@ func TestTheGrammarAgreesWithHostShapeOKOnTheAirlocksOwnHosts(t *testing.T) {
 	for _, host := range hostShapeRows {
 		served, shaped := Refusal(host) == "", proxyrules.HostShapeOK(host)
 		if served != shaped {
-			t.Errorf("Refusal(%q) = %q while proxyrules.HostShapeOK(%q) = %v; want the grammar to serve exactly what HostShapeOK accepts", host, Refusal(host), host, shaped)
+			t.Errorf("Refusal(%q) = %q while airlock.HostShapeOK(%q) = %v; want the grammar to serve exactly what HostShapeOK accepts", host, Refusal(host), host, shaped)
 		}
 		if shaped {
 			accepted++
@@ -39,7 +39,7 @@ func TestTheGrammarAgreesWithHostShapeOKOnTheAirlocksOwnHosts(t *testing.T) {
 	}
 	// The control: the rows hold hosts of both kinds, so the comparison above can fail either way.
 	if accepted == 0 || accepted == len(hostShapeRows) {
-		t.Fatalf("proxyrules.HostShapeOK accepts %d of the %d rows; want some of each", accepted, len(hostShapeRows))
+		t.Fatalf("airlock.HostShapeOK accepts %d of the %d rows; want some of each", accepted, len(hostShapeRows))
 	}
 }
 
@@ -286,7 +286,7 @@ func FuzzRefusalIsNoLooserThanHostShapeOK(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, host string) {
 		if why := Refusal(host); why == "" && !proxyrules.HostShapeOK(host) {
-			t.Fatalf("Refusal serves %q, which proxyrules.HostShapeOK refuses", host)
+			t.Fatalf("Refusal serves %q, which airlock.HostShapeOK refuses", host)
 		}
 	})
 }

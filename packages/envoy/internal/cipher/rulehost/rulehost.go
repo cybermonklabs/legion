@@ -135,7 +135,7 @@ func labelReason(label string) string {
 		switch c := label[i]; {
 		case 'a' <= c && c <= 'z', '0' <= c && c <= '9', c == '-':
 		case c == '*':
-			return "has a * other than one leading \"*.\", the only wildcard proxyrules.HostBound reads, so the host binds nothing"
+			return "has a * other than one leading \"*.\", the only wildcard airlock.HostBound reads, so the host binds nothing"
 		case c == '[' || c == ']':
 			return "holds a bracket, which the proxy takes off a request's host, so no request names it and the host binds nothing"
 		case c == '%':
@@ -185,7 +185,7 @@ func beyondShape(h string) string {
 // numberReason is the refusal of a host whose last label is a number, and of a wildcard over one.
 func numberReason(wildcard bool) string {
 	if wildcard {
-		return "is a wildcard whose last label is a number, which no host name has, so proxyrules.HostBound would match it against addresses by their text"
+		return "is a wildcard whose last label is a number, which no host name has, so airlock.HostBound would match it against addresses by their text"
 	}
 	return "ends in a number, which no host name does: the WHATWG URL parser reads a host whose last label is a number as an IPv4 address - in a form netip does not read when it has a leading zero, fewer than four parts or a hex part - or refuses it as no host, and clients read such a host differently, so it is no host in the one spelling a rules host is written in"
 }
@@ -200,7 +200,7 @@ func numberReason(wildcard bool) string {
 // without its dot is refused, when it is.
 func dotReason(h string) string {
 	const noName = "ends in a dot, and without it is no host name either, so no request is bound to it and the host binds nothing"
-	const decrypted = "ends in a dot, which a client drops from the TLS server name it sends, so the proxy decrypts a CONNECT to it and proxyrules.Decide refuses every request it carries (\"sni mismatch\"): the entry carries no secret there"
+	const decrypted = "ends in a dot, which a client drops from the TLS server name it sends, so the proxy decrypts a CONNECT to it and airlock.Decide refuses every request it carries (\"sni mismatch\"): the entry carries no secret there"
 	name := strings.TrimRight(h, ".")
 	if len(h)-len(name) > 1 || !resolverReads(name) {
 		return noName
@@ -283,7 +283,7 @@ func ipHostRefusal(h string, addr netip.Addr) string {
 	}
 	switch {
 	case fold.ASCII(h) == canonical:
-		return written + "a client sends no TLS server name for an address, so the proxy decrypts a CONNECT to it and proxyrules.Decide refuses every request it carries (\"sni mismatch\"): the entry carries no secret there" + rename
+		return written + "a client sends no TLS server name for an address, so the proxy decrypts a CONNECT to it and airlock.Decide refuses every request it carries (\"sni mismatch\"): the entry carries no secret there" + rename
 	case strings.HasSuffix(strings.TrimSuffix(h, "]"), "."):
 		return written + "with a trailing dot it is a name of numbers alone, which the resolver refuses, so a CONNECT to it is refused before anything is bound: the entry carries no secret there" + rename
 	}

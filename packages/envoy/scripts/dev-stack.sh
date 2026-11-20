@@ -238,14 +238,19 @@ fi
 POSTGRES_SERVER="${BASH_REMATCH[1]}"
 POSTGRES_QUERY="${BASH_REMATCH[3]:-}"
 
-# --- The packages of the binaries this stack runs, the one list of them: go build names each
-# binary for its package's last path element, so the build's arguments and the names --binaries
-# checks and copies all come from here. The header and the usage name them for a reader. ---
-STACK_PACKAGES=(./cmd/cipherd ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener
-  ./cmd/cipher ./cmd/cipher-helper ./internal/testnats/cmd/natsd ./cmd/natsprobe)
+# --- The binaries this stack runs and their packages, the one list of them, as
+# <binary>=<package>: the build's arguments and the names --binaries checks and copies all come
+# from here. go build names each binary for its package's last path element, so a package whose
+# directory is not its binary's name is renamed after the build. The header and the usage name
+# them for a reader. ---
+STACK_ENTRIES=(broker=./cmd/cipherd dev-oidc-issuer=./cmd/dev-oidc-issuer dispatch=./cmd/dispatch
+  listener=./cmd/listener agent-secrets=./cmd/cipher agent-secrets-helper=./cmd/cipher-helper
+  natsd=./internal/testnats/cmd/natsd natsprobe=./cmd/natsprobe)
+STACK_PACKAGES=()
 STACK_BINARIES=()
-for stack_package in "${STACK_PACKAGES[@]}"; do
-  STACK_BINARIES+=("${stack_package##*/}")
+for stack_entry in "${STACK_ENTRIES[@]}"; do
+  STACK_BINARIES+=("${stack_entry%%=*}")
+  STACK_PACKAGES+=("${stack_entry#*=}")
 done
 
 # --- The prebuilt binaries --binaries names, checked here for the reason the URL is: a directory
@@ -506,6 +511,11 @@ else
     cd "$ENVOY_DIR"
     GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/" "${STACK_PACKAGES[@]}"
   )
+  for stack_entry in "${STACK_ENTRIES[@]}"; do
+    built="${stack_entry#*=}"
+    built="${built##*/}"
+    [ "$built" = "${stack_entry%%=*}" ] || mv "$BIN_DIR/$built" "$BIN_DIR/${stack_entry%%=*}"
+  done
 fi
 
 # --- Each process's readiness is read from its own log, never from a port this script chose:

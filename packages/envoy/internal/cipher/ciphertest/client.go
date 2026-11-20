@@ -158,7 +158,7 @@ func NewSigningKey(t *testing.T) *ecdsa.PrivateKey {
 func (c *Client) deviceClient(t *testing.T, key *ecdsa.PrivateKey) (*oauth2.Config, context.Context) {
 	t.Helper()
 	if c.DPoP == nil {
-		t.Fatal("this Client has no DPoP: set it to cipherclient.NewDPoPTransport before driving an OAuth step")
+		t.Fatal("this Client has no DPoP: set it to brokerclient.NewDPoPTransport before driving an OAuth step")
 	}
 	return &oauth2.Config{
 			ClientID: oauthwire.ClientID, Scopes: []string{oauthwire.Scope},

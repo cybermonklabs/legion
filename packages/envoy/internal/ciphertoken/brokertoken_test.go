@@ -116,7 +116,7 @@ func newRig(t *testing.T, options ...func(*ciphertoken.Options)) *rig {
 	}
 	verifier, err := ciphertoken.New(opts)
 	if err != nil {
-		t.Fatalf("ciphertoken.New: %v", err)
+		t.Fatalf("brokertoken.New: %v", err)
 	}
 	return &rig{broker: broker, clock: tick, verifier: verifier}
 }
