@@ -3391,6 +3391,22 @@ export default function envoyExtension(hostApi: PiApi): void {
       answered: (result) => {
         if (asking !== undefined) takeDeliveryAnswer(registeringFor, asking, result);
       },
+      // An edge listener refused these topics for the projects of the session's token: they stop
+      // being followed, here and in the ledger, so no later registration carries them and a
+      // restore does not follow them again. A session the host has since left keeps its own.
+      drop: (topics) => {
+        if (sessionID !== registeringFor) return;
+        for (const topic of topics) followed.delete(topic);
+        ledgerFollowedChanged().catch((error: unknown) => {
+          logger.warn(
+            "envoy: the topics the listener refused stay in the ledger until it is written next",
+            {
+              error: messageFor(error),
+            }
+          );
+        });
+      },
+      log: (line) => logger.warn(`envoy: ${line}`),
     });
   };
 
@@ -5107,18 +5123,29 @@ export default function envoyExtension(hostApi: PiApi): void {
             // from here on and nothing the stream stored before it.
             await ledgerFollowedChanged();
           }
-          const subscribed = `Subscribed: ${added.join(", ") || "(none new)"}`;
-          return toolSuccess(
-            warnings === undefined || warnings.length === 0
-              ? subscribed
-              : `${subscribed}\nWarnings: ${warnings.join("; ")}`,
-            {
-              added,
-              already,
-              ...(warnings === undefined || warnings.length === 0 ? {} : { warnings }),
-              ...(registrationError === undefined ? {} : { registrationError }),
-            }
+          // An edge listener refuses a topic of no project of the session's token, and the
+          // registration drops it from what the session follows (`registerWithRelay`): the caller
+          // asked for it by name, so it is told by name, not reported subscribed.
+          const refused = added.filter((topic) =>
+            expandSubscriptionTopics([topic]).some((subject) => !followed.has(subject))
           );
+          const kept = added.filter((topic) => !refused.includes(topic));
+          const lines = [`Subscribed: ${kept.join(", ") || "(none new)"}`];
+          if (refused.length > 0) {
+            lines.push(
+              `Refused by the listener for this session's projects: ${refused.join(", ")}`
+            );
+          }
+          if (warnings !== undefined && warnings.length > 0) {
+            lines.push(`Warnings: ${warnings.join("; ")}`);
+          }
+          return toolSuccess(lines.join("\n"), {
+            added: kept,
+            already,
+            ...(refused.length === 0 ? {} : { refused }),
+            ...(warnings === undefined || warnings.length === 0 ? {} : { warnings }),
+            ...(registrationError === undefined ? {} : { registrationError }),
+          });
         }
         case EnvoyToolOperation.unsubscribe: {
           // The session's own inbox is not a subscription the tool manages.

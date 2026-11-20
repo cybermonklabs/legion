@@ -12,6 +12,7 @@ import { registrationTopics, subjectsOverlap } from "./stream-topics";
 import {
   type DeliveryAnswer,
   type DeliveryRequest,
+  EnvoyApiError,
   expandSubscriptionTopics,
   type ResumePoint,
 } from "./transport";
@@ -904,6 +905,42 @@ export interface RelayRegistration<Result> {
    * has since left the session or closed the relay this asked for.
    */
   readonly answered: (result: Result) => void;
+  /**
+   * Stops following these topics, which an edge listener refused for the projects of this
+   * session's token (`projectRefusedTopics`): the host takes them out of what it follows, so no
+   * later registration of its carries them. `registerWithRelay` sends the rest at once.
+   */
+  readonly drop: (topics: readonly string[]) => void;
+  /** Where the one line naming the topics `drop` was given goes. */
+  readonly log: (line: string) => void;
+}
+
+/** The reasons an edge listener refuses a registration for a topic of no project of the session's
+ *  token, naming each such topic in `refused` (`ErrorWireSchema.reason`). */
+const PROJECT_TOPIC_REFUSALS = ["topic_not_in_project", "repository_not_in_project"] as const;
+
+/**
+ * The topics of `topics` a project refusal of the listener's names, with its reason: each topic
+ * whose wire forms (`expandSubscriptionTopics`, which the client sends) include a topic the 403's
+ * `refused` lists, the session's own agent subject never among them. Undefined for any other
+ * failure, a 403 for any other reason included, and for a refusal that names none of `topics` but
+ * that subject.
+ */
+function projectRefusedTopics(
+  error: unknown,
+  topics: readonly string[],
+  ownAgentSubject: string
+): { readonly reason: string; readonly topics: string[] } | undefined {
+  if (!(error instanceof EnvoyApiError) || error.details.status !== 403) return undefined;
+  const reason = PROJECT_TOPIC_REFUSALS.find((refusal) => refusal === error.reason);
+  if (reason === undefined) return undefined;
+  const refused = new Set(error.refused ?? []);
+  const named = topics.filter(
+    (topic) =>
+      topic !== ownAgentSubject &&
+      expandSubscriptionTopics([topic]).some((form) => refused.has(form))
+  );
+  return named.length === 0 ? undefined : { reason, topics: named };
 }
 
 /**
@@ -915,8 +952,16 @@ export interface RelayRegistration<Result> {
  * registration asks for consumer delivery, a session receives only what its own consumer holds,
  * and one carrying no relay would be refused `409 not_requested` and leave nothing registered.
  * The host's next heartbeat tries again.
+ *
+ * An edge listener refuses a whole registration that names one topic of no project of the
+ * session's token (`PROJECT_TOPIC_REFUSALS`), and the host sends its topics again at every
+ * heartbeat: kept, that one topic would refuse every registration until the entry lapsed and the
+ * session received nothing. So the topics the refusal names are dropped (`drop`), said once
+ * (`log`), and the rest registered again at once; each round drops at least one topic, so it
+ * ends. Any other refusal, and a project refusal naming nothing but the session's own agent
+ * subject, fails the registration as before.
  */
-export function registerWithRelay<Result>({
+export async function registerWithRelay<Result>({
   relay,
   ownAgentSubject,
   followed,
@@ -924,25 +969,37 @@ export function registerWithRelay<Result>({
   outage,
   send,
   answered,
+  drop,
+  log,
 }: RelayRegistration<Result>): Promise<Result> {
   if (relay === undefined) {
     const refused = new Error(
       "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing"
     );
     outage.refused(refused);
-    return Promise.reject(refused);
+    throw refused;
   }
-  const topics = registrationTopics(ownAgentSubject, followed, roles);
-  relay.setFollowed(topics);
-  return send(topics, relay.registration()).then(
-    (result) => {
-      outage.accepted();
-      answered(result);
-      return result;
-    },
-    (error: unknown) => {
-      outage.refused(error);
-      throw error;
+  let topics = registrationTopics(ownAgentSubject, followed, roles);
+  for (;;) {
+    relay.setFollowed(topics);
+    let result: Result;
+    try {
+      result = await send(topics, relay.registration());
+    } catch (error) {
+      const refused = projectRefusedTopics(error, topics, ownAgentSubject);
+      if (refused === undefined) {
+        outage.refused(error);
+        throw error;
+      }
+      drop(refused.topics);
+      log(
+        `the listener refused ${refused.topics.join(", ")} for this session's projects (${refused.reason}); the session no longer follows them and registers the rest`
+      );
+      topics = topics.filter((topic) => !refused.topics.includes(topic));
+      continue;
     }
-  );
+    outage.accepted();
+    answered(result);
+    return result;
+  }
 }

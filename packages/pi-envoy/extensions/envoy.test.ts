@@ -12293,6 +12293,79 @@ console.log(JSON.stringify(args));
     expect(registered).toContain("notifications.team.deploys");
   });
 
+  // An edge listener refuses a whole registration that names a topic of no project of the
+  // session's token, naming each refused topic. The session drops exactly those, says which in
+  // the tool's answer, and its next heartbeat registers the rest rather than being refused again.
+  test("a topic the edge refuses for the session's projects is dropped, named, and never registered again", async () => {
+    const refusedRoot = "notifications.github.acme.priv";
+    const registrations: string[][] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      if (url.pathname === "/v1/interests/subscribe") {
+        const topics: string[] = Array.isArray(body?.topics) ? body.topics : [];
+        registrations.push(topics);
+        const refused = topics.filter((topic) => topic.startsWith(refusedRoot));
+        if (refused.length > 0) {
+          return Response.json(
+            {
+              error: "the edge serves the GitHub events of its projects' repositories alone",
+              reason: "repository_not_in_project",
+              refused,
+            },
+            { status: 403 }
+          );
+        }
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?edge-refused-topic");
+    const fixture = createPi();
+    const intervals: (() => void)[] = [];
+    const context: SessionContext = {
+      ...sessionContext("ses_edge_refused"),
+      setInterval: (callback) => intervals.push(callback),
+    };
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, context);
+    const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
+    if (subscribeTool === undefined) throw new Error("envoy_subscribe was not registered");
+
+    const subscribed = await subscribeTool.execute("", {
+      topics: [`${refusedRoot}.>`, "notifications.dispatch.issue.PRIV-1.>"],
+    });
+
+    expect(subscribed.isError).toBeFalsy();
+    // The tool reports each concrete subject it follows: a named `X.>` is `X` and `X.>`.
+    expect(subscribed.details).toMatchObject({
+      added: ["notifications.dispatch.issue.PRIV-1", "notifications.dispatch.issue.PRIV-1.>"],
+      refused: [refusedRoot, `${refusedRoot}.>`],
+    });
+    expect(subscribed.content[0]?.text).toContain(
+      `Refused by the listener for this session's projects: ${refusedRoot}, ${refusedRoot}.>`
+    );
+    expect(await followedTopics(fixture.tools, context)).not.toContain(`${refusedRoot}.>`);
+    const refusedAt = registrations.findIndex((topics) =>
+      topics.some((topic) => topic.startsWith(refusedRoot))
+    );
+    expect(refusedAt).toBeGreaterThanOrEqual(0);
+    // The next heartbeat carries the rest, and no registration after the refusal names it again.
+    intervals[0]?.();
+    for (let tick = 0; tick < 300 && registrations.length < refusedAt + 3; tick += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const carriedAgain = registrations
+      .slice(refusedAt + 1)
+      .filter((topics) => topics.some((topic) => topic.startsWith(refusedRoot)));
+    if (carriedAgain.length > 0) {
+      throw new Error(`a registration carried a refused topic again: ${JSON.stringify(carriedAgain)}`);
+    }
+    expect(registrations.length).toBeGreaterThanOrEqual(refusedAt + 3);
+    expect(registrations.at(-1)).toEqual(
+      expect.arrayContaining(["notifications.dispatch.issue.PRIV-1.>"])
+    );
+  });
+
   test("unsubscribes role-shaped subscriptions locally without releasing the held role", async () => {
     const role = "librarian";
     const roleTopic = `notifications.role.${role}`;

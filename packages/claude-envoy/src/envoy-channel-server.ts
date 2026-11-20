@@ -1445,6 +1445,20 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       answered: (result) => {
         if (asking !== undefined) takeDeliveryAnswer(sessionID, asking, result)
       },
+      // An edge listener refused these topics for the projects of the session's token: they stop
+      // being followed, here and in the ledger, so no later registration carries them and a
+      // restart does not follow them again. A session this process has since left keeps its own.
+      drop: (topics) => {
+        if (identity.id !== sessionID) return
+        for (const topic of topics) userTopics.delete(topic)
+        followedTopics.unfollow(topics)
+        ledger.followedChanged().catch((error: unknown) => {
+          process.stderr.write(
+            `envoy-channel: the topics the listener refused stay in the delivery state until it is written next — ${messageFor(error)}\n`,
+          )
+        })
+      },
+      log: (line) => process.stderr.write(`envoy-channel: ${line}\n`),
     })
   }
 
