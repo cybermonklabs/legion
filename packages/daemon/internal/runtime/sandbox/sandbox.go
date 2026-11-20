@@ -1049,9 +1049,9 @@ func (r *Runtime) controllerSandbox(ctx context.Context, token claim.Token) (*sa
 // --update-author`, run in the pod's own workspace on the issue's volume) over the claim's
 // connection. The recorded process must still be the claim's running pod: the connection is its.
 // That is the one rule for a request a role's shim answers in the issue's workspace
-// (runningProcessConn), and each of its refusals opens with "adopt <claim>'s working copy: ".
+// (runningProcessConn), and each of its refusals opens with "adopt <claim>'s working copy".
 func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity) error {
-	conn, err := r.runningProcessConn(loc, loc.Claim)
+	conn, err := r.runningProcessConn(loc)
 	if err != nil {
 		return fmt.Errorf("adopt %s's working copy: %w", loc.Claim, err)
 	}
@@ -1133,7 +1133,7 @@ func (r *Runtime) runningRoleConn(ctx context.Context, issue string, role claim.
 		return nil, "", runtime.Locator{}, fmt.Errorf("%s %s's workspace: %s holds no role process to %s it", verb, issue, token, verb)
 	}
 	loc := *claims[index].Locator
-	conn, err := r.runningProcessConn(loc, token)
+	conn, err := r.runningProcessConn(loc)
 	if err != nil {
 		return nil, "", runtime.Locator{}, fmt.Errorf("%s %s's workspace: %w", verb, issue, err)
 	}
@@ -1142,12 +1142,12 @@ func (r *Runtime) runningRoleConn(ctx context.Context, issue string, role claim.
 
 // runningProcessConn is the one rule for a request a role's shim answers in the issue's workspace
 // (AdoptWorkingCopy, and BundleWorkspace and WorkspaceWork through runningRoleConn): the process
-// loc records must run in the issue's own running pod, since token's shim works in that workspace.
-// It answers the connection to token's shim. A locator this runtime did not mint, a pod that is
-// not the recorded one or not running, and a claim with no connection are each a refusal, which
-// names what failed and, for the last two, token. Each caller opens the refusal with its own
-// prefix.
-func (r *Runtime) runningProcessConn(loc runtime.Locator, token claim.Token) (runtime.Conn, error) {
+// loc records must run in the issue's own running pod, since the shim of loc's claim works in that
+// workspace. It answers the connection to that claim's shim. A locator this runtime did not mint,
+// a pod that is not the recorded one or not running, and a claim with no connection are each a
+// refusal, which names what failed and, for the last two, loc's claim. Each caller opens the
+// refusal with its own prefix.
+func (r *Runtime) runningProcessConn(loc runtime.Locator) (runtime.Conn, error) {
 	if err := r.checkLocator(loc); err != nil {
 		return nil, err
 	}
@@ -1156,11 +1156,11 @@ func (r *Runtime) runningProcessConn(loc runtime.Locator, token claim.Token) (ru
 		return nil, err
 	}
 	if view.pod == nil || string(view.pod.UID) != loc.Sandbox.PodUID || terminal(view.pod) {
-		return nil, fmt.Errorf("%s's recorded role process %s is not in its running issue pod", token, loc.Incarnation)
+		return nil, fmt.Errorf("%s's recorded role process %s is not in its running issue pod", loc.Claim, loc.Incarnation)
 	}
-	conn, ok := r.conns.Conn(token)
+	conn, ok := r.conns.Conn(loc.Claim)
 	if !ok {
-		return nil, fmt.Errorf("%s has no connection to ask over", token)
+		return nil, fmt.Errorf("%s has no connection to ask over", loc.Claim)
 	}
 	return conn, nil
 }

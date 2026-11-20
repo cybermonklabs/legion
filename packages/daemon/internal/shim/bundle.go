@@ -1,7 +1,6 @@
 package shim
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -10,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -183,45 +181,6 @@ func (s *shim) runBundle(request shimwire.BundleWorkspace) (workspaceSave, error
 		bundle: shimwire.WorkspaceBundle{Bundle: bundle, Head: head, Tips: tips, Bookmarks: bookmarks, At: time.Now().UTC()},
 		size:   len(bundle),
 	}, nil
-}
-
-// openedWorkspace is what one request of the daemon's runs its commands with in the workspace
-// its role works in (openWorkspace): the workspace, the jj of PATH, and run, which runs one
-// command there with the request's environment and within its budget, with stdin fed to it, and
-// answers its trimmed standard output (workspace.RunCommand).
-type openedWorkspace struct {
-	dir string
-	jj  string
-	run func(stdin []byte, args ...string) (string, error)
-}
-
-// openWorkspace is the one start of every request a shim answers in its role's workspace: the
-// save (runBundle), the read (readWorkspaceWork) and the adoption (runAdoption). The workspace is
-// the one the shim's environment names in LEGION_WORKSPACE, which the runtime sets on every role,
-// and the jj is the one of PATH, which the pane's or pod's own shell runs, since no runtime pins it
-// on a pane or a pod. env is the environment the request's commands run with: the shim's own
-// (s.cfg.Env) for the save and the read, and for the adoption that environment with the requested
-// identity added (JJ_USER, JJ_EMAIL). The budget is a bound on the shim's command context
-// (s.commands) rather than a context of its own, so the shim's own end ends the request's commands
-// at once and a command that outlives the budget is still reported as a timeout. The caller calls
-// done once its commands have run. verb is what the caller does to the workspace ("bundle",
-// "read", "adopt"), which both refusals name: "no workspace to <verb>" for a shim with no
-// LEGION_WORKSPACE, and "no jj to <verb> the workspace with" for a PATH with no jj.
-func (s *shim) openWorkspace(verb string, env []string, budget time.Duration) (opened openedWorkspace, done context.CancelFunc, err error) {
-	dir := envValue(s.cfg.Env, "LEGION_WORKSPACE")
-	if dir == "" {
-		return openedWorkspace{}, nil, fmt.Errorf("worker-shim: LEGION_WORKSPACE is not set; no workspace to %s", verb)
-	}
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		return openedWorkspace{}, nil, fmt.Errorf("worker-shim: jj is not on PATH (%s); no jj to %s the workspace with", os.Getenv("PATH"), verb)
-	}
-	ctx, cancel := context.WithTimeout(s.commands, budget)
-	started := time.Now()
-	run := func(stdin []byte, args ...string) (string, error) {
-		return workspace.RunCommand(ctx, procgroup.NoReaper, budget, started, env, dir, stdin, args)
-	}
-	return openedWorkspace{dir: dir, jj: jj, run: run}, cancel, nil
 }
 
 // bookmarksInto is every local bookmark of listed that points at a commit the bundle keeps, by
