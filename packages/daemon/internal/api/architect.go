@@ -1541,9 +1541,9 @@ func (s *server) parkChild(w http.ResponseWriter, r *http.Request) {
 // own) again once it is out of the workflow, parked or signed off, by moving it to todo in Dispatch,
 // the move a human would make, and applies that move to the record before it answers
 // (applyOwnStatusWrite), as the move's event would: the child's next run starts under the tree from
-// planning (the workflow's reenterChild), and the event, once delivered, changes nothing. A running
-// child is parked first, and a lingering tree runs nothing more; a todo it reached anyway would
-// admit the child as an orphan root of its own.
+// planning (the workflow's reenterChild), and the event, once delivered, changes nothing. A child
+// still in the workflow is refused (childRunning). A lingering tree runs nothing more, since a todo
+// it reached anyway would admit the child as an orphan root of its own.
 //
 // It is refused while an ancestor of the child has already been accepted
 // (CHILD_UNDER_ACCEPTED_PARENT): work entering the workflow beneath such an ancestor would let
@@ -1561,7 +1561,7 @@ func (s *server) rerunChild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if child.Phase != phase.Done {
-		writeFailure(w, http.StatusConflict, "CHILD_RUNNING", fmt.Sprintf("%s is in phase %s; park_child takes it out of the workflow before rerun_child runs it again. That pair is the child's restart and not a park", child.Key, child.Phase))
+		writeFailure(w, http.StatusConflict, "CHILD_RUNNING", s.childRunning(r.Context(), child))
 		return
 	}
 	members, err := s.treeMembers(r.Context(), child.Tree)
@@ -1585,6 +1585,32 @@ func (s *server) rerunChild(w http.ResponseWriter, r *http.Request) {
 	if written, ok := s.setDispatchStatus(w, r, child.Key, "todo"); ok && s.applyOwnStatusWrite(w, r, written) {
 		writeJSON(w, http.StatusOK, EmptyResponse{})
 	}
+}
+
+// childRunning is why rerun_child refuses child, which the record holds in the workflow
+// (CHILD_RUNNING), told as what the architect does next. The restart of a running child is the
+// owning architect's backlog, then rerun_child, and the daemon takes that backlog from its
+// Dispatch event (workflow's sessionStatusWrite), which the event consumer can deliver late
+// (dispatch://INFRA-3178/spec R1). So the refusal reads the child from Dispatch once. Where
+// Dispatch already shows a status that takes the child out of the workflow (record.OutOfWorkflow),
+// the architect wrote its move and the daemon has not taken it yet, so the architect calls again
+// once read_record shows the child at phase done. Anywhere else the architect writes backlog
+// first. A read that fails gives that second reason: the refusal stands without the read, so it
+// never fails 502. Only this refusal reads Dispatch, so a rerun the record takes costs no read.
+func (s *server) childRunning(ctx context.Context, child record.Issue) string {
+	if s.dispatch != nil {
+		shown, err := s.dispatch.GetIssue(ctx, child.Key)
+		if err == nil && record.OutOfWorkflow(shown.Status) {
+			return fmt.Sprintf("Dispatch shows %s for %s, but the daemon has not taken that move yet. The record still shows %s in phase %s. "+
+				"Call rerun_child again when read_record shows %s at phase done.", shown.Status, child.Key, child.Key, child.Phase, child.Key)
+		}
+		if err != nil {
+			s.log.Warn("api: rerun_child could not read the running child from Dispatch, so its refusal says to write backlog first", "issue", child.Key, "error", err)
+		}
+	}
+	return fmt.Sprintf("%s is in phase %s, so rerun_child cannot run it again now. The restart of a running child is backlog, then rerun_child. "+
+		"Write backlog on %s first (dispatch issue-update --issue %s --status backlog). Then call rerun_child again when read_record shows %s at phase done.",
+		child.Key, child.Phase, child.Key, child.Key, child.Key)
 }
 
 // childOfTree reads a ChildRequest for op, park_child or rerun_child, and authorizes it: an

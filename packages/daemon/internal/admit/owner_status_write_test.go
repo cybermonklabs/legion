@@ -678,7 +678,8 @@ func TestTheOwningArchitectsDoneOnAChildWhosePullRequestMergedOpensItsCheck(t *t
 
 // A move of a child ends the child alone. Each recorded issue under it stays as it is: the one
 // still in the workflow runs on, with its claims, its pod and its slot, and the ones already out
-// of the workflow stay out.
+// of the workflow stay out. The notice to the architect above names each one that is not done,
+// with its status, so that architect can write a status on each one the move also ends.
 func TestAnIssueUnderTheChildRunsOnAfterTheOwningArchitectsDone(t *testing.T) {
 	const atBacklog, done = "LEGION-6", "LEGION-7"
 	rig := seedOwnerTree(t, func(issues map[string]*record.Issue) {
@@ -693,6 +694,10 @@ func TestAnIssueUnderTheChildRunsOnAfterTheOwningArchitectsDone(t *testing.T) {
 	rig.write(ownerChild, record.DoneStatus, rootArchitect)
 	rig.assertLeft(ownerChild, record.DoneStatus)
 	rows := effects(t, rig.pool)
+	want := ownerChild + " is done. Under it, not done: " + ownerGrandchild + " (in_progress), " + atBacklog + " (backlog)"
+	if notices := childNotices(rowsFor(rows, ownerChild)); len(notices) != 1 || notices[0].Reason != want {
+		t.Fatalf("the notices of the done of %s = %+v, want one reading %q", ownerChild, notices, want)
+	}
 	for _, key := range under {
 		if got := withoutMovement(issue(t, rig.pool, key)); !reflect.DeepEqual(got, before[key]) {
 			t.Fatalf("%s under %s after its done = %#v, want it as it was, %#v", key, ownerChild, got, before[key])
