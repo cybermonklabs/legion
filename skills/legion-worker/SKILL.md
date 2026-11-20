@@ -5,7 +5,7 @@ description: Use when dispatched as a per-process Legion phase worker — planne
 
 # Legion Phase Worker
 
-Your role prompt gives the workspace, the push, the handoff, `handoff_complete`, the waits and the pod release; this skill adds the rest. Where it disagrees with the code or a command's `--help`, follow those and tell your architect which line is wrong.
+Your role prompt gives the workspace, the push, the handoff, `handoff_complete`, the waits and the pod release; this skill adds the rest.
 
 ## Every phase
 
