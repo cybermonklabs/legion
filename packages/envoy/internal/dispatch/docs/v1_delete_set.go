@@ -85,9 +85,11 @@ func eachV1Range(update []byte, structs, deletes func(client crdt.ClientID, cloc
 // structs one by one, Skip runs included, counting each against its value limit before it reads it,
 // and reserves a one-client update's list of structs for its header's count held to the same half
 // of the bytes left (decodeStructs, crdt/update.go:912-948 in theorem-labs/ygo
-// v1.55.1-theorem.11). It passes each struct as eachV1Range does, building nothing, and stops where
-// the bytes stop reading, past which the decoder reads nothing either: it refuses the update there.
-// So the hook can weigh what an apply's decode will build before it decodes anything
+// v1.55.1-theorem.11). It passes the structs of every group but the last as eachV1Range does,
+// building nothing, to reach the next group's header, and stops where the bytes stop reading,
+// past which the decoder reads nothing either: it refuses the update there. Nothing past the
+// last group's header is read, since the count needs nothing of its structs and the delete set
+// after them. So the hook can weigh what an apply's decode will build before it decodes anything
 // (weighPeerUpdate).
 func declaredStructs(update []byte) uint64 {
 	r := v1Reader{rest: update, ok: true}
@@ -100,6 +102,9 @@ func declaredStructs(update []byte) uint64 {
 			break
 		}
 		structs += min(count, uint64(len(r.rest)/2))
+		if groups == 1 {
+			break
+		}
 		for ; count > 0 && r.ok; count-- {
 			r.passStruct()
 		}

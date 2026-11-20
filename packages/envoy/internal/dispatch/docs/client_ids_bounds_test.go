@@ -206,11 +206,11 @@ func TestAReadOnlyAdmissionStoresNoRowAndItsPageKeepsItsIDOnceWritable(t *testin
 // dashboard's editor writes under the id its document holds as it reads - it gives the document's
 // headings ids - and the read-only room takes none of that, so a reconnect that sent the page
 // another id would find its document had written under the first, and the page would rebuild it
-// and tell a reader who typed nothing that it held edits under an identity Dispatch did not give
-// them (the dashboard's takeClientId; e2e/doc-reload-line.e2e.ts). So bob's read-only page, which
-// has written under the id it was sent, presents that id while the issue is still closed and is
-// given it back, and no row is stored for it. A read-only page presenting an id another person's
-// row names is not given that id.
+// and tell a reader who typed nothing that it held edits under an editing identity it may not
+// write under (the dashboard's takeClientId; e2e/doc-reload-line.e2e.ts). So bob's read-only
+// page, which has written under the id it was sent, presents that id while the issue is still
+// closed and is given it back, and no row is stored for it. A read-only page presenting an id
+// another person's row names is not given that id.
 func TestAReadOnlyPageKeepsTheIDItWasSentAcrossReadOnlyReconnects(t *testing.T) {
 	service, artifactID, serverURL := clientIDRoom(t)
 	writer := openPage(t, serverURL, artifactID, "alice")

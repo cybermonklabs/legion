@@ -1268,18 +1268,26 @@ func (s *Service) loadTree(ctx context.Context, artifactID string) (*pmdoc.Node,
 	if history.refused != nil {
 		// The room carries the decode failure as its cause, which a reader that meets the
 		// failed room answers as DOC_SERVICE_UNAVAILABLE; this read met the history itself.
-		s.failRoom(artifactID, fmt.Errorf("decode live document: %w", history.refused))
-		return nil, nil, 0, fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, history.refused)
+		return nil, nil, 0, s.failUnloadable(artifactID, history.refused)
 	}
 	if parked := s.parkedPastRoomCaps(history.decoded.doc); parked != nil {
-		s.failRoom(artifactID, fmt.Errorf("decode live document: %w", parked))
-		return nil, nil, 0, fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, parked)
+		return nil, nil, 0, s.failUnloadable(artifactID, parked)
 	}
 	if len(history.loaded.Update) == 0 {
 		return nil, &history.loaded, 0, nil
 	}
 	tree, err = treeOf(history.decoded.doc)
 	return tree, &history.loaded, int64(heldStructs(history.decoded.doc)), err
+}
+
+// failUnloadable fails room for cause, why a room's load of its stored history would fail: the
+// history does not decode, or its decode parks past a room's cap (parkedPastRoomCaps). It returns
+// what a read that met the history itself answers, ErrDocumentUnloadable wrapping cause, as
+// loadTree and coldFork do. cause is never nil: a caller holding a *parkedPastCap passes it only
+// once it has checked it for nil, since a nil one in an error is no nil error.
+func (s *Service) failUnloadable(room string, cause error) error {
+	s.failRoom(room, fmt.Errorf("decode live document: %w", cause))
+	return fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, cause)
 }
 
 func renderTokenTree(tree *pmdoc.Node) (string, string, error) {

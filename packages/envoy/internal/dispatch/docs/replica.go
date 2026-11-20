@@ -513,9 +513,7 @@ func (r *renderedReplica) drainLog() (base []byte, updates []crdt.LoggedUpdate, 
 // consumed, counted, classified and recorded once.
 func (r *renderedReplica) takeLocked(room string, base []byte, updates []crdt.LoggedUpdate, reports []madeReport) (settles, changed, local bool) {
 	r.pairing = reportPairing{reports: reports}
-	defer r.chargeAdded(len(updates) > 0, slices.ContainsFunc(updates, func(update crdt.LoggedUpdate) bool {
-		return writtenApplyOf(update.Origin) != nil
-	}))
+	defer r.chargeAdded(updates)
 	note := func(update crdt.LoggedUpdate, contentChanged bool, asks func() map[string]struct{}) {
 		r.seq++
 		if r.classify == nil {
@@ -1117,13 +1115,13 @@ func (r *renderedReplica) drainedSeq(room string) (seq uint64, settles bool) {
 	return r.seq, settles
 }
 
-// chargeAdded ends a drain: it drops the reports the drain paired its commits against
+// chargeAdded ends a drain of updates: it drops the reports the drain paired its commits against
 // (roomApplies.settleReports), reads the room's pending queue again where the drain handed over a
-// server write's commit (written), re-reads the room's state where the drain left its figure owed
-// (roomApplies.reread), and, where the drain handed anything over, charges the room again from
-// the bytes of state its record now holds, with what its pending queue holds beside them
-// (roomApplies.residentBytes), and the structs the room holds (roomWeight), whoever
-// wrote what it handed over: a browser's update the peer hook admitted, an API write's publish,
+// server write's commit (writtenApplyOf), re-reads the room's state where the drain left its
+// figure owed (roomApplies.reread), and, where the drain handed anything over, charges the room
+// again from the bytes of state its record now holds, with what its pending queue holds beside
+// them (roomApplies.residentBytes), and the structs the room holds (roomWeight), whoever wrote
+// what it handed over: a browser's update the peer hook admitted, an API write's publish,
 // an injected update, settlement's repair, any other write of the server's own. It is the
 // budget's one writer while a room stands, and it reads nothing of the document but on a path
 // that owes a re-read or follows a server write: the structs are the figure the room's last
@@ -1162,18 +1160,18 @@ func (r *renderedReplica) drainedSeq(room string) (seq uint64, settles bool) {
 // a commit no report covers by the observer whose drain of the room's update log hands it over,
 // whichever observer that is (observe, atPoint). A replica no room's load charged (a test's)
 // charges nothing.
-func (r *renderedReplica) chargeAdded(handed, written bool) {
+func (r *renderedReplica) chargeAdded(updates []crdt.LoggedUpdate) {
 	applies := r.applies()
 	applies.settleReports(len(r.pairing.reports))
 	r.pairing = reportPairing{}
-	if written && r.live != nil {
-		queued := r.live.PendingStats()
-		applies.noteQueued(queued)
-		applies.noteParkedRanges(queued)
+	if r.live != nil && slices.ContainsFunc(updates, func(update crdt.LoggedUpdate) bool {
+		return writtenApplyOf(update.Origin) != nil
+	}) {
+		applies.notePending(r.live.PendingStats())
 	}
 	reread := applies.reread(r.live)
 	charge := r.roomCharge()
-	if charge == nil || !handed && !reread {
+	if charge == nil || len(updates) == 0 && !reread {
 		return
 	}
 	// The structs are what the apply that committed these updates reported the room holding:

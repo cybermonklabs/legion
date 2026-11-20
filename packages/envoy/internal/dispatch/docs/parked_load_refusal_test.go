@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // parkedRowClient is the client of the rows an earlier build stored of content that parked: none
@@ -25,18 +27,14 @@ const parkedRowClient = 8
 // (parkedPastRoomCaps), and the rebuild takes it from its own text.
 func TestAHistoryParkingPastTheRoomsStructCapIsUnloadableUntilItsRebuildKeepsItsText(t *testing.T) {
 	parks := maxParkedStructs + 1
-	frame := newV1Frame(1).group(parks, parkedRowClient, 1)
-	for range parks {
-		frame.gc(1)
-	}
-	requireParkedPastCapUnloadable(t, frame.noDeletes(), &parkedPastCap{parked: "structs", most: maxParkedStructs, parks: parks})
+	requireParkedPastCapUnloadable(t, parkedGCFrame(parkedRowClient, parks), &parkedPastCap{parked: parkedKindStructs, most: maxParkedStructs, parks: parks})
 }
 
 // The same for a stored history whose decode parks one delete range past the room's cap for
 // them (maxParkedDeleteRanges).
 func TestAHistoryParkingPastTheRoomsDeleteRangeCapIsUnloadableUntilItsRebuildKeepsItsText(t *testing.T) {
 	parks := maxParkedDeleteRanges + 1
-	requireParkedPastCapUnloadable(t, deleteRangesFrom(parkedRowClient, parks), &parkedPastCap{parked: "delete ranges", most: maxParkedDeleteRanges, parks: parks})
+	requireParkedPastCapUnloadable(t, deleteRangesFrom(parkedRowClient, parks), &parkedPastCap{parked: parkedKindDeleteRanges, most: maxParkedDeleteRanges, parks: parks})
 }
 
 // requireParkedPastCapUnloadable stores a document's history as an earlier build's room stored
@@ -79,7 +77,7 @@ func requireParkedPastCapUnloadable(t *testing.T, parked []byte, want *parkedPas
 		t.Fatalf("the stored history does not decode under the service's own cap, so nothing here is tested: %v", err)
 	}
 	stats := history.PendingStats()
-	if parks := map[string]int{"structs": stats.Items, "delete ranges": stats.DeleteRanges}[want.parked]; parks != want.parks || parks <= want.most {
+	if parks := map[string]int{parkedKindStructs: stats.Items, parkedKindDeleteRanges: stats.DeleteRanges}[want.parked]; parks != want.parks || parks <= want.most {
 		t.Fatalf("the stored history parks %d %s, want %d, past the room's %d: nothing here is tested", parks, want.parked, want.parks, want.most)
 	}
 	rendered, err := renderDocument(history)
@@ -92,14 +90,6 @@ func requireParkedPastCapUnloadable(t *testing.T, parked []byte, want *parkedPas
 	}
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(server.Close)
-	recovered := func(t *testing.T, access int) {
-		t.Helper()
-		wait, cancel := context.WithTimeout(ctx, recoveryBound)
-		defer cancel()
-		if err := service.awaitRoomRecovery(wait, artifactID); err != nil {
-			t.Fatalf("access %d: the failed room's eviction: %v", access, err)
-		}
-	}
 	readLine := fmt.Sprintf("level=WARN msg=%q room=%s cap=%q most=%d parks=%d\n", parkedPastCapReadLine, artifactID, "parked "+want.parked, want.most, want.parks)
 	loadLine := fmt.Sprintf("level=ERROR msg=%q room=%s cap=%q most=%d parks=%d\n", parkedPastCapLoadLine, artifactID, "parked "+want.parked, want.most, want.parks)
 	for access := 1; access <= 2; access++ {
@@ -110,7 +100,7 @@ func requireParkedPastCapUnloadable(t *testing.T, parked []byte, want *parkedPas
 		}
 		requireLogged(t, logs, parkedPastCapReadLine, readLine, access)
 
-		recovered(t, access)
+		awaitRecovered(t, service, artifactID)
 		opened := time.Now()
 		connection, err := dialDocument(server.URL, artifactID)
 		if connection != nil {
@@ -123,13 +113,13 @@ func requireParkedPastCapUnloadable(t *testing.T, parked []byte, want *parkedPas
 			t.Fatalf("access %d: the socket was answered after %s, want it within %s", access, took, recoveryBound)
 		}
 
-		recovered(t, access)
+		awaitRecovered(t, service, artifactID)
 		if err := service.warmLiveDocument(ctx, artifactID); !errors.Is(err, crdt.ErrPendingCap) {
 			t.Fatalf("access %d: a room's load of the document = %v, want the room's own pending cap refusal", access, err)
 		}
 		requireLogged(t, logs, parkedPastCapLoadLine, loadLine, access)
 
-		recovered(t, access)
+		awaitRecovered(t, service, artifactID)
 		_, err = joinedApplyOps(service, artifactID, []model.EditOp{{Op: "replace", Find: "Typed", With: "Retyped"}},
 			model.Actor{Kind: "session", ID: "session-0123456789abcdef"}, nil)
 		if !errors.Is(err, ErrDocumentUnloadable) || !errors.As(err, &refused) || *refused != *want {
@@ -142,7 +132,7 @@ func requireParkedPastCapUnloadable(t *testing.T, parked []byte, want *parkedPas
 		requireRowsAsStored(t, service.store, artifactID, asStored)
 	}
 
-	recovered(t, 3)
+	awaitRecovered(t, service, artifactID)
 	report, _, err := rebuildDocument(t, service, artifactID, nil)
 	if err != nil {
 		t.Fatalf("rebuild the document: %v, want the rebuild to take a history no room loads", err)
@@ -179,11 +169,10 @@ func requireParkedPastCapUnloadable(t *testing.T, parked []byte, want *parkedPas
 
 // requireLogged requires logs to hold access lines with msg, each line, the line from its level
 // on.
-func requireLogged(t *testing.T, logs interface{ Lines(string) string }, msg, line string, access int) {
+func requireLogged(t *testing.T, logs *storetest.LockedLog, msg, line string, access int) {
 	t.Helper()
 	logged := logs.Lines(fmt.Sprintf("msg=%q", msg))
-	lines := strings.SplitAfter(logged, "\n")
-	lines = lines[:len(lines)-1]
+	lines := slices.Collect(strings.Lines(logged))
 	if len(lines) != access {
 		t.Fatalf("access %d: the log holds %d lines %q, want %d:\n%s", access, len(lines), msg, access, logged)
 	}

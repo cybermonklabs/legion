@@ -911,15 +911,13 @@ func (s *Service) coldFork(ctx context.Context, write *liveWrite, head int64) (*
 	loaded.Update = nil
 	if err != nil {
 		// A room's load of the same history would fail it, as loadTree does.
-		s.failRoom(write.artifactID, fmt.Errorf("decode live document: %w", err))
-		return nil, fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, err)
+		return nil, s.failUnloadable(write.artifactID, err)
 	}
 	// So would a room's load of a history that parks past the room's cap, and loadTree answers
 	// it the same way (parkedPastRoomCaps): a write appended onto it would stand on a history no
 	// room can open.
 	if parked := s.parkedPastRoomCaps(fork); parked != nil {
-		s.failRoom(write.artifactID, fmt.Errorf("decode live document: %w", parked))
-		return nil, fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, parked)
+		return nil, s.failUnloadable(write.artifactID, parked)
 	}
 	write.forkStructs = structCeiling(fork)
 	write.coldNear = coldForkNear(write.forkStructs, fork)
@@ -1321,7 +1319,7 @@ func (s *Service) publishedWithoutARoom(write *liveWrite) {
 // held is no commit: ygo calls no update observer for it, so there is nothing for the observer to
 // classify. An apply whose drain of the room's pending queue the room's apply check refused stood,
 // with that drain discarded and its senders closed, and is published as any other
-// (serverApplyStood). What the update parked stays parked, and the room keeps no record of the
+// (serverApplyError). What the update parked stays parked, and the room keeps no record of the
 // write as the sender of it (applyServerWrite). marginRoom is the room document a margin write's
 // fork was warm-built from, or the zero pointer (liveWrite.marginRooms): the update is tagged
 // margin-only when the document it reaches is that one (liveWriteOrigin.marginOnly). shadow, on
@@ -1345,7 +1343,7 @@ func (s *Service) publishLiveUpdate(room string, update []byte, version persiste
 		}
 		return applyServerWrite(doc, update, origin)
 	})
-	if err = s.serverApplyStood(room, update, err); err != nil {
+	if err = s.serverApplyError(room, update, err); err != nil {
 		s.cancelSuppressedPersistence(room, slot)
 		return fmt.Errorf("apply committed live document write: %w", err)
 	}

@@ -164,7 +164,7 @@ func TestAServerWriteTheRoomAlreadyHoldsHasItsDrainJudged(t *testing.T) {
 func TestAServerWriteWhoseStructsOnlyParkHasItsDrainJudged(t *testing.T) {
 	service, artifactID, room := parkPastesBehindTheRoomsOwnClock(t)
 	const client = 7_600_001
-	batch := newV1Frame(1).group(1, client, 1).raw(0x84).uint(client).uint(0).str("x").noDeletes()
+	batch := newV1Frame(1).group(1, client, 1).raw(structStringRef | infoHasOrigin).uint(client).uint(0).str("x").noDeletes()
 	if held, err := crdt.DocContainsUpdateV1(room, batch); held || err != nil {
 		t.Fatalf("a struct of a client the room has never seen reads as held %t (%v), want not held", held, err)
 	}
@@ -201,9 +201,9 @@ func parkPastesBehindTheRoomsOwnClock(t *testing.T) (*Service, string, *crdt.Doc
 	next := room.StateVector().Clock(room.ClientID())
 	m := room.StateVector().Clock(mallory.Given)
 	const paste = 900_000
-	first := newV1Frame(1).group(1, own, m).raw(0xC4).uint(own).uint(m - 1).uint(server).uint(next).
+	first := newV1Frame(1).group(1, own, m).raw(structStringRef | infoHasOrigin | infoHasRightOrigin).uint(own).uint(m - 1).uint(server).uint(next).
 		str(strings.Repeat("a", paste)).noDeletes()
-	second := newV1Frame(1).group(1, own, m+paste).raw(0x84).uint(own).uint(m + paste - 1).
+	second := newV1Frame(1).group(1, own, m+paste).raw(structStringRef | infoHasOrigin).uint(own).uint(m + paste - 1).
 		str(strings.Repeat("b", paste)).noDeletes()
 	for i, frame := range [][]byte{first, second} {
 		if err := mallory.Write(ygsync.EncodeUpdate(frame)); err != nil {

@@ -54,9 +54,9 @@ func TestAServerWriteThatParksLeavesTheRoomNoReferenceToItsUpdate(t *testing.T) 
 			frame  []byte
 			parked func(crdt.PendingStats) int
 		}{
-			{"a struct", newV1Frame(1).group(1, client, 1).raw(0x84).uint(client).uint(0).str("x").noDeletes(),
+			{"a struct", newV1Frame(1).group(1, client, 1).raw(structStringRef | infoHasOrigin).uint(client).uint(0).str("x").noDeletes(),
 				func(stats crdt.PendingStats) int { return stats.Items }},
-			{"a delete range", newV1Frame(0).uint(1).uint(client).uint(1).uint(0).uint(1).done(),
+			{"a delete range", deleteRangesFrom(client, 1),
 				func(stats crdt.PendingStats) int { return stats.DeleteRanges }},
 		} {
 			t.Run(write.name+" that parks "+parks.name, func(t *testing.T) {

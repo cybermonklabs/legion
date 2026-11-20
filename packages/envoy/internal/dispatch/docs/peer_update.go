@@ -1156,6 +1156,16 @@ func (a *roomApplies) noteParkedRanges(after crdt.PendingStats) bool {
 	return a.parkedRanges.Swap(ranges) != ranges
 }
 
+// notePending records after, what the room's pending queue holds once an apply of the hook's has
+// returned or a drain has handed over a server write's commit, as both figures the room keeps of
+// it, the content it holds (noteQueued) and the delete ranges it parks (noteParkedRanges), and
+// reports whether either moved. Both are recorded whatever the first reports.
+func (a *roomApplies) notePending(after crdt.PendingStats) bool {
+	queued := a.noteQueued(after)
+	ranges := a.noteParkedRanges(after)
+	return queued || ranges
+}
+
 // parkedRangeCount is the delete ranges the room's pending queue held after the hook's last apply
 // or a server write's commit (noteParkedRanges), which the room budget charges
 // (roomChargeWeight), and none for a room no load listed.
@@ -1321,12 +1331,13 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 	// and the apply's decode - runs inside one grant; a keystroke takes none. An update is heavy
 	// past unslottedApplyBytes or past unslottedApplyStructs declared structs, since a frame of a
 	// million GC structs is 2 MB and allocated 102.5 times that to apply. What it takes is what its
-	// own apply builds, its bytes and the structs it declares at copyWeight (declaredStructs, a pass
-	// over the frame that builds nothing), rather than a whole slot, so a reconnect storm's handoffs
-	// decode as many at a time as the pool holds. A frame of at most twice unslottedApplyStructs
-	// bytes cannot declare more structs than that, so a keystroke is not read for them. The wait
-	// has no deadline, since the peer's read loop carries none and every holder gives its bytes
-	// back (loadSlots), so it cannot fail.
+	// own apply builds, its bytes and the structs it declares at copyWeight (declaredStructs, which
+	// reads each group's header and passes the structs of every group but the last, building
+	// nothing), rather than a whole slot, so a reconnect storm's handoffs decode as many at a time
+	// as the pool holds. A frame of at most twice unslottedApplyStructs bytes cannot declare more
+	// structs than that, so a keystroke is not read for them. The wait has no deadline, since the
+	// peer's read loop carries none and every holder gives its bytes back (loadSlots), so it cannot
+	// fail.
 	var declared uint64
 	if len(info.Update) > 2*unslottedApplyStructs {
 		declared = declaredStructs(info.Update)
@@ -1415,9 +1426,7 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 	// own parked was answered not applied, and its sender waits for what parked to land
 	// (noteParked, parked_resync.go).
 	parkedAfter := info.Doc.PendingStats()
-	queuedMoved := applies.noteQueued(parkedAfter)
-	rangesMoved := applies.noteParkedRanges(parkedAfter)
-	if queuedMoved || rangesMoved {
+	if applies.notePending(parkedAfter) {
 		weighing.roomCharge().weigh(applies.residentBytes(), int64(applies.structsHeld(info.Doc)), applies.parkedRangeCount())
 	}
 	applies.noteParked(info, parkedBefore, parkedAfter)
@@ -1426,7 +1435,7 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 
 // closeDiscardedSenders closes every browser whose parked frame a refused drain discarded
 // (crdt.DrainDiscardedError.Senders, leaveParkedOut): the update that filled the gap, a browser's
-// or a server write's (serverApplyStood), stood and was relayed as what it integrated, and what
+// or a server write's (serverApplyError), stood and was relayed as what it integrated, and what
 // parked behind the gap is gone from the room, which never relayed, answered applied or stored
 // it. Each sender is given the close of what refused the drain: where the render check refused
 // what the drain would land, the check's own close (renderRefusal.close) - DOC_TOO_LARGE for a
@@ -1467,14 +1476,14 @@ func (s *Service) closeDiscardedSenders(room string, update []byte, discarded *c
 		"close_reason", refusal.Reason, "error", discarded.Error())
 }
 
-// serverApplyStood is err, what a server write's apply of update to room returned - a published
-// live write's (publishLiveUpdate) or a catch-up's batch of stored rows (applyRemoteBatch) - as
-// the error that write failed with. An apply whose drain of the room's pending queue was taken
-// back stood (crdt.ErrApplyCheckDrain): the room's apply check refused what the drain would land
-// (renderCheck.check), the update committed without it, and the write goes on as one that
-// applied. What the drain would have landed was discarded, and its senders are closed as a
-// browser's refused drain closes them (closeDiscardedSenders).
-func (s *Service) serverApplyStood(room string, update []byte, err error) error {
+// serverApplyError is the error a server write fails with for err, what its apply of update to
+// room returned - a published live write's (publishLiveUpdate) or a catch-up's batch of stored
+// rows (applyRemoteBatch): nil for an apply whose drain of the room's pending queue was taken back
+// (crdt.ErrApplyCheckDrain), and err for any other. Such an apply stood: the room's apply check
+// refused what the drain would land (renderCheck.check), the update committed without it, and the
+// write goes on as one that applied. What the drain would have landed was discarded, and its
+// senders are closed as a browser's refused drain closes them (closeDiscardedSenders).
+func (s *Service) serverApplyError(room string, update []byte, err error) error {
 	if !errors.Is(err, crdt.ErrApplyCheckDrain) {
 		return err
 	}

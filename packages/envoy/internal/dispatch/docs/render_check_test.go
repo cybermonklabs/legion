@@ -1139,7 +1139,7 @@ func TestABrowsersUpdateThatOnlyParksHasItsDrainWeighedAgainstTheRoomAsItBegan(t
 		t.Fatalf("the room renders %d bytes (%v), want it past %d", len(before), err, maxPeerRenderingBytes)
 	}
 	const client = 7_600_002
-	parks := newV1Frame(1).group(1, client, 1).gc(1).noDeletes()
+	parks := parkedGCFrame(client, 1)
 	if err := room.frame(t, "a frame that only parks", parks); err != nil {
 		t.Fatalf("a frame that only parks was answered %v, want it parked and its drain landed", err)
 	}

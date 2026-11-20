@@ -173,11 +173,11 @@ func (s *Service) judgeClients(info websocket.PeerUpdateInfo) (judged clientJudg
 			fmt.Sprintf("its socket holds claims of %d ids, the most it may", maxClaimsASocket))
 	}
 	for _, client := range mints {
-		marks, refusal := s.mintForSender(ctx, info, connection, client)
+		awaitsMark, refusal := s.mintForSender(ctx, info, connection, client)
 		if refusal != nil {
 			return clientJudgement{}, refusal
 		}
-		if marks {
+		if awaitsMark {
 			unmarked = append(unmarked, client)
 		}
 	}
@@ -214,13 +214,13 @@ func (s *Service) judgeClients(info websocket.PeerUpdateInfo) (judged clientJudg
 // under that no row named and the document held no struct under as it was judged, for the
 // sender (storeMint), held to the same maxUnlandedMintsADocument as an admission's mint: past it,
 // with every row of the sender's live, the update is refused for a retry (errMintsLive,
-// clientCheckFailed). marks is whether the row awaits the socket's mark. A mint that stores
+// clientCheckFailed). unmarked is whether the row awaits the socket's mark. A mint that stores
 // nothing met a row stored for the id since the read, which the row's key let in first: the id
 // is the update's only where that row names the sender - another socket of theirs replaying the
 // same rows - and the update is refused where it names another person, who was given it first.
 // A mint the update made stays the sender's whether its apply stands or not, as an admission's
 // does: a replay that did not stand is sent again under the same id.
-func (s *Service) mintForSender(ctx context.Context, info websocket.PeerUpdateInfo, connection *connectionState, client uint64) (marks bool, refusal error) {
+func (s *Service) mintForSender(ctx context.Context, info websocket.PeerUpdateInfo, connection *connectionState, client uint64) (unmarked bool, refusal error) {
 	stored, err := s.storeMint(ctx, info.Room, connection.actor, crdt.ClientID(client))
 	if err != nil {
 		return false, s.clientCheckFailed(info, err)
@@ -387,16 +387,16 @@ func (s *Service) settleClients(info websocket.PeerUpdateInfo, judged clientJudg
 			}
 		}()
 	}
-	var marking []crdt.ClientID
+	var starting []crdt.ClientID
 	for _, client := range judged.marks {
 		if roomHolds(info.Doc, client) && clients.startMark(client) {
-			marking = append(marking, client)
+			starting = append(starting, client)
 		}
 	}
-	if len(marking) > 0 {
+	if len(starting) > 0 {
 		go func() {
-			for _, client := range marking {
-				clients.markedConfirmed(client, s.recordLanded(info.Room, connection.actor, client))
+			for _, client := range starting {
+				clients.endMark(client, s.recordLanded(info.Room, connection.actor, client))
 			}
 		}()
 	}

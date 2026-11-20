@@ -1925,11 +1925,7 @@ func TestAnUpdateSmallInBytesAndHeavyInStructsTakesASlotOfWhatItsStructsCost(t *
 	if err := crdt.ApplyUpdateV1(room, newV1Frame(1).group(1, 7, 0).gc(structs).noDeletes(), nil); err != nil {
 		t.Fatal(err)
 	}
-	f := newV1Frame(1).group(structs, 7, 0)
-	for range structs {
-		f = f.gc(1)
-	}
-	heavy := f.noDeletes()
+	heavy := gcFrameFrom(7, structs)
 	keystroke := peerTyping(t, room, "y")
 	if len(heavy) > unslottedApplyBytes || structs <= unslottedApplyStructs || declaredStructs(heavy) != structs {
 		t.Fatalf("the frame is %d bytes declaring %d structs, want it under the %d bytes a slot is taken over and its %d structs past the %d a slot is taken over",

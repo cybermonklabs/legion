@@ -53,7 +53,7 @@ import (
 // write's own: it is browser content another apply parked behind the clocks the write supplied.
 // So that drain is held to what a browser's drain is held to, and one the check refuses is
 // discarded while the write stands, its senders closed as a browser's refused drain closes
-// them (check, serverApplyStood).
+// them (check, serverApplyError).
 //
 // One render pays for the update. The check's rendering is the one the update observer then
 // keeps and publishes for the commit (takeChecked), so the observer renders nothing of its own for
@@ -266,9 +266,10 @@ func (c *loggedCommits) now() (uint64, bool) {
 }
 
 // renderCheck is the room's apply check (crdt.WithApplyCheck): what the room's document reads of
-// its own rendering before a browser's apply commits. fragment is the room document's fragment,
-// resolved before any apply, since a view resolves no root (crdt.ApplyView). panicsForTest makes
-// every whole render the check makes panic, so a test can hold it to its recovery (check).
+// its own rendering before a browser's apply commits, and before the drain of a server write's
+// apply commits what it lands (check). fragment is the room document's fragment, resolved before
+// any apply, since a view resolves no root (crdt.ApplyView). panicsForTest makes every whole
+// render the check makes panic, so a test can hold it to its recovery (check).
 type renderCheck struct {
 	weighing      *roomWeighing
 	fragment      *crdt.YXmlFragment
@@ -276,10 +277,11 @@ type renderCheck struct {
 	panicsForTest atomic.Bool
 }
 
-// newRenderCheck sets live, a room's document, to check every browser's apply by what it leaves
-// the document rendering (renderCheck.check), weighing against what weighing records of the room.
-// Like the room's other apply callbacks it is set as the room is listed, before ygo hands the
-// document to anyone, so every remote apply from then on is checked.
+// newRenderCheck sets live, a room's document, to check every browser's apply and the drain of
+// every server write's apply by what it leaves the document rendering (renderCheck.check),
+// weighing against what weighing records of the room. Like the room's other apply callbacks it
+// is set as the room is listed, before ygo hands the document to anyone, so every remote apply
+// from then on is checked.
 func newRenderCheck(live *crdt.Doc, weighing *roomWeighing, paths *renderPathCounts) *renderCheck {
 	check := &renderCheck{weighing: weighing, fragment: live.GetXmlFragment(fragmentName), paths: paths}
 	live.SetApplyCheck(check.check)

@@ -541,11 +541,18 @@ const (
 	parkedPastCapReadLine = "dispatch: a read answered a document unloadable: its stored history parks past a room's cap"
 )
 
+// The kinds of what a history parks that a parkedPastCap names (parkedPastCap.parked), each held
+// to a cap of its own.
+const (
+	parkedKindStructs      = "structs"
+	parkedKindDeleteRanges = "delete ranges"
+)
+
 // parkedPastCap is a stored history that parks more than a room's document may: parks of what
-// parked names, structs or delete ranges, past most, the room's cap for them
-// (Server.MaxPendingItems, maxParkedStructs; Server.MaxPendingDeleteRanges,
-// maxParkedDeleteRanges). The room's own decode of such a history is refused with
-// crdt.ErrPendingCap (bootstrapLoadedState), and so is this.
+// parked names, structs or delete ranges (parkedKindStructs, parkedKindDeleteRanges), past most,
+// the room's cap for them (Server.MaxPendingItems, maxParkedStructs;
+// Server.MaxPendingDeleteRanges, maxParkedDeleteRanges). The room's own decode of such a history
+// is refused with crdt.ErrPendingCap (bootstrapLoadedState), and so is this.
 type parkedPastCap struct {
 	parked string
 	most   int
@@ -590,10 +597,10 @@ func (s *Service) parkedPastRoomCaps(doc *crdt.Doc) *parkedPastCap {
 	}
 	stats := doc.PendingStats()
 	if most := s.srv.MaxPendingItems; stats.Items > most {
-		return &parkedPastCap{parked: "structs", most: most, parks: stats.Items}
+		return &parkedPastCap{parked: parkedKindStructs, most: most, parks: stats.Items}
 	}
 	if most := s.srv.MaxPendingDeleteRanges; stats.DeleteRanges > most {
-		return &parkedPastCap{parked: "delete ranges", most: most, parks: stats.DeleteRanges}
+		return &parkedPastCap{parked: parkedKindDeleteRanges, most: most, parks: stats.DeleteRanges}
 	}
 	return nil
 }
@@ -1370,15 +1377,17 @@ func (s *Service) classifyDrained(room string, instance *roomInstance, logged cr
 	// writer's rows is that browser's edit, which no writer credited, so it is credited to the peers
 	// connected as the room took it, as the browser update whose drain landed it would have been,
 	// and a catch-up that landed it is this process's to settle.
-	if credited := landed || !s.originCreditsNoOne(logged.Origin); credited && contentChanged {
-		// The authors of the ask blocks this render first showed go with the credit to the
-		// update's append, which records them durably (recordAskAuthors): a tree is rendered
-		// only for a content change, so a browser's update that names an author always carries
-		// a credit. A published live write's own carries none; its commit recorded its blocks'
-		// authors (Ledger.recordSettlementCredit).
-		class.credit = s.creditContentChange(room, &instance.hold, attributed)
-	} else if credited {
-		class.roomCredit = s.unchangedCredit(room, &instance.hold)
+	if landed || !s.originCreditsNoOne(logged.Origin) {
+		if contentChanged {
+			// The authors of the ask blocks this render first showed go with the credit to the
+			// update's append, which records them durably (recordAskAuthors): a tree is rendered
+			// only for a content change, so a browser's update that names an author always
+			// carries a credit. A published live write's own carries none; its commit recorded
+			// its blocks' authors (Ledger.recordSettlementCredit).
+			class.credit = s.creditContentChange(room, &instance.hold, attributed)
+		} else {
+			class.roomCredit = s.unchangedCredit(room, &instance.hold)
+		}
 	}
 	stored := (published || remote) && !landed
 	if !stored {

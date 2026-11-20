@@ -56,7 +56,7 @@ type socketClients struct {
 	marking atomic.Bool
 	// mu guards confirmed, unmarked and claims: the hook changes them on the peer's read loop,
 	// and reads confirmed inside the apply it waits for there (parkJudge), so the lock is never
-	// contended but by a mark's end (markedConfirmed).
+	// contended but by a mark's end (endMark).
 	mu sync.Mutex
 	// confirmed is every id this socket holds besides own: the ids its updates claimed and have
 	// not given back, and those its updates showed the table names its person for. It keeps each
@@ -144,7 +144,7 @@ func (c *socketClients) awaitingMarks(writes crdt.StateVector) []crdt.ClientID {
 }
 
 // startMark is whether this call starts the mark of client, an id whose row awaits this socket's
-// mark and whose mark is not in flight; it is in flight from then until markedConfirmed.
+// mark and whose mark is not in flight; it is in flight from then until endMark.
 func (c *socketClients) startMark(client crdt.ClientID) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -156,9 +156,9 @@ func (c *socketClients) startMark(client crdt.ClientID) bool {
 	return true
 }
 
-// markedConfirmed ends the mark of client that startMark started: a mark written takes client
-// out of unmarked, and one the store refused leaves it awaiting the next.
-func (c *socketClients) markedConfirmed(client crdt.ClientID, written bool) {
+// endMark ends the mark of client that startMark started: a mark written takes client out of
+// unmarked, and one the store refused leaves it awaiting the next.
+func (c *socketClients) endMark(client crdt.ClientID, written bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if written {
@@ -270,8 +270,8 @@ func (s *Service) admitClients(ctx context.Context, room string, actor model.Act
 // document's headings ids (e2e/doc.e2e.ts) - and a read-only room takes none of that, so a
 // read-only reconnect that drew it another id would find the document had written under the
 // first, and the page would rebuild it at every such reconnect, telling a reader who typed
-// nothing that it held edits under an identity Dispatch did not give them (takeClientId, in the
-// dashboard's connection.ts; e2e/doc-reload-line.e2e.ts). A read-only socket carries nothing
+// nothing that it held edits under an editing identity it may not write under (takeClientId, in
+// the dashboard's connection.ts; e2e/doc-reload-line.e2e.ts). A read-only socket carries nothing
 // under the id it keeps: ygo hands the hook none of its updates and discards its awareness
 // (awareness_limit.go). One a row names for another person is not kept all the same.
 //
@@ -377,8 +377,8 @@ func (s *Service) mintClient(ctx context.Context, room string, actor model.Actor
 // mints of one id, by an admission or a browser update's judgement (judgeClients), the first
 // stores it and the second stores nothing.
 //
-// It is held to maxUnlandedMintsADocument: where actor holds that many rows in room of ids an
-// admission gave out that no edit landed under, the same statement gives back the one presented
+// It is held to maxUnlandedMintsADocument: where actor holds that many rows in room of ids a
+// mint gave out that no edit landed under, the same statement gives back the one presented
 // least recently and stores the new one, and where none of them is old enough to give back,
 // stores nothing and answers errMintsLive. A row is old enough once clientPresenceLapses
 // intervals have passed since it was last presented: every open socket presents its row again

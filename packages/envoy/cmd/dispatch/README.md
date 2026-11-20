@@ -5436,7 +5436,7 @@ Each item below names a status and code, then its meaning.
   A person decides whether to rebuild;
   the dashboard offers the rebuild for this code, and for the `4413 DOC_NEEDS_REBUILD` close below.
   The document socket refuses such a document `503` at its admission, before any room loads.
-  For a history past a room's cap, the server logs each read that answers this code (`dispatch: a read answered a document unloadable: its stored history parks past a room's cap`) and each room load the history fails (`dispatch: a document's room did not load: its stored history parks past the room's cap`), each with the document (`room`), the cap (`cap`), its figure (`most`) and what the history parks (`parks`).
+  For a history past a room's cap, the server logs each load of the history from which a read answers this code (`dispatch: a read answered a document unloadable: its stored history parks past a room's cap`; reads made at the same moment share one load, and so one line) and each room load the history fails (`dispatch: a document's room did not load: its stored history parks past the room's cap`), each with the document (`room`), the cap (`cap`), its figure (`most`) and what the history parks (`parks`).
   A room or store that could not serve the document stays `503 DOC_SERVICE_UNAVAILABLE`, which is retried, not rebuilt.
 
 - `409 DOCUMENT_LIVE`

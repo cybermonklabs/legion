@@ -26,13 +26,10 @@ func TestParkedDeleteRangesHoldNoMoreHeapThanTheirChargeAtTheirHeaviestShape(t *
 	type sender struct{ n int }
 	const firstClient = 9_000_001
 	chargedBefore := chargedWeight(charge)
-	var before, after runtime.MemStats
-	runtime.GC()
-	runtime.GC()
-	runtime.ReadMemStats(&before)
+	before := liveHeap()
 	for i := range maxParkedDeleteRanges {
 		for half := range 2 {
-			frame := newV1Frame(0).uint(1).uint(uint64(firstClient + i)).uint(1).uint(uint64(half)).uint(1).done()
+			frame := deleteRangesPast(crdt.ClientID(firstClient+i), uint64(half), 1)
 			origin := &sender{2*i + half}
 			called := false
 			err := service.weighPeerUpdate(websocket.PeerUpdateInfo{Room: "room", Doc: room, Update: frame}, func() error {
@@ -44,11 +41,9 @@ func TestParkedDeleteRangesHoldNoMoreHeapThanTheirChargeAtTheirHeaviestShape(t *
 			}
 		}
 	}
-	runtime.GC()
-	runtime.GC()
-	runtime.ReadMemStats(&after)
+	after := liveHeap()
 	runtime.KeepAlive(room)
-	held := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+	held := int64(after) - int64(before)
 	charged := chargedWeight(charge) - chargedBefore
 	ranges := room.PendingStats().DeleteRanges
 	t.Logf("%d clients' ranges parked in halves by two senders each: the room parks %d ranges; its live heap grew %d bytes (%.1f a range) and its budget charge %d",
