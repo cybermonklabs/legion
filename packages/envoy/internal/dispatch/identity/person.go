@@ -61,7 +61,8 @@ type SignedIn struct {
 
 // SignInRule is who may sign in to Dispatch and how Dispatch treats their sign-in: GroupRule for
 // the members of a Cognito sign-in pool's group, DomainRule for the people of a Google Workspace
-// domain, or OutsideRule for those people beside the restricted members an access list names.
+// domain, or PasskeyRule for those people beside the restricted members an access list names, who
+// sign in with a passkey.
 // cmd/dispatch's signInRule chooses one from boot's settings, once, and every other package
 // consults the value it returns rather than branching on which settings are set.
 type SignInRule interface {

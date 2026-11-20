@@ -1,6 +1,6 @@
 kind: Added
 body: |-
-  `envoy-infra:gcp:Dispatch` takes an optional input for sign-in by people from outside the
+  `envoy-infra:gcp:Dispatch` takes two optional inputs for sign-in by people from outside the
   company. `outsideOrigin` is a second origin Dispatch is reached at, whatever way those people
   come in by: an `https` origin written as a browser writes it (a lowercase scheme, no `:443`, a
   port of 1 to 65535 with no leading zero, and no path, user, query or fragment), whose host is
@@ -10,13 +10,17 @@ body: |-
   begin with `xn--`, and an `xn--` label that profile refuses is a Fake A-label). Another spelling
   of the same origin is refused rather than rewritten, since Dispatch
   compares a browser's `Origin` with it as a string. It renders `DISPATCH_OUTSIDE_ORIGIN` on the
-  app's container right after `DISPATCH_SERVER_URL`, and needs the tailnet inputs. With it unset
-  the component renders exactly what it rendered before. With `outsideOrigin` and sign-in on, its
-  host is the relying party of the passkeys people from outside enroll there, a registrable domain
-  name, so the component then also refuses a raw IP address and a host whose top-level domain is
-  not on the public suffix list; the Google client lists no callback of the outside origin. The
-  component does not build what serves the second origin, and an `envoy-dispatch` that predates the
-  setting ignores it.
+  app's container right after `DISPATCH_SERVER_URL`, and needs the tailnet inputs.
+  `signInOutside: true` renders `DISPATCH_SIGNIN_OUTSIDE=1` right after `DISPATCH_SIGNIN_DOMAIN`;
+  it needs the sign-in inputs and is not one of their group, so a deployment that sets them
+  without it is accepted as before. With both unset the component renders exactly what it
+  rendered before. With `outsideOrigin` and sign-in on, the Google client needs the rendered
+  `DISPATCH_OUTSIDE_ORIGIN` followed by `/auth/callback` as a redirect URI, so the component then
+  also refuses a host Google refuses there: a raw IP address, and one whose top-level domain is
+  not on the public suffix list. With `signInOutside`, the client's consent screen's audience must
+  be External. The
+  component does not build what serves the second origin, and an `envoy-dispatch` that predates
+  the two settings ignores both.
 time: 2026-11-16T02:01:26Z
 custom:
     Issue: pr4117

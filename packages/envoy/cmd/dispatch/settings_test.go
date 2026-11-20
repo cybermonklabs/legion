@@ -349,8 +349,8 @@ func codeFlowSignIn(t *testing.T, handler http.Handler, issuer *oidctest.Issuer,
 	return codeFlowSignInAt(t, handler, issuer, "dispatch.test", claims)
 }
 
-// codeFlowSignInAt is codeFlowSignIn with the start and the callback both sent to host, so the
-// sign-in comes back to the callback of the origin host is.
+// codeFlowSignInAt is codeFlowSignIn with the start and the callback both sent to host, a host the
+// canonical origin answers at: the outside origin serves no Google sign-in.
 func codeFlowSignInAt(t *testing.T, handler http.Handler, issuer *oidctest.Issuer, host string, claims map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
 	issuer.SignInAs(claims)
