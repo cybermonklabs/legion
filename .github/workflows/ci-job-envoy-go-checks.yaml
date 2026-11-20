@@ -180,6 +180,9 @@ jobs:
       - name: Isolation test for dev-airlock.sh (fakes psql/go/curl; no real Postgres, network or Go build)
         run: bash scripts/dev-airlock.test.sh
         working-directory: packages/envoy
+      - name: Required-input test for airlock-check.sh k7 (no stack or network)
+        run: bash scripts/airlock-check.test.sh
+        working-directory: packages/envoy
       - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3; no real Postgres or network)
         run: bash scripts/dev-stack.test.sh
         working-directory: packages/envoy

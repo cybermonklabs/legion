@@ -17,6 +17,6 @@ body: |-
   does not register is forgotten at the next try, charged nothing, under the new notice kind
   `session-forgotten`. A refused process an earlier release started for such a claim is charged
   nothing. The `supervise: launched` line names how the launch resumed (`resumedBy`). Daemon API
-  contract 188: the launcher start frame gains `resumeSession`, the launcher hello
+  contract 193: the launcher start frame gains `resumeSession`, the launcher hello
   `resumesBySession`, and the migration `20261120042902_claim_agent_resume_generation` a column
   whose way back is in its header.

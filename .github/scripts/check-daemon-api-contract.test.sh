@@ -2,8 +2,9 @@
 # Tests for `check-daemon-api-contract.sh`: a change that touches the daemon API contract's
 # history or declaration declares a number above the one its base carries, the refusal names a
 # free number and every file that holds it, the files that hold the number agree on it, an
-# edit of the doc comment above the history touches no contract, and a base, a tree or a file the
-# check cannot read refuses the change.
+# edit of the doc comment above the history touches no contract, a declared number needs its own
+# `// <number>:` history entry, and a base, a tree or a file the check cannot read refuses the
+# change.
 #
 # Each case builds a miniature repository under a temporary directory, symlinks the real script
 # into it, and puts a stub `gh` first on PATH, so the script under test is the file CI runs and
@@ -566,5 +567,42 @@ check "names both numbers" \
 check "names the free number" "$(contains "$out" 'Take 8, the lowest number above')"
 check "names every file that holds the number" "$(contains "$out" "$all_files")"
 check "reads the open pull requests once" "$(is "$queries" 1)"
+
+echo "case: a declaration bump with no history entry at its number"
+root=$(fixture const-without-history)
+built_on "$root" 7 > /dev/null
+declaration 7 > "$root/stub/refs/main"
+declaration 7 > "$root/packages/daemon/internal/api/version.go"
+sed -i 's/^const DaemonAPIVersion = 7$/const DaemonAPIVersion = 8/' \
+  "$root/packages/daemon/internal/api/version.go"
+sites "$root" 8
+no_open_pull_requests "$root"
+pull_request_event "$root" main
+run_check "$root" pull_request
+check "exits 1" "$(is "$status" 1)"
+# shellcheck disable=SC2016 # the backticks are the refusal's own text, not a substitution
+check "names the missing history entry" \
+  "$(contains "$out" 'declares daemon API contract 8, but its history has no `// 8:` entry')"
+check "names the free number" "$(contains "$out" 'Take 8, the lowest number above')"
+check "reads the open pull requests once" "$(is "$queries" 1)"
+
+echo "case: a declaration bump whose only line at its number is an entry's wrapped prose"
+root=$(fixture const-with-prose-number)
+built_on "$root" 7 > /dev/null
+declaration 7 > "$root/stub/refs/main"
+declaration 7 "a reading taken between 07:58Z and" > "$root/packages/daemon/internal/api/version.go"
+sed -i -e 's/^const DaemonAPIVersion = 7$/const DaemonAPIVersion = 8/' \
+  -e 's|^// a reading taken between 07:58Z and$|// a reading taken between 07:58Z and\n// 8:04Z, which the bump cites|' \
+  "$root/packages/daemon/internal/api/version.go"
+sites "$root" 8
+no_open_pull_requests "$root"
+pull_request_event "$root" main
+run_check "$root" pull_request
+check "the miniature file has the wrapped line" \
+  "$(contains "$(cat "$root/packages/daemon/internal/api/version.go")" '^// 8:04Z')"
+check "exits 1" "$(is "$status" 1)"
+# shellcheck disable=SC2016 # the backticks are the refusal's own text, not a substitution
+check "names the missing history entry" \
+  "$(contains "$out" 'declares daemon API contract 8, but its history has no `// 8:` entry')"
 
 summary "check-daemon-api-contract.sh"

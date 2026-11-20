@@ -913,10 +913,9 @@ package api
 // composer, `internal/runtime/spendattrs.go`'s SpendResourceAttributes, called from
 // `internal/runtime/sandbox/manifest.go`'s roleOperatorEnv and `internal/runtime/tmux/spawn.go`'s
 // panePairs), so every launch's resource attributes name the issue it serves rather than the
-// deployment alone. Both keys reach the spend collector today, and its keep-list of six theorem.*
-// resource attributes drops every other key, so no spend row names an issue yet. A row grouped by
-// issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list. The
-// detector that reads the value assigns last-wins, which is why the daemon's pairs are
+// deployment alone. A deployment's collector may keep a fixed list of resource attributes, so a
+// spend row can be grouped by issue only when the collector keeps legion.issue and legion.role.
+// The detector that reads the value assigns last-wins, which is why the daemon's pairs are
 // written after the operator's; a pair the launch holds no fact for is left out rather than
 // written empty, so the project controller's launch, which serves no issue, carries `legion.role`
 // alone. The name stays the operator's to set — the runtime composes the value, it does not own
@@ -924,7 +923,7 @@ package api
 // second pair of that name is the one the C library's lookup answers with, and both configuration
 // loaders refuse an operator value the agent's OpenTelemetry detector would throw on
 // (runtime.SpendAttributesRefusal): that throw is caught with an empty hand, so one malformed
-// member costs the launch every attribute of the variable, the operator's own theorem.project
+// member costs the launch every attribute of the variable, the operator's own project attribute
 // among them. The pane environment and the worker container's environment are surfaces of this
 // contract, which is why an environment change takes a number at all: the boot gate refuses to
 // start against an installed plugin declaring another number, and `legion probe-image` refuses an
@@ -2455,7 +2454,17 @@ package api
 // between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
 // and none declaring 178.)
 //
-// 188: a pod's launcher resumes a session named by its id alone (dispatch://INFRA-4108). A claim
+// 188: #4543 -- no wire shape changes. Entry 64's prose no longer names one deployment's spend
+// collector or its attribute prefix: it says that a spend row can be grouped by issue only when a
+// deployment's collector keeps `legion.issue` and `legion.role`. Every route, the state, and the
+// pane and container environments are as 178 has them. The number moves because
+// `.github/scripts/check-daemon-api-contract.sh` reads any edit of this history as a contract
+// change, and the boot gate and `legion probe-image` refuse a daemon and a plugin that declare
+// different numbers, so the two still move together.
+// (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
+// and #4581 declares 187.)
+//
+// 193: a pod's launcher resumes a session named by its id alone (dispatch://INFRA-4108). A claim
 // can record a session and no file of it: the issue close of every release from `legion-v18.0.1`
 // up to, and not including, `legion-v20.5.0` cleared the file and kept the id
 // (`clearIssueResumePath`), and a launch of such a claim spawned a fresh agent, which the
@@ -2488,12 +2497,11 @@ package api
 // own kind. The way back of this change's migration
 // (`store/migrations/20261120042902_claim_agent_resume_generation.up.sql`) deletes those rows
 // before a rollback. No shape of `GET /legion/v1/state` moves.
-// (This entry takes 188, the lowest number above main's 178 that no open pull request declared
-// when the merge of 2026-11-20 brought main in at e4584fae753a: a reading of `const
-// DaemonAPIVersion` at refs/pull/<n>/head, made between 2026-11-20T05:56:19Z and 06:00:55Z, for
-// each of the 107 open pull requests, of 251, whose file list names this file or is longer than
-// one read lists, found each of 179 to 186 declared by another open pull request, and 187 by
-// #4543 as well as by this change's own head, which took it at 05:52Z when an earlier reading
-// found it free, and nothing above 187. Read the base's own number and every open pull request
-// again at the next merge rather than from this line.)
-const DaemonAPIVersion = 188
+// (This entry takes 193, the lowest number above main's 188 that no open pull request declared
+// when the merge of 2026-11-20 brought main in at 1c7c8253678f, after #4543 took 188: a reading
+// of `const DaemonAPIVersion` at refs/pull/<n>/head, made between 2026-11-20T11:02:05Z and
+// 11:04:38Z, for each of the 110 open pull requests, of 266, whose file list names this file or is
+// longer than one read lists, found 189 declared by #3831 and #4596, 190 by #4578, 191 by #4493,
+// #4495, #4573 and #4592, 192 by #4175 and #4611, and nothing above 192. Read the base's own
+// number and every open pull request again at the next merge rather than from this line.)
+const DaemonAPIVersion = 193
