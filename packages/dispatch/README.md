@@ -827,6 +827,16 @@ a named pipe or a process substitution under an inherited `TMOUT`. Each row carr
 timeout. The row of `outside-path-reach-input.test.ts` that runs the script under zsh skips where
 zsh is missing, so a local run needs zsh for that row; CI's `dispatch-ui` job installs it.
 
+`e2e/acceptance/outside-agent-tailnet.sh` and `e2e/acceptance/outside-agent-public.sh` are the two
+legs of the outside agent's acceptance: what a person from outside the sign-in domain gets when
+their agents, on their own machine and on the public internet, work with ours through the edge
+origins, and the gate both legs make before a real person from outside is named on an access
+list. The tailnet leg is the one command and runs on a developer box; it starts the public leg
+on a runner on the public internet. `e2e/acceptance/outside-agent-acceptance.md` says how to run
+them, what each row reads, and the controls. `cd packages/dispatch && bun test
+e2e/__tests__/outside-agent-acceptance.test.ts` checks that each leg prints `UNKNOWN`, never
+`PASS`, for a row whose target is absent.
+
 ## Acceptance run against the deployed image
 
 The `dispatch.acceptance.compose.yml` Compose file builds a Dispatch image from this tree and runs
