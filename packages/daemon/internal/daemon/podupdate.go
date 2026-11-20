@@ -442,9 +442,9 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	// round's terms are fixed at its open (dispatch://INFRA-2981 R9), so what an open round's
 	// notices and its replacement name is its own recorded reasons (roundReasons). That holds
 	// where the drift has gone away too — an operator rolled the release back — and the round
-	// replaces the pod all the same. The round has already asked every role in that pod to push
-	// its work and to start no new work, and no path is left that lets a role carry on in the pod
-	// it was told would be replaced. Replacing it is one restart of each role in its own session,
+	// replaces the pod all the same. The round has already asked each role it asks (roundAsks) to
+	// push its work and to start no new work, and no path is left that lets a role carry on in the
+	// pod it was told would be replaced. Replacing it is one restart of each role in its own session,
 	// which the alternative — a release of the answered roles that the daemon alone knows about —
 	// is not.
 	terms := strings.Join(reasons, ", ")
@@ -1885,9 +1885,9 @@ func (s *supervision) noticeGroup(group []supervise.Claim) []supervise.Claim {
 // roundGroup is the claims of group as a round reads them now, less the ones no round weighs.
 // It is the one read the sweep's decision, the replacement's last word and the operator's notice
 // are all built from, so no two of them can disagree about what a claim holds. The round asks
-// each role, and replaces the pod once every asked role has answered and no turn runs, or at the
-// round's bound (pod_update_grace_minutes) whatever the roles answered, an operator's suspension
-// excepted.
+// each claim roundAsks keeps, and replaces the pod once each of them has answered and no turn
+// runs, or at the round's bound (pod_update_grace_minutes) whatever the roles answered, an
+// operator's suspension excepted.
 //
 // What it reads is each machine's published view (Machine.View), never Machine.Claim: Claim
 // waits out the decision in flight, and that decision can be a Sandbox relaunch that holds the
@@ -2147,11 +2147,11 @@ func (s *supervision) endRoundOverAGonePod(ctx context.Context, issue string, gr
 	s.endPodUpdates(issue, told, round)
 }
 
-// openPodUpdate opens the round, or keeps it open, and asks each role of it once: one ask that
-// reaches the role's session, since an ask that reached none is asked again (askRound). Every
-// claim with a session is posted PodUpdateOpen at every tick while the round runs: the event is
-// idempotent, and it is what records the round on the claim (supervise's openPodUpdate), with its
-// reasons and its clock fixed at the post that opens it.
+// openPodUpdate opens the round, or keeps it open, and asks each claim the round asks (roundAsks)
+// once: one ask that reaches the claim's session, since an ask that reached none is asked again
+// (askRound). Every claim with a session is posted PodUpdateOpen at every tick while the round
+// runs: the event is idempotent, and it is what records the round on the claim (supervise's
+// openPodUpdate), with its reasons and its clock fixed at the post that opens it.
 //
 // The ask is the sweep's own, enqueued on the reading that finds the round recorded (askRound).
 // The post is asynchronous (supervisor.post), so the tick that opens a round asks nothing, and a

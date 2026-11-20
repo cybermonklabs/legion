@@ -2104,12 +2104,16 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // It wakes nothing, where hookPrompt, mergeQueueRemoval and mergeForwardMessage call
 // wakeForDelivery first. The round does not ask a claim the daemon suspended (its own rule, a
 // root's exit, an idle release, or an unknown source), and does not wait for it
-// (dispatch://INFRA-4109 R1, the sweep's roundAsks). A row the sweep queued before such a
-// suspension still runs, so the machine refuses the ask of such a claim before any publish
+// (dispatch://INFRA-4109 R1, the sweep's roundAsks). A claim a project's pause stopped is the one
+// exception: the pause suspends it as released, and while the pause still keeps its pod the round
+// waits for it and the sweep asks it once its agent is ready (the sweep's roundClock.passesOver).
+// A row the sweep queued before any such suspension still runs, so the machine refuses the ask of
+// every claim the daemon suspended, a claim the pause stopped included, before any publish
 // (supervise.Machine.PublishUpdateAsk answers UpdateAskSuspended), and the row finishes with one
 // line of its own. A publish would go to a role with no holder, and the Envoy listener raises a
 // role wake for every publish to a role with no holder (packages/envoy/cmd/listener/confirmed.go,
-// roleSend.noHolder). That wake would bring back a pod that an idle release took.
+// roleSend.noHolder). That wake would bring back a pod that an idle release took, or a role that
+// the pause stopped, and the round brings back neither.
 //
 // An outbox row cannot be withdrawn, and the round it names can end while the row waits. So the
 // row reads the claim before it publishes, through the machine's view as every other read of a

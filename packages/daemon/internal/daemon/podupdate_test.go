@@ -1,9 +1,9 @@
 package daemon
 
 // The update-round sweep: a running issue pod whose configuration has drifted is replaced once
-// every worker in it has pushed its work and answered, or at the round's bound whatever they said
-// (podupdate_bound_test.go holds the bound). These tests drive the real supervision — real
-// machines over a real Postgres, with the runtime faked — one sweep at a time, as the orphan
+// every worker the round asks has pushed its work and answered, or at the round's bound whatever
+// they said (podupdate_bound_test.go holds the bound). These tests drive the real supervision —
+// real machines over a real Postgres, with the runtime faked — one sweep at a time, as the orphan
 // sweep's tick calls it, and read what the store, the runtime and the outbox then hold. The rig's
 // clock is held, so every test here that moves no clock decides before the round's bound.
 //
@@ -696,12 +696,12 @@ func (r *podUpdateRig) replacements() []fake.Call {
 // so a test that reads the count once, immediately after the tick that follows the last answer,
 // asserts a race rather than the rule: it passes only when no machine happens to be deciding at
 // that moment, which CI run 41340112838 is the reproduction of. Sweeping until the count is
-// reached asks the question the rule answers — the pod is replaced once every worker has
-// answered — without asking it of one particular sweep. An assertion that a replacement has
-// *not* happened needs no such wait and keeps reading the count once, since no deferral can turn
-// nothing-yet into a replacement. Either failure names the count and what the caller waited for:
-// the wait's, the number of replacements it swept for, and the check below it, the number read
-// against the number wanted.
+// reached asks the question the rule answers — the pod is replaced once every worker the round
+// asks has answered — without asking it of one particular sweep. An assertion that a replacement
+// has *not* happened needs no such wait and keeps reading the count once, since no deferral can
+// turn nothing-yet into a replacement. Either failure names the count and what the caller waited
+// for: the wait's, the number of replacements it swept for, and the check below it, the number
+// read against the number wanted.
 func (r *podUpdateRig) awaitReplacement(n int, what string) []fake.Call {
 	r.t.Helper()
 	testwait.Eventually(r.t, fmt.Sprintf("%d replacement(s) of the pod %s", n, what), func() bool {
@@ -1069,7 +1069,7 @@ const podUpdateAccountDrift = "account default, now legion-worker"
 // configuration has since moved off used to be replaced by the next launch of any of its roles,
 // which cut every turn running in the pod and deleted its disk with everything unpushed still on
 // it. The account is now one of PodDrift's reasons for every pod a round covers, so a round
-// opened on that reason alone does what a round does: every worker claim of the issue is asked
+// opened on that reason alone does what a round does: every worker claim the round asks is asked
 // and answers, and only then is the pod replaced and the claims let go of the round. The rest of
 // the round's machinery is held by the tests around this one; this one holds the daemon's half of
 // the account's path, with PodDrift's half held in the sandbox package.
@@ -1104,7 +1104,7 @@ func TestPodUpdateCarriesAnAccountDriftedPodToItsReplacement(t *testing.T) {
 
 // Drift that clears while a round is open — the operator put the configuration back — ends
 // nothing. A round, once opened, ends only by replacing its pod or because that pod is gone: it
-// has already asked every worker in the pod to push its work and to start no new work, each has
+// has already asked each worker it asks to push its work and to start no new work, each has
 // answered or is about to, and no path is left that lets one carry on in a pod it was told would
 // be replaced. So the pod is replaced here too, which is one restart of each worker in its own
 // session.

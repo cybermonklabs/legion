@@ -211,13 +211,15 @@ func (p unusedPublisher) PublishKept(_ context.Context, topic, _ string, _ any, 
 }
 
 // The ask wakes nothing and publishes nothing to a role whose pod an idle release took
-// (dispatch://INFRA-2981 R1, dispatch://INFRA-4109 R1). The round passes over a released claim,
-// so its machine ends the row at UpdateAskSuspended before any publish, and the row finishes with
-// one Info line of its own. No publish reaches the listener, which raises a role wake for every
-// publish to a role with no holder. No pod wake is taken, no process is resumed, and the claim
-// stays released. The sweep asks no released claim (roundAsks), so this row stands for one that
-// the sweep queued before the release. The negative control is c-one-channel's: an executor that
-// called wakeForDelivery first, as hookPrompt does, takes a wake and resumes the claim here.
+// (dispatch://INFRA-2981 R1, dispatch://INFRA-4109 R1). The machine refuses the ask of a claim the
+// daemon suspended (supervise's Claim.PassedOverByRound), a released claim included, so it ends
+// the row at UpdateAskSuspended before any publish, and the row finishes with one Info line of its
+// own. No publish reaches the listener, which raises a role wake for every publish to a role with
+// no holder. No pod wake is taken, no process is resumed, and the claim stays released. The sweep
+// asks a claim only once its agent is ready (askRound reads supervise.SaidReady), and a released
+// claim is not ready, so this row stands for one that the sweep queued before the release. The
+// negative control is c-one-channel's: an executor that called wakeForDelivery first, as
+// hookPrompt does, takes a wake and resumes the claim here.
 func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 	rig := newIdleRig(t)
 	ctx := context.Background()

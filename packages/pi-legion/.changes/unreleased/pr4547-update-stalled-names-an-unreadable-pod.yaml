@@ -1,5 +1,10 @@
 kind: Changed
-body: The controller's escalation reference lists a pod the runtime cannot read among the holds an `update-stalled` notice's `reason` can name.
-time: 2026-11-20T03:45:16Z
+body: |-
+    The controller's escalation reference says which roles a pod update round asks and waits for:
+    not a role that failed, and not a role the daemon itself suspended, except a role the project's
+    pause stopped while the pause keeps the pod. It lists a pod the runtime cannot read among the
+    holds an `update-stalled` notice's `reason` can name, and names "no process in the pod" as a hold
+    only where the daemon cannot replace that pod by issue.
+time: 2026-11-20T04:13:00Z
 custom:
     Issue: pr4547

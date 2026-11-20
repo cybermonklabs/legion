@@ -169,9 +169,10 @@ type Config struct {
 	// named for itself, at the retry of a look nobody reported, or at this bound.
 	ProductionCheckBound time.Duration
 	// PodUpdateGrace is how long a pod's update round waits for its roles after it opens
-	// (`pod_update_grace_minutes`, thirty minutes by default): an answer from every role ends the
-	// round before it, and no answer holds the round past it. It is a decimal number of minutes,
-	// as `worker_silence_minutes` is, so a live proof can drive the bound inside one run.
+	// (`pod_update_grace_minutes`, thirty minutes by default): an answer from every role the round
+	// asks ends the round before it, and no answer holds the round past it. It is a decimal number
+	// of minutes, as `worker_silence_minutes` is, so a live proof can drive the bound inside one
+	// run.
 	PodUpdateGrace time.Duration
 	// StalledTreeNotice bounds the stalled-tree notice (`stalled_tree_notice_hours`, six hours by
 	// default, a decimal number of hours as `production_check_hours` is): when a tree this daemon
