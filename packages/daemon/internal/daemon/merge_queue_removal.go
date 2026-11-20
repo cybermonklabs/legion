@@ -210,7 +210,7 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 	// role on every attempt and wait for a session nothing brings back. A launch the wake pacing
 	// holds is waited for until it runs, the claim read again at its turn or parkedWakeBound on,
 	// whichever comes first (parkedWait).
-	if waits, turn, err := r.wakeForDelivery(ctx, m.token, m.what); err != nil {
+	if waits, turn, err := r.wakeForDelivery(ctx, m.token, m.what, row.HeldByPause); err != nil {
 		return err
 	} else if !turn.IsZero() {
 		return r.parkedWait(turn, fmt.Sprintf("%s waits for its %s's launch, which the wake pacing holds until %s",

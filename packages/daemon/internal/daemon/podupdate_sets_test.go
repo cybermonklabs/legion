@@ -52,8 +52,10 @@ type roundShape struct {
 func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 	const round = podUpdateRound
 	opened := podUpdateStart
-	bound := opened.Add(podUpdateGrace)
 	now := opened.Add(time.Minute)
+	// clock is the round read a minute after it opened, long before its bound, with no pause
+	// holding its pod.
+	clock := roundClock{now: now, grace: podUpdateGrace}
 	answeredAt := opened.Add(30 * time.Second)
 	token := mustClaimToken(t, podUpdateIssue, claim.RoleImplementer)
 
@@ -123,7 +125,7 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 			named := func(claims []supervise.Claim) bool {
 				return slices.ContainsFunc(claims, func(of supervise.Claim) bool { return of.Token == c.Token })
 			}
-			unanswered, _ := readRoundEnd(group, round, &bound, now).holding()
+			unanswered, _ := readRoundEnd(group, round, clock).holding()
 			waiting, held, holding := named(waitingClaims(group, round)), named(heldByOperator(group, round)), named(unanswered)
 			t.Logf("over %d claims: waitingClaims %t, heldByOperator %t, holding %t", len(group), waiting, held, holding)
 			read = append(read, waiting || held || holding)
