@@ -3,7 +3,7 @@ import { hashKey, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
-import { settle } from "../../__tests__/fake-clock";
+import { jump, onFakeClock, settle } from "../../__tests__/fake-clock";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import { issueCoverageQuery, issueQuery } from "../../api/queries";
@@ -17,6 +17,7 @@ import type {
   IssueDetails,
 } from "../../api/types";
 import { issue } from "../margin/margin-fixture";
+import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { useIssueComponents } from "./useIssueComponents";
 
 /** The project's tree before the save: `issue` is in no component and not yet marked. */
@@ -340,11 +341,11 @@ function savedAs(reason: string): SavedAs {
  * `useShownComponents` under Dispatch's own client signed in as alice, once it has read the issue
  * and its tree and the reader has pressed two saves of the issue's components, "Hiring" and then
  * "Hiring, for now": the first is out, and the second waits its turn behind it (`issue:<KEY>`).
- * Each read of the issue and the tree, and each save, is answered when the row says; `asked` lists
- * the reads of the two as each calls its function, so a read a save holds is listed before it
- * waits.
+ * `beforeSecond`, where a row gives it, runs between the two presses. Each read of the issue and
+ * the tree, and each save, is answered when the row says; `asked` lists the reads of the two as
+ * each calls its function, so a read a save holds is listed before it waits.
  */
-async function twoSavesOut() {
+async function twoSavesOut(beforeSecond?: () => Promise<void>) {
   const client = new DispatchQueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -398,6 +399,7 @@ async function twoSavesOut() {
       void hook.result.current.write.submit({ mode: "none", reason: "Hiring" });
     });
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await beforeSecond?.();
     act(() => {
       void hook.result.current.write.submit({ mode: "none", reason: "Hiring, for now" });
     });
@@ -476,11 +478,14 @@ test("one components event ends the hold of the first of two saves out, and a re
   }
 });
 
-// Dispatch can answer a save before its event reaches the page. The first save's reads go at its
-// answer, and the second save goes out; the first save's event, which comes after, is still the
-// first save's, and leaves the second's hold, which the second's own event ends.
-test("a components save's event that comes after its answer leaves the hold of the save pressed after it", async () => {
-  const saves = await twoSavesOut();
+/**
+ * Presses two saves (`twoSavesOut`, with `beforeSecond` between them) and has Dispatch answer the
+ * first before its event reaches the page, then send that event, and then the second save's: the
+ * reads the first one's settling asks wait through the first save's event for the second's, and
+ * then show what Dispatch holds.
+ */
+async function answerFirstThenEvents(beforeSecond?: () => Promise<void>): Promise<void> {
+  const saves = await twoSavesOut(beforeSecond);
   const later = savedAs("Hiring, for now");
   try {
     // The first save's answer comes before its event, and the second goes out. The reads the
@@ -523,6 +528,21 @@ test("a components save's event that comes after its answer leaves the hold of t
   } finally {
     saves.stop();
   }
+}
+
+// Dispatch can answer a save before its event reaches the page. The first save's reads go at its
+// answer, and the second save goes out; the first save's event, which comes after, is still the
+// first save's, and leaves the second's hold, which the second's own event ends.
+test("a components save's event that comes after its answer leaves the hold of the save pressed after it", async () => {
+  await answerFirstThenEvents();
+});
+
+// Dispatch can take a save later than its deadline: its hold lets the issue's and the tree's
+// reads go then, and the save is still out. Its event still comes once Dispatch takes it, here
+// after its answer, and is still that save's: it leaves the hold of a second save pressed after
+// the deadline, which the second's own event ends.
+test("a components save past its deadline takes its own event after its answer, and leaves the hold of the save pressed after it", async () => {
+  await onFakeClock(() => answerFirstThenEvents(() => jump(SEND_DEADLINE_MS)));
 });
 
 /** What the Spec tab draws beside each requirement, with `gaps` lacking. */

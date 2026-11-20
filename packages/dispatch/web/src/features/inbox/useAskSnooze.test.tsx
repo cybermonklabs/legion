@@ -8,13 +8,14 @@ import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
-import { settle } from "../../__tests__/fake-clock";
+import { jump, onFakeClock, settle } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAskSnoozes } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type { AskSnooze, DispatchEvent, InboxRow } from "../../api/types";
+import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { issueAsk } from "./inbox-fixture";
 import { type AskSnoozeFailure, useAskSnooze, useAskSnoozeMany } from "./useAskSnooze";
 
@@ -499,4 +500,79 @@ test("a bulk snooze of two asks and a snooze pressed after it hold the Inbox unt
     hook.unmount();
     getInbox.mockRestore();
   }
+});
+
+// Dispatch can take a snooze later than its deadline: its hold lets the Inbox's reads go then,
+// and the snooze is still out. Its event still comes once Dispatch takes it, here after its
+// answer, and is still that snooze's. A snooze pressed after the deadline holds the Inbox until
+// its own event: the late snooze's event, though it names no ask, ends no hold of the later one.
+test("a snooze past its deadline takes its own event after its answer, and a read of the Inbox waits for the event of the snooze pressed after it", async () => {
+  await onFakeClock(async () => {
+    const served = { rows: [issueAsk({ id: "ask-1" }), issueAsk({ id: "ask-2" })] };
+    const answers = heldSnoozeAnswers();
+    const { client, getInbox, hook } = renderBesideInbox(served, () => ({
+      first: useAskSnooze("ask-1"),
+      second: useAskSnooze("ask-2"),
+    }));
+    const readInboxAgain = () => {
+      void client.invalidateQueries({ queryKey: inboxQuery().queryKey });
+    };
+    try {
+      await waitFor(() => expect(snoozedUntil(hook.result.current.inbox)).toEqual([null, null]));
+      act(() => hook.result.current.write.first.submit(UNTIL));
+      await waitFor(() => expect([...answers.keys()]).toEqual(["ask-1"]));
+
+      // Dispatch has not taken the first snooze by its deadline, and the reader snoozes the
+      // second ask.
+      await jump(SEND_DEADLINE_MS);
+      act(() => hook.result.current.write.second.submit(UNTIL));
+      await waitFor(() => expect([...answers.keys()]).toEqual(["ask-1", "ask-2"]));
+      expect(snoozedUntil(hook.result.current.inbox)).toEqual([UNTIL, UNTIL]);
+
+      // Dispatch takes the first and answers it. The second is still out, so the read the first
+      // asks as it settles waits.
+      served.rows = [issueAsk({ id: "ask-1", snoozed_until: UNTIL }), issueAsk({ id: "ask-2" })];
+      await act(async () => {
+        answers.get("ask-1")?.({ snoozed_until: UNTIL });
+        await settle();
+      });
+      await waitFor(() => expect(hook.result.current.write.first.pending).toBe(false));
+      expect(getInbox).toHaveBeenCalledTimes(1);
+
+      // The first's event comes after its answer. It is the first's, and the read waits still.
+      await act(async () => {
+        hearLiveEvent(client, userStateEvent("alice", ["snoozed"]), "alice");
+        readInboxAgain();
+        await settle();
+      });
+      expect(getInbox).toHaveBeenCalledTimes(1);
+      expect(snoozedUntil(hook.result.current.inbox)).toEqual([UNTIL, UNTIL]);
+
+      // Dispatch takes the second, whose event comes, and somebody asks another question
+      // meanwhile: the read goes.
+      served.rows = [
+        issueAsk({ id: "ask-1", snoozed_until: UNTIL }),
+        issueAsk({ id: "ask-2", snoozed_until: UNTIL }),
+        issueAsk({ id: "ask-3" }),
+      ];
+      await act(async () => {
+        hearLiveEvent(client, userStateEvent("alice", ["snoozed"]), "alice");
+        readInboxAgain();
+        await settle();
+      });
+      expect(getInbox.mock.calls.length).toBeGreaterThan(1);
+      await waitFor(() => expect(hook.result.current.inbox).toEqual(served.rows));
+
+      await act(async () => {
+        answers.get("ask-2")?.({ snoozed_until: UNTIL });
+        await settle();
+      });
+      await waitFor(() => expect(hook.result.current.write.second.pending).toBe(false));
+      await waitFor(() => expect(client.isFetching()).toBe(0));
+      expect(hook.result.current.inbox).toEqual(served.rows);
+    } finally {
+      hook.unmount();
+      getInbox.mockRestore();
+    }
+  });
 });
