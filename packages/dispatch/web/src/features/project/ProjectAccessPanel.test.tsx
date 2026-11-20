@@ -590,18 +590,19 @@ function drawn(text: string): boolean {
 // words are written for the deployment's operator: a table, an envoy-dispatch command, a setting,
 // the hub's bucket. They stay in the server's log and record. The owner who pressed the switch
 // reads one sentence of the dashboard's per code instead, which says what they can do, and none
-// of Dispatch's text is drawn anywhere on the page. Only PRIVATE_PROJECTS_UNAVAILABLE, the hub
-// refusing the project's record for now, offers Retry: every other answer stays the same until
-// someone changes the deployment, the store or the project. A code the dashboard does not know
-// gets a sentence that names nothing of Dispatch's. The switch stays public through each.
-for (const { code, status, server, shown, retry } of [
+// of Dispatch's text is drawn anywhere on the page. None offers Retry: every answer stays the same
+// until someone changes the deployment, the store or the project. That holds for
+// PRIVATE_PROJECTS_UNAVAILABLE too, which this release answers every switch to private that passes
+// the other checks, since it has no writer of the hub's private-projects record. A code the
+// dashboard does not know gets a sentence that names nothing of Dispatch's. The switch stays
+// public through each.
+for (const { code, status, server, shown } of [
   {
     code: "PRIVATE_PROJECTS_OFF",
     status: 409,
     server: "this deployment cannot make a project private yet: nothing was changed",
     shown:
       "This deployment cannot make a project private yet: ask its operator to set up private projects.",
-    retry: false,
   },
   {
     code: "PRIVATE_PROJECT_NOT_PROVISIONED",
@@ -609,7 +610,6 @@ for (const { code, status, server, shown, retry } of [
     server:
       "CORE is not one of the projects DISPATCH_PRIVATE_PROJECTS names; a deployment names a project there once it has provisioned that project's private namespace, stores and grants (the infrastructure repository's privateprojects.Projects())",
     shown: "This deployment has not set up CORE to be private: ask its operator to set it up.",
-    retry: false,
   },
   {
     code: "PRIVATE_PROJECTS_INCOMPLETE",
@@ -618,36 +618,32 @@ for (const { code, status, server, shown, retry } of [
       "the project stays public until the store can hold it private: access_events_scrubbed holds no row, so project.access_changed events stored before this release may still carry a project's access list: run envoy-dispatch scrub-access-events",
     shown:
       "This deployment is not ready to keep CORE private yet: ask its operator to finish setting up private projects.",
-    retry: false,
   },
   {
     code: "PRIVATE_PROJECTS_UNAVAILABLE",
     status: 409,
     server:
       "the project stays public: every listener holds a private project's messages back by its key in the hub's envoy_private_projects bucket, and that key could not be written: this deployment has no bus to write it to",
-    shown: "Dispatch could not make CORE private just now: try again in a moment.",
-    retry: true,
+    shown:
+      "This deployment cannot keep CORE's messages from other people yet, so CORE stays public: ask its operator to set up private projects.",
   },
   {
     code: "PROJECT_OWNER_REQUIRED",
     status: 403,
     server: "only the project's owner changes who may see it: ask its owner, bob",
     shown: "Only CORE's owner can change who may see it.",
-    retry: false,
   },
   {
     code: "PROJECT_NOT_FOUND",
     status: 404,
     server: "no project has this key: CORE",
     shown: "You can no longer see CORE, so you cannot change who may see it.",
-    retry: false,
   },
   {
     code: "PROJECT_ACCESS_INPUT",
     status: 400,
     server: 'a project is public or private, not "secret"',
     shown: "Dispatch did not take this change: reload the page and press the switch again.",
-    retry: false,
   },
   {
     code: "A_REFUSAL_THIS_DASHBOARD_DOES_NOT_KNOW",
@@ -655,10 +651,9 @@ for (const { code, status, server, shown, retry } of [
     server: "the owner lock dispatch-owner:project:CORE was not taken within 60s",
     shown:
       "Dispatch did not make CORE private: if this keeps happening, ask the deployment's operator.",
-    retry: false,
   },
 ] as const) {
-  test(`a switch refused ${code} tells the owner what to do, draws none of Dispatch's words, and stays public`, async () => {
+  test(`a switch refused ${code} tells the owner what to do, offers no Retry, draws none of Dispatch's words, and stays public`, async () => {
     const user = userEvent.setup();
     const panel = renderPanel();
     const patch = spyOn(api, "patchProjectAccess").mockRejectedValue(
@@ -676,14 +671,8 @@ for (const { code, status, server, shown, retry } of [
         "false"
       );
       expect(screen.getByTestId("access-visibility")).toHaveTextContent("Public");
-      if (retry) {
-        // A retry can help here, and it sends the same switch again.
-        await user.click(within(alert).getByRole("button", { name: "Retry" }));
-        await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
-        expect(patch).toHaveBeenLastCalledWith("CORE", { visibility: "private" }, keyedAttempt);
-      } else {
-        expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
-      }
+      expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+      expect(patch).toHaveBeenCalledTimes(1);
     } finally {
       panel.restore();
       patch.mockRestore();
