@@ -11,9 +11,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
@@ -45,8 +47,10 @@ func captureStderr(t *testing.T, fn func()) string {
 // TestTheAWSSDKsOwnLogWritesNothing: the AWS SDK logs a response's Date header it cannot parse,
 // quoted whole, as a WARN line on the process's stderr, and whoever answers at AWS_ENDPOINT_URL
 // writes that header: here a made-up secret. A call through the clients awsClients builds writes
-// none of it. Controls: the stand-in answered the call, which succeeded, and the capture sees a
-// line written to the process's stderr.
+// none of it. Controls: the stand-in answered the call, which succeeded; the capture sees a line
+// written to the process's stderr; and the same call through a client the SDK builds with its
+// default logger writes the planted header there, so the SDK still logs that line and the row
+// tests what it claims.
 func TestTheAWSSDKsOwnLogWritesNothing(t *testing.T) {
 	planted := "hunter2pw-" + "datehdr-" + "8e1f"
 	var called atomic.Bool
@@ -76,4 +80,21 @@ func TestTheAWSSDKsOwnLogWritesNothing(t *testing.T) {
 		t.Fatalf("control: the call through the stand-in failed (%v) or never reached it, so the row is blind", callErr)
 	}
 	wantNamedNotPrinted(t, "the process's stderr", written, []string{seen}, planted, "Date header")
+	t.Run("control: the SDK's default logger writes the planted header", func(t *testing.T) {
+		var callErr error
+		written := captureStderr(t, func() {
+			cfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion("us-east-1"))
+			if err != nil {
+				callErr = err
+				return
+			}
+			_, callErr = sts.NewFromConfig(cfg).GetCallerIdentity(context.Background(), &sts.GetCallerIdentityInput{})
+		})
+		if callErr != nil {
+			t.Fatalf("the call failed: %v", callErr)
+		}
+		if !strings.Contains(written, planted) {
+			t.Fatalf("the SDK's default logger wrote %q, without the planted Date header, so the row above no longer tests the SDK's own log", written)
+		}
+	})
 }
