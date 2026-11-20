@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
@@ -104,6 +105,30 @@ func TestAppliedNamesOnlyTheFactsApplyFactAppliedFromTheSource(t *testing.T) {
 	}
 	if none, err := Applied(ctx, pool, "supervise", nil); err != nil || len(none) != 0 {
 		t.Fatalf("Applied of no ids = %v, %v; want none and no error", none, err)
+	}
+}
+
+// An event id is built of what the fact's source sent — the API's from a reported commit, the
+// daemon's reads from what GitHub answered — so it can hold a NUL, and the store records the id
+// as storetext.Text makes it. Applied answers each id under the id its caller gave, so a caller
+// that looks its own id up finds the fact applied: a completion the workflow already took reads
+// as taken, not as new.
+func TestAppliedAnswersAnIDHoldingNULThatApplyFactRecordedAsApplied(t *testing.T) {
+	pool := store.NewPool(migratedPool(t))
+	ctx := context.Background()
+	const id = "handoff:LEGION-208:1:1:1:implementer:implementing:1:commit\x00sha:"
+	if _, err := ApplyFact(ctx, pool, "api", id, DispatchIssue{Key: "LEGION-208"}); err != nil {
+		t.Fatalf("apply %q: %v", id, err)
+	}
+	applied, err := Applied(ctx, pool, "api", []string{id, "never\x00applied", "never-applied"})
+	if err != nil {
+		t.Fatalf("Applied: %v", err)
+	}
+	if want := map[string]bool{id: true}; !reflect.DeepEqual(applied, want) {
+		t.Fatalf("Applied = %#v, want %#v", applied, want)
+	}
+	if result, err := ApplyFact(ctx, pool, "api", id, DispatchIssue{Key: "LEGION-208"}); err != nil || !result.Duplicate {
+		t.Fatalf("ApplyFact of %q again = %+v, %v; want the duplicate it is", id, result, err)
 	}
 }
 

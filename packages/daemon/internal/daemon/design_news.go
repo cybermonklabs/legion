@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -205,7 +206,7 @@ func (r *outbox) resolveBaselines(ctx context.Context, row record.OutboxRow, ite
 				answers[question] = got
 				if got.err == nil {
 					resolved.answered = append(resolved.answered, question)
-				} else if reason, giveUp := giveUpReason(row, got.err, "the document's review history"); giveUp {
+				} else if reason, giveUp := r.giveUpReason(row, got.err, "the document's review history"); giveUp {
 					resolved.unread = append(resolved.unread, record.DesignHistoryUnread{DesignHistoryQuestion: question, ReadAt: at,
 						Reason: reason})
 				} else {
@@ -249,7 +250,7 @@ func (r *outbox) readChangeSets(ctx context.Context, row record.OutboxRow, pairs
 		answer, err := r.dispatch.ArtifactChanges(ctx, pair.ArtifactID, pair.From, pair.To)
 		if err == nil {
 			read = append(read, changesFromDispatch(pair, answer, at))
-		} else if reason, giveUp := giveUpReason(row, err, "it"); giveUp {
+		} else if reason, giveUp := r.giveUpReason(row, err, "it"); giveUp {
 			read = append(read, record.DesignChanges{VersionPair: pair, State: record.DesignChangesUnavailable, Reason: reason, ReadAt: at})
 		} else {
 			failed = errors.Join(failed, fmt.Errorf("read what changed in %s from version %d to %d: %w", pair.ArtifactID, pair.From, pair.To, err))
@@ -257,6 +258,11 @@ func (r *outbox) readChangeSets(ctx context.Context, row record.OutboxRow, pairs
 	}
 	return read, failed
 }
+
+// designReadErrorInFull is the message of the lines that carry, in parts, the whole error of a
+// Dispatch read the reconcile gave up on (giveUpReason, storetext.LogWhole), where the reason the
+// record keeps holds only its start.
+const designReadErrorInFull = "outbox design_changes: the error of a Dispatch read given up on, in full; the recorded reason keeps its start"
 
 // giveUpReason is the one rule for giving up on a Dispatch read of the design_changes row row
 // that failed with err (resolveBaselines, readChangeSets): whether the reconcile gives up, and the
@@ -267,16 +273,24 @@ func (r *outbox) readChangeSets(ctx context.Context, row record.OutboxRow, pairs
 // since nothing else ends a read Dispatch keeps failing. A Dispatch build without the changes
 // route (dispatch.ErrNoChangesRoute) is one such failure: while Dispatch rolls out, the next
 // attempt can reach the build that has it. Before then giveUp is false, and the caller returns the
-// failure for the row to retry on its backoff.
-func giveUpReason(row record.OutboxRow, err error, what string) (reason string, giveUp bool) {
+// failure for the row to retry on its backoff, whose settle logs it.
+//
+// Dispatch's error is a far side's text, so the reason holds it as the daemon keeps any far side's
+// error text (storetext.FarSideError): valid UTF-8 with no NUL, no URL's credentials, and cut to
+// its start. The record, the news and every task that carries the item then hold one text, which
+// the store keeps as it is written. What the cut leaves out is in the log: the whole error is
+// logged here, once for the read given up on (storetext.LogWhole).
+func (r *outbox) giveUpReason(row record.OutboxRow, err error, what string) (reason string, giveUp bool) {
 	switch {
 	case errors.Is(err, dispatch.ErrDocumentNotFound):
-		return err.Error(), true
+		reason = storetext.FarSideError(err.Error())
 	case row.Attempts+1 >= designChangesAttempts:
-		return fmt.Sprintf("Dispatch failed %d reads of %s, the last with: %v", row.Attempts+1, what, err), true
+		reason = fmt.Sprintf("Dispatch failed %d reads of %s, the last with: %s", row.Attempts+1, what, storetext.FarSideError(err.Error()))
 	default:
 		return "", false
 	}
+	storetext.LogWhole(r.log, designReadErrorInFull, err.Error(), "row", row.ID, "kind", row.Kind, "issue", row.Issue)
+	return reason, true
 }
 
 // changesFromDispatch is Dispatch's answer for pair as the record keeps it, read at at: whether the

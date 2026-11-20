@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -776,13 +777,16 @@ func (w *workflowRuntime) sessionHeld(ctx context.Context, tx pgx.Tx, c supervis
 
 // agentText is text when it is in the form of a step's agent text (steprecord.AgentTextHolds), and
 // "" when it is not, logged with its length and its first 256 bytes, quoted, so an operator can see
-// what the record leaves out without the log carrying text of any length.
+// what the record leaves out without the log carrying text of any length. The text comes from the
+// agent's frames, so redact.Bytes reads it whole through the URL rule before the cut: a cut made
+// first could end inside a URL's userinfo, before its "@", where the log's rule no longer finds it.
 func (w *workflowRuntime) agentText(token claim.Token, field, text string) string {
 	if text == "" || steprecord.AgentTextHolds(text) {
 		return text
 	}
+	quoted, _ := redact.Bytes(text, 256)
 	w.log.Warn("legion step record leaves out an agent's text outside its form", "claim", string(token), "field", field,
-		"bytes", len(text), "text", strconv.Quote(text[:min(len(text), 256)]))
+		"bytes", len(text), "text", strconv.Quote(quoted))
 	return ""
 }
 

@@ -59,7 +59,8 @@ body: |-
   the new run is told what it is owed. A task's
   text and the news it records are rendered together, so a root architect's task narrowed to the
   decisions its tree still owes carries exactly the news its text names. Dispatch's error text and
-  a document's block ids are quoted where a task names them.
+  a document's block ids are quoted where a task names them. Dispatch's error text is stored and
+  told as any far side's error text is: cut to 2048 runes, with its whole text in the log.
 
   The daemon reads the change set from Dispatch (`GET /api/v1/artifacts/{id}/changes`). Against a
   Dispatch without that route, the task names the two versions and says why it lists no change.

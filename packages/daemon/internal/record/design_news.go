@@ -97,7 +97,8 @@ type DesignHistoryQuestion struct {
 
 // DesignHistoryUnread is a question of Dispatch's review history that the reconcile could not
 // answer within its bounded attempts (the daemon's designChanges): Reason names the failed read,
-// and ReadAt is when the reconcile gave up on it.
+// with Dispatch's error kept as a far side's error text is (the daemon's giveUpReason), and ReadAt
+// is when the reconcile gave up on it.
 //
 // It is a state of its own, and never a version. A read that failed says nothing about the
 // document, so the told row that asked keeps no version of the step, and its item names no pair:
@@ -148,7 +149,8 @@ type DesignChanges struct {
 	Unchanged bool
 	Sections  []SectionChange
 	Blocks    []BlockChange
-	// Reason is why Dispatch could not answer, for an unavailable pair alone.
+	// Reason is why Dispatch could not answer, for an unavailable pair alone, with Dispatch's error
+	// kept as a far side's error text is (the daemon's giveUpReason).
 	Reason string
 	ReadAt time.Time
 }

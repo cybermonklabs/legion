@@ -1311,10 +1311,10 @@ func sessionInfoWith(entry session.ListEntry, held []string) listenerwire.Sessio
 // legacy id past envoy_interests' get bound that envoy_sessions still lists, or one outside
 // nats.go's key alphabet, which GET /v1/interests/<session_id> answers as the 413 or 400
 // writeBusUnavailable writes and the two session routes as a row whose topics are []). Any other
-// error is a read that did not answer, whatever it names. In nats.go v1.50.0 that includes ctx's
+// error is a read that did not answer, whatever it names. In nats.go v1.55.0 that includes ctx's
 // end (store.Registry.Get's bound, or the JetStream MaxWait context nats.go's direct get always
 // runs under, so it always takes requestWithContext), nats.ErrConnectionClosed,
-// nats.ErrNoResponders, and whatever nats.go's publish returns, the raw *net.OpError of a write
+// nats.ErrDisconnected, nats.ErrNoResponders, and whatever nats.go's publish returns, the raw *net.OpError of a write
 // buffer flushed onto a broken connection among them; the rule does not rest on that list being
 // complete.
 func interestReadAnswered(err error) bool {
