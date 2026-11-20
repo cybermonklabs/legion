@@ -503,8 +503,8 @@ func (rig *copiesRig) holdRoleLaneForward(t *testing.T, eventID string) copiesHe
 // not copied and the dead letter that is not sent - pass there and with the change. Row 5 as the
 // verification writes it holds only controls; its case is the role message stored inside the
 // hour before the same takeover, which reaches B, so the row shows the pass ran. Row 8 stores on
-// the holder's subject role messages that a read of the whole envelope refuses or misreads
-// (roleFramesTheStrictReadsMiss) and messages whose role no read can tell
+// the holder's subject a role message of every shape a reader of JSON can read wrongly
+// (roleFramesOfEveryShape) and messages whose role no read can tell
 // (framesNoReadCanTellTheRoleOf): the pass copies each of the first, which reaches B once, and
 // none of the second.
 func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing.T) {
@@ -799,7 +799,7 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 		rig.crash(t, copiesHolder, holder)
 		// Stored once the holder's process stopped, as messages it never read: no process takes
 		// them, and its consumer holds each unacknowledged when the takeover's pass reads it.
-		readable := roleFramesTheStrictReadsMiss(t, copiesRole)
+		readable := roleFramesOfEveryShape(t, copiesRole)
 		unreadable := framesNoReadCanTellTheRoleOf(t)
 		for _, frames := range [][]markedFrame{readable, unreadable} {
 			for _, frame := range frames {
@@ -825,21 +825,21 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 		for _, frame := range readable {
 			t.Run("case: "+frame.shape+" reaches the new holder once", func(t *testing.T) {
 				if n := taker.countMark(frame.mark); n != 1 {
-					t.Errorf("%s received %q %d times; want once: it received %v", copiesTaker, frame.mark, n, taker.allMarks())
+					t.Errorf("%s received %q %d times; want once: it received %v", copiesTaker, frame, n, taker.allMarks())
 				}
 				taker.requireIssuedAt(t, copiesTaker, frame)
 				if marked, _ := keptMarks(t, rig.harness.client, copiesRole, frame.mark); marked != 1 {
-					t.Errorf("role %s's kept lane holds %d copies of %q; want exactly one", copiesRole, marked, frame.mark)
+					t.Errorf("role %s's kept lane holds %d copies of %q; want exactly one", copiesRole, marked, frame)
 				}
 			})
 		}
 		for _, frame := range unreadable {
 			t.Run("control: "+frame.shape+" is not copied, and the new holder does not receive it", func(t *testing.T) {
 				if n := taker.countMark(frame.mark); n != 0 {
-					t.Errorf("%s received %q %d times; want none", copiesTaker, frame.mark, n)
+					t.Errorf("%s received %q %d times; want none", copiesTaker, frame, n)
 				}
 				if marked, _ := keptMarks(t, rig.harness.client, copiesRole, frame.mark); marked != 0 {
-					t.Errorf("role %s's kept lane holds %d copies of %q; want none", copiesRole, marked, frame.mark)
+					t.Errorf("role %s's kept lane holds %d copies of %q; want none", copiesRole, marked, frame)
 				}
 			})
 		}

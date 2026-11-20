@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -123,10 +124,12 @@ func copiesOf(held []storedEnvelope, eventID string) int {
 	return copies
 }
 
-// markedFrame is a message's bytes as a row stores them on a subject, the shape it has, its
-// mark: the text a row finds it by in what a session received (hearMarks) and in a role's kept
-// lane (keptMarks), its payload summary where it is a JSON object with one, else its whole text -
-// and, for a role message, the issued_at its sender wrote, which every copy of it must carry.
+// markedFrame is a message's bytes as a row stores them on a subject, the shape it has, and its
+// mark: a token of letters, digits and hyphens in its payload summary, or in its text where it is
+// no JSON object, which every JSON writer leaves as it is, so a row finds the message by it in the
+// raw bytes of what a session received (hearMarks) and of a role's kept lane (keptMarks), however
+// little of the message a reader of JSON takes. For a role message it also holds the issued_at its
+// sender wrote, which every copy of it must carry.
 type markedFrame struct {
 	shape    string
 	mark     string
@@ -134,22 +137,54 @@ type markedFrame struct {
 	issuedAt int64
 }
 
-// roleFramesTheStrictReadsMiss is a role message of role for each way a stored one, as the role
-// lane stores a forward to the role's holder, can be read wrongly by a read of its whole envelope:
-// four that the listener's envelope decode refuses (decodeStoredEnvelope) although JSON holds them
-// - a newer build's urgency, source and expects_reply words, and an issued_at written with a
-// fraction of zero - and three that a read of the envelope into a struct refuses or reads as no
-// role message - an event id written as a number, a UTF-8 byte order mark before the JSON, and a
-// "TOPIC" key after "topic", which a read that matches keys without case takes as the topic. The
-// plugins' transport reads each of them as that role message. Each one's topic, read by its exact
-// key past the byte order mark, is role's topic, and t fails for a shape that does not hold so.
-func roleFramesTheStrictReadsMiss(t testing.TB, role string) []markedFrame {
+// String names the frame in a row's lines by its shape and its mark.
+func (f markedFrame) String() string {
+	return f.shape + " " + f.mark
+}
+
+// frameMark is a new mark (markedFrame).
+func frameMark() string {
+	return "mark-" + id.New()
+}
+
+// nestedDeepDepth is one more level of nesting than encoding/json reads; JSON.parse has no such
+// limit.
+const nestedDeepDepth = 10_001
+
+// nestedDeep is data, a JSON object, with one more field, "nested": an array nested
+// nestedDeepDepth deep around a string that holds an escaped quote and more closing brackets than
+// opening ones, so a reader that counts brackets inside strings ends the field two levels early,
+// and one that ends a string at an escaped quote finds no end to the string after it.
+func nestedDeep(data []byte) []byte {
+	value := strings.Repeat("[", nestedDeepDepth) + `"]]}\"{"` + strings.Repeat("]", nestedDeepDepth)
+	deep := append([]byte{}, bytes.TrimSuffix(data, []byte("}"))...)
+	return append(deep, `,"nested":`+value+"}"...)
+}
+
+// roleFramesOfEveryShape is a role message of role, as the role lane stores a forward to the
+// role's holder, for each shape a reader of JSON can read wrongly. Four the listener's envelope
+// decode refuses (decodeStoredEnvelope) although JSON holds them: a newer build's urgency, source
+// and expects_reply words, and an issued_at written with a fraction of zero. Four that a read of
+// the envelope into a struct refuses or reads as no role message: an event id written as a number,
+// a UTF-8 byte order mark before the JSON, a "TOPIC" key after "topic", which a read that matches
+// keys without case takes as the topic, and a value nested nestedDeepDepth deep, which
+// encoding/json refuses outright. And two that every reader reads alike, a repeated "topic" key
+// whose last value is the role's and a key written top\u0069c, which hold a reader to the plugins'
+// rules: the last value of a repeated key wins, and a key is read with its escapes. The plugins'
+// transport reads each of them as that role message. Each one's topic, read by its exact key past
+// the byte order mark, is role's topic, and t fails for a shape that does not hold so.
+func roleFramesOfEveryShape(t testing.TB, role string) []markedFrame {
 	t.Helper()
 	topic := contracts.RoleTopicPrefix + role
 	shapes := []struct {
 		shape string
 		edit  func(item *contracts.Envelope, fields map[string]json.RawMessage)
 		bytes func(data []byte) []byte
+		// deep marks the shape encoding/json refuses: its topic is checked before nestedDeep.
+		deep bool
+		// alike marks a shape every reader of JSON reads as role's message; the plain read of
+		// its topic by exact key below holds it to that.
+		alike bool
 	}{
 		{shape: "a newer build's urgency", edit: func(item *contracts.Envelope, _ map[string]json.RawMessage) { item.Urgency = "critical" }},
 		{shape: "a newer build's source", edit: func(item *contracts.Envelope, _ map[string]json.RawMessage) { item.Source = "linear" }},
@@ -165,29 +200,50 @@ func roleFramesTheStrictReadsMiss(t testing.TB, role string) []markedFrame {
 		{shape: "a byte order mark before the JSON", bytes: func(data []byte) []byte { return append([]byte("\xef\xbb\xbf"), data...) }},
 		{shape: `a "TOPIC" key after "topic"`, bytes: func(data []byte) []byte {
 			shadow := `,"TOPIC":"` + contracts.AgentTopicPrefix + `ses_topic_shadow"}`
-			return append(bytes.TrimSuffix(data, []byte("}")), shadow...)
+			return append(append([]byte{}, bytes.TrimSuffix(data, []byte("}"))...), shadow...)
+		}},
+		{shape: "a value nested 10,001 deep", bytes: nestedDeep, deep: true},
+		{shape: `a repeated "topic" key whose last value is the role's`, alike: true, bytes: func(data []byte) []byte {
+			first := `{"topic":"` + contracts.AgentTopicPrefix + `ses_topic_first",`
+			return append([]byte(first), bytes.TrimPrefix(data, []byte("{"))...)
+		}},
+		{shape: `a topic key written top\u0069c`, alike: true, bytes: func(data []byte) []byte {
+			return bytes.Replace(data, []byte(`"topic":`), []byte(`"top\u0069c":`), 1)
 		}},
 	}
 	frames := make([]markedFrame, 0, len(shapes))
 	for _, shape := range shapes {
-		item := listenerTestEnvelope(topic, roleForwardDedupePrefix+"strict-reads-miss-"+id.New())
-		item.PayloadSummary = shape.shape + " " + id.New()
+		item := listenerTestEnvelope(topic, roleForwardDedupePrefix+"every-shape-"+id.New())
+		mark := frameMark()
+		item.PayloadSummary = shape.shape + " " + mark
 		fields := map[string]json.RawMessage{}
 		if shape.edit != nil {
 			shape.edit(&item, fields)
 		}
-		data := withFields(t, item, fields)
+		plain := withFields(t, item, fields)
+		data := plain
 		if shape.bytes != nil {
-			data = shape.bytes(data)
+			data = shape.bytes(plain)
 		}
-		if got, isString := exactField(t, data, "topic"); !isString || got != topic {
-			t.Fatalf("the %s frame %s has the topic %q by its exact key; want %s", shape.shape, data, got, topic)
+		checked := data
+		if shape.deep {
+			var all map[string]json.RawMessage
+			if err := json.Unmarshal(data, &all); err == nil {
+				t.Fatalf("encoding/json reads the %s frame; want it to refuse it", shape.shape)
+			}
+			checked = plain
+		}
+		if got, isString := exactField(t, checked, "topic"); !isString || got != topic {
+			t.Fatalf("the %s frame %s has the topic %q by its exact key; want %s", shape.shape, checked, got, topic)
 		}
 		var strict contracts.Envelope
-		if err := decodeStoredEnvelope(data, &strict); err == nil && strict.Topic == topic {
+		if !shape.alike && decodeStoredEnvelope(data, &strict) == nil && strict.Topic == topic {
 			t.Fatalf("the listener's envelope decode reads the %s frame %s as role %s's message; want it to refuse or misread it", shape.shape, data, role)
 		}
-		frames = append(frames, markedFrame{shape: shape.shape, mark: item.PayloadSummary, data: data, issuedAt: item.IssuedAt})
+		if !strings.Contains(string(data), mark) {
+			t.Fatalf("the %s frame does not hold its mark %s as it is", shape.shape, mark)
+		}
+		frames = append(frames, markedFrame{shape: shape.shape, mark: mark, data: data, issuedAt: item.IssuedAt})
 	}
 	return frames
 }
@@ -200,15 +256,16 @@ func roleFramesTheStrictReadsMiss(t testing.TB, role string) []markedFrame {
 // so.
 func framesNoReadCanTellTheRoleOf(t testing.TB) []markedFrame {
 	t.Helper()
-	notAnObject := "not a JSON object " + id.New()
+	marks := []string{frameMark(), frameMark(), frameMark(), frameMark()}
+	notAnObject := "not a JSON object " + marks[0]
 	topicItem := listenerTestEnvelope("", roleForwardDedupePrefix+"topic-a-number-"+id.New())
-	topicItem.PayloadSummary = "a topic that is a number " + id.New()
+	topicItem.PayloadSummary = "a topic that is a number " + marks[1]
 	numberTopic := withFields(t, topicItem, map[string]json.RawMessage{"topic": json.RawMessage(`5`)})
 	objectItem := listenerTestEnvelope("", "topic-an-object-"+id.New())
-	objectItem.PayloadSummary = "a topic that is a JSON object " + id.New()
+	objectItem.PayloadSummary = "a topic that is a JSON object " + marks[2]
 	objectTopic := withFields(t, objectItem, map[string]json.RawMessage{"topic": json.RawMessage(`{"name":"notifications.role.deliverer"}`)})
 	markItem := listenerTestEnvelope(contracts.AgentTopicPrefix+"ses_role_mark_a_number", "role-mark-a-number-"+id.New())
-	markItem.PayloadSummary = "a role mark that is a number " + id.New()
+	markItem.PayloadSummary = "a role mark that is a number " + marks[3]
 	numberMark := withFields(t, markItem, map[string]json.RawMessage{"role": json.RawMessage(`7`)})
 	var fields map[string]json.RawMessage
 	if json.Unmarshal([]byte(notAnObject), &fields) == nil {
@@ -224,10 +281,10 @@ func framesNoReadCanTellTheRoleOf(t testing.TB) []markedFrame {
 		t.Fatalf("the frame %s has the role mark %q (a string: %t); want the number 7", numberMark, got, isString)
 	}
 	frames := []markedFrame{
-		{shape: "a message that is not a JSON object", mark: notAnObject, data: []byte(notAnObject)},
-		{shape: "a topic that is a number, with no role mark", mark: topicItem.PayloadSummary, data: numberTopic},
-		{shape: "a topic that is a JSON object, with no role mark", mark: objectItem.PayloadSummary, data: objectTopic},
-		{shape: "a role mark that is a number, under a topic that names no role", mark: markItem.PayloadSummary, data: numberMark},
+		{shape: "a message that is not a JSON object", mark: marks[0], data: []byte(notAnObject)},
+		{shape: "a topic that is a number, with no role mark", mark: marks[1], data: numberTopic},
+		{shape: "a topic that is a JSON object, with no role mark", mark: marks[2], data: objectTopic},
+		{shape: "a role mark that is a number, under a topic that names no role", mark: marks[3], data: numberMark},
 	}
 	for _, frame := range frames {
 		if _, err := readRoleFrame(frame.data); !errors.Is(err, errRoleFrameUnreadable) {
@@ -277,20 +334,6 @@ func exactField(t testing.TB, data []byte, key string) (string, bool) {
 	return value, true
 }
 
-// markOf is the mark of a message's bytes (markedFrame): its payload summary, read by its exact
-// key past a leading UTF-8 byte order mark, where it is a JSON object with one, else its whole
-// text.
-func markOf(data []byte) string {
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")), &fields) == nil {
-		var summary string
-		if json.Unmarshal(fields["payload_summary"], &summary) == nil && summary != "" {
-			return summary
-		}
-	}
-	return string(data)
-}
-
 // eventIDOf is the event id of a message's bytes, read by its exact key, empty where it is not a
 // JSON object or its event id is not a string.
 func eventIDOf(data []byte) string {
@@ -322,10 +365,10 @@ func issuedAtOf(data []byte) int64 {
 }
 
 // hearMarks is sessionID's process on a connection of its own: it takes each relay frame as bytes,
-// records its event id and its mark (markOf) however little of it a read of the envelope would
-// take, and answers it received and done, as a session that wrote it does; it answers the
-// connection probe (bus.ConnectionProbeHeader) done, as the plugins do. It answers nothing more,
-// and its connection drains, once t ends.
+// records its event id and its raw text, which holds its mark (markedFrame) however little of it a
+// read of JSON would take, and answers it received and done, as a session that wrote it does; it
+// answers the connection probe (bus.ConnectionProbeHeader) done, as the plugins do. It answers
+// nothing more, and its connection drains, once t ends.
 func hearMarks(t testing.TB, url, sessionID string) *heardFrames {
 	t.Helper()
 	conn := testnats.Connect(t, url)
@@ -341,7 +384,7 @@ func hearMarks(t testing.TB, url, sessionID string) *heardFrames {
 		} else {
 			heard.mu.Lock()
 			heard.events = append(heard.events, eventIDOf(msg.Data))
-			heard.marks = append(heard.marks, markOf(msg.Data))
+			heard.marks = append(heard.marks, string(msg.Data))
 			heard.issuedAt = append(heard.issuedAt, issuedAtOf(msg.Data))
 			heard.mu.Unlock()
 		}
@@ -365,8 +408,8 @@ func hearMarks(t testing.TB, url, sessionID string) *heardFrames {
 	return heard
 }
 
-// keptMarks is how many messages role's kept lane holds whose mark (markOf) is mark, and how many
-// it holds in all, read as bytes.
+// keptMarks is how many messages role's kept lane holds whose raw bytes hold mark (markedFrame),
+// and how many it holds in all.
 func keptMarks(t testing.TB, client *bus.Client, role, mark string) (int, int) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -377,7 +420,7 @@ func keptMarks(t testing.TB, client *bus.Client, role, mark string) (int, int) {
 	}
 	marked := 0
 	for _, message := range messages {
-		if markOf(message.Data) == mark {
+		if bytes.Contains(message.Data, []byte(mark)) {
 			marked++
 		}
 	}

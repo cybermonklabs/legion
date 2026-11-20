@@ -525,8 +525,10 @@ record finished) and otherwise only once its last write is fifteen minutes old, 
 moves costs four writes an hour however many listeners sweep it, and never ages out while a pass
 needs it. A role message is one whose topic is the role's, or whose `role` field names it. A pass,
 the relay and the kept lane's walk tell it by one read (`readRoleFrame`): past a leading UTF-8 byte
-order mark, the message is read as a JSON object and only its `topic` and `role` fields are read,
-each by its exact key, so a later `"TOPIC"` key or an event id written as a number does not change
+order mark, the message's top-level fields are split by their brackets and strings, at any depth,
+and only its `topic` and `role` fields are read, each by its exact key, the last of a repeated key
+winning, as the plugins' `JSON.parse` reads them. So a later `"TOPIC"` key, an event id written as
+a number, or a value nested deeper than the 10,000 levels `encoding/json` reads does not change
 what it is. The envelope is then read field by field, a field whose value its type does not take
 left unset, so the message is still copied whatever the listener's wire rules or the envelope's
 own say of it. An `urgency` or `source` word a newer build adds is kept in the copy, for the

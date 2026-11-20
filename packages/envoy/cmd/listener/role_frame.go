@@ -33,23 +33,21 @@ type roleFrame struct {
 	role   string
 }
 
-// readRoleFrame reads data, past a leading UTF-8 BOM, as a JSON object and tells its role from two
-// fields alone, each by its exact key, as the plugins' transport reads them: a message whose topic
-// is a role's topic (roleOfLaneTopic) is a role message of that role whatever else it carries, and
-// one whose topic names no role is a role message of the role its role mark names, in either form
-// (contracts.CanonicalRole). A reader that matched keys without regard to case, as encoding/json
-// does into a struct, would take a later "TOPIC" key as the topic, and one that decoded the whole
-// envelope would refuse a message for a field that tells no role, such as an event id written as a
-// number; either would hand a role message to a session that does not hold the role. A null field
-// is an absent one. The answer is errRoleFrameUnreadable for a message no read can tell a role
-// message or not.
+// readRoleFrame reads data, past a leading UTF-8 BOM, as a JSON object (topLevelFields) and tells
+// its role from two fields alone, each by its exact key, as the plugins' transport reads them: a
+// message whose topic is a role's topic (roleOfLaneTopic) is a role message of that role whatever
+// else it carries, and one whose topic names no role is a role message of the role its role mark
+// names, in either form (contracts.CanonicalRole). A reader that matched keys without regard to
+// case, as encoding/json does into a struct, would take a later "TOPIC" key as the topic; one that
+// decoded the whole envelope would refuse a message for a field that tells no role, such as an
+// event id written as a number; and one with encoding/json's limit on nesting would refuse a
+// message with a value nested deeper than 10,000, which JSON.parse reads. Each would hand a role
+// message to a session that does not hold the role. A null field is an absent one. The answer is
+// errRoleFrameUnreadable for a message no read can tell a role message or not.
 func readRoleFrame(data []byte) (roleFrame, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(bytes.TrimPrefix(data, utf8BOM), &fields); err != nil {
+	fields, err := topLevelFields(bytes.TrimPrefix(data, utf8BOM))
+	if err != nil {
 		return roleFrame{}, fmt.Errorf("%w: it is not a JSON object: %w", errRoleFrameUnreadable, err)
-	}
-	if fields == nil {
-		return roleFrame{}, fmt.Errorf("%w: it is not a JSON object: it is null", errRoleFrameUnreadable)
 	}
 	frame := roleFrame{fields: fields}
 	topic, topicErr := frame.text("topic")
@@ -68,6 +66,148 @@ func readRoleFrame(data []byte) (roleFrame, error) {
 		return roleFrame{}, fmt.Errorf("%w: %w", errRoleFrameUnreadable, err)
 	}
 	return frame, nil
+}
+
+// topLevelFields reads data, past JSON whitespace, as a JSON object and returns its top-level
+// fields by their exact keys, the last value of a repeated key winning, as the plugins' JSON.parse
+// keeps them. It finds each value's end by its brackets and strings alone, at any depth:
+// encoding/json refuses a document nested deeper than 10,000 and JSON.parse does not, so a reader
+// with that limit would tell a role message with a value nested that deep a message whose role
+// cannot be read, and the session's plugin would read it as the role message it is. It refuses
+// only what JSON.parse refuses too: a document that is not an object, a string with no end, a key
+// that is no string or holds a bad escape, a missing colon or comma, a value that is missing, an
+// object or array with no end, and text after the object. It checks no more of a value than where
+// it ends, so a value JSON.parse would refuse is kept as its raw text, which the field's own read
+// (roleFrame.text, roleFrame.envelope) refuses in turn.
+func topLevelFields(data []byte) (map[string]json.RawMessage, error) {
+	i := skipJSONSpace(data, 0)
+	if i == len(data) || data[i] != '{' {
+		return nil, errors.New("it does not start with {")
+	}
+	fields := map[string]json.RawMessage{}
+	i = skipJSONSpace(data, i+1)
+	if i < len(data) && data[i] == '}' {
+		return fields, endOfJSONDocument(data, i+1)
+	}
+	for {
+		if i == len(data) || data[i] != '"' {
+			return nil, fmt.Errorf("the key at byte %d is not a string", i)
+		}
+		keyEnd, err := endOfJSONString(data, i)
+		if err != nil {
+			return nil, err
+		}
+		key, err := jsonKey(data[i:keyEnd])
+		if err != nil {
+			return nil, err
+		}
+		i = skipJSONSpace(data, keyEnd)
+		if i == len(data) || data[i] != ':' {
+			return nil, fmt.Errorf("the key %q has no colon after it", key)
+		}
+		start := skipJSONSpace(data, i+1)
+		end, err := endOfJSONValue(data, start)
+		if err != nil {
+			return nil, fmt.Errorf("the value of %q: %w", key, err)
+		}
+		fields[key] = json.RawMessage(data[start:end])
+		i = skipJSONSpace(data, end)
+		if i == len(data) {
+			return nil, errors.New("the object has no end")
+		}
+		switch data[i] {
+		case ',':
+			i = skipJSONSpace(data, i+1)
+		case '}':
+			return fields, endOfJSONDocument(data, i+1)
+		default:
+			return nil, fmt.Errorf("byte %d is neither a comma nor the object's end", i)
+		}
+	}
+}
+
+// jsonKey is the key a JSON string token names: its text, with any escape read as encoding/json
+// reads one, so a key written top\u0069c is the topic.
+func jsonKey(token []byte) (string, error) {
+	if bytes.IndexByte(token, '\\') < 0 {
+		return string(token[1 : len(token)-1]), nil
+	}
+	var key string
+	if err := json.Unmarshal(token, &key); err != nil {
+		return "", fmt.Errorf("the key %s: %w", token, err)
+	}
+	return key, nil
+}
+
+// endOfJSONValue is the index just past the JSON value that starts at data[i]: a string, an
+// object or array found by counting its brackets outside strings, with no limit on depth, or a
+// scalar that runs to the next comma, closing bracket or whitespace.
+func endOfJSONValue(data []byte, i int) (int, error) {
+	if i == len(data) {
+		return 0, errors.New("it is missing")
+	}
+	switch data[i] {
+	case '"':
+		return endOfJSONString(data, i)
+	case '{', '[':
+		depth := 0
+		for j := i; j < len(data); j++ {
+			switch data[j] {
+			case '"':
+				end, err := endOfJSONString(data, j)
+				if err != nil {
+					return 0, err
+				}
+				j = end - 1
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+				if depth == 0 {
+					return j + 1, nil
+				}
+			}
+		}
+		return 0, errors.New("an object or array has no end")
+	}
+	j := i
+	for j < len(data) && !strings.ContainsRune(",}] \t\n\r", rune(data[j])) {
+		j++
+	}
+	if j == i {
+		return 0, errors.New("it is missing")
+	}
+	return j, nil
+}
+
+// endOfJSONString is the index just past the JSON string whose opening quote is data[i]; a
+// backslash escapes the byte after it.
+func endOfJSONString(data []byte, i int) (int, error) {
+	for j := i + 1; j < len(data); j++ {
+		switch data[j] {
+		case '\\':
+			j++
+		case '"':
+			return j + 1, nil
+		}
+	}
+	return 0, fmt.Errorf("the string at byte %d has no end", i)
+}
+
+// endOfJSONDocument refuses text after the object that ends at data[i-1], as JSON.parse does.
+func endOfJSONDocument(data []byte, i int) error {
+	if skipJSONSpace(data, i) != len(data) {
+		return errors.New("text follows the object")
+	}
+	return nil
+}
+
+// skipJSONSpace is the index of the first byte at or after i that is not JSON whitespace.
+func skipJSONSpace(data []byte, i int) int {
+	for i < len(data) && (data[i] == ' ' || data[i] == '\t' || data[i] == '\n' || data[i] == '\r') {
+		i++
+	}
+	return i
 }
 
 // text is the string the frame's field key holds, empty when the field is absent or null, and an
