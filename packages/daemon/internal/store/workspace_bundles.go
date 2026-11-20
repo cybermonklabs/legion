@@ -117,6 +117,7 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID
 	// The body is read back only when it is being sent: a refusal records the attempt and
 	// answers the row's facts alone, and a bundle runs to tens of megabytes.
 	err := transactUntilCommitted(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		found = false
 		err := tx.QueryRow(ctx, `update workspace_bundles
 			set attempt_pod_uid = $2, attempt_at = now(),
 				attempt_outcome = case when date_trunc('second', at) <= $3 then 'sent' else 'refused_older' end
@@ -132,6 +133,9 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID
 	})
 	if !found && err == nil {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, nil
+	}
+	if errors.Is(err, ErrCommitOutcomeUnknown) {
+		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("take the workspace bundle of %s for the pod %s: %w: the bundle's one restore attempt may be spent, and its work stays in the database", issue, podUID, err)
 	}
 	if err != nil {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("take the workspace bundle of %s for the pod %s to restore: %w", issue, podUID, err)

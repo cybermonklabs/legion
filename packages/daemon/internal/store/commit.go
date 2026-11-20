@@ -421,8 +421,9 @@ func watchOutcome(ctx context.Context, pool TxPool, xid string, hooks []func()) 
 
 // transactUntilCommitted runs write in Transact until one run commits, and returns nil then. A run
 // whose outcome is unknown is waited for and taken as that outcome; one that did not commit runs
-// again after outcomeRetryFirst, the wait doubling up to outcomeRetryMax. write must be safe to run
-// again after a run that did not commit.
+// again after outcomeRetryFirst, the wait doubling up to outcomeRetryMax. When ctx ends first, it
+// returns the last run's error, so a run whose outcome is still unknown answers
+// ErrCommitOutcomeUnknown. write must be safe to run again after a run that did not commit.
 func transactUntilCommitted(ctx context.Context, pool TxPool, write func(ctx context.Context, tx pgx.Tx) error) error {
 	for wait := outcomeRetryFirst; ; wait = min(2*wait, outcomeRetryMax) {
 		err := Transact(ctx, pool, write)
@@ -433,7 +434,7 @@ func transactUntilCommitted(ctx context.Context, pool TxPool, write func(ctx con
 		if errors.As(err, &unknown) {
 			committed, outcomeErr := awaitOutcome(ctx, pool, unknown.xid)
 			if outcomeErr != nil {
-				return outcomeErr
+				return err
 			}
 			if committed {
 				return nil
