@@ -18,6 +18,11 @@
 // it, case kept, to the list of its values in order, `{}` for none (Go's `nats.Header` as JSON).
 // A frame over 1 MiB closes the socket 1009. The server pings every 20 s.
 //
+// A test that drives the listener's HTTP routes beside the socket, as a session registers and
+// sends at the listener it opens its socket at, serves them through `routes`
+// (`RelaySocketStandInOptions`): it is asked for every request that is neither the trade nor the
+// relay path, and a route it does not answer is 404.
+//
 // Nothing here registers a hook: a test file pushes the stand-in's `stop` onto its own cleanup.
 
 import {
@@ -174,8 +179,23 @@ function verifiedProof(
   }
 }
 
+/** How a test starts the stand-in. */
+export interface RelaySocketStandInOptions {
+  /**
+   * Answers a request that is neither the broker's trade (`POST /v1/oauth/token`) nor the relay
+   * path (`/v1/sessions/<session>/relay`), on the same origin as both, with the stand-in itself to
+   * read and drive (`deliver`); undefined, or a request it does not answer, is 404.
+   */
+  readonly routes?: (
+    request: Request,
+    standIn: RelaySocketStandIn
+  ) => Response | undefined | Promise<Response | undefined>;
+}
+
 /** Starts the stand-in on a port the kernel picks. */
-export function startRelaySocketStandIn(): RelaySocketStandIn {
+export function startRelaySocketStandIn(
+  options: RelaySocketStandInOptions = {}
+): RelaySocketStandIn {
   const minted: StandInToken[] = [];
   const revoked = new Set<string>();
   const upgrades: StandInUpgrade[] = [];
@@ -293,7 +313,8 @@ export function startRelaySocketStandIn(): RelaySocketStandIn {
       if (request.method === "POST" && url.pathname === "/v1/oauth/token") return trade(request);
       const matched = /^\/v1\/sessions\/([^/]+)\/relay$/.exec(url.pathname);
       if (matched === null || request.method !== "GET") {
-        return new Response("not found", { status: 404 });
+        const answered = await options.routes?.(request, standIn);
+        return answered ?? new Response("not found", { status: 404 });
       }
       const session = decodeURIComponent(matched[1] ?? "");
       const authorization = request.headers.get("Authorization") ?? "";
