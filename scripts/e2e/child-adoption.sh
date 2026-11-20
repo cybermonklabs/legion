@@ -7,9 +7,9 @@
 # another tree, the child of a root held under an unreleased child among them, is refused by name.
 # The whole daemon is booted by the function `legion start` calls, over a real PostgreSQL and a
 # real nats-server, and driven only through the Dispatch envelopes of the ENVOY_NOTIFICATIONS stream
-# and its own HTTP routes; every
-# step of its eleven is read back from GET /legion/v1/state, the park route, what the daemon wrote
-# to the Dispatch stand-in, and the daemon's own record of each issue's tree
+# and its own HTTP routes; every step of its eleven is read back from GET /legion/v1/state,
+# rerun_child's refusal of a running child, what the daemon wrote to the Dispatch stand-in, and the
+# daemon's own record of each issue's tree
 # (packages/daemon/internal/daemon/child_adoption_live_test.go, which this script builds with
 # `-tags e2e`). Each check prints `== <name>`, what it observed and `ok <name>`; the first that
 # fails ends the run non-zero, naming it.

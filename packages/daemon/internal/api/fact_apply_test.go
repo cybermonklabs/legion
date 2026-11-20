@@ -258,10 +258,10 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 // worker, whose run the record holds open, goes through apply as every fact does and waits for
 // no stream, since the operator is no requester whose stream the record reads. A request an
 // agent made waits only where the record names that agent the agent of a run on the issue its
-// fact names: the architect's park of a child in implementing, whose run is its implementer's,
-// waits for nothing, though the architect runs the accepting step of another child. A request
-// refused before it applies a fact waits for nothing: the tester's completion with no verdict,
-// and the architect's move back of an issue of another tree.
+// fact names: the architect's move back of a child in implementing, whose run is its
+// implementer's, waits for nothing, though the architect runs the accepting step of another
+// child. A request refused before it applies a fact waits for nothing: the tester's completion
+// with no verdict, and the architect's move back of an issue of another tree.
 func TestAFactNoAgentRequestedWaitsForNothing(t *testing.T) {
 	r := newAwaitRig(t)
 	worker, _ := r.h.launchIn("LEGION-208", "LEGION-209", claim.RoleImplementer)
@@ -285,8 +285,10 @@ func TestAFactNoAgentRequestedWaitsForNothing(t *testing.T) {
 	implementer, _ := r.h.launchIn("LEGION-300", "LEGION-302", claim.RoleImplementer)
 	r.runs(t, "LEGION-301", acceptingPlace, architect.token)
 	r.runs(t, "LEGION-302", implementingPlace, implementer)
-	if park := r.h.request(http.MethodPost, "/legion/v1/children/park", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-302"}, nil); park.Code != http.StatusOK {
-		t.Fatalf("park = %d: %s", park.Code, park.Body)
+	if back := r.h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{
+		"grantId": architect.grant(t), "issue": "LEGION-302", "to": "planning", "reason": "the plan needs another look",
+	}, nil); back.Code != http.StatusOK {
+		t.Fatalf("the architect's move back of LEGION-302 = %d: %s", back.Code, back.Body)
 	}
 
 	seedIssueAt(t, r.h, "LEGION-208", phase.Testing)
@@ -305,6 +307,6 @@ func TestAFactNoAgentRequestedWaitsForNothing(t *testing.T) {
 		t.Fatalf("the waits made = %+v, want none", made)
 	}
 	if applied := r.facts.recorded(); len(applied) != 2 {
-		t.Fatalf("the facts applied = %#v, want the operator's retry and the park", applied)
+		t.Fatalf("the facts applied = %#v, want the operator's retry and the move back", applied)
 	}
 }

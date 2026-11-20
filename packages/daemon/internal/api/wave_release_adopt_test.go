@@ -107,10 +107,15 @@ func (a *adoptionHarness) release(keys ...string) *httptest.ResponseRecorder {
 	return a.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": a.architect.grant(a.t), "issues": keys}, nil)
 }
 
-func (a *adoptionHarness) assertParked(key string) {
+// assertTheArchitectsBacklogStands is the architect of adoptionTree writing backlog on key in
+// Dispatch (ownersBacklog). The daemon takes that write as a person's move because that architect
+// owns key in its tree: key leaves the workflow as a child of adoptionTree, at phase done with no
+// linger of its own.
+func (a *adoptionHarness) assertTheArchitectsBacklogStands(key string) {
 	a.t.Helper()
-	if recorder := a.request(http.MethodPost, "/legion/v1/children/park", map[string]any{"grantId": a.architect.grant(a.t), "issue": key}, nil); recorder.Code != http.StatusOK {
-		a.t.Fatalf("park_child of %s by the architect of %s = %d: %s", key, adoptionTree, recorder.Code, recorder.Body)
+	ownersBacklog(a.t, a.harness, []intake.Handler{blockers.NewMirror(a.records, testProject), a.engine, a.admission}, a.statuses, a.architect, key)
+	if got := a.record(key); got.Tree != adoptionTree || got.Lingers() {
+		a.t.Fatalf("%s after the backlog of the architect of %s = %#v, want it out of the workflow as a child of that tree, with no linger of its own", key, adoptionTree, got)
 	}
 }
 
@@ -242,7 +247,7 @@ func TestReleaseAdoptsAQueuedRootDispatchShowsTodo(t *testing.T) {
 	if len(a.statuses.writes) != 0 {
 		t.Fatalf("Dispatch writes = %#v, want none: the child is already todo", a.statuses.writes)
 	}
-	a.assertParked(adoptionChild)
+	a.assertTheArchitectsBacklogStands(adoptionChild)
 }
 
 // A queued root the release adopts that waits on an unfinished Dispatch issue joins the tree and
@@ -318,7 +323,7 @@ func TestReleaseAdoptsAQueuedRootFromBacklog(t *testing.T) {
 		Status: "todo", Title: adoptionChild, Parent: adoptionTree, Rank: "B", HandedOver: true, DaemonActor: true})
 	got := a.record(adoptionChild)
 	a.assertJoinedAndWaiting(adoptionChild, got.Generation)
-	a.assertParked(adoptionChild)
+	a.assertTheArchitectsBacklogStands(adoptionChild)
 }
 
 // The state INFRA-214 reached: queued with the label, moved to backlog (its own tree lingers), the
@@ -363,7 +368,7 @@ func TestReleaseAdoptsTheStateInfra214Reached(t *testing.T) {
 	if got := a.record(adoptionChild); !reflect.DeepEqual(got, adopted) {
 		t.Fatalf("%s after its old linger expired = %#v, want it unchanged from %#v", adoptionChild, got, adopted)
 	}
-	a.assertParked(adoptionChild)
+	a.assertTheArchitectsBacklogStands(adoptionChild)
 }
 
 // A labelled todo issue under a backlog child of the live tree, which the tree's architect has not
@@ -391,7 +396,7 @@ func TestReleaseAdoptsAHeldRootUnderAnUnreleasedChild(t *testing.T) {
 	if len(a.statuses.writes) != 0 {
 		t.Fatalf("Dispatch writes = %#v, want none: the child is already todo", a.statuses.writes)
 	}
-	a.assertParked(adoptionChild)
+	a.assertTheArchitectsBacklogStands(adoptionChild)
 }
 
 // A child the release cannot adopt is refused with the reason, naming the child, and nothing is
@@ -568,8 +573,8 @@ func TestReleaseOfAClosedTreesMemberIsAcceptedWhole(t *testing.T) {
 	if len(a.statuses.writes) != 0 {
 		t.Fatalf("Dispatch writes = %#v, want none: the member is already todo", a.statuses.writes)
 	}
-	// The member is the taking tree's now: its architect parks it as it parks any child of it.
-	a.assertParked(member)
+	// The member is the taking tree's now: its architect's backlog of it stands, as on any child of it.
+	a.assertTheArchitectsBacklogStands(member)
 }
 
 // A closed tree's member whose only blocker is the one the release's own Dispatch read showed —
