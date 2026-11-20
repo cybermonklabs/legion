@@ -270,6 +270,15 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		conns.Register(tokens[role.role], conn)
 		rig.workers[role.role] = conn
 	}
+	// A role seeded as having answered its round answered from a turn whose end sent the report
+	// that nothing of its own runs, as signal writes for an answer a test makes. Without it the
+	// round would wait for that role's report until its bound (backgroundClaims). It is written
+	// after the restore, onto the launch the restore left the claim at.
+	for _, role := range roles {
+		if role.round != "" && role.signalled {
+			rig.reportsNothingRunning(role.role)
+		}
+	}
 	return rig
 }
 
@@ -492,6 +501,13 @@ func (r *podUpdateRig) awaitSwept(role claim.Role, what string, want func(superv
 // (supervise.PromptAcked). Answered while one is still in flight, the machine decides that
 // acknowledgement after the answer, and a sweep that reads it then masks the answer (roundGroup)
 // and asks the runtime nothing, which CI run 41563218953 is the reproduction of.
+//
+// After the answer, signal writes the activity report that the answering turn's end sends in
+// production: nothing of the worker's own runs (reportsNothingRunning). In production every
+// answer comes from a turn whose end sends such a report, and before its bound a round waits for
+// a claim with a process in its pod that has sent no report since its last turn started
+// (backgroundClaims, dispatch://INFRA-4203 R1). Without the report, every round this rig's
+// answers end early would hold to its bound.
 func (r *podUpdateRig) signal(role claim.Role, head string) {
 	r.t.Helper()
 	m, ok := r.sup.Machine(r.tokens[role])
@@ -505,6 +521,7 @@ func (r *podUpdateRig) signal(role claim.Role, head string) {
 	}); err != nil {
 		r.t.Fatalf("%s answered the update round: %v", role, err)
 	}
+	r.reportsNothingRunning(role)
 }
 
 // handle drives one event into a claim's machine and waits for it, as the daemon's own sources do.
@@ -1336,6 +1353,8 @@ func TestPodUpdateKeepsARoundWhoseLiveClaimStopsRecordingItsLivePod(t *testing.T
 	}
 
 	rig.resumeInPod(claim.RoleImplementer)
+	// The resumed process sends its first report, that nothing runs, as Oh My Pi does after a launch.
+	rig.reportsNothingRunning(claim.RoleImplementer)
 
 	rig.awaitReplacement(1, "at the sweep that read the round's own pod recorded again")
 	rig.awaitClaim(claim.RoleImplementer, "its round to end with the replacement",

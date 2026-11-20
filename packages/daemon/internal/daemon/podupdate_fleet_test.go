@@ -97,6 +97,10 @@ type fleetRig struct {
 	records record.Store
 	clock   *heldClock
 	grants  *credential.Grants
+	// st is the store the rig's supervisor writes, over the same Postgres, through which signal
+	// writes what only a session's own route writes: the activity report of an answering turn's
+	// end (api's claims activity route, store.Store.PutClaimActivity). A restart opens its own.
+	st *store.Store
 	// api is the daemon's own HTTP handler over the same store: the completion route under test.
 	api http.Handler
 	// handoffs is the Dispatch that route reads a completion's handoff record back from.
@@ -208,7 +212,7 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 		conns.Register(token, workers[token])
 	}
 	records := record.NewStore()
-	rig := &fleetRig{t: t, ctx: ctx, sup: sup, rt: rt, pool: pool, records: records, clock: clock,
+	rig := &fleetRig{t: t, ctx: ctx, sup: sup, rt: rt, pool: pool, st: st, records: records, clock: clock,
 		grants: credential.New(nil), handoffs: &fleetHandoffs{handoffs: map[string]dispatch.Handoff{}},
 		tokens: tokens, workers: workers, pods: pods, noPod: map[string]bool{}, wire: wire}
 	rig.s = &supervision{
@@ -301,7 +305,7 @@ func (r *fleetRig) restart() *fleetRig {
 		workers[token] = fake.NewConn()
 		conns.Register(token, workers[token])
 	}
-	next := &fleetRig{t: r.t, ctx: r.ctx, sup: sup, rt: rt, pool: r.pool, records: r.records, clock: r.clock,
+	next := &fleetRig{t: r.t, ctx: r.ctx, sup: sup, rt: rt, pool: r.pool, st: st, records: r.records, clock: r.clock,
 		grants: r.grants, handoffs: r.handoffs, tokens: r.tokens, workers: workers, pods: r.pods,
 		noPod: maps.Clone(r.noPod), wire: r.wire}
 	next.s = &supervision{
@@ -352,6 +356,13 @@ func (r *fleetRig) awaitRound(issue string, role claim.Role) supervise.Claim {
 }
 
 // signal is the worker answering ready_for_update, as api's claims/ready-for-update posts it.
+//
+// After the answer, signal writes the activity report that the answering turn's end sends in
+// production: nothing of the worker's own runs, onto the claim's current launch through the
+// store's own call. In production every answer comes from a turn whose end sends such a report,
+// and before its bound a round waits for a claim with a process in its pod that has sent no
+// report since its last turn started (backgroundClaims, dispatch://INFRA-4203 R1). Without the
+// report, every round this rig's answers end early would hold to its bound.
 func (r *fleetRig) signal(issue string, role claim.Role, head string) {
 	r.t.Helper()
 	m := r.machineOf(issue, role)
@@ -360,6 +371,10 @@ func (r *fleetRig) signal(issue string, role claim.Role, head string) {
 		Claim: c.Token, Generation: c.Generation, Session: c.Session, Round: c.UpdateRound, Head: head,
 	}); err != nil {
 		r.t.Fatalf("%s's %s answered the update round: %v", issue, role, err)
+	}
+	known, err := r.st.PutClaimActivity(r.ctx, c.Token, m.Claim().Generation, claim.SessionActivity{At: r.clock.Now().UTC()})
+	if err != nil || !known {
+		r.t.Fatalf("report that nothing of %s's %s runs: known %v, %v", issue, role, known, err)
 	}
 }
 

@@ -326,6 +326,8 @@ func TestPodUpdateBoundLineIsNotWrittenWhenTheAnswersEndARoundPastItsBound(t *te
 	}
 
 	rig.resumeInPod(claim.RoleTester)
+	// The resumed process sends its first report, that nothing runs, as Oh My Pi does after a launch.
+	rig.reportsNothingRunning(claim.RoleTester)
 	rig.awaitReplacement(1, "once the operator resumed the tester, past the bound, with every claim answered")
 
 	replaced := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
