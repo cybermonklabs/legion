@@ -1,6 +1,5 @@
 import { askProject } from "../features/inbox/list-row";
-import * as routes from "../features/refs/routes";
-import { buildDispatchReference } from "../features/refs/routes";
+import { buildDispatchReference, DECISIONS_DOCUMENT_SLUG } from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
 import {
   agentMessagesQuery,
@@ -1182,7 +1181,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       // that document by its role, which it writes as it creates the row; a server built before
       // roles sends none, and names it by its slug alone.
       const { role, slug } = event.payload.artifact;
-      if (role === "decisions" || (role === undefined && slug === routes.DECISIONS_DOCUMENT_SLUG)) {
+      if (role === "decisions" || (role === undefined && slug === DECISIONS_DOCUMENT_SLUG)) {
         targets.push({ exact: true, queryKey: ["decisions", key] });
       }
     }

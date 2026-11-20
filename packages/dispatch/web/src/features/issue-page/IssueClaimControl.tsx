@@ -12,7 +12,7 @@ import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 
 /** What the row says of a release that failed, before the reason Dispatch gave. */
-const RELEASE_FAILED = "Could not release this claim.";
+export const RELEASE_FAILED = "Could not release this claim.";
 
 /**
  * Who holds the issue, since when, and the control that hands the claim back, in the claim's

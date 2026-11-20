@@ -102,9 +102,10 @@ function closedStoppedNote(
 export const TITLES_READ_FAILED = "Could not read the titles of these issues.";
 
 /** The title a names read (`referenceTargetsQuery`) answered for the issue `key`. While that read
- *  has not answered, an issue the set before held too keeps the title the read of that set
- *  answered (`keptUntilFailed`), and any other is undefined; undefined too where the read failed
- *  holding no answer, and where it names nothing at the issue's address. */
+ *  has not answered, an issue the read's last answer named keeps the title that answer gave
+ *  (`keptUntilFailed`: the last answer that held data, of an earlier set), and any other is
+ *  undefined; undefined too where the read failed holding no answer, and where it names nothing
+ *  at the issue's address. */
 function issueTitleIn(read: ReferenceTargets | undefined, key: string): string | undefined {
   const reference = buildDispatchReference({ key, kind: "issue" });
   return read?.targets?.find((target) => target.ref === reference)?.name;

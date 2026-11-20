@@ -346,7 +346,7 @@ test("a press that leaves the indicator drawn keeps the focus in it, in the same
   }
 });
 
-/** Presses two writes Dispatch refuses; answers the indicator and the second write's Discard. */
+/** Runs two writes Dispatch refuses; answers the indicator and the second write's Discard. */
 async function twoRefusedWrites(
   writes: Writes
 ): Promise<{ discard: HTMLElement; indicator: HTMLElement }> {
