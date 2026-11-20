@@ -211,19 +211,12 @@ type Timer struct {
 type StalePlugin struct {
 	Claim   claim.Token
 	Trigger string
-	// Admitted is whether the pass that posted this took a credit of the stale-plugin refresh
-	// gate for this claim, which bounds how much of the wake pacing the lane holds at once
-	// (RefreshGate, dispatch://INFRA-2712 R1). The pass posts no refused claim at all — it
-	// re-reads every stale claim at the next sweep, so nothing is lost by the refusal — so what
-	// arrives here is admitted but three: the project controller's claim, whose relaunch is
-	// exempt from the pacing and takes no credit (reserveWake); a claim the pass read in a
-	// turn, whose relaunch takes no wake until that turn's end asks the gate itself
-	// (holdStaleRelaunch, afterTurn, R2); and a post a test or another daemon path makes with
-	// no gate behind it. The machine holds what it is handed until the decision that raises the
-	// relaunch ends with no refresh wake of this claim's waiting, and gives it straight back to
-	// the gate where it already holds one of its own (refreshPlugin, refreshCredit,
-	// endRefreshLane).
-	Admitted bool
+	// Credit is the refresh gate credit the pass that posted this took for this claim, or nil
+	// when the post carries none: the controller's claim, a claim in a turn, or a post with no
+	// gate. The credit's Publish and Release are idempotent, and Release of an unpublished
+	// credit takes it off the floor. The machine holds the credit until the decision that
+	// raises the relaunch ends (endRefreshLane).
+	Credit *RefreshCredit
 }
 
 // StallBackstop is the daemon's stall backstop reaching this claim: the orphan sweep found it in
@@ -2132,7 +2125,7 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 func (m *Machine) afterTurn(ctx context.Context) error {
 	if held := m.staleRelaunch; held != nil {
 		m.staleRelaunch = nil
-		if err := m.refreshPlugin(ctx, *held, false); err != nil {
+		if err := m.refreshPlugin(ctx, *held, nil); err != nil {
 			return err
 		}
 	}

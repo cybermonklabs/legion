@@ -156,21 +156,18 @@ const PodUpdateContract = 46
 // end of this decision gives it back (endRefreshLane). And the relaunch that hold left waiting
 // comes back through here at the turn's end, with no credit of its own and the claim in whatever
 // state that end left it (afterTurn).
-func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bool) error {
-	if admitted {
-		if m.refreshCredit {
-			// This machine's wake already holds a credit, and one flag holds one credit: the
-			// post's own goes back to the gate here, where losing it would cost the lane a
-			// credit nothing ever waits for (the doc above, RefreshGate.Release).
-			m.deps.RefreshGate.Release()
+func (m *Machine) refreshPlugin(ctx context.Context, trigger string, credit *RefreshCredit) error {
+	if credit != nil {
+		if m.refreshCredit != nil {
+			// This machine already holds a credit: the post's own goes back.
+			credit.Release()
 		} else {
-			m.refreshCredit = true
+			m.refreshCredit = credit
 		}
 	}
 	if m.claim.PluginContract == m.deps.PluginContract {
 		return nil
 	}
-	// A claim already queued for a wake takes no second one.
 	if m.wake != nil {
 		return nil
 	}
@@ -182,22 +179,14 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 		m.holdStaleRelaunch(trigger)
 		return nil
 	}
-	// Every relaunch of this lane waits under a credit of the gate, so one reached with none asks
-	// for its own here, which is the lane's one ask inside a machine; the roads that reach it
-	// holding none are named above. Relaunching on no credit would park a wake the gate never
-	// counted — eight of them at once where a wave's turns end together, which is twice the rate
-	// in the pacing and the one thing R1 promises cannot happen. Refused, the claim is left to
-	// the next sweep, which reads it idle and admits it like any other. The ask is made here
-	// rather than on those roads because it is made after the three guards above: a claim that
-	// is no longer stale, that already holds a wake or that holds no capability burns no credit
-	// it would give back at once.
-	if !controller && !m.refreshCredit {
-		if !m.admitRefresh() {
+	if !controller && m.refreshCredit == nil {
+		c := m.admitRefresh()
+		if c == nil {
 			m.log.Info("supervise: this claim's stale-plugin relaunch reached the refresh gate with no credit of its own and the gate is full; its relaunch waits for the next sweep",
 				"state", m.claim.State, "pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract, "trigger", trigger)
 			return nil
 		}
-		m.refreshCredit = true
+		m.refreshCredit = c
 	}
 	return m.relaunchStale(ctx, WakePluginRefresh, trigger)
 }
@@ -384,7 +373,7 @@ func (m *Machine) commitPluginRelaunch() {
 // the machine then holds for the relaunch it is about to raise (refreshPlugin, refreshCredit).
 func refreshStalePlugin(m *Machine, ctx context.Context, ev Event) error {
 	stale := ev.(StalePlugin)
-	return m.refreshPlugin(ctx, stale.Trigger, stale.Admitted)
+	return m.refreshPlugin(ctx, stale.Trigger, stale.Credit)
 }
 
 // refreshOverturned is the fact the lane's relaunch was raised for, read again at the wake's own

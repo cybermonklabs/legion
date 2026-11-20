@@ -266,7 +266,7 @@ func parkedOverItsProcess(t *testing.T, sup *supervisor, issue string, role clai
 	if err != nil {
 		t.Fatalf("create the live %s's claim: %v", role, err)
 	}
-	if err := machine.Handle(ctx, supervise.StalePlugin{Claim: token, Trigger: "sweep", Admitted: true}); err != nil {
+	if err := machine.Handle(ctx, supervise.StalePlugin{Claim: token, Trigger: "sweep", Credit: sup.deps.RefreshGate.Admit()}); err != nil {
 		t.Fatalf("raise the stale-plugin relaunch of the %s: %v", role, err)
 	}
 	if held := machine.View(); held.State != supervise.StateIdle || held.Locator == nil ||

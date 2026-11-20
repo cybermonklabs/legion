@@ -2202,11 +2202,14 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 			s.supervisor.post(c.Token, supervise.StalePlugin{Claim: c.Token, Trigger: trigger})
 			continue
 		}
-		if !s.refreshGate.Admit() {
+		credit := s.refreshGate.Admit()
+		if credit == nil {
 			refused++
 			continue
 		}
-		s.supervisor.post(c.Token, supervise.StalePlugin{Claim: c.Token, Trigger: trigger, Admitted: true})
+		if !s.supervisor.post(c.Token, supervise.StalePlugin{Claim: c.Token, Trigger: trigger, Credit: credit}) {
+			credit.Release()
+		}
 	}
 	if refused > 0 {
 		s.log.Info("supervise: the stale-plugin refresh gate is full; these claims are left to a later sweep",

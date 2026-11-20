@@ -40,16 +40,8 @@ type refreshAsks struct {
 	released int
 }
 
-// fakeAdmitter is the gate a test hands a machine: it answers admissions with what the test set
-// and counts every call. It is the surface Deps.RefreshGate names and nothing more
-// (RefreshAdmitter), which is why a fake can stand where the daemon's one real gate stands.
-//
-// Every method takes the lock, as the real gate's do: a machine's decisions run on a goroutine of
-// its own, and a test reads the counts from its own.
 type fakeAdmitter struct {
-	mu sync.Mutex
-	// refuse is what the gate answers from now on: false grants, true refuses, as a real gate
-	// does once K credits are out.
+	mu          sync.Mutex
 	refuse      bool
 	asks        refreshAsks
 	corrections []int
@@ -59,21 +51,21 @@ func newFakeAdmitter() *fakeAdmitter { return &fakeAdmitter{} }
 
 var _ RefreshAdmitter = (*fakeAdmitter)(nil)
 
-func (g *fakeAdmitter) Admit() bool {
+func (g *fakeAdmitter) Admit() *RefreshCredit {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.asks.asked++
 	if g.refuse {
-		return false
+		return nil
 	}
 	g.asks.granted++
-	return true
-}
-
-func (g *fakeAdmitter) Release() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.asks.released++
+	return &RefreshCredit{
+		doRelease: func(published bool) {
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			g.asks.released++
+		},
+	}
 }
 
 func (g *fakeAdmitter) Correct(waiting int) {
@@ -134,10 +126,11 @@ func gatedHarness(t *testing.T, rate int) (*harness, *fakeAdmitter) {
 // says so where it does it.
 func (h *harness) refreshPass(gate *fakeAdmitter, trigger string) bool {
 	h.t.Helper()
-	if !gate.Admit() {
+	credit := gate.Admit()
+	if credit == nil {
 		return false
 	}
-	h.must(StalePlugin{Claim: h.token, Trigger: trigger, Admitted: true})
+	h.must(StalePlugin{Claim: h.token, Trigger: trigger, Credit: credit})
 	return true
 }
 
@@ -439,10 +432,11 @@ func TestARefreshOverAClaimWithNoProcessToReplaceGivesItsCreditBack(t *testing.T
 	h.reach(StateSuspended)
 	h.m.deps.PluginContract = refreshContract
 
-	if !gate.Admit() {
+	credit := gate.Admit()
+	if credit == nil {
 		t.Fatal("the gate refused the first admission of a fresh gate")
 	}
-	err := h.insideDecision(h.m, func() error { return h.m.refreshPlugin(h.ctx, "sweep", true) })
+	err := h.insideDecision(h.m, func() error { return h.m.refreshPlugin(h.ctx, "sweep", credit) })
 	if err != nil {
 		t.Fatalf("the refresh of a suspended claim = %v, want nil", err)
 	}
@@ -661,10 +655,11 @@ func TestARefreshTheLaunchPathRefusesGivesItsCreditBack(t *testing.T) {
 	// the gate granted for it (refreshStalePlugins in internal/daemon, StalePlugin.Admitted).
 	// The post is handled here rather than through that helper because the refusal hands its
 	// error back to the caller.
-	if !gate.Admit() {
+	credit := gate.Admit()
+	if credit == nil {
 		t.Fatal("the sweep pass was refused its credit, want it granted")
 	}
-	err := h.handle(StalePlugin{Claim: h.token, Trigger: "sweep", Admitted: true})
+	err := h.handle(StalePlugin{Claim: h.token, Trigger: "sweep", Credit: credit})
 	if !errors.Is(err, treelifecycle.ErrCleanupReserved) {
 		t.Fatalf("the relaunch the launch path refused = %v, want the reservation's wait", err)
 	}
@@ -816,10 +811,11 @@ func TestATakeBackTheStoreRefusesAtTheRelaunchsOwnDecisionGivesTheCreditBack(t *
 	// StalePlugin.Admitted). The post is handled here rather than through that helper because the
 	// refused take-back hands its error back to the caller.
 	h.store.fail("PutDelivery", errBoom)
-	if !gate.Admit() {
+	credit2 := gate.Admit()
+	if credit2 == nil {
 		t.Fatal("the sweep pass was refused its credit, want it granted")
 	}
-	if err := h.handle(StalePlugin{Claim: h.token, Trigger: "sweep", Admitted: true}); !errors.Is(err, errBoom) {
+	if err := h.handle(StalePlugin{Claim: h.token, Trigger: "sweep", Credit: credit2}); !errors.Is(err, errBoom) {
 		t.Fatalf("the relaunch whose take-back the store refused = %v, want the store's refusal", err)
 	}
 

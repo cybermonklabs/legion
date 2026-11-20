@@ -78,64 +78,74 @@ import "sync"
 // implementation a daemon builds, shared by every machine of that daemon, which is why every
 // method of it is safe for use from several goroutines.
 type RefreshAdmitter interface {
-	// Admit grants a credit while fewer than K are held, counting it, and answers false once K
-	// are held: the refresh the caller was about to raise is left to a later sweep rather than
-	// taking a reservation out of the pacing now.
-	Admit() bool
-	// Release gives one credit back, for a refresh whose wake has run or which raised no wake
-	// after all. It never takes the held count below zero, so a release the count holds no
-	// credit for any longer — one that lands after a correction has set the count from a
-	// re-read its credit was already out of — grants nobody an admission that was never taken.
-	Release()
+	// Admit grants a credit while fewer than K are held and answers it; nil once K are held.
+	// The credit's Publish and Release are idempotent: calling either twice is harmless, and
+	// releasing an unpublished credit takes it off the floor itself.
+	Admit() *RefreshCredit
 	// Correct sets the held count from a re-read of the wakes the lane actually has waiting,
-	// never below the admissions granted since the correction before it, and resets that count
-	// of admissions. It is the sweep's own call, made before the sweep asks for anything.
+	// plus the admissions not yet published (the floor). It is the sweep's own call, made
+	// before the sweep asks for anything.
 	Correct(waiting int)
 }
 
-// RefreshGate is the gate itself: K credits, one held by each stale-plugin refresh the lane has
-// in the daemon's wake pacing, and a count of the admissions granted since the last correction,
-// which is what keeps a correction from taking back a credit whose wake has not been parked yet.
-//
-// The two counts are separate because the two readings they answer are. held is what the gate
-// gives out and takes back as the lane acts, instant by instant. granted is what the sweep's
-// re-read may not yet see: the machines publish their waiting wakes at the end of each decision
-// (Machine.publish, read by internal/daemon's waitingWakes), so a refresh posted a moment before
-// the sweep counted is a wake the count misses, and a correction that believed that count would
-// hand its credit out a second time. The floor at granted is the answer, and it has a price the
-// sweep pays knowingly: the view lags the other way too, so a correction can also keep a credit
-// whose wake has already run and been released. That credit comes back at the next correction,
-// one minute later, against the hours the gate itself removes.
-//
-// A rate of zero or less is the pacing off, which is how the daemon reads an operator that paces
-// nothing (WakePace.Reserve is nil there too): the gate then bounds nothing, grants every
-// request, counts none of them and corrects nothing. The lane behaves exactly as it did before
-// this gate existed, which is the only sensible reading of an operator who asked for no pacing at
-// all.
-type RefreshGate struct {
-	// credits is K, the most refreshes the lane may hold in the pacing at once: the rate the
-	// operator set (worker_wakes_per_minute), which is one minute of the pacing because the sweep
-	// that refills the gate runs each minute. Zero is the pacing off, and the only value below 1
-	// this field takes: NewRefreshGate turns every rate of zero or less into it.
-	credits int
+// RefreshCredit is one admission of the refresh gate. Its Publish and Release are idempotent and
+// goroutine-safe. A nil *RefreshCredit is safe: its methods do nothing, so a gate with the pacing
+// off returns one whose callbacks are nil.
+type RefreshCredit struct {
+	mu        sync.Mutex
+	published bool
+	released  bool
+	doPublish func()               // called once, on the first Publish before any Release
+	doRelease func(published bool) // called once, on the first Release
+}
 
-	// mu guards held and granted, which the daemon's refresh pass, each machine's own goroutine
-	// and the sweep all reach: one gate per daemon, and no caller waits on what another is doing.
-	mu sync.Mutex
-	// held is how many credits are out now — never more than credits by an admission of this
-	// gate's own, though a correction from a reading above K may set it higher, which is a lane
-	// holding more of the pacing than K and is refused every further admission until the next
-	// correction.
-	held int
-	// granted is how many of the admissions granted since the last correction are still out: the
-	// floor that correction takes, and the whole of what keeps it from handing one credit out
-	// twice. It rises with each admission and falls with each release, because what it answers is
-	// "how many credits of this window has the sweep's own reading not caught up with yet", and a
-	// credit already given back is one whose wake demonstrably ran or was never parked. Counting
-	// every admission of the window instead, releases included, would floor each correction at the
-	// whole of the batch the sweep before it admitted and so admit a batch only every other sweep,
-	// which halves the rate the operator set and doubles the drain this gate exists to shorten.
-	granted int
+// Publish marks this credit's wake as visible. Idempotent; harmless after Release.
+func (c *RefreshCredit) Publish() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.published || c.released {
+		return
+	}
+	c.published = true
+	if c.doPublish != nil {
+		c.doPublish()
+	}
+}
+
+// Release gives this credit back. Releasing an unpublished credit also takes it off the floor.
+// Idempotent; a second call does nothing.
+func (c *RefreshCredit) Release() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.released {
+		return
+	}
+	c.released = true
+	if c.doRelease != nil {
+		c.doRelease(c.published)
+	}
+}
+
+// RefreshGate is the gate itself: K credits, one held by each stale-plugin refresh the lane has
+// in the daemon's wake pacing. The admissions the sweep's re-read may not yet see are counted
+// separately (unpublished): a refresh posted a moment before the sweep counted is a wake the
+// count misses. Correct sets held to waiting + unpublished, and only a credit's Publish or
+// Release takes it off the floor. The old design zeroed the floor at each correction, which lost
+// it when two corrections ran in one window (a ticker that buffered a tick while the sweep
+// stalled).
+//
+// A rate of zero or less is the pacing off: the gate grants every request and corrects nothing.
+type RefreshGate struct {
+	credits     int
+	mu          sync.Mutex
+	held        int
+	unpublished int
 }
 
 // NewRefreshGate builds the gate of a daemon whose pacing is rate wakes a minute: K is the rate,
@@ -159,134 +169,81 @@ func NewRefreshGate(rate int) *RefreshGate {
 // a method that changes shape fails here rather than at the Deps literal.
 var _ RefreshAdmitter = (*RefreshGate)(nil)
 
-// Admit grants a credit while fewer than K are held and counts it against the next correction,
-// and answers false once K are held, which is the caller's refresh waiting for a later sweep.
-//
-// A gate with the pacing off grants every request and counts nothing, as its own doc states.
-// There is no gate-less caller to answer for: every Deps and every supervision is built with a
-// gate, one of rate 0 where the pacing is off (NewRefreshGate, which states why).
-func (g *RefreshGate) Admit() bool {
+// Admit grants a credit while fewer than K are held. A gate with the pacing off grants every
+// request. The returned credit's Publish and Release are idempotent.
+func (g *RefreshGate) Admit() *RefreshCredit {
 	if g.credits == 0 {
-		return true
+		return &RefreshCredit{}
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.held >= g.credits {
-		return false
+		return nil
 	}
 	g.held++
-	g.granted++
-	return true
-}
-
-// Release gives one credit back: the refresh it was taken for has run its wake, or it raised no
-// wake at all and the credit is owed back at once. The held count never goes below zero, so a
-// release the count holds no credit for any longer — one that lands after a correction has set
-// that count from a re-read its credit was already out of (Correct) — grants nobody an admission
-// that was never taken.
-//
-// It lowers the admissions counted since the last correction with it, never below zero: that
-// count is of the credits of this window the sweep's reading may not have caught up with, and a
-// credit given back is one it need not hold a place for.
-//
-// Neither count is told which window the credit it is giving back was admitted in, and one
-// admitted before the last correction is the case that costs: it lowers held, which is right,
-// and it lowers granted with it, which takes the floor of the window it did not belong to one
-// too low. The correction that reset granted had already read that credit in the wakes waiting
-// and taken it into the count it set (Correct), so the next correction can then set held below
-// what the lane really holds, and the lane can hold K and one for a sweep. It is bounded at
-// one such credit per window and it corrects itself at the sweep after, which is the same
-// bound every other reading the sweep lags by costs (RefreshGate). Carrying the window a
-// credit was admitted in would cost a field on every admission to save a sweep of one credit.
-func (g *RefreshGate) Release() {
-	if g.credits == 0 {
-		return
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.held > 0 {
-		g.held--
-	}
-	if g.granted > 0 {
-		g.granted--
+	g.unpublished++
+	return &RefreshCredit{
+		doPublish: func() {
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			if g.unpublished > 0 {
+				g.unpublished--
+			}
+		},
+		doRelease: func(published bool) {
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			if g.held > 0 {
+				g.held--
+			}
+			if !published && g.unpublished > 0 {
+				g.unpublished--
+			}
+		},
 	}
 }
 
-// Correct sets the held count from waiting, the wakes the lane actually has waiting as the sweep
-// has just re-read them, and never below the admissions granted since the correction before it;
-// the count of those admissions starts again from here. It is what takes back a credit lost to a
-// path that returns none, and what keeps a credit whose wake the re-read has not caught up with
-// (RefreshGate states both halves, and what each costs).
-//
-// A reading above K is kept as it is rather than capped: more of the pacing is held by this lane
-// than the gate would grant, which is a fact about the wakes waiting and not an error, and the
-// gate admits nothing until a later correction reads a smaller number. A reading below zero
-// cannot lower the count below the admissions since, which are never negative.
-//
-// A gate with the pacing off corrects nothing: it holds no count to put right.
 func (g *RefreshGate) Correct(waiting int) {
 	if g.credits == 0 {
 		return
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.held = max(waiting, g.granted)
-	g.granted = 0
+	g.held = waiting + g.unpublished
 }
 
-// admitRefresh is a machine asking the gate for a credit of its own, which one decision does:
-// the relaunch refreshPlugin reaches with none, its own guard asking there, where the roads
-// that reach it holding none are named (refreshPlugin). The daemon's own pass asks the same
-// gate before it posts, and hands what it was granted to the machine on the event it posts
-// (StalePlugin.Admitted, refreshStalePlugins in internal/daemon).
-func (m *Machine) admitRefresh() bool {
+func (m *Machine) admitRefresh() *RefreshCredit {
 	return m.deps.RefreshGate.Admit()
 }
 
-// releaseRefresh gives back the credit this machine holds, if it holds one, and leaves it holding
-// none. A release over a machine holding none is nothing, so no path gives one credit back twice.
-//
-// Its one caller is endRefreshLane below, and no decision of this package gives its machine's
-// credit back of its own accord: there is no list of release sites to keep in step with the
-// code (RefreshGate, Machine.unlock). The one release a decision makes itself is of a credit the
-// machine never took, so it is not this helper's to give: the second credit an admitted post
-// hands a machine already holding one goes back to the gate itself (refreshPlugin).
+// releaseRefresh gives back this machine's credit. The credit's Release is idempotent, so calling
+// this when the machine holds no credit (nil) is harmless.
 func (m *Machine) releaseRefresh() {
-	if !m.refreshCredit {
+	if m.refreshCredit == nil {
 		return
 	}
-	m.refreshCredit = false
-	m.deps.RefreshGate.Release()
+	m.refreshCredit.Release()
+	m.refreshCredit = nil
+}
+
+// publishRefresh marks this machine's credit as published: its wake is about to be visible.
+// The credit's Publish is idempotent.
+func (m *Machine) publishRefresh() {
+	if m.refreshCredit == nil {
+		return
+	}
+	m.refreshCredit.Publish()
 }
 
 // endRefreshLane holds the stale-plugin lane to its two invariants, at the one line every
-// decision of a machine ends on (Machine.unlock, dispatch://INFRA-2712 R1). Both are of the same
-// shape — nothing of a relaunch this lane raised may outlive the decision that raised it, except
-// the wake that relaunch is waiting on — and both are kept here rather than at each of the paths
-// that could break them, because a path added later keeps them by ending its decision.
-//
-// The credit goes back unless a refresh wake of this machine's own is waiting in the pacing: that
-// wake is the one thing a credit may be held for, from the park that raises it to the turn that
-// runs it (parkWake, wakeNow), and a decision that ends with any other wake on the machine, or with
-// none, has either dropped that wake, spent it, or never raised one. A refresh the project pause's
-// gate holds (wake.pause) waits in no pacing, so it holds no credit either: the claim is stopped
-// for the pause, and a launch let out at the resume enters the pacing asking this gate nothing, as
-// the retry of a refused launch does, until the next sweep's correction counts it (RefreshGate). A
-// credit kept past such a decision is worse than a credit lost, because the machine reads it as
-// held at its next uncredited post, skips the gate and parks a wake the gate never granted
-// (refreshCredit, refreshPlugin).
-//
-// The intent goes whatever the decision did with it: it names one launch and no other, and the
-// launch it names is raised, parked and committed inside the decision that marked it
-// (markPluginRelaunch, reserveWake, commitPluginRelaunch). One left standing here would mark
-// the next launch of this machine — a resume, a retry, a death's relaunch — as a relaunch of
-// this lane, which writes PluginRelaunchFor for a contract no relaunch was made for and reports
-// the lane one claim wide of what it holds (dispatch://INFRA-2712 R4). A retry that still owes
-// one carries it in its own closure and puts it back where it runs, so it loses nothing here
-// (retryHolding).
+// decision of a machine ends on (Machine.unlock). The credit goes back unless a refresh wake
+// of this machine's own is waiting in the pacing; when kept, the wake is published so the
+// next correction sees it in its reading rather than the floor.
 func (m *Machine) endRefreshLane() {
 	if m.wake == nil || m.wake.kind != WakePluginRefresh || m.wake.pause != 0 {
 		m.releaseRefresh()
+	} else {
+		m.publishRefresh()
 	}
 	m.pluginRelaunch = nil
 }
