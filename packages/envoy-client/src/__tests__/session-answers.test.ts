@@ -839,27 +839,26 @@ describe("readSessionAnswers", () => {
   test("a failed read of a Dispatch whose password holds an '@' names no part of the password", async () => {
     const tail = `Tail${crypto.randomUUID().slice(0, 8)}`;
     const dispatch = { ...dispatchAt(), url: `https://user-7f2a:p@ssword${tail}.invalid` };
-    const asked: string[] = [];
-    const unresolved = (async (input: string | URL | Request): Promise<Response> => {
-      const { hostname } = new URL(input instanceof Request ? input.url : input);
-      asked.push(hostname);
-      throw Object.assign(new TypeError(`getaddrinfo ENOTFOUND ${hostname}`), {
-        code: "ENOTFOUND",
-        syscall: "getaddrinfo",
-        hostname,
-        errno: 4,
-      });
-    }) as typeof fetch;
+    const { calls, fetchImpl } = fakeDispatchFetch({
+      handler: ({ url: { hostname } }) => {
+        throw Object.assign(new TypeError(`getaddrinfo ENOTFOUND ${hostname}`), {
+          code: "ENOTFOUND",
+          syscall: "getaddrinfo",
+          hostname,
+          errno: 4,
+        });
+      },
+    });
     const read = await readSessionAnswers({
       session: newSession(),
       dispatch,
       env: envAt(stateDir()),
-      fetchImpl: unresolved,
+      fetchImpl,
       now: () => NOW,
       deadlineMs: 10_000,
     });
     // The error the read was given named the password's tail, so the check below can fail.
-    expect(asked).toEqual([`ssword${tail}.invalid`.toLowerCase()]);
+    expect(calls.map((call) => call.url.hostname)).toEqual([`ssword${tail}.invalid`.toLowerCase()]);
     expect(read.text).toContain(
       `Dispatch at the configured Dispatch URL ${URL_NOT_PRINTED} is unreachable: `
     );
