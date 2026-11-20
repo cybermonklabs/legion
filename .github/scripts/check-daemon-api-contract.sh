@@ -18,13 +18,17 @@
 # group's tree carries both changes at that number, which is above the base's, and that tree is
 # the pair that ships.
 #
-# "Touches the file" is the contract's numeric history entries and its declaration differing from
-# the copy the commit this checkout was built on. A history entry is its `// <number>:` header; the
-# text under it and the doc comment above the first entry hold no number, so an edit of either alone
-# needs no contract bump: a bump relaunches every registered claim in every deployment onto the new
-# plugin, and a comment is not worth that. What this gives up: an edit of the prose under an entry
-# alone is no longer refused, even one that adds a surface to what the contract names. A copy with no
-# history entry is compared whole.
+# "Touches the file" is this checkout's copy of the contract's history and declaration differing
+# from the copy the commit this checkout was built on carries. That part runs from the file's
+# first history entry (the first line that starts `// <number>:`) to its end: the history and
+# the `const` line. A collision shows there, as a second entry at one number or in the `const`
+# line. The doc comment above the first entry holds no number, and an edit of it alone needs no
+# contract bump: a bump relaunches every registered claim in every deployment onto the new
+# plugin, and a comment is not worth that. What this gives up: an edit of that header alone is
+# no longer refused, even one that adds a surface to what the contract names. A copy with no
+# history entry is compared whole. The number the `const` line declares must also have its own
+# `// <number>:` entry, so a bump cannot move the declaration and its fixtures while the history
+# stays silent.
 #
 # The commit this checkout was built on is not always the base: a merge group is the base with
 # the group's entries on top, so there the two are one commit, but a pull request is checked out
@@ -97,9 +101,9 @@ FIELDS = {
 # version.go declares.
 SITES = (DECLARATION, *FIELDS)
 DECLARED = re.compile(r"^const\s+DaemonAPIVersion\s*=\s*(\d+)\s*$", re.M)
-# version.go's numeric history headers: every declared number must have one, so a bump cannot
-# change only the const and fixtures while leaving the contract history silent.
-HISTORY = re.compile(r"^// (\d+):", re.M)
+# version.go's history entries: each line that starts `// <number>: `, the number its group. The
+# blank after the colon keeps out an entry's own prose that wraps at a time of day (`// 22:48Z`).
+HISTORY = re.compile(r"^// (\d+):[ \t]", re.M)
 # One page of the open pull requests, each with its number, its draft mark, its head commit and
 # the paths it changes. Drafts are counted: a draft holds the number it declares as firmly as any
 # other open pull request, and one of the collisions this check exists for was a draft's.
@@ -248,17 +252,13 @@ def held_in(site: str) -> dict[str, int]:
 
 
 def history_and_declaration(text: str) -> str:
-    """The numeric contract history headers and declaration in a copy of version.go. A history
-    entry's `// <number>:` header and `const DaemonAPIVersion` carry the number that the daemon
-    and plugin must agree on; prose below the header and the doc comment above the first header
-    do not. A copy with no history header is returned whole."""
-    entries = HISTORY.findall(text)
-    declaration = DECLARED.search(text)
-    if not entries:
-        return text.rstrip("\n")
-    if not declaration:
-        return "\n".join(entries).rstrip("\n")
-    return "\n".join((*entries, declaration.group(0))).rstrip("\n")
+    """The contract's history and declaration in a copy of version.go: the text from its first
+    history entry to its end, trailing newlines normalised, since the API's body and the file on
+    disk differ only there when nothing changed the file. The doc comment above the first entry
+    holds no number, so an edit of it alone touches no contract. A copy with no history entry is
+    returned whole."""
+    entry = HISTORY.search(text)
+    return text[entry.start() if entry else 0 :].rstrip("\n")
 
 
 def payload_field(payload: dict, *path: str) -> str:

@@ -171,3 +171,22 @@ func TestTheLoadDriverRefusesACredentialInItsArguments(t *testing.T) {
 		})
 	}
 }
+
+// TestTheLoadDriverNamesAnUnreadableProxyURLWithoutItsPassword: a proxy URL the driver cannot parse
+// is reported by the flag it came from, never by its text, which holds the grant's proxy password.
+func TestTheLoadDriverNamesAnUnreadableProxyURLWithoutItsPassword(t *testing.T) {
+	dir := t.TempDir()
+	// A host whose bracket is never closed, which url.Parse refuses; the URL holds the password.
+	proxyFile := writeFile(t, dir, "proxy", fixtureProxy("[::1")+"\n")
+	var stdout, stderr strings.Builder
+	if code := run(context.Background(), []string{"load", "gap", "--proxy-file", proxyFile, "--host", "example.com"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("dev-airlock-stands load gap exited %d; stderr: %s", code, stderr.String())
+	}
+	var result struct{ Error string }
+	if err := json.Unmarshal([]byte(stdout.String()), &result); err != nil || !strings.Contains(result.Error, "--proxy-file") {
+		t.Fatalf("load gap answered %q (%v); want an error naming --proxy-file", stdout.String(), err)
+	}
+	if strings.Contains(stdout.String()+stderr.String(), fixturePassword) {
+		t.Errorf("the error repeats the proxy password: %s%s", stdout.String(), stderr.String())
+	}
+}

@@ -1493,24 +1493,12 @@ k7_broker() {
 # k7_steps writes every consumer's own command into one file, as k3's and k4's steps are
 # written, so one grant of the seven names covers them all.
 k7_steps() {
-	local d="$WORK_DIR/k7" gcloud_secret read_secret admin_secret tier_key dotfiles consumer_boundary
-	printf -v gcloud_secret '%q' "$AIRLOCK_GCLOUD_SECRET"
-	printf -v read_secret '%q' "$AIRLOCK_GWS_READ_SECRET"
-	printf -v admin_secret '%q' "$AIRLOCK_GWS_ADMIN_SECRET"
-	printf -v tier_key '%q' "$AIRLOCK_GWS_TIER_KEY"
-	printf -v dotfiles '%q' "$K7_DOTFILES"
-	printf -v consumer_boundary '%q' "$SCRIPT_DIR/airlock/k7-consumers.sh"
-	cat >"$d/steps.sh" <<EOF
-set -u
-K7_CONSUMER_WORK_DIR=$d
-K7_CONSUMER_GCLOUD_SECRET=$gcloud_secret
-K7_CONSUMER_GWS_READ_SECRET=$read_secret
-K7_CONSUMER_GWS_ADMIN_SECRET=$admin_secret
-K7_CONSUMER_TIER_KEY=$tier_key
-K7_DOTFILES=$dotfiles
-# shellcheck source=packages/envoy/scripts/airlock/k7-consumers.sh
-source $consumer_boundary
-k7_consumer_prepare_steps
+	local d="$WORK_DIR/k7"
+	{
+		printf 'set -u\n'
+		k7_consumer_preamble "$d"
+	} >"$d/steps.sh"
+	cat >>"$d/steps.sh" <<EOF
 out="\$K7_CONSUMER_WORK_DIR/out"
 say() { printf '%s\n' "\$1" >>"\$out"; }
 say "no_proxy=\$NO_PROXY"

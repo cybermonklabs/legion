@@ -176,9 +176,11 @@ func (o *loadOptions) say(stdout io.Writer, result map[string]any) {
 // connect opens one tunnel to the bound host through the proxy and answers the connection the
 // CONNECT left behind.
 func (o *loadOptions) connect(timeout time.Duration) (net.Conn, error) {
+	// url.Parse's error quotes the whole URL, the grant's proxy password with it, so the error names
+	// the flag the URL came from instead.
 	u, err := url.Parse(o.proxyURL)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("--proxy-file: the proxy URL is not a valid URL")
 	}
 	conn, err := net.DialTimeout("tcp", u.Host, timeout)
 	if err != nil {

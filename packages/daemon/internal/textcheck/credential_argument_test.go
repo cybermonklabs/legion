@@ -43,10 +43,11 @@ var credentialHeader = regexp.MustCompile(`(?i)(?:^|[^\w-])(?:-H|--header|--prox
 // token itself (`--token`, kubectl's and gh's, and curl's `--oauth2-bearer`), one of curl's other
 // passwords (`--pass`, `--proxy-pass`, `--tlspassword`, `--proxy-tlspassword`, `--ftp-account`,
 // and the `:password` of a client certificate given to `-E`, `--cert` or `--proxy-cert`), a
-// session's cookie (`-b`, `--cookie`), a proxy URL with its user's password in it (`-x`,
-// `--proxy`, `--preproxy`), or a whole header (`-H`, `--header`, `--proxy-header`). It is written
-// case-sensitive, since `-D`, `-X`, `-B` and `-e` are other flags; `--token-file`,
-// `--github-token`, `--proxy-file` and `--header-file` are other flags too, and match nothing.
+// session's cookie (`-b`, `--cookie`), a proxy URL with its user's password in it or one of the
+// proxy variables agent-secrets puts that URL in (`-x`, `--proxy`, `--preproxy`), or a whole header
+// (`-H`, `--header`, `--proxy-header`). It is written case-sensitive, since `-D`, `-X`, `-B` and
+// `-e` are other flags; `--token-file`, `--github-token`, `--proxy-file` and `--header-file` are
+// other flags too, and match nothing.
 var credentialFlag = regexp.MustCompile(`(?:^|[^\w-])(-u|--user|-U|--proxy-user|-d|--data|--data-binary|--data-raw|--data-urlencode|--data-ascii|--json|--post-data|-F|--form|--form-string|--url-query|--variable|--token|--oauth2-bearer|--pass|--proxy-pass|--tlspassword|--proxy-tlspassword|--ftp-account|-E|--cert|--proxy-cert|-b|--cookie|-x|--proxy|--preproxy|-H|--header|--proxy-header)(?:=|[ \t]+)`)
 
 // curlCommand matches a line that runs curl, the one command whose `-E` is a client certificate
@@ -82,6 +83,38 @@ var tokenValue = regexp.MustCompile(`^\\?["']?(?:\\?\$\{?!?\w+\}?|\\?\$\([^)]*\)
 // and, on a line that runs curl, the URL curl is asked for (`https://ada:$PASSWORD@host/`). A URL
 // with no user part (`http://$host:$port`) matches nothing.
 var urlUserinfo = regexp.MustCompile(`://[^\s/@"']*:(?:\\?\$\{?\w+\}?|\\?\$\([^)]*\)|<[^>]*>)[^\s/@"']*@`)
+
+// proxyVariable matches an expansion of a variable agent-secrets puts the proxy URL in, with the
+// grant's proxy password in its user part: `$HTTPS_PROXY`, `${https_proxy}`, and an expansion with
+// an operator, which is the second group (`${HTTPS_PROXY%@*}`). `$HTTPS_PROXY_HOST` and
+// `${HTTPS_PROXY_HOST}` are other variables and match nothing.
+var proxyVariable = regexp.MustCompile(`\$(?:\{(HTTPS_PROXY|https_proxy|HTTP_PROXY|http_proxy|ALL_PROXY|all_proxy)((?:[^\w}][^}]*)?)\}|(?:HTTPS_PROXY|https_proxy|HTTP_PROXY|http_proxy|ALL_PROXY|all_proxy)\b)`)
+
+// proxyPassword says whether word expands a proxy variable in a form that keeps the password: whole,
+// or with any operator but the removal of everything up to the "@" (`#*@`, `##*@`), which leaves the
+// proxy's host and port alone.
+func proxyPassword(word string) bool {
+	for _, m := range proxyVariable.FindAllStringSubmatch(word, -1) {
+		if m[2] != "#*@" && m[2] != "##*@" {
+			return true
+		}
+	}
+	return false
+}
+
+// gitConfigFlag matches git's `-c`, and gitProxySetting the setting after it that names a proxy:
+// `http.proxy`, `https.proxy` or a URL's own `http.<url>.proxy`, in any case. Its groups are the
+// quote before the key, if any, and the value after the "=".
+var (
+	gitConfigFlag   = regexp.MustCompile(`(?:^|[^\w-])-c[ \t]+`)
+	gitProxySetting = regexp.MustCompile(`^(\\?["']?)(?i:https?(?:\.[^=\s"']+)?\.proxy)=(.*)$`)
+)
+
+// proxyCarries says whether a proxy word carries the proxy's password: a URL with a password in it,
+// a name the script holds a credential in, or a proxy variable that keeps the password.
+func proxyCarries(word string, h held) bool {
+	return urlUserinfo.MatchString(word) || h.expands(word) || proxyPassword(word)
+}
 
 // A script can also hold a credential in a variable or a function whose name says nothing of it:
 // `proxy="$(proxy_for "$addr")"`, then `--proxy "$proxy"`. heldCredentials reads where each one came
@@ -244,13 +277,18 @@ func credentialArgument(line string, h held) bool {
 		case "--cookie":
 			carries = cookieWord.MatchString(word) || tokenWord.MatchString(word) || h.expands(word)
 		case "-x", "--proxy", "--preproxy":
-			carries = urlUserinfo.MatchString(word) || h.expands(word)
+			carries = proxyCarries(word, h)
 		case "-H", "--header", "--proxy-header":
 			carries = h.expands(word)
 		default:
 			carries = tokenWord.MatchString(word) || h.expands(word)
 		}
 		if carries {
+			return true
+		}
+	}
+	for _, at := range gitConfigFlag.FindAllStringIndex(line, -1) {
+		if m := gitProxySetting.FindStringSubmatch(shellWord(line[at[1]:])); m != nil && proxyCarries(m[1]+m[2], h) {
 			return true
 		}
 	}
@@ -420,6 +458,23 @@ func TestTheCredentialMatcherCatchesEachSpellingAndPassesAnInputCurlReads(t *tes
 		`curl --cookie "auth_token=<token>" "$url"`,
 		`curl -fsS "https://ada:$PASSWORD@example.com/api"`,
 		`curl "https://x-access-token:$(cat "$TOKEN_FILE")@api.github.com/user"`,
+		// The proxy URL agent-secrets puts in HTTPS_PROXY and the other proxy variables holds the
+		// grant's proxy password, so a proxy flag or git's http.proxy given one of them carries it:
+		// k4's and k7's lines of airlock-check.sh as main wrote them, and an expansion that keeps the
+		// password (everything before the "@", or everything after the scheme).
+		`say "private=\$(curl -sS --noproxy '' --proxy "\$HTTPS_PROXY" http://10.11.12.13/ 2>&1 | tr '\n' ' ')"`,
+		`say "metadata=\$(curl -sS --noproxy '' --proxy "\$HTTPS_PROXY" http://169.254.169.254/ 2>&1 | tr '\n' ' ')"`,
+		`say "broker_port=\$(curl -sS --noproxy '' --proxy "\$HTTPS_PROXY" http://${BROKER_API_ADDRS[0]}/healthz 2>&1 | tr '\n' ' ')"`,
+		`say "broker_connect=\$(curl -sS --noproxy '' --proxy "\$HTTPS_PROXY" https://${BROKER_API_ADDRS[0]}/healthz 2>&1 | tr '\n' ' ')"`,
+		`say "made_up=\$(curl -sS --noproxy '' --proxy "\${HTTPS_PROXY%@*}-made-up@\${HTTPS_PROXY##*@}" $AIRLOCK_S_URL/ok 2>&1 | tr '\n' ' ')"`,
+		`say "git=\$(cd $d/repo && env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 -u GIT_CONFIG_KEY_1 -u GIT_CONFIG_VALUE_1 -u GIT_CONFIG_KEY_2 -u GIT_CONFIG_VALUE_2 -u GIT_CONFIG_KEY_3 -u GIT_CONFIG_VALUE_3 -u GIT_CONFIG_KEY_4 -u GIT_CONFIG_VALUE_4 git -c http.proxy="\$HTTPS_PROXY" -c credential.helper=$SCRIPT_DIR/airlock/credential-helper -c http.sslCAInfo="\$GIT_SSL_CAINFO" push --dry-run https://github.com/cybermonklabs/legion HEAD:refs/heads/k7-airlock-never-pushed 2>&1 | tail -n 2 | tr '\n' ' ')"`,
+		`curl --preproxy "$ALL_PROXY" -x "http://$addr" "$url"`,
+		`curl -x "${https_proxy}" "$url"`,
+		`curl --proxy="$HTTP_PROXY" "$url"`,
+		`curl --proxy "http://${HTTPS_PROXY#*://}" "$url"`,
+		`git -c https.proxy="$HTTPS_PROXY" fetch origin`,
+		`git -c "http.proxy=$all_proxy" fetch origin`,
+		`git -c http.https://github.com.proxy="http://ada:$PROXY_PASSWORD@$addr" fetch origin`,
 	} {
 		if !credentialArgument(line, nil) {
 			t.Errorf("does not catch a credential given as an argument: %s", line)
@@ -474,6 +529,14 @@ func TestTheCredentialMatcherCatchesEachSpellingAndPassesAnInputCurlReads(t *tes
 		`git checkout -b "session=$name"`,
 		`curl -fsS "http://$host:$port/healthz"`,
 		`curl "https://example.com/api?user=$user"`,
+		// The proxy's host and port alone, with the user's part dropped (`##*@`), and proxies that
+		// hold no password: git's in its environment, and a fixed one.
+		`say "no_password=\$(curl -sS --noproxy '' --proxy "http://\${HTTPS_PROXY##*@}" $AIRLOCK_S_URL/ok 2>&1 | tr '\n' ' ')"`,
+		`curl --proxy "http://${HTTPS_PROXY#*@}" "$url"`,
+		`curl --proxy "$HTTPS_PROXY_HOST" "$url"`,
+		`say "git=\$(cd $d/repo && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.proxy GIT_CONFIG_VALUE_0="\$HTTPS_PROXY" git -c credential.helper=$SCRIPT_DIR/airlock/credential-helper push --dry-run "$url")"`,
+		`git -c http.proxy=http://proxy.example:3128 fetch origin`,
+		`bash -c 'echo "$HTTPS_PROXY" | sed "s/:[^:@]*@/:***@/"'`,
 	} {
 		if credentialArgument(line, nil) {
 			t.Errorf("catches a line that gives no credential as an argument: %s", line)

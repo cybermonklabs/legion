@@ -28,9 +28,11 @@ k7_consumer_require_inputs() {
 		printf 'airlock-check: k7 requires operator inputs: %s\n' "${absent[*]}" >&2
 		return 2
 	fi
+	# The refusal names the input and never repeats its value: an operator who put a credential in
+	# the wrong variable would otherwise see it printed.
 	for input in "${K7_CONSUMER_SECRET_INPUTS[@]}"; do
 		if ! k7_consumer_broker_name "${!input}"; then
-			printf 'airlock-check: %s=%s is no broker name: uppercase letters, digits and single underscores, starting with a letter\n' "$input" "${!input}" >&2
+			printf 'airlock-check: %s is no broker name: uppercase letters, digits and single underscores, starting with a letter\n' "$input" >&2
 			return 2
 		fi
 	done
@@ -80,6 +82,21 @@ variables:
 outputs:
   devices: ${devices}
 EOF
+}
+
+# k7_consumer_preamble <work dir> prints the generated step script's first lines: the names the
+# Google steps read each login by, mapped from the operator's inputs, the consumer checkout and
+# the boundary itself, then the setup. k7_steps writes it into steps.sh, and the test runs it.
+k7_consumer_preamble() {
+	local boundary="${BASH_SOURCE[0]}"
+	printf 'K7_CONSUMER_WORK_DIR=%q\n' "$1"
+	printf 'K7_CONSUMER_GCLOUD_SECRET=%q\n' "$AIRLOCK_GCLOUD_SECRET"
+	printf 'K7_CONSUMER_GWS_READ_SECRET=%q\n' "$AIRLOCK_GWS_READ_SECRET"
+	printf 'K7_CONSUMER_GWS_ADMIN_SECRET=%q\n' "$AIRLOCK_GWS_ADMIN_SECRET"
+	printf 'K7_CONSUMER_TIER_KEY=%q\n' "$AIRLOCK_GWS_TIER_KEY"
+	printf 'K7_DOTFILES=%q\n' "${K7_DOTFILES:?}"
+	printf 'source %q\n' "$(cd "$(dirname "$boundary")" && pwd)/$(basename "$boundary")"
+	printf 'k7_consumer_prepare_steps\n'
 }
 
 # k7_consumer_prepare_steps is the generated script's setup: its output file, dotfiles location,

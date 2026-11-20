@@ -50,10 +50,14 @@ for i in "${!inputs[@]}"; do
   label="k7 refuses an empty ${inputs[$i]}"; check test "$status" -eq 2
   # The first three name broker secrets, which are of policy.NameToSlug's form or no name at all.
   if [[ "${inputs[$i]}" != AIRLOCK_GWS_TIER_KEY ]]; then
-    for bad in 'gws_operator_read' 'GWS__READ' '_GWS' 'GWS-READ' 'ÉGWS'; do
+    for bad in 'gws_operator_read' 'GWS__READ' '_GWS' 'GWS-READ' 'ÉGWS' 'ghp_pasted-in-by-mistake'; do
       run_check "${supplied[@]}" "${inputs[$i]}=$bad"
       label="k7 refuses ${inputs[$i]}=$bad, no broker name"; check test "$status" -eq 2
-      label="that refusal names ${inputs[$i]}"; check test "${output#*"${inputs[$i]}=$bad is no broker name"}" != "$output"
+      label="that refusal names ${inputs[$i]}"; check test "${output#*"${inputs[$i]} is no broker name"}" != "$output"
+      # A value such as _GWS is also part of the input's own name, so the name is taken out of the
+      # output first, and the value must then appear nowhere in what is left.
+      without_name="${output//"${inputs[$i]}"/}"
+      label="that refusal does not repeat the value $bad"; check test "${without_name#*"$bad"}" = "$without_name"
     done
   fi
 done
@@ -144,23 +148,52 @@ cat >"$work/consumer-bin/pulumi" <<'PULUMI'
 [[ "$1 $2" == 'stack init' ]] && printf 'error: token %s\n' "${GOOGLE_OAUTH_ACCESS_TOKEN:-unset}"
 PULUMI
 chmod +x "$consumer/scripts/gcloud-broker" "$work/consumer-bin/secret-run" "$work/consumer-bin/curl" "$work/consumer-bin/pulumi"
-status=0
-# shellcheck disable=SC2016 # These variables expand in bash -c after the fake environment is set.
-output="$(env -u BASH_ENV PATH="$work/consumer-bin:$PATH" \
-  GCLOUD_EXAMPLE_LOGIN=gcloud-placeholder GWS_EXAMPLE_VIEW_2=read-placeholder GWS_EXAMPLE_ADMIN_2=admin-placeholder \
-  K7_CONSUMER_WORK_DIR="$work/k7" K7_DOTFILES="$consumer" \
-  K7_CONSUMER_GCLOUD_SECRET="$AIRLOCK_GCLOUD_SECRET" K7_CONSUMER_GWS_READ_SECRET="$AIRLOCK_GWS_READ_SECRET" \
-  K7_CONSUMER_GWS_ADMIN_SECRET="$AIRLOCK_GWS_ADMIN_SECRET" K7_CONSUMER_TIER_KEY="$AIRLOCK_GWS_TIER_KEY" \
-  bash -c 'source "$1"
-    k7_consumer_prepare_steps
-    [[ "$DOTFILES_DIR" == "$K7_DOTFILES" ]]
-    [[ "$XDG_CONFIG_HOME" == "$K7_CONSUMER_WORK_DIR/xdg" && -d "$XDG_CONFIG_HOME" ]]
-    [[ "$PATH" == "$K7_DOTFILES/scripts:$K7_DOTFILES/shims:"* ]]
-    k7_consumer_google_steps
-    cat "$K7_CONSUMER_WORK_DIR/out"' bash "$boundary" 2>&1)" || status=$?
+# run_consumers [state]: writes the step script's preamble with the real k7_consumer_preamble, as
+# k7_steps does, runs it, checks the setup it made, then runs the Google consumers. A state file
+# is sourced after the setup, so a control can leave the setup wrong and show the check refuses
+# it. PREAMBLE_EDIT, a sed program, edits the preamble first, so a control can swap its mapping.
+run_consumers() {
+  status=0
+  K7_DOTFILES="$consumer" k7_consumer_preamble "$work/k7" >"$work/preamble.sh"
+  if [[ -n "${PREAMBLE_EDIT:-}" ]]; then sed -i "$PREAMBLE_EDIT" "$work/preamble.sh"; fi
+  # shellcheck disable=SC2016 # These variables expand in bash -c after the fake environment is set.
+  output="$(env -u BASH_ENV PATH="$work/consumer-bin:$PATH" \
+    GCLOUD_EXAMPLE_LOGIN=gcloud-placeholder GWS_EXAMPLE_VIEW_2=read-placeholder GWS_EXAMPLE_ADMIN_2=admin-placeholder \
+    bash -c 'set -u
+      source "$1"
+      if [[ -n "${2:-}" ]]; then source "$2"; fi
+      [[ "$DOTFILES_DIR" == "$K7_DOTFILES" ]] || { echo "setup: DOTFILES_DIR is $DOTFILES_DIR" >&2; exit 1; }
+      [[ "$XDG_CONFIG_HOME" == "$K7_CONSUMER_WORK_DIR/xdg" && -d "$XDG_CONFIG_HOME" ]] || { echo "setup: XDG_CONFIG_HOME is $XDG_CONFIG_HOME" >&2; exit 1; }
+      [[ "$PATH" == "$K7_DOTFILES/scripts:$K7_DOTFILES/shims:"* ]] || { echo "setup: PATH does not start with the consumer scripts and shims" >&2; exit 1; }
+      k7_consumer_google_steps
+      cat "$K7_CONSUMER_WORK_DIR/out"' bash "$work/preamble.sh" "$@" 2>&1)" || status=$?
+}
+run_consumers
 label='operator inputs build matching rules, store names, prepare consumers and run valid commands'; check test "$status" -eq 0
 label='the gcloud login, selected tier and both Google Workspace logins reach the real consumer boundary'
 check test "$output" = $'kms=error: token gcloud-placeholder\ngcloud=ERROR: gcloud-placeholder\ngws_tier=secret-run GWS_EXAMPLE_VIEW_2\ngws=200\nadmin=200'
+
+# Control: the preamble with the read and administrator logins swapped. The read call is then sent
+# the administrator's login and the administrator call the read login, which the fake curl refuses.
+PREAMBLE_EDIT='s/^K7_CONSUMER_GWS_READ_SECRET=/K7_SWAP=/; s/^K7_CONSUMER_GWS_ADMIN_SECRET=/K7_CONSUMER_GWS_READ_SECRET=/; s/^K7_SWAP=/K7_CONSUMER_GWS_ADMIN_SECRET=/' run_consumers
+label='a preamble that swaps the read and administrator logins fails both Google Workspace calls'
+check test "$output" = $'kms=error: token gcloud-placeholder\ngcloud=ERROR: gcloud-placeholder\ngws_tier=secret-run GWS_EXAMPLE_VIEW_2\ngws=\nadmin='
+
+# Controls: each wrong setup state must stop the consumers and name the variable that is wrong.
+cat >"$work/wrong-dotfiles.sh" <<'STATE'
+export DOTFILES_DIR="$K7_CONSUMER_WORK_DIR/wrong-dotfiles"
+STATE
+cat >"$work/wrong-xdg.sh" <<'STATE'
+export XDG_CONFIG_HOME="$K7_CONSUMER_WORK_DIR/wrong-xdg"
+STATE
+cat >"$work/wrong-path.sh" <<'STATE'
+export PATH="$K7_DOTFILES/shims:$PATH"
+STATE
+for wrong in DOTFILES_DIR:wrong-dotfiles XDG_CONFIG_HOME:wrong-xdg PATH:wrong-path; do
+  run_consumers "$work/${wrong#*:}.sh"
+  label="a wrong ${wrong%%:*} stops the consumers"; check test "$status" -ne 0
+  label="that refusal names ${wrong%%:*}"; check test "${output#*"setup: ${wrong%%:*}"}" != "$output"
+done
 
 if [[ "$failed" -ne 0 ]]; then
   printf 'airlock-check inputs: failed (%s checks)\n' "$failed"

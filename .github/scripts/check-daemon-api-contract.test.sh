@@ -1,8 +1,10 @@
+#!/usr/bin/env bash
 # Tests for `check-daemon-api-contract.sh`: a change that touches the daemon API contract's
-# numeric history headers or declaration declares a number above the one its base carries, the
-# refusal names a free number and every file that holds it, the files that hold the number agree on
-# it, and an edit of prose in a history entry or a doc comment above it touches no contract. A base,
-# a tree or a file the check cannot read refuses the change.
+# history or declaration declares a number above the one its base carries, the refusal names a
+# free number and every file that holds it, the files that hold the number agree on it, an
+# edit of the doc comment above the history touches no contract, a declared number needs its own
+# `// <number>:` history entry, and a base, a tree or a file the check cannot read refuses the
+# change.
 #
 # Each case builds a miniature repository under a temporary directory, symlinks the real script
 # into it, and puts a stub `gh` first on PATH, so the script under test is the file CI runs and
@@ -29,8 +31,8 @@ source "$script_dir/test-lib.sh"
 
 # declaration <number> [<extra comment>]: the text of a version.go declaring <number>, laid out as
 # the real one is: a doc comment, then the history, here one entry at <number>, then the `const`
-# line. The extra comment goes under that entry; it holds no number, so a case can show a prose
-# edit that needs no bump.
+# line. The extra comment goes under that entry, which is how a case makes a tree that touches
+# the contract's history without moving the number.
 declaration() {
   printf 'package api\n\n'
   printf '// DaemonAPIVersion is the contract this daemon speaks with the plugin in its pods.\n'
@@ -40,12 +42,6 @@ declaration() {
     printf '// %s\n' "$2"
   fi
   printf 'const DaemonAPIVersion = %s\n' "$1"
-}
-
-# touch_history <file> <number>: adds one numeric history header, so that a case touches the
-# contract without moving the declaration.
-touch_history() {
-  printf '// %s: another shape the plugin parses at this number.\n' "$2" >> "$1"
 }
 
 # The files beside version.go that hold the contract number, in the order the check names
@@ -213,17 +209,15 @@ echo "case: a tree equal to its base that touches the declaration"
 root=$(fixture equal)
 built_on "$root" 7 > /dev/null
 declaration 7 > "$root/stub/refs/main"
-declaration 7 > "$root/packages/daemon/internal/api/version.go"
-touch_history "$root/packages/daemon/internal/api/version.go" 7
+declaration 7 "LEGION-1: a shape this change adds, on the number the base already carries" \
+  > "$root/packages/daemon/internal/api/version.go"
 sites "$root" 7
 no_open_pull_requests "$root"
 pull_request_event "$root" main
 run_check "$root" pull_request
 check "exits 1" "$(is "$status" 1)"
-# The declaration line is named, rather than a fixed number: touch_history can place the second
-# numeric header after the const in this miniature file.
 check "names the declaration and its line" \
-  "$(contains "$out" '^::error file=packages/daemon/internal/api/version.go::packages/daemon/internal/api/version.go:[0-9][0-9]*:')"
+  "$(contains "$out" '^::error file=packages/daemon/internal/api/version.go::packages/daemon/internal/api/version.go:7:')"
 check "names both numbers and the base it read" \
   "$(contains "$out" 'declares daemon API contract 7, which is not above the 7 the base carries (the tip of main)')"
 check "names the free number" \
@@ -342,8 +336,8 @@ echo "case: the free number passes over the number an open pull request holds"
 root=$(fixture held)
 built_on "$root" 7 > /dev/null
 declaration 7 > "$root/stub/refs/main"
-declaration 7 > "$root/packages/daemon/internal/api/version.go"
-touch_history "$root/packages/daemon/internal/api/version.go" 8
+declaration 7 "LEGION-2: another shape on the number the base carries" \
+  > "$root/packages/daemon/internal/api/version.go"
 sites "$root" 7
 open_pull_request_declaring "$root" 11 8
 pull_request_event "$root" main
@@ -358,8 +352,8 @@ echo "case: a file list GitHub cut short is read rather than guessed at"
 root=$(fixture cut-short)
 built_on "$root" 7 > /dev/null
 declaration 7 > "$root/stub/refs/main"
-declaration 7 > "$root/packages/daemon/internal/api/version.go"
-touch_history "$root/packages/daemon/internal/api/version.go" 8
+declaration 7 "LEGION-3: a shape that needs a number" \
+  > "$root/packages/daemon/internal/api/version.go"
 sites "$root" 7
 # #12 changes more than 100 files, so the list GitHub answers with says nothing about whether
 # the declaration is among them. Its head declares 8, which the free number must pass over.
@@ -382,8 +376,8 @@ echo "case: a pull request's own declaration the check cannot read"
 root=$(fixture unreadable-head)
 built_on "$root" 7 > /dev/null
 declaration 7 > "$root/stub/refs/main"
-declaration 7 > "$root/packages/daemon/internal/api/version.go"
-touch_history "$root/packages/daemon/internal/api/version.go" 8
+declaration 7 "LEGION-4: a shape that needs a number" \
+  > "$root/packages/daemon/internal/api/version.go"
 sites "$root" 7
 open_pull_request_declaring "$root" 13 8
 rm "$root/stub/refs/refs_pull_13_head"
@@ -554,8 +548,8 @@ check "says it declares none of its own, naming the commit it was built on" \
 check "takes no number for an edit above the history" "$(is "$(contains "$out" 'Take ')" false)"
 check "reads no open pull request" "$(is "$queries" 0)"
 
-echo "case: an edit of prose under a history entry, the number left alone"
-root=$(fixture history-prose)
+echo "case: an edit of a history entry, the number left alone"
+root=$(fixture history-entry)
 built_on "$root" 7 > /dev/null
 declaration 7 > "$root/stub/refs/main"
 text=$(declaration 7)
@@ -565,13 +559,16 @@ sites "$root" 7
 no_open_pull_requests "$root"
 pull_request_event "$root" main
 run_check "$root" pull_request
-check "exits 0" "$(is "$status" 0)"
-check "says it declares none of its own" \
-  "$(contains "$out" 'leaves the history and the declaration in packages/daemon/internal/api/version.go')"
-check "takes no number for prose under a history entry" "$(is "$(contains "$out" 'Take ')" false)"
-check "reads no open pull request" "$(is "$queries" 0)"
+check "exits 1" "$(is "$status" 1)"
+check "names the declaration and its line" \
+  "$(contains "$out" '^::error file=packages/daemon/internal/api/version.go::packages/daemon/internal/api/version.go:6:')"
+check "names both numbers" \
+  "$(contains "$out" 'declares daemon API contract 7, which is not above the 7 the base carries (the tip of main)')"
+check "names the free number" "$(contains "$out" 'Take 8, the lowest number above')"
+check "names every file that holds the number" "$(contains "$out" "$all_files")"
+check "reads the open pull requests once" "$(is "$queries" 1)"
 
-echo "case: a declaration bump with no history header"
+echo "case: a declaration bump with no history entry at its number"
 root=$(fixture const-without-history)
 built_on "$root" 7 > /dev/null
 declaration 7 > "$root/stub/refs/main"
@@ -583,9 +580,29 @@ no_open_pull_requests "$root"
 pull_request_event "$root" main
 run_check "$root" pull_request
 check "exits 1" "$(is "$status" 1)"
-check "names the missing history header" \
+# shellcheck disable=SC2016 # the backticks are the refusal's own text, not a substitution
+check "names the missing history entry" \
   "$(contains "$out" 'declares daemon API contract 8, but its history has no `// 8:` entry')"
 check "names the free number" "$(contains "$out" 'Take 8, the lowest number above')"
 check "reads the open pull requests once" "$(is "$queries" 1)"
+
+echo "case: a declaration bump whose only line at its number is an entry's wrapped prose"
+root=$(fixture const-with-prose-number)
+built_on "$root" 7 > /dev/null
+declaration 7 > "$root/stub/refs/main"
+declaration 7 "a reading taken between 07:58Z and" > "$root/packages/daemon/internal/api/version.go"
+sed -i -e 's/^const DaemonAPIVersion = 7$/const DaemonAPIVersion = 8/' \
+  -e 's|^// a reading taken between 07:58Z and$|// a reading taken between 07:58Z and\n// 8:04Z, which the bump cites|' \
+  "$root/packages/daemon/internal/api/version.go"
+sites "$root" 8
+no_open_pull_requests "$root"
+pull_request_event "$root" main
+run_check "$root" pull_request
+check "the miniature file has the wrapped line" \
+  "$(contains "$(cat "$root/packages/daemon/internal/api/version.go")" '^// 8:04Z')"
+check "exits 1" "$(is "$status" 1)"
+# shellcheck disable=SC2016 # the backticks are the refusal's own text, not a substitution
+check "names the missing history entry" \
+  "$(contains "$out" 'declares daemon API contract 8, but its history has no `// 8:` entry')"
 
 summary "check-daemon-api-contract.sh"
