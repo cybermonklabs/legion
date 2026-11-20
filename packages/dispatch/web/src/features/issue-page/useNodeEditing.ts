@@ -132,16 +132,17 @@ export function nodeEditable(
  * That hold is the caret's precondition: no caret goes in, and no key that could edit reaches
  * the editor, until it is on, and the focus stays on the row till then. Where it cannot go on -
  * what it is built of did not load, or the page handed the row no editor - the editing ends, and
- * the row says its editor could not open (`KEY_REPORTS.editor_closed`). While the caret is put
- * off by a press outside the tree (above), such a hold ends the editing at once too, with no
- * focus taken from where the reader is - Details, or the page's body where that press left the
- * focus on nothing. At once is once no press is under way, a press held outside the tree
- * included, since the editing ends with no caret placed only once a press has ended, so nothing
- * moves under the pointer (above). The row says nothing then unless the focus is inside the
- * tree: with the focus out of it, the tree lets go of the row, and of what was reported at it,
- * as the editing ends (`IssueTree.tsx`'s `useReleaseFocus`), so a report said then would stand
- * at the tree's tab stop for one commit and go. Seen while a press in the tree that ends the
- * editing (below) is held, such a hold ends the editing as that press does, once it is over:
+ * the row says its editor could not open (`KEY_REPORTS.editor_closed`) where the focus is the
+ * row's or inside the tree. With the focus out of the tree - moved there by a script before the
+ * reader acted, or by a press outside the tree that put off the caret (above) - the row says
+ * nothing: the tree lets go of the row, and of what was reported at it, as the editing ends
+ * (`IssueTree.tsx`'s `useReleaseFocus`), so a report said then would stand at the tree's tab stop
+ * for one commit and go. While the caret is put off by a press outside the tree, such a hold ends
+ * the editing at once too, with no focus taken from where the reader is - Details, or the page's
+ * body where that press left the focus on nothing. At once is once no press is under way, a press
+ * held outside the tree included, since the editing ends with no caret placed only once a press
+ * has ended, so nothing moves under the pointer (above). Seen while a press in the tree that ends
+ * the editing (below) is held, such a hold ends the editing as that press does, once it is over:
  * the row the press focused says nothing of an editor it never asked for. A node whose text no
  * document of this issue holds has nothing to put a caret in, and the key says so. Enter on the
  * row while it is edited, the focus back on the row itself, puts the caret in the node's block
@@ -349,14 +350,15 @@ export function useNodeEditing({
     // or the page handed the row no editor - the editing ends at once, as it does with no caret
     // put off (`endUnplaced`): once no press is under way, as there, a press held outside the
     // tree included. No focus is taken from where the reader is, the page's body included, where
-    // the row taking the focus would scroll the page to it, and the row says nothing then unless
-    // the focus is inside the tree: with the focus out of it, the tree lets go of the row, and of
-    // what was reported at it, as the editing ends (`IssueTree.tsx`'s `useReleaseFocus`), so a
-    // report said then would stand at the tree's tab stop for one commit and go. Where a press
-    // in the tree that ends the editing (the press rule) is held as that is seen, the editing
-    // ends as that press ends it once it is over - the reader moved on - and the row it focused
-    // says nothing either. So the editor's drawing is watched on while the caret is put off,
-    // until the hold is on, for an editor never handed over that draws the node's block.
+    // the row taking the focus would scroll the page to it. As wherever such a hold ends the
+    // editing, the row says nothing unless the focus is inside the tree: with the focus out of it,
+    // the tree lets go of the row, and of what was reported at it, as the editing ends
+    // (`IssueTree.tsx`'s `useReleaseFocus`), so a report said then would stand at the tree's tab
+    // stop for one commit and go. Where a press in the tree that ends the editing (the press rule)
+    // is held as that is seen, the editing ends as that press ends it once it is over - the reader
+    // moved on - and the row it focused says nothing either. So the editor's drawing is watched on
+    // while the caret is put off, until the hold is on, for an editor never handed over that draws
+    // the node's block.
     //
     // The row is watched on after the caret is placed, until the reader's first act, for two
     // things the editor does to the caret before the reader has done anything. It changes its
@@ -484,25 +486,24 @@ export function useNodeEditing({
         setEditing(undefined);
         return true;
       }
-      // The row says its editor could not open, where the reader is: a focus their press put in
-      // the editor's box goes back to the row first, as Escape's does, since that box goes, and
-      // the row takes it again on the next frame where it has fallen to nothing by then
-      // (`leaving`). With the caret put off and the focus elsewhere - in Details, on the page's
-      // body - the reader is out of the row, and the editing's end takes no focus: the row
-      // taking it from the page's body moved the reader off where they were, and scrolled the
-      // page to it. It says nothing then unless the focus is inside the tree: with the focus out
-      // of it, the tree lets go of the row, and of what was reported at it, as the editing ends
-      // (`IssueTree.tsx`'s `useReleaseFocus`), and the report stood at the tree's tab stop for
-      // one commit and was gone.
+      // The row says its editor could not open where the focus is the row's or inside the tree:
+      // a focus the reader's press put in the editor's box goes back to the row first, as
+      // Escape's does, since that box goes, and the row takes it again on the next frame where
+      // it has fallen to nothing by then (`leaving`). With the focus out of the tree - moved
+      // there by a script before the reader acted, or by a press outside the tree that put off
+      // the caret - it says nothing: the tree lets go of the row, and of what was reported at
+      // it, as the editing ends (`IssueTree.tsx`'s `useReleaseFocus`), and the report stood at
+      // the tree's tab stop for one commit and was gone. With the caret put off and the focus
+      // elsewhere - in Details, on the page's body - the reader is out of the row, and the
+      // editing's end takes no focus: the row taking it from the page's body moved the reader
+      // off where they were, and scrolled the page to it.
       const rowsFocus = holdsRowsFocus(row);
       if (rowsFocus) row.focus();
-      if (putOff && !rowsFocus) {
-        if (box.contains(document.activeElement)) report.current(KEY_REPORTS.editor_closed);
-        setEditing(undefined);
-      } else {
+      if (rowsFocus || box.contains(document.activeElement)) {
         report.current(KEY_REPORTS.editor_closed);
-        stopEditing();
       }
+      if (putOff && !rowsFocus) setEditing(undefined);
+      else stopEditing();
       return true;
     };
     // Places the caret, or places it again where the focus has fallen to nothing or the caret

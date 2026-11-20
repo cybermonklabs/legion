@@ -477,6 +477,32 @@ function rowReport(container: HTMLElement): string | undefined {
   return container.querySelector("[data-row-report]")?.textContent ?? undefined;
 }
 
+/** The words of every report a row draws in `container` from the call on (`[data-row-report]`),
+ *  however briefly it stands - one drawn for a commit and gone at the next among them - from the
+ *  tree's own changes rather than from what a task happens to leave; the call it answers with
+ *  ends the watch and gives them. */
+function reportsDrawn(container: HTMLElement): () => string[] {
+  const drawn: string[] = [];
+  const take = (records: MutationRecord[]): void => {
+    for (const record of records) {
+      for (const added of Array.from(record.addedNodes)) {
+        if (!(added instanceof Element)) continue;
+        const reports = added.matches("[data-row-report]")
+          ? [added]
+          : Array.from(added.querySelectorAll("[data-row-report]"));
+        for (const report of reports) drawn.push(report.textContent ?? "");
+      }
+    }
+  };
+  const watch = new MutationObserver(take);
+  watch.observe(container, { childList: true, subtree: true });
+  return () => {
+    take(watch.takeRecords());
+    watch.disconnect();
+    return drawn;
+  };
+}
+
 /** Every row drawn for `nodeId`, in the order the tree drew them: one per placement. */
 function rowsFor(container: HTMLElement, nodeId: string): HTMLElement[] {
   return [...container.querySelectorAll<HTMLElement>(`[data-node-row][data-node-id="${nodeId}"]`)];
@@ -5198,7 +5224,9 @@ test("a hold that fails to load while a press on another row is held, after a pr
 // whose next frame gives the row the focus where it has fallen to nothing (`leaving`): the row
 // took the focus from the page's body, where the reader had left it, scrolling the page to it,
 // and said nothing there, since the tree had let go of what was reported at it. The end of an
-// editing whose caret is put off takes no focus.
+// editing whose caret is put off takes no focus, and with the focus out of the tree the row says
+// nothing as it ends: at 6586a4be the report it said then stood at the tree's tab stop for one
+// commit, until the tree let go of the row, so each report drawn is watched for.
 test("a hold that fails to load after a press on words outside the tree put off the row's caret leaves the focus on the page's body", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -5219,6 +5247,7 @@ test("a hold that fails to load after a press on words outside the tree put off 
     ).toBe("artifact-spec");
     expect(document.activeElement, "the press left the focus on an element").toBe(document.body);
 
+    const reports = reportsDrawn(view.container);
     await failLoad(held.reject);
     await waitFor(() =>
       expect(
@@ -5239,10 +5268,64 @@ test("a hold that fails to load after a press on words outside the tree put off 
       rowReport(view.container),
       "a row says its editor could not open, with the focus out of the tree"
     ).toBeUndefined();
+    expect(
+      reports(),
+      "a row said its editor could not open as the editing ended, with the focus out of the tree"
+    ).toEqual([]);
   } finally {
     load.mockRestore();
   }
 });
+
+// The class search of #4205's a0ba8427: the row said its editor could not open wherever the focus
+// was as an editing with no caret put off ended, so a hold that failed to load after a script had
+// moved the focus out of the tree before the reader acted - a blur, a focus on a control out of
+// the outline, which leaves the editing on - drew that report at the tree's tab stop for one
+// commit, until the tree let go of the row, and of what was reported at it (`useReleaseFocus`).
+// The row says it only where the focus is the row's or inside the tree: the editing ends, and no
+// report is drawn at all.
+for (const blur of [true, false]) {
+  const name = blur ? "blur" : "focus on a control out of the outline";
+  test(`a hold that fails to load after a script's ${name} took the focus out of the tree before the reader acted ends the editing, and no row says its editor could not open`, async () => {
+    setViewport(1440);
+    const user = userEvent.setup();
+    const held = Promise.withResolvers<nodeCaret.HoldParts>();
+    const load = spyOn(nodeCaret, "loadEditsHold").mockReturnValue(held.promise);
+    try {
+      const { editable, view } = await enterBeforeDrawn(user);
+      const { control } = controlOutside();
+      const [row] = rowsFor(view.container, "spec#b-r1");
+      if (row === undefined) throw new Error("the statement's row is not drawn");
+      await drawStatementBlocks(editable);
+      await nextFrame();
+      await act(async () => (blur ? row.blur() : control.focus()));
+      expect(
+        view.container.contains(document.activeElement),
+        `the script's ${name} left the focus in the tree`
+      ).toBe(false);
+      // The row is looked at a task after the focus left it.
+      await waitInAct(0);
+      expect(view.edited.at(-1), `the script's ${name} ended the editing`).toBe("artifact-spec");
+
+      const reports = reportsDrawn(view.container);
+      await failLoad(held.reject);
+      await waitFor(() =>
+        expect(
+          view.edited.at(-1),
+          "the editing went on once the hold failed to load"
+        ).toBeUndefined()
+      );
+      await nextFrame();
+      await nextFrame();
+      expect(
+        reports(),
+        "a row said its editor could not open as the editing ended, with the focus out of the tree"
+      ).toEqual([]);
+    } finally {
+      load.mockRestore();
+    }
+  });
+}
 
 // The document's editor draws a document the room already holds as it is made, some microtasks
 // before the page hands it to the row (`doc/ProofDocument.tsx`'s `onEditorHandle`), and a look at

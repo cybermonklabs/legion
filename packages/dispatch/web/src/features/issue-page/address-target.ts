@@ -309,9 +309,11 @@ export function useAddressFallback({
   const following = useLocation().key;
   const [followed, setFollowed] = useState<Following | undefined>(undefined);
   const before = followed?.key === following ? followed : undefined;
-  // A following that has settled on a landing, or found the address's node or the ancestor a
-  // turn only agents wrote in lands on, keeps reading the item while the reads are out again, so
-  // the landing stays drawn (above).
+  // While the reads are out again, a following that has settled on a landing keeps its landing's
+  // read, so the landing stays drawn (above); one that has found the address's node or the
+  // ancestor a turn only agents wrote in lands on reads nothing (below), and only checks the item
+  // against the conversation reads the page holds (`agentsOnly`), so a landing on that ancestor
+  // stays drawn too.
   const unheld =
     reveal === undefined && (readsHeld || before?.settled !== undefined || before?.found === true)
       ? item
