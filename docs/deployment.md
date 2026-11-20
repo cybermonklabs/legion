@@ -367,9 +367,31 @@ The pinned install is a pod's: the daemon reads the check at the tag the worker 
 pushes it to the pod's launcher, which installs it ([Worker image](kubernetes.md#worker-image)).
 So a box that writes to public repositories carries the check through the check's own installer,
 run on the machine the daemon runs on.
-A daemon that resolves none logs one line per launch naming the pane, tells that pane no
-`PUBLIC_LEAK_CHECK`, and every write from it to a public repository is then refused with a setup
-error naming the missing check.
+A daemon that resolves none tells that pane no `PUBLIC_LEAK_CHECK`.
+What a pane's `legion gh` writes then meet is the deployment's leak check setting, which a tmux
+daemon reads from its process environment as a Kubernetes daemon does:
+`LEGION_LEAK_CHECK_REPOSITORY` and `LEGION_LEAK_CHECK_MANIFEST_SHA256`, or the `leak_check` block
+of `legion.yaml` ([Worker image](kubernetes.md#worker-image)).
+With the setting, every pane is told the check's manifest digest as
+`LEGION_LEAK_CHECKER_MANIFEST_SHA256`, the daemon logs one line per launch naming a pane it
+resolved no check for, and every write that pane's `legion gh` makes to a public repository is
+refused with a setup error naming the missing check.
+A pane that resolves a check whose manifest digest is anything but that one — another program, a
+launcher script edited beside an unchanged program, a missing README or must-pass lines — has
+every call of its `legion gh` refused, reads included, with a setup error naming the digest told
+and the digest found, so the check the machine's installer put there must be the tag the setting
+names, whole.
+
+Under a checker digest, `legion gh` writes the four files it hashed into a new 0700 directory before it runs the check, and removes that directory when the call ends. A role pod puts that directory under `/var/run/legion/private`, a memory-backed path only that role's mount namespace reaches. A tmux pane has no such mount: its fallback is a 0700 directory under `/tmp`. That fallback keeps other Unix users out and is removed on every normal call exit, but it does not isolate same-user panes and it is not the `/var/run/legion/private` boundary.
+A broken setup on the machine is told to the pane all the same, as the path it is broken at: a
+stale `PUBLIC_LEAK_CHECK`, a `PUBLIC_LEAK_CHECK` or pointer file naming a directory or a file with
+no execute bit, a pointer file that names nothing or cannot be read, or, where nothing else names
+a check, a `public-leak-check.sh` on `PATH` that is a dangling link or has no execute bit. Its
+public writes, pushes included, are then refused under either setting, and the daemon logs a line
+per launch.
+With no setting, the daemon logs once at boot that the deployment leak check is not configured, and
+a pane's `legion gh` with no check named anywhere writes under the guard's visibility read and this
+repository's own private-name rules alone.
 
 The real gh is a compiled program, so when the first `gh` on the daemon's `PATH`
 is a script (a `gh` wrapper of the box's own, as the devbox's login `PATH` heads with, or asdf's
@@ -585,8 +607,8 @@ provider_keys:
   arm it runs in (`legion.arms=memory:memory` once decoded), so each model call says which arm's
   files it ran with. The agent keeps the last value a key is
   given, so the daemon's pairs come last. A spend row names an issue, a role or an arm only
-  where the spend collector keeps that key: a collector that keeps a list of `theorem.*`
-  attributes alone drops all three (dispatch://INFRA-1835). A controller pane serves no issue and carries the
+  where the spend collector keeps that key. A deployment's collector may keep a fixed list of
+  attributes; include all three in that list to group spend by them. A controller pane serves no issue and carries the
   role alone, and the boot gate's probe runs no role, so it carries the operator's value with its
   trailing commas and whitespace dropped and nothing added.
   The loader reads this one value for its content as well as its name: it

@@ -15,7 +15,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,6 +24,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"text/tabwriter"
@@ -130,7 +130,8 @@ func cmdSecret(args []string, stdout, stderr io.Writer) int {
 			return form.run(args[1:], stdout, stderr)
 		}
 	}
-	fmt.Fprintf(stderr, "agent-secrets secret: unknown form %q; the forms are %s\n", args[0], secretFormNames())
+	// The argument is not printed, as cmdGroup's is not.
+	fmt.Fprintf(stderr, "agent-secrets secret: unknown form (not printed); the forms are %s\n", secretFormNames())
 	return exitUsageError
 }
 
@@ -186,18 +187,21 @@ var secretFlagValues = map[string]bool{"owner": true, "tier": true, "type": true
 
 // secretFlags is form's flag set. The store credential comes from the environment, never a flag
 // (cmdSecret refuses --profile), so no form registers one for it.
-func secretFlags(form string, stderr io.Writer) *flag.FlagSet {
+func secretFlags(form string, stderr io.Writer) *flagSet {
 	return newFlagSet(form, stderr)
 }
 
-// secretName is the one NAME a form takes, and its slug: the secret's name under the prefix.
+// secretName is the one NAME a form takes, and its slug: the secret's name under the prefix. A
+// NAME that is no secret name is refused with the rule it broke and not printed, as a tag flag's
+// value is not (valueNotPrinted): a NAME is where a person who pasted the value in place of the
+// name puts it.
 func secretName(positional []string) (name, slug string, err error) {
 	if len(positional) != 1 {
 		return "", "", usageErr{errors.New("exactly one secret NAME is required")}
 	}
 	slug, err = policy.NameToSlug(positional[0])
 	if err != nil {
-		return "", "", usageErr{fmt.Errorf("%q: %w", positional[0], err)}
+		return "", "", usageErr{fmt.Errorf("NAME (not printed): %w", err)}
 	}
 	return positional[0], slug, nil
 }
@@ -947,14 +951,14 @@ func openSecretBackend(ctx context.Context, settings Settings) (secretBackend, e
 		if err != nil {
 			return nil, err
 		}
-		return &awsBackend{settings: settings, sm: sm, st: st, source: awsSourceOf(sources)}, nil
+		return &awsBackend{settings: settings, sm: awsStore{sm}, st: st, source: awsSourceOf(sources)}, nil
 	case secrets.StoreGCP:
 		if err := checkSettingsKMSKeyName(settings); err != nil {
 			return nil, err
 		}
 		return newGCPBackend(ctx, settings)
 	default:
-		return nil, fmt.Errorf("the broker's settings name an unknown secret store %q", settings.Store)
+		return nil, fmt.Errorf("the broker's settings name an unknown secret store %s", settings.words(strconv.Quote(settings.Store)))
 	}
 }
 
@@ -1007,7 +1011,7 @@ func rereadValue(s *secretSession, stdout, stderr io.Writer, form, name, secretT
 		releases = ", so every grant of it releases what it stores as it is"
 	}
 	fmt.Fprintf(stderr, "agent-secrets %s: the value of %s in %s stands, but %s serves %s as %s, not %s%s. Run `%s` to write the type again and ask it to reread %s, until that exits 0\n",
-		form, name, s.storeName(), s.src.brokerAt(), name, typeName(r.Type), typeName(secretType), releases,
+		form, name, s.storeName(), s.src.brokerAt(), name, servedTypeName(s, r.Type), typeName(secretType), releases,
 		pipeCommand(s.backend.signInPrefix(), "secret", "retag", name, "--type", retag), name)
 	return 1
 }
@@ -1035,17 +1039,17 @@ func reread(s *secretSession, stdout, stderr io.Writer, form, name, secretType s
 	default:
 		switch {
 		case r.Served && r.Type != "":
-			fmt.Fprintf(stdout, "broker: serving %s from %s (type %s)\n", name, s.storeName(), r.Type)
+			fmt.Fprintf(stdout, "broker: serving %s from %s (type %s)\n", name, s.storeName(), s.settings.words(r.Type))
 		case r.Served:
 			fmt.Fprintf(stdout, "broker: serving %s from %s\n", name, s.storeName())
 		case !wantServed && r.Reason == policy.ReasonAbsent:
 			fmt.Fprintf(stdout, "broker: %s is deleted in %s (restorable until %s)\n", name, s.storeName(), formatTime(restorable))
 		default:
-			fmt.Fprintf(stdout, "broker: refusing %s from %s (reason=%s)\n", name, s.storeName(), r.Reason)
+			fmt.Fprintf(stdout, "broker: refusing %s from %s (reason=%s)\n", name, s.storeName(), s.settings.words(r.Reason))
 		}
 		switch {
 		case wantServed && !r.Served:
-			fmt.Fprintf(stderr, "agent-secrets %s: %s refuses %s after the write to %s (reason=%s)\n", form, s.src.brokerAt(), name, s.storeName(), r.Reason)
+			fmt.Fprintf(stderr, "agent-secrets %s: %s refuses %s after the write to %s (reason=%s)\n", form, s.src.brokerAt(), name, s.storeName(), s.settings.words(r.Reason))
 			ok = false
 		case !wantServed && r.Served:
 			fmt.Fprintf(stderr, "agent-secrets %s: %s still serves %s after its delete in %s\n", form, s.src.brokerAt(), name, s.storeName())
@@ -1186,7 +1190,7 @@ func cmdSecretList(args []string, stdout, stderr io.Writer) int {
 		return exitUsage(err)
 	}
 	if len(positional) > 0 {
-		return secretFail(stderr, form, usageErr{fmt.Errorf("unexpected argument %q", positional[0])})
+		return secretFail(stderr, form, usageErr{errors.New(unexpectedArgument)})
 	}
 	s, err := openSession(context.Background(), stderr, form)
 	if err != nil {
@@ -1270,7 +1274,7 @@ func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "name: %s\nstore: %s\nsecret_name: %s\nowner: %s\ntier: %s\ntype: %s\ngithub_owners: %s\nrequesters: %s\nscopes: %s\nadmin: %s\nmax_grant: %s\ndefault_grant: %s\ncreated: %s\nlast_changed: %s\n",
 		view.Name, view.Store, view.SecretName, orDash(view.Owner), orDash(view.Tier), orDash(view.Type), orDash(view.GitHubOwners), orDash(view.Requesters), orDash(view.Scopes), orDash(view.Admin), orDash(view.MaxGrant), orDash(view.DefaultGrant), formatTime(view.Created), formatTime(view.LastChanged))
 	decides, guidance := whoDecides(view, s.settings.JudgeKeys)
-	fmt.Fprintf(stdout, "decides: %s\nguidance: %s\n", decides, guidance)
+	fmt.Fprintf(stdout, "decides: %s\nguidance: %s\n", decides, s.settings.words(guidance))
 	switch {
 	case view.EarliestPurge != nil:
 		fmt.Fprintf(stdout, "deleted: %s\nearliest_purge: %s (the deletion plus Secrets Manager's %d-day minimum recovery window: restorable at least until then; the window the delete chose may be longer)\n",

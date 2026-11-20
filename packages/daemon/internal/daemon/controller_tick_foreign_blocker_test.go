@@ -177,8 +177,8 @@ func seedStartedWaiter(t *testing.T, pool *store.Pool, key, blocker string) {
 func seedForeignMirror(t *testing.T, pool *store.Pool, key, status string, seq int64) {
 	t.Helper()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchIssueRow{
-			Key: key, Project: foreignProject, Status: status, Seq: seq})
+		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: key, Project: foreignProject, Seq: seq,
+			Status: record.Carry(status), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)})
 	}); err != nil {
 		t.Fatalf("seed the mirror row of %s: %v", key, err)
 	}

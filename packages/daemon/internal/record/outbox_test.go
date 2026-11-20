@@ -1078,6 +1078,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "message-refused", Role: claim.RoleArchitect, Reason: "Dispatch refused the message Legion was posting on LEGION-208"},
 		{Kind: "session-lost", Role: claim.RoleImplementer, Phase: phase.Implementing,
 			Reason: "the session store holds no session for this claim, so its agent starts afresh"},
+		{Kind: "session-forgotten", Role: claim.RoleImplementer, Phase: phase.Implementing,
+			Reason: "the pod's launcher could not look this claim's session up by its id, and Oh My Pi did not resume it by that id, so its agent starts afresh"},
 		{Kind: "session-store-fault", Role: claim.RoleImplementer, Phase: phase.Implementing,
 			Reason: "the session store did not answer, so this claim's agent is not started again yet"},
 		{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-208/spec"},

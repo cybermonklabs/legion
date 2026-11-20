@@ -181,7 +181,7 @@ func (c Client) call(ctx context.Context, method, target string, body []byte, in
 		return "", response.Header, err
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return "", response.Header, c.refusal(method, request.URL, response, answer, RateLimited(response, answer))
+		return "", response.Header, c.refusal(method, request.URL, response, answer)
 	}
 	if into == nil {
 		return nextPage(response.Header.Get("Link")), response.Header, nil
@@ -190,24 +190,35 @@ func (c Client) call(ctx context.Context, method, target string, body []byte, in
 }
 
 // refusal is response, GitHub's answer other than 2xx to method at target, as the *Answer its
-// caller returns: the status, the body as GitHub sent it, the rate-limit headers as GitHub sent
-// them, whether the answer is GitHub's rate limit (limited, which the caller has read already
-// where it decides something of its own by it, as JobLog's 403 does) and, when it is, how long to
-// wait and which budget it spent — the REST API's core budget when GitHub names no other.
-func (c Client) refusal(method string, target *url.URL, response *http.Response, body []byte, limited bool) *Answer {
-	refused := &Answer{Method: method, Path: c.answerPath(target), Status: response.StatusCode, Body: strings.TrimSpace(string(body)),
-		RateLimited: limited, RetryAfter: retryAfter(response, body, time.Now()), Limit: limitHeaders(response.Header)}
+// caller returns (AnswerOf), naming the path under the client's API (answerPath).
+func (c Client) refusal(method string, target *url.URL, response *http.Response, body []byte) *Answer {
+	return AnswerOf(method, c.answerPath(target), response, body)
+}
+
+// AnswerOf is response, GitHub's answer other than 2xx to method at path, whose body is body, as an
+// *Answer: the status, the body as GitHub sent it, the rate-limit headers as GitHub sent them,
+// whether the answer is GitHub's rate limit (RateLimited) and, when it is, how long to wait
+// (retryAfter) and which budget it spent (spent) — the REST API's core budget when GitHub names no
+// other. Client builds every answer it returns with it, and appauth builds the one its own errors
+// carry (appauth.AnswerError), so both read GitHub's answers one way.
+func AnswerOf(method, path string, response *http.Response, body []byte) *Answer {
+	refused := &Answer{Method: method, Path: path, Status: response.StatusCode, Body: strings.TrimSpace(string(body)),
+		RateLimited: RateLimited(response, body), RetryAfter: retryAfter(response, body, time.Now()), Limit: limitHeaders(response.Header)}
 	if refused.RateLimited {
 		refused.Budget = spent(response.Header, body)
 	}
 	return refused
 }
 
-// answerPath is the path an Answer names for target, its query left out: the path under the
-// client's API, or GitHub's whole path for a URL outside it, such as a later page GitHub names
-// under /repositories/<id>/.
-func (c Client) answerPath(target *url.URL) string {
-	if base, err := url.Parse(c.API); err == nil {
+// answerPath is the path an Answer names for target under the client's API (PathUnder).
+func (c Client) answerPath(target *url.URL) string { return PathUnder(c.API, target) }
+
+// PathUnder is the path an Answer names for target, its query left out: the path under api, or
+// GitHub's whole path for a URL outside it, such as a later page GitHub names under
+// /repositories/<id>/. Client names its answers' paths so (answerPath), and appauth names those its
+// errors carry so under its own base URL (appauth.AnswerError).
+func PathUnder(api string, target *url.URL) string {
+	if base, err := url.Parse(api); err == nil {
 		if rest, found := strings.CutPrefix(target.Path, base.Path); found && strings.HasPrefix(rest, "/") {
 			return rest
 		}

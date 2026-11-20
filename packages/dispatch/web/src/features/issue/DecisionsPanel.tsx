@@ -3,6 +3,7 @@ import { type ReactNode, useId, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
+import { replaceQueryData } from "../../api/query-client";
 import type {
   Artifact,
   Decision,
@@ -407,7 +408,9 @@ function WaitingDecision({
         void queryClient.invalidateQueries({ exact: true, queryKey: ["decisions", issueKey] });
         return;
       }
-      queryClient.setQueryData<IssueDecisions>(["decisions", issueKey], (view) =>
+      // Over any read of the decisions still out, which was asked before the Keep and would put
+      // the decision back as waiting (`replaceQueryData`).
+      replaceQueryData<IssueDecisions>(queryClient, ["decisions", issueKey], (view) =>
         view === undefined
           ? view
           : {

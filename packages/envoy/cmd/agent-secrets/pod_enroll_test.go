@@ -140,7 +140,7 @@ func TestEnrolAPodFromItsProjectedToken(t *testing.T) {
 	// The thumbprint must be the key.pem this run wrote, and the enrollment must be signed by the
 	// login's own key, not by the session key: a broker with the real verifier refuses either
 	// mistake, so both are checked here with that verifier.
-	sessionKey, err := loadKey(filepath.Join(out, keyFile))
+	sessionKey, err := loadKey(filepath.Join(out, keyFile), outKeyFile)
 	if err != nil {
 		t.Fatalf("read the session key the run wrote: %v", err)
 	}

@@ -226,12 +226,12 @@ func TestOnlyAFailureARetryCanCureIsRetried(t *testing.T) {
 	}{
 		{reset, true},
 		{fmt.Errorf("wrapped: %w", reset), true},
-		{&cutOffError{"GET " + base + "/v1/requests/x", &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)}}, true},
-		{&cutOffError{"GET " + base + "/v1/requests/x", io.ErrUnexpectedEOF}, true},
+		{&cutOffError{base: brokeraddr.New(base), method: http.MethodGet, url: base + "/v1/requests/x", cause: &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)}}, true},
+		{&cutOffError{base: brokeraddr.New(base), method: http.MethodGet, url: base + "/v1/requests/x", cause: io.ErrUnexpectedEOF}, true},
 		// The helper's socket failing under a machine session's proof is the local signer's
 		// failure, not a poll that did not reach the broker: it ends the wait, as before.
 		{fmt.Errorf("sign proof: %w", &net.OpError{Op: "read", Net: "unix", Err: os.NewSyscallError("read", syscall.ECONNRESET)}), false},
-		{&unreachableError{"the broker's address is not a valid URL", brokeraddr.New(base), http.MethodGet, base, errNothingSent}, false},
+		{&unreachableError{"the broker's address is not a valid URL", brokeraddr.New(base), http.MethodGet, base, errNothingSent, ""}, false},
 		{&apiError{Status: http.StatusTooManyRequests, Code: "RATE_LIMITED", Message: "slow down"}, true},
 		{&apiError{Status: http.StatusBadGateway, Message: "<html>502 Bad Gateway</html>"}, true},
 		{&apiError{Status: http.StatusServiceUnavailable, Code: "SHUTTING_DOWN", Message: "shutting down"}, true},

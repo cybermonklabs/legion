@@ -42,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -398,7 +399,14 @@ func NewDeps(input DepsInput) (Deps, error) {
 	}, nil
 }
 
-// ParseRepoProjects parses DISPATCH_REPO_PROJECTS (owner/repo=PROJECT,...).
+// ParseRepoProjects parses DISPATCH_REPO_PROJECTS (owner/repo=PROJECT,...). Each entry is
+// trimmed, and its repository is read as a mapping's path is (refs.ParseGitHubRepo: lower-cased,
+// one trailing `.git` trimmed, and held to the names GitHub allows in that form), so the seed
+// stores no mapping the settings route refuses: `acme/.git=KEY`, which reads as `acme/`, a
+// mapping no request reaches, or `acme/..=KEY`. Nothing more is trimmed, so a space before the
+// `=` stays in the name and `acme/x =KEY` is refused. Such an entry is refused, naming it, and the
+// boot with it: one whose repository GitHub's rule refuses with that rule's own words, any other
+// with the form an entry takes.
 func ParseRepoProjects(raw string) (map[string]string, error) {
 	projects := make(map[string]string)
 	if strings.TrimSpace(raw) == "" {
@@ -411,10 +419,14 @@ func ParseRepoProjects(raw string) (map[string]string, error) {
 		if !ok || repo == "" || project == "" || strings.Contains(project, "=") || !projectKeyPattern.MatchString(project) {
 			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q (expected owner/repo=KEY)", part)
 		}
-		canonical, _, err := externalRef(repo + "#1")
-		if err != nil {
+		owner, name, err := refs.ParseGitHubRepo(repo)
+		switch {
+		case errors.Is(err, refs.ErrNotGitHubRepo):
+			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q: %w", part, err)
+		case err != nil:
 			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q (expected owner/repo=KEY)", part)
 		}
+		canonical := owner + "/" + name
 		if _, exists := projects[canonical]; exists {
 			return nil, fmt.Errorf("duplicate DISPATCH_REPO_PROJECTS repository %q", canonical)
 		}
@@ -1055,9 +1067,10 @@ type apiError struct {
 	code    string
 	message string
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
-	// that carries none. Only a refusal that knows when the caller may come back sets it
-	// (brokerTokenActor's 429, and the results write's 409 CHECK_CONTENDED);
-	// writeHandlerError writes the header.
+	// that carries none. Only a refusal that knows when the caller may come back sets it:
+	// brokerTokenActor's 429, the results write's 409 CHECK_CONTENDED, and linkedReadRefusal's
+	// 502 for a linked repository's read GitHub rate-limited with a wait. writeHandlerError
+	// writes the header.
 	retryAfter int
 	// scope is the OAuth scope a missing-scope refusal names, and is empty for every other
 	// refusal. Only missingScopeError sets it; writeHandlerError writes the challenge header

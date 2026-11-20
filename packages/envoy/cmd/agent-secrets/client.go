@@ -23,19 +23,15 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/sjawhar/envoy/brokeraddr"
@@ -159,116 +155,6 @@ func (e *apiError) Permanent() bool {
 	return slices.Contains(terminalRenewal.Codes, e.Code) || e.enrollmentEnded()
 }
 
-// unreachableError is a broker call that did not complete. Its host might not resolve, nothing
-// might answer at the address, or a peer might answer the connection but fail the exchange. It is
-// not a broker refusal - the broker sent no usable response - and it reads as what it is, naming
-// the address tried and the variable the address came from, because a session that inherited a
-// stale AGENT_SECRETS_URL otherwise reads a bare DNS error as a broker that is down and the stale
-// value goes unnoticed.
-type unreachableError struct {
-	// what classifies the failure: a failed name resolution, no connection made, nothing answered
-	// in time, a peer that answered but failed the exchange, or a request that failed in a way
-	// none of those names.
-	what string
-	// base is the broker's address as AGENT_SECRETS_URL gave it, method and url the call tried;
-	// Error prints base as the Address prints and url through base.Call, so a credential the
-	// variable carries never prints, while an id the call path-escaped still does.
-	base        brokeraddr.Address
-	method, url string
-	// cause is the transport's own error through base.Cause: without net/http's *url.Error
-	// wrapper, which repeats the URL, or its class alone where its text may not print.
-	cause error
-}
-
-func (e *unreachableError) Error() string {
-	return fmt.Sprintf("%s: %s %s (%s names %s): %v", e.what, e.method, e.base.Call(e.url), brokerURLVar, e.base, e.cause)
-}
-
-func (e *unreachableError) Unwrap() error { return e.cause }
-
-// unreachable classifies a failed HTTP exchange, sending its reader to the layer that failed.
-// Any resolver error is name resolution, before the generic timeout branch. A dial that made no
-// connection (refused, network or host unreachable, any other dial error) is a non-answer, which
-// routing or a listener fixes. Only what proves a peer answered - a TLS record or certificate
-// error, EOF, or a reset once the connection existed - is "answered but the exchange failed",
-// which TLS or a proxy fixes. An error that fits none says no more than that the request failed,
-// rather than name a layer it cannot prove.
-func unreachable(base brokeraddr.Address, method, callURL string, err error) error {
-	cause := base.Cause(err)
-	host := brokerHost(base)
-	failed := func(what string) error { return &unreachableError{what, base, method, callURL, cause} }
-	var dns *net.DNSError
-	var timeout net.Error
-	var op *net.OpError
-	switch {
-	case errors.As(err, &dns) && dns.IsNotFound:
-		return failed("the broker's host " + host + " does not resolve")
-	case errors.As(err, &dns):
-		return failed("the broker's host " + host + " name resolution failed")
-	case errors.Is(err, syscall.ECONNREFUSED):
-		return failed("nothing answered at " + host + ": the connection was refused")
-	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &timeout) && timeout.Timeout()):
-		return failed("the broker at " + host + " did not answer in time")
-	case errors.Is(err, syscall.ENETUNREACH), errors.Is(err, syscall.EHOSTUNREACH),
-		errors.As(err, &op) && op.Op == "dial":
-		return failed("nothing answered at " + host + ": no connection could be made")
-	case peerAnswered(err):
-		return failed("the broker at " + host + " answered but the exchange failed")
-	default:
-		return failed("the request to the broker at " + host + " failed")
-	}
-}
-
-// peerAnswered reports whether err shows a peer took the connection and then broke the exchange:
-// a TLS record that is not TLS (an HTTP server answering an https URL, which net/http reports as
-// its fixed http.ErrSchemeMismatch in place of the record error), a TLS alert or certificate it
-// would not trust, or the stream ending or being reset once it existed.
-func peerAnswered(err error) bool {
-	var record tls.RecordHeaderError
-	var alert tls.AlertError
-	var verify *tls.CertificateVerificationError
-	var authority x509.UnknownAuthorityError
-	var hostname x509.HostnameError
-	var invalid x509.CertificateInvalidError
-	return errors.As(err, &record) || errors.Is(err, http.ErrSchemeMismatch) || errors.As(err, &alert) || errors.As(err, &verify) ||
-		errors.As(err, &authority) || errors.As(err, &hostname) || errors.As(err, &invalid) ||
-		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
-		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
-}
-
-// cutOffError is a broker answer lost after its headers came: the status line arrived and the
-// body did not, because the stream broke while doStatus read it. Its text is the call, then
-// "read response:", then the transport's own cause.
-type cutOffError struct {
-	call  string
-	cause error
-}
-
-func (e *cutOffError) Error() string { return e.call + ": read response: " + e.cause.Error() }
-
-func (e *cutOffError) Unwrap() error { return e.cause }
-
-// retryable reports whether a later call may get the answer err's call did not: the call went
-// out and failed in transport (unreachable's classes), its answer was cut off after the headers
-// came (*cutOffError), or the broker, or a front door before it, could not serve it just then —
-// 429, 502, 503 or 504, with the broker's envelope or without it (doStatus makes an *apiError of
-// either). Any other refusal is the broker's answer, which the same call gets again, and a
-// failure of the local signer (the helper's socket) is not the broker's at all.
-func retryable(err error) bool {
-	var unreached *unreachableError
-	if errors.As(err, &unreached) {
-		return !errors.Is(err, errNothingSent)
-	}
-	var refusal *apiError
-	if errors.As(err, &refusal) {
-		return slices.Contains([]int{
-			http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout,
-		}, refusal.Status)
-	}
-	var cut *cutOffError
-	return errors.As(err, &cut)
-}
-
 // do sends the request and, on a 2xx response, returns its raw body; any other status decodes
 // the broker's error envelope into an *apiError.
 func (c *client) do(ctx context.Context, method, url string, body []byte, headers map[string]string) ([]byte, error) {
@@ -299,7 +185,7 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 		if c.baseURL.Clean() {
 			return 0, nil, fmt.Errorf("the request could not be built: %w", c.baseURL.Error(err))
 		}
-		return 0, nil, &unreachableError{"the broker's address is not a valid URL", c.baseURL, method, named, errNothingSent}
+		return 0, nil, &unreachableError{"the broker's address is not a valid URL", c.baseURL, method, named, errNothingSent, ""}
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -314,7 +200,7 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, nil, &cutOffError{method + " " + c.baseURL.Call(named), c.baseURL.Error(err)}
+		return 0, nil, &cutOffError{base: c.baseURL, method: method, url: named, cause: c.baseURL.Error(err)}
 	}
 	if resp.StatusCode/100 == 3 {
 		// A redirect this client refuses to follow (redirects.Refused), handed back as the
@@ -355,25 +241,10 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 	return resp.StatusCode, data, nil
 }
 
-// withoutQuery is err with the URL of the *url.Error net/http wraps a failed call in cut at query,
-// the query doStatus's call carried, so the redactor reads the URL this client built from the
-// broker's address and a route. A URL that does not end in that query, a redirect's target say,
-// stays as net/http named it.
-func withoutQuery(err error, query string) error {
-	var ue *url.Error
-	if query != "" && errors.As(err, &ue) {
-		ue.URL = strings.TrimSuffix(ue.URL, "?"+query)
-	}
-	return err
-}
-
 // answerIDHeader is the header every answer the broker itself writes names its answer id in
 // (answer.Header in internal/broker/answer, which this client does not link); net/http's own
 // 400, 431 and 417, written before any of the broker's code runs, carry none.
 const answerIDHeader = "X-Broker-Answer-Id"
-
-// errNothingSent is the cause of a call this client could not even build a request for.
-var errNothingSent = errors.New("nothing was sent")
 
 // reenroller is a signer that can replace an enrollment the broker no longer holds: a person's
 // sign-in on this box, and a machine that registered its own session here (proofsource.go).
@@ -569,10 +440,22 @@ func (c *client) postRequest(ctx context.Context, signer Signer, build func(rere
 		return RequestResult{}, nil, err
 	}
 	var result RequestResult
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return RequestResult{}, nil, fmt.Errorf("decode create request response: %w", err)
+	if err := c.decode(raw, &result, "decode create request response"); err != nil {
+		return RequestResult{}, nil, err
 	}
 	return result, raw, nil
+}
+
+// decode reads raw, a broker answer, into v, and refuses one it cannot read with call and the
+// decoder's words as the address lets the answer's own words print (brokeraddr.Address.Words):
+// encoding/json's error can quote the answer (a time field's value whole, through time.Parse),
+// and whoever answers at an address that is not clean can repeat its credential in any text of
+// its answer. Every answer decoder of this client reads through it, enroll --pod's among them.
+func (c *client) decode(raw []byte, v any, call string) error {
+	if err := json.Unmarshal(raw, v); err != nil {
+		return fmt.Errorf("%s: %s", call, c.baseURL.Words(err.Error()))
+	}
+	return nil
 }
 
 type requestDecision struct {
@@ -600,13 +483,14 @@ type refusedBeforeCall struct{ text string }
 
 func (e *refusedBeforeCall) Error() string { return e.text }
 
-// pathID refuses id, naming it as kind, when it would not appear in a call's path as written: the
-// proof signs the URL this client builds, and the broker checks it against its public URL and the
-// path it decoded, so an id url.PathEscape would change (a '%', a space, a '/') could only be
-// escaped into a proof the broker refuses, or sent raw into a different path.
+// pathID refuses id, naming kind and never id, when it would not appear in a call's path as
+// written: the proof signs the URL this client builds, and the broker checks it against its public
+// URL and the path it decoded, so an id url.PathEscape would change (a '%', a space, a '/') could
+// only be escaped into a proof the broker refuses, or sent raw into a different path. The id is
+// not printed: an argument that is no id is where a credential pasted in the wrong place lands.
 func pathID(kind, id string) error {
 	if url.PathEscape(id) != id {
-		return &refusedBeforeCall{fmt.Sprintf("%q is not %s", id, kind)}
+		return &refusedBeforeCall{"not " + kind + " (the argument is not printed: it holds a character a call's path would change)"}
 	}
 	return nil
 }
@@ -626,11 +510,11 @@ func (c *client) GetRequest(ctx context.Context, signer Signer, id string, waitS
 	}
 	raw, err := c.doProof(ctx, signer, http.MethodGet, path, nil)
 	if err != nil {
-		return RequestStatus{}, nil, err
+		return RequestStatus{}, nil, withoutTypedID(err, "/v1/requests/(the request id, not printed)")
 	}
 	var status RequestStatus
-	if err := json.Unmarshal(raw, &status); err != nil {
-		return RequestStatus{}, nil, fmt.Errorf("decode request status: %w", err)
+	if err := c.decode(raw, &status, "decode request status"); err != nil {
+		return RequestStatus{}, nil, err
 	}
 	return status, raw, nil
 }
@@ -640,7 +524,7 @@ func (c *client) CancelRequest(ctx context.Context, signer Signer, id string) er
 		return err
 	}
 	_, err := c.doProof(ctx, signer, http.MethodPost, "/v1/requests/"+id+"/cancel", nil)
-	return err
+	return withoutTypedID(err, "/v1/requests/(the request id, not printed)/cancel")
 }
 
 // --- POST /v1/grants/{id}/values, POST /v1/grants/{id}/revoke ---
@@ -731,8 +615,8 @@ func (c *client) GrantValues(ctx context.Context, signer Signer, grantID string,
 		return GrantValues{}, err
 	}
 	var values GrantValues
-	if err := json.Unmarshal(raw, &values); err != nil {
-		return GrantValues{}, fmt.Errorf("decode grant values: %w", err)
+	if err := c.decode(raw, &values, "decode grant values"); err != nil {
+		return GrantValues{}, err
 	}
 	return values, nil
 }
@@ -769,7 +653,7 @@ func (c *client) RevokeGrant(ctx context.Context, signer Signer, grantID string)
 		return err
 	}
 	_, err := c.doProof(ctx, signer, http.MethodPost, "/v1/grants/"+grantID+"/revoke", nil)
-	return err
+	return withoutTypedID(err, "/v1/grants/(the grant id, not printed)/revoke")
 }
 
 // --- GET /v1/enrollments/self, POST /v1/enrollments/{id}/renew ---
@@ -797,8 +681,8 @@ func (c *client) Self(ctx context.Context, signer Signer) (SelfResult, []byte, e
 		return SelfResult{}, nil, err
 	}
 	var self SelfResult
-	if err := json.Unmarshal(raw, &self); err != nil {
-		return SelfResult{}, nil, fmt.Errorf("decode self: %w", err)
+	if err := c.decode(raw, &self, "decode self"); err != nil {
+		return SelfResult{}, nil, err
 	}
 	return self, raw, nil
 }
@@ -825,8 +709,8 @@ func (c *client) RenewEnrollment(ctx context.Context, signer Signer, enrollmentI
 	var result struct {
 		LeaseExpiresAt time.Time `json:"lease_expires_at"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return time.Time{}, fmt.Errorf("decode renew response: %w", err)
+	if err := c.decode(raw, &result, "decode renew response"); err != nil {
+		return time.Time{}, err
 	}
 	return result.LeaseExpiresAt, nil
 }
@@ -860,8 +744,8 @@ func (c *client) OperatorMachines(ctx context.Context, signer proofSigner) (Oper
 		return OperatorMachines{}, nil, err
 	}
 	var out OperatorMachines
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return OperatorMachines{}, nil, fmt.Errorf("decode machine logins: %w", err)
+	if err := c.decode(raw, &out, "decode machine logins"); err != nil {
+		return OperatorMachines{}, nil, err
 	}
 	return out, raw, nil
 }
@@ -874,7 +758,7 @@ func (c *client) RevokeOperatorMachine(ctx context.Context, signer proofSigner, 
 		return err
 	}
 	_, err := c.doProof(ctx, signer, http.MethodPost, "/v1/operator/machines/"+id+"/revoke", nil)
-	return err
+	return withoutTypedID(err, "/v1/operator/machines/(the machine id, not printed)/revoke")
 }
 
 // OperatorGrantEnrollment mirrors a grant's session, the broker's recordEnrollmentResp.
@@ -916,8 +800,8 @@ func (c *client) OperatorGrants(ctx context.Context, signer proofSigner) (Operat
 		return OperatorGrants{}, nil, err
 	}
 	var out OperatorGrants
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return OperatorGrants{}, nil, fmt.Errorf("decode grants: %w", err)
+	if err := c.decode(raw, &out, "decode grants"); err != nil {
+		return OperatorGrants{}, nil, err
 	}
 	return out, raw, nil
 }
@@ -929,5 +813,5 @@ func (c *client) RevokeOperatorGrant(ctx context.Context, signer proofSigner, id
 		return err
 	}
 	_, err := c.doProof(ctx, signer, http.MethodPost, "/v1/operator/grants/"+id+"/revoke", nil)
-	return err
+	return withoutTypedID(err, "/v1/operator/grants/(the grant id, not printed)/revoke")
 }

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -13,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // A project imports its component model from any number of sources, one per repository, and a
@@ -377,30 +377,16 @@ func sourcePathRepo(r *http.Request) (owner, name string, err error) {
 	return parseSourceRepo(r.PathValue("owner") + "/" + r.PathValue("repo"))
 }
 
-var sourceRepoNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
-
-// parseSourceRepo validates and canonicalizes an owner/name repository input
-// the same way repository mappings are stored (lowercase, .git trimmed). The
-// owner is read by the grammar an issue's own repository is (repoOwnerPattern,
-// the daemon's ghrepo ownerName): a login as GitHub serves it, which is wider
-// than GitHub's sign-up charset, since a managed user's login ends in
-// `_<shortcode>` (`mona-cat_octo`) and a source in such an account is one a
-// project can hold. The name is held to letters, digits, `.`, `-` and `_`, and
-// `.` and `..` are refused, so a stored repo can never smuggle path segments
-// into an outbound API URL (".." would traverse); an underscore traverses
-// nothing, in either segment.
+// parseSourceRepo reads raw, trimmed of the space around it, as a repository GitHub could hold, in
+// the form repository mappings are stored, and answers that form's halves: refs.ParseGitHubRepo,
+// which lower-cases it, trims one trailing `.git` and holds the result to GitHub's names, so a
+// stored name puts no `..` into a GitHub path. Any other raw is 400 SOURCE_INPUT. A source's
+// repository, a mapping's path and its renamed_to, and the delivery settings' deploy repository
+// are each read through it.
 func parseSourceRepo(raw string) (owner, name string, err error) {
-	trimmed := strings.TrimSpace(raw)
-	parts := strings.Split(trimmed, "/")
-	if len(parts) != 2 || !repoOwnerPattern.MatchString(parts[0]) ||
-		!sourceRepoNamePattern.MatchString(parts[1]) || parts[1] == "." || parts[1] == ".." {
+	owner, name, err = refs.ParseGitHubRepo(strings.TrimSpace(raw))
+	if err != nil {
 		return "", "", errorf(http.StatusBadRequest, "SOURCE_INPUT", "repository must be owner/name, got %q", raw)
 	}
-	canonical := strings.SplitN(canonicalRepo(parts[0], parts[1]), "/", 2)
-	// canonicalRepo trims a trailing ".git", so the canonical name needs the same
-	// empty/"."/".." check as the raw input ("legion/...git" canonicalizes to "..").
-	if canonical[1] == "" || canonical[1] == "." || canonical[1] == ".." {
-		return "", "", errorf(http.StatusBadRequest, "SOURCE_INPUT", "repository must be owner/name, got %q", raw)
-	}
-	return canonical[0], canonical[1], nil
+	return owner, name, nil
 }

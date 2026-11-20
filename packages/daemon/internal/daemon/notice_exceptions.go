@@ -465,7 +465,7 @@ func copyDueAtOnce(held supervise.Claim, resends int, recipient string) bool {
 	if !supervise.SaidReady(held.State) {
 		return false
 	}
-	return resends == 0 || recipient != "" && recipient != held.Session
+	return resends == 0 || recipient != "" && !held.HoldsSession(recipient)
 }
 
 // reportedNotice is the notice a failed publish was, as exceptionNotice reads it from a report or
