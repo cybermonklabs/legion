@@ -3,6 +3,7 @@ import { hashKey, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
+import { settle } from "../../__tests__/fake-clock";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import { issueCoverageQuery, issueQuery } from "../../api/queries";
@@ -303,6 +304,224 @@ test("a title somebody else writes while a components save is out shows once the
     getArchitecture.mockRestore();
     getIssue.mockRestore();
     patchIssue.mockRestore();
+  }
+});
+
+/** What Dispatch holds once it took a save that marked `issue` not architectural for `reason`:
+ *  the issue's read, the save's answer, and the project's tree. */
+interface SavedAs {
+  readonly answer: Issue;
+  readonly details: IssueDetails;
+  readonly tree: ArchitectureTree;
+}
+
+function savedAs(reason: string): SavedAs {
+  const details: IssueDetails = {
+    ...issue,
+    components: { ...notArchitectural, reason },
+    updated_at: "2026-09-09T00:01:00Z",
+  };
+  const { artifacts: _a, children: _c, open_asks: _o, ...answer } = details;
+  return {
+    answer,
+    details,
+    tree: {
+      ...unassignedTree,
+      not_architectural: [
+        { inherited_from: null, key: issue.key, reason, status: issue.status, title: issue.title },
+      ],
+      totals: { ...unassignedTree.totals, not_architectural: 1, unassigned: 0 },
+      unassigned: [],
+    },
+  };
+}
+
+/**
+ * `useShownComponents` under Dispatch's own client signed in as alice, once it has read the issue
+ * and its tree and the reader has pressed two saves of the issue's components, "Hiring" and then
+ * "Hiring, for now": the first is out, and the second waits its turn behind it (`issue:<KEY>`).
+ * Each read of the issue and the tree, and each save, is answered when the row says; `asked` lists
+ * the reads of the two as each calls its function, so a read a save holds is listed before it
+ * waits.
+ */
+async function twoSavesOut() {
+  const client = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const detailKey = issueQuery(issue.key).queryKey;
+  const treeKey = ["architecture", issue.project];
+  const asked: string[] = [];
+  const stopListening = client.onAttempt((queryHash) => {
+    if (queryHash === hashKey(detailKey) || queryHash === hashKey(treeKey)) asked.push(queryHash);
+  });
+  const issueAnswers: ((details: IssueDetails) => void)[] = [];
+  const getIssue = spyOn(api, "getIssue").mockImplementation(() => {
+    const read = Promise.withResolvers<IssueDetails>();
+    issueAnswers.push(read.resolve);
+    return read.promise;
+  });
+  const treeAnswers: ((tree: ArchitectureTree) => void)[] = [];
+  const getArchitecture = spyOn(api, "getArchitecture").mockImplementation(() => {
+    const read = Promise.withResolvers<ArchitectureTree>();
+    treeAnswers.push(read.resolve);
+    return read.promise;
+  });
+  const saveAnswers: ((answer: Issue) => void)[] = [];
+  const patchIssue = answerIssuePatches().mockImplementation(() => {
+    const save = Promise.withResolvers<Issue>();
+    saveAnswers.push(save.resolve);
+    return save.promise;
+  });
+  const hook = renderHook(useShownComponents, {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    ),
+  });
+  const stop = () => {
+    hook.unmount();
+    stopListening();
+    getArchitecture.mockRestore();
+    getIssue.mockRestore();
+    patchIssue.mockRestore();
+  };
+  try {
+    await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getArchitecture).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      issueAnswers[0]?.(issue);
+      treeAnswers[0]?.(unassignedTree);
+    });
+    await waitFor(() => expect(hook.result.current.notArchitectural).toEqual([]));
+
+    act(() => {
+      void hook.result.current.write.submit({ mode: "none", reason: "Hiring" });
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    act(() => {
+      void hook.result.current.write.submit({ mode: "none", reason: "Hiring, for now" });
+    });
+    await waitFor(() => expect(hook.result.current.components?.reason).toBe("Hiring, for now"));
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } catch (error) {
+    stop();
+    throw error;
+  }
+  return {
+    asked,
+    client,
+    getArchitecture,
+    getIssue,
+    hook,
+    issueAnswers,
+    patchIssue,
+    /** Asks the issue and its tree again, as an event's refresh does. */
+    readAgain: () => {
+      void client.invalidateQueries({ queryKey: detailKey });
+      void client.invalidateQueries({ queryKey: treeKey });
+    },
+    saveAnswers,
+    stop,
+    treeAnswers,
+  };
+}
+
+// Two components saves of one issue go out in press order (`issue:<KEY>`), and each publishes an
+// `issue.updated` by the viewer naming `components`. One such event is the first save's, and says
+// nothing of the second, which Dispatch has not taken yet: it ends one hold, the older, and a read
+// of the issue or its tree asked then waits for the second save's event.
+test("one components event ends the hold of the first of two saves out, and a read of the issue or its tree waits for the second's", async () => {
+  const saves = await twoSavesOut();
+  const later = savedAs("Hiring, for now");
+  try {
+    // Dispatch takes the first save, whose event comes; the second is not sent yet.
+    await act(async () => {
+      hearLiveEvent(saves.client, issueUpdated("alice", ["components"]), "alice");
+      saves.readAgain();
+      await settle();
+    });
+    await waitFor(() => expect(saves.asked).toHaveLength(4));
+    expect(saves.getIssue).toHaveBeenCalledTimes(1);
+    expect(saves.getArchitecture).toHaveBeenCalledTimes(1);
+    expect(saves.hook.result.current.components?.reason).toBe("Hiring, for now");
+
+    // The first save's answer comes, and the second goes out: the reads still wait.
+    await act(async () => {
+      saves.saveAnswers[0]?.(savedAs("Hiring").answer);
+      await settle();
+    });
+    await waitFor(() => expect(saves.patchIssue).toHaveBeenCalledTimes(2));
+    expect(saves.getIssue).toHaveBeenCalledTimes(1);
+    expect(saves.getArchitecture).toHaveBeenCalledTimes(1);
+
+    // The second save's event comes, and both reads ask Dispatch and show what it holds.
+    await act(async () => {
+      hearLiveEvent(saves.client, issueUpdated("alice", ["components"]), "alice");
+    });
+    await waitFor(() => expect(saves.getIssue).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(saves.getArchitecture).toHaveBeenCalledTimes(2));
+    saves.getIssue.mockResolvedValue(later.details);
+    saves.getArchitecture.mockResolvedValue(later.tree);
+    await act(async () => {
+      saves.issueAnswers[1]?.(later.details);
+      saves.treeAnswers[1]?.(later.tree);
+      saves.saveAnswers[1]?.(later.answer);
+    });
+    await waitFor(() => expect(saves.client.isMutating()).toBe(0));
+    await waitFor(() => expect(saves.client.isFetching()).toBe(0));
+    expect(saves.hook.result.current.components).toEqual(later.details.components);
+    expect(saves.hook.result.current.tree).toEqual(later.tree);
+  } finally {
+    saves.stop();
+  }
+});
+
+// Dispatch can answer a save before its event reaches the page. The first save's reads go at its
+// answer, and the second save goes out; the first save's event, which comes after, is still the
+// first save's, and leaves the second's hold, which the second's own event ends.
+test("a components save's event that comes after its answer leaves the hold of the save pressed after it", async () => {
+  const saves = await twoSavesOut();
+  const later = savedAs("Hiring, for now");
+  try {
+    // The first save's answer comes before its event, and the second goes out. The reads the
+    // first one's settling asks wait for the second.
+    await act(async () => {
+      saves.saveAnswers[0]?.(savedAs("Hiring").answer);
+      await settle();
+    });
+    await waitFor(() => expect(saves.patchIssue).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(saves.asked).toHaveLength(4));
+    expect(saves.getIssue).toHaveBeenCalledTimes(1);
+    expect(saves.getArchitecture).toHaveBeenCalledTimes(1);
+
+    // The first save's event comes now, and the reads still wait.
+    await act(async () => {
+      hearLiveEvent(saves.client, issueUpdated("alice", ["components"]), "alice");
+      await settle();
+    });
+    expect(saves.getIssue).toHaveBeenCalledTimes(1);
+    expect(saves.getArchitecture).toHaveBeenCalledTimes(1);
+    expect(saves.hook.result.current.components?.reason).toBe("Hiring, for now");
+
+    // The second save's event comes, and both reads ask Dispatch and show what it holds.
+    await act(async () => {
+      hearLiveEvent(saves.client, issueUpdated("alice", ["components"]), "alice");
+    });
+    await waitFor(() => expect(saves.getIssue).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(saves.getArchitecture).toHaveBeenCalledTimes(2));
+    saves.getIssue.mockResolvedValue(later.details);
+    saves.getArchitecture.mockResolvedValue(later.tree);
+    await act(async () => {
+      saves.issueAnswers[1]?.(later.details);
+      saves.treeAnswers[1]?.(later.tree);
+      saves.saveAnswers[1]?.(later.answer);
+    });
+    await waitFor(() => expect(saves.client.isMutating()).toBe(0));
+    await waitFor(() => expect(saves.client.isFetching()).toBe(0));
+    expect(saves.hook.result.current.components).toEqual(later.details.components);
+    expect(saves.hook.result.current.tree).toEqual(later.tree);
+  } finally {
+    saves.stop();
   }
 });
 
