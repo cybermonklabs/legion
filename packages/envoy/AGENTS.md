@@ -37,6 +37,10 @@ Start with `docs/architecture.md`; `.dispatch/architecture/` at the repository r
 
 - In Dispatch, call the listener before a transaction opens, never inside one (`internal/dispatch/api/envoy_resolve.go`).
 
+- In the broker, ask Dispatch (`internal/broker/projectaccess`) before a transaction opens, never inside one.
+  A restricted member's machine login enrolls no session and is released no secret (`enroll.Service.checkMember`, `policy.ReasonRestrictedMember`): keep both halves on every new path that enrolls or releases for a person.
+  Where Dispatch cannot say, refuse with `projectaccess.MemberKindUncheckable` (503 `MEMBER_KIND_UNCHECKABLE`), never answer as before.
+
 - A transaction that appends events for more than one owner calls `events.Broker.LockOwners` on all of them before its first `Append`, or two writers can deadlock.
 
 - A Dispatch route whose answer holds a credential goes in `answerHoldsSecret` (`internal/dispatch/api/request_keys.go`), or the keyed-write layer stores that answer for 24 hours.

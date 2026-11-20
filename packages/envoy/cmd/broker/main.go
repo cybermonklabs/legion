@@ -453,16 +453,28 @@ func main() {
 	slog.Info("broker metrics listening", "addr", started.MetricsListener.Addr().String())
 
 	lease, sweep := time.Duration(cfg.LeaseSeconds)*time.Second, time.Duration(cfg.SweepSeconds)*time.Second
+	// The broker's one client of Dispatch's project access, nil where BROKER_PROJECT_ACCESS_URL
+	// is unset: the token exchange, an enrollment and a secret request each ask through it, so
+	// one cache of Dispatch's answers serves all three. It presents the broker's own projected
+	// ServiceAccount token for Dispatch's audience, read at call time through the reader every
+	// projected token here goes through, so a rotation needs no restart. config.Load holds the
+	// two settings to both or neither.
+	var projects projectaccess.Access
+	if cfg.ProjectAccessURL != "" {
+		projects = projectaccess.New(cfg.ProjectAccessURL, brokertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)
+	}
 	enr := &enroll.Service{
 		Store: st, Lease: lease, Carry: time.Duration(cfg.SessionCarrySeconds) * time.Second, Pod: pod,
 		ServiceLogins: cfg.ServiceLogins, ServicesByAccount: cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount, PodOperators: cfg.PodOperators,
+		Projects: projects,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
 	// The broker's one read of Dispatch, where BROKER_JUDGE_DISPATCH_URL names one: the request
 	// machine and the model judge share it, its token cache and its client.
 	dispatch := judgeDispatch(cfg)
 	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry), dispatch)
+	reqMachine.Projects = projects
 	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
 	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
 	// person who decides it today rather than approving it while the pod is going away.
@@ -524,15 +536,12 @@ func main() {
 		fatal(err)
 		exchangeConfig.GitHub = oauth.IssuerConfig{Issuer: cfg.ExchangeGitHubIssuer, Audience: cfg.ExchangeGitHubAudience, Keys: keys}
 	}
-	if cfg.ProjectAccessURL != "" {
-		// The broker's own projected ServiceAccount token for Dispatch's audience, read at call
-		// time through the reader every projected token here goes through, so a rotation needs no
-		// restart. config.Load holds the two settings to both or neither.
-		exchangeConfig.Projects = projectaccess.New(cfg.ProjectAccessURL, brokertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)
+	exchangeConfig.Projects = projects
+	if projects != nil {
 		slog.Info("project access check", "state", "on", "url", redact.URL(cfg.ProjectAccessURL))
 	} else {
 		slog.Info("project access check", "state", "off",
-			"detail", "BROKER_PROJECT_ACCESS_URL is unset, so a token naming no project is minted as before and a person's trade naming one is refused")
+			"detail", "BROKER_PROJECT_ACCESS_URL is unset, so a token naming no project is minted as before, a person's trade naming one is refused, and no enrollment or secret request asks what kind of member its person is")
 	}
 	if cfg.ExchangeK8sAudience == "" && cfg.ExchangeGitHubIssuer == "" && cfg.GoogleOIDCAudience == "" {
 		slog.Info("token exchange", "state", "unconfigured", "detail", "no subject token issuer is set, so no pod, workflow run or machine exchanges")

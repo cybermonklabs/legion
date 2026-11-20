@@ -344,10 +344,16 @@ ended stays without secrets until it is replaced. To stop it logging in, remove 
 to that person alone, and only that person may revoke it ([a person's pod](#a-persons-pod)).
 
 A credential enrolls sessions only for its own operator: an enrollment naming anyone else is refused
-`OPERATOR_MISMATCH`. The broker's rate limiter caps how often anyone can start a machine login, per
-source address and per named person, and how often anyone can try a token login: per source
-address before the token is verified, and per account once it is. A token login the broker could
-not complete (a 5xx, such as while its database is away) spends neither.
+`OPERATOR_MISMATCH`. Where `BROKER_PROJECT_ACCESS_URL` is set, a machine login or a pod login
+whose person Dispatch calls a restricted member, someone an access list admitted from outside the
+deployment's sign-in domain, enrolls nothing (`403 RESTRICTED_MEMBER_ENROLLS_NOTHING`), so that
+person's agents are released no secret; the login still trades for a token that names their
+projects. A session such a person already had is denied every secret `restricted-member`, and its
+grants end at their next use ([Operating the broker](/legion/broker/operate/)). The broker's rate
+limiter caps how often anyone can start a machine login, per source address and per named person,
+and how often anyone can try a token login: per source address before the token is verified, and
+per account once it is. A token login the broker could not complete (a 5xx, such as while its
+database is away) spends neither.
 
 ## Owner and tier: who may have which secret
 
@@ -1353,8 +1359,9 @@ that check.
 The judge's reads of Dispatch are the issue a reason names and the text of its spec document, and
 the ask it cites, with the broker's own projected ServiceAccount token, read again from its file
 once the copy it holds is 30 seconds old. Another, with the same token, is one GET of the issue a
-Legion worker pod's claim names, for its assignee alone ([Approvals](#approvals)); the token
-exchange's reads of a person's project access are the last, at `BROKER_PROJECT_ACCESS_URL`
+Legion worker pod's claim names, for its assignee alone ([Approvals](#approvals)); the reads of a
+person's project access and member kind, by the token exchange, an enrollment and a secret request,
+are the last, at `BROKER_PROJECT_ACCESS_URL`
 ([Operating the broker](/legion/broker/operate/)). The broker writes nothing there — no
 ask, no comment, no status — and reads nothing that belongs to a person. It reaches its model at
 the endpoint its settings name, presenting the broker machine's own Google identity token for the

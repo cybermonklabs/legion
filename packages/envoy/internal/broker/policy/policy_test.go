@@ -222,6 +222,51 @@ func TestRequesters(t *testing.T) {
 	}
 }
 
+// TestARestrictedMemberIsDeniedEverySecret: a requester Dispatch calls a restricted member — a
+// person an access list admitted from outside the sign-in domain — is denied every secret the set
+// serves, restricted-member, before owner, tier and the requesters tag are read: a shared
+// agent-tier secret, one the person owns, one whose requesters list names them, a human-tier one
+// that would have been an approval request, and a service's. The control is the same requester
+// unmarked, who is answered exactly as before. A name the set does not serve is still
+// ErrUnknownSecret.
+func TestARestrictedMemberIsDeniedEverySecret(t *testing.T) {
+	const outsider = "outsider@outside.example"
+	store := secrets.NewLocal(
+		policytest.Secret("OWN_AGENT", outsider, policy.TierAgent, "v"),
+		policytest.Secret("PERSON_HUMAN", owner, policy.TierHuman, "v"),
+		policytest.Secret("SHARED_AGENT", policy.OwnerShared, policy.TierAgent, "v"),
+		policytest.Secret("SHARED_HUMAN", policy.OwnerShared, policy.TierHuman, "v"),
+		policytest.Secret("SERVICE_AGENT", legion, policy.TierAgent, "v"),
+		policytest.ListedSecret("LISTED_AGENT", policy.OwnerShared, policy.TierAgent, outsider, "v"),
+	)
+	set, err := policytest.Loader(store, legion).Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	unmarked := map[string]policy.Decision{
+		"OWN_AGENT":     {Outcome: policy.Automatic},
+		"PERSON_HUMAN":  {Outcome: policy.Approval, Approver: owner},
+		"SHARED_AGENT":  {Outcome: policy.Automatic},
+		"SHARED_HUMAN":  {Outcome: policy.Approval, Approver: record.AnyoneApprover},
+		"SERVICE_AGENT": {Outcome: policy.Deny},
+		"LISTED_AGENT":  {Outcome: policy.Automatic},
+	}
+	for name, want := range unmarked {
+		source := secrets.LocalARN(policytest.ID(name))
+		want.Source = source
+		if got, err := set.Evaluate(name, policy.Requester{Operator: outsider}); err != nil || got != want {
+			t.Errorf("Evaluate(%s, the person unmarked) = %+v, %v; want %+v", name, got, err, want)
+		}
+		denied := policy.Decision{Outcome: policy.Deny, Reason: policy.ReasonRestrictedMember, Source: source}
+		if got, err := set.Evaluate(name, policy.Requester{Operator: outsider, Restricted: true}); err != nil || got != denied {
+			t.Errorf("Evaluate(%s, the person a restricted member) = %+v, %v; want %+v", name, got, err, denied)
+		}
+	}
+	if _, err := set.Evaluate("NOT_A_SECRET", policy.Requester{Operator: outsider, Restricted: true}); !errors.Is(err, policy.ErrUnknownSecret) {
+		t.Errorf("Evaluate(NOT_A_SECRET, a restricted member) = %v, want ErrUnknownSecret", err)
+	}
+}
+
 // TestTrimLineEnding is the one line-ending rule's table: the value TrimLineEnding spends for
 // each stored value, and whether it says it changed it. The whole trailing run of carriage
 // returns and line feeds goes only where what is left is not empty and holds no carriage return

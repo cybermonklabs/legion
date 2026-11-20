@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/oauth"
 	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
@@ -689,6 +690,22 @@ func writeInternal(w http.ResponseWriter, op string, err error) {
 func writeUnavailable(w http.ResponseWriter, code, op string, err error) {
 	slog.Error("broker: "+op+" failed", "error", err)
 	writeError(w, http.StatusServiceUnavailable, code, op+" failed: a dependency the broker needs is unavailable")
+}
+
+// writeMemberKindUncheckable answers a refusal the broker made because it could not learn whether
+// Dispatch calls a person a restricted member (*projectaccess.MemberKindUncheckable), and reports
+// whether err was one: 503 projectaccess.UncheckableCode naming the person and why in fixed
+// words, with the failure itself, which can name Dispatch's address, in the log alone. what is
+// the thing refused, as the log line names it.
+func writeMemberKindUncheckable(w http.ResponseWriter, what string, err error) bool {
+	var uncheckable *projectaccess.MemberKindUncheckable
+	if !errors.As(err, &uncheckable) {
+		return false
+	}
+	slog.Error("broker: whether Dispatch calls a person a restricted member cannot be read, so "+what+" is refused",
+		"person", uncheckable.Person, "error", uncheckable.Err)
+	writeError(w, http.StatusServiceUnavailable, projectaccess.UncheckableCode, uncheckable.Error())
+	return true
 }
 
 // writeJSON answers status with v, which is one of this package's named response types: the

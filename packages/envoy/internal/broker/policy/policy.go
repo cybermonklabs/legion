@@ -913,6 +913,12 @@ type Requester struct {
 	// the session got without asking (requests.Machine.RevokeByApprover). Evaluate answers each as
 	// a human-tier secret.
 	Withheld []string
+	// Restricted is true when Dispatch calls Operator a restricted member: a person an access
+	// list admitted from outside the deployment's sign-in domain, who sees only the projects that
+	// name them (projectaccess.MemberRestricted). The request machine asks Dispatch before any
+	// transaction opens (requests.Machine.Projects), so the policy reads it as plain data.
+	// Evaluate denies such a requester every secret, ReasonRestrictedMember.
+	Restricted bool
 }
 
 // Decision is how the policy answers one requester's ask for one name.
@@ -941,6 +947,13 @@ func (s *Set) ServiceOwned(name string) bool {
 // secret's list, so it is refused whatever its owner and tier would have given them.
 const ReasonRequesterNotListed = "requester-not-listed"
 
+// ReasonRestrictedMember is the Reason of a Deny for a requester whose person Dispatch calls a
+// restricted member (Requester.Restricted): such a person's sessions are released no secret,
+// whatever the secret's owner, tier and requesters list would have given them, because the
+// broker's secrets are the deployment's own people's and a restricted member is a guest of the
+// projects that name them.
+const ReasonRestrictedMember = "restricted-member"
+
 // ReasonNoReason is the Reason of a Deny the request machine decided: the request named a
 // credential that would wait for a person's approval and carried no reason, so it is refused
 // rather than put to anyone. Set.Evaluate never answers it, since the reason is not the
@@ -955,7 +968,9 @@ const ReasonNoReason = "a reason is necessary; ask again with --reason"
 // policy's to see.
 const ReasonSignInOff = "a person must approve it, and this broker signs nobody in (BROKER_SIGNIN=off)"
 
-// Evaluate answers r's ask for name. A name the set does not serve is ErrUnknownSecret. A secret
+// Evaluate answers r's ask for name. A name the set does not serve is ErrUnknownSecret. A
+// requester whose person Dispatch calls a restricted member (Requester.Restricted) is denied
+// every name the set serves, ReasonRestrictedMember, before anything else is read. A secret
 // whose requesters are listed (Secret.Requesters) is denied, ReasonRequesterNotListed, to every
 // requester the list does not name, before owner and tier are read at all. A name withheld from r
 // (Requester.Withheld) is decided as a human-tier secret: what r would have got at once is an
@@ -965,6 +980,9 @@ func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
 	secret, ok := s.Secrets[name]
 	if !ok {
 		return Decision{}, ErrUnknownSecret
+	}
+	if r.Restricted {
+		return Decision{Outcome: Deny, Reason: ReasonRestrictedMember, Source: secret.Source}, nil
 	}
 	if secret.Requesters != "" && !secret.lists(r) {
 		return Decision{Outcome: Deny, Reason: ReasonRequesterNotListed, Source: secret.Source}, nil
