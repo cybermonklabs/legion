@@ -118,8 +118,8 @@ func (s *Store) PublishRoleHolders(woken func(issue string)) {
 
 // queuesRoleHolders is whether a write of claim c can queue a role-holder publication at all: the
 // daemon has turned the publication on (PublishRoleHolders), and c's session can hold a role of an
-// issue (holdsIssueRole). Neither depends on the stored row, so each is read before a transaction
-// opens, and a write for which it is false needs none (PutClaim).
+// issue (holdsIssueRole). Neither depends on the stored row, so a write for which it is false
+// reads no stored holder (putClaim).
 func (s *Store) queuesRoleHolders(c supervise.Claim) bool {
 	return s.roleHoldersQueued.Load() != nil && holdsIssueRole(c)
 }

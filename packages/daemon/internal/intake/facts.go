@@ -1110,11 +1110,10 @@ func (f CloseRoot) Message() string {
 // a running agent, each as the runtime said it and empty when the claim has none: the two answer
 // different questions — a worker that kept dying and a worker that could never start — and the
 // failure record a notice of this fact carries, where the fact names a Cause, holds both whole,
-// since the architect reading it has no other way to learn either (dispatch://INFRA-714 R6;
-// workflow's noticeFailure). A worker-died's reason names neither whole: it names the first line
-// of Death only where its notice carries no failure record, Cause is supervise.CauseDied and no
-// PodEnd was read, which is the tree architect's notice alone, and StartFailure nowhere
-// (workflow's deathReason).
+// since the architect reading it has no other way to learn either (workflow's noticeFailure). A
+// worker-died's reason names neither whole: it names the first line of Death only where its notice
+// carries no failure record, Cause is supervise.CauseDied and no PodEnd was read, which is the tree
+// architect's notice alone, and StartFailure nowhere (workflow's deathReason).
 //
 // PodEnd is the pod end the claim's process was last observed to have died of, as the runtime
 // read it off the pod itself and the claim kept it (supervise.Claim.PodEnd,
@@ -1514,21 +1513,19 @@ func PlanRatingUnexpected(what string) *Refusal {
 		"%s names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded", what)}
 }
 
-// Pool is the Postgres connection pool the intake applies its facts on, keeps its consumers'
-// positions in and reads what it has already applied from. In the daemon it is always the store's
-// guarded pool (store.Pool), and that is the point of the hand-over: a handler that asks the pool
-// for a second connection while the fact's own transaction holds one — under the global fact lock
-// every other fact queues behind — is refused at that call (store.ErrNestedAcquire) instead of
-// waiting for a connection only it can give back (INFRA-3169).
+// Pool is the Postgres connection pool the intake applies facts on, keeps its consumers'
+// positions in and reads what it has already applied from, each through store.TransactWith. In
+// the daemon it is always the store's guarded pool (store.Pool), and that is the point of
+// the hand-over: a handler that asks the pool for a second connection while the fact's own
+// transaction holds one — under the global fact lock every other fact queues behind — is refused
+// at that call (store.ErrNestedAcquire) instead of waiting for a connection only it can give back
+// (INFRA-3169).
 //
-// It is named as the three methods the intake uses rather than as that one type because the
-// packages that measure the handlers against a real Postgres — the workflow engine's and
-// admission's tests — open pools of their own and apply facts straight on them, and the guard has
-// nothing to say about a pool a test owns. Nothing in the daemon opens a pool but the store.
+// It is named as the one method those transactions need because the packages that measure the
+// handlers against a real Postgres open pools of their own and apply facts straight on them.
+// Nothing in the daemon opens a pool but the store.
 type Pool interface {
 	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // ApplyFact is the only transaction path for facts, whether they arrived through JetStream, the
@@ -1610,23 +1607,27 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 	return result, nil
 }
 
-// Applied is which of eventIDs from source ApplyFact has already applied, read in one query and
-// outside the fact lock. A fact's processed_events row commits with the fact, and only a refused
-// production check report or a fact a handler left unspent removes its own (ApplyFact), so an id
-// read here as applied is one ApplyFact would only take the lock to skip. A caller that
-// replays many facts it has most likely applied before (the boot's terminal replay) applies only
-// the rest: the duplicates cost one read between them, not a transaction each queued on the lock
-// behind every live fact.
+// Applied is which of eventIDs from source ApplyFact has already applied, read in one read-only
+// transaction and outside the fact lock. A fact's processed_events row commits with the fact, and
+// only a refused production check report or a fact a handler left unspent removes its own
+// (ApplyFact), so an id read here as applied is one ApplyFact would only take the lock to skip. A
+// caller that replays many facts it has most likely applied before (the boot's terminal replay)
+// applies only the rest: the duplicates cost one read-only transaction between them, not a
+// transaction each queued on the lock behind every live fact.
 func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (map[string]bool, error) {
 	applied := make(map[string]bool, len(eventIDs))
 	if len(eventIDs) == 0 {
 		return applied, nil
 	}
-	rows, err := pool.Query(ctx, `select event_id from processed_events where source = $1 and event_id = any($2::text[])`, source, eventIDs)
-	if err != nil {
-		return nil, fmt.Errorf("read which %s facts are applied: %w", source, err)
-	}
-	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	var ids []string
+	err := store.TransactWith(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select event_id from processed_events where source = $1 and event_id = any($2::text[])`, source, eventIDs)
+		if err != nil {
+			return err
+		}
+		ids, err = pgx.CollectRows(rows, pgx.RowTo[string])
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("read which %s facts are applied: %w", source, err)
 	}

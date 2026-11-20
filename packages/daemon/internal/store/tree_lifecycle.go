@@ -252,8 +252,10 @@ func (s *Store) CleanupReservedTree(ctx context.Context, project, tree string, e
 // releasing. Such a tree's resources are its cleanup's to delete, and no orphan sweep's.
 func (s *Store) TreeLive(ctx context.Context, project, tree string) (bool, error) {
 	var live bool
-	err := s.pool.QueryRow(ctx, `select exists (select 1 from tree_lifecycles
-		where project = $1 and tree = $2 and cleanup_confirmed_at is null)`, project, tree).Scan(&live)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select exists (select 1 from tree_lifecycles
+			where project = $1 and tree = $2 and cleanup_confirmed_at is null)`, project, tree).Scan(&live)
+	})
 	if err != nil {
 		return false, fmt.Errorf("read the lifecycle of tree %s: %w", tree, err)
 	}
@@ -277,7 +279,8 @@ func (s *Store) TreeLive(ctx context.Context, project, tree string) (bool, error
 // nothing over, since an issue pod's disk goes with its pod and its next launch makes both again.
 func (s *Store) IssueSandboxHome(ctx context.Context, project, issue string) (string, error) {
 	var home string
-	err := s.pool.QueryRow(ctx, `select coalesce((select case
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select coalesce((select case
 			when exists (select 1 from handovers h where h.issue = i.key and not h.cancelled and h.tree = i.tree) then i.key
 			when exists (select 1 from tree_lifecycles l where l.project = $1 and l.tree = i.tree) then
 				case when exists (select 1 from tree_lifecycles l where l.project = $1 and l.tree = i.tree and l.cleanup_confirmed_at is null)
@@ -285,6 +288,7 @@ func (s *Store) IssueSandboxHome(ctx context.Context, project, issue string) (st
 			when (i.status = 'todo' and i.handed_over and i.key = i.tree) or i.linger_until > now() then i.tree
 			else '' end
 		from issues i where i.key = $2), '')`, project, issue).Scan(&home)
+	})
 	if err != nil {
 		return "", fmt.Errorf("read the tree issue %s's Sandbox belongs to: %w", issue, err)
 	}

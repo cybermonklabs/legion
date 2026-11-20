@@ -239,14 +239,12 @@ func tracedStore(t *testing.T, s *Store, publishes bool) (*Store, *transactionsB
 	return traced, counter
 }
 
-// A claim write that can queue no publication is one statement on the pool, as PutClaim was before
-// the publication, with no BEGIN and no COMMIT around it. Two conditions make such a write, and
-// both are read before a transaction opens: a store the daemon has not turned the publication on
-// for (each claim write of a daemon with no dispatch_url), and a claim that holds no role of an
-// issue (each write of the project's controller, and of a claim on no issue). The last row is the
-// control that the count sees a transaction when one opens: a retirement on a store that publishes
-// can queue, so it runs in one transaction with the row it queues.
-func TestAClaimWriteThatCanQueueNothingOpensNoTransaction(t *testing.T) {
+// Every claim write opens one transaction, including a write that can queue no publication. Two
+// conditions make such a write: a store the daemon has not turned the publication on for (each
+// claim write of a daemon with no dispatch_url), and a claim that holds no role of an issue (each
+// write of the project's controller, and of a claim on no issue). The last row can queue, so it
+// also checks that the transaction writes the publication with the claim.
+func TestEveryClaimWriteOpensOneTransaction(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
 	quiet, quietBegun := tracedStore(t, s, false)
@@ -262,9 +260,9 @@ func TestAClaimWriteThatCanQueueNothingOpensNoTransaction(t *testing.T) {
 		claim supervise.Claim
 		want  int64
 	}{
-		{"the tester's registration on a store that does not publish", quiet, quietBegun, holderClaim(supervise.StateRegistered, "ses-1"), 0},
-		{"the controller's registration on a store that publishes", publishing, publishingBegun, controller, 0},
-		{"the registration of a claim on no issue on a store that publishes", publishing, publishingBegun, noIssue, 0},
+		{"the tester's registration on a store that does not publish", quiet, quietBegun, holderClaim(supervise.StateRegistered, "ses-1"), 1},
+		{"the controller's registration on a store that publishes", publishing, publishingBegun, controller, 1},
+		{"the registration of a claim on no issue on a store that publishes", publishing, publishingBegun, noIssue, 1},
 		{"the tester's retirement on a store that publishes", publishing, publishingBegun, holderClaim(supervise.StateRetired, "ses-1"), 1},
 	} {
 		before := write.begun.begun.Load()

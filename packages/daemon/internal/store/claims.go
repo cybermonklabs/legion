@@ -62,13 +62,9 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 
 // PutClaim persists an admitted claim's state: every write a claim's machine makes. A claim enters
 // the store through AdmitClaim, which binds it to its tree's open lifecycle first; PutClaim alone
-// writes historical state in migrations and test fixtures. A write that can queue a role-holder
-// publication is one transaction with the publication it queues (putClaim); a write that can queue
-// none (queuesRoleHolders) is one statement on the pool, with no transaction around it.
+// writes historical state in migrations and test fixtures. The write and any role-holder
+// publication it queues share one transaction.
 func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
-	if !s.queuesRoleHolders(c) {
-		return upsertClaim(ctx, s.pool, c)
-	}
 	var wrote error
 	if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		wrote = s.putClaim(ctx, tx, c)
@@ -262,8 +258,10 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 		report     supervise.ActivityReport
 		kinds      string
 	)
-	err := s.pool.QueryRow(ctx, `select activity_at, activity_background, activity_kinds from claims
-		where token = $1 and generation = $2`, string(token), int64(generation)).Scan(&reportedAt, &report.Background, &kinds)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select activity_at, activity_background, activity_kinds from claims
+			where token = $1 and generation = $2`, string(token), int64(generation)).Scan(&reportedAt, &report.Background, &kinds)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return supervise.ActivityReport{}, false, nil
 	}
@@ -290,9 +288,7 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // It wakes the lane once tx commits, through a hook of the transaction's commit scope
 // (OnCommit), when it queued. Every claim write goes through here — PutClaim, PutClaimAndDelivery,
 // RetireDelivery, ReleaseHolds and AdmitClaim — each in a Transact of its own, so whichever
-// decision makes a write, the store holds the change and its publication together, or neither;
-// PutClaim alone writes on the pool when it can queue none, since then nothing goes with the
-// write.
+// decision makes a write, the store holds the change and its publication together, or neither.
 func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	if !s.queuesRoleHolders(c) {
 		return upsertClaim(ctx, tx, c)
@@ -318,8 +314,7 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) erro
 	return nil
 }
 
-// upsertClaim writes the row of claim c on db: putClaim's transaction, or the pool for a PutClaim
-// that can queue no publication.
+// upsertClaim writes the row of claim c inside tx, putClaim's transaction.
 //
 // The write that records a retirement stamps the claim with retired_at_write_mark, a number
 // from outbox_write_mark_seq, and every other write leaves the column where it stands: the mark
@@ -348,7 +343,7 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) erro
 // earlier release retired carries the column's default, 0, which is below every number the
 // sequence hands out, so no owed row of it is ever ended and it behaves as it did before the
 // column existed (20261109191929_outbox_write_mark).
-func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
+func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	if c.Generation > math.MaxInt64 {
 		return fmt.Errorf("put claim %s: generation %d does not fit a bigint", c.Token, c.Generation)
 	}
@@ -406,7 +401,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 	if delivered == nil {
 		delivered = []int64{}
 	}
-	_, err := db.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, tree_epoch,
+	_, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, tree_epoch,
 		session, session_file, locator, state, failure, launch_failures, deaths, prompt_failures, prompt_retires,
 		boot_token_hash, capability_hash, uncertain_streak, last_start_row,
 		serving_generation, given_entry, served_entry, agent_secrets_enrollment, agent_secrets_enrollment_incarnation, suspended_by,
@@ -515,7 +510,19 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 // not validate refuses the whole read, naming the claim: a daemon that loaded it would believe in
 // a process it has no way to act on.
 func (s *Store) Claims(ctx context.Context) ([]supervise.Claim, error) {
-	return readClaims(ctx, s.pool)
+	var claims []supervise.Claim
+	var read error
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		claims, read = readClaims(ctx, tx)
+		return read
+	})
+	if err != nil && read == nil {
+		return nil, fmt.Errorf("read claims: %w", err)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return claims, nil
 }
 
 // ClaimsTx is Claims through tx's snapshot. State reports use it with their durable issue and
@@ -525,8 +532,8 @@ func (s *Store) ClaimsTx(ctx context.Context, tx pgx.Tx) ([]supervise.Claim, err
 	return readClaims(ctx, tx)
 }
 
-func readClaims(ctx context.Context, q rowsQuerier) ([]supervise.Claim, error) {
-	rows, err := q.Query(ctx, claimSelect+" order by c.token")
+func readClaims(ctx context.Context, tx pgx.Tx) ([]supervise.Claim, error) {
+	rows, err := tx.Query(ctx, claimSelect+" order by c.token")
 	if err != nil {
 		return nil, fmt.Errorf("read claims: %w", err)
 	}
@@ -551,7 +558,9 @@ func readClaims(ctx context.Context, q rowsQuerier) ([]supervise.Claim, error) {
 // reaches, since a token spells its issue lowercased. A token no claim holds is refused.
 func (s *Store) ClaimIssue(ctx context.Context, token claim.Token) (string, error) {
 	var issue string
-	err := s.pool.QueryRow(ctx, `select issue from claims where token = $1`, string(token)).Scan(&issue)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select issue from claims where token = $1`, string(token)).Scan(&issue)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", fmt.Errorf("no claim holds token %s", token)
 	}
@@ -570,8 +579,10 @@ const claimMayRun = `(state not in ('suspended', 'failed', 'retired') or locator
 // supervisor persists a claim before it publishes its machine, and the stop is for that machine.
 func (s *Store) StoredClaimMayRun(ctx context.Context, token claim.Token, row int64) (bool, error) {
 	var may bool
-	err := s.pool.QueryRow(ctx, `select exists (select 1 from claims where token = $1 and last_start_row <= $2 and `+claimMayRun+`)`,
-		string(token), row).Scan(&may)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select exists (select 1 from claims where token = $1 and last_start_row <= $2 and `+claimMayRun+`)`,
+			string(token), row).Scan(&may)
+	})
 	if err != nil {
 		return false, fmt.Errorf("read stored claim %s: %w", token, err)
 	}
@@ -583,8 +594,10 @@ func (s *Store) StoredClaimMayRun(ctx context.Context, token claim.Token, row in
 // the sweep read its claims. A token no claim holds is not unretired.
 func (s *Store) ClaimUnretired(ctx context.Context, token claim.Token) (bool, error) {
 	var unretired bool
-	err := s.pool.QueryRow(ctx, `select exists (select 1 from claims where token = $1 and state <> $2)`,
-		string(token), string(supervise.StateRetired)).Scan(&unretired)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select exists (select 1 from claims where token = $1 and state <> $2)`,
+			string(token), string(supervise.StateRetired)).Scan(&unretired)
+	})
 	if err != nil {
 		return false, fmt.Errorf("read whether claim %s is retired: %w", token, err)
 	}
@@ -610,8 +623,10 @@ func runsNothingStates() []string {
 // would end it.
 func (s *Store) IssueRunsElsewhere(ctx context.Context, project, issue, tree string) (string, error) {
 	var running string
-	err := s.pool.QueryRow(ctx, `select token || ':' || state from claims where project = $1 and issue = $2 and tree <> $3
-		and not (state = any($4) and locator is null) order by token limit 1`, project, issue, tree, runsNothingStates()).Scan(&running)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select token || ':' || state from claims where project = $1 and issue = $2 and tree <> $3
+			and not (state = any($4) and locator is null) order by token limit 1`, project, issue, tree, runsNothingStates()).Scan(&running)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
@@ -626,11 +641,13 @@ func (s *Store) IssueRunsElsewhere(ctx context.Context, project, issue, tree str
 // decoder would refuse first without naming the layout migration that is needed.
 func (s *Store) HasLegacySandboxClaims(ctx context.Context, project string) (bool, error) {
 	var legacy bool
-	err := s.pool.QueryRow(ctx, `select exists (
-		select 1 from claims where project = $1 and locator->>'runtime' = 'sandbox'
-		and (locator->'sandbox'->>'podUid' is null or locator->'sandbox'->>'container' is null
-			or locator->'sandbox'->>'generation' is null)
-	)`, project).Scan(&legacy)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select exists (
+			select 1 from claims where project = $1 and locator->>'runtime' = 'sandbox'
+			and (locator->'sandbox'->>'podUid' is null or locator->'sandbox'->>'container' is null
+				or locator->'sandbox'->>'generation' is null)
+		)`, project).Scan(&legacy)
+	})
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "42P01" {
@@ -647,7 +664,12 @@ func (s *Store) HasLegacySandboxClaims(ctx context.Context, project string) (boo
 // ClaimByBootTokenHash finds the claim whose current launch minted the boot token with this hash
 // — how a shim's hello and an agent's registration find the claim they belong to.
 func (s *Store) ClaimByBootTokenHash(ctx context.Context, hash []byte) (supervise.Claim, bool, error) {
-	c, err := scanClaim(s.pool.QueryRow(ctx, claimSelect+" where c.boot_token_hash = $1", hash))
+	var c supervise.Claim
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		c, err = scanClaim(tx.QueryRow(ctx, claimSelect+" where c.boot_token_hash = $1", hash))
+		return err
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return supervise.Claim{}, false, nil
 	}

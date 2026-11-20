@@ -170,7 +170,16 @@ func (s *Store) migrate(ctx context.Context, all []migrations.Migration) (int, e
 // one of the numbered migrations, or the 14-digit UTC timestamp of a migration
 // added since — and 0 for a database no daemon has migrated yet.
 func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
-	return schemaVersion(ctx, s.pool)
+	var version int
+	var read error
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		version, read = schemaVersion(ctx, tx)
+		return read
+	})
+	if err != nil && read == nil {
+		err = fmt.Errorf("read schema_version: %w", err)
+	}
+	return version, err
 }
 
 // SchemaVersionTx reads the schema version through the caller's transaction.
@@ -178,8 +187,8 @@ func (s *Store) SchemaVersionTx(ctx context.Context, tx pgx.Tx) (int, error) {
 	return schemaVersion(ctx, tx)
 }
 
-func schemaVersion(ctx context.Context, db queryRower) (int, error) {
-	recorded, err := schemaVersionExists(ctx, db)
+func schemaVersion(ctx context.Context, tx pgx.Tx) (int, error) {
+	recorded, err := schemaVersionExists(ctx, tx)
 	if err != nil {
 		return 0, err
 	}
@@ -190,7 +199,7 @@ func schemaVersion(ctx context.Context, db queryRower) (int, error) {
 	// has, so a connection that read the version before a timestamped migration
 	// widened it is not left with a cached plan whose result type changed.
 	var version int
-	if err := db.QueryRow(ctx, "select coalesce(max(version), 0)::bigint from schema_version").Scan(&version); err != nil {
+	if err := tx.QueryRow(ctx, "select coalesce(max(version), 0)::bigint from schema_version").Scan(&version); err != nil {
 		return 0, fmt.Errorf("read schema_version: %w", err)
 	}
 	return version, nil
@@ -235,7 +244,19 @@ func (s *Store) StopBoot(ctx context.Context, id int64, at time.Time) error {
 // them — the two durable facts a restart is proved by. A project that never
 // booted reads 0 and the zero time.
 func (s *Store) Boots(ctx context.Context, project string) (int, time.Time, error) {
-	return boots(ctx, s.pool, project)
+	var (
+		count int
+		first time.Time
+		read  error
+	)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		count, first, read = boots(ctx, tx, project)
+		return read
+	})
+	if err != nil && read == nil {
+		err = fmt.Errorf("read the boots of %s: %w", project, err)
+	}
+	return count, first, err
 }
 
 // BootsTx reads boot history through the caller's transaction.
@@ -243,10 +264,10 @@ func (s *Store) BootsTx(ctx context.Context, tx pgx.Tx, project string) (int, ti
 	return boots(ctx, tx, project)
 }
 
-func boots(ctx context.Context, db queryRower, project string) (int, time.Time, error) {
+func boots(ctx context.Context, tx pgx.Tx, project string) (int, time.Time, error) {
 	var count int
 	var firstBootAt *time.Time
-	err := db.QueryRow(ctx,
+	err := tx.QueryRow(ctx,
 		"select count(*), min(started_at) from daemon_boot where project = $1", project,
 	).Scan(&count, &firstBootAt)
 	if err != nil {
@@ -406,28 +427,9 @@ func versionRecorded(ctx context.Context, tx pgx.Tx, version int) (bool, error) 
 	return recorded, nil
 }
 
-// queryRower is the part of a pool and of a transaction this package reads
-// through.
-type queryRower interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
-
-// rowsQuerier is the part of a pool and of a transaction this package reads many rows through.
-// It is its own interface rather than queryRower, which carries QueryRow alone and so cannot
-// carry a read of more than one row; every read of rows in this package — claims, pod resumes —
-// takes this one, because the shape is the same wherever the rows come from.
-type rowsQuerier interface {
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-}
-
-// execer is the part of a pool and of a transaction this package writes through.
-type execer interface {
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-}
-
-func schemaVersionExists(ctx context.Context, db queryRower) (bool, error) {
+func schemaVersionExists(ctx context.Context, tx pgx.Tx) (bool, error) {
 	var exists bool
-	if err := db.QueryRow(ctx, "select to_regclass('schema_version') is not null").Scan(&exists); err != nil {
+	if err := tx.QueryRow(ctx, "select to_regclass('schema_version') is not null").Scan(&exists); err != nil {
 		return false, fmt.Errorf("look for schema_version: %w", err)
 	}
 	return exists, nil

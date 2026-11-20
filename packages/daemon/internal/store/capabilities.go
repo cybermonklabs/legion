@@ -32,11 +32,19 @@ type capabilityRowDocument struct {
 // has at most one, since a relaunched claim reports anew and the earlier report said nothing of the
 // process now running. A report of a claim the store does not hold is refused by the foreign key.
 func (s *Store) PutCapabilityReport(ctx context.Context, report capabilities.Report) error {
-	return putCapabilityReport(ctx, s.pool, report)
+	var wrote error
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		wrote = putCapabilityReport(ctx, tx, report)
+		return wrote
+	})
+	if err != nil && wrote == nil {
+		return fmt.Errorf("put capability report of %s: %w", report.Claim, err)
+	}
+	return err
 }
 
-// putCapabilityReport writes a report through whichever executor the caller has.
-func putCapabilityReport(ctx context.Context, db execer, report capabilities.Report) error {
+// putCapabilityReport writes a report inside the caller's transaction.
+func putCapabilityReport(ctx context.Context, tx pgx.Tx, report capabilities.Report) error {
 	if report.Generation > math.MaxInt64 {
 		return fmt.Errorf("put capability report of %s: generation %d does not fit a bigint", report.Claim, report.Generation)
 	}
@@ -52,7 +60,7 @@ func putCapabilityReport(ctx context.Context, db execer, report capabilities.Rep
 	if err != nil {
 		return fmt.Errorf("put capability report of %s: encode its rows: %w", report.Claim, err)
 	}
-	_, err = db.Exec(ctx, `insert into claim_capabilities (claim_token, generation, incarnation, locator, measured_at, reported_at, report)
+	_, err = tx.Exec(ctx, `insert into claim_capabilities (claim_token, generation, incarnation, locator, measured_at, reported_at, report)
 		values ($1, $2, $3, $4, $5, $6, $7)
 		on conflict (claim_token) do update set generation = excluded.generation, incarnation = excluded.incarnation,
 		locator = excluded.locator, measured_at = excluded.measured_at, reported_at = excluded.reported_at,

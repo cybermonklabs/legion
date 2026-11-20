@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Querier is what ScanCancel wraps: the daemon's guarded pool, a pgx pool, intake's Pool.
+// Querier is what ScanCancel wraps: the daemon's guarded pool or a pgx pool.
 type Querier interface {
 	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)

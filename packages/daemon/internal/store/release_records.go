@@ -161,7 +161,16 @@ func (s *Store) MarkPodResumeStuck(ctx context.Context, id int64) error {
 // stuck mark yet: the ones the daemon warns about and counts, read once per pass so each warns
 // once. The stranded report reads UnfinishedPodResumesTx instead, which keeps a marked row.
 func (s *Store) StuckPodResumes(ctx context.Context, project string, before time.Time) ([]PodResume, error) {
-	return podResumesWithoutAFirstTurn(ctx, s.pool, project, before, true)
+	var resumes []PodResume
+	var read error
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		resumes, read = podResumesWithoutAFirstTurn(ctx, tx, project, before, true)
+		return read
+	})
+	if err != nil && read == nil {
+		err = fmt.Errorf("read the unfinished resumes of %s: %w", project, err)
+	}
+	return resumes, err
 }
 
 // UnfinishedPodResumesTx are the resumes of project the stranded report judges R6 on, read
@@ -195,12 +204,12 @@ func (s *Store) UnfinishedPodResumesTx(ctx context.Context, tx pgx.Tx, project s
 	return podResumesWithoutAFirstTurn(ctx, tx, project, before, false)
 }
 
-// podResumesWithoutAFirstTurn is the pool read and the transaction read above, on whichever
-// querier the caller runs it on: the pool, or the caller's own transaction. A resume a release
-// closed (closed_at) is left out of each: it is a wake of a pod that is gone, which no warning
-// and no stranded report has anything to say about, and before closing had a column of its own
-// such a row was indeed gone from here, because closing wrote first_turn_at.
-func podResumesWithoutAFirstTurn(ctx context.Context, q rowsQuerier, project string, before time.Time, unmarked bool) ([]PodResume, error) {
+// podResumesWithoutAFirstTurn is the transaction read of the resumes an unowned pass or a
+// stranded report needs. A resume a release closed (closed_at) is left out of each: it is a wake
+// of a pod that is gone, which no warning and no stranded report has anything to say about, and
+// before closing had a column of its own such a row was indeed gone from here, because closing
+// wrote first_turn_at.
+func podResumesWithoutAFirstTurn(ctx context.Context, tx pgx.Tx, project string, before time.Time, unmarked bool) ([]PodResume, error) {
 	query := `select id, release_id, project, issue, role, kind, at, stuck
 		from pod_resumes r where project = $1 and first_turn_at is null and closed_at is null and at <= $2`
 	if unmarked {
@@ -209,7 +218,7 @@ func podResumesWithoutAFirstTurn(ctx context.Context, q rowsQuerier, project str
 		query += ` and release_id = (select max(id) from pod_releases
 			where project = r.project and issue = r.issue and roles <> '')`
 	}
-	rows, err := q.Query(ctx, query+` order by id`, project, before)
+	rows, err := tx.Query(ctx, query+` order by id`, project, before)
 	if err != nil {
 		return nil, fmt.Errorf("read the unfinished resumes of %s: %w", project, err)
 	}
@@ -272,25 +281,30 @@ func (s *Store) EndPodHoldStreaks(ctx context.Context, project, issue string) er
 	return nil
 }
 
-// OpenPodHold is whether a hold streak of the pod is running, on the pool: the same question
-// readIdleView answers as IdleView.Holding, asked outside any transaction. The release of a pod
-// no claim owns needs it there, because the one pass that reads no view at all — the issue whose
-// Sandbox the runtime no longer holds — still has a streak to end, and opening ReleaseIdleIssue
-// to learn that would cost the transaction, and the daemon's global fact serializer with it,
-// that reading the Sandbox first exists to save (daemon.releaseUnownedPod). The answer bounds a
-// write and nothing else: a pod with no streak is left alone, since an update that matches no
-// row costs a write transaction all the same.
+// OpenPodHold is whether a hold streak of the pod is running. The release of a pod no claim owns
+// needs it before it opens its decision transaction, because an issue whose Sandbox the runtime
+// no longer holds still has a streak to end. The answer bounds a write and nothing else: a pod
+// with no streak is left alone, since an update that matches no row costs a write transaction all
+// the same.
 func (s *Store) OpenPodHold(ctx context.Context, project, issue string) (bool, error) {
-	return openPodHold(ctx, s.pool, project, issue)
+	var holding bool
+	var read error
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		holding, read = openPodHold(ctx, tx, project, issue)
+		return read
+	})
+	if err != nil && read == nil {
+		err = fmt.Errorf("read whether a hold streak of %s is running: %w", issue, err)
+	}
+	return holding, err
 }
 
-// openPodHold is that question as one statement, read through db: the pool for OpenPodHold's
-// own read, and the release's own transaction for the idle view it decides on (readIdleView,
-// pods.IdleView.Holding). One predicate for both, so a reader of a view's Holding and a reader
-// of the answer outside a transaction can never be reading two different questions.
-func openPodHold(ctx context.Context, db queryRower, project, issue string) (bool, error) {
+// openPodHold is the question that both OpenPodHold and readIdleView ask, through the transaction
+// they each own. One predicate for both keeps a view's Holding and this answer from reading two
+// different questions.
+func openPodHold(ctx context.Context, tx pgx.Tx, project, issue string) (bool, error) {
 	var holding bool
-	if err := db.QueryRow(ctx, `select exists (
+	if err := tx.QueryRow(ctx, `select exists (
 		select 1 from pod_holds where project = $1 and issue = $2 and not ended)`,
 		project, issue).Scan(&holding); err != nil {
 		return false, fmt.Errorf("read whether a hold streak of %s is running: %w", issue, err)
@@ -311,7 +325,20 @@ func endPodHoldStreaks(ctx context.Context, tx pgx.Tx, project, issue, except st
 // oldest first, which is what a pod reads to measure a window.
 func (s *Store) PodReleaseRecords(ctx context.Context, project string, since time.Time) (PodReleaseRecords, error) {
 	var out PodReleaseRecords
-	releases, err := s.pool.Query(ctx, `select id, project, issue, generation, roles, at, bundle_bytes
+	var read error
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		out, read = podReleaseRecords(ctx, tx, project, since)
+		return read
+	})
+	if err != nil && read == nil {
+		err = fmt.Errorf("read the pod release records of %s: %w", project, err)
+	}
+	return out, err
+}
+
+func podReleaseRecords(ctx context.Context, tx pgx.Tx, project string, since time.Time) (PodReleaseRecords, error) {
+	var out PodReleaseRecords
+	releases, err := tx.Query(ctx, `select id, project, issue, generation, roles, at, bundle_bytes
 		from pod_releases where project = $1 and at >= $2 order by id`, project, since)
 	if err != nil {
 		return out, fmt.Errorf("read the release records of %s: %w", project, err)
@@ -335,7 +362,7 @@ func (s *Store) PodReleaseRecords(ctx context.Context, project string, since tim
 		return out, fmt.Errorf("read the release records of %s: %w", project, err)
 	}
 
-	resumes, err := s.pool.Query(ctx, `select id, release_id, project, issue, role, kind, at, pod_ready_at, first_turn_at, stuck
+	resumes, err := tx.Query(ctx, `select id, release_id, project, issue, role, kind, at, pod_ready_at, first_turn_at, stuck
 		from pod_resumes where project = $1 and at >= $2 order by id`, project, since)
 	if err != nil {
 		return out, fmt.Errorf("read the resume records of %s: %w", project, err)
@@ -360,7 +387,7 @@ func (s *Store) PodReleaseRecords(ctx context.Context, project string, since tim
 		return out, fmt.Errorf("read the resume records of %s: %w", project, err)
 	}
 
-	holds, err := s.pool.Query(ctx, `select id, project, issue, reason, detail, first_at, at, passes from pod_holds
+	holds, err := tx.Query(ctx, `select id, project, issue, reason, detail, first_at, at, passes from pod_holds
 		where project = $1 and at >= $2 order by id`, project, since)
 	if err != nil {
 		return out, fmt.Errorf("read the hold records of %s: %w", project, err)

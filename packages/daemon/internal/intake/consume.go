@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
 
@@ -879,7 +880,7 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 		return nakOutcome("read whether the pull request is recorded", "nak the pull request read", err)
 	}
 	if !recorded {
-		logMessage(spec.Logger, slog.LevelDebug, "a GitHub event of a pull request the daemon does not record is acknowledged without a transaction", message,
+		logMessage(spec.Logger, slog.LevelDebug, "a GitHub event of a pull request the daemon does not record is acknowledged without a fact transaction", message,
 			"event_id", decoded.EventID)
 		return ackOutcome()
 	}
@@ -964,13 +965,13 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 // name the fact carries and then, when that finds nothing, under the other name of the pair that
 // names it (ghrepo.Under, ConsumerSpec.Renames), as the workflow reads the row: a pull request
 // already open when its repository was transferred is recorded under the name it moved from,
-// while the fact names the one it moved to. It is one read of the pool per name within the one
-// AckWait, in no transaction and under no lock, made before the review's GitHub reads
-// (resolveReviewBody, resolveReviewPermission): the workflow applies either fact only to a
-// recorded pull request, so one of any other pull request is acknowledged with no transaction
-// under the fact lock (ApplyFact) and no GitHub read, whatever the number of other pull requests
-// a mapped repository reviews and checks. A pull request recorded after this read, by a later
-// opened, gets its checks and reviews from their next event.
+// while the fact names the one it moved to. It is one read-only transaction per name within the
+// one AckWait, made before the review's GitHub reads (resolveReviewBody,
+// resolveReviewPermission): the workflow applies either fact only to a recorded pull request, so
+// one of any other pull request is acknowledged with no transaction under the fact lock
+// (ApplyFact) and no GitHub read, whatever the number of other pull requests a mapped repository
+// reviews and checks. A pull request recorded after this read, by a later opened, gets its checks
+// and reviews from their next event.
 func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact Fact) (bool, error) {
 	var repo string
 	var number int
@@ -985,7 +986,18 @@ func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact
 	read, cancel := context.WithTimeout(ctx, spec.AckWait)
 	defer cancel()
 	return ghrepo.Under(spec.Renames, repo, func(name string) (bool, error) {
-		return record.PullRequestRecorded(read, pool, name, number)
+		var (
+			recorded bool
+			readErr  error
+		)
+		err := store.TransactWith(read, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+			recorded, readErr = record.PullRequestRecorded(ctx, tx, name, number)
+			return readErr
+		})
+		if err != nil && readErr == nil {
+			return false, fmt.Errorf("read whether %s#%d is recorded: %w", name, number, err)
+		}
+		return recorded, err
 	})
 }
 

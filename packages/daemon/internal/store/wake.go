@@ -189,9 +189,8 @@ func (c ClaimStates) MarshalText() ([]byte, error) { return []byte(c.String()), 
 // answers the released claims a wake resumes, and this one answers every claim, since a release
 // whose whole case is that no claim of the issue can take a turn must say so claim by claim.
 //
-// One statement reads it, so it runs on the pool rather than in a transaction of its own: there
-// is nothing here for a transaction to make consistent, and the read is of a pod the release is
-// about to delete anyway.
+// One statement reads it in a read-only transaction of its own: there is nothing here for a wider
+// transaction to make consistent, and the read is of a pod the release is about to delete anyway.
 func (s *Store) ClaimStatesIn(ctx context.Context, project, issue string) (ClaimStates, error) {
 	var states ClaimStates
 	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -249,7 +248,22 @@ func (s *Store) ArmPodBackstop(ctx context.Context, b PodWakeBackstop) error {
 // pass fires. One that came due while the daemon was down is in this read at the next pass after
 // the daemon starts, which is what makes the backstop a stored row rather than a timer.
 func (s *Store) DuePodBackstops(ctx context.Context, project string, now time.Time) ([]PodWakeBackstop, error) {
-	rows, err := s.pool.Query(ctx, `select id, project, issue, role, release_id, due_at
+	var (
+		out  []PodWakeBackstop
+		read error
+	)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		out, read = duePodBackstops(ctx, tx, project, now)
+		return read
+	})
+	if err != nil && read == nil {
+		return nil, fmt.Errorf("read the due backstops of %s: %w", project, err)
+	}
+	return out, err
+}
+
+func duePodBackstops(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]PodWakeBackstop, error) {
+	rows, err := tx.Query(ctx, `select id, project, issue, role, release_id, due_at
 		from pod_wake_backstops where project = $1 and not fired and due_at <= $2 order by due_at, id`,
 		project, now)
 	if err != nil {
@@ -357,9 +371,11 @@ func LatestPodRelease(ctx context.Context, tx pgx.Tx, project, issue string) (in
 // so a daemon that restarted between the wake and the first turn still stamps it.
 func (s *Store) OpenPodResume(ctx context.Context, project, issue string, role claim.Role) (int64, bool, error) {
 	var id int64
-	err := s.pool.QueryRow(ctx, `select id from pod_resumes
-		where project = $1 and issue = $2 and role = $3 and first_turn_at is null and closed_at is null
-		order by id desc limit 1`, project, issue, string(role)).Scan(&id)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select id from pod_resumes
+			where project = $1 and issue = $2 and role = $3 and first_turn_at is null and closed_at is null
+			order by id desc limit 1`, project, issue, string(role)).Scan(&id)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
 	}
@@ -373,7 +389,9 @@ func (s *Store) OpenPodResume(ctx context.Context, project, issue string, role c
 // it ever has. A daemon that has read no report releases nothing.
 func (s *Store) ListenerReadyAt(ctx context.Context, project string) (time.Time, bool, error) {
 	var at time.Time
-	err := s.pool.QueryRow(ctx, `select ready_at from listener_reports where project = $1`, project).Scan(&at)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select ready_at from listener_reports where project = $1`, project).Scan(&at)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, false, nil
 	}
@@ -405,7 +423,9 @@ func (s *Store) ListenerLive(ctx context.Context, project string, now time.Time,
 // the woken role's first turn.
 func (s *Store) PodResumeReadyAt(ctx context.Context, id int64) (time.Time, error) {
 	var at *time.Time
-	err := s.pool.QueryRow(ctx, `select pod_ready_at from pod_resumes where id = $1`, id).Scan(&at)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select pod_ready_at from pod_resumes where id = $1`, id).Scan(&at)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, nil
 	}

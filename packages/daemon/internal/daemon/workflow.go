@@ -1250,7 +1250,7 @@ type sweptFact struct {
 // fact applies, and the first error is returned once every other fact of the batch has had its
 // turn: one silence the store refused is no reason to leave the rest of the sweep unapplied.
 //
-// Which ids are applied already is read first, in one query outside the fact lock
+// Which ids are applied already is read first, in one read-only transaction outside the fact lock
 // (intake.Applied), and that read is the point of taking the batch rather than one fact at a
 // time. A sweep runs every minute over every claim, and a claim that is silent and stays silent
 // mints the same id at every sweep for ever, since the id is the claim token and a last step

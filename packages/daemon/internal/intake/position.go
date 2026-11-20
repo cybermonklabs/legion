@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // streamPosition is where a durable consumer's message sits on the notification stream: the
@@ -55,7 +57,9 @@ func recordStreamPosition(ctx context.Context, tx pgx.Tx) error {
 // has applied none.
 func storedStreamTime(ctx context.Context, pool Pool, consumer string) (time.Time, bool, error) {
 	var at time.Time
-	err := pool.QueryRow(ctx, `select stream_time from consumer_positions where consumer = $1`, consumer).Scan(&at)
+	err := store.TransactWith(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select stream_time from consumer_positions where consumer = $1`, consumer).Scan(&at)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, false, nil
 	}
