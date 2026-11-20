@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
+import { BATCH_WINDOW_MS } from "../web/src/api/event-feed";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import { setLiveSessions } from "./agents";
 import { createAsk, createComment, createIssue, createProject, getInbox, patchIssue } from "./api";
@@ -372,14 +373,15 @@ test.describe("inbox selection", () => {
       await expect(bar).not.toContainText("0 selected");
 
       // Dispatch takes the other ask, and its event reaches the page, whose feed asks for a read
-      // of the Inbox for it. That read waits for the pick: Dispatch has not decided the held ask,
-      // so the read would answer it with no moment and put its row back while its snooze is still
-      // out. The feed asks an event's reads 100 ms after the event comes, and the read of a query
-      // fetched in the second before that waits until a second after that fetch began
-      // (`MIN_REFETCH_INTERVAL_MS`); the 200 ms past both are for a request the page sends to
-      // reach Playwright's counter.
+      // of the Inbox for it.
       await expect.poll(() => snoozeEvents.length).toBeGreaterThan(0);
-      await sleep(MIN_REFETCH_INTERVAL_MS + 100 + 200);
+      // That read waits for the pick, since Dispatch has not decided the held ask and the read
+      // would put its row back with no moment, so no request is sent and none can be waited for.
+      // The window is where one would be sent: the feed asks an event's reads `BATCH_WINDOW_MS`
+      // after the event, the read of a query fetched in the second before then waits until a
+      // second after that fetch began (`MIN_REFETCH_INTERVAL_MS`), and 200 ms more lets a request
+      // the page sends reach Playwright's counter, in Node, where the page's clock cannot skip it.
+      await sleep(BATCH_WINDOW_MS + MIN_REFETCH_INTERVAL_MS + 200);
       expect(inboxReads, "reads of the Inbox sent while the pick is out").toEqual([]);
       await expect(rows).toHaveCount(0);
 
