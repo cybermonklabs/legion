@@ -417,10 +417,10 @@ func roleExecutable(t *testing.T, dir string) string {
 }
 
 // The launcher's own connections through a writer generation's socket are admitted: the resume
-// lookup (resumable) and a Claude Code keeper connect from the launcher's process, before any
-// process of the generation runs. Each reaches the session table through the fake dialer, and
-// the proxy logs no refusal. An Oh My Pi generation and a Claude Code one admit the launcher
-// alike.
+// lookups (resumable, and sessionByID for a start that names its session by its id alone) and a
+// Claude Code keeper connect from the launcher's process, before any process of the generation
+// runs. Each reaches the session table through the fake dialer, and the proxy logs no refusal. An
+// Oh My Pi generation and a Claude Code one admit the launcher alike.
 func TestTheLaunchersOwnSessionConnectionsPassTheWriterCheck(t *testing.T) {
 	database, dialer := sessionDatabaseAt(t, testdb.Database(t, "legion_launcher_writer_test"))
 	database.ImpersonateServiceAccount, database.WriterAudience = testServiceAccount, testWriterAudience
@@ -451,6 +451,13 @@ func TestTheLaunchersOwnSessionConnectionsPassTheWriterCheck(t *testing.T) {
 			}
 			if after := dialer.dials(); after <= before {
 				t.Fatalf("the fake dialer saw %d dials before the resume lookup and %d after it; want more", before, after)
+			}
+			before = dialer.dials()
+			if _, err := sessionByID(context.Background(), tc.env, "01a1f5de-4835-7667-b005-e99e3e17edd3", clientURL); !errors.Is(err, shimwire.SessionGone) {
+				t.Fatalf("the lookup of a session by its id answered %v; want the table's answer that it holds no such session", err)
+			}
+			if after := dialer.dials(); after <= before {
+				t.Fatalf("the fake dialer saw %d dials before the lookup by id and %d after it; want more", before, after)
 			}
 			if tc.env != nil {
 				keeper, err := newClaudeKeeper(tc.env, "", clientURL, nil)
