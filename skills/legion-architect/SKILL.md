@@ -98,8 +98,7 @@ check and every requirement, in the five sources that
 `skill://legion-architect/references/acceptance.md`, "Accepting", lists.
 
 Run the `goal-red-team` read your role prompt names. Accept only when a pass stands for every
-`before_merge` check at the approved head (or below it, where every push since changes no code that
-runs), every requirement has a check, and none is unmet or read
+`before_merge` check at the approved head, every requirement has a check, and none is unmet or read
 narrower than written: post a `dispatch comment` naming each check and its result, then
 `legion({ op: "sign_off", issue: "<KEY>" })`. Otherwise `request_backward_move` with `to`
 (`implementing` or `testing`) and a `reason` naming the check's block id. Wait for a `ci_check` run
