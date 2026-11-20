@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -6,14 +6,18 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import type { ClaimHolderLiveness, Issue, IssueDetails } from "../../api/types";
 import { dangerText, pageFailedText, pageHeaderControl } from "../../theme/classes";
 import { runningAgent } from "../credentials/agent-fixture";
 import { stateForIssue } from "../issue/pins";
 import { MarginProvider } from "../margin/margin-context";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { IssueClaimControl } from "./IssueClaimControl";
 import { claimIssue as base, sessionClaim as claim } from "./issue-fixtures";
@@ -227,6 +231,54 @@ test("a release Dispatch refuses says Dispatch's reason beside its words", async
     expect(alert, "the refusal does not say Dispatch's reason").toHaveTextContent(reason);
   } finally {
     view.unmount();
+    release.mockRestore();
+    agents.mockRestore();
+    subscribers.mockRestore();
+  }
+});
+
+// A release the reader stopped may have been made: the row says so in the header's words, and
+// that its Retry sends the same change again - a `DELETE` sends no key - rather than that the
+// release failed. The line is about that press while the release its Retry sent is out too, so
+// it keeps those words then rather than turn to the failure's.
+test("a release the reader stopped says in Details that it may have been made, not that it failed", async () => {
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const agents = spyOn(api, "listAgents").mockResolvedValue([
+    runningAgent({ session_id: "session-one", title: "Implementer" }),
+  ]);
+  const release = spyOn(api, "releaseIssueClaim").mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1/claim", new TypeError("Failed to fetch"))
+  );
+  const view = claimRow({ ...base, claim });
+  const stopped = stoppedWriteNote("the release of this claim", "made", {
+    method: "DELETE",
+    stopped: new SendStoppedError(),
+  });
+  try {
+    const control = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(control);
+    await stopTheLateWrite(view.client);
+    expect(screen.getByRole("alert").textContent).toBe(stopped);
+
+    const retried = Promise.withResolvers<Issue>();
+    release.mockImplementationOnce(() => retried.promise);
+    const made = release.mock.calls.length;
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.retry }));
+    await waitFor(() => expect(release).toHaveBeenCalledTimes(made + 1));
+    await waitFor(() => expect(control).toHaveTextContent(ANSWER_LINES.saving_release));
+    expect(
+      screen.getByRole("alert").textContent,
+      "the line turned to a failure while the release its Retry sent is out"
+    ).toBe(stopped);
+
+    await act(async () => retried.resolve({ ...base, claim: null }));
+    expect(await screen.findByText(CONTROL_LABELS.none)).toBeDefined();
+  } finally {
+    realClock();
+    view.unmount();
+    view.client.clear();
     release.mockRestore();
     agents.mockRestore();
     subscribers.mockRestore();

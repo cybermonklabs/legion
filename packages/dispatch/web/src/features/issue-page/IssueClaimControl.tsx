@@ -1,11 +1,17 @@
-import { type ReactNode, useRef } from "react";
+import { type ReactNode, useRef, useState } from "react";
 
 import { apiErrorMessage } from "../../api/client";
 import type { IssueDetails } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { pageHeaderControl, pageQuietText } from "../../theme/classes";
 import { ClaimChip } from "../issue/ClaimChip";
-import { DetailsErrorLine, useFocusHandOff, useSaidFailure } from "./details-error";
+import { stoppedNote } from "../writes/useKeyedWrite";
+import {
+  DetailsErrorLine,
+  type SaidFailure,
+  useFocusHandOff,
+  useSaidFailure,
+} from "./details-error";
 import { pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
@@ -16,7 +22,8 @@ const RELEASE_FAILED = "Could not release this claim.";
 /**
  * Who holds the issue, since when, and the control that hands the claim back, in the claim's
  * row of Details, which carries the label "Claimed by"; `None` while nobody holds it. A release
- * that fails says so beside it, with Dispatch's reason where Dispatch gave one, and a retry.
+ * that fails says so beside it, with Dispatch's reason where Dispatch gave one, and a retry; one
+ * the reader stopped says it may have been made, as the header says it.
  *
  * No control here is disabled while its release is out, since Chromium moves the focus of a
  * control that turns disabled to the page's body, which would lose a reader who pressed it by
@@ -35,7 +42,7 @@ export function IssueClaimControl({
 }): ReactNode {
   const { releaseClaim } = writes;
   const press = useSubmitGuard();
-  const failure = useSaidFailure(releaseClaim);
+  const failure = useSaidRelease(releaseClaim);
   const releaseControl = useRef<HTMLButtonElement>(null);
   const none = useRef<HTMLSpanElement>(null);
   const retryLeft = useFocusHandOff(() => releaseControl.current);
@@ -71,9 +78,7 @@ export function IssueClaimControl({
       {failure === null ? null : (
         <DetailsErrorLine
           failure={failure.count}
-          // Dispatch's reason beside the row's words, as the Parent row says a refused parent
-          // (`apiErrorMessage`); a release that got no answer, a dropped connection, has none.
-          message={releaseFailedLine(apiErrorMessage(failure.error, ""))}
+          message={failure.line}
           onRetry={release}
           refused={releaseClaim.isPending}
           retryRef={retryLeft}
@@ -81,6 +86,39 @@ export function IssueClaimControl({
       )}
     </div>
   );
+}
+
+/** The failure the claim's row says of the release, and the line it says it in. */
+interface SaidRelease {
+  readonly count: number;
+  readonly line: string;
+}
+
+/**
+ * The failure the claim's row says of `releaseClaim` (`useSaidFailure`), in its line: a release
+ * the reader stopped in the words the header says it in (`stoppedNote`), since it may have been
+ * made and Retry sends the same change again, and any other in the row's words, with Dispatch's
+ * reason after them where Dispatch gave one (`apiErrorMessage`, as the Parent row says a refused
+ * parent); a release that got no answer, a dropped connection, has none.
+ *
+ * The line is read from the write in the render its press ended in, the one that says the
+ * failure first, and kept with that failure while the release its Retry sent again is out. A
+ * write that is out holds no error and no method, so a line read from it then would say a
+ * stopped release failed while the line is still about that press.
+ */
+function useSaidRelease(releaseClaim: IssueHeaderWrites["releaseClaim"]): SaidRelease | null {
+  const failure = useSaidFailure(releaseClaim);
+  const [said, setSaid] = useState<{
+    readonly failure: SaidFailure<string>;
+    readonly line: string;
+  } | null>(null);
+  if (failure === null) return null;
+  if (said?.failure === failure) return { count: failure.count, line: said.line };
+  const line =
+    stoppedNote(releaseClaim, "the release of this claim", "made") ??
+    releaseFailedLine(apiErrorMessage(failure.error, ""));
+  setSaid({ failure, line });
+  return { count: failure.count, line };
 }
 
 /** The line of a failed release: the row's words, and `reason` after them where there is one. */

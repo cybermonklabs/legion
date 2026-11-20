@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { ApiError, apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { landIssueWrite } from "../../api/issue-cache";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import type { BlockedByRefusalWords } from "./page-words";
 
@@ -16,8 +17,9 @@ export interface BlockedByRefusal {
 
 export interface BlockedByWrite {
   /** Why the last save failed, until the next save starts or the control forgets it
-   *  (`forgetRefusal`): one of the page's sentences for a refusal it knows, else what Dispatch
-   *  said, or the page's line for a save that never reached it. */
+   *  (`forgetRefusal`): the sentence of a save the reader stopped, which may have been saved; one
+   *  of the page's sentences for a refusal it knows, else what Dispatch said, or the page's line
+   *  for a save that never reached it. */
   readonly error: BlockedByRefusal | string | undefined;
   /** Drops that refusal, so an editor opened again never draws the one before it. */
   readonly forgetRefusal: () => void;
@@ -61,6 +63,12 @@ export function blockedByRefusal(
  * open with the typed list in it; there is no Retry, because sending the same refused list again
  * would be refused again
  * (`packages/dispatch/AGENTS.md`: a field's refusal belongs at its control).
+ *
+ * A save the reader stopped is no refusal: it may have been saved. The editor stays open over it
+ * too, and says so in the words every surface says such a write in (`stoppedWriteNote`), with the
+ * field named as the editor's other lines name it. Its Save is a press of its own, a new write
+ * under a key of its own of what the box holds then, so the sentence says that and not that the
+ * stopped save is asked again under its key.
  */
 export function useIssueBlockedBy(issueKey: string, onSaved: () => void): BlockedByWrite {
   const queryClient = useQueryClient();
@@ -82,8 +90,12 @@ export function useIssueBlockedBy(issueKey: string, onSaved: () => void): Blocke
   });
   return {
     error: write.isError
-      ? (blockedByRefusal(write.error, issueKey, write.variables ?? []) ??
-        apiErrorMessage(write.error, `Could not save what ${issueKey} waits on.`))
+      ? write.error instanceof SendStoppedError
+        ? stoppedWriteNote(`what ${issueKey} waits on`, "saved", {
+            anew: "Saving again sends what the box holds now as a new write.",
+          })
+        : (blockedByRefusal(write.error, issueKey, write.variables ?? []) ??
+          apiErrorMessage(write.error, `Could not save what ${issueKey} waits on.`))
       : undefined,
     forgetRefusal: () => {
       if (write.isError) write.reset();

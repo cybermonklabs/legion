@@ -40,6 +40,7 @@ import { ReferencedBy } from "../refs/ReferencedBy";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { BLOCKED_BY_INPUT_ID, BlockedByControl, IssueLine } from "./BlockedByControl";
 import {
   DetailsErrorLine,
@@ -696,16 +697,27 @@ export function IssueMarginPanel({
               page's other refusals, never sees it. The line stays while the save its Retry sent
               again is out (`useSaidFailure`), and says Dispatch's new reason if that is refused
               too; its Retry takes no press while that save is out (`refused`), since the drafts
-              send nothing while a save is out (`useSubmitGuard`), and is never disabled. Once the
-              route lands the line goes, and the row's control takes the focus Retry held
-              (`useFocusHandOff`). */}
+              send nothing while a save is out (`useSubmitGuard`), and is never disabled. A
+              save the reader stopped is no refusal: it may have been saved, and the line says so
+              in the header's words for a title or a route save, whose Retry is this one, a press
+              of its own. Once the route lands the line goes, and the row's control takes the
+              focus Retry held (`useFocusHandOff`). */}
           {fieldFailure !== null &&
           fieldFailure.variables?.input.route !== undefined &&
           writes.drafts.route !== (issue.route ?? "") ? (
             <DetailsErrorLine
               error={fieldFailure.error}
               failure={fieldFailure.count}
-              message={apiErrorMessage(fieldFailure.error, "Could not update this issue.")}
+              message={
+                fieldFailure.error instanceof SendStoppedError
+                  ? stoppedWriteNote("this change to the issue", "saved", {
+                      // A closed issue's line draws no Retry, and Dispatch refuses its route.
+                      anew: isClosed
+                        ? "The issue is closed, so the route cannot be saved again."
+                        : "Retry sends what the field holds now as a new write.",
+                    })
+                  : apiErrorMessage(fieldFailure.error, "Could not update this issue.")
+              }
               onRetry={isClosed ? undefined : writes.drafts.retry}
               refused={writes.updateIssue.isPending}
               retryRef={routeRetryLeft}

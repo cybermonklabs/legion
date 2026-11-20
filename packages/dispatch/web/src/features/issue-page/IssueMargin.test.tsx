@@ -1,4 +1,4 @@
-import { expect, type Mock, spyOn, test } from "bun:test";
+import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import { MAX_ISSUE_ADVANCES, MAX_ISSUE_BLOCKERS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import {
@@ -15,10 +15,13 @@ import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { realClock } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import { eventRefreshTargets } from "../../api/event-refresh";
 import { primarySpec } from "../../api/issue-cache";
 import { issueQuery, userStateQuery } from "../../api/queries";
@@ -49,6 +52,7 @@ import { buildDispatchReference } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { blockedByControlName, referencedByControlName } from "./details-names";
@@ -305,6 +309,61 @@ test("the blocked-by editor stays open on a refusal and says what Dispatch refus
     ).toBe("CORE-9");
     expect(screen.queryByText("Could not update this issue.")).not.toBeInTheDocument();
   } finally {
+    unmount();
+    restore();
+  }
+});
+
+// A blocked-by save the reader stopped may have been saved: the editor says so, and stays open
+// with the list in it, rather than say the save failed. Its Save is a press of its own, so the
+// sentence says Save sends what the box holds then as a new write, and Save does: under a key of
+// its own, not the stopped save's.
+test("a blocked-by save the reader stopped says it may have been saved, and Save sends it anew", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  patchIssue.mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+  );
+  const { queryClient, unmount } = renderDetails();
+
+  try {
+    await user.click(
+      await screen.findByRole("button", { name: blockedByControlName("CORE-1", 0) })
+    );
+    await user.click(await screen.findByLabelText("Issues CORE-1 waits on"));
+    await user.paste("CORE-9");
+    jest.useFakeTimers();
+    const held = userOnFakeClock();
+    await held.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
+    await stopTheLateWrite(queryClient);
+    expect(screen.getByRole("alert").textContent).toBe(
+      stoppedWriteNote("what CORE-1 waits on", "saved", {
+        anew: "Saving again sends what the box holds now as a new write.",
+      })
+    );
+    expect(
+      (screen.getByLabelText("Issues CORE-1 waits on") as HTMLInputElement).value,
+      "the stopped list is no longer in the box"
+    ).toBe("CORE-9");
+
+    const stoppedKey = patchIssue.mock.calls[0]?.[2].key;
+    const made = patchIssue.mock.calls.length;
+    const saved = Promise.withResolvers<Issue>();
+    patchIssue.mockImplementation(() => saved.promise);
+    await held.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(made + 1));
+    expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { blocked_by: ["CORE-9"] }, keyedAttempt);
+    expect(
+      patchIssue.mock.calls.at(-1)?.[2].key,
+      "Save asked the stopped save again under its key"
+    ).not.toBe(stoppedKey);
+    // The new save lands, which closes the editor.
+    await act(async () => saved.resolve(narrowIssue({ ...issue, blocked_by: ["CORE-9"] })));
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Issues CORE-1 waits on")).not.toBeInTheDocument()
+    );
+  } finally {
+    realClock();
     unmount();
     restore();
   }
@@ -3856,6 +3915,40 @@ test("a route Dispatch refuses is said in the Messages go to row with Dispatch's
       ).not.toBeInTheDocument()
     );
   } finally {
+    unmount();
+    restore();
+  }
+});
+
+// A route save the reader stopped may have been saved: the row says so in the header's words for
+// a title or a route save, whose Retry is this row's too, rather than that the save failed.
+test("a route save the reader stopped says in its row that it may have been saved, not that it failed", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const route = "role:legion-controller-core";
+  patchIssue.mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+  );
+  const { queryClient, unmount } = renderDetails();
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
+    await user.click(await screen.findByLabelText(PROPERTY_LABELS.route));
+    await user.paste(route);
+    jest.useFakeTimers();
+    await userOnFakeClock().click(screen.getByRole("button", { name: CONTROL_LABELS.save_route }));
+    await stopTheLateWrite(queryClient);
+    expect(within(rowAt("route")).getByRole("alert").textContent).toBe(
+      stoppedWriteNote("this change to the issue", "saved", {
+        anew: "Retry sends what the field holds now as a new write.",
+      })
+    );
+    expect(
+      within(rowAt("route")).queryByRole("button", { name: CONTROL_LABELS.retry }),
+      "the sentence names a Retry the row does not offer"
+    ).not.toBeNull();
+  } finally {
+    realClock();
     unmount();
     restore();
   }
