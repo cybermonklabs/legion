@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -15,6 +16,44 @@ func recordedKeys(process *Importer) int {
 	process.ended.mu.Lock()
 	defer process.ended.mu.Unlock()
 	return len(process.ended.byKey)
+}
+
+// The record hands a call an ended flight by the rule Sync holds every answer to,
+// !servedAt().Before(calledAt): a flight whose head lookup went out at the very instant of the
+// call is fresh for it, one whose lookup went out a nanosecond before the call is not, and a
+// flight that failed before its lookup is dated by its start. A call that two clock readings put
+// at the same instant as the lookup must take the flight, or a refuser of it starts one more.
+// Once the key's last call has left, the record hands nothing back.
+func TestARecordedFlightIsFreshForACallAtTheInstantOfItsHeadLookup(t *testing.T) {
+	var ended endedFlights
+	at := time.Now()
+	looked := &syncFlight{startedAt: at.Add(-time.Second), headAt: at}
+	failedBefore := &syncFlight{startedAt: at}
+	ended.enter("looked")
+	ended.enter("failed")
+	ended.record("looked", looked)
+	ended.record("failed", failedBefore)
+	for _, row := range []struct {
+		what     string
+		key      string
+		calledAt time.Time
+		want     *syncFlight
+	}{
+		{"a call at the instant of the head lookup", "looked", at, looked},
+		{"a call a nanosecond before the head lookup", "looked", at.Add(-time.Nanosecond), looked},
+		{"a call a nanosecond after the head lookup", "looked", at.Add(time.Nanosecond), nil},
+		{"a call at the instant a flight that failed before its lookup began", "failed", at, failedBefore},
+		{"a call a nanosecond after that flight began", "failed", at.Add(time.Nanosecond), nil},
+		{"a key no call entered", "absent", time.Time{}, nil},
+	} {
+		if got := ended.fresh(row.key, row.calledAt); got != row.want {
+			t.Errorf("%s: fresh = %p, want %p", row.what, got, row.want)
+		}
+	}
+	ended.leave("looked")
+	if got := ended.fresh("looked", time.Time{}); got != nil {
+		t.Errorf("after the key's last call left: fresh = %p, want nil", got)
+	}
 }
 
 // The sync route hands Sync whatever project key and repository its path names, whether a

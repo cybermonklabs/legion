@@ -115,9 +115,9 @@ type Importer struct {
 	syncs singleflight.Group
 	// ended is, for each source a call of Sync is running for, its newest
 	// flight to have ended, on syncs' keys: what a caller that refused an
-	// older flight takes when it began after the caller's call
-	// (sharedFlight). Sync enters its key on the way in and leaves it on the
-	// way out, so no entry outlives the calls of its key.
+	// older flight takes when it began after the caller's call. Sync enters
+	// its key on the way in and leaves it on the way out, so no entry
+	// outlives the calls of its key.
 	ended endedFlights
 
 	// afterFlightTaken runs in Sync once a caller holds the flight it waits
@@ -260,9 +260,9 @@ func (i *Importer) SyncProject(ctx context.Context, project string) ([]SyncResul
 // person who pushes and then asks for a Refresh is never told the pre-push
 // commit with a fresh last_sync_at. A caller that refused a flight and looks
 // again after the next one has ended takes that one's answer rather than
-// starting a third (sharedFlight), so the callers that refused one flight make
-// one more set of GitHub calls between them, however late each looks again.
-// That answer is kept only while a call of the source runs (endedFlights).
+// starting a third, so the callers that refused one flight make one more set
+// of GitHub calls between them, however late each looks again. That answer is
+// kept only while a call of the source runs (endedFlights).
 func (i *Importer) Sync(ctx context.Context, project, repo string) (model.ArchitectureSource, error) {
 	// A caller that has already hung up, and an importer whose process is
 	// stopping, start no flight: the work would outlive both of them.
@@ -280,7 +280,20 @@ func (i *Importer) Sync(ctx context.Context, project, repo string) (model.Archit
 	i.ended.enter(key)
 	defer i.ended.leave(key)
 	for {
-		answered := i.syncs.DoChan(key, func() (any, error) { return i.sharedFlight(ctx, key, project, repo, calledAt) })
+		// A flight this caller starts hands back the newest flight of the
+		// source to have ended, when its head lookup came no earlier than
+		// this caller's call, as it would have had the caller joined it, and
+		// makes no GitHub call. Otherwise it runs a flight of its own and
+		// records it once it ends.
+		answered := i.syncs.DoChan(key, func() (any, error) {
+			if ended := i.ended.fresh(key, calledAt); ended != nil {
+				return ended, ended.err
+			}
+			flight, err := i.flight(ctx, project, repo)
+			flight.err = err
+			i.ended.record(key, flight)
+			return flight, err
+		})
 		if i.afterFlightTaken != nil {
 			i.afterFlightTaken()
 		}
@@ -299,19 +312,19 @@ func (i *Importer) Sync(ctx context.Context, project, repo string) (model.Archit
 			// the next one. singleflight deletes the key before it sends a
 			// result, and the flight records itself as its source's newest
 			// ended one before that, so the flight joined or started now began
-			// after calledAt, and one started now answers with the newest
-			// flight to have ended since, when that one is fresh for its
-			// starter's call, rather than asking GitHub again.
+			// after calledAt.
 			//
-			// This caller may still go round again: a flight started by a
-			// caller that called before this one can hand back a recorded
-			// flight that is fresh for that call and that this caller
-			// already refused. The loop still ends. A flight this caller
-			// starts itself answers only with a flight fresh for its own
-			// call, or makes its own head lookup after that call. Only a call
-			// older than this one can hand it a flight it must refuse, those
-			// calls are a fixed set once this one is made, and each ends by
-			// the same argument, the oldest first: no call is older than it.
+			// That flight may still answer with one older than this call.
+			// When an older caller that refused a flight started it, it
+			// hands back the newest ended flight that is fresh for that older
+			// call, and this caller, which joined it, refuses that answer too
+			// and goes round again. That round makes no GitHub call: the
+			// flight it joined answered from the record. The loop still ends.
+			// A flight this caller starts answers only with a flight fresh
+			// for this call, or makes its own head lookup after it. Only a
+			// caller older than this one can hand it an answer it refuses,
+			// those callers are a fixed set once this call is made, and each
+			// of them ends by the same argument, the oldest first.
 			if i.afterSyncRefusal != nil {
 				i.afterSyncRefusal()
 			}

@@ -72,7 +72,7 @@ func (c *syncCount) stop() {
 }
 
 // syncFlight is one shared sync of one source: what the flight hands every
-// caller that joined it, beside the flight's error. Every write to it happens
+// caller that joined it, with the flight's error. Every write to it happens
 // in the flight's goroutine before the result is sent, and before the flight
 // records itself as its source's newest ended flight (endedFlights), and every
 // read after that receive or that record's read, so the channel and the
@@ -88,6 +88,9 @@ type syncFlight struct {
 	// moved in between. A retry round stamps it again.
 	headAt time.Time
 	source model.ArchitectureSource
+	// err is the error the flight ended with, which every caller it answers
+	// takes beside its source.
+	err error
 }
 
 // servedAt is how fresh the flight's answer is: when it asked GitHub for the
@@ -100,9 +103,9 @@ func (f *syncFlight) servedAt() time.Time {
 }
 
 // endedFlights holds, for each source a call of Sync is running for, the
-// newest flight of that source to have ended, with its error, by the key Sync
-// shares flights on. One flight of a key runs at a time (singleflight), and
-// each records itself here before singleflight drops its key and sends its
+// newest flight of that source to have ended, its error with it, by the key
+// Sync shares flights on. One flight of a key runs at a time (singleflight),
+// and each records itself here before singleflight drops its key and sends its
 // answer, so while a call runs, the newest flight of its source is either the
 // one in flight or the one recorded here: a caller that looks for one finds
 // it, however late it looks.
@@ -124,13 +127,7 @@ type endedFlights struct {
 // newest ended flight, nil until one ends while a call runs.
 type keyFlights struct {
 	calls int
-	ended *endedFlight
-}
-
-// endedFlight is one flight that has ended and the error it ended with.
-type endedFlight struct {
-	flight *syncFlight
-	err    error
+	ended *syncFlight
 }
 
 // enter counts one more running call of key, making its entry if it has none.
@@ -159,42 +156,26 @@ func (e *endedFlights) leave(key string) {
 	}
 }
 
-// fresh is key's newest ended flight, and whether there is one whose head
-// lookup came no earlier than calledAt.
-func (e *endedFlights) fresh(key string, calledAt time.Time) (endedFlight, bool) {
+// fresh is key's newest ended flight when its head lookup came no earlier
+// than calledAt, and nil when there is none or it is older.
+func (e *endedFlights) fresh(key string, calledAt time.Time) *syncFlight {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	entry := e.byKey[key]
-	if entry == nil || entry.ended == nil {
-		return endedFlight{}, false
+	if entry == nil || entry.ended == nil || entry.ended.servedAt().Before(calledAt) {
+		return nil
 	}
-	return *entry.ended, !entry.ended.flight.servedAt().Before(calledAt)
+	return entry.ended
 }
 
-// record stores flight, which ended with err, as key's newest ended flight
-// while a call of key runs, and drops it when none does.
-func (e *endedFlights) record(key string, flight *syncFlight, err error) {
+// record stores flight, which has ended, as key's newest ended flight while a
+// call of key runs, and drops it when none does.
+func (e *endedFlights) record(key string, flight *syncFlight) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if entry := e.byKey[key]; entry != nil {
-		entry.ended = &endedFlight{flight: flight, err: err}
+		entry.ended = flight
 	}
-}
-
-// sharedFlight is what a flight of key, started by a caller of Sync that asked
-// at calledAt, runs: the newest flight of the source to have ended, when its
-// head lookup came no earlier than calledAt, and otherwise a flight of its own,
-// which it records as the newest once it ends. So a caller that refused a
-// flight older than its call and looks again after the next one has ended takes
-// that one's answer, as it would have had it joined it, and makes no GitHub
-// call of its own.
-func (i *Importer) sharedFlight(ctx context.Context, key, project, repo string, calledAt time.Time) (*syncFlight, error) {
-	if ended, ok := i.ended.fresh(key, calledAt); ok {
-		return ended.flight, ended.err
-	}
-	flight, err := i.flight(ctx, project, repo)
-	i.ended.record(key, flight, err)
-	return flight, err
 }
 
 // flight is the shared sync singleflight runs for one source: one set of
