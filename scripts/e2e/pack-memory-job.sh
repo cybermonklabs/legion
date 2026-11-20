@@ -10,10 +10,11 @@
 # each JJ_PACK_MAPPED_LIMIT budget and with jj 0.46.0-sami.20261008-234600, their control, each
 # on a copy of its own. Each copy's describedArgs, the shim's, runs right after an unmeasured `git
 # fetch` of every branch head of the feed into that copy's shared clone, as remote-tracking refs it
-# does not hold, so describedArgs imports new refs, as a role's jj does once git has fetched new
-# branches into the shared clone. It reads the image's `git config --system` and `jj --version`
-# too. The implementer runs it at the head it measures, and the tester runs it again at the head it
-# tests, so this recipe is the one both read.
+# does not hold, and an unmeasured `git commit` in its workspace, with both dates fixed, so
+# describedArgs imports new refs and a new HEAD, as a role's jj does once git has fetched new
+# branches into the shared clone and committed. It reads the image's `git config --system` and `jj
+# --version` too. The implementer runs it at the head it measures, and the tester runs it again at
+# the head it tests, so this recipe is the one both read.
 #
 # It is three files: this harness, which renders the Job, creates it and reads its verdict;
 # `pack-memory-probe.sh` beside it, the text the Job runs inside the image, whose header says what
