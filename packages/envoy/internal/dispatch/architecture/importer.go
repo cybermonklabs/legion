@@ -295,13 +295,16 @@ func (i *Importer) Sync(ctx context.Context, project, repo string) (model.Archit
 // how fresh the answer is, and a push worker reads it to know which pushes the
 // import covered: every push recorded no later than it (push.go). A push
 // worker names the moment of the newest push it holds, which came before its
-// key is entered, so a flight fresh for that push that ended in between is
-// recorded nowhere (endedFlights) and the worker starts one of its own: one set
-// of GitHub calls more, and never a push left uncovered. A zero time is
-// answered only when ctx is done or the importer's process is stopping as
-// syncAfter is called, or when ctx ends before the flight answers. A flight
-// that Close cut short answers like any other flight: its own servedAt, beside
-// the error that stopped it.
+// key is entered. A flight fresh for that push that ended before the worker
+// entered is recorded if a call of the key held the entry as it ended
+// (endedFlights.record), and fresh hands it, or a newer one, to the worker if
+// calls held the entry on until the worker entered. When no other call of the
+// key ran across that window, such a flight may be recorded nowhere, and then
+// the worker starts a flight of its own: one set of GitHub calls more, and
+// never a push left uncovered. A zero time is answered only when ctx is done
+// or the importer's process is stopping as syncAfter is called, or when ctx
+// ends before the flight answers. A flight that Close cut short answers like
+// any other flight: its own servedAt, beside the error that stopped it.
 func (i *Importer) syncAfter(ctx context.Context, project, repo string, after time.Time) (model.ArchitectureSource, time.Time, error) {
 	// A caller that has already hung up, and an importer whose process is
 	// stopping, start no flight: the work would outlive both of them.
@@ -312,10 +315,11 @@ func (i *Importer) syncAfter(ctx context.Context, project, repo string, after ti
 		return model.ArchitectureSource{}, time.Time{}, err
 	}
 	key := syncKey(project, repo)
-	// The key is entered before the call is stamped, so a flight that looks
-	// the head up after this call's stamp, and so is fresh for it, finds the
-	// entry held open when it ends, whoever started it and whether its
-	// starter is still there.
+	// The key is entered before Sync's call is stamped here, so a flight
+	// that looks the head up after that stamp, and so is fresh for it, finds
+	// the entry held open when it ends, whoever started it and whether its
+	// starter is still there. A push worker's moment, after, came before
+	// the entry, at its newest push (syncAfter).
 	i.ended.enter(key)
 	defer i.ended.leave(key)
 	// calledAt is stamped once, before any join: what a flight has to be
@@ -371,9 +375,14 @@ func (i *Importer) syncAfter(ctx context.Context, project, repo string, after ti
 			// flight it joined answered from the record. The loop still ends.
 			// A flight this caller starts answers only with a flight fresh
 			// for this call, or makes its own head lookup after it. Only a
-			// caller older than this one can hand it an answer it refuses,
-			// those callers are a fixed set once this call is made, and each
-			// of them ends by the same argument, the oldest first.
+			// caller older than this one can hand it an answer it refuses:
+			// a call of Sync made before this call's moment, or a push
+			// worker's round whose newest push was recorded before that
+			// moment, which may enter the key after this call did. Those
+			// callers are finitely many: such calls and such pushes are, and
+			// each round covers its newest push or ends its worker
+			// (coverPushes). Each of them ends by the same argument, the
+			// oldest first.
 			if i.afterSyncRefusal != nil {
 				i.afterSyncRefusal()
 			}

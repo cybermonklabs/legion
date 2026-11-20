@@ -43,10 +43,10 @@
 // A delivery's GUID, event and action are GitHub's text, and so is every key that holds a GUID, so
 // each line and error of this package shows them as githubapp.ShownBody shows GitHub's text: whole
 // up to 512 runes, and past that its first 512 runes and its size. It shows an error the bucket
-// answered the same way (bucketErr), since a refusal of bus.KeyValue quotes the key it refused,
-// and every error a GitHub call answered it with (gitHubErr), since such an error carries GitHub's
-// text: a refusal's body, a value of an answer it cannot decode, a header line a transport error
-// quotes.
+// answered the same way (bucketErr), since a refusal of bus.KeyValue quotes the key it refused.
+// GitHub's text in the errors of the GitHub calls (Sweeper.GitHub) reaches the sweep already cut
+// that way by the githubapp client: a refusal's body, a value of an answer the client cannot
+// decode, a line a transport error quotes. So the sweep shows those errors as they are.
 //
 // Dispatch runs the sweep because it holds the App's private key, which the list and redeliver
 // endpoints require (they take only an App JWT).
@@ -395,10 +395,8 @@ func (s *Sweeper) Sweep(ctx context.Context, opts Options) (Report, error) {
 		return Report{}, err
 	}
 	// The limits are read again ahead of every request, the listing's first page included, so a
-	// limit in force now stops the sweep before it asks GitHub anything. The listing's error is
-	// shown as the sweep shows every GitHub call's (gitHubErr) before anything reads it.
+	// limit in force now stops the sweep before it asks GitHub anything.
 	listed, err := s.GitHub.Deliveries(ctx, since, func() error { return s.limitHeld(ctx) })
-	err = gitHubErr(err)
 	if s.stoppedAtLimit(ctx, &report, err, opts.DryRun) {
 		return report, nil
 	}
@@ -549,7 +547,7 @@ func (s *Sweeper) rateLimited(ctx context.Context, report *Report, limited *gith
 		}
 	}
 	report.Complete, report.RateLimitedUntil = false, next.Until
-	s.Logger.Warn("webhook redelivery rate-limited by GitHub", "status", limited.Status, "until", next.Until.Format(time.RFC3339), "strikes", next.Strikes, "error", gitHubErr(limited).Error())
+	s.Logger.Warn("webhook redelivery rate-limited by GitHub", "status", limited.Status, "until", next.Until.Format(time.RFC3339), "strikes", next.Strikes, "error", limited.Error())
 }
 
 // decide settles one delivery from its failed attempts (newest first), whether GitHub recorded an
@@ -675,7 +673,7 @@ func (s *Sweeper) decide(ctx context.Context, guid string, attempts []githubapp.
 		decision.Outcome = RateLimited
 		return decision, false, err
 	}
-	err = gitHubErr(s.GitHub.Redeliver(ctx, newest.ID))
+	err = s.GitHub.Redeliver(ctx, newest.ID)
 	var limited *githubapp.RateLimitError
 	if errors.As(err, &limited) {
 		// GitHub refused to take the request at all.
@@ -814,34 +812,6 @@ type heldLimit struct{ until time.Time }
 
 func (e *heldLimit) Error() string {
 	return "GitHub rate-limited the App until " + e.until.Format(time.RFC3339)
-}
-
-// gitHubError is an error a GitHub call answered the sweep with, as the sweep's lines and errors
-// show it: its text cut as githubapp.ShownBody cuts GitHub's. GitHub's text reaches the sweep
-// through every GitHub call's error, and not only as the body of a refusal, which the githubapp
-// client cuts to that bound itself: a decode error quotes whole a value of a 200 answer that Go
-// cannot decode (a time.ParseError, a json.UnmarshalTypeError), and a transport error of net/http
-// quotes whole a response header line it cannot read. So the sweep shows each such error as
-// ShownBody shows GitHub's text, whoever worded it. Unwrap is the error itself, so errors.Is and
-// errors.As reach every class it carries: githubapp.ErrNoDelivery, the *githubapp.RateLimitError
-// stoppedAtLimit and decide read, the *heldLimit the listing returns from its before hook, and the
-// rest.
-type gitHubError struct{ err error }
-
-func (e *gitHubError) Error() string { return githubapp.ShownBody(e.err.Error()) }
-
-func (e *gitHubError) Unwrap() error { return e.err }
-
-// gitHubErr is err, an error a call on Sweeper.GitHub answered, as the sweep shows it
-// (gitHubError), and nil for nil. Every error the package takes from a GitHub call passes through
-// here at the call, before anything reads it: the listing's (Sweep) and each redelivery request's
-// (decide). The rate-limited line shows the limit decide or the listing answered through it too
-// (rateLimited).
-func gitHubErr(err error) error {
-	if err == nil {
-		return nil
-	}
-	return &gitHubError{err: err}
 }
 
 // limitHeld reads the shared limits right before a request to GitHub, since another sweep or

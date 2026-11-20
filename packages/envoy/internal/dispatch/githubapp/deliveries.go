@@ -71,7 +71,7 @@ func (c *Client) Deliveries(ctx context.Context, since time.Time, before func() 
 		}
 		var page []Delivery
 		if err := json.Unmarshal(body, &page); err != nil {
-			return nil, fmt.Errorf("decode webhook deliveries: %w", err)
+			return nil, fmt.Errorf("decode webhook deliveries: %w", shownErr(err))
 		}
 		for _, delivery := range page {
 			if delivery.DeliveredAt.Before(since) {
@@ -462,16 +462,16 @@ const shownBodyRunes = 512
 
 // ShownBody is body, text GitHub gave, as a line or an error shows it: whole where it is at most
 // shownBodyRunes runes long, and otherwise its first shownBodyRunes runes and `… (<n> bytes)`, n
-// the length of the whole body. Every error of this package whose text holds such a body holds it
-// as this shows it: a line that logs the error writes the text whole, and a body may be as long as
-// a response may be (responseLimit, 1 MiB), which put 1,048,697 bytes into one field of a WARN
-// line (review of cybermonklabs/legion#4209 at def907052c, H3). A reader that finds the body at
-// the end of such a text (api's gitHubErrorText) finds it as this shows it. The webhook
-// redelivery sweep shows the same way each GUID, event, action and key it logs or returns, each
-// error its bucket answers, and every error of a GitHub call it receives (redeliver), and the push
-// importer a push's repository and branch (architecture.Importer.Pushed). It reads at most
-// shownBodyRunes × 4 bytes of body, the most that many runes take, and never splits a rune; a byte
-// that is no UTF-8 counts as one rune.
+// the length of the whole body. Every error of this package whose text holds a body GitHub
+// answered holds it as this shows it (withBody), and so does every error of the package whose text
+// quotes a value of an answer the package cannot decode or a response line a transport error of
+// net/http quotes (shownError): each text is cut once, where it enters the error. A line that logs
+// the error writes the text whole, and a body may be as long as a response may be (responseLimit,
+// 1 MiB), which put 1,048,697 bytes into one field of a WARN line (review of
+// cybermonklabs/legion#4209 at def907052c, H3). A reader that finds the body at the end of such a
+// text (api's gitHubErrorText) finds it as this shows it. It reads at most shownBodyRunes × 4
+// bytes of body, the most that many runes take, and never splits a rune; a byte that is no UTF-8
+// counts as one rune.
 func ShownBody[Body ~string | ~[]byte](body Body) string {
 	head := string(body[:min(len(body), shownBodyRunes*utf8.UTFMax)])
 	runes := 0
@@ -485,6 +485,28 @@ func ShownBody[Body ~string | ~[]byte](body Body) string {
 		return fmt.Sprintf("%s… (%d bytes)", head, len(body))
 	}
 	return head
+}
+
+// shownError is err as this package's errors show it: its text is err's as ShownBody shows
+// GitHub's text. err is an error whose text quotes text GitHub gave, either a value of an answer
+// Go cannot decode (json.UnmarshalTypeError copies a number literal, time.ParseError quotes the
+// value) or a response line a transport error of net/http quotes. So the package shows that text
+// as ShownBody shows GitHub's, once, where the error enters an error of the package (shownErr), and
+// Unwrap is err, so errors.Is and errors.As still reach it.
+type shownError struct{ err error }
+
+func (e *shownError) Error() string { return ShownBody(e.err.Error()) }
+
+func (e *shownError) Unwrap() error { return e.err }
+
+// shownErr is err as shownError shows it, and nil for nil: the error of every JSON decode of an
+// answer GitHub gave whose error this package returns, and the transport's error of send's request
+// and of its read of the answer.
+func shownErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &shownError{err: err}
 }
 
 // StatusText is the text of an answer GitHub gave with status and body that its reader takes as

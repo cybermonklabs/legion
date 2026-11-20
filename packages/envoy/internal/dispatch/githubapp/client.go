@@ -476,7 +476,7 @@ func (c *Client) installation(ctx context.Context, owner, repo string) (Installa
 	}
 	var payload installationPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return Installation{}, fmt.Errorf("decode installation: %w", err)
+		return Installation{}, fmt.Errorf("decode installation: %w", shownErr(err))
 	}
 	return Installation{ID: payload.ID, AppSlug: payload.AppSlug, Permissions: payload.Permissions}, nil
 }
@@ -529,7 +529,7 @@ func (c *Client) ListInstallations(ctx context.Context) ([]Installation, error) 
 			}
 			var payload []installationPayload
 			if err := json.Unmarshal(body, &payload); err != nil {
-				return nil, fmt.Errorf("decode installations (page %d): %w", page, err)
+				return nil, fmt.Errorf("decode installations (page %d): %w", page, shownErr(err))
 			}
 			if len(payload) == 0 {
 				break
@@ -644,7 +644,7 @@ func listInstallationRepositories(ctx context.Context, c *Client, token string) 
 			} `json:"repositories"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
-			return nil, fmt.Errorf("decode installation repositories (page %d): %w", page, err)
+			return nil, fmt.Errorf("decode installation repositories (page %d): %w", page, shownErr(err))
 		}
 		if len(payload.Repositories) == 0 {
 			break
@@ -839,7 +839,7 @@ func (c *Client) token(ctx context.Context, installationID int64) (cachedToken, 
 		Permissions auth.AppPerms `json:"permissions"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return cachedToken{}, fmt.Errorf("decode installation token: %w", err)
+		return cachedToken{}, fmt.Errorf("decode installation token: %w", shownErr(err))
 	}
 	fresh := cachedToken{token: payload.Token, expires: payload.ExpiresAt, permissions: payload.Permissions}
 	c.mu.Lock()
@@ -983,14 +983,14 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 	githubreads.NoteSent(ctx)
 	response, err := c.http.Do(request)
 	if err != nil {
-		err = fmt.Errorf("%s %s: %w", method, target, err)
+		err = fmt.Errorf("%s %s: %w", method, target, shownErr(err))
 		noteFailure(ctx, err)
 		return nil, 0, nil, err
 	}
 	defer response.Body.Close()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		err = fmt.Errorf("read %s %s response: %w", method, target, err)
+		err = fmt.Errorf("read %s %s response: %w", method, target, shownErr(err))
 		noteFailure(ctx, err)
 		return nil, 0, nil, err
 	}
@@ -1130,7 +1130,7 @@ func (c *Client) Branch(ctx context.Context, token, owner, repo, branch string) 
 		} `json:"object"`
 	}
 	if err := json.Unmarshal(body, &ref); err != nil {
-		return "", fmt.Errorf("decode branch %s of %s/%s: %w", branch, owner, repo, err)
+		return "", fmt.Errorf("decode branch %s of %s/%s: %w", branch, owner, repo, shownErr(err))
 	}
 	if ref.Ref != "refs/heads/"+branch || !commitSHA.MatchString(ref.Object.SHA) {
 		return "", noBranch
@@ -1196,7 +1196,7 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 		} `json:"tree"`
 	}
 	if err := json.Unmarshal(body, &tree); err != nil {
-		return Dir{}, fmt.Errorf("decode tree %s:%s: %w", sha, dir, err)
+		return Dir{}, fmt.Errorf("decode tree %s:%s: %w", sha, dir, shownErr(err))
 	}
 	if tree.Truncated {
 		return Dir{}, fmt.Errorf("%w: %s/%s@%s:%s", ErrTreeTruncated, owner, repo, sha, dir)
@@ -1256,10 +1256,10 @@ func (c *Client) blob(ctx context.Context, token, repoBase, path, sha string) ([
 		Encoding string `json:"encoding"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, fmt.Errorf("decode blob %s (%s): %w", sha, path, err)
+		return nil, fmt.Errorf("decode blob %s (%s): %w", sha, path, shownErr(err))
 	}
 	if payload.Encoding != "base64" {
-		return nil, fmt.Errorf("blob %s (%s) has encoding %q, want base64", sha, path, payload.Encoding)
+		return nil, fmt.Errorf("blob %s (%s) has encoding %q, want base64", sha, path, ShownBody(payload.Encoding))
 	}
 	content, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(payload.Content, "\n", ""))
 	if err != nil {

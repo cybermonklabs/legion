@@ -354,8 +354,9 @@ So redelivering a delivery that did reach the stream adds nothing to the stream.
 
 - A delivery's GUID, event and action are GitHub's text, so every line and error of the sweep shows them, an index entry's `key`, and an error of the bucket that quotes a key, to a bound (`githubapp.ShownBody`):
   whole up to 512 characters, and past that the first 512 and `… (<n> bytes)`.
-  Every error a GitHub call answers the sweep with (a refusal's body, a value of an answer it cannot decode, a transport error) is shown in the sweep's errors and lines as `githubapp.ShownBody` shows it.
-  A next page link longer than 2048 bytes is refused rather than followed.
+  The GitHub App client (`githubapp`) shows GitHub's text in its errors as `githubapp.ShownBody` shows it: a refusal's body, a value of an answer it cannot decode, and a line a transport error quotes.
+  The sweep's errors and lines therefore carry that text the same way.
+  A next page link longer than 2048 bytes is refused rather than followed, and shown as `githubapp.ShownBody` shows it; an error that names a shorter one holds it whole.
 
 - The running sweep lists the last hour and six minutes (`redeliver.Lookback`, the longest backoff plus three sweep intervals), long enough that a delivery coming due still sees GitHub's answer to its last request in the listing.
   To that it adds the open deliveries the listing no longer returns that its index says are due, one still owed a request and one whose claim has run out alike.

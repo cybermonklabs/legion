@@ -128,11 +128,14 @@ func syncKey(project, repo string) string { return project + "\x00" + repo }
 // enter makes it, and the last to leave drops it, with what it recorded. So
 // the record never holds more entries than there are calls running, whatever
 // error a flight ended with and whatever key a caller names, a key that names
-// no source among them. No caller loses by the drop: a flight is fresh only
-// for a call made before its head lookup, and a call holds its key's entry
-// open from before it stamps its call until it returns (Sync). A flight that
-// ends once every call of its key has left is recorded nowhere. Its zero value
-// is ready.
+// no source among them. No call of Sync loses by the drop: a flight is fresh
+// only for a call made before its head lookup, and Sync's call holds its key's
+// entry open from before it stamps its call until it returns (syncAfter). A
+// push worker's moment is its newest push, which came before it entered the
+// key, so a flight that ended in that window may be recorded nowhere: that
+// costs the worker one more set of GitHub calls, and never leaves a push
+// uncovered. A flight that ends once every call of its key has left is
+// recorded nowhere. Its zero value is ready.
 type endedFlights struct {
 	mu    sync.Mutex
 	byKey map[string]*keyFlights
