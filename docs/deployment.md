@@ -70,13 +70,12 @@ With no key, the daemon reads each App's bot login from GraphQL's `viewer` under
 tokens, refuses a token whose `GET /apps/<slug>` names an id other than `app_id`, and reads whether
 the App is installed on a repository from that owner's installation's repository list.
 A read-only token holds what the command's read-only release gives: the broker's holds
-`contents: read`, `metadata: read`, `pull_requests: read` and `actions: read`, and the first three
-alone where the App's installation has not been granted Actions.
+`contents: read`, `metadata: read`, `pull_requests: read`, `actions: read`, `checks: read` and
+`statuses: read`, less each of the last three the App's installation has not been granted.
 A configured key asks for a set that differs from the broker's: `contents`, `metadata`,
 `pull_requests`, `issues`, `actions`, `checks`, `statuses` and `attestations`, each at `read`
-(`readPermissions` in `packages/daemon/internal/appauth`), so a controller reads an issue, a check
-run, a commit status or an attestation through a key-minted read-only token and not through the
-broker's.
+(`readPermissions` in `packages/daemon/internal/appauth`), so a controller reads an issue or an
+attestation through a key-minted read-only token and not through the broker's.
 A configured key reads what the installation is granted before each mint and asks for its set
 cut down to it.
 The daemon passes the command's stderr through as it runs, with every GitHub token in it redacted,

@@ -44,11 +44,12 @@ var credentialHeader = regexp.MustCompile(`(?i)(?:^|[^\w-])(?:-H|--header|--prox
 // passwords (`--pass`, `--proxy-pass`, `--tlspassword`, `--proxy-tlspassword`, `--ftp-account`,
 // and the `:password` of a client certificate given to `-E`, `--cert` or `--proxy-cert`), a
 // session's cookie (`-b`, `--cookie`), a proxy URL with its user's password in it or one of the
-// proxy variables agent-secrets puts that URL in (`-x`, `--proxy`, `--preproxy`), or a whole header
+// proxy variables agent-secrets puts that URL in (`-x`, `--proxy`, `--preproxy`, `--proxy1.0`,
+// `--socks4`, `--socks4a`, `--socks5`, `--socks5-hostname`), or a whole header
 // (`-H`, `--header`, `--proxy-header`). It is written case-sensitive, since `-D`, `-X`, `-B` and
 // `-e` are other flags; `--token-file`, `--github-token`, `--proxy-file` and `--header-file` are
 // other flags too, and match nothing.
-var credentialFlag = regexp.MustCompile(`(?:^|[^\w-])(-u|--user|-U|--proxy-user|-d|--data|--data-binary|--data-raw|--data-urlencode|--data-ascii|--json|--post-data|-F|--form|--form-string|--url-query|--variable|--token|--oauth2-bearer|--pass|--proxy-pass|--tlspassword|--proxy-tlspassword|--ftp-account|-E|--cert|--proxy-cert|-b|--cookie|-x|--proxy|--preproxy|-H|--header|--proxy-header)(?:=|[ \t]+)`)
+var credentialFlag = regexp.MustCompile(`(?:^|[^\w-])(-u|--user|-U|--proxy-user|-d|--data|--data-binary|--data-raw|--data-urlencode|--data-ascii|--json|--post-data|-F|--form|--form-string|--url-query|--variable|--token|--oauth2-bearer|--pass|--proxy-pass|--tlspassword|--proxy-tlspassword|--ftp-account|-E|--cert|--proxy-cert|-b|--cookie|-x|--proxy|--preproxy|--proxy1\.0|--socks4|--socks4a|--socks5|--socks5-hostname|-H|--header|--proxy-header)(?:=|[ \t]+)`)
 
 // curlCommand matches a line that runs curl, the one command whose `-E` is a client certificate
 // and whose `-b` is a cookie; grep's, sed's and sudo's `-E` and git's `-b` are other flags.
@@ -78,11 +79,11 @@ var cookieWord = regexp.MustCompile(`(?i)(?:^|[\s;"'])[\w.-]*(?:session|sid|auth
 // fixture-token`) is no secret, so neither matches.
 var tokenValue = regexp.MustCompile(`^\\?["']?(?:\\?\$\{?!?\w+\}?|\\?\$\([^)]*\)|<[^>]+>)\\?["']?(?:[\s;|&)]|$)`)
 
-// urlUserinfo matches a URL whose user's password is a variable, a command substitution or a
-// placeholder: a proxy's (`http://agent-secrets:$PROXY_PASSWORD@host`, `http://ada:<password>@proxy`)
-// and, on a line that runs curl, the URL curl is asked for (`https://ada:$PASSWORD@host/`). A URL
-// with no user part (`http://$host:$port`) matches nothing.
-var urlUserinfo = regexp.MustCompile(`://[^\s/@"']*:(?:\\?\$\{?\w+\}?|\\?\$\([^)]*\)|<[^>]*>)[^\s/@"']*@`)
+// urlUserinfo matches a URL-like string with a user and a password before the host, as the proxy
+// flags give them: `http://user:$PASSWORD@host`, `socks5://ada:<pw>@host` and, for the SOCKS
+// flags that take no scheme, `user:$PASSWORD@host`. It matches the user:password@ wherever it
+// sits, so a string with no scheme and no user part (`127.0.0.1:1080`) matches nothing.
+var urlUserinfo = regexp.MustCompile(`(?:://)?[^\s/@"']*:(?:\\?\$\{?\w+\}?|\\?\$\([^)]*\)|<[^>]*>)[^\s/@"']*@`)
 
 // proxyVariable matches an expansion of a variable agent-secrets puts the proxy URL in, with the
 // grant's proxy password in its user part: `$HTTPS_PROXY`, `${https_proxy}`, and an expansion with
@@ -105,9 +106,14 @@ func proxyPassword(word string) bool {
 // gitConfigFlag matches git's `-c`, and gitProxySetting the setting after it that names a proxy:
 // `http.proxy`, `https.proxy` or a URL's own `http.<url>.proxy`, in any case. Its groups are the
 // quote before the key, if any, and the value after the "=".
+//
+// gitConfigCommand matches `git config` (with optional `--global`/`--local`/`--system`) followed
+// by an http(s).proxy setting, so `git config http.proxy "$HTTPS_PROXY"` and
+// `git config --global https.proxy "$url"` are caught as well as `-c`.
 var (
-	gitConfigFlag   = regexp.MustCompile(`(?:^|[^\w-])-c[ \t]+`)
-	gitProxySetting = regexp.MustCompile(`^(\\?["']?)(?i:https?(?:\.[^=\s"']+)?\.proxy)=(.*)$`)
+	gitConfigFlag    = regexp.MustCompile(`(?:^|[^\w-])-c[ \t]+`)
+	gitProxySetting  = regexp.MustCompile(`^(\\?["']?)(?i:https?(?:\.[^=\s"']+)?\.proxy)=(.*)$`)
+	gitConfigCommand = regexp.MustCompile(`(?:^|[^\w-])git\s+config\s+(?:--(?:global|local|system|worktree|file\s+\S+)\s+)*(?i:https?(?:\.[^=\s"']+)?\.proxy)\s+`)
 )
 
 // proxyCarries says whether a proxy word carries the proxy's password: a URL with a password in it,
@@ -276,7 +282,7 @@ func credentialArgument(line string, h held) bool {
 			carries = curl && (cookieWord.MatchString(word) || tokenWord.MatchString(word) || h.expands(word))
 		case "--cookie":
 			carries = cookieWord.MatchString(word) || tokenWord.MatchString(word) || h.expands(word)
-		case "-x", "--proxy", "--preproxy":
+		case "-x", "--proxy", "--preproxy", "--proxy1.0", "--socks4", "--socks4a", "--socks5", "--socks5-hostname":
 			carries = proxyCarries(word, h)
 		case "-H", "--header", "--proxy-header":
 			carries = h.expands(word)
@@ -289,6 +295,12 @@ func credentialArgument(line string, h held) bool {
 	}
 	for _, at := range gitConfigFlag.FindAllStringIndex(line, -1) {
 		if m := gitProxySetting.FindStringSubmatch(shellWord(line[at[1]:])); m != nil && proxyCarries(m[1]+m[2], h) {
+			return true
+		}
+	}
+	if at := gitConfigCommand.FindStringIndex(line); at != nil {
+		word := shellWord(line[at[1]:])
+		if proxyCarries(word, h) {
 			return true
 		}
 	}
@@ -475,6 +487,15 @@ func TestTheCredentialMatcherCatchesEachSpellingAndPassesAnInputCurlReads(t *tes
 		`git -c https.proxy="$HTTPS_PROXY" fetch origin`,
 		`git -c "http.proxy=$all_proxy" fetch origin`,
 		`git -c http.https://github.com.proxy="http://ada:$PROXY_PASSWORD@$addr" fetch origin`,
+		// The SOCKS and proxy1.0 flags carry the same URL with the user's password in it.
+		`curl --proxy1.0 "http://agent-secrets:$PROXY_PASSWORD@127.0.0.1:3128" "$url"`,
+		`curl --socks5 "ada:${SOCKS_PASSWORD}@127.0.0.1:1080" "$url"`,
+		`curl --socks5-hostname "$ALL_PROXY" "$url"`,
+		`curl --socks4 "${HTTPS_PROXY}" "$url"`,
+		`curl --socks4a "ada:<password>@socks.example:1080" "$url"`,
+		// git config (not -c) with a proxy URL that holds a credential.
+		`git config http.proxy "$HTTPS_PROXY"`,
+		`git config --global https.proxy "http://ada:$PROXY_PASSWORD@proxy.example:3128"`,
 	} {
 		if !credentialArgument(line, nil) {
 			t.Errorf("does not catch a credential given as an argument: %s", line)
@@ -537,6 +558,10 @@ func TestTheCredentialMatcherCatchesEachSpellingAndPassesAnInputCurlReads(t *tes
 		`say "git=\$(cd $d/repo && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.proxy GIT_CONFIG_VALUE_0="\$HTTPS_PROXY" git -c credential.helper=$SCRIPT_DIR/airlock/credential-helper push --dry-run "$url")"`,
 		`git -c http.proxy=http://proxy.example:3128 fetch origin`,
 		`bash -c 'echo "$HTTPS_PROXY" | sed "s/:[^:@]*@/:***@/"'`,
+		`curl --proxy1.0 "http://127.0.0.1:3128" "$url"`,
+		`curl --socks5 "127.0.0.1:1080" "$url"`,
+		`git config http.proxy http://proxy.example:3128`,
+		`git config --global https.proxy "$HTTPS_PROXY_HOST"`,
 	} {
 		if credentialArgument(line, nil) {
 			t.Errorf("catches a line that gives no credential as an argument: %s", line)

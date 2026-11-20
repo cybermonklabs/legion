@@ -14,16 +14,18 @@ package api
 // number it was built against as `legion.daemonApiVersion` in its `package.json`, and the boot
 // gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
 //
-// Bump rule: a change to any of these surfaces bumps this constant. The same commit writes the
-// number in every other file that holds it: `legion.daemonApiVersion` in
-// `packages/pi-legion/package.json` and `packages/claude-envoy/package.json`, and the two fixtures
+// Bump rule: a change to any of these surfaces raises this constant above the number its base
+// carries. The same commit writes the number in every other file that holds it:
+// `legion.daemonApiVersion` in `packages/pi-legion/package.json` and
+// `packages/claude-envoy/package.json`, and the two fixtures
 // that this package's golden tests write, `packages/contracts/fixtures/daemon-api/version.json`
 // and `packages/contracts/fixtures/daemon-api/state.json`. In `packages/daemon`,
 // `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes
 // the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
 // and the plugin's field together.
 // `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
-// disagrees with this constant.
+// disagrees with this constant, and, naming a free number, a change that touches the contract
+// below (that script's header says which edits do) and declares no number above its base's.
 //
 // 8: secrets broker enrollment -- AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR on an enrolled pod's worker
 // container, and the shim's hello2.
@@ -2452,14 +2454,12 @@ package api
 // between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
 // and none declaring 178.)
 //
-// 185: #4543 -- no wire shape changes. Entry 64's prose no longer names one deployment's spend
+// 187: #4543 -- no wire shape changes. Entry 64's prose no longer names one deployment's spend
 // collector or its attribute prefix: it says that a spend row can be grouped by issue only when a
 // deployment's collector keeps `legion.issue` and `legion.role`. Every route, the state, and the
 // pane and container environments are as 178 has them. The number moves because
 // `.github/scripts/check-daemon-api-contract.sh` reads any edit of this history as a contract
 // change, and the boot gate and `legion probe-image` refuse a daemon and a plugin that declare
 // different numbers, so the two still move together.
-// (This entry takes 185, above main's 178: a reading of `const DaemonAPIVersion` at
-// refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-20,
-// found 179 to 184 each declared by another open pull request and none declaring 185.)
-const DaemonAPIVersion = 185
+// (This entry takes 187, above main's 178: #4175 declares 185 and #4573 declares 186.)
+const DaemonAPIVersion = 187

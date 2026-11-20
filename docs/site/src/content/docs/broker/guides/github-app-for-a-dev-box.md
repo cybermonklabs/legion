@@ -244,9 +244,9 @@ secret:
   The token keeps every permission the App holds, its organization permissions too, unless you
   also give `--github-read-only`.
 - `--github-read-only` limits the token to `contents: read`, `metadata: read`,
-  `pull_requests: read` and `actions: read`, the last of which an App whose installation has not
-  been granted Actions does not get. A machine that must only read needs it, with or without
-  `--github-repo`.
+  `pull_requests: read`, `actions: read`, `checks: read` and `statuses: read`. An App whose
+  installation has not been granted Actions, checks or commit statuses does not get those. A
+  machine that must only read needs it, with or without `--github-repo`.
 - `--github-token` hands over that one installation's token alone, in place of the JSON object
   of installations. A command that sends the token to GitHub in a header needs this form.
 

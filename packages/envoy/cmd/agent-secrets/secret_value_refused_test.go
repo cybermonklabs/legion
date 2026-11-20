@@ -64,6 +64,7 @@ func TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes(t *t
 	awsTypeStore{signedIn}.refuseValueReads(true)
 	useAWS(t, signedIn, testAccount, adaSignIn)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
+	useRigSession(t, rig)
 
 	id := policytest.ID("APP_KEY")
 	lines := func(message string) int {

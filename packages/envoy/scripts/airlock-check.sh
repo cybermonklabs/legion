@@ -422,11 +422,23 @@ records() { curl -sS "$AIRLOCK_RECORDS_URL/records/$1"; }
 records_count() { records "$1" | jq 'length'; }
 
 # reread_all makes every broker read one secret's name again, which is what the release of a
-# new version of a stored value waits on.
+# new version of a stored value waits on. Each call is signed by this stack's session, one proof a
+# broker (a proof is single-use), so each broker answers once its own reread is done; a call with
+# no proof is answered at once, before the store is read, and the next check would race it. Every
+# broker must answer 200: a signing failure or any other answer is a failed check (fail), and it
+# returns 1 so the step stops rather than read a broker that did not reread.
 reread_all() { # <name>
-	local addr
+	local addr proof code
 	for addr in "${BROKER_API_ADDRS[@]}"; do
-		curl -sS -o /dev/null -X POST "http://$addr/v1/secrets/$1/reread" || true
+		if ! proof="$(agent-secrets sign --method POST --url "$AGENT_SECRETS_URL/v1/secrets/$1/reread")"; then
+			fail "the stack's session could not sign the reread of $1"
+			return 1
+		fi
+		code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "Proof: $proof" "http://$addr/v1/secrets/$1/reread")"
+		if [ "$code" != 200 ]; then
+			fail "the broker at $addr answered the reread of $1 $code, not 200"
+			return 1
+		fi
 	done
 }
 
@@ -615,8 +627,8 @@ check_k1() {
 	github_app="$(stored_value "${STACK_SECRETS_PREFIX}airlock-github-app")"
 	add_fake_secret "${STACK_SECRETS_PREFIX}airlock-plain-github" \
 		'{"owner":"legion-daemon","tier":"agent","type":"github-app","github-owners":"acme-org"}' "$github_app"
-	reread_all AIRLOCK_PLAIN_TOKEN
-	reread_all AIRLOCK_PLAIN_GITHUB
+	reread_all AIRLOCK_PLAIN_TOKEN || return
+	reread_all AIRLOCK_PLAIN_GITHUB || return
 
 	k1_case AIRLOCK_PLAIN_TOKEN plain-stored "$plain_value" false
 	local plain_env="$K1_ENV_FILE_HITS" plain_environ="$K1_ENVIRON"
@@ -725,7 +737,7 @@ check_k2() {
 	plain_value="the-control-airlock-plain-token-$RANDOM$RANDOM"
 	add_fake_secret "${STACK_SECRETS_PREFIX}airlock-plain-token" \
 		'{"owner":"legion-daemon","tier":"agent"}' "$plain_value"
-	reread_all AIRLOCK_PLAIN_TOKEN
+	reread_all AIRLOCK_PLAIN_TOKEN || return
 	release AIRLOCK_PLAIN_TOKEN 30m
 	local plain_values plain_airlock released
 	plain_values="$(printf '%s' "$RELEASE_JSON" | jq -c '.values // {} | keys')"
@@ -1043,7 +1055,7 @@ k5_stored() {
 	first="$(k5_call "$PLACEHOLDER")"
 	new_value="the-second-version-of-the-airlock-demo-token-$RANDOM$RANDOM"
 	set_fake_value "${STACK_SECRETS_PREFIX}airlock-demo-token" "$new_value"
-	reread_all AIRLOCK_DEMO_TOKEN
+	reread_all AIRLOCK_DEMO_TOKEN || return
 	sleep 2
 	second="$(k5_call "$PLACEHOLDER")"
 	local recs got_first got_second
