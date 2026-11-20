@@ -30,14 +30,16 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import { dropSettledWrites } from "../writes/settled-writes";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { AccessPersonRow } from "./AccessPersonRow";
 
 /** One change of a project's access, as the owner presses it: the project given to another
  *  owner, made public or private, one person or group named on its access list or taken off it,
- *  or the Slack channels its credentials may post to. */
+ *  a person from outside reset (their passkeys deleted, their sign-in ended), or the Slack
+ *  channels its credentials may post to. */
 type AccessChange =
   | { readonly kind: "owner"; readonly owner: string }
   | { readonly kind: "visibility"; readonly visibility: ProjectAccess["visibility"] }
-  | { readonly kind: "add-person" | "remove-person"; readonly email: string }
+  | { readonly kind: "add-person" | "remove-person" | "reset-person"; readonly email: string }
   | { readonly kind: "add-group" | "remove-group"; readonly name: string }
   | { readonly kind: "slack-channels"; readonly channels: readonly string[] };
 
@@ -88,6 +90,13 @@ function accessOperation(project: string, change: AccessChange): AccessOperation
         label: `Remove ${change.email} from ${project}`,
         part: "people",
         refusal: `Couldn't remove ${change.email}.`,
+      };
+    case "reset-person":
+      return {
+        write: (bounds) => api.resetProjectAccessPerson(project, change.email, bounds),
+        label: `Reset ${change.email} on ${project}`,
+        part: "people",
+        refusal: `Couldn't reset ${change.email}.`,
       };
     case "add-group":
       return {
@@ -313,6 +322,10 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
   const { owner } = access.data;
   const people = access.data.people ?? [];
   const notSignedIn = new Set(access.data.not_signed_in ?? []);
+  // The owner's alone, and only where passkey sign-in is on: absent, no row shows a passkey
+  // control.
+  const passkeys = access.data.passkeys;
+  const invitable = new Set(access.data.invitable ?? []);
   const listedGroups = access.data.groups ?? [];
   const isPrivate = access.data.visibility === "private";
   const channelsText = (access.data.slack_channels ?? []).join(" ");
@@ -540,27 +553,24 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
         ) : (
           <ul aria-label="People" className={listClass}>
             {people.map((email) => (
-              <li className={rowClass} key={email}>
-                <span className={`min-w-0 break-all text-sm ${textPrimaryOnSurface}`}>
-                  {email}
-                  {notSignedIn.has(email) ? (
-                    <span className={`ml-2 ${textSecondaryOnCanvas}`}>not signed in yet</span>
-                  ) : null}
-                </span>
-                <RefusableButton
-                  busy={
-                    pendingOf((change) => change.kind === "remove-person" && change.email === email)
-                      ? "Removing…"
-                      : undefined
-                  }
-                  look="secondary-compact"
-                  onPress={() => write.save({ email, kind: "remove-person" })}
-                  refusal={refusal}
-                  refusalShownBy={refusal === null ? undefined : noteId}
-                >
-                  Remove<span className="sr-only"> {email}</span>
-                </RefusableButton>
-              </li>
+              <AccessPersonRow
+                email={email}
+                invitable={invitable.has(email)}
+                key={email}
+                notSignedIn={notSignedIn.has(email)}
+                onRemove={() => write.save({ email, kind: "remove-person" })}
+                onReset={() => write.save({ email, kind: "reset-person" })}
+                passkeys={passkeys?.filter((passkey) => passkey.email === email)}
+                project={project}
+                refusal={refusal}
+                refusalShownBy={refusal === null ? undefined : noteId}
+                removing={pendingOf(
+                  (change) => change.kind === "remove-person" && change.email === email
+                )}
+                resetting={pendingOf(
+                  (change) => change.kind === "reset-person" && change.email === email
+                )}
+              />
             ))}
           </ul>
         )}

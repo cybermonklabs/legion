@@ -31,6 +31,149 @@ export interface AuthenticatedUser {
   readonly event_head: string;
 }
 
+/** `sign_in` on `GET /auth/whoami`'s `401 NO_IDENTITY` (`AUTH_NO_IDENTITY`) where the origin's one
+ *  sign-in is a passkey: Dispatch's outside origin, with passkey sign-in on
+ *  (`DISPATCH_SIGNIN_PASSKEY=1`). The sign-in page there offers the passkey ceremony and no
+ *  Google link, which that origin answers 404. Every other 401 carries no `sign_in`. */
+export const AUTH_SIGN_IN_PASSKEY = "passkey";
+
+/**
+ * The passkey ceremonies at Dispatch's outside origin, four unauthenticated `POST`s under
+ * `/auth/passkey/` that sit outside the `/api/v1` route table and its keyed write layer, as
+ * `/auth/logout` does. Each begin answers the options a browser's WebAuthn call takes, in the JSON
+ * form go-webauthn writes them (every buffer a base64url string without padding), and sets the
+ * ceremony's state in a cookie of its own; the finish that follows takes the credential the
+ * browser made, in the same JSON form, and answers the person it signed in, with the session
+ * cookie beside it.
+ *
+ * - `/auth/passkey/register/begin` takes `{token}`, the link's fragment (`PasskeyEnrollmentStart`),
+ *   checks the link without using it, and answers `PasskeyCreationOptions`, whose `user.name` is
+ *   the address the link was made for.
+ * - `/auth/passkey/register/finish` takes `PasskeyRegistration`, stores the passkey, uses the
+ *   link, and signs the person in (`PasskeySignedIn`).
+ * - `/auth/passkey/login/begin` takes `{}` and answers `PasskeyRequestOptions` for any passkey
+ *   Dispatch holds (a discoverable credential, so it names none).
+ * - `/auth/passkey/login/finish` takes `PasskeyAssertion` and signs the person in.
+ *
+ * A refusal is Dispatch's ordinary `{code, error}`, its code one of `PASSKEY_REFUSALS`.
+ */
+export interface PasskeyEnrollmentStart {
+  /** The link's fragment: 32 random bytes, base64url without padding. */
+  readonly token: string;
+}
+
+/** One credential an options list names, by its id. */
+export interface PasskeyCredentialDescriptor {
+  readonly type: "public-key";
+  readonly id: string;
+  readonly transports?: readonly string[];
+}
+
+/** `/auth/passkey/register/begin`'s answer: go-webauthn's `protocol.CredentialCreation`. */
+export interface PasskeyCreationOptions {
+  readonly publicKey: {
+    readonly rp: { readonly id?: string; readonly name: string };
+    readonly user: { readonly id: string; readonly name: string; readonly displayName: string };
+    readonly challenge: string;
+    readonly pubKeyCredParams: readonly { readonly type: "public-key"; readonly alg: number }[];
+    readonly timeout?: number;
+    readonly excludeCredentials?: readonly PasskeyCredentialDescriptor[];
+    readonly authenticatorSelection?: {
+      readonly authenticatorAttachment?: string;
+      readonly requireResidentKey?: boolean;
+      readonly residentKey?: string;
+      readonly userVerification?: string;
+    };
+    readonly hints?: readonly string[];
+    readonly attestation?: string;
+    readonly extensions?: Readonly<Record<string, unknown>>;
+  };
+}
+
+/** `/auth/passkey/login/begin`'s answer: go-webauthn's `protocol.CredentialAssertion`. */
+export interface PasskeyRequestOptions {
+  readonly publicKey: {
+    readonly challenge: string;
+    readonly timeout?: number;
+    readonly rpId?: string;
+    readonly allowCredentials?: readonly PasskeyCredentialDescriptor[];
+    readonly userVerification?: string;
+    readonly hints?: readonly string[];
+    readonly extensions?: Readonly<Record<string, unknown>>;
+  };
+}
+
+/** What every credential a browser made carries, as JSON. */
+interface PasskeyCredentialJSON {
+  readonly id: string;
+  readonly rawId: string;
+  readonly type: "public-key";
+  readonly authenticatorAttachment?: string;
+  readonly clientExtensionResults: Readonly<Record<string, unknown>>;
+}
+
+/** `/auth/passkey/register/finish`'s body: the new passkey as `navigator.credentials.create`
+ *  made it. */
+export interface PasskeyRegistration extends PasskeyCredentialJSON {
+  readonly response: {
+    readonly clientDataJSON: string;
+    readonly attestationObject: string;
+    readonly transports?: readonly string[];
+  };
+}
+
+/** `/auth/passkey/login/finish`'s body: the passkey's signature as `navigator.credentials.get`
+ *  made it. */
+export interface PasskeyAssertion extends PasskeyCredentialJSON {
+  readonly response: {
+    readonly clientDataJSON: string;
+    readonly authenticatorData: string;
+    readonly signature: string;
+    readonly userHandle?: string;
+  };
+}
+
+/** Each finish's answer: the person the passkey signed in, whose session cookie came with it. */
+export interface PasskeySignedIn {
+  readonly login: string;
+}
+
+/**
+ * The codes a passkey ceremony is refused with:
+ * - `INVITATION_UNKNOWN` (404): Dispatch holds no such link. The owner made a newer one for the
+ *   address, reset it, or took it off the access list, each of which ends the address's unused
+ *   links.
+ * - `INVITATION_USED` (410): the link enrolled a passkey already.
+ * - `INVITATION_EXPIRED` (410): 24 hours have passed since the owner made it.
+ * - `INVITATION_NOT_LISTED` (403): the project's access list no longer names the address directly.
+ * - `WORKSPACE_ADDRESS` (403): the address is on a domain of the Google Workspace Dispatch signs
+ *   people in for, whose people sign in with Google and never with a passkey.
+ * - `NOT_LISTED` (403): no access list names the person any more; that finish also ended their
+ *   sign-in and deleted their passkeys.
+ * - `MEMBERSHIP_UNREADABLE` (503): the access lists could not be read; nothing changed.
+ * - `PASSKEY_UNKNOWN` (401): Dispatch holds no such passkey (the owner's Reset or a delisting
+ *   deleted it).
+ * - `PASSKEY_SIGN_COUNT` (401): the passkey's counter is not past the one Dispatch stored, as a
+ *   copy's would be.
+ * - `CEREMONY_EXPIRED` (400): the begin this finish follows is gone or older than five minutes.
+ * - `PASSKEY_REFUSED` (400): the credential did not verify for any other reason.
+ */
+export const PASSKEY_REFUSALS = [
+  "INVITATION_UNKNOWN",
+  "INVITATION_USED",
+  "INVITATION_EXPIRED",
+  "INVITATION_NOT_LISTED",
+  "WORKSPACE_ADDRESS",
+  "NOT_LISTED",
+  "MEMBERSHIP_UNREADABLE",
+  "PASSKEY_UNKNOWN",
+  "PASSKEY_SIGN_COUNT",
+  "CEREMONY_EXPIRED",
+  "PASSKEY_REFUSED",
+] as const;
+
+export type PasskeyRefusal = (typeof PASSKEY_REFUSALS)[number];
+
 /** GET /api/v1/whoami: a person by lowercase email (`login`), or an agent with its personal
  *  token's owner (a lowercase email) — null under the shared token or a verified service token —
  *  and that service token's subject, null unless one authenticated the request. `session` is the
