@@ -112,13 +112,15 @@ func proxyPassword(word string) bool {
 // `http.proxy`, `https.proxy` or a URL's own `http.<url>.proxy`, in any case. Its groups are the
 // quote before the key, if any, and the value after the "=".
 //
-// gitConfigCommand matches `git config` (with optional `--global`/`--local`/`--system`) followed
-// by an http(s).proxy setting, so `git config http.proxy "$HTTPS_PROXY"` and
-// `git config --global https.proxy "$url"` are caught as well as `-c`.
+// gitConfigCommand matches `git config` (with optional flags like `--global`, `--local`,
+// `--system`, `--worktree`, `-f <file>`, `--file <file>`, `--file=<file>`, `--add`,
+// `--replace-all`, `set`) and then an http(s).proxy setting, with or without quotes around the
+// key. `git -C <dir> config ...` is handled by its `-C` being consumed as a non-flag word.
+// It uses FindAllStringIndex so two matches on one line are both checked.
 var (
 	gitConfigFlag    = regexp.MustCompile(`(?:^|[^\w-])-c[ \t]+`)
 	gitProxySetting  = regexp.MustCompile(`^(\\?["']?)(?i:https?(?:\.[^=\s"']+)?\.proxy)=(.*)$`)
-	gitConfigCommand = regexp.MustCompile(`(?:^|[^\w-])git\s+config\s+(?:--(?:global|local|system|worktree|file\s+\S+)\s+)*(?i:https?(?:\.[^=\s"']+)?\.proxy)\s+`)
+	gitConfigCommand = regexp.MustCompile(`(?:^|[^\w-])git\s+(?:-C\s+\S+\s+)?config\s+(?:(?:--(?:global|local|system|worktree|add|replace-all)|set|-f\s+\S+|--file(?:=\S+|\s+\S+))\s+)*\\?["']?(?i:https?(?:\.[^=\s"']+)?\.proxy)\\?["']?\s+`)
 )
 
 // proxyCarries says whether a proxy word carries the proxy's password: a URL with a password in it,
@@ -303,7 +305,7 @@ func credentialArgument(line string, h held) bool {
 			return true
 		}
 	}
-	if at := gitConfigCommand.FindStringIndex(line); at != nil {
+	for _, at := range gitConfigCommand.FindAllStringIndex(line, -1) {
 		word := shellWord(line[at[1]:])
 		if proxyCarries(word, h) {
 			return true
@@ -501,6 +503,15 @@ func TestTheCredentialMatcherCatchesEachSpellingAndPassesAnInputCurlReads(t *tes
 		// git config (not -c) with a proxy URL that holds a credential.
 		`git config http.proxy "$HTTPS_PROXY"`,
 		`git config --global https.proxy "http://ada:$PROXY_PASSWORD@proxy.example:3128"`,
+		// git config with --add, set, -C, -f, --file, a quoted key and two on one line.
+		`git config --add http.proxy "$HTTPS_PROXY"`,
+		`git config set http.proxy "$HTTPS_PROXY"`,
+		`git config --replace-all https.proxy "$HTTPS_PROXY"`,
+		`git -C "$repo" config http.proxy "$HTTPS_PROXY"`,
+		`git config -f "$cfg" http.proxy "$HTTPS_PROXY"`,
+		`git config --file="$cfg" https.proxy "$HTTPS_PROXY"`,
+		`git config "http.proxy" "$HTTPS_PROXY"`,
+		`git config http.proxy "http://127.0.0.1:3128" && git config https.proxy "$HTTPS_PROXY"`,
 	} {
 		if !credentialArgument(line, nil) {
 			t.Errorf("does not catch a credential given as an argument: %s", line)
@@ -567,6 +578,12 @@ func TestTheCredentialMatcherCatchesEachSpellingAndPassesAnInputCurlReads(t *tes
 		`curl --socks5 "127.0.0.1:1080" "$url"`,
 		`git config http.proxy http://proxy.example:3128`,
 		`git config --global https.proxy "$HTTPS_PROXY_HOST"`,
+		// False catches prevented: a docker digest with @sha256 and an email with @ are not proxy credentials.
+		`curl -fsSL "$url" && docker pull "ghcr.io/acme/tool:${TAG}@sha256:${DIGEST}"`,
+		`curl -d "from=$NAME:$EMAIL@example.com" "$url"`,
+		// git config with no credential.
+		`git config --add http.proxy http://proxy.example:3128`,
+		`git -C "$repo" config http.proxy "$HTTPS_PROXY_HOST"`,
 	} {
 		if credentialArgument(line, nil) {
 			t.Errorf("catches a line that gives no credential as an argument: %s", line)
