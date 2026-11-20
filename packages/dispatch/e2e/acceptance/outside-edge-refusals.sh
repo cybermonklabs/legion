@@ -9,10 +9,13 @@
 # forwards.
 #
 # It is one file that sources nothing, and needs bash (3.2, as macOS ships it, or later), curl
-# 7.40 or later, mktemp, and sha256sum or shasum to hash each answer's body, all on a stock macOS
-# or Linux. No curl it runs reads the terminal (stdin is /dev/null), the device's curl
-# configuration (`-q` ignores ~/.curlrc, whose `header`, `proxy`, `resolve` or `connect-to` lines
-# could change a probe), a proxy (`--noproxy '*'`) or a pattern of several URLs in its URL (`-g`).
+# 8.4.0 or later (from October 2023), mktemp, and sha256sum or shasum to hash each answer's body.
+# bash, mktemp and a hasher are on a stock macOS or Linux; an older curl refuses the run by name,
+# since before 8.4.0 `--max-filesize` does not bound a body whose length the answer did not give
+# first, as curl's manual says. No curl it runs reads the terminal (stdin is /dev/null), the
+# device's curl configuration (`-q` ignores ~/.curlrc, whose `header`, `proxy`, `resolve` or
+# `connect-to` lines could change a probe), a proxy (`--noproxy '*'`) or a pattern of several URLs
+# in its URL (`-g`).
 #
 # Inputs, each refused by name when missing:
 #   OUTSIDE_EDGE_ADDRESS   the edge's IPv4 address, written as four numbers of 0 to 255 with no
@@ -51,7 +54,8 @@
 #     -D <headers> -o <body> -w '%{http_code}' --connect-timeout 3 --max-time 10 \
 #     --max-filesize 1048576 https://<sni><path>
 # with an empty body (`-d ''`) for POST, PUT and PATCH. The certificate is verified against the SNI.
-# A body past 1 MiB is not read (curl exit 63), so no answer fills the disk the run writes to.
+# curl stops reading a body at 1 MiB, with exit 63, whether or not the answer gave its length first
+# (curl 8.4.0 and later), so no answer fills the disk the run writes to.
 # curl's `-D` writes every header block of the answer, an informational 1xx before the final one,
 # and the status it prints is the final answer's. A marker is read from every block: an answer
 # names a backend when its final block carries a marker and every marker of every block is that
@@ -75,9 +79,19 @@
 #   FAIL     exit 1: a refusal line was REACHED, whatever else the run could not read: an answer
 #            is evidence, where a probe that came short only failed to look.
 #   UNKNOWN  exit 2: anything that proved nothing, which is never a pass: an input refused, a
-#            tool missing, an empty or unreadable list, a routed control whose marker was not
-#            visible, a refusal line whose answer could not be read, or a run that a HUP, INT or
-#            TERM stopped before its verdict.
+#            tool missing or too old, an empty or unreadable list, a routed control whose marker
+#            was not visible, a refusal line whose answer could not be read, or a run that a HUP,
+#            INT or TERM stopped before its verdict.
+#
+# A HUP, INT or TERM ends the run at its UNKNOWN verdict, never at bash's own exit with nothing
+# printed. While a list is read, it ends the run at once, sent to the script's own process alone
+# or to its whole process group: a job of its own reads each list, and the script waits for that
+# job in `wait`, which a trapped signal interrupts on every bash (bash holds a trap until a read
+# in the shell itself or in a command substitution ends, and bash 3.2 restarts an interrupted
+# open of a named pipe). While a probe runs, bash runs the trap once that probe's curl has
+# returned: a signal sent to the script's process alone ends the run within
+# OUTSIDE_EDGE_READ_SECONDS, and one sent to its process group, as a terminal's Ctrl-C is, ends
+# that curl too, and the run at once.
 #
 # Usage: OUTSIDE_EDGE_ADDRESS=192.0.2.10 OUTSIDE_EDGE_ROUTED=routed.txt \
 #          OUTSIDE_EDGE_REFUSALS=refusals.txt bash outside-edge-refusals.sh
@@ -98,8 +112,7 @@ unknown() {
   printf 'UNKNOWN: %s\n' "$1"
   exit 2
 }
-# Set before anything else can wait, the lists' reads included: a HUP, INT or TERM ends the run at
-# its UNKNOWN verdict, never at bash's own exit with nothing printed.
+# Set before anything else can wait: the header says when a HUP, INT or TERM ends the run.
 trap 'unknown "the run was stopped by a signal before its verdict"' HUP INT TERM
 
 is_count() { case $1 in '' | *[!0-9]*) return 1 ;; esac; }
@@ -181,33 +194,41 @@ byte_hex() {
 }
 
 # read_whole SETTING FILE: sets `text` to the whole of FILE, the list SETTING names, read once
-# before anything goes on the network. One `read -d ''` reads it all: it stops at a NUL byte and
-# succeeds only when it found one, fails with status 1 at the end of the list, and says so on
-# stderr only for a read error. Any other status is a read that stopped before the end, such as
-# a timeout. So `listed` holds the read's stderr, then an LF, the read's status, an LF and the
-# text: anything before that first LF is bash's own words, and refuses the run.
+# before anything goes on the network. A job of its own reads it, `reader`, and this shell waits
+# for that job in `wait`, which a trapped signal interrupts on every bash (the header says why);
+# the EXIT trap kills a job a signal left reading. One `read -d ''` reads the whole list: it stops
+# at a NUL byte and succeeds only when it found one, fails with status 1 at the end of the list,
+# and says so on stderr only for a read error. Any other status is a read that stopped before the
+# end, such as a timeout. The job writes the read's stderr, its status and the text to files of
+# `work`, and exits 0 only once all three are written. A job that wrote no status could not open
+# the file, and bash says why on stderr; words of bash's own on the read's stderr refuse the run.
 read_whole() {
-  local listed
-  listed=$({
-    text=''
-    IFS= read -r -d '' text 2>&1
-    printf '\n%s\n%s.' "$?" "$text"
-  } <"$2") || unknown "$1 names $2, which could not be read: could not open it"
-  listed=${listed%.}
-  case $listed in "$newline"*) ;; *)
-    unknown "$1 names $2, which could not be read whole: ${listed%%"$newline"*}"
-    ;;
-  esac
-  listed=${listed#"$newline"}
-  text=${listed#*"$newline"}
-  case ${listed%%"$newline"*} in
+  local base="$work/$1" status said=''
+  {
+    IFS= read -r -d '' text 2>"$base.said"
+    printf '%s' "$?" >"$base.status" && printf '%s' "$text" >"$base.text"
+  } <"$2" &
+  reader=$!
+  wait "$reader"
+  status=$?
+  reader=''
+  if [ "$status" -ne 0 ]; then
+    [ -f "$base.status" ] || unknown "$1 names $2, which could not be read: could not open it"
+    unknown "$1 names $2, which could not be read whole: what was read could not be written under $work"
+  fi
+  IFS= read -r said <"$base.said"
+  [ -z "$said" ] || unknown "$1 names $2, which could not be read whole: $said"
+  IFS= read -r status <"$base.status"
+  text=''
+  IFS= read -r -d '' text <"$base.text"
+  case $status in
     0)
       local lfs=${text//[!$newline]/}
       unknown "line $((${#lfs} + 1)) of $2 holds byte 0x00, which is not printable ASCII or a tab: write the list in ASCII, with LF or CRLF line endings"
       ;;
     1) ;;
     *)
-      unknown "$1 names $2, which could not be read whole: the read stopped with status ${listed%%"$newline"*} before its end"
+      unknown "$1 names $2, which could not be read whole: the read stopped with status $status before its end"
       ;;
   esac
 }
@@ -324,18 +345,7 @@ case $given in
     ;;
 esac
 
-# The probe table: the routed controls in rows 1 to `routed`, then the refusal lines to `total`.
-total=0
-taken=''
-read_list OUTSIDE_EDGE_ROUTED "$OUTSIDE_EDGE_ROUTED" routed
-routed=$total
-[ "$routed" -gt 0 ] ||
-  unknown "$OUTSIDE_EDGE_ROUTED lists no routed control: no marker can be seen, so no refusal can be read"
-read_list OUTSIDE_EDGE_REFUSALS "$OUTSIDE_EDGE_REFUSALS" refusals
-[ "$total" -gt "$routed" ] ||
-  unknown "$OUTSIDE_EDGE_REFUSALS lists no refusal line: nothing was tried, so nothing is proved"
-
-command -v curl >/dev/null 2>&1 || unknown "curl missing or too old: no curl on PATH; install curl 7.40 or later"
+command -v curl >/dev/null 2>&1 || unknown "curl missing or too old: no curl on PATH; install curl 8.4.0 or later"
 version=$(curl -q --version </dev/null 2>/dev/null)
 set -f
 # shellcheck disable=SC2086 # split on purpose: `curl <version> (<platform>) ...`
@@ -345,8 +355,8 @@ version=${2-}
 major=${version%%.*}
 minor=${version#*.}
 minor=${minor%%.*}
-if ! { is_count "$major" && is_count "$minor" && [ $((10#$major * 1000 + 10#$minor)) -ge 7040 ]; }; then
-  unknown "curl missing or too old: this curl is '${version}'; install curl 7.40 or later"
+if ! { is_count "$major" && is_count "$minor" && [ $((10#$major * 1000 + 10#$minor)) -ge 8004 ]; }; then
+  unknown "curl missing or too old: this curl is '${version}'; install curl 8.4.0 or later"
 fi
 command -v mktemp >/dev/null 2>&1 ||
   unknown "mktemp missing: no mktemp on PATH, which makes the directory the answers are written to"
@@ -358,11 +368,24 @@ else
   unknown "sha256sum and shasum missing: neither is on PATH, and one hashes each answer's body"
 fi
 
-# The directory each probe writes its headers, body and curl's stderr to, files of its own row,
-# removed when the run exits.
+# The directory each list's reader writes what it read to, and each probe its headers, body and
+# curl's stderr, files of its own row; removed when the run exits, after a reader a signal left
+# reading is killed.
 work=$(mktemp -d "${TMPDIR:-/tmp}/outside-edge-refusals.XXXXXX" 2>/dev/null) && [ -d "$work" ] ||
   unknown "mktemp could not make a directory under ${TMPDIR:-/tmp} for the answers"
-trap 'rm -rf "$work"' EXIT
+reader=''
+trap '[ -z "$reader" ] || { kill -KILL "$reader"; wait "$reader"; } 2>/dev/null; rm -rf "$work"' EXIT
+
+# The probe table: the routed controls in rows 1 to `routed`, then the refusal lines to `total`.
+total=0
+taken=''
+read_list OUTSIDE_EDGE_ROUTED "$OUTSIDE_EDGE_ROUTED" routed
+routed=$total
+[ "$routed" -gt 0 ] ||
+  unknown "$OUTSIDE_EDGE_ROUTED lists no routed control: no marker can be seen, so no refusal can be read"
+read_list OUTSIDE_EDGE_REFUSALS "$OUTSIDE_EDGE_REFUSALS" refusals
+[ "$total" -gt "$routed" ] ||
+  unknown "$OUTSIDE_EDGE_REFUSALS lists no refusal line: nothing was tried, so nothing is proved"
 
 now=''
 if command -v date >/dev/null 2>&1; then

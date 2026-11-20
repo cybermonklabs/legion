@@ -834,9 +834,10 @@ this: it measures TCP connects, and an address that answers on 443 forwards by p
 there. Every route of the edge sets the response header `X-Outside-Edge-Backend` to the backend it
 reached, so an answer without it came through none of them, and that marker is what the check
 reads. Like `outside-path-reach.sh` it is one file that sources nothing, and it needs bash (3.2,
-as macOS ships it, or later), curl 7.40 or later, `mktemp`, and `sha256sum` or `shasum` to hash
-each answer's body. Started by a shell that is not bash it prints `UNKNOWN: run this with bash`
-and stops. Its inputs:
+as macOS ships it, or later), curl 8.4.0 or later, `mktemp`, and `sha256sum` or `shasum` to hash
+each answer's body. An older curl reads `UNKNOWN: curl missing or too old`, since before 8.4.0
+curl's `--max-filesize` does not bound a body whose length the answer did not give first. Started
+by a shell that is not bash it prints `UNKNOWN: run this with bash` and stops. Its inputs:
 
 - `OUTSIDE_EDGE_ADDRESS`, the edge's IPv4 address, four numbers of 0 to 255 with no leading zero:
   every probe goes to it, wherever the names it sends resolve where it runs (`curl --resolve`);
@@ -871,8 +872,9 @@ OUTSIDE_EDGE_ADDRESS=192.0.2.10 OUTSIDE_EDGE_ROUTED=routed.txt \
 Each probe is one HTTP/1.1 request, which keeps the Host it sends literal: `curl --http1.1
 --resolve <sni>:443:<address> -H 'Host: <host>' -X <method> [-d ''] --max-filesize 1048576
 https://<sni><path>`, with an empty body for `POST`, `PUT` and `PATCH`, and the certificate
-verified against the SNI; a body past 1 MiB is not read. Its curls ignore `~/.curlrc` and any
-proxy, and read no URL as a pattern. curl writes every header block of an answer, an
+verified against the SNI; curl stops reading a body at 1 MiB, whether or not the answer gave its
+length first. Its curls ignore `~/.curlrc` and any proxy, and read no URL as a pattern. curl
+writes every header block of an answer, an
 informational `1xx` before the final one, and the status it prints is the final answer's; an
 answer names a backend when its final block carries a marker and every marker of every block is
 that backend. The routed controls go first: each must answer naming its backend, whatever its
@@ -892,11 +894,14 @@ line names
 the machine's host name, since the output goes to logs anyone may read. `PASS` (exit 0)
 needs every control's marker and every refusal line refused; `FAIL` (exit 1) names each line
 reached, whatever else the run could not read; every run that proved nothing is `UNKNOWN` (exit
-2): an input refused, a tool missing, an empty or unreadable list, a control's marker not seen, a
-line whose answer could not be read, or a run a signal stopped before its verdict. The script's own
-header has every rule.
+2): an input refused, a tool missing or too old, an empty or unreadable list, a control's marker
+not seen, a line whose answer could not be read, or a run a signal stopped before its verdict. A
+signal sent to the script's own process ends the run at once while it reads a list, and once the
+probe in flight returns while it probes; one sent to its process group ends it at once. The
+script's own header has every rule.
 `cd packages/dispatch && bun test e2e/__tests__/outside-edge-refusals.test.ts` drives it against a
-stand-in edge on the loopback (`outside-edge-refusals-edge.ts`, served from a process of its own),
+stand-in edge on the loopback (`outside-edge-refusals-edge.ts`, served for each row from a process
+of its own, so a row that passes its timeout takes down no other row's stand-in),
 which routes by Host, method and path from a table, marks each routed answer and answers 404 with
 no marker otherwise, and through a `curl` of the row's own for the HTTPS command line and the
 answers no stand-in gives. It holds the check's planted-route control: against a table of the

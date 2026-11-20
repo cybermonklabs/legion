@@ -4,7 +4,7 @@
  *  over HTTPS through a `curl` of the row's own first on PATH, which records the command line the
  *  script gives it and answers as an edge would.
  *
- *  The stand-in (`outside-edge-refusals-edge.ts`, served from a process beside this one by
+ *  The stand-in (`outside-edge-refusals-edge.ts`, served from a process of its own for each row by
  *  `fakeHost`) routes by Host, method and path from a table, sets `X-Outside-Edge-Backend` on the
  *  answers of a route that names a marker, and answers 404 with no marker otherwise, as the
  *  Gateway does. `production` below models the routes the edge serves; the refusal lines are the
@@ -46,9 +46,9 @@ const scratch = temporaryDirectory("outside-edge-refusals", {
   root: memoryRoot({ need: 6 * 2 ** 20 }),
 });
 
-const edgeHost = fakeHost(
+const edgeHost = fakeHost<Edge, Seen>(
   fileURLToPath(new URL("./outside-edge-refusals-edge.ts", import.meta.url)),
-  "the stand-in edge host"
+  "a stand-in edge host"
 );
 
 /** The body of the stand-in's 404 for a request no route takes. */
@@ -169,20 +169,11 @@ function sha(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-/** A stand-in edge that routes by `routes`, and its `http://127.0.0.1:<port>` address. */
+/** A stand-in edge that routes by `routes`, in a host of its own, and its
+ *  `http://127.0.0.1:<port>` address. */
 async function standIn(routes: Route[]) {
-  const edge: Edge = { routes, notFound };
-  const started = await edgeHost("/", { method: "POST", body: JSON.stringify(edge) });
-  const { port } = (await started.json()) as { port: number };
-  return {
-    address: `http://127.0.0.1:${port}`,
-    async seen(): Promise<Seen[]> {
-      return (await (await edgeHost(`/${port}/seen`)).json()) as Seen[];
-    },
-    async stop(): Promise<void> {
-      await edgeHost(`/${port}`, { method: "DELETE" });
-    },
-  };
+  const { port, seen, stop } = await edgeHost({ routes, notFound });
+  return { address: `http://127.0.0.1:${port}`, seen, stop };
 }
 
 /** A list file holding `lines`, each ended by `ending`, under the file's scratch directory. */
@@ -798,53 +789,73 @@ describe(scriptName, () => {
     rowLimit("short")
   );
 
-  // A signal can come while the script reads its lists, before any probe: here the refusal list is
-  // a named pipe that a bash wrapper holds open with nothing written, so the read waits. The
-  // wrapper's open of the pipe returns only once the script has opened it to read; a moment later
-  // it sends SIGTERM to the script's own bash, and then ends the list once the script has ended, or
-  // after 10 s. The run must end at its verdict line and exit 2, not at bash's own exit 143 with
-  // nothing printed. bash runs a trap when the read it waits in is interrupted, so the run ends
-  // while the list is held, unless the signal came in the moment between bash starting the read and
-  // waiting in it: then the trap runs once the read ends, here when the wrapper ends the list. The
-  // wrapper prints which it was.
-  test.skipIf(withoutTools)(
-    "reads UNKNOWN, never 143 with nothing printed, when a signal comes while it reads its lists",
-    async () => {
-      const fifo = join(scratch, `fifo-${randomUUID()}`);
-      const sleep = hostTool("sleep") ?? "sleep";
-      const wrapper = [
-        "shell=$1 script=$2 fifo=$3",
-        'mkfifo "$fifo" || exit 70',
-        '"$shell" "$script" &',
-        "pid=$!",
-        'exec 3>"$fifo"',
-        `${sleep} 0.2`,
-        'kill -TERM "$pid"',
-        "n=0",
-        `while kill -0 "$pid" 2>/dev/null && [ "$n" -lt 200 ]; do ${sleep} 0.05; n=$((n + 1)); done`,
-        'if kill -0 "$pid" 2>/dev/null; then held=no; else held=yes; fi',
-        "exec 3>&-",
-        'wait "$pid"',
-        'printf "exit %s, ended while the list was held: %s\\n" "$?" "$held" >&2',
-      ].join("\n");
-      const run = await check(
-        "signal while reading",
-        {
-          OUTSIDE_EDGE_ADDRESS: `http://127.0.0.1:${await closedPort()}`,
-          OUTSIDE_EDGE_ROUTED: listFile(routedTable),
-          OUTSIDE_EDGE_REFUSALS: fifo,
-        },
-        { argv: [bash, "-c", wrapper, "signal-while-reading", bash, script, fifo] }
-      );
-      expect(run.stdout, said(run)).toBe(
-        "UNKNOWN: the run was stopped by a signal before its verdict\n"
-      );
-      expect(run.stderr, said(run)).toMatch(/^exit 2, ended while the list was held: (yes|no)\n$/);
-      expect(run.code, said(run)).toBe(0);
-    },
-    // The wrapper, a bounded child under the short bound, which runs the script inside it.
-    rowLimit("short")
-  );
+  // A signal can come while the script reads its lists, before any probe, and a signal sent to the
+  // script's own bash alone must end the run at once. Here a bash wrapper sends SIGTERM to that
+  // bash alone while the refusal list, a named pipe, is read. In `held open`, the wrapper holds the
+  // pipe open with nothing written, and its open returns only once the script has opened the pipe
+  // to read, so the read waits. In `never opened`, the routed list is a pipe the wrapper writes the
+  // routed table to and closes, and nothing opens the refusal list's pipe to write, so the script's
+  // open of it waits. A moment later the wrapper sends the TERM, and waits up to 40 s for the
+  // script to end, the list still held; then it lets the read end. The run must end while the list
+  // is held, at its verdict line and exit 2, never at bash's own exit 143 with nothing printed: the
+  // script reads each list in a job of its own and waits for it in `wait`, which the signal
+  // interrupts. A script that read the list in a command substitution ended only once the read
+  // did, after the wrapper let it end, and the wrapper then prints `held: no`.
+  for (const mode of ["held open", "never opened"]) {
+    test.skipIf(withoutTools)(
+      `reads UNKNOWN at once, never 143 with nothing printed, when a signal to its own process comes while it reads a list ${mode}`,
+      async () => {
+        const fifo = join(scratch, `fifo-${randomUUID()}`);
+        const routedPipe = join(scratch, `fifo-${randomUUID()}`);
+        const sleep = hostTool("sleep") ?? "sleep";
+        const wrapper = [
+          "shell=$1 script=$2 mode=$3 fifo=$4 routed=$5 table=$6",
+          'mkfifo "$fifo" || exit 70',
+          '[ "$mode" = "held open" ] || mkfifo "$routed" || exit 70',
+          '"$shell" "$script" &',
+          "pid=$!",
+          'if [ "$mode" = "held open" ]; then exec 3>"$fifo"; else printf "%s\\n" "$table" >"$routed"; fi',
+          `${sleep} 0.2`,
+          'kill -TERM "$pid"',
+          "end=$((SECONDS + 40))",
+          `while kill -0 "$pid" 2>/dev/null && [ "$SECONDS" -lt "$end" ]; do ${sleep} 0.05; done`,
+          'if kill -0 "$pid" 2>/dev/null; then held=no; else held=yes; fi',
+          'if [ "$mode" = "held open" ]; then exec 3>&-; elif [ "$held" = no ]; then exec 3<>"$fifo"; exec 3>&-; fi',
+          'wait "$pid"',
+          'printf "exit %s, ended while the list was held: %s\\n" "$?" "$held" >&2',
+        ].join("\n");
+        const run = await check(
+          `signal while reading, ${mode}`,
+          {
+            OUTSIDE_EDGE_ADDRESS: `http://127.0.0.1:${await closedPort()}`,
+            OUTSIDE_EDGE_ROUTED: mode === "held open" ? listFile(routedTable) : routedPipe,
+            OUTSIDE_EDGE_REFUSALS: fifo,
+          },
+          {
+            argv: [
+              bash,
+              "-c",
+              wrapper,
+              "signal-while-reading",
+              bash,
+              script,
+              mode,
+              fifo,
+              routedPipe,
+              routedTable.join("\n"),
+            ],
+          }
+        );
+        expect(run.stdout, said(run)).toBe(
+          "UNKNOWN: the run was stopped by a signal before its verdict\n"
+        );
+        expect(run.stderr, said(run)).toBe("exit 2, ended while the list was held: yes\n");
+        expect(run.code, said(run)).toBe(0);
+      },
+      // The wrapper, a bounded child under the short bound, which runs the script inside it.
+      rowLimit("short")
+    );
+  }
 
   for (const control of routed) {
     test.skipIf(withoutTools)(
@@ -1441,6 +1452,62 @@ describe(scriptName, () => {
     // The script, a bounded child under the short bound.
     rowLimit("short")
   );
+
+  // curl 8.4.0 is the oldest the script takes: before it, `--max-filesize` does not bound a body
+  // whose length the answer did not give first, so such a body past 1 MiB would be read whole. The
+  // row's `curl` answers `--version` as the version it names and hands every other call to the
+  // host's curl. 8.10.1 is taken, so the version is compared as numbers, not as text.
+  for (const { version, taken } of [
+    { version: "7.88.1", taken: false },
+    { version: "8.3.0", taken: false },
+    { version: "8.4.0", taken: true },
+    { version: "8.10.1", taken: true },
+  ]) {
+    test.skipIf(withoutTools)(
+      taken
+        ? `takes curl ${version}`
+        : `reads UNKNOWN for curl ${version}, older than 8.4.0, before it probes anything`,
+      async () => {
+        const directory = join(scratch, `path-${randomUUID()}`);
+        mkdirSync(directory);
+        writeFileSync(
+          join(directory, "curl"),
+          [
+            `#!${bash}`,
+            `case " $* " in *" --version "*) echo 'curl ${version} (x86_64-pc-linux-gnu) libcurl/${version}'; exit 0 ;; esac`,
+            `exec ${curl} "$@"`,
+            "",
+          ].join("\n"),
+          { mode: 0o755 }
+        );
+        const edge = await standIn(production);
+        try {
+          const run = await check(
+            `curl ${version}`,
+            { OUTSIDE_EDGE_ADDRESS: edge.address, ...planLists() },
+            { path: `${directory}:${process.env.PATH ?? ""}` }
+          );
+          if (taken) {
+            expect(run.stdout.split("\n"), said(run)).toContain(
+              `outside-edge-refusals: curl ${version}`
+            );
+            expect(verdict(run), said(run)).toBe(passVerdict);
+            expect(run.code, said(run)).toBe(0);
+          } else {
+            expect(run.stdout, said(run)).toBe(
+              `UNKNOWN: curl missing or too old: this curl is '${version}'; install curl 8.4.0 or later\n`
+            );
+            expect(run.code, said(run)).toBe(2);
+            expect(await edge.seen()).toEqual([]);
+          }
+        } finally {
+          await edge.stop();
+        }
+      },
+      // The script, a bounded child under the short bound.
+      rowLimit("short")
+    );
+  }
 
   for (const shell of ["dash", "zsh"]) {
     test.skipIf(withoutTools || hostTool(shell) === null)(
