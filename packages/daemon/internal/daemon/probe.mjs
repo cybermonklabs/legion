@@ -1,7 +1,7 @@
 export default async function probeLegionPluginLoaded(pi) {
   // The three symbols are the wire between the plugins and this probe, read by their exact
-  // `Symbol.for` strings (packages/pi-shared/src/interface.ts; the table in
-  // packages/pi-shared/AGENTS.md): this probe imports nothing of pi-shared, since it must answer
+  // `Symbol.for` strings (packages/pi-shared/src/interface.ts; "The interface (`src/interface.ts`)"
+  // in packages/pi-shared/AGENTS.md): this probe imports nothing of pi-shared, since it must answer
   // about whatever build is installed. The Legion entry's factory sets its marker, an object naming
   // where it loaded from and the Envoy interface version it speaks; the Envoy entry publishes into
   // the interface object, created by whoever touches it first, so an object with no publisher is no

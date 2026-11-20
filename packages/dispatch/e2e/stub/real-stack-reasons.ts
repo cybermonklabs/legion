@@ -208,6 +208,8 @@ export const realStackReasons: Record<string, string> = {
   "live-socket.e2e.ts": "the `/ws/live` socket's own behaviour",
   "live.e2e.ts": "live delivery of writes made after the page loaded",
   "machine-login.e2e.ts": "device grants decided on the real broker",
+  "machine-logins-person-pod.e2e.ts":
+    "the machine logins it reads are written into the fake broker and the page is asserted against what the server relays back",
   "machines.e2e.ts":
     "the draw and drawing-age rows read the wall clock against last_seen, which a recording freezes",
   "margin-composer-hold.e2e.ts": "live document margin with sends out and server refusals",

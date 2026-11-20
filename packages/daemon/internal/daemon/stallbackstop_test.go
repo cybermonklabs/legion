@@ -74,15 +74,15 @@ func newBackstopRig(t *testing.T) *backstopRig {
 	rig.s = &supervision{
 		cfg: cfg, log: quietLogger(), supervisor: sup, plan: plan{clock: stillClock{}},
 		refreshGate: supervise.NewRefreshGate(0),
-		enqueue: func(_ context.Context, issue string, payloads ...record.OutboxPayload) error {
+		enqueue: func(_ context.Context, issue string, payloads ...record.OutboxPayload) (bool, error) {
 			rig.mu.Lock()
 			defer rig.mu.Unlock()
 			rig.attempts++
 			if rig.refuse != nil {
-				return rig.refuse
+				return false, rig.refuse
 			}
 			rig.rows[issue] = append(rig.rows[issue], payloads...)
-			return nil
+			return true, nil
 		},
 	}
 	// The machines tell supervision what each stall backstop ended, as the daemon's own boot
@@ -514,7 +514,7 @@ func TestTheStallBackstopKeepsTheNewerNoticeOwedWhileTheSweepRetriedTheOlder(t *
 				notices []record.Notice
 			)
 			s := &supervision{log: quietLogger(), plan: plan{clock: stillClock{}}}
-			s.enqueue = func(_ context.Context, _ string, payloads ...record.OutboxPayload) error {
+			s.enqueue = func(_ context.Context, _ string, payloads ...record.OutboxPayload) (bool, error) {
 				mu.Lock()
 				refusing, inside := refused, during
 				during = nil
@@ -527,12 +527,12 @@ func TestTheStallBackstopKeepsTheNewerNoticeOwedWhileTheSweepRetriedTheOlder(t *
 				}
 				mu.Unlock()
 				if !refusing {
-					return nil
+					return true, nil
 				}
 				if inside != nil {
 					inside()
 				}
-				return errors.New("the store is down")
+				return false, errors.New("the store is down")
 			}
 			s.oweStallNotice(c, older)
 			if tc.newerOwed == "during" {

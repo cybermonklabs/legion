@@ -180,7 +180,7 @@ test("a history that cannot be read says so, and lists nothing", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "Could not load what happened to this priority."
   );
-  expect(screen.queryAllByRole("listitem")).toEqual([]);
+  expect(screen.queryAllByRole("listitem").length).toBe(0);
 });
 
 test("the other three states each say in one line why nothing of that kind is there", async () => {
@@ -194,8 +194,8 @@ test("the other three states each say in one line why nothing of that kind is th
   ]) {
     await userEvent.selectOptions(state, option as string);
     expect(screen.getByText(line as string)).toBeDefined();
-    expect(screen.queryAllByRole("listitem")).toEqual([]);
-    expect(screen.queryAllByRole("link")).toEqual([]);
+    expect(screen.queryAllByRole("listitem").length).toBe(0);
+    expect(screen.queryAllByRole("link").length).toBe(0);
   }
   expect(history).toHaveBeenCalledTimes(1);
 });

@@ -180,7 +180,7 @@ func (a *Admission) adoptQueuedRoots(ctx context.Context, tx pgx.Tx, respectHold
 		var queued []record.Issue
 		var unread []string
 		for _, issue := range issues {
-			if issue.Project != a.project || !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Status != "todo" || issue.Parent == nil {
+			if !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Status != "todo" || issue.Parent == nil {
 				continue
 			}
 			queued = append(queued, issue)
