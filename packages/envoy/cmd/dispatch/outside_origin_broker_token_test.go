@@ -12,8 +12,10 @@ import (
 // Dispatch answers at beside brokerOrigin, its canonical one.
 const outsideBrokerOrigin = "https://outside.example"
 
-// outsideAgentToken is the broker token an agent on a machine outside presents: its Dispatch URL
-// is the outside origin, so it signs each proof for that origin.
+// outsideAgentToken is the broker token an agent whose Dispatch URL is the outside origin
+// presents, so it signs each proof for that origin. The fixture is a service's token: the origin a
+// proof is checked against is chosen for every live token before the caller's kind is read, so the
+// token's kind does not matter to these tests.
 const outsideAgentToken = "token-of-an-agent-outside"
 
 // presentedAt answers GET /api/v1/whoami from handler sent to origin, carrying signed's

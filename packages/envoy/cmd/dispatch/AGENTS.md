@@ -565,8 +565,9 @@ write identity errors with `identity.WriteError`.
   and `DISPATCH_SERVER_URL` and `DISPATCH_OUTSIDE_ORIGIN` (the origins a
   proof's `htu` is checked against: the outside origin for a request whose
   `Host` is its host, `DISPATCH_SERVER_URL` for every other, never a forwarded
-  header; `brokertoken.Options.Origins`). Spent proofs go in Dispatch's own `dpop_proofs`
-  (migration `0150`), swept beside the idempotency keys. A verified caller is
+  header; `brokertoken.Options.Origins`). Spent proofs go in Dispatch's own
+  `dpop_proofs` (migration `0150`), swept beside the idempotency keys. A
+  verified caller is
   `{kind: "session", id: <the token's session>}` carrying either `owner`, the
   person it acts for, or `service`, the fleet of a machine nobody has signed
   in on or the service a read entry names — never both and never neither —
