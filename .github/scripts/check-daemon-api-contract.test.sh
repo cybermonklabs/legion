@@ -571,4 +571,21 @@ check "says it declares none of its own" \
 check "takes no number for prose under a history entry" "$(is "$(contains "$out" 'Take ')" false)"
 check "reads no open pull request" "$(is "$queries" 0)"
 
+echo "case: a declaration bump with no history header"
+root=$(fixture const-without-history)
+built_on "$root" 7 > /dev/null
+declaration 7 > "$root/stub/refs/main"
+declaration 7 > "$root/packages/daemon/internal/api/version.go"
+sed -i 's/^const DaemonAPIVersion = 7$/const DaemonAPIVersion = 8/' \
+  "$root/packages/daemon/internal/api/version.go"
+sites "$root" 8
+no_open_pull_requests "$root"
+pull_request_event "$root" main
+run_check "$root" pull_request
+check "exits 1" "$(is "$status" 1)"
+check "names the missing history header" \
+  "$(contains "$out" 'declares daemon API contract 8, but its history has no `// 8:` entry')"
+check "names the free number" "$(contains "$out" 'Take 8, the lowest number above')"
+check "reads the open pull requests once" "$(is "$queries" 1)"
+
 summary "check-daemon-api-contract.sh"
