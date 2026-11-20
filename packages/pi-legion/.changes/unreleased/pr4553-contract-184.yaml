@@ -2,3 +2,6 @@ kind: Changed
 body: |-
   Declares daemon API contract 184, which adds the capability row `repository-cache-room` with the
   source `caches` to the state `read_state` and `read_record` read.
+time: 2026-11-20T10:48:15Z
+custom:
+    Issue: pr4553

@@ -2,3 +2,6 @@ kind: Added
 body: |-
   A capability row's `source` may be `caches` (daemon API contract 184): what the repository caches'
   last health reads said of their room, on the new deployment row `repository-cache-room`.
+time: 2026-11-20T10:48:15Z
+custom:
+    Issue: pr4553

@@ -17,3 +17,6 @@ body: |-
   role environment's pairs (`GIT_CONFIG_COUNT` 9), the worker image's `/etc/gitconfig`, the shared
   clone's own configuration and `-c` on the feed's fetch and the cache's git, whose repack keeps its
   own.
+time: 2026-11-20T10:48:15Z
+custom:
+    Issue: pr4553
