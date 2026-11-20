@@ -8,6 +8,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	k8stesting "k8s.io/client-go/testing"
 
@@ -237,23 +238,26 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 		}
 	}
 	// takeDowns are the two acts that take a kept pod down and leave the issue in the workflow: the
-	// update round's ReplacePod, and the release.
+	// update round's ReplacePod, and the release. later names the annotation that each patch after
+	// the suspension writes: the release records, once it has deleted the Secrets, that it deleted
+	// them (secretsReleasedAnnotation).
 	takeDowns := []struct {
-		name string
-		act  func(*testing.T, *rig, runtime.Locator)
+		name  string
+		act   func(*testing.T, *rig, runtime.Locator)
+		later []string
 	}{
 		{"ReplacePod", func(t *testing.T, g *rig, loc runtime.Locator) {
 			t.Helper()
 			if err := g.r.ReplacePod(g.ctx, runtime.Known{Claim: workerToken, Locator: &loc}, stillDue); err != nil {
 				t.Fatalf("ReplacePod: %v", err)
 			}
-		}},
+		}, nil},
 		{"ReleaseIssue", func(t *testing.T, g *rig, _ runtime.Locator) {
 			t.Helper()
 			if err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized); err != nil {
 				t.Fatalf("ReleaseIssue: %v", err)
 			}
-		}},
+		}, []string{secretsReleasedAnnotation}},
 	}
 	// ended is an init container that ended with code and reason after restarts restarts.
 	ended := func(container string, restarts, code int32, reason string) corev1.ContainerStatus {
@@ -293,6 +297,10 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 		{"workspace-init ended 1", initContainer, status(corev1.PodPending, fetched, initFailed)},
 		{"workspace-fetch failed with 1 past its restart grace", fetchContainer,
 			status(corev1.PodPending, restarting(fetchContainer, fetchRestartGrace+1, 1))},
+		// The kubelet's end of a container it lost is exit 137 with the reason ContainerStatusUnknown,
+		// which keeps the volume (TestAKeptVolumeOutlivesAnInitContainerTheKubeletLost). The rule
+		// reads the reason, so an exit 137 with the reason Error resets the volume.
+		{"workspace-init ended 137 with the reason Error", initContainer, status(corev1.PodPending, fetched, ended(initContainer, 0, 137, "Error"))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			log := &logBuffer{}
@@ -317,9 +325,15 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 			fail(t, g, status(corev1.PodPending, fetched, initFailed))
 			g.clearActions()
 			down.act(t, g, old)
-			if bodies := patches(g); len(bodies) != 1 || !isMergePatch(bodies[0]) || !modePatched(t, bodies[0], modeSuspended) ||
+			bodies := patches(g)
+			if len(bodies) != 1+len(down.later) || !isMergePatch(bodies[0]) || !modePatched(t, bodies[0], modeSuspended) ||
 				!strings.Contains(bodies[0], volumeResetAnnotation) {
-				t.Fatalf("%s patched the Sandbox with %q, want one merge patch that suspends it and marks it", down.name, bodies)
+				t.Fatalf("%s patched the Sandbox with %q, want one merge patch that suspends it and marks it, then one patch for each of %v", down.name, bodies, down.later)
+			}
+			for i, annotation := range down.later {
+				if body := bodies[1+i]; !isMergePatch(body) || !strings.Contains(body, annotation) || strings.Contains(body, volumeResetAnnotation) || strings.Contains(body, "operatingMode") {
+					t.Fatalf("%s's patch %d after the suspension is %q, want a merge patch of %s alone", down.name, 1+i, body, annotation)
+				}
 			}
 			want := initContainer + " exited 1 in pod " + old.Sandbox.PodUID
 			if value, _ := mark(g); value != want {
@@ -329,6 +343,66 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 			reset(t, g, log, next(t, g), before, old.Sandbox.PodUID, initContainer)
 		})
 	}
+
+	// A launch that resets the kept volume of a Sandbox already Suspended has no suspension patch
+	// to carry the mark. So it writes the mark in a patch of its own before it waits the pod out
+	// and deletes the Sandbox. The second rig runs no controller, so the failed pod never goes and
+	// the launch stops in its wait, before its delete. The mark is then on the Sandbox, and the next
+	// launch, which reads no pod, resets the volume on it.
+	t.Run("workspace-init ended 1 under a Sandbox already Suspended, and the launch stopped before its delete", func(t *testing.T) {
+		first, old, _ := launched(t, kept, &logBuffer{})
+		fail(t, first, status(corev1.PodPending, fetched, initFailed))
+		object, err := first.dyn.Tracker().Get(sandboxGVR, testNamespace, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The second rig's API stamps uids from its own count, so the copies carry a uid of their
+		// own, which no Sandbox that rig creates holds.
+		suspended := object.(*unstructured.Unstructured).DeepCopy()
+		suspended.SetResourceVersion("")
+		suspended.SetUID("uid-sandbox-suspended")
+		if err := unstructured.SetNestedField(suspended.Object, modeSuspended, "spec", "operatingMode"); err != nil {
+			t.Fatal(err)
+		}
+		pod := first.pod(name).DeepCopy()
+		pod.ResourceVersion = ""
+		pod.OwnerReferences[0].UID = suspended.GetUID()
+		first.stop()
+		g := newRig(t, []k8sruntime.Object{suspended, pod}, withoutController(), withOptions(kept))
+		before := g.sandbox(name)
+		g.eventually("the pod store to hold the failed pod", func() bool { return g.r.storedPod(name) != nil })
+		spec := workerSpec(t)
+		spec.Generation = 2
+		if _, err := g.r.Spawn(g.ctx, spec); err == nil || !strings.Contains(err.Error(), "wait out its previous pod") {
+			t.Fatalf("the launch = %v, want it to fail waiting out the failed pod", err)
+		}
+		if made := sandboxRemakes(g, name); len(made) > 0 {
+			t.Fatalf("the launch that stopped in its wait wrote %v of the Sandbox, want no delete yet", made)
+		}
+		bodies := patches(g)
+		want := initContainer + " exited 1 in pod " + old.Sandbox.PodUID
+		if len(bodies) != 1 || !isMergePatch(bodies[0]) || !strings.Contains(bodies[0], volumeResetAnnotation) || strings.Contains(bodies[0], "operatingMode") {
+			t.Fatalf("the launch patched the Sandbox with %q, want one merge patch of the reset mark alone", bodies)
+		}
+		if value, _ := mark(g); value != want {
+			t.Fatalf("the launch left the mark %q on the Sandbox, want %q", value, want)
+		}
+		if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
+			t.Fatal(err)
+		}
+		g.eventually("the pod store to lose the failed pod", func() bool { return g.r.storedPod(name) == nil })
+		g.clearActions()
+		spec.Generation = 3
+		// The rig runs no controller, so this launch fails after its reset, in a wait for an
+		// object that the controller makes. Its writes are what this case reads.
+		_, _ = g.r.Spawn(g.ctx, spec)
+		if made := sandboxRemakes(g, name); !slices.Equal(made, []string{"delete", "create"}) {
+			t.Fatalf("the next launch wrote %v of the Sandbox, want the reset's delete and create", made)
+		}
+		if s := g.sandbox(name); s == nil || s.UID == before.UID {
+			t.Fatalf("after the next launch the issue's Sandbox is %+v, want one with a new uid in place of %s", s, before.UID)
+		}
+	})
 
 	t.Run("workspace-init ended 2", func(t *testing.T) {
 		log := &logBuffer{}

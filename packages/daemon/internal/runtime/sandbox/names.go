@@ -364,9 +364,21 @@ const (
 // the init container that failed on the volume for a cause local to it (localInitFailure), its exit
 // code and the uid of its pod (volumeFault). ReplacePod and the release write it in the patch that
 // suspends the Sandbox, when the pod they take down shows such a failure, because the issue's next
-// launch then reads no pod. That launch resets the volume on the mark (volumeReset): it deletes the
-// Sandbox, with the claim it owns, and creates a new one, which carries no mark.
+// launch then reads no pod. A launch that resets the volume for the pod's fault writes it before
+// its delete too, because a launch can stop before that delete: in the patch that suspends a
+// Running Sandbox (suspendRecordingEnd), and in a patch of its own for a Sandbox already Suspended
+// (relaunch). The next launch resets the volume on the mark (volumeReset): it deletes the Sandbox,
+// with the claim it owns, and creates a new one, which carries no mark.
 const volumeResetAnnotation = "legion.dev/volume-reset"
+
+// secretsReleasedAnnotation is the release's record on the Sandbox of an issue's kept volume that
+// it deleted the Secrets the Sandbox owns: the provisioning Secret and the six role Secrets
+// (deleteIssueSecrets). Its value is the Sandbox's uid. The release writes it once every delete
+// has succeeded, so it is never on a Sandbox that still owns one of them. A launch that keeps the
+// Sandbox removes it before it writes the first Secret (relaunch, annotate). A Sandbox
+// that a launch creates carries none. IssueSandbox reads it: a Suspended kept Sandbox that carries
+// it holds nothing that a release can take.
+const secretsReleasedAnnotation = "legion.dev/secrets-released"
 
 // issueVolume is the name a pod's disk is mounted under, an issue's and the controller's alike,
 // and the name of the one volume claim template that the controller's Sandbox owns. The Sandbox of

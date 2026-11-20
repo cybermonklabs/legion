@@ -38,8 +38,11 @@ func (r *Runtime) SuspendIssue(ctx context.Context, issue, tree string, authoriz
 // the claim of its volume, for the issue's next pod, which mounts that claim (issuePod.disk). The
 // seven Secrets the Sandbox owns are deleted: the provisioning Secret and the six role Secrets,
 // each of which holds a token that no pod reads any more. The next launch writes each of them
-// again before its pod starts (provision, writeLauncherSecrets). Every other Sandbox holds nothing
-// the next pod can use, and is deleted as SuspendIssue deletes it.
+// again before its pod starts (provision, writeLauncherSecrets). Once every delete has succeeded,
+// the release records on the Sandbox that it deleted them (secretsReleasedAnnotation), in a patch
+// of its own. A release that stops before that patch leaves no record, and the next release
+// deletes the Secrets again, each one already gone counted as deleted, and then records it. Every
+// other Sandbox holds nothing the next pod can use, and is deleted as SuspendIssue deletes it.
 //
 // The pod may show that an init container failed on the kept volume for a cause local to it
 // (volumeFault, localInitFailure). The release then writes the reset mark (volumeResetAnnotation)
@@ -59,7 +62,8 @@ func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authoriz
 // write is setMode's JSON patch, which endIssuePod sends only when the Sandbox it read is not
 // Suspended yet. A release whose pod failed on the kept volume (volumeFault) sends one merge patch
 // of the mode and the reset mark in its place (suspendAnnotating), also for a Sandbox already
-// Suspended.
+// Suspended. A release that keeps the Sandbox sends one merge patch more once it has deleted the
+// Secrets, which records that delete (annotate, secretsReleasedAnnotation) and changes no mode.
 func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error), keep bool) error {
 	act := "suspend"
 	if keep {
@@ -114,6 +118,12 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 	if keep && ownsKeptVolume(s) {
 		if err := r.deleteIssueSecrets(ctx, name); err != nil {
 			return fmt.Errorf("%s issue %s: %w", act, issue, err)
+		}
+		// The record goes on only after every delete has succeeded, so it is never on a Sandbox
+		// that still owns a Secret (secretsReleasedAnnotation).
+		uid := string(s.UID)
+		if _, err := r.annotate(ctx, s, map[string]*string{secretsReleasedAnnotation: &uid}); err != nil {
+			return fmt.Errorf("%s issue %s: record that its Secrets are deleted: %w", act, issue, err)
 		}
 		r.log.Info("sandbox runtime: released the issue's pod and kept its Sandbox, which owns the issue's kept volume, Suspended; deleted the Secrets that the next launch writes again",
 			"issue", issue, "sandbox", name, "uid", s.UID, "claim", issueClaimName(name))

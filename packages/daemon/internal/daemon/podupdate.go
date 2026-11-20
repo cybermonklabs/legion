@@ -269,12 +269,13 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		// The pod went without the round: it was replaced where it stood for a failure of its
 		// own — a terminal pod, a failed init container, a superseded disk, a lost launcher
 		// binding — while a worker still had work to push. Its work stays only where the issue's
-		// Sandbox still holds the kept volume that it held when the round opened
-		// (podWentWithoutItsRound, roundKeptVolume). An ephemeral disk went with the pod. A reset
-		// of a kept volume or a change of the disk's shape made a new Sandbox, which holds a new,
-		// empty volume. The claims record the pod that replaced the round's pod, which is the
-		// evidence. A round that lost nothing — every member of it pushed its work before the pod
-		// went — is written on no issue, and ends below.
+		// Sandbox still holds the kept volume that it held when the round opened, and the issue's
+		// next launch keeps that volume (podWentWithoutItsRound, roundKeptVolume). An ephemeral
+		// disk went with the pod. A reset of a kept volume or a change of the disk's shape made a
+		// new Sandbox, which holds a new, empty volume, or makes one at the next launch. The claims
+		// record the pod that replaced the round's pod, which is the evidence. A round that lost
+		// nothing — every member of it pushed its work before the pod went — is written on no
+		// issue, and ends below.
 		//
 		// What was lost is counted here exactly as the message counts it (lostClaims), so the
 		// message is written when, and only when, there is a role to name. Counted as the claims
@@ -1177,13 +1178,14 @@ func (s *supervision) tellPodlessRound(ctx context.Context, issue string, group 
 // podWentWithoutItsRound is the round's pod gone before the round could finish: the message the
 // issue's spec requires is written on the issue, naming what was lost, and the round ends.
 // Nothing here can bring the work back, so the message is the whole of it. The work stays only
-// where the issue's Sandbox still holds the kept volume that it held when the round opened
-// (roundKeptVolume, which compares when the Sandbox was made with when the round opened). The
-// issue's next pod mounts that volume, so the message says where the work is. An ephemeral disk
-// went with the pod, and the work on it with it. A reset of a kept volume or a change of the
-// disk's shape made a new Sandbox, which holds a new, empty volume, so the work is lost there
-// too. On another project's issue, the pod of the operator's spawn of it, no message is written
-// (writeOnIssue), and the daemon's log lines are the whole of it.
+// where the issue's Sandbox still holds the kept volume that it held when the round opened, and the
+// issue's next launch keeps that volume (roundKeptVolume). The issue's next pod mounts that volume,
+// so the message says where the work is. An ephemeral disk went with the pod, and the work on it
+// with it. A reset of a kept volume or a change of the disk's shape made a new Sandbox, which holds
+// a new, empty volume, so the work is lost there too. So is a Sandbox that carries the reset mark,
+// or whose disk shape is not the one the configuration now renders: the next launch deletes it,
+// with its volume. On another project's issue, the pod of the operator's spawn of it, no message is
+// written (writeOnIssue), and the daemon's log lines are the whole of it.
 //
 // Three readings say the pod went. The claims recording a pod other than the round's own is one
 // (reconcileIssuePodUpdate), which calls this with the claims it decided from; the runtime
@@ -1222,10 +1224,12 @@ func (s *supervision) podWentWithoutItsRound(ctx context.Context, issue string, 
 	s.endPodUpdates(group, round)
 }
 
-// roundKeptVolume is whether the pod of the round that went had a kept volume that is still there,
-// as the runtime answers it (runtime.IssueVolumeReader) for the time the round opened: a Sandbox
-// made after that time holds a new volume, which holds nothing of the round's pod. Where no claim
-// records when the round opened, or the runtime keeps no volume, the answer is false.
+// roundKeptVolume is whether the pod of the round that went had a kept volume that is still there
+// and that the issue's next launch keeps, as the runtime answers it (runtime.IssueVolumeReader) for
+// the time the round opened: a Sandbox made after that time holds a new volume, which holds nothing
+// of the round's pod, and the next launch deletes a Sandbox that carries the reset mark or has
+// another disk shape. Where no claim records when the round opened, or the runtime keeps no volume,
+// the answer is false.
 func (s *supervision) roundKeptVolume(issue string, group []supervise.Claim, round string) bool {
 	volumes, ok := s.runtime.(runtime.IssueVolumeReader)
 	if !ok {

@@ -162,9 +162,18 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // the claim, before it provisions. It does so where the stored pod shows that an init container
 // failed on the volume for a cause local to it (localInitFailure). It does so too where the Sandbox
 // carries the reset mark (volumeResetAnnotation), which ReplacePod or the release wrote when they
-// took such a pod down. A fault on a kept volume stays there for each later pod of the issue, and
-// only a new volume cures it. Such a pod is not live, so the launch replaces it in any case. The
-// Sandbox that the reset creates carries no mark (createSandbox).
+// took such a pod down. A launch that resets the volume for the pod's fault writes the mark too,
+// before it deletes the Sandbox: in the patch that suspends a Running Sandbox
+// (suspendRecordingEnd), and in a patch of its own for a Sandbox already Suspended (annotate). So
+// a launch that stops before its delete leaves the reset to the next launch. A fault on a kept
+// volume stays there for each later pod of the issue, and only a new volume cures it. Such a pod is
+// not live, so the launch replaces it in any case. The Sandbox that the reset creates carries no
+// mark (createSandbox).
+//
+// A Sandbox that a release kept carries the release's record that it deleted the Secrets of the
+// Sandbox (secretsReleasedAnnotation). A launch that keeps such a Sandbox removes that record
+// before it writes the first Secret (provision), so the record is never on a Sandbox that owns a
+// Secret. A Sandbox that a replacement creates carries no record.
 func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	ctx = launching(ctx)
 	l, err := r.prepare(spec)
@@ -280,6 +289,16 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			if err := r.suspendRecordingEnd(bounded, s, pod); err != nil {
 				return fail("suspend its sandbox", err)
 			}
+		default:
+			// A Sandbox already Suspended takes no suspension patch that could carry the reset
+			// mark, so a launch that resets its kept volume for the pod's fault writes the mark in
+			// a patch of its own, before it waits the pod out and deletes the Sandbox. A launch
+			// that stops before that delete thus leaves the reset to the next launch.
+			if fault := volumeFault(s, pod); fault != "" && s.Annotations[volumeResetAnnotation] == "" {
+				if s, err = r.annotate(bounded, s, map[string]*string{volumeResetAnnotation: &fault}); err != nil {
+					return fail("mark its kept volume for the reset", err)
+				}
+			}
 		}
 		old, err := r.awaitPodGone(bounded, s)
 		if err != nil {
@@ -288,6 +307,11 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		if replacement != "" {
 			if s, err = r.replaceSupersededSandbox(bounded, l, s, replacement); err != nil {
 				return fail("replace its sandbox ("+string(replacement)+")", err)
+			}
+		}
+		if s.Annotations[secretsReleasedAnnotation] != "" {
+			if s, err = r.annotate(bounded, s, map[string]*string{secretsReleasedAnnotation: nil}); err != nil {
+				return fail("remove the release's record that its secrets are deleted", err)
 			}
 		}
 		if err := l.kind.provision(bounded, r, &l, s); err != nil {
@@ -429,7 +453,8 @@ func boundRanOut(parent, bounded context.Context, bound time.Duration, err error
 // (launchBound) must never be shorter than a legitimate try. Per try (relaunchPodCalls):
 // ensureSandbox's Get, its Create or relabel patch and that relabel's store read, and for a Sandbox
 // being deleted the wait's last Get, past its deadline, and the Get and Create after it (6); the
-// suspension patch (1); awaitPodGone's confirming Get, which may begin just before its deadline
+// suspension patch, or for a Sandbox already Suspended the patch of the reset mark, which a try
+// sends in its place (1); awaitPodGone's confirming Get, which may begin just before its deadline
 // (1); provision's token mint and its Secret upsert's Get, Delete and Create (4), and its
 // repository cache's ensure (cacheEnsureCalls); the Running patch (1); the stop of an earlier
 // generation (1); the address record patch (1); the Start frame (1) — 16, the cache's ensure apart.
@@ -440,6 +465,12 @@ func boundRanOut(parent, bounded context.Context, bound time.Duration, err error
 // That try never takes that wait: a Sandbox that ensureSandbox waited out is gone, and the one it
 // creates in its place already has the disk shape that the launch renders (sandboxManifest),
 // carries no reset mark and has no pod, so the launch does not replace it.
+// A try that keeps a Sandbox that a release kept sends one patch more, which removes the
+// release's record that the Secrets are deleted (secretsReleasedAnnotation, annotate).
+// Only a try that does not replace its Sandbox sends it, because the Sandbox that a replacement
+// creates carries no record. And only a try whose Sandbox ensureSandbox found standing sends it,
+// for the same reason, so that try never spends the 3 calls of the wait for a Sandbox being
+// deleted. It thus spends 14 calls at the most, the cache's ensure apart, under the 17.
 // Per launcher role of the pod (relaunchRoleCalls, claim.Roles for an issue pod, the most any pod
 // has): launcherBound's Secret Get (1); writeLauncherSecrets' credential mint and its upsert's Get,
 // Delete and Create (4); bindLauncherSecrets' Get and Update, and both again on a conflict (4).
@@ -1399,16 +1430,29 @@ func displacing(uid types.UID, kind replacementKind) map[string]string {
 // ended, it is not the Sandbox's, or there is none. A pod of the Sandbox's own whose end carries a
 // reason (runtime.PodEnd) has that end recorded in the same JSON merge patch (endedPodAnnotation,
 // endedPodEndAnnotation), so the API server applies the suspension and the record together or
-// neither; any other pod is suspended over as setMode does, recording nothing.
+// neither. A pod that failed on the Sandbox's kept volume for a cause local to it (volumeFault)
+// has the reset mark (volumeResetAnnotation) written in that same patch, as ReplacePod writes it.
+// The launch resets such a volume only after the pod is gone (replaceSupersededSandbox). A launch
+// that stops before that delete thus leaves the mark, and the next launch, which reads no pod or
+// one that is being deleted, resets the volume on it (volumeReset). Any other pod is suspended over
+// as setMode does, recording nothing.
 func (r *Runtime) suspendRecordingEnd(ctx context.Context, s *sandbox, pod *corev1.Pod) error {
 	end := ""
 	if ownedBy(pod, s.UID) {
 		end = runtime.PodEnd(pod.Status.Reason, pod.Status.Message)
 	}
-	if end == "" {
+	fault := volumeFault(s, pod)
+	if end == "" && fault == "" {
 		return r.setMode(ctx, s, modeSuspended)
 	}
-	_, err := r.suspendAnnotating(ctx, s, map[string]string{endedPodAnnotation: string(pod.UID), endedPodEndAnnotation: end})
+	annotations := map[string]string{}
+	if end != "" {
+		annotations[endedPodAnnotation], annotations[endedPodEndAnnotation] = string(pod.UID), end
+	}
+	if fault != "" {
+		annotations[volumeResetAnnotation] = fault
+	}
+	_, err := r.suspendAnnotating(ctx, s, annotations)
 	return err
 }
 
@@ -1421,6 +1465,24 @@ func (r *Runtime) suspendAnnotating(ctx context.Context, s *sandbox, annotations
 	body, err := json.Marshal(map[string]any{
 		"metadata": map[string]any{"uid": string(s.UID), "annotations": annotations},
 		"spec":     map[string]any{"operatingMode": modeSuspended},
+	})
+	if err != nil {
+		return nil, err
+	}
+	patched, err := r.sandboxClient().Patch(ctx, s.Name, types.MergePatchType, body, metav1.PatchOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return decodeSandbox(patched)
+}
+
+// annotate sets each of annotations on the Sandbox read as s, and removes each whose value is nil,
+// in one JSON merge patch that changes nothing else. It carries s's uid, which the API server
+// refuses to change on a live object, so a Sandbox deleted and created again in between is never
+// written. It returns the Sandbox as the patch left it.
+func (r *Runtime) annotate(ctx context.Context, s *sandbox, annotations map[string]*string) (*sandbox, error) {
+	body, err := json.Marshal(map[string]any{
+		"metadata": map[string]any{"uid": string(s.UID), "annotations": annotations},
 	})
 	if err != nil {
 		return nil, err

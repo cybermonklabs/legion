@@ -242,11 +242,14 @@ type IssueReleaser interface {
 }
 
 // IssueVolumeReader says whether the issue's Sandbox holds a kept volume that it held already at
-// since: the runtime's stored Sandbox of the issue owns a kept volume and was made before since. A
-// Sandbox made at or after since holds a new volume, which holds nothing of a pod before it. The
-// daemon asks it when a pod goes before its update round is over, with the time the round opened,
-// to tell the issue whether the work its roles did not push is still on the volume. A runtime
-// whose pods keep no volume implements nothing here, and the daemon then reads no kept volume.
+// since and that the issue's next launch keeps: the runtime's stored Sandbox of the issue owns a
+// kept volume, was made before since, carries no reset mark, and has the disk shape that the
+// configuration now renders for the issue. A Sandbox made at or after since holds a new volume,
+// which holds nothing of a pod before it. The next launch deletes a Sandbox that carries the reset
+// mark or that has another disk shape, with its volume. The daemon asks it when a pod goes before
+// its update round is over, with the time the round opened, to tell the issue whether the work its
+// roles did not push is still on the volume. A runtime whose pods keep no volume implements
+// nothing here, and the daemon then reads no kept volume.
 type IssueVolumeReader interface {
 	IssueKeepsVolume(issue string, since time.Time) bool
 }

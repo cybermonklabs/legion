@@ -6397,10 +6397,16 @@ These ends of a pod keep the Sandbox, so the issue's next pod mounts the same cl
 - An idle release, and the release of a pod that no claim owns ([Idle release](#idle-release)).
   Each one sets the Sandbox `Suspended`, waits until its pod is gone, and deletes the seven Secrets that the Sandbox owns: the provisioning Secret and the six role Secrets.
   The Sandbox stays with the same uid, and the next launch writes each Secret again.
+  After every delete succeeds, the release records on the Sandbox that it deleted the Secrets: the annotation `legion.dev/secrets-released`, whose value is the Sandbox's uid.
+  A release that stops before that record writes no record, and the next release deletes the Secrets again and then writes the record.
+  The next launch removes the record before it writes the first Secret again.
 
 - The relabel of the Sandbox for the issue's new tree (`ensureSandbox`).
 
 When a kept pod goes before its update round is over, the message that Legion writes on the issue says that the work the roles did not push is still on the kept volume.
+It says so only where the issue's next launch keeps the volume.
+Where the Sandbox carries the reset mark `legion.dev/volume-reset` (below), or where its disk shape is not the one that the configuration now gives the issue, the next launch deletes the volume.
+There the message is the one for a pod with an ephemeral volume: the work that the roles did not push is lost.
 The round's message still tells each role to push its work, because the ends below delete the volume.
 
 **The ends that delete the volume.**
@@ -6445,9 +6451,18 @@ The launch does this when the pod shows all of these:
 
 - The container did not end as `OOMKilled`.
 
+- The container did not end as `ContainerStatusUnknown` with exit 137.
+  The kubelet writes that end itself when the node or its container runtime restarts while the container runs.
+  That end is a node loss, so it keeps the volume, as an `OOMKilled` end does.
+  The rule reads the reason: an exit 137 with another reason, such as `Error`, still resets the volume.
+
 The launch logs one line that names the issue, the claim and the init container: the replacement's line above, with the reason `an init container failed on the kept volume: <container> exited <code> in pod <uid>`.
 `ReplacePod` and a release end the pod, so the launch after them reads no pod.
 When the pod that they end shows such a failure, each of them writes the annotation `legion.dev/volume-reset` on the Sandbox, and the next launch resets the volume on that mark.
+A launch that resets the volume of a `Running` Sandbox writes the same mark in the patch that sets the Sandbox `Suspended`.
+A launch that resets the volume of a Sandbox that is already `Suspended` writes the mark in a patch of its own.
+Each launch writes the mark before it deletes the Sandbox, and it deletes the Sandbox only after the pod is gone.
+So when the launch stops before that delete, for example because its wait for the pod runs out or the daemon stops, the next launch resets the volume on the mark.
 The Sandbox that the reset makes carries no mark.
 A reset loses all the work on the volume that no role pushed, except work that an idle release saved as a bundle, which the new pod restores.
 
@@ -6465,7 +6480,7 @@ Exit 2 is the usage error of every `legion` command.
 Every other failure exits 1.
 A failed init container in a pod that is being deleted keeps the volume: an eviction through the API, a drain or a preemption ends the container with SIGTERM or SIGKILL, and that move is the reason the volume is kept.
 A pod that the kubelet ended itself keeps the volume too.
-Exit 2, exit 3 and an `OOMKilled` end each replace the pod, and keep the Sandbox and its volume.
+Exit 2, exit 3, an `OOMKilled` end and a `ContainerStatusUnknown` end each replace the pod, and keep the Sandbox and its volume.
 
 **What stays open.**
 Some causes outside the volume exit 1, so they still reset it:
@@ -6541,7 +6556,7 @@ A daemon of a release before this key does not know the key, and refuses it at l
 So remove the key from `legion.yaml` before you pin such a release.
 That daemon reads a Sandbox that owns a claim template as one of the release before the pod-owned disk, so it replaces each kept Sandbox at the issue's next launch.
 The replacement deletes the volume, with all the work on it that no role pushed, so have each role push its work before the rollback.
-That daemon does not read the annotation `legion.dev/volume-reset`.
+That daemon does not read the annotations `legion.dev/volume-reset` and `legion.dev/secrets-released`.
 
 ### Idle release
 
@@ -6571,7 +6586,11 @@ A project's pause adds a fourth, `unowned_pause_held`, for a pod the pause holds
 The rule answers six reasons more, which the daemon counts in the per-pass line of its log and writes to no record:
 the issue's Sandbox has gone already (`unowned_sandbox_gone`), the issue or its tree root has left the workflow or lingers (`unowned_tree_not_live`), a release of the pod is already running (`unowned_releasing`), a live claim holds the pod again (`unowned_claim_live`), the record holds no claim of the issue at all (`unowned_no_claim`), and the pod did something inside the period (`unowned_not_idle`).
 `unowned_sandbox_gone` is the word an operator reads most, and it is no fault.
-It also names a kept Sandbox that a release left `Suspended`, which runs no pod: the runtime answers such a Sandbox as absent (`IssueSandbox`, `podimage.go`), so the rule does not release it again at each pass.
+It also names a kept Sandbox that a release left `Suspended`, which runs no pod and owns no Secret.
+The runtime answers a `Suspended` kept Sandbox that carries the release's record `legion.dev/secrets-released` as absent (`IssueSandbox`, `podimage.go`), so the rule does not release it again at each pass.
+A `Suspended` kept Sandbox that carries no such record can still own its Secrets: a launch that failed after it wrote them leaves it so.
+The rule releases such a Sandbox once.
+That release deletes its Secrets, keeps the Sandbox with its uid and writes the record, and the next pass holds the issue under `unowned_sandbox_gone`.
 Nothing takes a released issue out of the list the pass decides, because this release changes no claim, so the rule reads every issue whose pod it has taken on every later pass and holds it under that word, once a minute, until a start makes a claim of the issue live, which builds its pod again, or the issue or its tree root leaves the workflow or lingers.
 A pass line whose `held` counts are mostly `unowned_sandbox_gone` is the ordinary state of a deployment that has released pods, and the two numbers to read beside it are `decided` and `released`.
 An operator's suspension holds the pod because it is the one suspension the daemon never ends by itself.

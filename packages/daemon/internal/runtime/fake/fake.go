@@ -219,9 +219,11 @@ func (r *Runtime) ScriptIssuePod(issue, pod string) {
 }
 
 // ScriptKeptVolume makes every later IssueKeepsVolume of issue answer as the Sandbox runtime
-// answers an issue Sandbox that owns a kept volume and was made at created: true for a since
-// whose second is after created, false for any other. A zero created clears it. An issue no call
-// named keeps no volume, which is every pod's case but a microVM pod's under keep_volume.
+// answers an issue Sandbox that owns a kept volume, carries no reset mark, has the disk shape that
+// the configuration renders and was made at created: true for a since whose second is after
+// created, false for any other. A zero created clears it, which is also how a test scripts a
+// Sandbox that the next launch replaces. An issue no call named keeps no volume, which is every
+// pod's case but a microVM pod's under keep_volume.
 func (r *Runtime) ScriptKeptVolume(issue string, created time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

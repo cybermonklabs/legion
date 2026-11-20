@@ -89,6 +89,12 @@ func failedInit(pod *corev1.Pod) (string, *corev1.ContainerStateTerminated) {
 //     a cause outside the volume. A new volume cures neither.
 //   - An end with the reason OOMKilled. The container's memory limit caused it, not the volume.
 //     outOfMemory answers for the roles' container alone, so this rule reads the reason itself.
+//   - An end with the reason ContainerStatusUnknown, exit 137. The kubelet writes this end itself
+//     when the node or its container runtime restarted while the container ran, and it lost the
+//     container (kubernetes v1.36.4, pkg/kubelet/kubelet_pods.go, convertToAPIContainerStatuses).
+//     The end is the container's own state, or the end under its Waiting state where the runtime
+//     no longer knows it. The pod gets no deletionTimestamp and no DisruptionTarget. Such an end
+//     is a node loss, which keeps the volume, as an end in a pod that is being deleted does.
 //
 // A workspace-fetch in a Pending pod that its grace still restarts is no failure (failedInit).
 func localInitFailure(pod *corev1.Pod) (string, *corev1.ContainerStateTerminated) {
@@ -96,7 +102,8 @@ func localInitFailure(pod *corev1.Pod) (string, *corev1.ContainerStateTerminated
 	switch {
 	case ended == nil, pod.DeletionTimestamp != nil, endedByKubelet(pod):
 		return "", nil
-	case ended.ExitCode == workspace.InitExitUsage, ended.ExitCode == workspace.InitExitOutsideVolume, ended.Reason == "OOMKilled":
+	case ended.ExitCode == workspace.InitExitUsage, ended.ExitCode == workspace.InitExitOutsideVolume,
+		ended.Reason == "OOMKilled", ended.Reason == "ContainerStatusUnknown":
 		return "", nil
 	}
 	return name, ended

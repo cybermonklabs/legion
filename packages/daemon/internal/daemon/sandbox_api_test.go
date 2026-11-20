@@ -797,15 +797,25 @@ func kubeGeneration(meta map[string]any) float64 {
 	return generation
 }
 
-// kubeMerge applies a JSON merge patch to object.
+// kubeMerge applies a JSON merge patch to object: a null value removes its key, as the API server
+// applies one (RFC 7386).
 func kubeMerge(object, patch map[string]any) {
 	for key, value := range patch {
-		nested, isObject := value.(map[string]any)
-		if target, ok := object[key].(map[string]any); ok && isObject {
-			kubeMerge(target, nested)
+		if value == nil {
+			delete(object, key)
 			continue
 		}
-		object[key] = value
+		nested, isObject := value.(map[string]any)
+		if !isObject {
+			object[key] = value
+			continue
+		}
+		target, ok := object[key].(map[string]any)
+		if !ok {
+			target = map[string]any{}
+			object[key] = target
+		}
+		kubeMerge(target, nested)
 	}
 }
 

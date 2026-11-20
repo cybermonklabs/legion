@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -23,12 +24,13 @@ func TestAKeptVolumeOutlivesAnInitContainerTheKubeletLost(t *testing.T) {
 	}}
 	// lost is container as the kubelet writes it after it lost the container, with restarts
 	// restarts: under a Waiting state where waiting is set, and as the container's own state where
-	// it is not.
+	// it is not. Each form carries the kubelet's own message for it.
 	lost := func(container string, restarts int32, waiting bool) corev1.ContainerStatus {
 		end := &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "ContainerStatusUnknown",
 			Message: "The container could not be located when the pod was terminated"}
 		status := corev1.ContainerStatus{Name: container, RestartCount: restarts}
 		if waiting {
+			end.Message = "The container could not be located when the pod was deleted.  The container used to be Running"
 			status.State.Waiting = &corev1.ContainerStateWaiting{Reason: "PodInitializing"}
 			status.LastTerminationState.Terminated = end
 		} else {
@@ -76,4 +78,38 @@ func TestAKeptVolumeOutlivesAnInitContainerTheKubeletLost(t *testing.T) {
 			}
 		})
 	}
+
+	// The rule reads the reason and not the exit code: an init container that ended 137 with the
+	// reason Error is a fault on the volume, so the next launch resets it and the Sandbox gets a
+	// new uid.
+	t.Run("workspace-init ended 137 with the reason Error", func(t *testing.T) {
+		g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)))
+		old := g.spawn(workerSpec(t))
+		if err := g.r.Suspend(g.ctx, old); err != nil {
+			t.Fatal(err)
+		}
+		before := g.sandbox(name)
+		edit := func(p *corev1.Pod) {
+			p.Status = corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{fetched, {
+				Name: initContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "Error"}},
+			}}}
+		}
+		want := g.pod(name).DeepCopy()
+		edit(want)
+		g.update(g.pod(name), edit)
+		g.eventually("the pod store to see the failed init container", func() bool {
+			p := g.r.storedPod(name)
+			return p != nil && reflect.DeepEqual(p.Status, want.Status)
+		})
+		g.clearActions()
+		spec := workerSpec(t)
+		spec.Generation = 2
+		g.spawn(spec)
+		if made := sandboxRemakes(g, name); !slices.Equal(made, []string{"delete", "create"}) {
+			t.Fatalf("the launch wrote %v of the issue's Sandbox after workspace-init ended 137 with the reason Error, want the reset's delete and create", made)
+		}
+		if s := g.sandbox(name); s == nil || s.UID == before.UID {
+			t.Fatalf("the issue's Sandbox = %+v, want one with a new uid in place of %s", s, before.UID)
+		}
+	})
 }

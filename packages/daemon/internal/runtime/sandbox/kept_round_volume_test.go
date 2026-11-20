@@ -45,6 +45,9 @@ func TestIssueKeepsVolumeIsFalseWhereTheNextLaunchReplacesTheVolume(t *testing.T
 			keptVolumes(SandboxMicroVM)(o)
 			o.Sandbox.MicroVM.StorageClass = "another-microvm-class"
 		}},
+		{"canary_issues moved the issue to gVisor", func(o *Options) {
+			keptVolumes(SandboxMicroVM, childIssue)(o)
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g, opened := launched(t)

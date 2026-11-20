@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -235,8 +236,10 @@ func issueSecrets(sandbox string) []string {
 // launch that fails once its Running patch is sent; the release of an idle pod, which keeps the
 // Sandbox Suspended and deletes the Secrets that its next launch writes again; and a launch under a
 // new tree, which relabels the Sandbox. The next pod after each of them mounts the same claim at
-// TreeRoot. The released Sandbox runs no pod, so IssueSandbox answers it absent: the release of a
-// pod no claim owns has nothing of it to release. The daemon makes no request on a
+// TreeRoot. The release records on the Sandbox that it deleted the Secrets
+// (secretsReleasedAnnotation), and the released Sandbox runs no pod, so IssueSandbox answers it
+// absent: the release of a pod no claim owns has nothing of it to release. The next launch removes
+// that record before it writes the first Secret. The daemon makes no request on a
 // PersistentVolumeClaim at any step: it has no PVC verb, and the claim's life is the Sandbox's.
 func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 	name, claimName := SandboxName(childToken), IssueClaimName(childToken)
@@ -389,6 +392,9 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 					t.Fatalf("the release left the Secret %s, want each Secret of the Sandbox deleted", secret)
 				}
 			}
+			if record := g.sandbox(name).Annotations[secretsReleasedAnnotation]; record != string(uid) {
+				t.Fatalf("after the release the Sandbox's record of its deleted Secrets is %q, want %s", record, uid)
+			}
 			g.eventually("IssueSandbox to answer the released kept Sandbox absent", func() bool {
 				_, present := g.r.IssueSandbox(childIssue)
 				return !present
@@ -396,10 +402,23 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 			if !g.r.IssueKeepsVolume(childIssue, created.Add(time.Second)) {
 				t.Fatal("IssueKeepsVolume of the released kept Sandbox = false, want true: its volume is still there")
 			}
+			launched := len(g.writes())
 			loc = g.relaunchOnNewPod(loc, &spec)
 			keeps(t, g, "the release of the idle pod", loc, uid, template)
 			if s := g.sandbox(name); s.mode() != modeRunning {
 				t.Fatalf("the launch after the release left the Sandbox %s, want Running", s.mode())
+			}
+			if record, held := g.sandbox(name).Annotations[secretsReleasedAnnotation]; held {
+				t.Fatalf("the launch after the release left the record %q of the deleted Secrets on the Sandbox, want none", record)
+			}
+			writes := g.writes()[launched:]
+			cleared := slices.IndexFunc(writes, func(a action) bool {
+				return a.resource == "sandboxes" && a.verb == "patch" && a.name == name && strings.Contains(a.patch, secretsReleasedAnnotation)
+			})
+			written := slices.IndexFunc(writes, func(a action) bool { return a.resource == "secrets" })
+			if cleared < 0 || written < 0 || cleared > written {
+				t.Fatalf("the launch after the release removed the record at write %d and wrote the first Secret at write %d of %v; want the record removed first",
+					cleared, written, writes)
 			}
 			for _, secret := range secrets {
 				if held := g.secret(secret); held == nil || held.UID == before[secret] {
