@@ -109,6 +109,10 @@ type Rig struct {
 	// URL is the broker's own httptest.Server base URL: every proof's htu and every request
 	// object's aud must check against this one value.
 	URL string
+	// EdgeURL is the base URL of the broker's edge, the second httptest.Server WithEdge mounts
+	// api.RegisterEdge on: every request object and proof made there names it in place of URL.
+	// It is "" for a Rig with no edge.
+	EdgeURL string
 	// Operator is the approver, named by email as Dispatch names a signed-in person, also the
 	// owner of the fixture secrets below and the operator of the sessions a test enrolls.
 	Operator string
@@ -158,6 +162,24 @@ type rigConfig struct {
 	maxConns   int
 	minters    map[string]requests.Minter
 	personPods []personPod
+	edge       bool
+}
+
+// EdgeMachineLoginURL is the page a device authorization made at a Rig's edge sends its person
+// to (BROKER_EDGE_MACHINE_LOGIN_URL), and EdgeWorkspaceDomain the one domain a Rig's edge counts
+// as the Workspace's beside SignInDomain (BROKER_SIGNIN_WORKSPACE_DOMAINS).
+const (
+	EdgeMachineLoginURL = "https://dispatch.edge.example/credentials/machine"
+	EdgeWorkspaceDomain = "second.example"
+)
+
+// WithEdge gives the broker its edge, as BROKER_EDGE_LISTEN_ADDR does: api.RegisterEdge on an
+// httptest.Server of its own at Rig.EdgeURL, over the same Deps the Rig's own address serves,
+// sending a person to EdgeMachineLoginURL and refusing a login on SignInDomain or
+// EdgeWorkspaceDomain. The Rig's machine-login service, request machine and launcher credentials'
+// chain each take EdgeURL as their EdgeAudience, as cmd/broker wires them.
+func WithEdge() Option {
+	return func(c *rigConfig) { c.edge = true }
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -229,6 +251,15 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
+	// The edge's server, made before anything is built on its URL, as srv is for the Rig's own.
+	var edgeMux *http.ServeMux
+	var edgeURL string
+	if config.edge {
+		edgeMux = http.NewServeMux()
+		edgeSrv := httptest.NewServer(edgeMux)
+		t.Cleanup(edgeSrv.Close)
+		edgeURL = edgeSrv.URL
+	}
 
 	issuer := oidctest.New(t)
 	podKey := issuer.PublishKey(t, "signing-key")
@@ -265,6 +296,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount, PodOperators: podOperators,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
+	enr.Chain.EdgeAudience = edgeURL
 	// A session name is held here as the real broker holds one with no account paired
 	// (oauthstore.Store.SetSessionPairs never called, BROKER_SESSION_ACCOUNT_PAIRS unset), so it
 	// belongs to one principal: the binder is a store on the same pool the OAuth provider's own
@@ -274,18 +306,18 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
-		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
+		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
 		PodOperators: podOperators,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	provider := NewOAuthProvider(t, st, issuer)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
-		Audience: srv.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
+		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
 		OAuth: provider, Replay: enr.Replay,
 	}
 
-	api.Register(mux, api.Deps{
+	deps := api.Deps{
 		PublicURL: srv.URL,
 		APIAccounts: map[string]api.Account{
 			APIAccount:      Caller(t, APICaller),
@@ -299,7 +331,11 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		Approval: NewApprovalPage(t, SignIn(issuer, podKey), srv.URL, st, reqMachine),
-	})
+	}
+	api.Register(mux, deps)
+	if config.edge {
+		api.RegisterEdge(edgeMux, deps, api.Edge{URL: edgeURL, VerificationURL: EdgeMachineLoginURL, WorkspaceDomains: []string{SignInDomain, EdgeWorkspaceDomain}})
+	}
 
 	operatorFile := filepath.Join(t.TempDir(), "operator")
 	if err := os.WriteFile(operatorFile, []byte(operator), 0o600); err != nil {
@@ -307,7 +343,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	}
 
 	rig := &Rig{
-		URL: srv.URL, Operator: operator, OperatorFile: operatorFile,
+		URL: srv.URL, EdgeURL: edgeURL, Operator: operator, OperatorFile: operatorFile,
 		Store:     st,
 		Secrets:   local,
 		Registry:  registry,
@@ -565,6 +601,13 @@ func (r *Rig) Decide(t *testing.T, recordID string, approve bool) {
 func (r *Rig) DecideMachineLogin(t *testing.T, code string, approve bool) (credentialID string) {
 	t.Helper()
 	return decideMachineLogin(t, r.UI, r.Operator, code, approve, "")
+}
+
+// DecideMachineLoginAs decides the pending machine login whose confirmation code is code, naming
+// approver as the approver, as a person other than the Rig's Operator does on Dispatch's page.
+func (r *Rig) DecideMachineLoginAs(t *testing.T, approver, code string, approve bool) (credentialID string) {
+	t.Helper()
+	return decideMachineLogin(t, r.UI, approver, code, approve, "")
 }
 
 // MintPodToken mints a projected service-account token bound to podUID — the shape

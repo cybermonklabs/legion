@@ -273,7 +273,12 @@ type Machine struct {
 	PendingTTL time.Duration
 	// Audience is BROKER_PUBLIC_URL: the aud every request object's signature is checked against.
 	Audience string
-	Skew     time.Duration
+	// EdgeAudience is BROKER_EDGE_URL, and "" for a broker with no edge: the other address a
+	// machine login's request object may name, which the reads that list and look up machine
+	// logins take beside Audience (record.VerifyStoredRequestObject). A session's request is never
+	// made at the edge, so every check of one stays Audience's alone.
+	EdgeAudience string
+	Skew         time.Duration
 	// Replay records a request object's jti (the proof_jtis table), answering false when it was
 	// already seen. Wired to enroll.Service.Replay in production.
 	Replay func(ctx context.Context, jti string, expires time.Time) (fresh bool, err error)

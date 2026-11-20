@@ -38,6 +38,10 @@ type brokerBoot struct {
 	// no rules file and so has no airlock. In production: net.Listen("tcp",
 	// cfg.AirlockListenAddr).
 	ListenAirlock func() (net.Listener, error)
+	// ListenEdge binds the broker's edge, and is nil for a deployment that names no edge
+	// (BROKER_EDGE_LISTEN_ADDR unset), which binds nothing for one. In production:
+	// net.Listen("tcp", cfg.EdgeListenAddr).
+	ListenEdge func() (net.Listener, error)
 	// ListenMetrics binds the metrics port, which serves GET /metrics and GET /livez (metricsHandler). In production:
 	// net.Listen("tcp", cfg.MetricsListenAddr). Every deployment has that port, so a boot given
 	// no ListenMetrics refuses before it runs anything.
@@ -71,6 +75,9 @@ type booted struct {
 	// AirlockListener is the airlock proxy port's bound socket, nil when there is no airlock.
 	// Nothing is serving it yet either.
 	AirlockListener net.Listener
+	// EdgeListener is the edge's bound socket, nil when there is no edge. Nothing is serving it
+	// yet either.
+	EdgeListener net.Listener
 	// MetricsListener is the metrics port's bound socket. Nothing is serving it yet either.
 	MetricsListener net.Listener
 }
@@ -213,6 +220,22 @@ func boot(ctx context.Context, b brokerBoot) (booted, error) {
 			return booted{}, err
 		}
 	}
+	// The edge, bound after the proxy port and inside the boot for the same reason: a pod that
+	// cannot bind it fails its boot rather than serving an API whose edge the load balancer finds
+	// nobody listening on. Before the metrics port, since the edge answers callers and the metrics
+	// port answers nobody a caller waits on.
+	var edgeListener net.Listener
+	if b.ListenEdge != nil {
+		edgeListener, err = b.ListenEdge()
+		if err != nil {
+			listener.Close()
+			if airlockListener != nil {
+				airlockListener.Close()
+			}
+			endServing()
+			return booted{}, err
+		}
+	}
 	// The metrics port, bound last and inside the boot for the reason the proxy port is: what it
 	// serves is how this pod is watched from outside it, so a pod that cannot bind it - an
 	// address another process holds - fails its boot rather than serving callers nobody can
@@ -224,11 +247,14 @@ func boot(ctx context.Context, b brokerBoot) (booted, error) {
 		if airlockListener != nil {
 			airlockListener.Close()
 		}
+		if edgeListener != nil {
+			edgeListener.Close()
+		}
 		endServing()
 		return booted{}, err
 	}
 	return booted{Serving: serving, EndServing: endServing, Policy: current, Listener: listener,
-		AirlockListener: airlockListener, MetricsListener: metricsListener}, nil
+		AirlockListener: airlockListener, EdgeListener: edgeListener, MetricsListener: metricsListener}, nil
 }
 
 // listenTCP is brokerBoot.Listen in production: the bind on addr, which boot runs synchronously,
@@ -266,6 +292,9 @@ type brokerStop struct {
 	// ShutdownAirlock drains the airlock's proxy port, and is nil for a deployment with no
 	// airlock. In production: airlockproxy.Server.Shutdown.
 	ShutdownAirlock func(ctx context.Context) error
+	// ShutdownEdge drains the broker's edge, and is nil for a deployment with no edge. In
+	// production: the edge server's Shutdown.
+	ShutdownEdge func(ctx context.Context) error
 	// ShutdownMetrics drains the metrics port, which every broker binds. It is nil only in a row
 	// of ordering_test.go about another step, for which drainBeside answers nil at once. In
 	// production: the metrics server's Shutdown.
@@ -316,10 +345,12 @@ func stop(ctx context.Context, s brokerStop) {
 	// another: a command streaming an answer through the proxy and a caller waiting on the API
 	// are each owed the whole of the shutdown's allowance, and a sequence would hand the second
 	// of them whatever the first left. The proxy's own drain closes every tunnel it still
-	// holds, which http.Server.Shutdown does not. The metrics port goes on answering scrapes
-	// through the drain above, as the API does, so a draining pod is still watched, and closes
-	// with the other two.
+	// holds, which http.Server.Shutdown does not. The edge answers its callers through the drain
+	// above, as the API does, its GET /healthz failing beside the API's so the load balancer
+	// stops choosing this pod, and closes with the API. The metrics port goes on answering
+	// scrapes through the drain, so a draining pod is still watched, and closes with the rest.
 	airlockDrained := drainBeside(shutdownCtx, s.ShutdownAirlock)
+	edgeDrained := drainBeside(shutdownCtx, s.ShutdownEdge)
 	metricsDrained := drainBeside(shutdownCtx, s.ShutdownMetrics)
 	if err := s.Shutdown(shutdownCtx); err != nil {
 		s.Log.Warn("broker: shutdown", "error", err)
@@ -334,6 +365,9 @@ func stop(ctx context.Context, s brokerStop) {
 	}
 	if err := <-airlockDrained; err != nil {
 		s.Log.Warn("broker: airlock proxy shutdown", "error", err)
+	}
+	if err := <-edgeDrained; err != nil {
+		s.Log.Warn("broker: edge shutdown", "error", err)
 	}
 	if err := <-metricsDrained; err != nil {
 		s.Log.Warn("broker: metrics shutdown", "error", err)

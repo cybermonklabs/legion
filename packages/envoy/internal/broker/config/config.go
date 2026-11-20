@@ -91,6 +91,33 @@ type Config struct {
 	// — is served either way. Unset is the deployment where machines hold a cloud identity and
 	// no person ever types a code.
 	MachineLoginURL string
+	// BROKER_EDGE_LISTEN_ADDR: the host:port the broker's edge binds, a fourth port of the same
+	// process, bound and drained with the API's, and refused when its port is the port of
+	// BROKER_LISTEN_ADDR, BROKER_METRICS_LISTEN_ADDR or BROKER_AIRLOCK_LISTEN_ADDR. The edge is
+	// what a caller outside the deployment's private network reaches through a public load
+	// balancer, and it serves three routes and no other: POST /v1/oauth/device_authorization,
+	// POST /v1/oauth/token and GET /healthz. On it a caller's address is the second-to-last
+	// X-Forwarded-For entry, the one the load balancer appends for the client it accepted (a
+	// request with fewer than two is 400 REQUEST_INVALID); its buckets are its own, so a flood
+	// there spends nothing a caller of BROKER_LISTEN_ADDR is held to; a machine login naming an
+	// address on BROKER_SIGNIN_DOMAIN or a BROKER_SIGNIN_WORKSPACE_DOMAINS domain is 400
+	// EDGE_WORKSPACE_LOGIN before any of them is spent; and the token route takes the device
+	// code, the refresh token and the trade of the broker's own access token, and answers every
+	// other grant 400 unsupported_grant_type. Set together with BROKER_EDGE_URL and
+	// BROKER_EDGE_MACHINE_LOGIN_URL, or none of the three: unset, the broker has no edge and binds
+	// nothing for one. Needs BROKER_MACHINE_LOGIN_URL, since the device grant is what the edge
+	// serves, and BROKER_SIGNIN_DOMAIN, the Workspace it refuses.
+	EdgeListenAddr string
+	// BROKER_EDGE_URL: the broker's own address as a caller of its edge reaches it, an absolute
+	// http or https URL with no path, other than BROKER_PUBLIC_URL. A machine login's request
+	// object made at the edge names it as its audience and every DPoP proof sent there names it
+	// and the route's path, as one made on BROKER_PUBLIC_URL names that, so neither is spendable
+	// at the other. Set with BROKER_EDGE_LISTEN_ADDR.
+	EdgeURL string
+	// BROKER_EDGE_MACHINE_LOGIN_URL: the absolute http(s) URL of the page a person decides a
+	// machine login made at the edge on, which that login's verification_uri names in place of
+	// BROKER_MACHINE_LOGIN_URL. Set with BROKER_EDGE_LISTEN_ADDR.
+	EdgeMachineLoginURL string
 	// BROKER_API_ACCOUNTS: the accounts that call the broker's named-caller routes — the
 	// approval routes Dispatch's server calls on a person's behalf, the introspection route
 	// a resource server reads one of the broker's access tokens back through, and the grant-log
@@ -164,6 +191,17 @@ type Config struct {
 	// BROKER_SIGNIN_* setting, naming the ones set, and beside the model judge, which decides
 	// only a request that waits for a person; any other value refuses naming it.
 	SignInOff bool
+	// BROKER_SIGNIN_WORKSPACE_DOMAINS: the other domains the Google Workspace owns beside
+	// BROKER_SIGNIN_DOMAIN, separated by commas as DISPATCH_SIGNIN_WORKSPACE_DOMAINS lists them,
+	// each a lowercase domain name; an internationalized one is written in Unicode or as its
+	// A-labels, and is held as its A-labels.
+	// The broker's edge (BROKER_EDGE_LISTEN_ADDR) refuses a machine login naming an address on any
+	// of them or on a subdomain of one, as it refuses one on BROKER_SIGNIN_DOMAIN, so nobody on the
+	// internet can name a person of the Workspace there; nothing else reads it. Unset, the
+	// Workspace is BROKER_SIGNIN_DOMAIN alone. An empty entry, or one that is no lowercase domain
+	// name, refuses the start naming its position, and BROKER_SIGNIN=off refuses it, since that
+	// broker names no Workspace.
+	SignInWorkspaceDomains []string
 	// BROKER_SIGNIN_DEVICE_AUDIENCE: the audience a person's own Google identity token must
 	// carry to be traded at the RFC 8693 token exchange, where such a token is a subject token
 	// (urn:envoy:params:oauth:token-type:person-google-identity) and the machine the person
@@ -811,7 +849,9 @@ type Config struct {
 	// machine-login and secret-reread rate limiters take as the caller's address. Unset, they use
 	// the connection's own address, which is right only when nothing proxies the broker. Set it
 	// only when every request passes through your own reverse proxy, which appends that entry;
-	// otherwise a caller can forge the header and pick its own rate-limit bucket.
+	// otherwise a caller can forge the header and pick its own rate-limit bucket. The broker's
+	// edge (BROKER_EDGE_LISTEN_ADDR) does not read it: its buckets key on the second-to-last
+	// X-Forwarded-For entry, the one its load balancer appends for the client.
 	TrustedProxyHeader string
 }
 
@@ -836,10 +876,10 @@ const (
 )
 
 // signInOffRefuses are the settings BROKER_SIGNIN=off refuses beside it, in the order every
-// message naming them uses: the four of the sign-in client, how long a sign-in lasts, and the
+// message naming them uses: the four of the sign-in client, how long a sign-in lasts, the
 // audience a person's own device sign-in is traded at, which holds the person to the sign-in's
-// domain.
-var signInOffRefuses = append(slices.Clone(SignInSettings), "BROKER_SIGNIN_SESSION_SECONDS", "BROKER_SIGNIN_DEVICE_AUDIENCE")
+// domain, and the Workspace's other domains, which are listed beside that domain.
+var signInOffRefuses = append(slices.Clone(SignInSettings), "BROKER_SIGNIN_SESSION_SECONDS", "BROKER_SIGNIN_DEVICE_AUDIENCE", workspaceDomainsSetting)
 
 // airlockProxySettings are the settings the airlock's proxy port cannot run without, every one of
 // them required with BROKER_AIRLOCK_RULES_FILE. Every message that names them names them in this
@@ -1965,6 +2005,9 @@ func Load(getenv func(string) string) (Config, error) {
 		DatabaseURL:               getenv("BROKER_DATABASE_URL"),
 		PublicURL:                 getenv("BROKER_PUBLIC_URL"),
 		MachineLoginURL:           strings.TrimSpace(getenv("BROKER_MACHINE_LOGIN_URL")),
+		EdgeListenAddr:            strings.TrimSpace(getenv("BROKER_EDGE_LISTEN_ADDR")),
+		EdgeURL:                   strings.TrimSpace(getenv("BROKER_EDGE_URL")),
+		EdgeMachineLoginURL:       strings.TrimSpace(getenv("BROKER_EDGE_MACHINE_LOGIN_URL")),
 		SecretsStore:              orDefault(getenv("BROKER_SECRETS_STORE"), secrets.StoreAWS),
 		SecretsPrefix:             getenv("BROKER_SECRETS_PREFIX"),
 		AirlockRulesFile:          getenv("BROKER_AIRLOCK_RULES_FILE"),
@@ -2059,6 +2102,14 @@ func Load(getenv func(string) string) (Config, error) {
 		if err := httpURLSetting("BROKER_MACHINE_LOGIN_URL", cfg.MachineLoginURL); err != nil {
 			return Config{}, err
 		}
+	}
+	// The edge's settings, held here beside BROKER_MACHINE_LOGIN_URL, whose device grant the edge
+	// serves (loadEdge), and the Workspace's other domains, which only the edge reads.
+	if err := loadEdge(cfg, publicURL); err != nil {
+		return Config{}, err
+	}
+	if cfg.SignInWorkspaceDomains, err = parseWorkspaceDomains(getenv(workspaceDomainsSetting)); err != nil {
+		return Config{}, err
 	}
 	// The broker cluster's own ranges, read whatever the rules file says: a list the broker could
 	// not act on is a mistake in the deployment whether or not its airlock is on today.

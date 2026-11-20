@@ -171,16 +171,28 @@ type server struct {
 	deps            Deps
 	launcherLimiter *launcherLimiter
 	// rereadLimiter is the per-address bucket on POST /v1/secrets/{name}/reread
-	// (clientAddress) and rereadOverall the one every caller shares; refuseReread takes from
+	// (address) and rereadOverall the one every caller shares; refuseReread takes from
 	// both or neither. For a Deps that carries a RereadRate these are that rate's own pair, so
 	// a change of the replica count moves the rates this route really runs at.
 	rereadLimiter *ratelimit.Keyed
 	rereadOverall *ratelimit.Bucket
-	// tokenLimiter is TokenLimit applied per source address (clientAddress), over its route's own
+	// tokenLimiter is TokenLimit applied per source address (address), over its route's own
 	// bucket, and accountLimiter AccountLimit, over the bucket every accountAuth route and every
 	// route of the approval page share.
 	tokenLimiter   *ratelimit.Keyed
 	accountLimiter *ratelimit.Keyed
+	// address is the source address every per-address bucket of this listener keys on:
+	// clientAddress under BROKER_TRUSTED_PROXY_HEADER on the broker's own address, and
+	// edgeClientAddress at its edge, where a request it reads no address from is refused before
+	// any handler runs (edgeFormGate).
+	address func(*http.Request) string
+	// loginKeyPrefix opens every per-login bucket's key: "" on the broker's own address, and
+	// edgeLoginKeyPrefix at its edge.
+	loginKeyPrefix string
+	// verificationURI is the page a device authorization on this listener sends a person to:
+	// BROKER_MACHINE_LOGIN_URL on the broker's own address (oauth.Provider.VerificationURL), and
+	// BROKER_EDGE_MACHINE_LOGIN_URL at its edge.
+	verificationURI string
 }
 
 func Register(mux *http.ServeMux, deps Deps) {
@@ -221,13 +233,18 @@ func Register(mux *http.ServeMux, deps Deps) {
 	if deps.AccountLimit != nil {
 		account = *deps.AccountLimit
 	}
+	address := func(r *http.Request) string { return clientAddress(r, deps.TrustedProxyHeader) }
 	s := &server{
 		deps:            deps,
-		launcherLimiter: newLauncherLimiter(limits, deps.TrustedProxyHeader),
+		launcherLimiter: newLauncherLimiter(limits, address),
 		rereadLimiter:   rereadLimiter,
 		rereadOverall:   rereadBucket,
 		tokenLimiter:    ratelimit.NewKeyed(token),
 		accountLimiter:  ratelimit.NewKeyed(account),
+		address:         address,
+	}
+	if deps.OAuth != nil {
+		s.verificationURI = deps.OAuth.VerificationURL()
 	}
 	for _, route := range routes() {
 		// A broker with no provider serves neither the OAuth routes nor the document that names
@@ -244,17 +261,25 @@ func Register(mux *http.ServeMux, deps Deps) {
 		if deps.Approval == nil && (strings.HasPrefix(route.Pattern, approvalRoutes) || strings.HasPrefix(route.Pattern, signInRoutes)) {
 			continue
 		}
-		mux.HandleFunc(route.Method+" "+route.Pattern, func(w http.ResponseWriter, r *http.Request) {
-			recorder := answer.FromContext(r.Context())
-			who, ok := s.authenticate(w, r, route)
-			if !ok {
-				// A refusal raised in authentication, before any caller was established.
-				recorder.NoteCaller(answer.CallerUnauthenticated, "")
-				return
-			}
-			recorder.NoteCaller(who.answerCaller(route.Handler))
-			route.Handler.serve(s, w, r, who)
-		})
+		mux.HandleFunc(route.Method+" "+route.Pattern, s.handle(route))
+	}
+}
+
+// handle is route as a handler of s's listener: the caller authenticated as the row's class
+// requires, the answer's record told who it is, and the row's handler run. Register mounts every
+// row through it, and RegisterEdge the edge's three behind its gates, so a row runs one way on
+// either listener.
+func (s *server) handle(route apiRoute) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		recorder := answer.FromContext(r.Context())
+		who, ok := s.authenticate(w, r, route)
+		if !ok {
+			// A refusal raised in authentication, before any caller was established.
+			recorder.NoteCaller(answer.CallerUnauthenticated, "")
+			return
+		}
+		recorder.NoteCaller(who.answerCaller(route.Handler))
+		route.Handler.serve(s, w, r, who)
 	}
 }
 

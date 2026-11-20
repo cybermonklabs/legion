@@ -1323,6 +1323,65 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
   forge a record, so its access control is part of the broker's. Whoever can tag (or annotate) a
   secret under the namespace decides who gets it, so that write access is part of the broker's too.
 
+## The edge: device login from outside the private network
+
+A person outside the deployment's private network, with no way onto it, logs a machine in through
+the broker's edge: a fourth port of the same process, which a public load balancer reaches and
+nothing else does. It serves three routes, and every other path answers `404`:
+
+- `POST /v1/oauth/device_authorization`, the start of a machine login;
+- `POST /v1/oauth/token`, the machine's poll, its refreshes and the trade of its access token;
+- `GET /healthz`, the load balancer's health check, which answers as the API's does and fails
+  from the signal that stops the broker, through the drain.
+
+Each is served by the handler the API's port serves it with. The person decides the login where
+every machine login is decided, on the routes Dispatch relays to on `BROKER_PUBLIC_URL`, and the
+launcher credential the approval mints works as any other.
+
+| Setting | What it is |
+| --- | --- |
+| `BROKER_EDGE_LISTEN_ADDR` | The edge's `host:port`, such as `0.0.0.0:13383`. Its port may not be the port of `BROKER_LISTEN_ADDR`, `BROKER_METRICS_LISTEN_ADDR` or `BROKER_AIRLOCK_LISTEN_ADDR`: the boot is refused naming both settings. Unset, the broker has no edge and binds nothing for one. |
+| `BROKER_EDGE_URL` | The broker's address as the edge's callers reach it, an absolute URL with no path, other than `BROKER_PUBLIC_URL`. A login made at the edge signs its request object for this audience, and every DPoP proof sent there names this URL and the path, so a proof or request object made for one port is refused at the other. |
+| `BROKER_EDGE_MACHINE_LOGIN_URL` | The page the person types the code into, which a device authorization at the edge answers as its `verification_uri` in place of `BROKER_MACHINE_LOGIN_URL`: a page the person can reach from outside. |
+| `BROKER_SIGNIN_WORKSPACE_DOMAINS` | Optional: the other domains the Workspace owns beside `BROKER_SIGNIN_DOMAIN`, separated by commas, as `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists them. |
+
+The first three are set together or not at all. The edge also needs `BROKER_MACHINE_LOGIN_URL`,
+since the device grant is what it serves, and `BROKER_SIGNIN_DOMAIN`, so `BROKER_SIGNIN=off`
+refuses it.
+
+What the edge does that the API's port does not:
+
+- **The caller's address is the second-to-last `X-Forwarded-For` entry.** Google's external
+  Application Load Balancer writes the header as `[<what the client sent>,]<client address>,<load
+  balancer address>`, so the last entry is the balancer's own, the same for every caller, and
+  anything before the second-to-last is the caller's own text. A request whose header holds fewer
+  than two entries, or whose entry is no IP address, did not come through the balancer as it writes
+  the header, and is refused `400 invalid_request` `REQUEST_INVALID`. `BROKER_TRUSTED_PROXY_HEADER`
+  is not read at the edge.
+- **Its rate-limit buckets are its own.** The edge spends the address, login and token buckets of
+  [Network and trust](#network-and-trust) at the same limits, in buckets the API's port never
+  reads, and its per-login keys open with `edge:`. A flood at the edge spends nothing a caller of
+  the API's port is held to, and naming a person there cannot lock that person's machine logins
+  out on the private network.
+- **A person of the Workspace cannot be named there.** A device authorization whose `login_hint`
+  is an address on `BROKER_SIGNIN_DOMAIN` or a `BROKER_SIGNIN_WORKSPACE_DOMAINS` domain, or on a
+  subdomain of one, in any case, with a trailing dot or written in characters IDNA maps onto one,
+  or a login that is no address at all, is refused `400 invalid_request` `EDGE_WORKSPACE_LOGIN`
+  before it spends any bucket or writes any row. A person of the Workspace logs machines in on
+  `BROKER_PUBLIC_URL`. The answer to a login the edge takes is the same whether or not the broker
+  knows the person it names.
+- **The token route takes three grants.** The device code, a refresh token, and the RFC 8693
+  trade of one of the broker's own access tokens (`subject_token_type`
+  `urn:ietf:params:oauth:token-type:access_token`) with no actor token. Every other grant, a pod's,
+  a workflow run's and a Google trade among them, is `400 unsupported_grant_type`
+  `EDGE_GRANT_REFUSED`, before any bucket is spent.
+- **Both login routes take a form and nothing else.** A body of any type but
+  `application/x-www-form-urlencoded`, `multipart/form-data` included, is refused `400
+  invalid_request` `REQUEST_INVALID` before it is read.
+
+The load balancer's health check reads `GET /healthz` on the edge's port; route nothing else of
+the broker through it, and admit to the port only the balancer's own source ranges.
+
 ## People who manage secrets
 
 The broker writes no secret. A person or an agent creates, changes and deletes agent secrets with
@@ -1513,8 +1572,9 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `approval sign-in refused …` | At WARN: a sign-in made no session, the line saying why: the provider refused it, its state or return path was not the sign-in's, the code exchange or ID token failed, or the person is outside `BROKER_SIGNIN_DOMAIN` or unverified. |
 | `approval page decision login=<email> record=<record id> decision=<approve or deny> outcome=<outcome>` | A person decided a secret request on the page; `outcome` is what became of it (`granted`, for one). |
 | `approval sign-in: reach the provider issuer=<issuer> error=…` | At ERROR: the provider's discovery document could not be read at a sign-in, and the page answered `503` naming the issuer. |
-| `broker listening addr=<host:port>` | Startup finished: configuration, migrations and the first read of the namespace all succeeded, and every port is bound: the API's, at this address; the airlock's proxy port, where the deployment has one (`airlock proxy listening addr=<host:port>`, just after); and the metrics port (the line below). |
-| `broker metrics listening addr=<host:port>` | After `broker listening`, and after `airlock proxy listening` where the deployment has an airlock: the metrics port is bound at this address ([Metrics](#metrics)). A pod that cannot bind it does not start, and logs `broker: fatal` naming the address. |
+| `broker listening addr=<host:port>` | Startup finished: configuration, migrations and the first read of the namespace all succeeded, and every port is bound: the API's, at this address; the airlock's proxy port, where the deployment has one (`airlock proxy listening addr=<host:port>`, just after); the edge, where the deployment has one (the line below); and the metrics port. |
+| `broker edge listening addr=<host:port> url=<BROKER_EDGE_URL> verification_uri=<BROKER_EDGE_MACHINE_LOGIN_URL> workspace_domains=<domains>` | After `broker listening`, and after `airlock proxy listening` where the deployment has an airlock, on a broker with `BROKER_EDGE_LISTEN_ADDR` set: the edge is bound at this address, takes request objects and proofs naming `url`, sends a person to `verification_uri`, and refuses a login on any of `workspace_domains` ([The edge](#the-edge-device-login-from-outside-the-private-network)). A broker with no edge writes no such line. |
+| `broker metrics listening addr=<host:port>` | After `broker listening`, after `airlock proxy listening` where the deployment has an airlock, and after `broker edge listening` where it has an edge: the metrics port is bound at this address ([Metrics](#metrics)). A pod that cannot bind it does not start, and logs `broker: fatal` naming the address. |
 | `session account pairs state=on pairs=<pairs>` / `session account pairs state=off detail=…` | At INFO, at startup, after `broker metrics listening` and before the broker serves its first request: `state=on` names each pair `BROKER_SESSION_ACCOUNT_PAIRS` gives, as `<account>=<account>` in the setting's order, joined by one space, and `state=off` says the setting is unset, so an account is refused a session name another account holds. |
 | `broker: fatal error=…` | Startup refused; the error names the variable or dependency. The process exits 1. |
 | `agent secret policy refused name=<secret's name in the store> reason=<reason> owner=<owner tag> first_load=<true or false>` | At ERROR, when a secret becomes one the broker refuses to serve, and when it is refused for another reason than before, with `was=<the reason before>`: one line at the change, not one for each read of the store. A pod's first load writes one for each secret it refuses, each with `first_load=true`. A load or a reread that finds a secret refused for the reason it had writes nothing, and `broker_unservable_secrets` ([Metrics](#metrics)) holds every secret refused now. `name` is the secret's whole name in the store, such as `production/agent-secrets/deel-api-key`. `owner` is its owner tag, and empty for `owner-tag-missing` and `owner-tag-malformed`. Reasons include `owner-tag-missing`, `owner-tag-malformed`, `tier-tag-missing`, `tier-tag-malformed`, `name-malformed`, `service-owner-human-tier`, `not-on-agent-secrets-key`, `no-current-value`, `type-unknown`, `github-owners-missing`, `github-owners-malformed`, `requesters-malformed` (a `requesters` list holding a comma, naming nobody, carrying an email with a capital letter, or naming a service the deployment does not register), `max-grant-required` (an `admin` secret, or a `google-service-account` one, with no `max-grant` or one longer than an hour), `requesters-not-owner` (a `google-service-account` secret whose `requesters` are not its one person owner, or that lists a service it may not: any service at agent tier, and any service at all on a secret `BROKER_SERVICE_ACCOUNT_SECRETS` binds to a `dev-<name>` account), `admin-malformed` (an `admin` tag set to anything but `true`), `admin-tier` (an `admin` secret that is not human tier), `admin-requesters` (an `admin` secret with no `requesters` list), `scopes-malformed` (a `scopes` list holding a comma, naming no scope, naming one twice, or holding an entry that is no scope name, a whole `https://www.googleapis.com/auth/…` URL among them), `scopes-type` (a `scopes` tag on a secret that is not a `google-service-account` one), `max-grant-malformed`, `default-grant-malformed` and `value-malformed` (a `github-app`, `google-login`, `google-service-account` or `azure-login` secret whose stored value that type's minter could not mint from: [the value read](#the-value-read)). |
@@ -1569,13 +1629,14 @@ Each request is bounded to 45 seconds. Request bodies are JSON of at most 1 MiB.
 
 ### Refusals and the answer id
 
-Every answer of the API port and of the airlock's proxy port carries an answer id, 32 hexadecimal
-characters, in its `X-Broker-Answer-Id` header. An answer from 400 to 499 carries it in its body
+Every answer of the API port, of the edge and of the airlock's proxy port carries an answer id, 32
+hexadecimal characters, in its `X-Broker-Answer-Id` header, and the edge's refusals write the same
+refusal line and counts as the API port's. An answer from 400 to 499 carries it in its body
 too: a JSON one as its `answer_id` member, a refusal of the airlock's proxy port at the end of its
 text as `(answer <id>)`, and a refusal page of the approval page as an id to quote. A `429` is no
 refusal, so two bodies carry no id: the text of a `429` that the Azure token endpoint answered and
 the airlock's proxy port forwards, and the approval page's `429` page. The header of each still
-carries it. The exception on both ports is the answers Go's HTTP server writes itself before any
+carries it. The exception on every port is the answers Go's HTTP server writes itself before any
 of the broker's code runs, such as a `400` for a malformed request line, an invalid header name
 or value, or a missing, repeated or malformed `Host` header, a `431` for headers over its limit,
 a `417` for an `Expect` header it does not know, the `400`
@@ -1874,7 +1935,7 @@ The broker serves its metrics in the Prometheus text format at `GET /metrics`, o
 own: `BROKER_METRICS_LISTEN_ADDR`, by default `127.0.0.1:13382`. The same port serves `GET /livez`,
 the NATS auth service's liveness (below). The API's port serves neither, and the metrics port
 serves nothing else: every other path answers `404`, and a method other than `GET` or `HEAD`
-answers `405`. The boot binds it after the API's port and the airlock's proxy port and logs
+answers `405`. The boot binds it after the API's port, the airlock's proxy port and the edge and logs
 `broker metrics listening addr=<host:port>`, and a pod that cannot bind it does not start. A
 draining pod goes on answering scrapes through its drain, and the port closes with the others.
 

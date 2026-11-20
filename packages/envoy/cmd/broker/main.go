@@ -418,6 +418,9 @@ func main() {
 		// airlock: without a rules file no name is ever held back, so there is nothing for a
 		// proxy to carry and no port to bind.
 		ListenAirlock: airlockListen(cfg),
+		// The edge, bound by the same boot and only for a deployment that names one
+		// (BROKER_EDGE_LISTEN_ADDR): with none, the broker binds nothing for it.
+		ListenEdge: edgeListen(cfg),
 		// The metrics port, bound by the same boot after the other two, on every deployment.
 		ListenMetrics: listenTCP(cfg.MetricsListenAddr),
 		ListenWait:    rereadListenWait,
@@ -448,6 +451,10 @@ func main() {
 	if started.AirlockListener != nil {
 		slog.Info("airlock proxy listening", "addr", started.AirlockListener.Addr().String())
 	}
+	if started.EdgeListener != nil {
+		slog.Info("broker edge listening", "addr", started.EdgeListener.Addr().String(), "url", cfg.EdgeURL,
+			"verification_uri", cfg.EdgeMachineLoginURL, "workspace_domains", cfg.WorkspaceDomains())
+	}
 	// Logged as the API's line is, once its bind has succeeded, so a rig that starts many brokers
 	// on port 0 reads each one's own metrics address from its own log.
 	slog.Info("broker metrics listening", "addr", started.MetricsListener.Addr().String())
@@ -459,6 +466,9 @@ func main() {
 		VMServicesByAccount: cfg.VMServicesByAccount, PodOperators: cfg.PodOperators,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
+	// A machine login the edge opened is signed for BROKER_EDGE_URL, and the launcher credential
+	// its approval mints authenticates through this chain as any other does.
+	enr.Chain.EdgeAudience = cfg.EdgeURL
 	// The broker's one read of Dispatch, where BROKER_JUDGE_DISPATCH_URL names one: the request
 	// machine and the model judge share it, its token cache and its client.
 	dispatch := judgeDispatch(cfg)
@@ -583,7 +593,7 @@ func main() {
 	}
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: current,
-		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second,
+		Audience: cfg.PublicURL, EdgeAudience: cfg.EdgeURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second,
 		PendingTTL: machineLoginPendingTTL, CredentialLifetime: credentialLifetime,
 		OAuth: provider, Replay: enr.Replay,
 	}
@@ -661,7 +671,7 @@ func main() {
 	// detached counts the rereads the API runs after answering 202, which srv.Shutdown does not
 	// wait for; the stop sequence waits for them (brokerStop.WaitDetached).
 	detached := &api.Detached{}
-	api.Register(mux, api.Deps{PublicURL: cfg.PublicURL, RereadRate: rereadRate, Detached: detached,
+	deps := api.Deps{PublicURL: cfg.PublicURL, RereadRate: rereadRate, Detached: detached,
 		APIAccounts: cfg.APIAccounts, AccountTokens: pod,
 		PodRegistrars: cfg.PodRegistrars, PodRegistrationTokens: discovered.PodRegistration,
 		GoogleAPIAccounts: cfg.GoogleAPIAccounts, GoogleAccountTokens: googleCallers,
@@ -683,7 +693,8 @@ func main() {
 			if err := notify(ctx, name); err != nil {
 				slog.Warn("broker: the other pods were not told to reread a secret", "secret", name, "error", err)
 			}
-		}})
+		}}
+	api.Register(mux, deps)
 	// The answer recorder wraps the mux itself, inside the request deadline, which writes no
 	// answer, so it sees every answer a handler of this port writes, whichever writer wrote it:
 	// the API's routes, the OAuth provider's library, the approval page and the mux's own 404
@@ -730,6 +741,22 @@ func main() {
 		})
 		airlockProxy.Store(proxy)
 	}
+	// The edge's own server, for a deployment that has one, on the socket the boot bound: the
+	// device login's two routes and the health check (api.RegisterEdge), on the same request
+	// deadline, answer recorder and timeouts as the API, since what it serves is the API's own
+	// handlers on a server of its own.
+	var edgeServer *http.Server
+	if started.EdgeListener != nil {
+		edgeMux := http.NewServeMux()
+		api.RegisterEdge(edgeMux, deps, api.Edge{URL: cfg.EdgeURL, VerificationURL: cfg.EdgeMachineLoginURL, WorkspaceDomains: cfg.WorkspaceDomains()})
+		edgeServer = &http.Server{
+			Handler:           withRequestDeadline(answer.Middleware(edgeMux, answers), requestDeadline),
+			ReadHeaderTimeout: srv.ReadHeaderTimeout,
+			ReadTimeout:       srv.ReadTimeout,
+			WriteTimeout:      srv.WriteTimeout,
+			IdleTimeout:       srv.IdleTimeout,
+		}
+	}
 	// The metrics port's own server, on the socket the boot bound: the scrape of the registry
 	// every metric above is built on, and the NATS auth service's liveness (metricsHandler). Its
 	// timeouts are the API's, since a scraper is a caller like any other to the server.
@@ -770,6 +797,14 @@ func main() {
 			}
 		}()
 	}
+	if edgeServer != nil {
+		go func() {
+			if err := edgeServer.Serve(started.EdgeListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("broker: edge serve", "error", err)
+				stopNotify()
+			}
+		}()
+	}
 	go func() {
 		if err := metricsServer.Serve(started.MetricsListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("broker: metrics serve", "error", err)
@@ -803,14 +838,17 @@ func main() {
 		service.Close()
 	}
 	// nil when this deployment has no airlock, which is what brokerStop reads as "there is no
-	// proxy port to drain".
-	var airlockShutdown func(ctx context.Context) error
+	// proxy port to drain", and the same for the edge.
+	var airlockShutdown, edgeShutdown func(ctx context.Context) error
 	if proxy != nil {
 		airlockShutdown = proxy.Shutdown
 	}
+	if edgeServer != nil {
+		edgeShutdown = edgeServer.Shutdown
+	}
 	stop(context.Background(), brokerStop{
 		Drain: drain, DrainNow: drainNow, Draining: draining.Store,
-		Shutdown: srv.Shutdown, WaitDetached: detached.Wait, ShutdownAirlock: airlockShutdown, ShutdownMetrics: metricsServer.Shutdown,
+		Shutdown: srv.Shutdown, WaitDetached: detached.Wait, ShutdownAirlock: airlockShutdown, ShutdownEdge: edgeShutdown, ShutdownMetrics: metricsServer.Shutdown,
 		EndServing: started.EndServing, CloseStore: st.Close,
 		Log: slog.Default(),
 	})
@@ -1126,6 +1164,15 @@ func airlockListen(cfg config.Config) func() (net.Listener, error) {
 	return listenTCP(cfg.AirlockListenAddr)
 }
 
+// edgeListen is brokerBoot.ListenEdge in production: the bind on BROKER_EDGE_LISTEN_ADDR, and nil
+// for a deployment that names no edge, which binds nothing for one.
+func edgeListen(cfg config.Config) func() (net.Listener, error) {
+	if cfg.EdgeListenAddr == "" {
+		return nil
+	}
+	return listenTCP(cfg.EdgeListenAddr)
+}
+
 // peerReread is the reread listener's Refresh (reread.Listener): the reread of name another pod
 // told this one to make, current's RefreshOne. A peer served the reread, so this pod's airlock
 // proxy may be holding the old value of that name: dropAirlockName drops it whatever the reread
@@ -1196,7 +1243,7 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 	githubApp := secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry}
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
-		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
+		Audience: cfg.PublicURL, EdgeAudience: cfg.EdgeURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
 		ServicesByAccount:   cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount,
 		PodOperators:        cfg.PodOperators,

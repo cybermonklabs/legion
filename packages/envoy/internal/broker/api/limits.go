@@ -4,11 +4,13 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/broker/netaddr"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -368,17 +370,18 @@ func (r *RereadRate) SetReplicas(n int) {
 
 type launcherLimiter struct {
 	perAddress, perLogin *ratelimit.Keyed
-	// trustedProxyHeader is BROKER_TRUSTED_PROXY_HEADER: empty means every caller reaches the
-	// broker directly, so perAddress keys on r.RemoteAddr. Set only behind a trusted reverse
-	// proxy that itself sets this header on every forwarded request (see clientAddress).
-	trustedProxyHeader string
+	// address is the source address perAddress keys on: the server's own (server.address), so
+	// that every per-address bucket of one listener keys on the one rule that listener reads a
+	// caller's address by (clientAddress on the broker's own address, edgeClientAddress at its
+	// edge).
+	address func(*http.Request) string
 }
 
-func newLauncherLimiter(limits LauncherLimits, trustedProxyHeader string) *launcherLimiter {
+func newLauncherLimiter(limits LauncherLimits, address func(*http.Request) string) *launcherLimiter {
 	return &launcherLimiter{
-		perAddress:         ratelimit.NewKeyed(limits.PerAddress),
-		perLogin:           ratelimit.NewKeyed(limits.PerLogin),
-		trustedProxyHeader: trustedProxyHeader,
+		perAddress: ratelimit.NewKeyed(limits.PerAddress),
+		perLogin:   ratelimit.NewKeyed(limits.PerLogin),
+		address:    address,
 	}
 }
 
@@ -407,13 +410,40 @@ func clientAddress(r *http.Request, trustedProxyHeader string) string {
 	return address
 }
 
+// edgeForwardedFor is the header the public load balancer in front of the broker's edge appends
+// to: Google's external Application Load Balancer writes X-Forwarded-For as
+// [<what the client sent>,]<client address>,<load balancer address>.
+const edgeForwardedFor = "X-Forwarded-For"
+
+// edgeClientAddress is the source address every bucket of the broker's edge keys on, and whether
+// r carries one: the second-to-last entry of X-Forwarded-For, every line of the header read as
+// one list, which is the client address the load balancer appends before its own. The last entry
+// is the balancer's own address, the same for every caller, so keying on it as clientAddress does
+// would put every internet caller in one bucket; anything before the second-to-last is the
+// caller's own text, which it could change to pick a bucket of its choice. An entry that is no IP
+// address, or a header of fewer than two entries, is a request that did not come through the
+// balancer as it writes the header, and answers false. An IPv4 address written as IPv6
+// (::ffff:a.b.c.d) keys as the IPv4 address it is, so one caller has one bucket however it is
+// written.
+func edgeClientAddress(r *http.Request) (string, bool) {
+	hops := strings.Split(strings.Join(r.Header.Values(edgeForwardedFor), ","), ",")
+	if len(hops) < 2 {
+		return "", false
+	}
+	addr, err := netip.ParseAddr(strings.TrimSpace(hops[len(hops)-2]))
+	if err != nil {
+		return "", false
+	}
+	return netaddr.Canonical(addr).String(), true
+}
+
 // refuseAddress writes 429 RATE_LIMITED and reports refused when r's source address has no request
 // left in its bucket: POST /v1/launcher-credentials/token's first limit, spent before the token is
 // verified. Otherwise it answers giveBack, which returns the request to the bucket at the time it
 // is called: tokenLogin calls it only for a login whose token verified and that the broker then
 // could not complete (5xx); a token that does not verify always keeps the request it spent.
 func (l *launcherLimiter) refuseAddress(w http.ResponseWriter, r *http.Request) (giveBack func(), refused bool) {
-	giveBackAt, ok := l.perAddress.TakeAt(clientAddress(r, l.trustedProxyHeader), time.Now())
+	giveBackAt, ok := l.perAddress.TakeAt(l.address(r), time.Now())
 	if ok {
 		return func() { giveBackAt(time.Now()) }, false
 	}
@@ -440,13 +470,13 @@ func (l *launcherLimiter) refuseAccount(w http.ResponseWriter, subject string) (
 
 // addressAllows spends one request of r's source address's bucket, reporting whether it had one.
 func (l *launcherLimiter) addressAllows(r *http.Request) bool {
-	return l.perAddress.AllowAt(clientAddress(r, l.trustedProxyHeader), time.Now())
+	return l.perAddress.AllowAt(l.address(r), time.Now())
 }
 
 // tokenAllows spends one request of r's source address's token-endpoint bucket, reporting
 // whether it had one.
 func (s *server) tokenAllows(r *http.Request) bool {
-	return s.tokenLimiter.AllowAt(clientAddress(r, s.deps.TrustedProxyHeader), time.Now())
+	return s.tokenLimiter.AllowAt(s.address(r), time.Now())
 }
 
 // accountAddressAllows spends one request of r's source address's bucket, the one the routes a
@@ -454,7 +484,7 @@ func (s *server) tokenAllows(r *http.Request) bool {
 // share (DefaultAccountLimit), reporting whether it had one. The spend is here and the refusal
 // is each caller's own, so the three classes answer one bucket's refusal in three shapes.
 func (s *server) accountAddressAllows(r *http.Request) bool {
-	return s.accountLimiter.AllowAt(clientAddress(r, s.deps.TrustedProxyHeader), time.Now())
+	return s.accountLimiter.AllowAt(s.address(r), time.Now())
 }
 
 // refuseAccountAddress writes 429 RATE_LIMITED and reports true when r's source address has no
@@ -479,7 +509,7 @@ func (s *server) refuseAccountAddress(w http.ResponseWriter, r *http.Request) bo
 // caller, and a reread the broker-wide bucket refuses spends nothing of its address's own, so a
 // caller retrying through a flood is not then refused by its own limit after the flood stops.
 func (s *server) refuseReread(w http.ResponseWriter, r *http.Request) bool {
-	refused, ok := s.rereadLimiter.AllowBothAt(clientAddress(r, s.deps.TrustedProxyHeader), s.rereadOverall, time.Now())
+	refused, ok := s.rereadLimiter.AllowBothAt(s.address(r), s.rereadOverall, time.Now())
 	if ok {
 		return false
 	}

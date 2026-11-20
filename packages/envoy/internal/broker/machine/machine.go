@@ -62,9 +62,17 @@ type Service struct {
 	// Policy is the secret policy, whose version a machine-login record carries.
 	Policy *policy.Current
 
-	Audience   string
-	Skew       time.Duration
-	PendingTTL time.Duration
+	// Audience is what a login's request object must name as its aud (BROKER_PUBLIC_URL): the
+	// broker's own address as the login's caller reached it.
+	Audience string
+	// EdgeAudience is BROKER_EDGE_URL, the broker's address at its edge, and "" for a broker with
+	// no edge. A login the edge opens is verified against it (AtEdge), and a record read back for
+	// its lookup or its decision, which Dispatch relays to Audience, against either address
+	// (record.VerifyStoredRequestObject): each is this broker, and the record's object was held to
+	// the one its caller reached when the login was opened.
+	EdgeAudience string
+	Skew         time.Duration
+	PendingTTL   time.Duration
 	// CredentialLifetime is how long a minted credential lasts, and how far each refresh of its
 	// device login moves its expiry.
 	CredentialLifetime time.Duration
@@ -103,6 +111,20 @@ func deref(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// AtEdge is s as the broker's edge opens a login with: the same store, enrollment, policy and
+// provider, with the edge's address as the audience a login's request object must name. It
+// answers nil for a service with no EdgeAudience, a broker with no edge. The edge opens logins
+// and decides none, so what it answers is read only by LoginDevice and by the device route's
+// own bucket spend, which verify an object against Audience.
+func (s *Service) AtEdge() *Service {
+	if s.EdgeAudience == "" {
+		return nil
+	}
+	edge := *s
+	edge.Audience = s.EdgeAudience
+	return &edge
 }
 
 // verifyLauncherRequest verifies a machine request object for a launcher credential at now: its
@@ -250,7 +272,7 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 
 	// now is the record's own creation time: the request object's iat and exp bound how fresh it
 	// had to be when its login was opened, never how long the login may wait for its decision.
-	obj, err := record.VerifyRequestObject(body.Request, s.Audience, s.Skew, createdAt)
+	obj, err := record.VerifyStoredRequestObject(body.Request, s.Audience, s.EdgeAudience, s.Skew, createdAt)
 	if err != nil {
 		return "", "", err
 	}
@@ -499,7 +521,7 @@ func (s *Service) LookupByCode(ctx context.Context, code string) (RecordView, er
 	if err != nil {
 		return RecordView{}, err
 	}
-	obj, err := record.VerifyRequestObject(body.Request, s.Audience, s.Skew, createdAt)
+	obj, err := record.VerifyStoredRequestObject(body.Request, s.Audience, s.EdgeAudience, s.Skew, createdAt)
 	if err != nil {
 		return RecordView{}, err
 	}

@@ -1,0 +1,132 @@
+package config
+
+import (
+	"fmt"
+	"net"
+	"net/url"
+	"regexp"
+	"strings"
+	"unicode/utf8"
+
+	"golang.org/x/net/idna"
+
+	"github.com/sjawhar/envoy/internal/redact"
+)
+
+// EdgeSettings are the broker's edge's three settings, set together or not at all. Every message
+// that names them names them in this order.
+var EdgeSettings = []string{"BROKER_EDGE_LISTEN_ADDR", "BROKER_EDGE_URL", "BROKER_EDGE_MACHINE_LOGIN_URL"}
+
+// workspaceDomainsSetting is the setting that names the Workspace's other domains.
+const workspaceDomainsSetting = "BROKER_SIGNIN_WORKSPACE_DOMAINS"
+
+// loadEdge holds cfg's edge settings, which Load has read into it, to what the edge needs:
+// all three or none; a listen address of host:port whose port is not the port of the broker's
+// other three listeners; an edge URL of BROKER_PUBLIC_URL's form that is not publicURL, the
+// broker's own address as Load parsed it; a page that is an absolute http(s) URL; and the two
+// settings the edge's routes stand on, the device grant's page and the sign-in domain. With none
+// of the three set it holds nothing, and the broker has no edge.
+func loadEdge(cfg Config, publicURL *url.URL) error {
+	values := []string{cfg.EdgeListenAddr, cfg.EdgeURL, cfg.EdgeMachineLoginURL}
+	var missing []string
+	for i, setting := range EdgeSettings {
+		if values[i] == "" {
+			missing = append(missing, setting)
+		}
+	}
+	switch len(missing) {
+	case len(EdgeSettings):
+		return nil
+	case 0:
+	default:
+		return fmt.Errorf("the broker's edge needs %s; missing %s", strings.Join(EdgeSettings, ", "), strings.Join(missing, ", "))
+	}
+	_, edgePort, err := net.SplitHostPort(cfg.EdgeListenAddr)
+	if err != nil {
+		return fmt.Errorf("BROKER_EDGE_LISTEN_ADDR must be host:port, such as 0.0.0.0:13383, got %q", cfg.EdgeListenAddr)
+	}
+	// Port 0 is the kernel's choice of a port no listener holds, so two listeners given it never
+	// share one: a local run gives it to every listener.
+	if edgePort != "0" {
+		for _, other := range []struct{ setting, addr string }{
+			{"BROKER_LISTEN_ADDR", cfg.ListenAddr},
+			{"BROKER_METRICS_LISTEN_ADDR", cfg.MetricsListenAddr},
+			{"BROKER_AIRLOCK_LISTEN_ADDR", cfg.AirlockListenAddr},
+		} {
+			// An address that does not parse is not this check's to refuse: its own bind refuses
+			// the boot, naming it.
+			if _, port, err := net.SplitHostPort(other.addr); err == nil && port == edgePort {
+				return fmt.Errorf("BROKER_EDGE_LISTEN_ADDR (%s) and %s (%s) name the same port, %s: the edge is a listener of its own, which the public load balancer reaches and no other caller does, so give it a port no other listener of the broker binds",
+					cfg.EdgeListenAddr, other.setting, other.addr, edgePort)
+			}
+		}
+	}
+	edgeURL, err := url.Parse(cfg.EdgeURL)
+	if err != nil || (edgeURL.Scheme != "http" && edgeURL.Scheme != "https") || edgeURL.Host == "" || edgeURL.Path != "" {
+		return fmt.Errorf("BROKER_EDGE_URL must be an absolute http or https URL with no path: %q", redact.URL(cfg.EdgeURL))
+	}
+	// One address for both would let a request object or a DPoP proof made for one listener be
+	// spent at the other, which naming each its own address is there to prevent.
+	if edgeURL.Scheme == publicURL.Scheme && strings.EqualFold(edgeURL.Host, publicURL.Host) {
+		return fmt.Errorf("BROKER_EDGE_URL is BROKER_PUBLIC_URL (%s): the edge's callers name an address of its own in their request objects and proofs, so that one made for either listener is never spent at the other", redact.URL(cfg.EdgeURL))
+	}
+	if err := httpURLSetting("BROKER_EDGE_MACHINE_LOGIN_URL", cfg.EdgeMachineLoginURL); err != nil {
+		return err
+	}
+	if cfg.MachineLoginURL == "" {
+		return fmt.Errorf("BROKER_EDGE_LISTEN_ADDR needs BROKER_MACHINE_LOGIN_URL: the edge serves the device grant, which the broker composes only with a machine-login page")
+	}
+	if cfg.SignInOff {
+		return fmt.Errorf("BROKER_EDGE_LISTEN_ADDR needs BROKER_SIGNIN_DOMAIN: the edge refuses a machine login naming a person of the Workspace, and %s=%s names no Workspace", signInSwitchSetting, signInOffValue)
+	}
+	return nil
+}
+
+// domainShape is a lowercase DNS name of two or more labels, each 1 to 63 letters, digits and
+// inner hyphens: the shape of a Google Workspace domain.
+var domainShape = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// maxDomainLength is the longest DNS name, in its dotted text form.
+const maxDomainLength = 253
+
+// parseWorkspaceDomains reads BROKER_SIGNIN_WORKSPACE_DOMAINS, raw: a list separated by commas,
+// each entry trimmed, and each as IDNA lookup writes it (idna.Lookup.ToASCII), the A-label form
+// the edge compares an address's domain in. A value blank once trimmed lists none. An entry that
+// is empty, holds a capital letter, is not taken by the lookup or is no lowercase DNS name of at
+// most maxDomainLength characters refuses, named by its position and never quoted.
+func parseWorkspaceDomains(raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	entries := strings.Split(raw, ",")
+	domains := make([]string, len(entries))
+	for i, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			return nil, fmt.Errorf("%s entry %d of %d is empty", workspaceDomainsSetting, i+1, len(entries))
+		}
+		ascii, err := idna.Lookup.ToASCII(entry)
+		if err != nil || entry != strings.ToLower(entry) || len(ascii) > maxDomainLength || !domainShape.MatchString(ascii) {
+			return nil, fmt.Errorf("%s entry %d of %d must be a lowercase domain name such as example.com; got a value of %d characters",
+				workspaceDomainsSetting, i+1, len(entries), utf8.RuneCountInString(entry))
+		}
+		domains[i] = ascii
+	}
+	return domains, nil
+}
+
+// WorkspaceDomains are the domains the Google Workspace owns, as the edge compares an address's
+// domain with them: BROKER_SIGNIN_DOMAIN, lowered and as IDNA lookup writes it, then each
+// BROKER_SIGNIN_WORKSPACE_DOMAINS entry, which Load already holds in that form. A broker with
+// BROKER_SIGNIN=off names no Workspace and answers none; Load refuses an edge there.
+func (c Config) WorkspaceDomains() []string {
+	if c.SignIn.Domain == "" {
+		return nil
+	}
+	domain := strings.ToLower(c.SignIn.Domain)
+	if ascii, err := idna.Lookup.ToASCII(domain); err == nil {
+		domain = ascii
+	}
+	return append([]string{domain}, c.SignInWorkspaceDomains...)
+}

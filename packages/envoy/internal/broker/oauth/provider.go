@@ -73,10 +73,11 @@ type Provider struct {
 	strategy *codeStrategy
 	// exchange is Config.Exchange, which the exchange's own step decides by.
 	exchange ExchangeConfig
-	// deviceGrant is whether Config.VerificationURL named a page, so the RFC 8628 factories are
-	// composed: what the broker mounts its device authorization route on, and what its metadata
-	// document says.
-	deviceGrant bool
+	// verificationURL is Config.VerificationURL, and "" when it named no page, so the RFC 8628
+	// factories are not composed: what the broker mounts its device authorization route on, what
+	// its metadata document says, and the page a device authorization on the broker's own address
+	// sends a person to.
+	verificationURL string
 	// grantTypes is every grant type composed below, subjectTokenTypes every token type the
 	// exchange registered as a subject token, and dpopAlgorithms every algorithm a DPoP proof
 	// may be signed with. All three are read where the provider is composed, so the metadata
@@ -96,7 +97,12 @@ type Provider struct {
 // DeviceGrant reports whether this provider serves the device authorization grant (RFC 8628),
 // which it does only when it was built with a verification URL. The broker mounts POST
 // /v1/oauth/device_authorization only when it does.
-func (p *Provider) DeviceGrant() bool { return p.deviceGrant }
+func (p *Provider) DeviceGrant() bool { return p.verificationURL != "" }
+
+// VerificationURL is the page this provider was built to send a person to (Config.VerificationURL),
+// "" for one that serves no device grant: the verification_uri a device authorization on the
+// broker's own address answers (DeviceAuthorize).
+func (p *Provider) VerificationURL() string { return p.verificationURL }
 
 // GrantTypes is every grant type this provider serves, as RFC 8414's grant_types_supported
 // lists them, read off the factories New composed.
@@ -148,9 +154,12 @@ type TokenHooks struct {
 // Refusal is an onRequest error the device authorization endpoint answers as
 // {"error": "invalid_request", "error_description": "<Code>: <Message>", "code": "<Code>"} with
 // Status, and with Retry-After when RetryAfter (seconds) is set. Any other onRequest error is a
-// 500 server_error.
+// 500 server_error. OAuthError names another of RFC 6749's error codes in place of
+// invalid_request, for a refusal a client's OAuth library must read as that one: the broker's
+// edge answers a grant it does not take unsupported_grant_type.
 type Refusal struct {
 	Status     int
+	OAuthError string
 	Code       string
 	Message    string
 	RetryAfter int
@@ -262,7 +271,7 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 	}
 	p := &Provider{
 		oauth: provider, store: store, strategy: strategy, exchange: c.Exchange,
-		deviceGrant: deviceGrant, grantTypes: grantTypes,
+		verificationURL: c.VerificationURL, grantTypes: grantTypes,
 		subjectTokenTypes: subjectTokenTypes(cfg.RFC8693TokenTypes),
 		// Read from the configuration the provider was composed with rather than written down
 		// again here, so the document names what the proof check will take. The library's own
@@ -286,8 +295,11 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 // DeviceAuthorize is the device authorization endpoint. It validates the request, mints and stores
 // the device code and user code, and hands onRequest the request's form and user code, all in one
 // transaction (onRequest's ctx carries it: oauthstore.TxFrom), which commits only when onRequest
-// succeeds. The answer omits verification_uri_complete: a person always types the code.
-func (p *Provider) DeviceAuthorize(w http.ResponseWriter, r *http.Request, onRequest func(ctx context.Context, form url.Values, userCode string) error) {
+// succeeds. The answer's verification_uri is verificationURI, the page of the listener the request
+// reached: VerificationURL on the broker's own address, and BROKER_EDGE_MACHINE_LOGIN_URL at its
+// edge, since a person a machine reaches through the edge decides on a page they can reach. It
+// omits verification_uri_complete: a person always types the code.
+func (p *Provider) DeviceAuthorize(w http.ResponseWriter, r *http.Request, verificationURI string, onRequest func(ctx context.Context, form url.Values, userCode string) error) {
 	ctx := r.Context()
 	request, err := p.oauth.NewRFC862DeviceAuthorizeRequest(ctx, r)
 	if err != nil {
@@ -325,6 +337,7 @@ func (p *Provider) DeviceAuthorize(w http.ResponseWriter, r *http.Request, onReq
 	}
 	committed = true
 	body := resp.ToMap()
+	body["verification_uri"] = verificationURI
 	delete(body, "verification_uri_complete")
 	writeOAuthJSON(w, http.StatusOK, body)
 }
@@ -550,13 +563,17 @@ func noteClient(ctx context.Context, request oauth2.AccessRequester) {
 }
 
 // WriteRefusal answers refusal as an OAuth error a client's OAuth library parses: invalid_request,
-// its description naming the broker's code, and that code again as the member code every other
-// refusal of the broker carries, which the answer's record reads.
+// or the refusal's own OAuthError, its description naming the broker's code, and that code again
+// as the member code every other refusal of the broker carries, which the answer's record reads.
 func WriteRefusal(w http.ResponseWriter, refusal *Refusal) {
 	if refusal.RetryAfter > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(refusal.RetryAfter))
 	}
-	writeOAuthJSON(w, refusal.Status, map[string]string{"error": "invalid_request", "error_description": refusal.Error(), "code": refusal.Code})
+	oauthError := refusal.OAuthError
+	if oauthError == "" {
+		oauthError = "invalid_request"
+	}
+	writeOAuthJSON(w, refusal.Status, map[string]string{"error": oauthError, "error_description": refusal.Error(), "code": refusal.Code})
 }
 
 // writeOAuthJSON answers status with body and the no-store headers RFC 6749 and RFC 8628 require.

@@ -23,7 +23,8 @@ import (
 // login in the provider's transaction, and its refusals are OAuth errors (invalid_request) whose
 // description names the broker's code: a request object that does not verify, repeats a jti or
 // names another key than dpop_jkt REQUEST_INVALID, one naming a service
-// SERVICE_LOGS_IN_WITH_TOKEN.
+// SERVICE_LOGS_IN_WITH_TOKEN. The answer's verification_uri is this listener's page
+// (server.verificationURI).
 func (s *server) deviceAuthorization(w http.ResponseWriter, r *http.Request) {
 	if !s.launcherLimiter.addressAllows(r) {
 		oauth.WriteRefusal(w, rateLimitedRefusal(s.launcherLimiter.perAddress.Every()))
@@ -32,7 +33,7 @@ func (s *server) deviceAuthorization(w http.ResponseWriter, r *http.Request) {
 	if !readOAuthForm(w, r) {
 		return
 	}
-	s.deps.OAuth.DeviceAuthorize(w, r, func(ctx context.Context, form url.Values, userCode string) error {
+	s.deps.OAuth.DeviceAuthorize(w, r, s.verificationURI, func(ctx context.Context, form url.Values, userCode string) error {
 		if err := s.spendDeviceLoginBucket(form); err != nil {
 			return deviceLoginRefusal(err)
 		}
@@ -41,8 +42,8 @@ func (s *server) deviceAuthorization(w http.ResponseWriter, r *http.Request) {
 }
 
 // spendDeviceLoginBucket verifies form's request object, refusing one naming a service before it
-// reaches the limiter, and spends one request of the person:<login> bucket it names: a
-// RATE_LIMITED refusal when that bucket is empty.
+// reaches the limiter, and spends one request of the person:<login> bucket it names, under this
+// listener's key prefix (server.loginKeyPrefix): a RATE_LIMITED refusal when that bucket is empty.
 func (s *server) spendDeviceLoginBucket(form url.Values) error {
 	obj, err := record.VerifyRequestObject(form.Get("request"), s.deps.MachineLogin.Audience, s.deps.MachineLogin.Skew, time.Now())
 	if err != nil {
@@ -51,7 +52,7 @@ func (s *server) spendDeviceLoginBucket(form url.Values) error {
 	if obj.Service() != "" {
 		return machine.ErrServiceLogsInWithToken
 	}
-	if !s.launcherLimiter.perLogin.AllowAt(launcherLoginKey(obj), time.Now()) {
+	if !s.launcherLimiter.perLogin.AllowAt(s.loginKeyPrefix+launcherLoginKey(obj), time.Now()) {
 		return rateLimitedRefusal(s.launcherLimiter.perLogin.Every())
 	}
 	return nil
@@ -88,11 +89,13 @@ func rateLimitedRefusal(every time.Duration) *oauth.Refusal {
 // device code grant once the login's person has approved it, and the refresh grant, each with a
 // DPoP proof from the machine's key, and its answers are OAuth's own (RFC 6749 section 5). The
 // provider checks the proof's htu against the URL it rebuilds from the request's scheme, Host and
-// X-Forwarded-Proto, so the request it is handed carries BROKER_PUBLIC_URL's scheme and host and
+// X-Forwarded-Proto, so the request it is handed carries Deps.PublicURL's scheme and host and
 // no forwarding headers: the proof names PublicURL + /v1/oauth/token, as every other broker proof
-// names PublicURL + its path, whatever the hop in front of the broker sends. It first spends its
-// source address's token bucket (DefaultTokenLimit), a refusal being 429 invalid_request
-// RATE_LIMITED with Retry-After, as the device authorization endpoint's is.
+// names PublicURL + its path, whatever the hop in front of the broker sends. At the broker's edge
+// that URL is BROKER_EDGE_URL (RegisterEdge), so a proof made for either listener is refused at
+// the other. It first spends its source address's token bucket (DefaultTokenLimit), a refusal
+// being 429 invalid_request RATE_LIMITED with Retry-After, as the device authorization
+// endpoint's is.
 func (s *server) oauthToken(w http.ResponseWriter, r *http.Request) {
 	if !s.tokenAllows(r) {
 		oauth.WriteRefusal(w, &oauth.Refusal{
