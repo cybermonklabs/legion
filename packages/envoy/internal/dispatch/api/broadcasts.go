@@ -661,21 +661,23 @@ func (s *server) sendOwedBroadcastRecipients(ctx context.Context, read broadcast
 }
 
 // broadcastVisibleSQL is which broadcasts a viewer reads, over the broadcasts row aliased
-// broadcast and the visibility argument at viewerParam (refs.VisibilityArg): the person who sent
-// it reads it, and so does an open viewer that may see every session it was sent to
-// (access.SessionClause: an open viewer sees every session but one that acted in a project it does
-// not see). A viewer that is not open - a restricted member, or a credential that lists projects -
-// reads its own direct messages alone (R4), so it reads only the broadcasts its person sent, and
-// not one it is no party to whose every recipient it may see. To any other viewer it is a broadcast
-// nobody sent. SessionClause answers true or false and never null, so its negation lets no hidden
-// recipient pass.
+// broadcast and the visibility argument at viewerParam (refs.VisibilityArg): one whose every
+// recipient session the viewer may see (access.SessionClause: an open viewer sees every session but
+// one that acted in a project it does not see), when the viewer's person sent it or the viewer is
+// open. A viewer that is not open - a restricted member, or a credential that lists projects - reads
+// its own direct messages alone (R4), so it reads only the broadcasts its person sent; and a
+// credential reads its person's own broadcast only where it sees every recipient, since it sees
+// what its own list lets it see and not all its person sees (R3). To any other viewer it is a
+// broadcast nobody sent. SessionClause answers true or false and never null, so its negation lets
+// no hidden recipient pass.
 func broadcastVisibleSQL(broadcast, viewerParam string) string {
-	return `((` + broadcast + `.author->>'kind' = 'user' and ` + broadcast + `.author->>'id' = ` + access.ViewerPerson(viewerParam) + `)
-		or (` + access.ViewerFlag(viewerParam, "open") + ` and not exists (
+	return `(((` + broadcast + `.author->>'kind' = 'user' and ` + broadcast + `.author->>'id' = ` + access.ViewerPerson(viewerParam) + `)
+			or ` + access.ViewerFlag(viewerParam, "open") + `)
+		and not exists (
 			select 1 from messages recipient
 			where recipient.broadcast_id = ` + broadcast + `.id
 				and not ` + access.SessionClause("substr(recipient.target, 9)", viewerParam) + `
-			offset 0)))`
+			offset 0))`
 }
 
 // broadcastReplyVisibleSQL is whether a viewer reads the message whose id idExpr names, a reply
