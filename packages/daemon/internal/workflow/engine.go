@@ -1549,31 +1549,53 @@ func missingList(list []record.VolumeMissing) string {
 	return strings.Join(quoted, ", ")
 }
 
-// sessionLost tells the issue, its architect and the controller that a worker's recorded session
-// is in no session store any more, so the agent working the issue now has read none of its own
-// earlier work: it runs from a fresh session, and only what it pushed and committed survives.
-// Nothing of the issue moves — the worker is running — and nothing is held: the report is the
-// whole point, since a worker that lost its memory is otherwise indistinguishable from one that
-// is merely slow. An issue the record does not hold tells nobody.
+// sessionLost tells the issue, its architect and the controller that a worker forgot its recorded
+// session, so the agent working the issue now has read none of its own earlier work: it runs from
+// a fresh session, and only what it pushed and committed survives. Nothing of the issue moves — the
+// worker is running — and nothing is held: the report is the whole point, since a worker that lost
+// its memory is otherwise indistinguishable from one that is merely slow. An issue the record does
+// not hold tells nobody.
 //
-// The detail is the runtime's own account of the failed resume, which carries a session file name
-// and a transport error from outside the daemon, and this sentence is read into an agent's
-// prompt, so it is quoted as a Go string (strconv.Quote): the quotes bound it, and a quote or a
-// newline inside it is escaped rather than closing the one around it. sessionStoreFault quotes
-// its own detail for the same reason.
+// The fact's cause chooses the words, the notice kind and the warning line. A session no store
+// holds (gone, and a fact with no cause) and a Claude Code claim's session with no transcript file
+// are told as lost, in a notice of the kind session-lost. A session that the pod's launcher, older
+// than this release, could not look up by its id, and that Oh My Pi did not resume by that id, is
+// told as forgotten, in a notice of the kind session-forgotten, and nothing says it was lost:
+// nothing of it was deleted, and a store may hold it still (dispatch://INFRA-4108 R3). The kind is
+// part of what the architect and the controller hear, since the outbox publishes each notice as
+// `<kind> on <issue>` (the daemon's noticeSummary), so that forget has a kind of its own.
+//
+// The detail of a lost session can be the runtime's own account of the failed resume, which
+// carries a session file name and a transport error from outside the daemon, and this sentence is
+// read into an agent's prompt, so it is quoted as a Go string (strconv.Quote): the quotes bound it,
+// and a quote or a newline inside it is escaped rather than closing the one around it.
+// sessionStoreFault quotes its own detail for the same reason. The words of a forgotten session
+// carry no detail; they name the session the claim forgot (intake.SessionLost.Session), which the
+// agent's registration chose, quoted the same way.
 func (e *Engine) sessionLost(ctx context.Context, tx pgx.Tx, fact intake.SessionLost) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
+	kind := record.NoticeKind("session-lost")
 	told := fmt.Sprintf("The %s of %s lost the session it recorded: %s. It is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives.",
 		fact.Role, issue.Key, strconv.Quote(fact.Detail))
+	line := "workflow: a worker's recorded session was in no session store"
+	fields := []any{"issue", issue.Key, "role", fact.Role, "detail", fact.Detail}
+	if fact.Cause == supervise.SessionLossNotResumedByID {
+		kind = "session-forgotten"
+		told = fmt.Sprintf("The %s of %s forgot the session it recorded, %s: its pod's launcher is older than this release and could not look the session up by its id, and Oh My Pi did not resume it by that id. "+
+			"The daemon deleted nothing of that session. The %s is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives.",
+			fact.Role, issue.Key, strconv.Quote(fact.Session), fact.Role)
+		line = "workflow: a worker forgot its recorded session, which its pod's launcher could not look up and Oh My Pi did not resume by its id"
+		fields = []any{"issue", issue.Key, "role", fact.Role, "session", fact.Session, "cause", fact.Cause, "detail", fact.Detail}
+	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: told}); err != nil {
 		return intake.Result{}, err
 	}
-	e.warnOnCommit(ctx, "workflow: a worker's recorded session was in no session store", "issue", issue.Key, "role", fact.Role, "detail", fact.Detail)
+	e.warnOnCommit(ctx, line, fields...)
 	return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{
-		Kind: "session-lost", Role: fact.Role, Phase: issue.Phase, Reason: told})
+		Kind: kind, Role: fact.Role, Phase: issue.Phase, Reason: told})
 }
 
 // sessionStoreFault tells the issue and the controller that no worker of the issue can start
