@@ -1800,6 +1800,69 @@ async function focusByScript(editable: HTMLElement): Promise<void> {
   await waitInAct(30);
 }
 
+// A press in Details between Enter and the caret's placement keeps the editing and puts off the
+// caret: none goes in while the reader is out there (decision 348 (2), and the tester's case
+// beside the editor's hold, below). The reader coming back to the row - Details' Close gives the
+// focus back to it, or they press in the row's editor box - asks for the caret again, as Enter on
+// the edited row does: it goes in the node's block where Enter puts it, the block's start, and
+// the reader's acts are counted from then, so a caret the editor moves out of the block before
+// they act goes back to the block's start, as it does after Enter.
+const COMING_BACK: readonly (readonly [
+  name: string,
+  comeBack: (user: UserEvent, row: HTMLElement, editable: HTMLElement) => Promise<void>,
+])[] = [
+  [
+    "the focus Details' Close gives back to the row",
+    async (_user, row) => {
+      await act(async () => row.focus());
+    },
+  ],
+  [
+    "a press in the row's editor box",
+    async (user, _row, editable) => {
+      await user.click(editable);
+    },
+  ],
+];
+for (const [name, comeBack] of COMING_BACK) {
+  test(`${name}, after a press in Details put off the row's caret, puts the caret in the node's block as Enter does`, async () => {
+    setViewport(1440);
+    const user = userEvent.setup();
+    const parts = await nodeCaret.loadEditsHold();
+    const held = Promise.withResolvers<nodeCaret.HoldParts>();
+    const load = spyOn(nodeCaret, "loadEditsHold").mockReturnValue(held.promise);
+    try {
+      const { editable, view } = await enterBeforeDrawn(user);
+      const [row] = rowsFor(view.container, "spec#b-r1");
+      if (row === undefined) throw new Error("the statement's row is not drawn");
+      await drawStatementBlocks(editable, BLOCKS_AROUND);
+      await nextFrame();
+      await user.click(cardInDetails());
+      // The press is over a task after its click.
+      await waitInAct(0);
+      await act(async () => held.resolve(parts));
+      await nextFrame();
+
+      await comeBack(user, row, editable);
+      await waitFor(() =>
+        expect(
+          document.activeElement === editable && caretBlock() === "r1",
+          `${name} put no caret in the statement`
+        ).toBe(true)
+      );
+      expect(selected(), "the caret is not where Enter puts it").toEqual(["r1:0", "r1:0"]);
+      expect(view.edited.at(-1), "the editing ended").toBe("artifact-spec");
+      await select(wordsOf(editable, "r2"), 3);
+      expect(
+        selected(),
+        "a caret the editor moved below the statement before the reader acted did not go back to its start"
+      ).toEqual(["r1:0", "r1:0"]);
+    } finally {
+      load.mockRestore();
+    }
+  });
+}
+
 // The fold control, Let it close and the row's other controls prevent their `mousedown`'s
 // default, so a press on one leaves the focus where it was. A press on one while a row is edited
 // left the focus in the row's editor, and ending the editing at that press's end took the editor's
@@ -2687,12 +2750,12 @@ test("Enter puts no caret in the row's editor until it has drawn the node's own 
 });
 
 // A press that takes the focus out of the outline before the row's editor has drawn the
-// document ends the editing (above). The tree lets go of a row as the focus leaves it, except
-// while that row is being edited, when the editor moving drops the focus, so the statement's row
-// kept its focused look, its open body and its facts in the panel, with the focus on the control
-// pressed. The editing ending with the focus out of the tree lets go of the row, as the focus
-// leaving it does.
-test("a press out of the outline before the row's editor has drawn the document lets go of the row as the editing ends", async () => {
+// document ended the editing, and the editor's box and the threads Details draws beside the
+// document's editor went off the page. Under decision 348 (2) such a press keeps the editing, as
+// it does once the caret is placed, and puts off the caret: none goes in once the editor draws,
+// and the focus stays on the control pressed. The tree keeps the row being edited as it is - its
+// focused look, its open body and its facts in the panel.
+test("a press out of the outline before the row's editor has drawn the document keeps the editing and the row, and no caret takes the focus from the control once the editor draws", async () => {
   setViewport(1440);
   const user = userEvent.setup();
   const { editable, view } = await enterBeforeDrawn(user);
@@ -2704,28 +2767,42 @@ test("a press out of the outline before the row's editor has drawn the document 
     "the statement's row drew no body as it was edited"
   ).not.toBeNull();
   await user.click(control);
-  expect(document.activeElement, "the press did not focus the control").toBe(control);
+  expect(document.activeElement === control, "the press did not focus the control").toBe(true);
   // The editor draws the document a frame later.
   await nextFrame();
   await drawStatementBlocks(editable);
-  await waitFor(() => expect(view.edited.at(-1), "the editing did not end").toBeUndefined());
-  expect(document.activeElement, "the focus left the control pressed").toBe(control);
-  await waitFor(() =>
-    expect(
-      statement.querySelector("[data-node-body]"),
-      "the statement's row still draws its body"
-    ).toBeNull()
+  await nextFrame();
+  await waitInAct(20);
+  expect(document.activeElement === control, "the caret took the focus from the control").toBe(
+    true
   );
   expect(
+    editable.contains(window.getSelection()?.anchorNode ?? null),
+    "a caret went into the editor while the focus was out of the outline"
+  ).toBe(false);
+  expect(view.edited.at(-1), "the press out of the outline ended the editing").toBe(
+    "artifact-spec"
+  );
+  expect(
+    statement.querySelector('[contenteditable="true"]') !== null,
+    "the statement's row no longer holds the editor"
+  ).toBe(true);
+  expect(
+    statement.querySelector("[data-node-body]"),
+    "the statement's row no longer draws its body"
+  ).not.toBeNull();
+  expect(
     statement.querySelector("[data-node-card]")?.className,
-    "the statement's row still looks focused"
-  ).not.toContain(pageFocusedRow);
-  expect(view.focusedNode(), "the panel still holds the statement's facts").toBeUndefined();
+    "the statement's row no longer looks focused"
+  ).toContain(pageFocusedRow);
+  expect(view.focusedNode()?.id, "the panel no longer holds the statement's facts").toBe(
+    "spec#b-r1"
+  );
 });
 
-// The same where the editor never draws the document at all after the press: nothing more is
-// drawn to look again, and the editing ended all the same, a task after the reader's act.
-test("a press out of the outline ends the editing of a row whose editor never draws the node's block", async () => {
+// The same where the editor never draws the document at all after the press: the row is looked
+// at a task after the press has ended with nothing drawn, which ended the editing; it keeps it.
+test("a press out of the outline keeps the editing of a row whose editor never draws the node's block, with the focus where the press put it", async () => {
   setViewport(1440);
   const user = userEvent.setup();
   const { view } = await enterBeforeDrawn(user);
@@ -2733,61 +2810,64 @@ test("a press out of the outline ends the editing of a row whose editor never dr
   const statement = rowsFor(view.container, "spec#b-r1")[0];
   if (statement === undefined) throw new Error("the statement's row is not drawn");
   await user.click(control);
-  expect(document.activeElement, "the press did not focus the control").toBe(control);
-  await waitFor(() =>
-    expect(view.edited.at(-1), "the editing went on with nothing drawn to end it").toBeUndefined()
+  expect(document.activeElement === control, "the press did not focus the control").toBe(true);
+  // The press is over a task after its click, and the row is looked at then.
+  await waitInAct(20);
+  await nextFrame();
+  expect(view.edited.at(-1), "the press out of the outline ended the editing").toBe(
+    "artifact-spec"
   );
-  expect(document.activeElement, "the focus left the control pressed").toBe(control);
-  await waitFor(() =>
-    expect(
-      statement.querySelector("[data-node-body]"),
-      "the statement's row still draws its body"
-    ).toBeNull()
-  );
+  expect(document.activeElement === control, "the focus left the control pressed").toBe(true);
+  expect(
+    statement.querySelector("[data-node-body]"),
+    "the statement's row no longer draws its body"
+  ).not.toBeNull();
 });
 
-// A press away from the row before its editor has drawn the node's block ends the editing once
-// the press is over, a task after its click, as the tree lets go of a row a press left
-// (`useReleaseFocus`). Until the caret is placed the editor's box stands in the row as tall as
-// what the editor has drawn, and the editing ending a task after the press went down took that
-// box out of the row with the pointer still down: the control below the row rose under the
-// pointer, and the click landed on something else. happy-dom lays nothing out, so what is under
-// the pointer as the press ends is given: the control while the row holds the editor's box, and
-// the words below the control once the box has left the row.
-test("a press on a control below the row before its editor has drawn the node's block lands on that control, and ends the editing once it is over", async () => {
+// A press on another row of the tree before the row's editor has drawn the node's block ends the
+// editing once the press is over, a task after its click, as the tree lets go of a row a press
+// left (`useReleaseFocus`). Until the caret is placed the editor's box stands in the row as tall
+// as what the editor has drawn, and the editing ending a task after the press went down took that
+// box out of the row with the pointer still down: the row below rose under the pointer, and the
+// click landed on something else. happy-dom lays nothing out, so what is under the pointer as the
+// press ends is given: the row below's words while the edited row holds the editor's box, and the
+// words below the outline once the box has left the row.
+test("a press on the row below before its editor has drawn the node's block lands on that row, and ends the editing once it is over", async () => {
   setViewport(1440);
   const user = userEvent.setup();
   const { editable, view } = await enterBeforeDrawn(user);
-  const outside = controlOutside();
-  const words = "Words below the control";
+  const words = "Words below the outline";
   const below = render(<p>{words}</p>).getByText(words);
   const statement = rowsFor(view.container, "spec#b-r1")[0];
-  if (statement === undefined) throw new Error("the statement's row is not drawn");
+  const next = rowsFor(view.container, "comment-2")[0]?.querySelector<HTMLElement>(
+    "[data-node-words]"
+  );
+  if (statement === undefined || next === null || next === undefined) {
+    throw new Error("the outline's rows are not drawn");
+  }
+  let clicks = 0;
+  next.addEventListener("click", () => {
+    clicks += 1;
+  });
   // The editor draws the words above the statement, and not the statement.
   await drawStatementBlocks(editable, [["r0", "The words above the statement."]]);
   await nextFrame();
   const underPointer = () =>
-    statement.querySelector(`[${EDITOR_BOX_ATTRIBUTE}]`) === null ? below : outside.control;
+    statement.querySelector(`[${EDITOR_BOX_ATTRIBUTE}]`) === null ? below : next;
 
-  await user.pointer({ keys: "[MouseLeft>]", target: outside.control });
-  expect(document.activeElement, "the press did not focus the control").toBe(outside.control);
+  await user.pointer({ keys: "[MouseLeft>]", target: next });
+  expect(focusedRow(view.container), "the press did not focus the row below").toBe("comment-2");
   // The press is held over a few frames, as a reader's is.
   await nextFrame();
   await nextFrame();
   await user.pointer({ keys: "[/MouseLeft]", target: underPointer() });
   expect(
-    outside.presses(),
-    "the editing ended while the press was held, and its click landed below the control"
+    clicks,
+    "the editing ended while the press was held, and its click landed below the row"
   ).toBe(1);
 
   await waitFor(() => expect(view.edited.at(-1), "the editing did not end").toBeUndefined());
-  expect(document.activeElement, "the focus left the control pressed").toBe(outside.control);
-  await waitFor(() =>
-    expect(
-      statement.querySelector("[data-node-body]"),
-      "the statement's row still draws its body"
-    ).toBeNull()
-  );
+  expect(focusedRow(view.container), "the focus left the row pressed").toBe("comment-2");
 });
 
 // The row is looked at after each focus move off it, and not only after the reader's first act,
