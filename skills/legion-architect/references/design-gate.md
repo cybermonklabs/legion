@@ -70,7 +70,6 @@ Each step records one document of the root issue:
 
 | Step | Document |
 | --- | --- |
-| `decisions` | the decisions document (`decisions.md`) |
 | `criteria` | the Verification document (`verification.md`) |
 | `spec` | the primary document |
 
@@ -87,8 +86,7 @@ For each gated step, once every child is filed:
    told it is a spec, for each factual claim. `wait` for each, resolve every finding, and check
    each unverified claim with a command or take it out.
 4. Request approval only once the person has agreed to every point; a new point gets its own
-   decision block first. `--include-verification` covers `spec` and `criteria` in one request;
-   `decisions` takes its own (`--artifact decisions.md`):
+   decision block first. `--include-verification` covers `spec` and `criteria` in one request:
 
    ```bash
    dispatch request-approval --issue <root> --include-verification --summary '<what they approve> Reviews: <gap result>, <claim result>; <what they do not show>.'

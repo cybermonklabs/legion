@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import {
   hashKey,
   QueryClient,
@@ -18,10 +18,11 @@ import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { settle } from "../../__tests__/fake-clock";
+import { realClock, settle } from "../../__tests__/fake-clock";
 import { renderWithQueries } from "../../__tests__/query-provider";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { ApiError, api, NetworkError } from "../../api/client";
 import { landIssueWrite } from "../../api/issue-cache";
 import { userStateQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
@@ -50,6 +51,7 @@ import { RepoControl, repoControlName } from "../issue/RepoControl";
 import { issue as marginIssue } from "../margin/margin-fixture";
 import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { issueStatuses } from "../project/board-model";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { statusGlyph, statusTone } from "./issue-status";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
@@ -202,6 +204,39 @@ test("a status pick is kept in the write store when the page that made it goes",
     expect(statusWrites()).toBe(1);
     expect(writesOf(client).rows()).toEqual([]);
   } finally {
+    hook.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// A parent save the reader stopped may have been saved: the hook's parent line says so, and that
+// saving it again is a write of its own, rather than that the save failed.
+test("a parent save the reader stopped says it may have been saved, not that it failed", async () => {
+  const client = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client }, children);
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new NetworkError(`/api/v1/issues/${issue.key}`, new TypeError("Failed to fetch"))
+  );
+  jest.useFakeTimers();
+  const hook = renderHook(() => useIssueHeaderWrites(issue, state), { wrapper });
+  try {
+    act(() => {
+      hook.result.current.drafts.writeParent("CORE-9");
+      hook.result.current.drafts.requestParentSubmit();
+    });
+    await stopTheLateWrite(client);
+    expect(hook.result.current.parentSaveFailed).toBe(true);
+    expect(hook.result.current.parentError).toBe(
+      stoppedWriteNote("the new parent", "saved", {
+        anew: "Saving it again sends it as a new write.",
+      })
+    );
+  } finally {
+    realClock();
     hook.unmount();
     patchIssue.mockRestore();
   }
@@ -638,7 +673,7 @@ test("a read of the state asked while the pin is out does not put back the unpin
     });
     act(() => {
       const { pin, pinGuard } = hook.result.current;
-      pinGuard.guard(() => pin.mutate(true));
+      pinGuard.guard(() => pin.mutate({ issueKey: issue.key, pinned: true }));
     });
     await waitFor(() => expect(putIssueState).toHaveBeenCalledTimes(1));
     // While the PUT is out the state is read again; Dispatch has not taken the pin yet.
@@ -699,7 +734,7 @@ test("a read of the state asked while the pin is out waits for its answer, and t
 
     act(() => {
       const { pin, pinGuard } = hook.result.current.writes;
-      pinGuard.guard(() => pin.mutate(true));
+      pinGuard.guard(() => pin.mutate({ issueKey: issue.key, pinned: true }));
     });
     await waitFor(() => expect(putIssueState).toHaveBeenCalledTimes(1));
     expect(hook.result.current.shown.pinned).toBe(true);

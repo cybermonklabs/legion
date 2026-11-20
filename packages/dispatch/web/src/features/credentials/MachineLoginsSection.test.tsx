@@ -19,6 +19,7 @@ const devbox: LauncherCredentialResp = {
   expires_at: "2026-10-10T12:00:00Z",
   host: "devbox.example.com",
   issued_at: "2026-10-03T12:00:00Z",
+  person: null,
   service: null,
   subject: null,
 };
@@ -29,6 +30,7 @@ const laptop: LauncherCredentialResp = {
   expires_at: "2026-10-09T08:00:00Z",
   host: "laptop.example.com",
   issued_at: "2026-10-02T08:00:00Z",
+  person: null,
   service: null,
   subject: null,
 };
@@ -41,6 +43,7 @@ const daemon: LauncherCredentialResp = {
   expires_at: "2026-10-10T09:00:00Z",
   host: "cluster.example.com",
   issued_at: "2026-10-03T09:00:00Z",
+  person: null,
   service: "legion-daemon",
   subject: null,
 };
@@ -52,8 +55,24 @@ const stale: LauncherCredentialResp = {
   expires_at: "2026-10-03T11:00:00Z",
   host: "devbox.example.com",
   issued_at: "2026-09-26T11:00:00Z",
+  person: null,
   service: null,
   subject: null,
+};
+/** A person's pod login: the token login of a pod whose Kubernetes account the broker's
+ *  BROKER_POD_OPERATORS maps to ada, the viewer. The broker sets its service, the login service
+ *  the account logs in as, and its subject, and names ada as its person. Only ada's list holds it,
+ *  and only she may revoke it. */
+const adaPod: LauncherCredentialResp = {
+  approved_by: "",
+  credential_id: "cred-ada-pod",
+  expired: false,
+  expires_at: "2026-10-03T13:00:00Z",
+  host: "people/ada",
+  issued_at: "2026-10-03T12:00:00Z",
+  person: "ada@example.com",
+  service: "person-ada",
+  subject: "system:serviceaccount:people:ada",
 };
 
 function renderPage() {
@@ -253,16 +272,17 @@ test("a service's login someone else approved is listed by its service and its a
   }
 });
 
-// A broker older than token logins sends no `subject` at all, so while Dispatch deploys first, a
-// service's login a person approved is shown with its approver and its plain Revoke, never as a
-// token login of `undefined`.
+// A broker older than token logins sends no `subject` and no `person` at all, so while Dispatch
+// deploys first, a service's login a person approved is shown with its approver and its plain
+// Revoke, never as a token login of `undefined`.
 test("a service's login from a broker that sends no subject is shown as one a person approved", async () => {
   const user = userEvent.setup();
-  // The route table declares `subject` on every machine login, because the broker Dispatch
-  // relays today sends one; a broker older than the field sends no such key at all, which is
-  // what this row is, so the key is dropped from the value rather than set to anything.
+  // The route table declares `subject` and `person` on every machine login, because the broker
+  // Dispatch relays today sends both; a broker older than the fields sends no such keys at all,
+  // which is what this row is, so the keys are dropped from the value rather than set to anything.
   const fromOlderBroker: LauncherCredentialResp = { ...daemon };
   Reflect.deleteProperty(fromOlderBroker, "subject");
+  Reflect.deleteProperty(fromOlderBroker, "person");
   const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({
     credentials: [fromOlderBroker],
   });
@@ -317,6 +337,59 @@ test("a service's token login names its ServiceAccount, and its Revoke says what
     expect(confirm.mock.calls).toEqual([
       [
         "Revoke the machine login for legion-daemon on legion-system/legion-daemon-legion? Every session it started, its worker pods included, ends at once, and a running pod stays without secrets until it is replaced; legion-daemon logs in again with its Kubernetes token, for the pods it launches next, unless system:serviceaccount:legion-system:legion-daemon-legion is removed from the broker's BROKER_SERVICE_LOGINS.",
+      ],
+    ]);
+    expect(revokeMachineLogin).not.toHaveBeenCalled();
+  } finally {
+    cleanup();
+    confirm.mockRestore();
+    getMachineLogins.mockRestore();
+    revokeMachineLogin.mockRestore();
+  }
+});
+
+// A person's pod login carries a service and a subject, as a service's token login does, and
+// its person besides: the viewer, whose list alone holds it and who alone may revoke it. So it
+// reads as the viewer's own pod, and never as a service's login that anyone signed in may
+// revoke, while a service's token login beside it still reads as the service's.
+test("a person's pod login reads as the viewer's own pod, and its Revoke says the pod logs in again", async () => {
+  const user = userEvent.setup();
+  const serviceToken: LauncherCredentialResp = {
+    ...daemon,
+    approved_by: "",
+    credential_id: "cred-token",
+    host: "legion-system/legion-daemon-legion",
+    subject: "system:serviceaccount:legion-system:legion-daemon-legion",
+  };
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({
+    credentials: [adaPod, serviceToken],
+  });
+  const revokeMachineLogin = spyOn(api, "revokeMachineLogin").mockResolvedValue(undefined);
+  const confirm = spyOn(window, "confirm").mockReturnValue(false);
+
+  try {
+    renderPage();
+    const section = within(await screen.findByRole("region", { name: "Machine logins" }));
+    const podRow = (await section.findByText("people/ada (your pod)")).closest("tr") as HTMLElement;
+    expect(
+      within(podRow).getByText(
+        "No one: BROKER_POD_OPERATORS maps system:serviceaccount:people:ada to you"
+      )
+    ).toBeDefined();
+    expect(section.queryByText(/person-ada/)).not.toBeInTheDocument();
+    const serviceRow = section
+      .getByText("legion-daemon on legion-system/legion-daemon-legion")
+      .closest("tr") as HTMLElement;
+    expect(
+      within(serviceRow).getByText(
+        "No one: system:serviceaccount:legion-system:legion-daemon-legion"
+      )
+    ).toBeDefined();
+
+    await user.click(within(podRow).getByRole("button", { name: "Revoke" }));
+    expect(confirm.mock.calls).toEqual([
+      [
+        "Revoke the machine login for people/ada (your pod)? Every session it started ends at once. The pod logs in again with its token, under a new login, while the broker's BROKER_SERVICE_LOGINS names its Kubernetes account, and that login is yours while BROKER_POD_OPERATORS maps the account to you.",
       ],
     ]);
     expect(revokeMachineLogin).not.toHaveBeenCalled();

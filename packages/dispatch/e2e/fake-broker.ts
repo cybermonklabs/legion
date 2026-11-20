@@ -5,6 +5,8 @@ import type {
   CredentialPendingResponse,
   CredentialPendingRow,
   DecisionResponse,
+  LauncherCredentialResp,
+  LauncherCredentialsResponse,
   PersonSignInResp,
   PersonSignInsResponse,
   RecordResponse,
@@ -15,9 +17,10 @@ import { harnessPorts } from "./harness-ports";
 // The secrets broker's reads Dispatch relays on every Inbox and Settings load: `GET /v1/pending`
 // (the credential requests waiting on an approver, and the expired ones nobody dismissed),
 // `GET /v1/grants` (the live grants of a person's sessions and those the person approved) and
-// `GET /v1/person-signins` (the machines one person signed in on); the two routes Dispatch's
-// machine-login page drives: `POST /v1/machine-logins/lookup` (the login a typed code selects)
-// and `POST /v1/credential-requests/{id}/approve|deny` (that login's decision, carrying the code
+// `GET /v1/person-signins` (the machines one person signed in on); `GET /v1/launcher-credentials`
+// (the machine logins one person may revoke), which the machine-login page lists; the two routes
+// that page drives: `POST /v1/machine-logins/lookup` (the login a typed code selects) and
+// `POST /v1/credential-requests/{id}/approve|deny` (that login's decision, carrying the code
 // again); `POST /v1/credential-requests/{id}/dismiss`, which the Inbox's Dismiss of an expired
 // request drives; `POST /v1/person-signins/{id}/revoke`, which the Settings page's Sign-ins
 // section drives; and the public `GET /.well-known/oauth-authorization-server`, the RFC 8414
@@ -25,8 +28,9 @@ import { harnessPorts } from "./harness-ports";
 // reaches this through
 // DISPATCH_AGENT_SECRETS_URL (run-server.sh) whenever the harness switch is left unset
 // (e2e/harness-broker.ts), and it lists nothing until a test seeds a request through
-// /__fixture/pending, a grant through /__fixture/grants, a machine login through
-// /__fixture/machine-logins or a sign-in through /__fixture/signins, relaying each row as
+// /__fixture/pending, a grant through /__fixture/grants, a machine login a typed code selects
+// through /__fixture/machine-logins, a live machine login through
+// /__fixture/launcher-credentials or a sign-in through /__fixture/signins, relaying each row as
 // seeded: a
 // secret request's row carries the `approve_url` of its page on the broker that the Inbox links
 // to (an absolute URL, which e2e/broker-approval.e2e.ts points at a record on the real broker,
@@ -61,6 +65,12 @@ export type FakeSignIn = PersonSignInResp & { readonly person: string };
  *  fails the typecheck here too. */
 export type FakeGrant = ApproverGrantResp & { readonly listedFor: string };
 
+/** A live machine login as `GET /v1/launcher-credentials?approver=<login>` lists it, beside the
+ *  login whose list holds it: a person's own machine's and pod's logins are on that person's list
+ *  alone, and a service's login is on every signed-in person's. The row is the SPA's own type, so
+ *  a change to the contract fails the typecheck here too. */
+export type FakeLauncherCredential = LauncherCredentialResp & { readonly listedFor: string };
+
 /** Every piece of fixture state this listener holds; `PUT /__fixture/reset` replaces it whole. */
 interface FakeBrokerState {
   /** Whether this broker serves RFC 8628's device grant, which its RFC 8414 metadata names and
@@ -73,6 +83,7 @@ interface FakeBrokerState {
    *  clears them, since they named the rows that seeding replaced. */
   dismissals: DismissResponse[];
   grants: FakeGrant[];
+  launcherCredentials: FakeLauncherCredential[];
   machineLogins: FakeMachineLogin[];
   pending: FakePendingRequest[];
   signIns: FakeSignIn[];
@@ -83,6 +94,7 @@ function emptyState(): FakeBrokerState {
     deviceGrant: true,
     dismissals: [],
     grants: [],
+    launcherCredentials: [],
     machineLogins: [],
     pending: [],
     signIns: [],
@@ -239,6 +251,19 @@ const server = Bun.serve({
       };
       return Response.json(body);
     }
+    // The machine logins one person may revoke, as internal/broker/api/handlers_ui_machinelogin.go
+    // lists them: the rows seeded for that login, each without the fixture's own `listedFor`,
+    // which no broker sends. A row's `person` is relayed as seeded, which is the field that marks
+    // a person's pod login.
+    if (request.method === "GET" && url.pathname === "/v1/launcher-credentials") {
+      const approver = url.searchParams.get("approver");
+      const body: LauncherCredentialsResponse = {
+        credentials: state.launcherCredentials
+          .filter((row) => row.listedFor === approver)
+          .map(({ listedFor: _, ...row }) => row),
+      };
+      return Response.json(body);
+    }
     // The RFC 8414 document, public on the real broker too: Dispatch reads
     // `grant_types_supported` from it and serves the machine-code page only while it names the
     // device code. The other members are what internal/broker/api/handlers_metadata.go writes,
@@ -331,6 +356,11 @@ const server = Bun.serve({
     if (request.method === "PUT" && url.pathname === "/__fixture/grants") {
       const grants = (await request.json()) as FakeGrant[];
       state = { ...state, grants };
+      return Response.json({ ok: true });
+    }
+    if (request.method === "PUT" && url.pathname === "/__fixture/launcher-credentials") {
+      const launcherCredentials = (await request.json()) as FakeLauncherCredential[];
+      state = { ...state, launcherCredentials };
       return Response.json({ ok: true });
     }
     if (request.method === "PUT" && url.pathname === "/__fixture/machine-logins") {

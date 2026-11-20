@@ -112,7 +112,7 @@ Each item below names a script, then what it proves.
 - `controller-start-tmux.sh`
 
   the operator-launched controller on the Go daemon under tmux:
-  `legion config check` passes a real config, reporting after its OK line the two deployment capabilities a tmux file alone leaves open (secrets, resource-limits), and names the key on each broken variant, running no key command;
+  `legion config check` passes a real config, reporting after its OK line the two deployment capabilities a tmux file alone leaves open (secrets, resource-limits) and then that a daemon under tmux cannot pause its project (`pause unavailable: runtime: tmux`), and names the key on each broken variant, running no key command;
   the boot gate refuses a plugin of another contract;
   `legion state --config` runs no key command;
   `legion controller start` refuses a group-readable operator token file, claims the controller role, shows in `controllerLocator`, runs Oh My Pi interactive with the controller environment and its secret only as a file, leaves Ctrl-C to Oh My Pi, and exits with its code;
@@ -3061,7 +3061,7 @@ Each item below names a check, then what it holds, with 4b.5's acceptance item i
 - `config-check-passes`
 
   `legion config check` passes the run's tmux config:
-  its first line is the `Config OK` line, and the lines after it are exactly the two deployment capabilities a tmux file alone leaves open (`capability secrets is open: …` then `capability resource-limits is open: …`, each ending with its `capabilities.decided.<name>: "<reason>"` line), a report that keeps the exit 0 (LEGION-578).
+  its first line is the `Config OK` line, and the lines after it are exactly the two deployment capabilities a tmux file alone leaves open (`capability secrets is open: …` then `capability resource-limits is open: …`, each ending with its `capabilities.decided.<name>: "<reason>"` line) and then `pause unavailable: runtime: tmux`, the setting under which this daemon cannot pause its project, a report that keeps the exit 0 (LEGION-578).
   4b.5's item that the check passes on the proof's config is the full-tree driver's, whose config is `runtime: kubernetes`:
   `stage4b-sandbox-tree.sh`'s `boot` checkpoint runs it before the daemon starts
 
@@ -6439,7 +6439,7 @@ A harness shell makes the same root for itself with one `ln -s` an entry, as `li
 How a live proof knows a process it started: by the pid it had when it started, read from what started it, and by the program the kernel records it runs (`/proc/<pid>/exe`), never by a walk of the machine's `/proc` for its name, its command line or its working directory.
 On a devbox at load 469 one such walk of 29,613 entries took 504 s; every other Oh My Pi there runs under the same name, its own daemon broker child among them; an `omp_invocation`, a wrapper or `exec -a` gives `argv[0]` any name;
 and an entry read through `tr | grep -q` under `pipefail` reads as absent whenever grep stops before tr has written the rest, which missed 2 to 4 reads in 100 of a devbox's own environment and every read of one with a mebibyte after the variable.
-[`lib/rig.sh`](#librigsh) sources it, [`lib/leftovers.sh`](#libleftoverssh) sources it when no script has, and `stage2-tmux-supervision.sh`, which sources no rig, sources it on its own.
+[`lib/rig.sh`](#librigsh) sources it, [`lib/leftovers.sh`](#libleftoverssh) sources it when no script has, and `stage2-tmux-supervision.sh`, which sources no rig, and `packages/dispatch/e2e/acceptance/replace-blocks.sh` source it on their own.
 It needs nothing of its caller's.
 Its walks of every process (`procs_naming`) read `${proc_root:-/proc}` ([`lib/proc-root.ts`](#libproc-rootts)) and hand the entries to `grep` through `xargs` in calls that fit ARG_MAX, and [`lib/rig.sh`](#librigsh)'s `listening_holders` and [`lib/leftovers.sh`](#libleftoverssh)'s `refuse_leftovers` hand them to `find` on stdin (`-files0-from -`), which needs GNU findutils 4.9 or later: on an older `find` (4.8, Ubuntu 22.04's) both always exit 2.
 Both read their `find`'s stderr with `proc_walk_complaint ERRFILE PROC`, which prints its first line that is neither an entry of PROC this user may not read nor one whose process ended during the walk, and fails when there is none.
@@ -6453,8 +6453,8 @@ A walk or a read that cannot see the processes it reads says why and fails with 
 
   print PID's parent, its process group, and each of its children, one a line, from that process's own `/proc/PID/stat` (read whole and past its last `) `, since a command name may hold both and a newline) and every thread's `/proc/PID/task/*/children`.
   None reads every process of the machine, as procps-ng's `ps -p` and `pgrep -P` do: one `ps -o args= -p PID` opened `/proc/<pid>/stat` 12,564 times at about 13,000 processes.
-  Each prints nothing for a process that is gone; a host with no `/proc` asks `ps` and `pgrep`.
-  [`signalable`](#libprocess-treesh), `stop_tree` (below), `stop_pid` (below) and the skill-scenario rig's `stop_env_processes` use them.
+  Each prints nothing, and succeeds, for a process that is gone, so a caller under `set -e` may assign its answer bare; a host with no `/proc` asks `ps` and `pgrep`, and `lib/process-tree.test.ts` holds the `ps` path to the same answers.
+  [`signalable`](#libprocess-treesh), `stop_tree` (below), `stop_pid` (below), the skill-scenario rig's `stop_env_processes` and `replace-blocks.sh` (`proc_group`, for its own shell's group and its Dispatch instance's) use them.
   `proc_children` asks `pgrep` as well where a process's `task/<tid>/children` file is missing (a kernel built without `CONFIG_PROC_CHILDREN`), so `stop_tree` never leaves the children of such a process running, and fails with 2 on a `pgrep` that exits above 1 and on a `/proc` that cannot be read
 
 - `proc_start PID`

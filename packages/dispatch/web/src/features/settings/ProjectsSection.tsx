@@ -25,8 +25,9 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { type KeyedPress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   settingsFieldLabel,
   settingsMonoInput,
@@ -55,6 +56,7 @@ export function ProjectsSection(): ReactNode {
   const createProject = useKeyedWrite({
     inline: true,
     label: (input: CreateProjectInput) => `New project ${input.key}`,
+    method: "POST",
     write: (input, bounds) => api.createProject(input, bounds),
     onSettled: () => projectSubmitGuard.release(),
     // Made either way, so the form empties; with no answer to give, it says what was made
@@ -259,7 +261,10 @@ export function ProjectsSection(): ReactNode {
           {createProject.isError ? (
             <div className="mt-4">
               <QueryError
-                message={apiErrorMessage(createProject.error, "Couldn't create the project.")}
+                message={
+                  stoppedNote(createProject, "the new project", "made") ??
+                  apiErrorMessage(createProject.error, "Couldn't create the project.")
+                }
                 onRetry={() => projectSubmitGuard.retryLast(createProject)}
                 retrying={createProject.isPending}
               />
@@ -316,7 +321,17 @@ function DefaultAssigneeCell({
       {write.error === null ? null : (
         <div className="mt-2">
           <QueryError
-            message={apiErrorMessage(write.error, "Couldn't update the default assignee.")}
+            message={
+              write.error instanceof SendStoppedError
+                ? // `useDefaultAssigneeWrite` reads this row's refusal from the mutation cache, not
+                  // from a `KeyedWriteResult`, so no write is in hand here to read the method from;
+                  // a default assignee is always this `PUT`.
+                  stoppedWriteNote("the default assignee", "saved", {
+                    method: "PUT",
+                    stopped: write.error,
+                  })
+                : apiErrorMessage(write.error, "Couldn't update the default assignee.")
+            }
             onRetry={write.retry}
             retrying={write.pending}
           />
@@ -334,10 +349,12 @@ type DefaultAssigneePick = { assignee: string };
 /** What a pick's save resolves to when a newer pick was waiting behind it: nothing was sent. */
 type DefaultAssigneeSuperseded = { superseded: true };
 
+/** One save as the mutation cache holds it: the press the keyed write made of a pick
+ *  (`KeyedPress`), the pick inside it. */
 type DefaultAssigneeSave = Mutation<
   ProjectDefaultAssignee | DefaultAssigneeSuperseded | null,
   Error,
-  DefaultAssigneePick
+  KeyedPress<DefaultAssigneePick>
 >;
 
 /** One project's default-assignee saves. The mutation scope runs a project's saves one at a time
@@ -379,13 +396,15 @@ function useDefaultAssigneeWrite(project: string): {
     // The row shows its newest save's refusal itself, beside the control it was refused over.
     inline: true,
     label: (pick) => `${project}'s default assignee ${pick.assignee}`,
+    method: "PUT",
     write: async (pick, bounds): Promise<ProjectDefaultAssignee | DefaultAssigneeSuperseded> => {
       // The cache lists mutations in the order they were made, so the last pending one is the
       // newest pick. Any other is waiting behind this save, and only it need reach the server.
       const waiting = queryClient
         .getMutationCache()
         .findAll({ exact: true, mutationKey, status: "pending" });
-      if (waiting.at(-1)?.state.variables !== pick) {
+      const last = waiting.at(-1) as DefaultAssigneeSave | undefined;
+      if (last?.state.variables?.variables !== pick) {
         return { superseded: true };
       }
       return api.putProjectDefaultAssignee(project, { assignee: pick.assignee }, bounds);
@@ -437,7 +456,7 @@ function useDefaultAssigneeWrite(project: string): {
     filters: { exact: true, mutationKey },
     select: (save) => ({
       error: save.state.error,
-      pick: save.state.variables,
+      pick: save.state.variables?.variables,
       status: save.state.status,
     }),
   });
@@ -449,8 +468,25 @@ function useDefaultAssigneeWrite(project: string): {
     error: refused?.error ?? null,
     pending: pendingPicks.length > 0,
     retry: () => {
-      if (refused?.pick !== undefined) {
-        mutation.mutate({ assignee: refused.pick.assignee });
+      // The pick is read from the mutation cache rather than from `saves`, which
+      // `useMutationState` gives: that hook shares its `select` result structurally, so it can
+      // hand back an older save's pick where the two are deep-equal. While the Retry is on screen
+      // the cache holds one settled save - each save's `onSettled` removes the project's settled
+      // saves - so the newest save is that one.
+      const newestSave = queryClient
+        .getMutationCache()
+        .findAll({ exact: true, mutationKey })
+        .at(-1) as DefaultAssigneeSave | undefined;
+      const press = newestSave?.state.status === "error" ? newestSave.state.variables : undefined;
+      if (press === undefined) {
+        return;
+      }
+      // The Retry of the press the refusal is about, which is the very press the cache holds: one
+      // this row made and the reader stopped is made again as that press (`again`). A default
+      // assignee is a `PUT`, which sends no key, so that is the same change sent again. A refusal
+      // Dispatch decided, or a press of a row mounted before this one, is retried as a new pick.
+      if (!mutation.again(press)) {
+        mutation.mutate({ assignee: press.variables.assignee });
       }
     },
     shown: pendingPicks.at(-1)?.pick?.assignee,

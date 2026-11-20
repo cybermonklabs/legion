@@ -375,8 +375,9 @@ agent-secrets grant revoke <grant_id>
 agent-secrets-helper sessions
 ```
 
-`machine list` shows your machines' logins, `grant list` the live grants of your sessions and
-those you approved, and `agent-secrets-helper sessions` the sessions this machine's helper holds.
+`machine list` shows your machines' logins and your pods' logins, `grant list` the live grants of
+your sessions and those you approved, and `agent-secrets-helper sessions` the sessions this
+machine's helper holds.
 `grant revoke` ends a grant: from your own shell it is the operator's revoke of any of these
 grants, and from inside a session it ends a grant given to the broker identity (enrollment) the
 session signs as; a grant of another enrollment is refused `was given to another broker identity

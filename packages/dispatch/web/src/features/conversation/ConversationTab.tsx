@@ -74,6 +74,7 @@ import {
   commentDeliveries,
   focusConversation,
   handoffFields,
+  listedReplies,
   type MessageConversation,
   matchesFilter,
 } from "./conversation-model";
@@ -92,6 +93,8 @@ import {
   useHeldSends,
   useHeldSendsUnder,
 } from "./held-sends";
+import { DraftOffer } from "./KeptDraftOffers";
+import { GoneReply, KeptReply } from "./KeptReply";
 import { MentionComposer } from "./MentionComposer";
 import { ReplyButton } from "./ReplyButton";
 import { ReplyTurn, ThreadReplies, TurnActions } from "./ReplyTurn";
@@ -216,6 +219,7 @@ function ConversationReply({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${text.part(targetName)} again, as ${MODE_LABELS[delivery]}`,
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["issue-messages", issueKey] }),
+    method: "POST",
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
   });
   const capabilities = capabilitiesForTarget(root.root.target, agents);
@@ -622,6 +626,7 @@ function CommentTurn({
   composerClassName,
   current,
   currentReplyId,
+  editingCommentId,
   expanded,
   forceExpanded = false,
   hideReplyComposer = false,
@@ -631,6 +636,7 @@ function CommentTurn({
   issueKey,
   item,
   onAction,
+  onEditingChange,
   onPhoneThreadToggle,
   onPin,
   onReply,
@@ -652,6 +658,9 @@ function CommentTurn({
   current: boolean;
   /** The reply a deep link named, marked inside the thread. */
   currentReplyId: string | undefined;
+  /** The comment whose editor is open in the thread. The tab owns it, so the phone thread view's
+   *  card, drawn afresh each time the view opens, finds the editor the reader left open. */
+  editingCommentId: string | undefined;
   /** Whether the reader has the thread open inline. The tab owns it, so a comment whose thread is
    *  open stays in the list whoever resolves it (`shown`), with its reply and the reply's send. */
   expanded: boolean;
@@ -669,6 +678,7 @@ function CommentTurn({
   issueKey: string;
   item: Extract<Conversation, { kind: "comment" }>;
   onAction: (id: string, kind: "accept" | "reject" | "resolve" | "reopen") => void;
+  onEditingChange: (id: string | undefined) => void;
   onPhoneThreadToggle?: () => void;
   onPin: () => void;
   /** Starts a reply, and says whether it did: a send that is out refuses it. On a phone a comment's
@@ -687,7 +697,6 @@ function CommentTurn({
 }): ReactNode {
   const queryClient = useQueryClient();
   const agentText = useAgentText();
-  const [editingCommentId, setEditingCommentId] = useState<string>();
   const [savingCommentEditId, setSavingCommentEditId] = useState<string>();
   /** One attempt of a comment edit's save, under the composer's key (`sendRequest`). */
   const editComment = useCallback(
@@ -718,6 +727,7 @@ function CommentTurn({
       `Delivery of the comment to ${agentText.part(targetPart(delivery.target))} again, as ${MODE_LABELS[delivery.delivery]}`,
     onSettled: () => retryGuard.release(),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] }),
+    method: "POST",
     write: (delivery, bounds) =>
       api.createCommentDelivery(delivery.comment_id, delivery.target, delivery.delivery, bounds),
   });
@@ -775,12 +785,15 @@ function CommentTurn({
         savingCommentEditId={savingCommentEditId}
         onAction={onAction}
         onEdit={editComment}
-        onEditingChange={setEditingCommentId}
+        onEditingChange={onEditingChange}
         onRetryAction={onRetryAction}
         onToggle={toggleThread}
         owner={{ key: issueKey, kind: "issue" }}
         pendingAction={pendingAction}
         pulseOrphanBlock={false}
+        // A reply the card keeps while its thread is closed comes back with Expand thread: the
+        // turn's Reply answers through another composer.
+        reopenControl="Expand thread"
         replyMutationKey={replySendKey}
         showReference={false}
         renderDeliveries={(comment) => (
@@ -855,6 +868,7 @@ function TargetedMessageTurn({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${text.part(targetName)} again, as ${MODE_LABELS[delivery]}`,
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["issue-messages", issueKey] }),
+    method: "POST",
     write: (delivery, bounds) => api.createMessageDelivery(item.root.id, delivery, bounds),
   });
   const capabilities = capabilitiesForTarget(item.root.target, agents);
@@ -981,9 +995,21 @@ export function ConversationTab({
       }),
     [asks.data, comments.data, handoffs.data, messages.data, unreadFrom]
   );
+  // The messages and comments the issue's reads hold, whatever the filter shows of them: a draft
+  // a composer keeps for one goes back by its Reply, and one kept for a reply the reads no longer
+  // hold is drawn itself (`ListedReplies`).
+  const listed = useMemo(
+    () => listedReplies(messages.data ?? [], comments.data ?? []),
+    [comments.data, messages.data]
+  );
   const [filter, setFilter] = useState<ConversationFilter>("all");
   const isPhoneViewport = useMediaQuery(PHONE_VIEWPORT_QUERY);
-  const phone = usePhoneThread({ isPhoneViewport, sendKey, sendingNow });
+  const phone = usePhoneThread({
+    isPhoneViewport,
+    owner: { issueKey, kind: "issue" },
+    sendKey,
+    sendingNow,
+  });
   // The comments whose thread the reader has open inline.
   const [openThreads, setOpenThreads] = useState<ReadonlySet<string>>(() => new Set());
   const setThreadOpen = useCallback((id: string, open: boolean) => {
@@ -992,6 +1018,20 @@ export function ConversationTab({
       const next = new Set(current);
       if (open) next.add(id);
       else next.delete(id);
+      return next;
+    });
+  }, []);
+  // The comment whose editor is open in each thread, by the thread's root: the tab's rather than
+  // a card's, since a phone's thread view draws its comment's card afresh each time it opens.
+  // Back, then that comment's thread again, finds the editor open where the reader left it, with
+  // what they wrote in it (`useKeptDrafts`'s `awayName`).
+  const [editingIn, setEditingIn] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const setEditing = useCallback((rootId: string, id: string | undefined) => {
+    setEditingIn((current) => {
+      if (current.get(rootId) === id) return current;
+      const next = new Map(current);
+      if (id === undefined) next.delete(rootId);
+      else next.set(rootId, id);
       return next;
     });
   }, []);
@@ -1074,8 +1114,34 @@ export function ConversationTab({
     setReplyTo(reply);
     return reply.id === target.id;
   };
+  // The thread composer shows in the thread its reply answers, unless the reader's Cancel reply
+  // put it away there (`parked`).
   const phoneReplyTargetsThread =
-    phoneThread !== undefined && phone.replyTo?.id === phoneThread.root.id;
+    phoneThread !== undefined &&
+    phone.replyTo?.id === phoneThread.root.id &&
+    phone.parked === undefined;
+  // A thread reply put away over the docked composer's own draft is out of sight, so the docked
+  // composer says it is kept, whose comment it answers, and how to go on with it: that comment's
+  // Reply. Once the list no longer holds the comment, no Reply brings it back, so the docked
+  // composer draws the reply itself, for the reader to read or copy, with Discard my draft. It
+  // offers no Use it here: the docked field holds a draft of its own, which is why the reply was
+  // put away rather than carried there (`usePhoneThread`'s `cancelReply`), and Use it here would
+  // write over it.
+  let parkedNotice: ReactNode;
+  if (phone.parked !== undefined && phone.replyTo !== null) {
+    parkedNotice = listed.has(phone.replyTo.id) ? (
+      <p className={`text-sm ${textMutedOnSurfaceMuted}`} role="status">
+        <KeptReply actor={phone.replyTo.actor} />
+      </p>
+    ) : (
+      <DraftOffer
+        body={phone.parked.body}
+        drop={{ label: "Discard my draft", press: phone.dropParked }}
+        lead={<GoneReply actor={phone.replyTo.actor} parentKind={phone.replyTo.parentKind} />}
+        replacement={phone.parked.replacement}
+      />
+    );
+  }
   // The list is on the page only once all four reads answer: `loading` and `failed` both hide it
   // (the early returns below) and withhold `latestItemSeq`, so the two cannot drift apart. The
   // number is the newest activity's own millisecond, since the list is ordered by activity.
@@ -1232,12 +1298,15 @@ export function ConversationTab({
           send's refusal and its reply are all still there on Back. A closed issue takes comments
           and message replies, so it shows and sends there as on an open one (`closed` hides only
           the kinds a closed issue refuses). `contents`, so the composer's own box stays the one
-          that sticks. */}
+          that sticks. The thread composer's Cancel reply puts its draft here (`intake`). */}
       <div className="contents" hidden={phoneThread !== undefined}>
         <MentionComposer
           closed={isClosed}
           docked
+          intake={phone.dockedIntake}
+          listed={listed}
           mutationKey={sendKey}
+          notice={parkedNotice}
           onCancelReply={() => setReplyTo(null)}
           onClose={() => setReplyTo(null)}
           onSent={() => {
@@ -1375,7 +1444,9 @@ export function ConversationTab({
                 onAction={(id, kind) => commentActions.mutateItem({ id, kind })}
                 current={current}
                 currentReplyId={currentReplyId}
+                editingCommentId={editingIn.get(item.root.id)}
                 expanded={openThreads.has(item.root.id)}
+                onEditingChange={(id) => setEditing(item.root.id, id)}
                 onRetryAction={commentActions.retryItem}
                 pendingAction={commentActions.pendingActionIds.has(item.root.id)}
                 isClosed={isClosed}
@@ -1430,7 +1501,11 @@ export function ConversationTab({
       </ol>
       {/* The thread view stays mounted, hidden, while its reply composer holds a reply: Back, or
           another comment's thread, leaves that composer - its draft, a send it has out and the
-          send's refusal - where reopening the comment's thread finds it. */}
+          send's refusal - where reopening the comment's thread finds it. Its Cancel reply is the
+          reader's own move to the issue's address, so the draft goes to the docked composer
+          (`cancelReply`), or, while that one holds a draft of its own, stays put away here for
+          the comment's Reply; a send that landed, or a Discard, leaves nothing to carry
+          (`endReply`). */}
       {phoneThread === undefined && phone.replyTo === null ? null : (
         <section
           aria-label="Thread"
@@ -1464,6 +1539,7 @@ export function ConversationTab({
                 current={phoneThread.id === focus?.id}
                 currentReplyId={phoneThread.id === focus?.id ? focus?.replyId : undefined}
                 viewerLogin={viewer.data?.login ?? ""}
+                editingCommentId={editingIn.get(phoneThread.root.id)}
                 expanded={openThreads.has(phoneThread.root.id)}
                 forceExpanded
                 hideReplyComposer={phoneReplyTargetsThread}
@@ -1474,6 +1550,7 @@ export function ConversationTab({
                 isPhone
                 key={phoneThread.id}
                 onAction={(id, kind) => commentActions.mutateItem({ id, kind })}
+                onEditingChange={(id) => setEditing(phoneThread.root.id, id)}
                 onPhoneThreadToggle={phone.leave}
                 onRetryAction={commentActions.retryItem}
                 pendingAction={commentActions.pendingActionIds.has(phoneThread.root.id)}
@@ -1492,8 +1569,10 @@ export function ConversationTab({
               <MentionComposer
                 closed={isClosed}
                 frame={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
+                intake={phone.threadIntake}
+                listed={listed}
                 mutationKey={phone.composerKey}
-                onCancelReply={phone.endReply}
+                onCancelReply={phone.cancelReply}
                 onClose={phone.endReply}
                 onSent={() => {
                   phone.endReply();

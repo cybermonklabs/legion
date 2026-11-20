@@ -1,9 +1,15 @@
 import { useRef, useState } from "react";
 
-import { api, apiErrorCodeIn, apiErrorMessage, type WriteBounds } from "../../api/client";
+import {
+  api,
+  apiErrorCodeIn,
+  apiErrorMessage,
+  type WriteBounds,
+  type WriteMethod,
+} from "../../api/client";
 import type { ReadHold } from "../../api/query-client";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 
 export type CommentAction = "accept" | "reject" | "resolve" | "reopen";
 
@@ -28,11 +34,18 @@ const permanentRefusals = new Set([
   "INVALID_OP",
 ]);
 
-function actionFailure(id: string, error: Error): CommentActionFailure {
+/** What the card says of `action`'s failed press, of the comment `id`. One the reader stopped may
+ *  have been saved, and the card's Retry makes it again under its key (`retryItem`). */
+function actionFailure(
+  id: string,
+  action: { readonly error: Error; readonly method: WriteMethod | undefined }
+): CommentActionFailure {
   return {
     id,
-    message: apiErrorMessage(error, "Could not save this action."),
-    retryable: !apiErrorCodeIn(error, permanentRefusals),
+    message:
+      stoppedNote(action, "this action", "saved") ??
+      apiErrorMessage(action.error, "Could not save this action."),
+    retryable: !apiErrorCodeIn(action.error, permanentRefusals),
   };
 }
 
@@ -82,6 +95,8 @@ export function useCommentActionQueue<TContext = undefined>({
     inline: true,
     label: ({ kind }) => ACTION_LABELS[kind],
     holds,
+    // Every action is a `POST` of its own route (`submitCommentAction`).
+    method: "POST",
     write: submitCommentAction,
     onError,
     onMutate,
@@ -102,10 +117,13 @@ export function useCommentActionQueue<TContext = undefined>({
       start({ id, kind });
     },
   });
-  function start(input: CommentActionInput): boolean {
+  /** Makes `press` under the guard, with `input` the action in flight: a new press of `input`, or
+   *  the card's Retry of the newest press (`retry`), which goes under that press's key where the
+   *  reader stopped it. */
+  function start(input: CommentActionInput, press = () => action.mutate(input)): boolean {
     return actionGuard.guard(() => {
       inFlight.current = input;
-      action.mutate(input);
+      press();
     });
   }
 
@@ -116,7 +134,7 @@ export function useCommentActionQueue<TContext = undefined>({
   return {
     actionFailure:
       action.isError && action.variables !== undefined
-        ? actionFailure(action.variables.id, action.error)
+        ? actionFailure(action.variables.id, action)
         : undefined,
     mutateItem: (input: CommentActionInput) => {
       if (start(input)) return;
@@ -127,7 +145,7 @@ export function useCommentActionQueue<TContext = undefined>({
     },
     pendingActionIds,
     retryItem: () => {
-      if (action.variables !== undefined) start(action.variables);
+      if (action.variables !== undefined) start(action.variables, action.retry);
     },
   };
 }

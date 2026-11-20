@@ -16,7 +16,9 @@ import {
   api,
   apiErrorCodeIn,
   apiErrorMessage,
+  isSubscriberNotFound,
   issuePatchRequest,
+  removedEvenIfGone,
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import { projectsQuery, userStateQuery } from "../../api/queries";
@@ -65,7 +67,8 @@ import { CopyRefButton } from "../refs/CopyRefButton";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath, sessionOfAddress } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { ApprovalSteps } from "./ApprovalSteps";
 import { AssigneeControl } from "./AssigneeControl";
 import { ClaimChip } from "./ClaimChip";
@@ -150,10 +153,17 @@ export function IssueHeader({
   const subscriberList = subscribers.isError ? [] : (subscribers.data ?? []);
   // The count is a claim about who is subscribed, so only a read that answered makes it.
   const subscribersCounted = !subscribers.isError && subscribers.data !== undefined;
-  // Every write here names `write` first: its answer and its variables are what the callbacks
-  // below read.
+  // Every write here names `write` before its callbacks: its answer and its variables are what
+  // the callbacks below read.
   const unsubscribe = useKeyedWrite({
-    write: (sessionId: string, bounds) => api.unsubscribeIssueSession(issue.key, sessionId, bounds),
+    // An unsubscribe made again after one that landed finds the session no longer subscribed
+    // (`404 SUBSCRIBER_NOT_FOUND`), which is the unsubscribe done (`removedEvenIfGone`).
+    method: "DELETE",
+    write: (sessionId: string, bounds) =>
+      removedEvenIfGone(
+        api.unsubscribeIssueSession(issue.key, sessionId, bounds),
+        isSubscriberNotFound
+      ),
     inline: true,
     label: (sessionId) =>
       `${agentText.sessionText(sessionId, subscriberList.find((row) => row.session_id === sessionId)?.title)} unsubscribed from ${issue.key}`,
@@ -162,6 +172,9 @@ export function IssueHeader({
     },
   });
   const releaseClaim = useKeyedWrite({
+    // A release made again after one that landed needs no `removedEvenIfGone`: Dispatch answers a
+    // release of an issue nobody holds with the issue, as it answers the first.
+    method: "DELETE",
     write: (_variables, bounds) => api.releaseIssueClaim(issue.key, bounds),
     inline: true,
     label: () => `Claim on ${issue.key} released`,
@@ -274,6 +287,7 @@ export function IssueHeader({
     // is the viewer's alone, so the wait keeps back nobody else's change.
     holds: () => ({ keys: [userStateQuery().queryKey] }),
     label: (pinned: boolean) => `${issue.key} ${pinned ? "pinned" : "unpinned"}`,
+    method: "PUT",
     write: (pinned: boolean, bounds) => api.putIssueState(issue.key, { pinned }, bounds),
     onSettled: () => {
       pinGuard.release();
@@ -324,9 +338,16 @@ export function IssueHeader({
     }
   };
   // A refused parent save (PARENT_INPUT, ISSUE_CLOSED) renders the server's reason inline,
-  // like a route validation error, instead of the generic update failure line.
+  // like a route validation error, instead of the generic update failure line. One the reader
+  // stopped may have been saved; the editor has closed, and saving it again is a press of its own
+  // (`requestParentSubmit`).
   const parentSaveFailed = updateIssue.isError && updateIssue.variables?.parent !== undefined;
-  const parentError = apiErrorMessage(updateIssue.error, "Could not save parent.");
+  const parentError =
+    updateIssue.error instanceof SendStoppedError
+      ? stoppedWriteNote("the new parent", "saved", {
+          anew: "Saving it again sends it as a new write.",
+        })
+      : apiErrorMessage(updateIssue.error, "Could not save parent.");
   // A title Dispatch refused (CAP_EXCEEDED past ISSUE_TITLE_MAX, ISSUE_CLOSED) shows its reason
   // with no Retry, since the same title is refused every time; any other failure keeps the generic
   // line and its Retry.
@@ -836,22 +857,30 @@ export function IssueHeader({
       ) : null}
       {updateState.isError ? (
         <QueryError
-          message="Could not save pin status."
+          message={
+            stoppedNote(updateState, "the pin status", "saved") ?? "Could not save pin status."
+          }
           onRetry={() => pinGuard.retryLast(updateState)}
           retrying={updateState.isPending}
         />
       ) : null}
       {unsubscribe.isError ? (
         <QueryError
-          message="Could not unsubscribe this agent."
-          onRetry={() => unsubscribe.mutate(unsubscribe.variables as string)}
+          message={
+            stoppedNote(unsubscribe, "this agent's unsubscribe", "made") ??
+            "Could not unsubscribe this agent."
+          }
+          onRetry={unsubscribe.retry}
           retrying={unsubscribe.isPending}
         />
       ) : null}
       {releaseClaim.isError ? (
         <QueryError
-          message="Could not release this claim."
-          onRetry={() => releaseClaim.mutate()}
+          message={
+            stoppedNote(releaseClaim, "the release of this claim", "made") ??
+            "Could not release this claim."
+          }
+          onRetry={releaseClaim.retry}
           retrying={releaseClaim.isPending}
         />
       ) : null}
@@ -865,8 +894,17 @@ export function IssueHeader({
             {titleRefusal}
           </p>
         ) : (
+          // A title or a route save. Its Retry is the field's own submit (`drafts.retry`): a press
+          // of its own, of what the field holds now, so a stopped save is never made again under
+          // its key from here.
           <QueryError
-            message="Could not update this issue."
+            message={
+              updateIssue.error instanceof SendStoppedError
+                ? stoppedWriteNote("this change to the issue", "saved", {
+                    anew: "Retry sends what the field holds now as a new write.",
+                  })
+                : "Could not update this issue."
+            }
             onRetry={drafts.retry}
             retrying={updateIssue.isPending}
           />

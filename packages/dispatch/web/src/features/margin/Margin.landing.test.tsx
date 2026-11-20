@@ -7,6 +7,7 @@ import { type ReactNode, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { MemoryRouter } from "react-router-dom";
 
+import { nextFrame } from "../../__tests__/frames";
 import { api } from "../../api/client";
 import type { Ask, Comment } from "../../api/types";
 import { useDrawerPage } from "../issue-page/drawer-page";
@@ -27,13 +28,15 @@ import {
   anchoredAsk,
   CommentLink,
   comment,
+  DESKTOP_WIDTH,
   issue,
   KeptDetailsLinks,
   markedCommentPath,
+  PHONE_WIDTH,
   ReportEmptyLayoutButton,
   SameCommentLink,
   SelectedItemLabel,
-  stubMatchMedia,
+  stubViewport,
 } from "./margin-fixture";
 import { RELAYOUT_SETTLES_FRAMES } from "./useCardHold";
 
@@ -126,14 +129,6 @@ function renderCommentLinkLanding(comments: Comment[] = [comment], asks: Ask[] =
   );
 }
 
-/** One rendering frame. happy-dom runs animation frames as immediates, so this is one turn of the
- *  event loop - and a frame is the unit the hold's relayout window counts. */
-async function nextFrame(): Promise<void> {
-  const done = Promise.withResolvers<void>();
-  requestAnimationFrame(() => done.resolve());
-  await done.promise;
-}
-
 /** Longer than the hold's relayout window, so what follows is judged on its own: whatever the
  *  margin is still rendering lands first, then the window's frames run out. */
 async function settled(): Promise<void> {
@@ -160,7 +155,7 @@ test("a phone comment deep link highlights its card without expanding it or open
   // reader finds it when they open the review panel, but a thread on a phone opens only in the
   // Thread dialog: an inline expansion left behind here would strand a Reply composer whose Cancel
   // opens the fullscreen thread (#1239).
-  const restoreMatchMedia = stubMatchMedia(true);
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
   const view = render(
     <MemoryRouter
       initialEntries={[buildIssuePath({ id: comment.id, key: issue.key, kind: "comment" })]}
@@ -226,7 +221,7 @@ function Details({
 // its copy of the comment and expands nothing at a desktop width either: an expanded thread's
 // Reply box takes the focus off that node as it mounts.
 test("a desktop link to a comment's node marks its card without expanding its thread", async () => {
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   // The card below the margin's view, as main's deep-link case puts it, so a hold on it would
   // scroll the margin: only the address's rule keeps it still.
   const restoreRects = stubRects(() => 900);
@@ -277,7 +272,7 @@ test("a desktop link to a comment's node marks its card without expanding its th
 // leaves Details closed.
 test("a link to a card beside its document opens Details on it, and a link to a node does not", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const scrollTo = stubScrollTo();
   try {
     for (const [path, opens] of [
@@ -327,7 +322,7 @@ test("a link to a card beside its document opens Details on it, and a link to a 
 // drawer's React tree, so the drawer must hear the link's click from the DOM.
 test("on a phone, a link followed in a panel portaled into Details closes the sheet", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(true);
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
   const tree = (target: Element | null) => (
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
       <QueryClientProvider client={landingClient([])}>
@@ -370,7 +365,7 @@ test("on a phone, a link followed in a panel portaled into Details closes the sh
 // plain link beside it still closes the sheet.
 test("on a phone, a link that keeps Details open leaves the sheet open, and a plain link still closes it", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(true);
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
   const tree = (target: Element | null) => (
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
       <QueryClientProvider client={landingClient([])}>
@@ -433,7 +428,7 @@ function ListOfKeys(): ReactNode {
 // takes it, or on the page after a press on the list's own text.
 test("with the list of keys over Details, Escape closes the list alone, the focus outside it", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
       <QueryClientProvider client={landingClient([])}>
@@ -492,7 +487,7 @@ test("a desktop comment deep link activates Comments and scrolls its card from P
   const listComments = spyOn(api, "listComments").mockResolvedValue([comment]);
   const restoreRects = stubRects(() => 900);
   const scrollTo = stubScrollTo();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
 
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: "CORE-1", kind: "issue" })]}>
@@ -541,7 +536,7 @@ test("a reader who lands on a comment link can still select another card", async
   // The URL keeps naming its item for the whole visit, so reading it ahead of the reader's own
   // selection - or re-applying it on every render - would pin the linked card as the selected one
   // and leave every later click with nothing to show for it.
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const scrollTo = stubScrollTo();
   const getAsk = answerAnchoredAsk();
   const view = renderCommentLinkLanding([comment, secondComment], [anchoredAsk]);
@@ -572,7 +567,7 @@ test("a reader who lands on a comment link can still select another card", async
 
 test("a reader who lands on a comment link can select a Needs you ask", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const scrollTo = stubScrollTo();
   const getAsk = answerAnchoredAsk();
   const view = renderCommentLinkLanding([comment], [anchoredAsk]);
@@ -598,7 +593,7 @@ test("following the same comment link again brings the reader back to its card",
   // Once per link is once per navigation: the URL still names comment-1 after the reader has
   // moved to another card, so a link back to it has to be honoured rather than seen as already
   // applied.
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const scrollTo = stubScrollTo();
   const view = render(
     <MemoryRouter
@@ -641,7 +636,7 @@ test("following a second comment link selects the item that link names", async (
   const user = userEvent.setup();
   // The route selection is applied once per link, not once ever: a reader who follows another
   // link from the same page has to land on its card.
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const scrollTo = stubScrollTo();
   const view = render(
     <MemoryRouter
@@ -684,7 +679,7 @@ test("the margin holds a linked card in view while the margin is still filling i
   let cardTop = 0;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = stubScrollTo();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
 
   const view = renderCommentLinkLanding();
 
@@ -729,7 +724,7 @@ test("the margin stops correcting a linked card once the reader scrolls the marg
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = stubScrollTo();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
 
   const view = renderCommentLinkLanding();
 
@@ -783,7 +778,7 @@ test("a press in the document takes over once the document has reported an empty
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = stubScrollTo();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   // The spec's margin reads the issue's decisions, which this issue has none of.
   const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue({
     decisions: [],
@@ -829,7 +824,7 @@ test("a press in the document leaves the hold armed while the layout reported is
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = stubScrollTo();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const view = renderLandingWithReport("artifact-handbook");
 
   try {
@@ -863,7 +858,7 @@ test("a text update in the margin keeps its anchoring scroll from taking over", 
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = stubScrollTo();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const view = renderCommentLinkLanding();
 
   try {
@@ -906,7 +901,7 @@ test("a scroll the margin did not perform, with nothing having changed, ends the
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = stubScrollTo();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
 
   const view = renderCommentLinkLanding();
 
@@ -946,7 +941,7 @@ test("a relayout that scrolls the margin twice leaves the hold alone", async () 
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = stubScrollTo();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
 
   const view = renderCommentLinkLanding();
 
@@ -986,7 +981,7 @@ test("a stream of scrolls after one relayout does not slide the window along", a
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = stubScrollTo();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
 
   const view = renderCommentLinkLanding();
 
@@ -1032,7 +1027,7 @@ test("a relayout's own scroll that lands after a long task leaves the hold alone
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = stubScrollTo();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
 
   const view = renderCommentLinkLanding();
 
