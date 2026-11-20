@@ -34,6 +34,7 @@ type testWriteAdvice struct {
 	DecisionBlocksAdded     *int                  `json:"decision_blocks_added"`
 	SupersededApproval      *supersededApproval   `json:"superseded_approval"`
 	MovedApprovalRequest    *movedApprovalRequest `json:"moved_approval_request"`
+	StandingReview          *standingReview       `json:"standing_review"`
 	LegionManagedStatus     *bool                 `json:"legion_managed_status"`
 	UnparsedOpeners         *struct {
 		Count    int      `json:"count"`
@@ -827,11 +828,16 @@ func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
 		t.Fatalf("begin event seed: %v", err)
 	}
 	defer tx.Rollback(context.Background())
+	// The seed appends to the issue's event log as a writer does: under its owner lock, its
+	// sequence read in the statement after it.
+	if err := store.LockOwner(context.Background(), tx, store.IssueOwner(issue.Key)); err != nil {
+		t.Fatalf("lock issue for event seed: %v", err)
+	}
 	var lastSeq int
 	if err := tx.QueryRow(context.Background(), `
-		select last_seq from issues where key = $1 for update
+		select last_seq from issues where key = $1
 	`, issue.Key).Scan(&lastSeq); err != nil {
-		t.Fatalf("lock issue for event seed: %v", err)
+		t.Fatalf("read issue sequence for event seed: %v", err)
 	}
 	if _, err := tx.Exec(context.Background(), `
 		insert into events (issue_key, seq, type, actor, payload, notify)

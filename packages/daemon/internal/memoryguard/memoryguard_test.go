@@ -102,6 +102,9 @@ type fakeProcess struct {
 	file      uint64
 	shared    uint64
 	memfd     uint64
+	// resident is its resident size, which its stat's rss field holds in pages: the size the guest
+	// watch reads of it, where the guard reads its smaps.
+	resident uint64
 	// unreadableExe makes exe a plain file, whose readlink fails as an unreadable link does.
 	unreadableExe bool
 	// zombie writes the process's stat in state Z: it has exited and its parent has not reaped it.
@@ -153,7 +156,7 @@ func (p *fakePod) write(fp fakeProcess) {
 	if err := os.MkdirAll(filepath.Join(dir, "ns"), 0o755); err != nil {
 		p.t.Fatal(err)
 	}
-	stat := statLine(fp.pid, fp.name, fp.ppid, fp.start)
+	stat := statLine(fp.pid, fp.name, fp.ppid, fp.start, fp.resident/uint64(os.Getpagesize()))
 	if fp.zombie {
 		stat = strings.Replace(stat, ") S ", ") Z ", 1)
 	}
@@ -254,7 +257,7 @@ func (p *fakePod) sparseFile(path string, size uint64) {
 // restart rewrites pid's stat with another start time, as a process that took the pid would
 // read.
 func (p *fakePod) restart(pid int, start uint64) {
-	p.writeWhole(filepath.Join(p.proc, strconv.Itoa(pid), "stat"), statLine(pid, "reused", 1, start))
+	p.writeWhole(filepath.Join(p.proc, strconv.Itoa(pid), "stat"), statLine(pid, "reused", 1, start, 0))
 }
 
 func (p *fakePod) remove(pid int) {
@@ -285,34 +288,60 @@ func (p *fakePod) exitAsItsCmdlineIsRead(pid int) {
 	if err != nil {
 		p.t.Fatal(err)
 	}
-	if err := os.Remove(cmdline); err != nil {
-		p.t.Fatal(err)
-	}
-	if err := unix.Mkfifo(cmdline, 0o644); err != nil {
-		p.t.Fatal(err)
-	}
 	done := make(chan error, 1)
-	go func() {
-		w, err := os.OpenFile(cmdline, os.O_WRONLY, 0)
-		if err != nil {
-			done <- err
-			return
-		}
-		renamed := os.Rename(zombie, stat)
-		_, written := w.Write(args)
-		done <- errors.Join(renamed, written, w.Close())
-	}()
-	p.t.Cleanup(func() {
-		// The writer waits in its open until a reader opens the pipe; one that does not wait lets
-		// it go where no scan read the pipe.
-		r, err := os.OpenFile(cmdline, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-		if err == nil {
-			defer r.Close()
-		}
+	opened := p.namedPipe(cmdline, func() {
 		if err := <-done; err != nil {
 			p.t.Errorf("the exit of pid %d as its cmdline was read: %v", pid, err)
 		}
 	})
+	go func() {
+		o := <-opened
+		if o.err != nil {
+			done <- o.err
+			return
+		}
+		renamed := os.Rename(zombie, stat)
+		_, written := o.writer.Write(args)
+		done <- errors.Join(renamed, written, o.writer.Close())
+	}()
+}
+
+// openedPipe is the writer of a named pipe (namedPipe), opened once a reader has opened the pipe,
+// or the error of its open.
+type openedPipe struct {
+	writer *os.File
+	err    error
+}
+
+// namedPipe replaces the file at path with a named pipe and answers the channel that takes its
+// writer, opened on a goroutine of its own once a reader has opened the pipe; the caller writes and
+// closes it. The writer waits in its open until a reader opens the pipe, so the test's cleanup lets
+// go one that no reader met, with a reader that does not wait, which it holds open while await,
+// where not nil, waits for what the caller does with the writer: what the caller writes then still
+// has a reader.
+func (p *fakePod) namedPipe(path string, await func()) <-chan openedPipe {
+	p.t.Helper()
+	if err := os.Remove(path); err != nil {
+		p.t.Fatal(err)
+	}
+	if err := unix.Mkfifo(path, 0o644); err != nil {
+		p.t.Fatal(err)
+	}
+	opened := make(chan openedPipe, 1)
+	go func() {
+		writer, err := os.OpenFile(path, os.O_WRONLY, 0)
+		opened <- openedPipe{writer, err}
+	}()
+	p.t.Cleanup(func() {
+		r, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+		if err == nil {
+			defer r.Close()
+		}
+		if await != nil {
+			await()
+		}
+	})
+	return opened
 }
 
 // writeWhole writes a process's file through a rename, so the guard's hourly scan, which reads
@@ -328,10 +357,11 @@ func (p *fakePod) writeWhole(path, content string) {
 	}
 }
 
-// statLine is a stat line of the kernel's shape: the start time is field 22.
-func statLine(pid int, name string, ppid int, start uint64) string {
-	return fmt.Sprintf("%d (%s) S %d %d %d 0 -1 4194304 100 0 0 0 5 3 0 0 20 0 1 0 %d 123456789 2048 "+
-		"18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n", pid, name, ppid, pid, pid, start)
+// statLine is a stat line of the kernel's shape: the start time is field 22, and the resident
+// pages, rss, field 24.
+func statLine(pid int, name string, ppid int, start, rss uint64) string {
+	return fmt.Sprintf("%d (%s) S %d %d %d 0 -1 4194304 100 0 0 0 5 3 0 0 20 0 1 0 %d 123456789 %d "+
+		"18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n", pid, name, ppid, pid, pid, start, rss)
 }
 
 func smapsOf(fp fakeProcess) string {
@@ -1281,7 +1311,7 @@ func TestMemoryGuardDoesNotKillOrReportAProcessThatExitedBeforeTheKill(t *testin
 
 func TestMemoryGuardParsesAStatWhoseNameHoldsSpacesAndAParenthesis(t *testing.T) {
 	for _, tc := range []struct{ name string }{{"omp daemon brok"}, {"x) S 1 2 3 4 (y"}, {"a)"}} {
-		p, err := parseStat([]byte(statLine(42, tc.name, 7, 4242)))
+		p, err := parseStat([]byte(statLine(42, tc.name, 7, 4242, 0)))
 		if err != nil {
 			t.Fatalf("parseStat of the name %q: %v", tc.name, err)
 		}
@@ -1292,7 +1322,7 @@ func TestMemoryGuardParsesAStatWhoseNameHoldsSpacesAndAParenthesis(t *testing.T)
 	// And through the scan, where the classifier reads it.
 	pod := newFakePod(t)
 	pod.add(fakeProcess{pid: 900, ppid: 7, start: 4242, name: "x) S 1 2 3 4 (y", exe: "/usr/bin/x", args: []string{"x"}})
-	table, err := scan(pod.proc)
+	table, err := Scan(pod.proc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1618,7 +1648,7 @@ func TestMemoryGuardNamesAProcessByItsExecutablesBaseNameOrItsStatName(t *testin
 		fakeProcess{pid: 900, ppid: 1, exe: "/opt/tool/bin/gr\now", args: []string{"grow", "SECRETPASS"}},
 		fakeProcess{pid: 901, ppid: 1, name: "gr\x1bow", unreadableExe: true, args: []string{"grow", "SECRETPASS"}},
 	)
-	table, err := scan(pod.proc)
+	table, err := Scan(pod.proc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1650,7 +1680,7 @@ func TestMemoryGuardScanReadsAtMostClassifierArgsBytesOfAMebibyteOfArguments(t *
 	}
 	cmdline := b.String()
 	pod.writeWhole(filepath.Join(pod.proc, "900", "cmdline"), cmdline)
-	table, err := scan(pod.proc)
+	table, err := Scan(pod.proc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1794,7 +1824,7 @@ func TestMemoryGuardEndsAProcessInStateZWhoseOtherThreadsRun(t *testing.T) {
 		fakeProcess{pid: 970, ppid: 100, args: []string{"python3", "threads.py"}, anon: 1500 * mib, zombie: true, threads: 3},
 		fakeProcess{pid: 971, ppid: 100, args: []string{"python3", "grow.py"}, anon: 600 * mib},
 	)
-	table, err := scan(pod.proc)
+	table, err := Scan(pod.proc)
 	if err != nil {
 		t.Fatal(err)
 	}

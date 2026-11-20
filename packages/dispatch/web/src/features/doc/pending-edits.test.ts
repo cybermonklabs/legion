@@ -1,6 +1,7 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import * as Y from "yjs";
 
+import { quietConsoleError } from "../../__tests__/act-warnings";
 import {
   deletePendingEdits,
   openPendingEdits,
@@ -8,18 +9,23 @@ import {
   type PendingKey,
 } from "./pending-edits";
 
-// Each test names its own artifact: fake-indexeddb keeps one database for the whole test process.
+// Each test names its own artifact, and its rows are deleted after it: fake-indexeddb keeps one
+// database for the whole test process, and a rerun of this file names the same artifacts again.
 let next = 0;
+const named: string[] = [];
 function artifactId(): string {
   next += 1;
-  return `pending-edits-test-${next}`;
+  const artifact = `pending-edits-test-${next}`;
+  named.push(artifact);
+  return artifact;
 }
 
 const opened: PendingEdits[] = [];
-afterEach(() => {
+afterEach(async () => {
   for (const store of opened.splice(0)) {
     store.close();
   }
+  await Promise.all(named.splice(0).map(deletePendingEdits));
 });
 
 async function open(artifact: string, clientId: number): Promise<PendingEdits> {
@@ -197,7 +203,7 @@ test("an IndexedDB that throws on open leaves the browser keeping no edits, and 
       throw new DOMException("The user denied permission.", "SecurityError");
     },
   };
-  const logged = spyOn(console, "error").mockImplementation(() => {});
+  const logged = quietConsoleError();
   Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: refusing });
   try {
     expect(await openPendingEdits(artifactId(), 1)).toBeUndefined();

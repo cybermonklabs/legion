@@ -26,7 +26,7 @@ type Deployment struct {
 	Probed bool
 	// AgentSecrets is whether runtime.kubernetes.agent_secrets is configured.
 	AgentSecrets bool
-	// SecretsLogin is the broker login's state (agentsecrets.LoginState.State: "none", "issued" or
+	// SecretsLogin is the broker login's state (cipher.LoginState.State: "none", "issued" or
 	// "failed"); "" with no broker.
 	SecretsLogin string
 	// UnreservedPods are the pods the daemon builds that reserve no CPU and memory, those whose
@@ -61,15 +61,19 @@ type Deployment struct {
 // (in the probe table, the browser row under `probe-image --skip-browser`).
 // StatusMissing and StatusReported are the probe table's alone (CheckImage): a deployment row
 // `legion state` carries (api.CapabilityState) is never missing or reported, since the daemon
-// either measures it or has nothing yet to measure it with.
+// either measures it or has nothing yet to measure it with. StatusUnanswered is the probe table's
+// alone too: an image row the end of the check's context (the probe's deadline) left with no
+// verdict, a command of its check stopped by that end, or kept from starting, or the check never
+// run, which says nothing of the image.
 const (
-	StatusPresent   = "present"
-	StatusMissing   = "missing"
-	StatusReported  = "reported"
-	StatusWithheld  = "withheld"
-	StatusUnchecked = "unchecked"
-	StatusDecided   = "decided"
-	StatusOpen      = "open"
+	StatusPresent    = "present"
+	StatusMissing    = "missing"
+	StatusReported   = "reported"
+	StatusWithheld   = "withheld"
+	StatusUnchecked  = "unchecked"
+	StatusUnanswered = "unanswered"
+	StatusDecided    = "decided"
+	StatusOpen       = "open"
 )
 
 // Source is where a deployment row's measurement came from.
@@ -106,7 +110,7 @@ func (s State) String() string {
 	return fmt.Sprintf("probe-image: capability %s: %s (%s)", s.Name, s.Status, s.Detail)
 }
 
-// OpenLine is the sentence an open row is logged with (Log) and `legion start --check-config`
+// OpenLine is the sentence an open row is logged with (Log) and `legion config check`
 // prints: the gap and, on a deployment row, the line that records a decision. A live row has no
 // such line: a session's failing check is a fact to fix, not a gap an operator decides.
 func (s State) OpenLine() string {
@@ -123,9 +127,9 @@ func (s State) OpenLine() string {
 // satisfies it, decided when legion.yaml records a decision on it, and open otherwise, with the
 // line that records one.
 func (d Deployment) Report() []State {
-	// The renderers run no command, so the walk under a context that never ends cannot fail.
-	states, _ := render(context.Background(), renderer{image: d.image, live: d.live, deployment: d.deployment})
-	return states
+	// The renderers run no command, and the walk's context never ends, so no image row is
+	// unanswered.
+	return render(context.Background(), renderer{image: d.image, live: d.live, deployment: d.deployment})
 }
 
 // Open is the rows whose status is open, in Table order: the deployment gaps with no decision, and
@@ -139,7 +143,7 @@ func (d Deployment) Open() []Name {
 }
 
 // OpenFromConfiguration is the open rows whose Source is SourceConfiguration, in Table order: the
-// configuration's own gaps, whatever row they fall on, which `legion start --check-config` prints.
+// configuration's own gaps, whatever row they fall on, which `legion config check` prints.
 // Boot's measurements are not its to say — a configured broker's login, model fallback, which the
 // probe or the plugin gate reads, and pool capacity, which the probe's run measures.
 func (d Deployment) OpenFromConfiguration() []State {
@@ -325,7 +329,7 @@ func (d Deployment) measure(name Name) (bool, Source, string) {
 		case d.ProbeCapacityWaits == 0:
 			return true, SourceBoot, "the image probe pod scheduled at its first attempt"
 		default:
-			return false, SourceBoot, fmt.Sprintf("the image probe pod was Unschedulable %d time(s) at boot before it scheduled: %s; the pool had no room for its 250m / 1Gi reservation",
+			return false, SourceBoot, fmt.Sprintf("the image probe pod was Unschedulable %d time(s) at boot before it scheduled: %s; the pool had no room for its 500m / 1Gi reservation",
 				d.ProbeCapacityWaits, d.ProbeCapacityReason)
 		}
 	}
@@ -345,8 +349,8 @@ const (
 )
 
 // BurstableLine names the Burstable pods and says every other pod is Guaranteed; "" when no pod
-// requests less than its limit. The resource-limits row's detail carries it, and `legion start
-// --check-config` prints it after Config OK.
+// requests less than its limit. The resource-limits row's detail carries it, and `legion config
+// check` prints it after Config OK.
 func (d Deployment) BurstableLine() string {
 	if len(d.BurstablePods) == 0 {
 		return ""

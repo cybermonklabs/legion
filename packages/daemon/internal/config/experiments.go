@@ -53,8 +53,9 @@ var experimentUnits = []ExperimentUnit{ExperimentTree, ExperimentIssue}
 // (api.Issue.Assignments), which name the directory and the file of an `experiments` arm's
 // instructions copy under the state directory (VariantInstructionsFile), and which head that copy
 // in every prompt it reaches (WriteVariantInstructions), so the names stay short and stay in
-// characters a path segment and every such reader take: neither holds `/`. No environment
-// variable carries either.
+// characters a path segment and every such reader take: neither holds `/`. One environment
+// variable carries both, as `<experiment>:<variant>` in the `legion.arms` attribute of a launch's
+// OTEL_RESOURCE_ATTRIBUTES (runtime.SpendArmsValue), which is why neither holds `:` or `,`.
 var experimentNamePattern = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 
 // Experiment is one `projects.<KEY>.experiments.<name>` block: something the daemon decides once
@@ -536,11 +537,19 @@ func checkExperimentMemory(experiments []Experiment, blockWritten bool, key stri
 // The walk is of the declared list rather than of the file as it was read, so an arm is named by
 // the key path it carries (Variant.ConfigFilesField) and the spelling an operator reads in a
 // refusal is built in one place.
+//
+// Before those, each project's whole declared list is held to the bound of the attribute that
+// names a launch's arms (checkSpendArms), which the `memory` block's experiment counts toward too,
+// since every launch drawn into it names its arm there.
 func checkExperiments(cfg Config) error {
 	for _, name := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		project := cfg.Projects[name]
 		block := project.MemoryIsBlock()
-		for _, experiment := range project.ExperimentsDeclared("projects." + name) {
+		declared := project.ExperimentsDeclared("projects." + name)
+		if err := checkSpendArms(declared, "projects."+name); err != nil {
+			return err
+		}
+		for _, experiment := range declared {
 			if block && experiment.Name == MemoryExperimentName {
 				continue
 			}
@@ -550,6 +559,30 @@ func checkExperiments(cfg Config) error {
 				}
 			}
 		}
+	}
+	return nil
+}
+
+// checkSpendArms refuses a project whose declared experiments could make one launch's
+// `legion.arms` longer than the agent's OpenTelemetry detector takes
+// (runtime.SpendAttributeLimit): a launch names one arm of each experiment it runs in
+// (runtime.SpendArmsValue), so the longest value is each experiment with its longest arm's name,
+// and a value past the bound throws in the detector and costs every launch of that unit every
+// attribute it carries, including the operator's project attribute. Every name is ASCII
+// (experimentNamePattern), so its length in bytes is its length in the detector's UTF-16 units.
+func checkSpendArms(declared []Experiment, key string) error {
+	longest := make([]runtime.Variant, 0, len(declared))
+	for _, experiment := range declared {
+		arm := runtime.Variant{Experiment: experiment.Name}
+		for _, variant := range experiment.Variants {
+			if len(variant.Name) > len(arm.Name) {
+				arm.Name = variant.Name
+			}
+		}
+		longest = append(longest, arm)
+	}
+	if n := len(runtime.SpendArmsValue(longest)); n > runtime.SpendAttributeLimit {
+		return fmt.Errorf("%s declares experiments whose arms one launch could name in %s in %d characters, over the 255 the agent's telemetry takes: shorten the experiments' or their variants' names, or declare fewer experiments", key, runtime.SpendArmsAttribute, n)
 	}
 	return nil
 }

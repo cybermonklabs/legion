@@ -74,6 +74,7 @@ func reviewerRequestsChanges(t *testing.T, pool *pgxpool.Pool, engine *Engine, r
 	standsIn(t, pool, phase.Reviewing, "needs_review")
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim",
 		HandoffCommit: "review-" + round})
+	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
 	applyRefusingNothing(t, pool, engine, intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42,
 		State: "changes_requested", CommitID: head, HeadSHA: head, Author: testReviewApp,
 		Body: reviewBody("the round "+round+" findings", head)})
@@ -99,15 +100,19 @@ func mergerMovesBack(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 		Reason: "the head GitHub shows is not the head this merger read"})
 }
 
-// marksConflicting is the daemon's read of GitHub that judges head, the pull request's own
-// recorded head, conflicting with its base: the mark a conflict round is read against
-// (classify.ConflictRound). It is applied while the issue stands in implementing, the one phase
-// with no row for the conflict trigger, so it records the judgement and moves nothing
-// (workflow's mergeability).
+// marksConflicting is the daemon's two reads of GitHub, a minute apart, that judge head, the pull
+// request's own recorded head, conflicting with its base: the confirmed conflict a conflict round
+// is read against (record.PullRequest.ConflictingHead, classify.ConflictRound). The reads carry a
+// base that requires no check and is not strict, and the issue stands short of accepting, so the
+// conflict is recorded and nothing is asked or moved (workflow's mergeability,
+// classify.ConflictNeedsMerge).
 func marksConflicting(t *testing.T, pool *pgxpool.Pool, engine *Engine, head string) {
 	t.Helper()
-	applyRefusingNothing(t, pool, engine, intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42,
-		Base: "main", HeadSHA: head, Mergeable: record.MergeabilityConflicting})
+	read := intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: head,
+		Mergeable: record.MergeabilityConflicting, Rules: &record.BaseRules{}}
+	applyRefusingNothing(t, pool, engine, read)
+	read.ReadAt = engine.now().Add(conflictConfirmWait)
+	applyRefusingNothing(t, pool, engine, read)
 }
 
 // Every move back is counted under its own "<from>-<to>" pair, and the pass the daemon has always

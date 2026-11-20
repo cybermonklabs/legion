@@ -67,9 +67,10 @@ type StatusWrite struct {
 	Kind           StatusRowKind `json:"kind"`
 	Status         string        `json:"status"`
 	ObservedStatus string        `json:"observedStatus"`
-	// Reason is a done write's reason: the runner posts it as a message on the issue before it
-	// writes the status, so the reason is on the issue before the close. Empty for a write
-	// with no reason to record.
+	// Reason is posted as a message on the issue before the runner writes the status, so it is on
+	// the issue before the status lands: a done write's reason, and the reason of a workflow move
+	// nothing else on Dispatch explains (workflow's moveReason: a worker's backward move). Empty
+	// for a write with no reason to record.
 	Reason string `json:"reason,omitempty"`
 	// HandOverTree and HandOverLinger fence a hand-over (HandOverStatusRow): the runner writes it
 	// only while the issue is still that tree's and the tree's root still lingers at that
@@ -88,8 +89,9 @@ type StatusWrite struct {
 func (StatusWrite) OutboxKind() OutboxKind { return OutboxKindDispatchStatus }
 
 // OrdinaryStatusWrite is the workflow's own move of an issue inside the workflow, to status from
-// the observed status Dispatch shows until the write runs. reason is a done write's, posted as a
-// message before the status lands (StatusWrite.Reason); every other write has none.
+// the observed status Dispatch shows until the write runs. reason is posted as a message before
+// the status lands (StatusWrite.Reason): a done write's, or a move's that no worker's act on
+// Dispatch explains; every other write has none.
 func OrdinaryStatusWrite(status, observed, reason string) StatusWrite {
 	return StatusWrite{Kind: OrdinaryStatusRow, Status: status, ObservedStatus: observed, Reason: reason}
 }

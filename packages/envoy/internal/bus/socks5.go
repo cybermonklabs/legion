@@ -91,7 +91,7 @@ func dnsName(host string) bool {
 // the last error a Dial returned, which connectWithContext names when nats.go reports only
 // ErrNoServers (nats.go discards "connection refused"). The record is shared by every copy bounded
 // makes and is safe for concurrent use: nats.go dials from its own reconnect goroutine
-// (nats.go@v1.50.0:3038, doReconnect → createConn), and a client's background recovery and a
+// (nats.go@v1.55.0:3562-3565, doReconnect → createConn), and a client's background recovery and a
 // publish's replacement dial can connect at once, each storing while the other loads.
 type socks5Dialer struct {
 	address string              // the proxy's host:port, for the error that names it

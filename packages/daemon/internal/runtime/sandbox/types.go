@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -14,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -22,11 +24,81 @@ import (
 
 // Scheduling is where Legion's pods may run, beyond the Legion pool every one of them selects.
 type Scheduling struct {
-	// NodeSelector is added to {legion.dev/pool: legion}; it may not set legion.dev/pool itself.
+	// NodeSelector is added to {legion.dev/pool: legion}; it may not set legion.dev/pool itself. A
+	// microVM issue pod names its own ComputeClass in place of any this names (placement).
 	NodeSelector map[string]string
-	// Tolerations are appended to the Legion pool's own toleration.
+	// Tolerations are appended to the Legion pool's own toleration, less one of another
+	// ComputeClass on a microVM issue pod (placement).
 	Tolerations   []corev1.Toleration
 	PriorityClass string
+}
+
+// SandboxType is the sandbox an issue pod runs in.
+type SandboxType string
+
+const (
+	// SandboxGVisor is gVisor: the sandbox of every issue pod the configuration names no other
+	// for, and of every other pod the runtime builds.
+	SandboxGVisor SandboxType = "gvisor"
+	// SandboxMicroVM is a GKE Sandbox microVM, on a node of the ComputeClass MicroVM names.
+	SandboxMicroVM SandboxType = "microvm"
+)
+
+// SandboxConfig is runtime.kubernetes.sandbox, settled, as the daemon hands it over member for
+// member (config.SandboxConfig): the sandbox of the project's issue pods, the issues whose pods run
+// in the other one, and where a microVM pod runs. It places issue pods alone: the controller's pod,
+// the repository cache pods and the image probe run in gVisor whatever it says. The zero value
+// runs every issue pod in gVisor.
+type SandboxConfig struct {
+	// Type is the sandbox of the project's issue pods. Any value but SandboxMicroVM, the zero
+	// value's included, reads as gVisor.
+	Type SandboxType
+	// CanaryIssues are the issue keys whose pods run in the sandbox Type does not name.
+	CanaryIssues []string
+	// MicroVM is where a microVM pod runs, its disk and its metadata endpoint; nil when the
+	// configuration names none. New refuses a nil one, or one naming no ComputeClass or no
+	// StorageClass, while an issue pod runs in a microVM (AnyMicroVM).
+	MicroVM *MicroVM
+}
+
+// MicroVM is runtime.kubernetes.sandbox.microvm: the GKE ComputeClass whose nodes run the microVM
+// pods; the StorageClass of their disks, runtime.kubernetes.storage_class where the block names
+// none, which the loader fills in; whether an issue pod keeps its volume; and the metadata endpoint
+// their launchers serve, nil for none.
+type MicroVM struct {
+	ComputeClass, StorageClass string
+	// KeepVolume is microvm.keep_volume. It applies to an issue pod that runs in a microVM alone:
+	// that pod's volume is then a claim that the issue's Sandbox owns, and the claim outlives the
+	// pod. A gVisor pod and the controller's pod ignore it.
+	KeepVolume bool
+	Metadata   *MetadataEndpoint
+}
+
+// MetadataEndpoint is runtime.kubernetes.sandbox.microvm.metadata, which a microVM pod's launcher
+// is told (launcher.MetadataConfig): the cluster's Workload Identity pool,
+// `<PROJECT_ID>.svc.id.goog`, which is also the audience of the projected token the launcher
+// exchanges for a Google one (workloadIdentityVolumes), and the cluster's identity provider.
+type MetadataEndpoint struct {
+	WorkloadPool, IdentityProvider string
+}
+
+// Of is the sandbox issue's pod runs in: Type, or the other one when CanaryIssues names the
+// issue's exact key.
+func (c SandboxConfig) Of(issue string) SandboxType {
+	microVM := c.Type == SandboxMicroVM
+	if slices.Contains(c.CanaryIssues, issue) {
+		microVM = !microVM
+	}
+	if microVM {
+		return SandboxMicroVM
+	}
+	return SandboxGVisor
+}
+
+// AnyMicroVM reports whether an issue pod may run in a microVM: Type is microvm, or CanaryIssues
+// names an issue, whose pod then runs in a microVM on a gVisor project.
+func (c SandboxConfig) AnyMicroVM() bool {
+	return c.Type == SandboxMicroVM || len(c.CanaryIssues) > 0
 }
 
 // Tools are absolute paths inside the worker image. Legion is the `legion` every container runs
@@ -98,6 +170,9 @@ type Options struct {
 	// default (runtime.kubernetes.issue_volume, config.defaultIssueVolume when the file sets none).
 	IssueVolume resource.Quantity
 	Scheduling  Scheduling
+	// Sandbox is the sandbox each issue pod runs in, and where a microVM pod runs (SandboxConfig).
+	// Every pod runs in gVisor under the zero value.
+	Sandbox SandboxConfig
 	// Resources are the two pods' requirements: every issue pod's one container and its two init
 	// containers carry Issue, the controller's pod's one container Controller. The daemon hands
 	// both (config.DefaultResources fills what its file leaves out). At
@@ -187,7 +262,11 @@ type Options struct {
 	// impersonate where the store names one (sessionProxyFlags), proxies a socket of each
 	// generation's own to Cloud SQL as the pod itself or, impersonating it with the pod's own
 	// credentials, as that account, and writes the URL file in that generation's private
-	// directory.
+	// directory. Where the store names a writer audience too, the launcher is told it, the pod
+	// carries the projected token of that audience under RolesDir (sessionWriterVolumes), and the
+	// launcher impersonates the account with that token in place of the pod's own credentials; the
+	// controller's pod then runs the launcher's roles-dir form, so no role's process reads the
+	// token (controllerPod.launcherContainer).
 	SessionStore ompsessions.Store
 	// Agent is the command the shim wraps, before the Oh My Pi arguments the runtime appends
 	// (`--extension <envoy plugin> --extension <legion plugin> --model @default`, `--resume`,
@@ -199,12 +278,6 @@ type Options struct {
 	// working directory and with the environment Oh My Pi gets — through the start wrapper
 	// (startArgv); Oh My Pi starts only once it exits 0. Nil runs none.
 	Setup []string
-	// SkillsRepository is the deployment's skills marketplace (runtime.kubernetes.skills_repository):
-	// the GitHub repository an issue pod's third init container, skills-fetch, clones shallow into
-	// the pod's skills volume at SkillsDir, and which every role's start wrapper then installs from
-	// before Oh My Pi starts. The zero repository runs no such container and installs nothing,
-	// which is every deployment that names no skills repository.
-	SkillsRepository ghrepo.Repository
 	// TestPostgres is runtime.kubernetes.test_postgres: every issue pod serves its own PostgreSQL
 	// for tests, started by the roles container's launcher before it accepts a role start and
 	// started again whenever the postmaster exits (launcher.Config.TestPostgres), and every role
@@ -224,6 +297,16 @@ type Options struct {
 	// pod is built from it, since a launcher is told it on every hello, a reconnect after a
 	// daemon restart included, so a changed setting reaches every pod without replacing one.
 	MemoryGuard *shimwire.LauncherMemoryGuard
+	// VolumeTrim is what the launcher of an issue pod is told its cache trimmer should run by,
+	// handed to it on the daemon's answer to its hello (LauncherResolver). Nil is a deployment
+	// that runs no trimmer, which is the absence the launcher reads as "run none". The
+	// controller's pod takes none however this is set: its launcher never reaches the block that
+	// would run one, and the volume it works on is no issue's.
+	//
+	// It is no part of the pod shape a template records (podShapeRecord): nothing of a running
+	// pod is built from it — a launcher is told it on every hello, a reconnect after a daemon
+	// restart included — so a pod whose shape predates it has drifted from nothing.
+	VolumeTrim *shimwire.LauncherVolumeTrim
 	// BootTimeout bounds each wait of a relaunch, its wait for the API server to answer one of its
 	// requests other than overloaded included (resend), and is how long a pod may stay unscheduled
 	// before it counts as gone (worker_boot_timeout_seconds).
@@ -256,8 +339,8 @@ type Options struct {
 	// ControllerCredential is the daemon's function for the controller's own gh bundle
 	// (appauth.ControllerCredential). The refresher asks it for the owner the Secret holds
 	// (refreshGitHubCredential); a launch asks for none, taking the first owner, which is the
-	// default the Secret then records, and a refresh whose render names another default is
-	// refused rather than written. Required: configure refuses nil as it refuses a nil
+	// default the Secret then records, and a refresh whose render holds no directory for that
+	// default is refused rather than written. Required: configure refuses nil as it refuses a nil
 	// GitHubCredential.
 	ControllerCredential runtime.ControllerCredential
 	// GitHubDirs are the directories the gh bundle of a pod created now for repo would hold
@@ -285,9 +368,15 @@ type Options struct {
 	// .repository_cache, whose defaults the daemon's configuration supplies): required for
 	// supervision, which sweeps and refreshes caches.
 	RepositoryCache RepositoryCache
-	// Mapped is the repositories the project's mapping names now, read at every orphan sweep: the
-	// sweep makes or repairs each one's cache (EnsureRepositoryCache), and retires the cache of a
-	// repository it no longer names once that cache's retention passes. Required for supervision.
+	// Mapped is, despite its name, more than the mapping: the repositories the project works
+	// now, read at every orphan sweep, which are those Dispatch's mapping names and those of the
+	// project's live issue records, a set the daemon holds and answers without I/O
+	// (daemon's cacheRepositories). An issue of any project may name any repository both role
+	// Apps are installed on, so a repository no mapping names gets its cache — one volume and one
+	// pod — from the moment a record names it. The sweep makes or repairs each member's cache
+	// (EnsureRepositoryCache), and retires the cache of a repository the set no longer holds,
+	// which is one no live record and no mapping names, once that cache's retention passes.
+	// Required for supervision.
 	Mapped func() []ghrepo.Repository
 	// SavedWorkspaceBundle is the bundle an issue's last release saved, and WorkspaceBundleRestored
 	// the confirmation that drops it once the issue's new pod holds it. The pair carries the work a
@@ -297,6 +386,13 @@ type Options struct {
 	// neither restores nothing, which is what a pod whose issue was never released does anyway.
 	SavedWorkspaceBundle    runtime.SavedWorkspaceBundle
 	WorkspaceBundleRestored runtime.WorkspaceBundleRestored
+	// HeldWorkspaceBundle drops the bundle an issue's last release saved where the pod's own kept
+	// volume holds that work already (runtime.HeldWorkspaceBundleDrop): the pod's Sandbox owns the
+	// issue's kept volume and was created before the save. At each role start the runtime asks it
+	// before the take, and only for a pod of such a Sandbox (launchers.restoreWorkspace). When it
+	// drops the bundle, the runtime sends that pod nothing. A runtime given none takes the bundle
+	// for every pod as SavedWorkspaceBundle answers it.
+	HeldWorkspaceBundle runtime.HeldWorkspaceBundleDrop
 	// MemoryGuardKilled takes one process an issue pod's memory guard ended, as that pod's
 	// launcher reported it on the connection of the role whose process it was
 	// (runtime.MemoryGuardKilled): the daemon turns it into the note that tells that role why its
@@ -304,12 +400,27 @@ type Options struct {
 	// daemon sets this field, and drops it; it never closes the connection on it, since the
 	// launcher would redial a second later and send its waiting reports into the same refusal.
 	MemoryGuardKilled runtime.MemoryGuardKilled
+	// LeakCheckSetting is the deployment's shared public leak check (leakguard.Setting): the
+	// repository it is read from and the sha256 of its checker. Configured, every role is told the
+	// pod's install as PUBLIC_LEAK_CHECK and the checker as leakguard.CheckerVar
+	// (mainEnvironment), and the check is pushed to each pod's launcher (LeakCheck). The zero
+	// Setting is a deployment that runs none: the runtime pushes nothing to a launcher whatever
+	// tag its hello names, tells its roles neither variable, and so starts each role without one.
+	LeakCheckSetting leakguard.Setting
+	// VolumeReported takes one sweep of an issue pod's volume as that pod's launcher reported it
+	// (runtime.VolumeReported): the daemon turns it into the fact that tells the issue's
+	// architect its volume is filling. A runtime given none reads the frame, logs a warning naming
+	// where the daemon sets this field, and drops it; what it must never do is close the
+	// connection on it, since the launcher would redial the one connection that carries its
+	// reports once a second (ServeLauncher's switch).
+	VolumeReported runtime.VolumeReported
 	// LeakCheck reads the shared public leak check at the tag a pod's launcher names in its hello
 	// (shimwire.LauncherHello.LeakCheckTag), which the runtime pushes to that launcher before it
 	// starts any role of it (launchers.serveLeakCheck): the launcher installs the check once for
 	// its pod, and every role's shim reads that install. The daemon fills it from its GitHub App
-	// (*leakguard.Source); nil is a daemon that runs with no GitHub App, which refuses the start of
-	// every role whose launcher names a tag and starts a launcher that names none as it is.
+	// (*leakguard.Source) where LeakCheckSetting is configured; nil under a configured setting is a
+	// daemon that runs with no GitHub App, which refuses the start of every role whose launcher
+	// names a tag and starts a launcher that names none as it is.
 	LeakCheck LeakCheckReader
 	// Now stamps observations and ages pods and orphans; time.Now when nil.
 	Now func() time.Time

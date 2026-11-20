@@ -38,6 +38,17 @@
 // What it may end is its caller's to say (Classifier): the launcher protects Legion's own
 // processes and the agents', and INFRA-3531's controller pod protects its own. The package
 // protects only its own process.
+//
+// In a pod that runs in a GKE Sandbox microVM (INFRA-3729) the launcher runs Guest in place of the
+// guard (guest.go). The microVM's kernel is the pod's own, and its out-of-memory killer stops one
+// process rather than the whole sandbox, so Guest ends nothing. At each scan it raises to
+// oom_score_adj 1000 every process of a role that the same Classifier does not protect, and sets
+// each protected process that reads above the starting score back to it, so that the kernel stops
+// a command before an agent. It names each process that the kernel stopped from a rise of the
+// cgroup's oom_kill counter, writes the guard's own ended line for it and gives the sink a Kill,
+// through the guard's own writer (writeKill), with one of the kernel's two causes, the second for
+// a process the Classifier protects; and it logs the cgroup's memory each hour. Like the guard, it
+// runs only where its launcher is the container's first process.
 package memoryguard
 
 import (
@@ -94,9 +105,17 @@ func SettingsOf(w shimwire.LauncherMemoryGuard) Settings {
 
 // Class is what a classifier says of one process: the role whose process it is, "" outside
 // every role (a line names it `none`), and whether the guard must spare it.
+//
+// Session is a process whose end ends its role's session: the role's role-init, its shim, and
+// every direct child of the shim. The classifier cannot tell the agent from the shim's other
+// direct children (the secrets renewer, the working copy's adoption, the CodeGraph warm-up), so it
+// marks them all, a superset of the agent whose only cost is a kill left unnamed, never a wrong
+// name (Guest). Oh My Pi's helpers are not session processes, since one can end alone. The guest
+// watch reads it; the guard ignores it.
 type Class struct {
 	Role      string
 	Protected bool
+	Session   bool
 }
 
 // Classifier says, for each process of a scan, whose it is and whether the guard may end it. It
@@ -225,13 +244,12 @@ const noLimit = 1 << 62
 // Guard is one memory guard. One runs in a launcher (Run), and the settings of each role's
 // acknowledgement reach it from that role's connection (Apply).
 type Guard struct {
+	// killWriter is the guard's id, its log, its sink and its count of kills (writeKill).
+	killWriter
 	proc     string
 	classify Classifier
-	sink     func(Kill)
-	logf     func(format string, args ...any)
 	clock    Clock
 	signal   Signaler
-	id       string
 	self     int
 	// observe, when set, is called with each reading the guard takes, on its loop and before it
 	// acts on the reading. The live test (live_test.go) sets it to time the guard's decisions
@@ -260,7 +278,6 @@ type Guard struct {
 	smaps        []byte
 	phase        phase
 	wait         afterKill
-	sequence     uint64
 	window       window
 	counterAt    time.Time
 	unreadLogged map[int]bool
@@ -289,18 +306,14 @@ type Guard struct {
 
 // New is a guard of cfg, at the default settings and on, with an id of its own.
 func New(cfg Config) *Guard {
-	var id [8]byte
-	_, _ = rand.Read(id[:])
 	proc := cmp.Or(cfg.Proc, "/proc")
 	cgroup := cmp.Or(cfg.Cgroup, "/sys/fs/cgroup/memory")
 	g := &Guard{
+		killWriter:   newKillWriter(cfg.Logf, cfg.Sink),
 		proc:         proc,
 		classify:     cfg.Classify,
-		sink:         cfg.Sink,
-		logf:         cfg.Logf,
 		clock:        cfg.Clock,
 		signal:       cfg.Signal,
-		id:           hex.EncodeToString(id[:]),
 		self:         os.Getpid(),
 		settings:     Defaults(),
 		on:           true,
@@ -313,9 +326,6 @@ func New(cfg Config) *Guard {
 		memfds:       map[memfdID]bool{},
 		scanMemfds:   map[memfdID]bool{},
 	}
-	if g.logf == nil {
-		g.logf = func(string, ...any) {}
-	}
 	if g.clock == nil {
 		g.clock = &wallClock{}
 	}
@@ -323,6 +333,47 @@ func New(cfg Config) *Guard {
 		g.signal = defaultSignal()
 	}
 	return g
+}
+
+// newWatchID is a watch's own id, 8 random bytes in hex: the guard's (New) and the guest watch's
+// (NewGuest) alike.
+func newWatchID() string {
+	var id [8]byte
+	_, _ = rand.Read(id[:])
+	return hex.EncodeToString(id[:])
+}
+
+// killWriter is how a watch writes each process it names as stopped for memory and hands that
+// process's report to its sink: the guard's own kills (Guard.act) and the ones the guest kernel
+// made (Guest.report) alike, so either watch writes the same line and the same report, under the
+// watch's own id and its own count of kills from 1. logf writes every other line of the watch's
+// too. sequence is the watch's loop's own.
+type killWriter struct {
+	id       string
+	logf     func(format string, args ...any)
+	sink     func(Kill)
+	sequence uint64
+}
+
+// newKillWriter is a watch's killWriter, with an id of its own (newWatchID): a nil logf discards
+// every line, and a nil sink takes no report.
+func newKillWriter(logf func(format string, args ...any), sink func(Kill)) killWriter {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	return killWriter{id: newWatchID(), logf: logf, sink: sink}
+}
+
+// writeKill takes the next sequence for k, a process the watch names as stopped for memory: it
+// writes the guard's own endedLine for k, with shmem, the pod's shared memory then, which the line
+// alone carries, and hands the sink k under the watch's id and that sequence.
+func (w *killWriter) writeKill(k Kill, shmem uint64) {
+	w.sequence++
+	k.Guard, k.Sequence = w.id, w.sequence
+	w.logf(endedLine, k.PID, roleName(k.Role), k.SizeBytes, k.ReadingBytes, k.CounterBytes, shmem, k.LimitBytes, k.Executable)
+	if w.sink != nil {
+		w.sink(k)
+	}
 }
 
 // ID is the guard's own id, random for each guard, which every kill report carries: with the
@@ -530,7 +581,7 @@ func (g *Guard) act(now time.Time, s Settings, reading, limit uint64) {
 		g.killFailed(target.Process, err)
 		return
 	}
-	if start, err := readStartTime(g.proc, target.PID); err != nil || start != target.StartTime {
+	if start, err := ReadStartTime(g.proc, target.PID); err != nil || start != target.StartTime {
 		_ = h.Close()
 		return
 	}
@@ -549,19 +600,13 @@ func (g *Guard) act(now time.Time, s Settings, reading, limit uint64) {
 	at := g.clock.Now()
 	counter := g.readCounter(at)
 	shmem, _ := meminfoBytes(g.meminfoData, "Shmem")
-	executable := processName(target.Process)
-	g.sequence++
-	g.logf(endedLine, target.PID, roleName(target.role), target.size, reading, counter, shmem, limit, executable)
-	if g.sink != nil {
-		g.sink(Kill{
-			LauncherMemoryKill: shimwire.LauncherMemoryKill{
-				Guard: g.id, Sequence: g.sequence, PID: target.PID,
-				Executable: executable, SizeBytes: target.size,
-				ReadingBytes: reading, CounterBytes: counter, LimitBytes: limit, At: at,
-			},
-			Role: target.role,
-		})
-	}
+	g.writeKill(Kill{
+		LauncherMemoryKill: shimwire.LauncherMemoryKill{
+			PID: target.PID, Executable: processName(target.Process), SizeBytes: target.size,
+			ReadingBytes: reading, CounterBytes: counter, LimitBytes: limit, At: at, Cause: shimwire.MemoryKillCauseGuard,
+		},
+		Role: target.role,
+	}, shmem)
 	g.phase = waiting
 	g.wait = afterKill{handle: h, reading: reading, deadline: now.Add(s.Wait)}
 }
@@ -626,7 +671,7 @@ type assessment struct {
 // alike. The processes it may end are the only ones whose files it reads, so they alone are the
 // holders and the mappers of memfds among which a memfd counts once (addHeldMemfds).
 func (g *Guard) assess() (assessment, error) {
-	t, err := scan(g.proc)
+	t, err := Scan(g.proc)
 	if err != nil {
 		return assessment{}, err
 	}
@@ -779,9 +824,8 @@ func (g *Guard) hour(now time.Time, reading, limit uint64) {
 	g.takeScan()
 	if !now.Before(g.window.end) {
 		g.closeWindow()
-		start := g.window.end
-		start = start.Add(now.Sub(start).Truncate(time.Hour))
-		g.window = window{start: start, end: start.Add(time.Hour)}
+		start, end := nextWindow(g.window.end, now)
+		g.window = window{start: start, end: end}
 	}
 	w := &g.window
 	first := !w.readings
@@ -798,6 +842,14 @@ func (g *Guard) hour(now time.Time, reading, limit uint64) {
 	if reading == w.readingHigh && (!w.scanned || reading >= w.scannedHigh+limit/100) && g.startScan(w.start) {
 		w.scanned, w.scannedHigh = true, reading
 	}
+}
+
+// nextWindow is the start and the end of the hour now falls in, counted in whole hours from end,
+// the end of an hourly window that has passed: the guard's (Guard.hour) and the guest watch's
+// (Guest.hour) alike.
+func nextWindow(end, now time.Time) (time.Time, time.Time) {
+	start := end.Add(now.Sub(end).Truncate(time.Hour))
+	return start, start.Add(time.Hour)
 }
 
 // closeWindow logs the hourly line of the window that has passed, if it holds any reading.
@@ -869,7 +921,7 @@ func (g *Guard) takeScan() {
 func (g *Guard) scanLargest(start time.Time, shmem uint64) {
 	defer g.scans.Done()
 	found := largestScan{window: start}
-	if t, err := scan(g.proc); err == nil {
+	if t, err := Scan(g.proc); err == nil {
 		classes := g.classes(t)
 		clear(g.scanMemfds)
 		read := make([]candidate, 0, len(t.byPID))

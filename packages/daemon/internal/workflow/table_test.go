@@ -12,7 +12,7 @@ import (
 var allWorkflowTriggers = []TriggerKind{
 	TriggerGateOpened, TriggerPlannerCompleted, TriggerImplementationReady, TriggerTesterPassed,
 	TriggerTesterFailed, TriggerReviewApproved, TriggerReviewRejected, TriggerRetroCompleted,
-	TriggerPullRequestMerged, TriggerSignOff, TriggerBackward, TriggerConflict,
+	TriggerPullRequestMerged, TriggerSignOff, TriggerBackward,
 }
 
 func TestEveryPhaseAndTriggerHasARowOrNamedIgnore(t *testing.T) {
@@ -56,8 +56,8 @@ func TestBackwardRowsMatchPhaseBackwardPairs(t *testing.T) {
 		t.Fatalf("table backward moves = %v, phase.BackwardPairs = %v", sortedPairs(fromTable), sortedPairs(fromPhase))
 	}
 	// The backward trigger carries every pair: a worker may ask for any move back the phases
-	// allow, and the daemon's own move for a conflicting head is a trigger of its own
-	// (TriggerConflict) over the same pairs rather than a pair the backward trigger is missing.
+	// allow, and a move back another trigger makes (a tester's fail, a review's request for
+	// changes) is over a pair the backward trigger carries too, never one it is missing.
 	if !maps.Equal(fromTrigger, fromPhase) {
 		t.Fatalf("%s rows = %v, want %v", TriggerBackward, sortedPairs(fromTrigger), sortedPairs(fromPhase))
 	}
@@ -133,8 +133,6 @@ func workflowTransitionRequired(from phase.Phase, trigger TriggerKind) bool {
 		return from == phase.Testing
 	case TriggerReviewApproved, TriggerReviewRejected:
 		return from == phase.Reviewing
-	case TriggerConflict:
-		return from == phase.Testing || from == phase.Reviewing || from == phase.Accepting || from == phase.Retro || from == phase.Merging
 	case TriggerRetroCompleted:
 		return from == phase.Retro
 	case TriggerPullRequestMerged:

@@ -289,6 +289,15 @@ func (d *blockingDispatch) WebhookAppInstalled(context.Context, string) (bool, e
 func (d *blockingDispatch) PutGatedSteps(context.Context, string, []string) error {
 	return nil
 }
+func (d *blockingDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
+func (d *blockingDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+func (d *blockingDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
+	return nil
+}
 func (d *blockingDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }
@@ -476,6 +485,15 @@ func (d *refusingDispatch) WebhookAppInstalled(context.Context, string) (bool, e
 func (d *refusingDispatch) PutGatedSteps(context.Context, string, []string) error {
 	return nil
 }
+func (d *refusingDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
+func (d *refusingDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+func (d *refusingDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
+	return nil
+}
 func (d *refusingDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }
@@ -528,6 +546,15 @@ func (d *boardDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProjec
 }
 func (d *boardDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
 func (d *boardDispatch) PutGatedSteps(context.Context, string, []string) error     { return nil }
+func (d *boardDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
+func (d *boardDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+func (d *boardDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
+	return nil
+}
 func (d *boardDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }

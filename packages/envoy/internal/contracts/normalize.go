@@ -1,6 +1,7 @@
 package contracts
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -52,8 +53,13 @@ func GithubEnvelopes(input GithubEnvelopeInput, trigger string) []Envelope {
 		return nil
 	}
 	item := GithubEnvelope(input)
-	if item.Topic == "" {
-		// Event should not be routed (e.g. push to non-heads/tags ref).
+	if item.Topic == "" || item.Payload == "" {
+		// The event is published nowhere: one the listener does not normalize, for which githubTopic
+		// names no topic and githubPayload no payload (a commit status, a branch created, a webhook's
+		// ping), or one it does that names no route (a push to a ref that is neither a branch nor a
+		// tag). An envelope with no payload would go on the bus with none, since Payload is
+		// omitempty, and every Legion daemon that hears the repository terminates such an envelope
+		// as poison.
 		return nil
 	}
 	if !githubCommentEvent(input.Event) {
@@ -104,11 +110,19 @@ type CIObservation struct {
 	// ObservedAt orders observations of one run: completed_at, else started_at
 	// (check runs) or updated_at (suites).
 	ObservedAt string
+	// CheckRunCount is the latest_check_runs_count a check_suite webhook gave for
+	// its suite, and nil where the event gave no whole number or the observation
+	// is no suite's. It is display only: the CI store names it in the line for a
+	// head it holds, and nothing decides on it.
+	CheckRunCount *int
 }
 
 // GithubCIObservations extracts one CI observation per associated PR. Both
 // check runs and suites are folded into durable per-head state; neither emits a
-// raw webhook envelope.
+// raw webhook envelope. A check suite's observation carries the event's run
+// count (CheckRunCount), which only this mapping reads: GithubCIObservation is
+// shared with Dispatch's CI reconcile, which records only completed suites and
+// so would store no count.
 func GithubCIObservations(event string, body map[string]any) []CIObservation {
 	numbers := githubCIPullRequests(event, body)
 	if len(numbers) == 0 {
@@ -123,9 +137,13 @@ func GithubCIObservations(event string, body map[string]any) []CIObservation {
 	}
 	owner, repo := githubRepo(body)
 	// The CI event name is also the key of its object in the body.
-	obs, ok := GithubCIObservation(event, mapValue(body[event]), owner, repo, numbers[0])
+	object := mapValue(body[event])
+	obs, ok := GithubCIObservation(event, object, owner, repo, numbers[0])
 	if !ok {
 		return nil
+	}
+	if event == "check_suite" {
+		obs.CheckRunCount = githubCount(object["latest_check_runs_count"])
 	}
 	out := make([]CIObservation, 0, len(numbers))
 	for _, number := range numbers {
@@ -133,6 +151,18 @@ func GithubCIObservations(event string, body map[string]any) []CIObservation {
 		out = append(out, obs)
 	}
 	return out
+}
+
+// githubCount is a count GitHub gives as a JSON number, which a decoded body holds as a float64,
+// and nil for anything that is no whole number of zero or more: absent, null, negative,
+// fractional, or a string. GitHub caps a check suite at 50,000 check runs, so a value past
+// math.MaxInt32 is no count it gives, and the bound keeps the conversion exact on every platform.
+func githubCount(value any) *int {
+	number, ok := value.(float64)
+	if !ok || number < 0 || number > math.MaxInt32 || number != math.Trunc(number) {
+		return nil
+	}
+	return new(int(number))
 }
 
 // GithubCIObservation maps one GitHub check-run or check-suite object (event is "check_run" or
@@ -189,16 +219,83 @@ func GithubCIObservation(event string, object map[string]any, owner, repo, numbe
 	return obs, true
 }
 
-// checkName is a check's name as the CI store keys it: whole, or past maxEnvelopeTextRunes its first
-// maxEnvelopeTextRunes runes and an ellipsis followed by a digest of the whole name, so two names
-// that share the kept text stay two checks and one name keys the same entry every time. The name is
-// the one text a repository chooses in an observation (a workflow's job names it).
+// checkName is a check's name, or a commit status's context, as the CI store keys it: whole, or
+// past maxEnvelopeTextRunes its first maxEnvelopeTextRunes runes and an ellipsis followed by a
+// digest of the whole name, so two names that share the kept text stay two entries and one name
+// keys the same entry every time. The name is the one text a repository chooses in an observation
+// (a workflow's job names a check run, and whatever posts a status names its context).
 func checkName(name string) string {
 	if utf8.RuneCountInString(name) <= maxEnvelopeTextRunes {
 		return name
 	}
 	digest := sha256.Sum256([]byte(name))
 	return truncateWithEllipsis(name, maxEnvelopeTextRunes) + " " + hex.EncodeToString(digest[:8])
+}
+
+// StatusObservation is one commit status of a pull request's head for the CI state aggregator:
+// the newest status GitHub holds for one context, in a state the record keeps
+// (TerminalStatusState). A status is an entry of its own kind in the record, apart from any check
+// run of the same name.
+type StatusObservation struct {
+	Owner  string
+	Repo   string
+	Number string
+	SHA    string
+	// Context names the status, as the CI store keys it (checkName).
+	Context string
+	// State is success, failure or error, as GitHub's REST answer spells it.
+	State string
+	// CreatedAt is GitHub's created_at, which orders two statuses of one context.
+	CreatedAt   string
+	URL         string
+	Description string
+}
+
+// TerminalStatusState reports whether state is a commit status state the CI record keeps:
+// success, failure or error. GitHub's other states, pending and GraphQL's EXPECTED, say the
+// context has not finished, and the record keeps no such status, so a context that stays pending
+// holds no head back.
+func TerminalStatusState(state string) bool {
+	switch state {
+	case "success", "failure", "error":
+		return true
+	}
+	return false
+}
+
+// GithubStatusObservation maps one commit status object to the observation the CI store records
+// under owner/repo, pull request number and head sha. ok is false for a status with no context or
+// no head, and for one in a state the record does not keep (TerminalStatusState): a pending status
+// is never recorded, so a newer pending status leaves the recorded one in place.
+//
+// object is in the shape GitHub's REST answer GET /repos/{owner}/{repo}/commits/{ref}/status lists
+// each status in: context, state, created_at, target_url and description. Dispatch's CI reconcile
+// maps a status its GraphQL query read into that same shape, as it maps a check run into the
+// webhook's, so one status read either way maps to one observation. The sha and the number come
+// from the caller, because a listed status carries neither. The state is lower-cased, since
+// GraphQL's StatusState is upper case (SUCCESS) where REST's is lower case (success). Each text is
+// capped as a check run's is (GithubCIObservation), and a context past the cap keeps a digest of
+// the whole context after its ellipsis (checkName), because the record is keyed by context.
+func GithubStatusObservation(object map[string]any, owner, repo, number, sha string) (StatusObservation, bool) {
+	name := checkName(stringValue(object["context"]))
+	state := strings.ToLower(stringValue(object["state"]))
+	if sha == "" || name == "" || !TerminalStatusState(state) {
+		return StatusObservation{}, false
+	}
+	text := func(key string) string {
+		return truncateWithEllipsis(stringValue(object[key]), maxEnvelopeTextRunes)
+	}
+	return StatusObservation{
+		Owner:       owner,
+		Repo:        repo,
+		Number:      number,
+		SHA:         sha,
+		Context:     name,
+		State:       state,
+		CreatedAt:   text("created_at"),
+		URL:         text("target_url"),
+		Description: text("description"),
+	}, true
 }
 
 // ReviewerVerdict is what the shared rule says about one check run's name and the App that
@@ -365,9 +462,12 @@ func githubTopic(owner string, repo string, event string, body map[string]any) s
 		}
 		return GithubWorkflowSubject(owner, repo, filename, action)
 	}
+	kind := githubEventKinds[event]
+	if kind == "" {
+		return ""
+	}
 	num := githubNumber(event, body)
 	parent := githubParentKind(event, body)
-	kind := githubKind(event)
 	if num != "" && kind != parent {
 		// e.g., pr.7706.comment, pr.7706.review, issue.42.comment
 		return GithubSubject(owner, repo, parent+"."+num+"."+kind)
@@ -441,14 +541,7 @@ var githubEventParents = map[string]string{
 	"issue_comment":               "issue",
 }
 
-func githubKind(event string) string {
-	if kind, ok := githubEventKinds[event]; ok {
-		return kind
-	}
-	return githubDefaultKind
-}
-
-// githubEventKinds names each GitHub event's topic kind; any other event is githubDefaultKind.
+// githubEventKinds names the topic kind of each GitHub event the listener publishes.
 var githubEventKinds = map[string]string{
 	"pull_request":                "pr",
 	"issues":                      "issue",
@@ -462,8 +555,6 @@ var githubEventKinds = map[string]string{
 	"pull_request_review_comment": "comment",
 }
 
-const githubDefaultKind = "comment"
-
 // githubJobKind is the kind a finished Actions job on the default branch, of a run with no pull
 // request, is published under (githubActionsJob), and its payload's kind.
 const githubJobKind = "job"
@@ -473,13 +564,13 @@ const githubJobKind = "job"
 const githubMentionKind = "mention"
 
 // GithubTopicKinds are the tokens that follow a GitHub topic's owner and name, sorted: every kind
-// and parent kind the two tables name, githubDefaultKind, githubMentionKind and githubJobKind (the
-// push, workflow and checks topics begin `push`, `workflow` and `pr`). A token there that is none of
-// these is not a GitHub topic kind.
+// and parent kind the two tables name, githubMentionKind and githubJobKind (the push, workflow and
+// checks topics begin `push`, `workflow` and `pr`). A token there that is none of these is not a
+// GitHub topic kind.
 var GithubTopicKinds = githubTopicKinds()
 
 func githubTopicKinds() []string {
-	kinds := []string{githubDefaultKind, githubMentionKind, githubJobKind}
+	kinds := []string{githubMentionKind, githubJobKind}
 	for _, kind := range githubEventKinds {
 		kinds = append(kinds, kind)
 	}
@@ -544,6 +635,11 @@ func githubNumber(event string, body map[string]any) string {
 	case "issues":
 		return GithubPRNumber(nested(body, "issue", "number"))
 	case "sub_issues":
+		// GitHub delivers a sub-issue's change to each issue's repository: sub_issue_* to the
+		// parent's, parent_issue_* to the child's. The number is that repository's issue.
+		if strings.HasPrefix(stringValue(body["action"]), "parent_issue_") {
+			return GithubPRNumber(nested(body, "sub_issue", "number"))
+		}
 		return GithubPRNumber(nested(body, "parent_issue", "number"))
 	case "issue_comment":
 		return GithubPRNumber(nested(body, "issue", "number"))
@@ -792,6 +888,9 @@ func githubSummary(event string, body map[string]any) string {
 	return OneLineSummary(summary)
 }
 
+// githubPayload encodes, as one JSON object, the fields a consumer reads of an event the listener
+// normalizes. Every event githubEventKinds names has a case here but check_suite, and a check run
+// has one only as a finished Actions job: a pull request's CI folds into the CI store instead.
 func githubPayload(event string, body map[string]any) string {
 	repo := nestedString(body, "repository", "full_name")
 	if repo == "" {
@@ -912,6 +1011,26 @@ func githubPayload(event string, body map[string]any) string {
 			"url":    nestedString(body, "issue", "html_url"),
 		}
 		addCappedBody(data, issueBody)
+	case "sub_issues":
+		// The event is published on the topic of the issue in the webhook's own repository
+		// (githubNumber), so number is that issue's. The two issues can be in two repositories:
+		// GitHub names the other in parent_issue_repo or sub_issue_repo, and each falls back to
+		// the webhook's own repository.
+		data = map[string]string{
+			"kind":             "sub_issue",
+			"action":           action,
+			"repo":             repo,
+			"number":           number,
+			"parent_number":    GithubPRNumber(nested(body, "parent_issue", "number")),
+			"parent_title":     nestedString(body, "parent_issue", "title"),
+			"parent_url":       nestedString(body, "parent_issue", "html_url"),
+			"parent_repo":      cmp.Or(nestedString(body, "parent_issue_repo", "full_name"), repo),
+			"sub_issue_number": GithubPRNumber(nested(body, "sub_issue", "number")),
+			"sub_issue_title":  nestedString(body, "sub_issue", "title"),
+			"sub_issue_url":    nestedString(body, "sub_issue", "html_url"),
+			"sub_issue_repo":   cmp.Or(nestedString(body, "sub_issue_repo", "full_name"), repo),
+			"sender":           nestedString(body, "sender", "login"),
+		}
 	case "push":
 		data = map[string]string{
 			"kind":   "push",
@@ -1644,7 +1763,9 @@ func ghostWisprSummary(eventType string, body map[string]any) string {
 // ghostWisprPayload builds the envelope payload from the body's payload object: the session id,
 // its times and links, its title and its duration for every event type, and the summary fields
 // for summary_ready. payloadJSON drops a field the unit did not send. A current unit sends no
-// title or summary text (packages/envoy/AGENTS.md says why), and an older unit's still pass.
+// title or summary text, because the stream keeps an envelope for its whole retention window and
+// no deletion on the unit can recall it, so a reader fetches the current text through the links;
+// an older unit's still pass.
 func ghostWisprPayload(eventType string, body map[string]any) string {
 	normalizedEventType := normalizeGhostWisprEventType(eventType)
 	data := map[string]string{"event_type": normalizedEventType}

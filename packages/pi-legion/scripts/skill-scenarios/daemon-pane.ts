@@ -13,6 +13,7 @@ import path from "node:path";
 import type { LegionRole } from "@legion/contracts";
 import { DEFAULT_ENVOY_URL } from "@legion/envoy-client/envoy-settings";
 import { sessionConfigFile, sessionEnvoySettings } from "@legion/envoy-client/session-settings";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 /** This checkout's daemon module, the one the rig reads unless a run names another checkout's. */
 export const DAEMON_MODULE = path.resolve(import.meta.dir, "../../../daemon");
@@ -75,8 +76,10 @@ export interface DaemonPane {
 }
 
 /** The stand-in for the claim's GitHub App token: `daemon-pane.go` renders it into the claim's gh
- * files, and the pane's own `gh auth token` prints it. A placeholder, never a secret. */
-export const RIG_GH_TOKEN = "ghs_rig_token";
+ * files, and the pane's own `gh auth token` prints it. Random, as a real one is, since a process
+ * that reads it holds it and scrubs it from every line it prints
+ * (`@legion/contracts/held-secrets`). */
+export const RIG_GH_TOKEN = fixtureSecret("gh");
 
 /** Where a worker pane runs: the run directory that stands for the daemon's state directory and
  * the issue's workspace, the stand-in daemon's port, and the Oh My Pi profile. */
@@ -117,11 +120,13 @@ export interface PaneSource {
  * (`<state>/secrets/boot`, the file the stand-in checks), and PATH with the launcher directory
  * first; no grant file, since the `legion` tool mints its grants in-process and no agent runs
  * `legion` from bash; and, with `systemPrompt`, the system prompt argument. An inherited
- * `ANTHROPIC_API_KEY`, every `LEGION_*` and `DISPATCH_*` value and the caller's own GitHub
- * variables are dropped first. The profile's agent directory, and so its envoy.json, is under the
- * inherited `HOME`. Throws `envoy: <why>` when that Envoy is off with an error, or on with inbound
- * messages off (`inbound.off`: no NATS server, or its seed refused), since the pane's Legion claim
- * refuses then. */
+ * `ANTHROPIC_API_KEY`, every `LEGION_*` and `DISPATCH_*` value, the caller's own GitHub variables
+ * and its session variables (`OMP_SESSION_ID`, `TMUX`, `TMUX_PANE` and `OMP_SESSION_EXCLUSIVE`,
+ * the hold the daemon gives a resumed launch alone, where a scenario pane is a fresh launch) are
+ * dropped first. The profile's agent directory, and so its envoy.json, is under the inherited
+ * `HOME`. Throws `envoy: <why>` when that Envoy is off with an error, or on with inbound messages
+ * off (`inbound.off`: no NATS server, or its seed refused), since the pane's Legion claim refuses
+ * then. */
 export function workerPane(
   launch: WorkerLaunch,
   inherited: NodeJS.ProcessEnv,
@@ -134,7 +139,7 @@ export function workerPane(
     if (key === "ANTHROPIC_API_KEY" || key.startsWith("LEGION_") || key.startsWith("DISPATCH_"))
       continue;
     if (["GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "GH_HOST"].includes(key)) continue;
-    if (key === "OMP_SESSION_ID" || key === "TMUX" || key === "TMUX_PANE") continue;
+    if (["OMP_SESSION_ID", "OMP_SESSION_EXCLUSIVE", "TMUX", "TMUX_PANE"].includes(key)) continue;
     env[key] = value;
   }
   const home = env.HOME ?? os.homedir();

@@ -114,9 +114,10 @@ type suspendedOwner struct {
 	run   record.RoleRun
 }
 
-// phaseOwners is what suspendedPhaseOwners reads: every issue the store holds, of every project;
-// the roots of the project's trees that run (record.RunningRoots); and the suspended owners of
-// the project's unfinished phases in those trees, in the order the store lists the issues.
+// phaseOwners is what suspendedPhaseOwners reads: every issue the store holds, which the daemon's
+// store holds of the project alone (internal/daemon's projectRecords); the roots of the project's
+// trees that run (record.RunningRoots); and the suspended owners of the project's unfinished
+// phases in those trees, in the order the store lists the issues.
 type phaseOwners struct {
 	issues    []record.Issue
 	running   map[string]struct{}
@@ -147,29 +148,30 @@ type phaseOwners struct {
 // A phase its own terminating fact has already met is given no owner either (PhaseFinished): a
 // merged root stands in merging for as long as the rest of its tree runs, and resuming its merger
 // there would hand it the same phase again at every boot, for days.
-// The owner of admitted and of accepting is the tree's architect, which admission starts with the
-// tree, so no issue in either is given one. An owner is answered only while its claim at the
-// issue's generation stands suspended, whatever the source: which sources a start may act on is
-// each caller's to judge.
+// The owner of admitted and of accepting is an architect and no phase worker, so no issue in
+// either is given one. On a root it is the root's own architect, which admission starts with the
+// tree. On a child it is the architect that owns it: its own while that claim holds its role,
+// else the one above. At admitted that is the one above, since the child's own has not started
+// yet or a leave suspended or retired it, unless a person set the child back to todo while it ran
+// or was held: that re-entry starts and stops nothing, so a child's own architect that held its
+// role still holds it (ReenterChild). An owner is answered only while its claim at the issue's
+// generation stands suspended, whatever the source: which sources a start may act on is each
+// caller's to judge.
 func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwners, error) {
 	issues, err := e.store.Issues(ctx, tx)
 	if err != nil {
 		return phaseOwners{}, err
 	}
-	own := make([]record.Issue, 0, len(issues))
 	byKey := make(map[string]record.Issue, len(issues))
 	for _, issue := range issues {
 		byKey[issue.Key] = issue
-		if issue.Project == e.cfg.Project {
-			own = append(own, issue)
-		}
 	}
-	facts, err := record.ReadLineFacts(ctx, tx, e.store, e.cfg.Project, own, e.cfg.Steps)
+	facts, err := record.ReadLineFacts(ctx, tx, e.store, e.cfg.Project, issues, e.cfg.Steps)
 	if err != nil {
 		return phaseOwners{}, err
 	}
-	owners := phaseOwners{issues: issues, running: record.RunningRoots(own, facts)}
-	for _, issue := range own {
+	owners := phaseOwners{issues: issues, running: record.RunningRoots(issues, facts)}
+	for _, issue := range issues {
 		role := phase.RoleFor(issue.Phase)
 		if role == "" || role == claim.RoleArchitect || record.OutOfWorkflow(issue.Status) {
 			continue
@@ -254,7 +256,7 @@ func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {
 		return err
 	}
 	for _, listed := range issues {
-		if listed.Project != e.cfg.Project || !awaitsMerge(listed) {
+		if !awaitsMerge(listed) {
 			continue
 		}
 		pr, err := e.store.PullRequest(ctx, tx, listed.Key)

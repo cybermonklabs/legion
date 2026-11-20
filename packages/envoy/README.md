@@ -41,7 +41,7 @@ Current secret names:
 - `ENVOY_SLACK_SIGNING_SECRET`
 - `ENVOY_GITHUB_WEBHOOK_SECRET`
 
-The secrets broker (`cmd/broker`) supports these kinds for `agent-secrets secret create --kind` and `secret retag --kind`:
+The secrets broker (`cmd/cipherd`) supports these types for `agent-secrets secret create --type` and `secret retag --type`:
 
 - `github-app`: stores an App id and private key; releases installation tokens for its listed GitHub owners.
 - `google-login`: stores an `authorized_user` credential; releases a Google access token, not the refresh token.
@@ -55,31 +55,63 @@ The secrets broker (`cmd/broker`) supports these kinds for `agent-secrets secret
   Exactly one Entra identity may trust that ServiceAccount subject, since a released token can sign in to every identity that trusts it.
 - `google-service-account`: stores `{"service_account":"<id>@<project>.iam.gserviceaccount.com"}`; releases a bare Google access token for that account, minted by impersonating it with the broker's own credential, good for one hour.
   Set `BROKER_SERVICE_ACCOUNT_SECRETS` to whitespace-separated `<SECRET NAME>=<account email>` entries, such as `GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com`; it, and not the stored value, chooses the account the broker mints for, and a secret it does not bind releases nothing (`class=binding`).
-  `--scopes "cloud-platform bigquery"` names the OAuth scopes the token carries, each the part of a Google scope after `https://www.googleapis.com/auth/`; without it the token carries `cloud-platform` alone, and the flag is refused on any other kind.
+  `--scopes "cloud-platform bigquery"` names the OAuth scopes the token carries, each the part of a Google scope after `https://www.googleapis.com/auth/`; without it the token carries `cloud-platform` alone, and the flag is refused on any other type.
   `--admin true` marks a secret whose grant is an administrator's: it is human tier, names its `--requesters`, and takes a `--max-grant` of an hour or less, as a `google-service-account` secret does whether or not it is marked.
   The secret's `--requesters` name its one person owner, and at human tier the registered services that may ask beside them.
 
-Without a kind, the broker releases the stored value unchanged.
+Without a type, the broker releases the stored value unchanged.
 
-One decoder reads each kind's stored value, `secrets.ParseValue`, which the minters, the broker's policy load and `agent-secrets secret` all call.
-`secret create --kind`, `secret set` on a kind secret, and a `secret retag` that changes the kind, or the shape of a secret that keeps a kind, refuse a value that kind's minter would refuse and write nothing.
+One decoder reads each type's stored value, `secrets.ParseValue`, which the minters, the broker's policy load and `agent-secrets secret` all call.
+`secret create --type`, `secret set` on a typed secret, and `secret retag` that changes the type refuse a value that type’s minter would refuse and write nothing.
 A retag whose read of the value the store refuses as access denied writes the tags without the check and says so on standard error.
-The broker reads each kind secret's value once for each new version, kind or shape, and refuses a secret whose value the decoder refuses as `value-malformed`.
+The broker reads each typed secret’s value once for each new version or type, and refuses a secret whose value the decoder refuses as `value-malformed`.
 
 ## Layout
 
 - `internal/contracts/generated.go` — generated Go contract output from `packages/contracts/scripts/gen-go.ts`
 - `internal/config` — env parsing
-- `internal/verify` — GitHub / Slack signature verification
-- `cmd/listener` — per-machine listener service
-- `cmd/github` — GitHub webhook receiver
-- `cmd/slack` — Slack Events receiver
-- `docker/github.Dockerfile` — GitHub receiver image
-- `docker/slack.Dockerfile` — Slack receiver image
-- `docker/listener.Dockerfile` — listener image
+- `internal/webhook` — the GitHub, Slack and Ghost Wispr webhook handlers, and the `ENVOY_WEBHOOKS` read at start-up
+- `internal/verify` — GitHub, Slack and Ghost Wispr signature verification
+- `cmd/listener` — per-machine listener service, which serves the webhook routes
+- `docker/Dockerfile` — the one released image, holding the listener, Dispatch, the broker and `agent-secrets`
 - `deploy` — compose files and deploy scripts
 - `docs` — architecture, constraints, external repo touchpoints
-- `.envoy` — local execution notes and machine-readable work tracker
+
+## Development
+
+Run the Go commands from `packages/envoy`:
+
+```bash
+go build ./cmd/dispatch ./cmd/listener
+go test -timeout 20m ./...
+go test -count=1 -run '^TestName$' ./internal/bus/
+gofmt -l .
+go vet ./...
+```
+
+`internal/dispatch/api` alone takes close to `go test`'s ten-minute default deadline, so a
+run that includes it passes `-timeout 20m` (`docs/testing.md` at the repository root, "Go's
+package deadline").
+
+`./...` here does not build `infra/`, a Go module of its own that imports packages of this
+one (`internal/bus` and `internal/contracts` among them): after a change to one of them,
+vet `infra/` too (`infra/README.md`, "Changing the module").
+
+The Postgres-backed tests read `DISPATCH_TEST_DATABASE_URL` (Dispatch) and
+`BROKER_TEST_DATABASE_URL` (the secrets broker). Without them most of those tests skip, and
+`go test` still prints `ok`. `scripts/dev-postgres.sh` starts a pgvector Postgres and
+prints its URL, and `scripts/database-skips.sh` (`scripts/README.md`) fails a run on any
+skip.
+
+Build tags hold the slow and live suites, which `go test ./...` does not build: among them
+`natslive` (a NATS image, so it needs Docker), `smoke` (the listener image),
+`multiprocess` (Dispatch and the broker), and Dispatch's `twobuild` and `memory`
+(`cmd/dispatch/README.md`, "Tests"). The `ci-job-*.yaml` files in `.github/workflows/` at
+the repository root show how CI runs each.
+
+`internal/dispatch/pmdoc` tests compare with the browser editor through bun scripts in
+`pmdoc/gen`: they need `bun` and a `bun install` at the repository root. Without `bun` they
+skip, except where `CI` is set, where they fail.
 
 ## Local end-to-end
 

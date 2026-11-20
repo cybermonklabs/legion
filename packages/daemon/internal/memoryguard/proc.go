@@ -25,17 +25,21 @@ import (
 // a kill, costs no more than the scan of any other.
 const classifierArgsBytes = 4096
 
-// Process is one process as the guard's scan read it: its parent and start time from
-// `/proc/<pid>/stat`, its executable from the `exe` link, its arguments from `cmdline` and its PID
-// namespace from the `ns/pid` link. A classifier knows a process by these alone: its place in the
-// tree first, then its executable and its arguments, so a program that copies a name is not taken
-// for the process it copies.
+// Process is one process as the guard's scan read it: its parent, start time and resident pages
+// from `/proc/<pid>/stat`, its executable from the `exe` link, its arguments from `cmdline` and its
+// PID namespace from the `ns/pid` link. A classifier knows a process by these alone: its place in
+// the tree first, then its executable and its arguments, so a program that copies a name is not
+// taken for the process it copies.
 type Process struct {
 	PID  int
 	PPID int
 	// StartTime is the process's start in clock ticks since boot, the field the kill reads again
 	// to know the pid still names this process and not one that took the pid after it.
 	StartTime uint64
+	// Resident is the process's resident pages, stat's rss (field 24), the kernel's own count of
+	// them; 0 where the stat holds no rss that parses. The guest watch sizes a process by it, and
+	// the guard by its smaps instead.
+	Resident uint64
 	// Name is the command name between the parentheses of stat, which can hold spaces and `)`: the
 	// name a line gives a process whose `exe` link the scan could not read (processName).
 	Name string
@@ -95,11 +99,13 @@ func (t *Table) Cwd(pid int) (string, error) {
 	return os.Readlink(filepath.Join(t.proc, strconv.Itoa(pid), "cwd"))
 }
 
-// scan reads every process under proc. A process that ends while the scan reads it is left out:
+// Scan reads every process under proc. A process that ends while the scan reads it is left out:
 // it holds nothing any longer, and a missing file is how the kernel says so. A zombie and a dead
 // process are left out the same way (errExited), and so is a process that a read after its stat's
 // finds ended (endedSince). Any other failure to read its stat, exe or ns/pid counts it in unread.
-func scan(proc string) (*Table, error) {
+// The guard, the guest watch and the launcher's session peer check all read their table through
+// it, so each knows a process by the same reads.
+func Scan(proc string) (*Table, error) {
 	entries, err := os.ReadDir(proc)
 	if err != nil {
 		return nil, err
@@ -231,13 +237,18 @@ func threadsLeft(dir string) bool {
 }
 
 // statStartField is the index of starttime (stat's field 22) among the fields after the command
-// name's closing parenthesis, which begin at field 3 (state).
-const statStartField = 22 - 3
+// name's closing parenthesis, which begin at field 3 (state), and statResidentField the index of
+// rss (field 24), the resident pages.
+const (
+	statStartField    = 22 - 3
+	statResidentField = 24 - 3
+)
 
 // parseStat reads a `/proc/<pid>/stat` line: the command name between the first `(` and the last
-// `)`, and the state, the parent and the start time among the fields after that last `)`. The name
-// is the one field a process chooses, and it can hold spaces and parentheses of its own (`(omp
-// daemon brok)`), so nothing after the first `(` is split until the last `)`.
+// `)`, and the state, the parent, the start time and the resident pages among the fields after that
+// last `)`, the resident pages 0 where the stat holds none that parses. The name is the one field a
+// process chooses, and it can hold spaces and parentheses of its own (`(omp daemon brok)`), so
+// nothing after the first `(` is split until the last `)`.
 func parseStat(stat []byte) (*Process, error) {
 	open, end := bytes.IndexByte(stat, '('), bytes.LastIndexByte(stat, ')')
 	if open < 0 || end < open {
@@ -255,11 +266,19 @@ func parseStat(stat []byte) (*Process, error) {
 	if err != nil {
 		return nil, fmt.Errorf("a stat whose start time is %q", fields[statStartField])
 	}
-	return &Process{PPID: ppid, StartTime: start, Name: string(stat[open+1 : end]), state: fields[0][0]}, nil
+	p := &Process{PPID: ppid, StartTime: start, Name: string(stat[open+1 : end]), state: fields[0][0]}
+	if len(fields) > statResidentField {
+		if resident, err := strconv.ParseUint(fields[statResidentField], 10, 64); err == nil {
+			p.Resident = resident
+		}
+	}
+	return p, nil
 }
 
-// readStartTime is pid's start time as its stat reads now.
-func readStartTime(proc string, pid int) (uint64, error) {
+// ReadStartTime is pid's start time as its stat under proc reads now. A caller that read a
+// process before compares it with the start time it read then: a different one is a process that
+// took the pid after the first one ended.
+func ReadStartTime(proc string, pid int) (uint64, error) {
 	stat, err := os.ReadFile(filepath.Join(proc, strconv.Itoa(pid), "stat"))
 	if err != nil {
 		return 0, err
@@ -421,14 +440,24 @@ func heldMemfdBytes(dir, link string, counted map[memfdID]bool, shmem uint64) ui
 
 // meminfoBytes is the value of key's line in a /proc/meminfo, in bytes, read in place.
 func meminfoBytes(data []byte, key string) (uint64, bool) {
+	value, ok := keyValue(data, key)
+	if !ok {
+		return 0, false
+	}
+	return parseKB(value)
+}
+
+// keyValue is what follows the colon of key's `Key:` line in data, a file of such lines as a
+// /proc/meminfo or a /proc/<pid>/status is, read in place; false where no line has key.
+func keyValue(data []byte, key string) ([]byte, bool) {
 	for len(data) > 0 {
 		var line []byte
 		line, data, _ = bytes.Cut(data, []byte{'\n'})
 		if len(line) > len(key) && line[len(key)] == ':' && string(line[:len(key)]) == key {
-			return parseKB(line[len(key)+1:])
+			return line[len(key)+1:], true
 		}
 	}
-	return 0, false
+	return nil, false
 }
 
 // parseKB reads `  123 kB` as bytes, and a number with no unit as bytes already.

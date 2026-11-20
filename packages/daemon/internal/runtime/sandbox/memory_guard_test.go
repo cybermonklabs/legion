@@ -67,6 +67,44 @@ func TestMemoryGuardTheResolverHandsNoSettingsWhenTheGuardIsOff(t *testing.T) {
 	}
 }
 
+// Every role's launcher of an issue pod is told the daemon knows the pod's kernel's kill
+// (kernelKills), with the guard's settings and with the guard turned off alike, since a microVM
+// pod's launcher sends those reports on nothing else; the controller's launcher is not, nor is a
+// refused hello.
+func TestKernelKillsTheResolverTellsEveryIssuePodLauncherAndNotTheControllers(t *testing.T) {
+	settings := shimwire.LauncherMemoryGuard{ActPercent: 70, FloorPercent: 20, WaitSeconds: 9, IntervalMilliseconds: 250}
+	for name, guard := range map[string]*shimwire.LauncherMemoryGuard{"the guard on": &settings, "the guard off": nil} {
+		t.Run(name, func(t *testing.T) {
+			g := newRig(t, nil, withOptions(func(o *Options) { o.MemoryGuard = guard }))
+			controller := g.spawn(controllerSpec(t))
+			issue := g.spawn(workerSpec(t))
+			accept := g.r.LauncherResolver()
+
+			for _, role := range claim.Roles {
+				handler, ack, reason := accept(rigLauncherHello(g, issue.Sandbox.Name, issue.Sandbox.PodUID, role))
+				if handler == nil {
+					t.Fatalf("the issue pod's %s launcher was refused: %s", role, reason)
+				}
+				if !ack.KernelKills {
+					t.Fatalf("the issue pod's %s launcher was answered %+v, want kernelKills", role, ack)
+				}
+			}
+			handler, ack, reason := accept(rigLauncherHello(g, controller.Sandbox.Name, controller.Sandbox.PodUID, claim.RoleController))
+			if handler == nil {
+				t.Fatalf("the controller's launcher was refused: %s", reason)
+			}
+			if ack.KernelKills {
+				t.Fatalf("the controller's launcher was answered %+v, want no kernelKills", ack)
+			}
+			refused := rigLauncherHello(g, issue.Sandbox.Name, issue.Sandbox.PodUID, claim.RoleTester)
+			refused.Token = "not-the-token"
+			if handler, ack, reason := accept(refused); handler != nil || reason == "" || ack.KernelKills {
+				t.Fatalf("a hello with a stale token was answered handler=%v ack=%+v reason=%q, want refused with the zero acknowledgement", handler, ack, reason)
+			}
+		})
+	}
+}
+
 // memoryKillCall is one call of a runtime's MemoryGuardKilled receiver, and whether the context it
 // was called with carried a deadline.
 type memoryKillCall struct {
@@ -136,8 +174,8 @@ func nextMemoryKillCall(t *testing.T, calls <-chan memoryKillCall) memoryKillCal
 func TestMemoryGuardServeLauncherHandsAKillToTheReceiverWithTheSessionsOwnIssueRoleAndPod(t *testing.T) {
 	var logs lockedLog
 	killed, calls := recordedMemoryKills()
-	launchers := newLaunchers(nil, nil, nil, killed, slogTo(&logs))
-	session := launchers.accept(workerToken, testTree, rigNow, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
+	launchers := newLaunchers(testLeakCheck, nil, nil, nil, nil, killed, nil, slogTo(&logs))
+	session := launchers.accept(workerToken, testTree, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
 	w, done := serveLauncherPipe(t, session)
 
 	noGuard := memoryKillReport(1)
@@ -173,6 +211,38 @@ func TestMemoryGuardServeLauncherHandsAKillToTheReceiverWithTheSessionsOwnIssueR
 	}
 }
 
+// A report of a process the pod's kernel stopped reaches the daemon's receiver, which applies it
+// as the intake fact, with its cause as the launcher sent it; a report whose cause the frame's own
+// rule does not know is dropped with a warning naming the cause, and the connection stays open.
+func TestKernelKillServeLauncherHandsTheReceiverTheReportWithItsCause(t *testing.T) {
+	var logs lockedLog
+	killed, calls := recordedMemoryKills()
+	launchers := newLaunchers(testLeakCheck, nil, nil, nil, nil, killed, nil, slogTo(&logs))
+	session := launchers.accept(workerToken, testTree, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
+	w, done := serveLauncherPipe(t, session)
+
+	unknown := memoryKillReport(1)
+	unknown.Cause = "oom"
+	sendFrame(t, w, unknown)
+	kernel := memoryKillReport(1)
+	kernel.Cause = shimwire.MemoryKillCauseKernel
+	sendFrame(t, w, kernel)
+	if call := nextMemoryKillCall(t, calls); call != (memoryKillCall{issue: testTree, token: workerToken, podUID: "pod-1", report: kernel, bounded: true}) {
+		t.Fatalf("the receiver was called with %+v, want the session's %s, %s and pod-1 and the report %+v with its cause %q",
+			call, testTree, workerToken, kernel, kernel.Cause)
+	}
+	select {
+	case call := <-calls:
+		t.Fatalf("the receiver was called again with %+v, want the report of an unknown cause dropped", call)
+	case <-done:
+		t.Fatal("the frame loop ended, want the connection open after each report")
+	default:
+	}
+	if text := logs.String(); !strings.Contains(text, "the pod's launcher sent a kill report the daemon cannot apply") || !strings.Contains(text, `cause is \"oom\"`) {
+		t.Fatalf("log = %q, want a warning naming the unknown cause", text)
+	}
+}
+
 // A kill report from a launcher of no issue (the controller's pod, whose role has no issue to
 // hold a note) and one a runtime with no receiver reads are dropped with a warning naming the
 // launcher, and the connection stays open: the launcher's frames after them are read.
@@ -194,8 +264,8 @@ func TestMemoryGuardServeLauncherDropsAKillNoIssueOrNoReceiverCanTake(t *testing
 			if tc.receiver {
 				killed, calls = recordedMemoryKills()
 			}
-			launchers := newLaunchers(nil, nil, nil, killed, slogTo(&logs))
-			session := launchers.accept(tc.token, tc.issue, rigNow, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
+			launchers := newLaunchers(testLeakCheck, nil, nil, nil, nil, killed, nil, slogTo(&logs))
+			session := launchers.accept(tc.token, tc.issue, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-1", LauncherID: "l-1"})
 			w, done := serveLauncherPipe(t, session)
 
 			sendFrame(t, w, memoryKillReport(1))

@@ -70,21 +70,56 @@ export const ITEM: SessionAnswer = {
   href: "/agents/ses/live",
 };
 
-/** A request of `session` (a session of its own unless given), not compacting unless told, that
- *  drops what `unshownFailure` is told. */
+/** The session id `recordedFor` and `requestOf` use unless given one. */
+const SESSION_ID = "ses_a";
+
+/** What each request's `record` wrote, by its session object and then its session id, in the
+ *  order written: the entries a session's branch holds after the items its fixture branch lists.
+ *  A module-level `WeakMap`, so every request built with the same `session` object reads what the
+ *  ones before it recorded, as a real session's `getBranch` does after `pi.appendEntry`. */
+const recorded = new WeakMap<object, Map<string, unknown[]>>();
+
+/** The data of every entry the requests of `session` (and `id`) recorded, in the order written:
+ *  what a case reads to check what a request recorded. */
+export function recordedFor(session: object, id = SESSION_ID): readonly unknown[] {
+  return recorded.get(session)?.get(id) ?? [];
+}
+
+/** The branch entry `pi.appendEntry("envoy-answers-sent", data)` writes, with `id`: how a branch
+ *  lists an answers message a request sent. */
+export function answersSentEntry(data: unknown, id: string): unknown {
+  return { type: "custom", customType: "envoy-answers-sent", id, data };
+}
+
+/** A request of `session` (a session of its own unless given), not compacting unless told, whose
+ *  `record` keeps each entry for `session` and `id` and whose `branch` returns `branch`'s entries
+ *  followed by one `custom` entry (`envoy-answers-sent`) per entry recorded for them, in the order
+ *  recorded, so the next request of the same `session` object reads what the one before it wrote,
+ *  as a session does. A fresh `session` object over the same entries, as a resumed process sees
+ *  them, is a `branch` that lists them itself. It drops what `readFailed` is told. */
 export function requestOf(
   read: () => Promise<CarriedAnswers | undefined>,
   branch: () => readonly unknown[],
   session: object = {},
   compacting = false,
-  id = "ses_a"
+  id = SESSION_ID
 ): SessionAnswersRequest {
   return {
     read,
-    branch,
+    branch: () => [
+      ...branch(),
+      ...recordedFor(session, id).map((data, index) => answersSentEntry(data, `a${index}`)),
+    ],
     session,
     id,
     compacting: () => compacting,
-    unshownFailure: () => undefined,
+    record: (entry) => {
+      const sessions = recorded.get(session) ?? new Map<string, unknown[]>();
+      recorded.set(session, sessions);
+      const entries = sessions.get(id) ?? [];
+      sessions.set(id, entries);
+      entries.push(entry);
+    },
+    readFailed: () => undefined,
   };
 }

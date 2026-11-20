@@ -2,15 +2,14 @@ kind: Changed
 body: |-
   A session in a pod whose trade reaches the secrets broker before the pod's registration does
   is no longer refused for good. The broker refuses such a trade with a description beginning
-  `pod_session_not_registered:`, and the broker credential trades again in the background, 15 s
-  later, doubling to 5 minutes, until a trade lands; a call that arrives meanwhile has it trade at
-  once. Every Dispatch and Envoy call hands the credential its own deadline
-  (`RequestCredential.headers` takes a signal), so a call still waiting at that deadline fails
-  with `RegistrationPendingError`, naming the session and saying the trade is being retried, and
-  the next call takes the token once the registration lands. The wait is logged through
-  `console.warn` once, naming the session, and again every 30 minutes. A call made while the
-  session holds a live token goes on with that token. Every other refusal fails the call as
-  before.
+  `pod_session_not_registered:`, and the broker credential trades again in the background, 2 s
+  later, doubling to 30 s, until a trade lands, so the trade after a registration lands is at
+  most 30 s away; no call cuts that wait short. Every Dispatch and Envoy call hands the credential its own
+  deadline (`RequestCredential.headers` takes a signal), so a call still waiting at that deadline
+  fails with `RegistrationPendingError`, naming the session and saying the trade is being
+  retried. The wait is logged through `console.warn` once, naming the session, again every 30
+  minutes while it lasts and once when it ends. A call made while the session holds a live token goes on with that token. Every
+  other refusal fails the call as before.
 time: 2026-11-16T04:15:13Z
 custom:
     Issue: INFRA-840

@@ -20,9 +20,9 @@ type Tmux struct {
 	// (a toolchain's home, a cache directory, a public dashboard URL). A name the runtime sets
 	// itself is refused when the runtime is built (tmux.New), and here a credential-shaped one and
 	// every one runtime.PaneVariableRefusal refuses — a variable that places the session a resume
-	// reads, one the runtime sets on a Claude Code pane, a launch secret's pointer, and a value that
-	// is a URL carrying a password: a secret reaches a pane as a file, never as a value on tmux's
-	// command line.
+	// reads, one the runtime sets on a Claude Code pane or on a resumed Oh My Pi pane
+	// (OMP_SESSION_EXCLUSIVE), a launch secret's pointer, and a value that is a URL carrying a
+	// password: a secret reaches a pane as a file, never as a value on tmux's command line.
 	PaneEnv map[string]string
 	// PiConfigFiles is `runtime.tmux.pi_config_files`: Oh My Pi settings overlays every pane names
 	// in PI_CONFIG_FILES, in file order and before the pane's own role overlays
@@ -102,7 +102,7 @@ func readTmux(value *yaml.Node) (*Tmux, error) {
 // One variable is read for its content and not its name alone: runtime.SpendAttributesVariable,
 // the operator's own resource attributes, which the runtime appends the launch's issue and role
 // to. runtime.SpendAttributesRefusal holds the detector's measured rules, and what it refuses is
-// refused here, where a person reads the refusal — under `legion start --check-config` as at boot
+// refused here, where a person reads the refusal — under `legion config check` as at boot
 // — rather than at a launch nobody watches.
 func readPaneEnv(value *yaml.Node, key string) (map[string]string, error) {
 	if value.Kind != yaml.MappingNode {

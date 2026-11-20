@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -67,21 +68,25 @@ func runNothing(context.Context, pgx.Tx) error { return nil }
 // launch; runtime work happens after this transaction commits. The project controller's claim
 // (`controller: daemon`) belongs to no tree, so it binds no lifecycle: it is written at epoch zero.
 func (s *Store) AdmitClaim(ctx context.Context, c supervise.Claim) (supervise.Claim, error) {
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	var queued bool
+	err := s.Tx(ctx, func(tx pgx.Tx) (err error) {
 		if claim.IsController(c.Role, c.Issue, c.Tree) {
 			c.TreeEpoch = 0
-			return putClaim(ctx, tx, c)
+			queued, err = s.putClaim(ctx, tx, c)
+			return err
 		}
 		epoch, err := treelifecycle.BindWork(ctx, tx, c.Project, c.Tree)
 		if err != nil {
 			return err
 		}
 		c.TreeEpoch = epoch
-		return putClaim(ctx, tx, c)
+		queued, err = s.putClaim(ctx, tx, c)
+		return err
 	})
 	if err != nil {
 		return supervise.Claim{}, fmt.Errorf("admit claim %s: %w", c.Token, err)
 	}
+	s.CommittedClaim(c, queued)
 	return c, nil
 }
 
@@ -223,6 +228,12 @@ type TreeReleaser interface {
 // tree's resources and the reservation is confirmed, after which only a fresh root admission opens
 // the tree's next epoch. A caller whose reservation is no longer current releases nothing. A retry
 // after a failed release runs it again: releasing what is already gone succeeds.
+//
+// The release deletes every pod of the tree, so the transaction that confirms it also ends the
+// pause's hold of each of them (endTreePausePodHoldsTx, decision 13 of dispatch://INFRA-3759): a
+// hold of a deleted pod would hold nothing, and a project release would name a pod that is gone.
+// The confirmation goes first, since it takes treelifecycle.Serialize, which every writer of a
+// pod hold takes before the issue's lock (LockIssueForPause).
 func (s *Store) CleanupReservedTree(ctx context.Context, project, tree string, epoch uint64, releaser TreeReleaser) error {
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
 		if err := treelifecycle.CheckReservation(ctx, tx, project, tree, epoch); err != nil {
@@ -244,7 +255,10 @@ func (s *Store) CleanupReservedTree(ctx context.Context, project, tree string, e
 		return fmt.Errorf("release the resources of tree %s: %w", tree, err)
 	}
 	return s.Tx(ctx, func(tx pgx.Tx) error {
-		return treelifecycle.ConfirmCleanup(ctx, tx, project, tree, epoch)
+		if err := treelifecycle.ConfirmCleanup(ctx, tx, project, tree, epoch); err != nil {
+			return err
+		}
+		return endTreePausePodHoldsTx(ctx, tx, project, tree, time.Now().UTC())
 	})
 }
 
@@ -275,6 +289,12 @@ func (s *Store) TreeLive(ctx context.Context, project, tree string) (bool, error
 // tree whose cleanup confirmed holds none. The orphan sweep keeps a Sandbox whose home is the
 // tree it is labelled with; a tree's cleanup deletes every Sandbox of its own tree, carrying
 // nothing over, since an issue pod's disk goes with its pod and its next launch makes both again.
+//
+// The record is the project's own (lower(project) = project, the token, as readIdleView reads
+// it): the issues table holds every project's records, and the Sandbox of the operator's spawn
+// of another project's issue is this project's, labelled with that issue. That project's record
+// of the issue is no record of this one's, so it keeps no such Sandbox past its own tree, whatever
+// it says of that project's line, linger or hand-over.
 func (s *Store) IssueSandboxHome(ctx context.Context, project, issue string) (string, error) {
 	var home string
 	err := s.pool.QueryRow(ctx, `select coalesce((select case
@@ -284,7 +304,7 @@ func (s *Store) IssueSandboxHome(ctx context.Context, project, issue string) (st
 					then i.tree else '' end
 			when (i.status = 'todo' and i.handed_over and i.key = i.tree) or i.linger_until > now() then i.tree
 			else '' end
-		from issues i where i.key = $2), '')`, project, issue).Scan(&home)
+		from issues i where i.key = $2 and lower(i.project) = $1), '')`, project, issue).Scan(&home)
 	if err != nil {
 		return "", fmt.Errorf("read the tree issue %s's Sandbox belongs to: %w", issue, err)
 	}

@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -158,7 +158,7 @@ func TestABrokerTokensAnswerActsAsTheSessionTheBrokerProved(t *testing.T) {
 	caller := newBrokerCaller(t)
 	const token = "a-dev-box-token-that-answers"
 	says := liveNamedToken(caller.jkt)
-	says.ProjectScope, says.Projects = brokertoken.ProjectScopePerson, nil
+	says.ProjectScope, says.Projects = ciphertoken.ProjectScopePerson, nil
 	rig.broker.Says(token, says)
 
 	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{
@@ -192,6 +192,84 @@ func TestABrokerTokensAnswerActsAsTheSessionTheBrokerProved(t *testing.T) {
 	}
 	if !slices.Equal(answer.Act.Scopes, []string{model.ScopePerson, model.ScopeApprove}) {
 		t.Fatalf("the stored answer's act scopes = %v, want both", answer.Act.Scopes)
+	}
+}
+
+// An act's session is proven only where the credential proved it. A personal token proves its
+// person and no session, so the session its caller names, through ?session= or the body, is
+// recorded without session_proven; a broker-issued token proved its own session, so its act
+// carries session_proven whether the caller names that session again or not. The answer's actor
+// is the person either way, and proven either way: every credential that holds the person scope
+// proves whom it acts for.
+func TestAnActsSessionIsProvenOnlyWhereTheCredentialProvedIt(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const brokerToken = "a-dev-box-token-whose-session-is-proven"
+	says := liveNamedToken(caller.jkt)
+	says.ProjectScope, says.Projects = ciphertoken.ProjectScopePerson, nil
+	rig.broker.Says(brokerToken, says)
+	fixture := seedProject(t, rig, brokerTestProject, "Broker")
+	personal := mintPersonalToken(t, rig.handler, brokerTestPerson, actingTokenName, nil)
+	presenting := func(t *testing.T, askID, query string, body map[string]any) *httptest.ResponseRecorder {
+		body["expected_edited_at"] = nil
+		return rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+askID+"/answer"+query, brokerToken, body))
+	}
+
+	for _, answer := range []struct {
+		name          string
+		send          func(t *testing.T, askID string, body map[string]any) *httptest.ResponseRecorder
+		session       string
+		sessionProven bool
+	}{
+		{"a personal token naming its session in ?session=", func(t *testing.T, askID string, body map[string]any) *httptest.ResponseRecorder {
+			return answerAsToken(t, rig.handler, askID, personal.Token, actingSession, body)
+		}, actingSession, false},
+		{"a personal token naming its session in the body", func(t *testing.T, askID string, body map[string]any) *httptest.ResponseRecorder {
+			body["actor"] = map[string]any{"kind": "session", "id": actingSession}
+			return answerAsToken(t, rig.handler, askID, personal.Token, "", body)
+		}, actingSession, false},
+		// A forged body: its actor says proven and names an act whose session_proven is true.
+		// Both are fields the strict decode takes, so the answer is written; the act still
+		// records the session the body named as not proven, which a handler that copied the
+		// body's act or mark would fail.
+		{"a personal token whose body says its session is proven", func(t *testing.T, askID string, body map[string]any) *httptest.ResponseRecorder {
+			body["actor"] = map[string]any{
+				"kind": "session", "id": actingSession, "proven": true,
+				"act": map[string]any{"session": actingSession, "session_proven": true},
+			}
+			return answerAsToken(t, rig.handler, askID, personal.Token, "", body)
+		}, actingSession, false},
+		{"a broker-issued token naming no session", func(t *testing.T, askID string, body map[string]any) *httptest.ResponseRecorder {
+			return presenting(t, askID, "", body)
+		}, brokerTestSession, true},
+		{"a broker-issued token naming its own session in ?session=", func(t *testing.T, askID string, body map[string]any) *httptest.ResponseRecorder {
+			return presenting(t, askID, "?session="+brokerTestSession, body)
+		}, brokerTestSession, true},
+		{"a broker-issued token naming its own session in the body", func(t *testing.T, askID string, body map[string]any) *httptest.ResponseRecorder {
+			body["actor"] = map[string]any{"kind": "session", "id": brokerTestSession}
+			return presenting(t, askID, "", body)
+		}, brokerTestSession, true},
+	} {
+		t.Run(answer.name, func(t *testing.T) {
+			askID := openAskAs(t, rig.handler, fixture.issue, "session-asking", "Which option for "+answer.name+"?")
+			answered := answer.send(t, askID, map[string]any{"selected": []string{"Yes"}})
+			if answered.Code != http.StatusOK {
+				t.Fatalf("answer: status=%d body=%s", answered.Code, answered.Body.String())
+			}
+			event := latestAskEventActor(t, rig.database, askID, "ask.answered")
+			requirePersonActor(t, "the ask.answered event's", event, brokerTestPerson)
+			if !event.Proven {
+				t.Fatalf("the ask.answered event's actor = %+v, want its person proven", event)
+			}
+			for what, act := range map[string]*model.ActorAct{
+				"the ask.answered event's act": event.Act,
+				"the stored answer's act":      storedAskAnswer(t, rig.database, askID).Act,
+			} {
+				if act == nil || act.Session != answer.session || act.SessionProven != answer.sessionProven {
+					t.Fatalf("%s = %+v, want session %q with session_proven %t", what, act, answer.session, answer.sessionProven)
+				}
+			}
+		})
 	}
 }
 
@@ -234,7 +312,7 @@ func TestABodyActorNamingAnotherSessionThanTheCredentialProvedIsRefused(t *testi
 	caller := newBrokerCaller(t)
 	const token = "a-dev-box-token-whose-body-lies"
 	says := liveNamedToken(caller.jkt)
-	says.ProjectScope, says.Projects = brokertoken.ProjectScopePerson, nil
+	says.ProjectScope, says.Projects = ciphertoken.ProjectScopePerson, nil
 	rig.broker.Says(token, says)
 	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{
 		"key": brokerTestProject, "name": "Broker",

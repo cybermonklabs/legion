@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 func TestApplyOpsEditsLiveDocumentAndSettlesVersion(t *testing.T) {
@@ -151,7 +152,7 @@ func TestVerifyTableAnchorSnapshotsRejectsMarkAddedAfterPrevalidation(t *testing
 	}
 }
 
-func TestLockTableAnchorRowsRejectsCommentReopenedAfterPrevalidation(t *testing.T) {
+func TestCheckTableAnchorRowsRejectsCommentReopenedAfterPrevalidation(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "| Key | Value |\n| --- | --- |\n| delete | row |\n| retain | row |\n")
@@ -187,25 +188,44 @@ func TestLockTableAnchorRowsRejectsCommentReopenedAfterPrevalidation(t *testing.
 	if _, err := service.store.Pool.Exec(context.Background(), `update comments set resolved = false where id = $1`, commentID); err != nil {
 		t.Fatalf("reopen table comment: %v", err)
 	}
+	// The edit's transaction holds the document owner's lock, as ApplyOps's does through
+	// joinLiveWrite, and reads the anchored rows under it with no row lock of its own.
 	tx, err := service.store.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("begin edit transaction: %v", err)
 	}
 	defer tx.Rollback(context.Background())
-	err = lockTableAnchorRows(context.Background(), tx, artifactID, snapshots)
+	if _, _, err := lockArtifactOwner(context.Background(), tx, artifactID); err != nil {
+		t.Fatalf("lock the document owner: %v", err)
+	}
+	err = checkTableAnchorRows(context.Background(), tx, artifactID, snapshots)
 	var invalid *ErrInvalidOp
 	if !errors.As(err, &invalid) || invalid.Field != "index" || !strings.Contains(invalid.Reason, "active anchors") {
-		t.Fatalf("reopened table comment lock error = %v", err)
+		t.Fatalf("reopened table comment check error = %v", err)
 	}
 
+	// A writer of the comment takes the owner's lock first, as every comment mutation does, so it
+	// waits for the edit's transaction and changes nothing the check read until that ends.
 	updateDone := make(chan error, 1)
 	go func() {
-		_, err := service.store.Pool.Exec(context.Background(), `update comments set body = 'Updated discussion' where id = $1`, commentID)
-		updateDone <- err
+		updateDone <- func() error {
+			writer, err := service.store.Pool.Begin(context.Background())
+			if err != nil {
+				return err
+			}
+			defer writer.Rollback(context.Background())
+			if err := store.LockOwner(context.Background(), writer, store.IssueOwner("DOC-1")); err != nil {
+				return err
+			}
+			if _, err := writer.Exec(context.Background(), `update comments set body = 'Updated discussion' where id = $1`, commentID); err != nil {
+				return err
+			}
+			return writer.Commit(context.Background())
+		}()
 	}()
-	waitForLockWait(t, context.Background(), service.store, "%update comments%", updateDone)
+	waitForLockWait(t, context.Background(), service.store, "%as owner_lock%", updateDone)
 	if err := tx.Rollback(context.Background()); err != nil {
-		t.Fatalf("release table share lock: %v", err)
+		t.Fatalf("release the document owner's lock: %v", err)
 	}
 	select {
 	case err := <-updateDone:
@@ -213,7 +233,7 @@ func TestLockTableAnchorRowsRejectsCommentReopenedAfterPrevalidation(t *testing.
 			t.Fatalf("comment body update: %v", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("comment body update remained blocked after the edit transaction released its share lock")
+		t.Fatal("comment body update remained blocked after the edit transaction released the owner's lock")
 	}
 }
 
@@ -263,6 +283,44 @@ func queueDepth(gate *conditionalEditGate) int {
 	gate.mu.Lock()
 	defer gate.mu.Unlock()
 	return gate.queued
+}
+
+// An upload's precondition names the token of the version it replaces and nothing else, so each
+// shape an upload cannot mean is refused in words true of an upload: a blocks guard names part
+// of a tree the upload rewrites whole, and an object naming nothing names no token at all.
+// Neither is answered with the doc-edit rule about selecting document or blocks, which offers a
+// choice an upload does not have.
+func TestValidateUploadPreconditionRefusesInTheWordsOfAnUpload(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		precondition model.EditPrecondition
+		want         string
+	}{
+		{
+			name:         "a blocks guard",
+			precondition: model.EditPrecondition{Blocks: []model.EditBlockPrecondition{{ID: "intro", Token: "sha256:" + strings.Repeat("a", 64)}}},
+			want:         "an upload's precondition names the document token and nothing else",
+		},
+		{
+			name:         "an object naming nothing",
+			precondition: model.EditPrecondition{},
+			want:         "an upload's precondition names the token of the version it replaces as document",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := ValidateUploadPrecondition(test.precondition)
+			var invalid *ErrInvalidPrecondition
+			if !errors.As(err, &invalid) || invalid.Reason != test.want {
+				t.Fatalf("ValidateUploadPrecondition(%#v) = %v, want ErrInvalidPrecondition saying %q", test.precondition, err, test.want)
+			}
+			if strings.Contains(err.Error(), "exactly one of document or blocks") {
+				t.Fatalf("the refusal reads %q, want no choice between document and blocks, which an upload does not have", err)
+			}
+		})
+	}
+	if err := ValidateUploadPrecondition(model.EditPrecondition{Document: "sha256:" + strings.Repeat("a", 64)}); err != nil {
+		t.Fatalf("an upload naming the document token = %v, want it kept", err)
+	}
 }
 
 func TestApplyOperationRetypesAParagraphInPlace(t *testing.T) {

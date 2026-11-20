@@ -88,6 +88,7 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 		byOperator   = "runtime.kubernetes.pod.env sets"
 		byController = "Legion's runtime sets for the controller it launches, from the project's slack_channels alone"
 		byClaude     = "Legion's runtime sets for a role it launches on Claude Code (worker_backends)"
+		byResume     = "Legion's runtime sets on every launch that resumes a recorded Oh My Pi session, to hold it to that session"
 	)
 	fixture := operatorRouteFixture(t)
 	for _, tc := range []struct {
@@ -110,6 +111,12 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 		// a task that finishes wakes a turn the bridge reports to the daemon.
 		{name: "Claude Code's background tasks", pod: env("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "0")},
 		{name: "an operator's Claude Code setting", pod: env("CLAUDE_CODE_USE_FOUNDRY", "1")},
+		// A resumed Oh My Pi is held to the session it resumes (mainEnvironment): the operator's pod
+		// may neither turn that off nor set it on the fresh launches.
+		{name: "what holds a resumed Oh My Pi to its session", pod: env("OMP_SESSION_EXCLUSIVE", "0"),
+			want: envSets("OMP_SESSION_EXCLUSIVE", byResume)},
+		{name: "a provider key for what holds a resumed Oh My Pi to its session", keys: map[string]string{"OMP_SESSION_EXCLUSIVE": "exclusive"},
+			want: keyNames("OMP_SESSION_EXCLUSIVE", byResume)},
 		{name: "the image's HOME", pod: env("HOME", "/tmp/elsewhere"), want: envSets("HOME", byImage)},
 		{name: "the AWS CLI CA bundle", pod: env("AWS_CA_BUNDLE", "/tmp/roots.pem"), want: envSets("AWS_CA_BUNDLE", byImage)},
 		{name: "the image's profile", pod: env("OMP_PROFILE", "other"), want: envSets("OMP_PROFILE", byImage)},
@@ -119,6 +126,10 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 		{name: "Oh My Pi's session database", pod: env("OMP_SESSION_SQL_DSN_FILE", "/etc/operator/dsn"), want: envSets("OMP_SESSION_SQL_DSN_FILE", byStore)},
 		{name: "the name the session database's URL is mounted under", pod: env("OMP_SESSION_SQL_DSN", "postgres://operator.internal.example/sessions"),
 			want: envSets("OMP_SESSION_SQL_DSN", "is the name the providers volume mounts the session database's URL under (runtime.kubernetes.session_store)")},
+		// Nothing of Legion's sets Oh My Pi's config root override, but it moves the agent
+		// directory and every session path with it, so the operator's pod may not set it either.
+		{name: "Oh My Pi's config root override", pod: env("OMP_CONFIG_ROOT", "/var/lib/operator/omp"),
+			want: envSets("OMP_CONFIG_ROOT", "replaces the config root Oh My Pi keeps the agent directory and a session's path key under (Legion's runtime sets none)")},
 		{name: "a variable of the App's git identity", pod: env("JJ_USER", "operator"), want: envSets("JJ_USER", byIdentity)},
 		{name: "a variable pointing at a launch secret", pod: env("ENVOY_TOKEN_FILE", "/etc/envoy"), want: envSets("ENVOY_TOKEN_FILE", byEnvoy)},
 		// The daemon names its controller's Slack channels from the project's slack_channels alone: an
@@ -143,6 +154,9 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 			{Name: "share", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: SandboxName("legion-acme-acme-7-architect") + "-" + issueVolume}}},
 		}}, want: "runtime.kubernetes.pod.volumes[0].persistent_volume_claim.name legion-acme-acme-7-issue is a claim Legion makes for an issue's, a tree's or a repository cache's own volume: name a claim of your own"},
 		{name: "a mount at a path Legion mounts", pod: mountAt("/var/run/legion/launcher"), want: overlaps("/var/run/legion/launcher", "/var/run/legion/launcher", false)},
+		// This release refuses it: role-init binds the pod's test server log there.
+		{name: "a mount at the test server log's path", pod: mountAt("/var/run/legion/testpg.log"),
+			want: overlaps("/var/run/legion/testpg.log", "/var/run/legion/testpg.log", false)},
 		{name: "a mount under a path Legion mounts", pod: mountAt("/legion/operator"), want: overlaps("/legion/operator", "/legion", false)},
 		{name: "a mount above a path Legion mounts", pod: mountAt("/var/run/legion"), want: overlaps("/var/run/legion", "/var/run/legion/agent-secrets", false)},
 		{name: "a mount at the root", pod: mountAt("/"), want: overlaps("/", "/home/legion/.config", false)},
@@ -291,7 +305,7 @@ func TestTheRuntimeRefusesAnOperatorPodCollidingWithLegionsOwn(t *testing.T) {
 	}
 }
 
-// imageEnv is exactly what the worker image's final stage sets with ENV: a variable the image adds
+// ImageEnv is exactly what the worker image's final stage sets with ENV: a variable the image adds
 // and the list lacks is one an operator could override unrefused; one the list keeps that the
 // image dropped is refused for nothing.
 func TestImageEnvIsWhatTheWorkerImageSets(t *testing.T) {
@@ -335,7 +349,7 @@ func TestImageEnvIsWhatTheWorkerImageSets(t *testing.T) {
 		}
 	}
 	slices.Sort(set)
-	if len(set) == 0 || !slices.Equal(set, imageEnv) {
-		t.Errorf("the worker image's final stage sets %v, and imageEnv is %v", set, imageEnv)
+	if len(set) == 0 || !slices.Equal(set, ImageEnv) {
+		t.Errorf("the worker image's final stage sets %v, and ImageEnv is %v", set, ImageEnv)
 	}
 }

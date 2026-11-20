@@ -286,6 +286,58 @@ export function clopperPearsonInterval(
   };
 }
 
+/**
+ * Kish's effective size of trials that fall in groups of the given sizes: the square of their sum
+ * over the sum of their squares. It is what the trials are worth where every member of a group
+ * can go the same way, and it is the number of groups where the groups are all one size.
+ */
+export function kishEffectiveSize(groupSizes: readonly number[]): number {
+  let sum = 0;
+  let squares = 0;
+  for (const size of groupSizes) {
+    if (!Number.isInteger(size) || size <= 0) {
+      throw new RangeError(`a group size must be a whole number above zero, not ${size}`);
+    }
+    sum += size;
+    squares += size * size;
+  }
+  if (sum === 0) throw new RangeError("an effective size needs at least one group");
+  return (sum * sum) / squares;
+}
+
+/**
+ * The two-sided Clopper-Pearson interval in its beta form, with the share `successes / trials`
+ * read at `effectiveTrials` trials, which need not be whole: the interval Korn and Graubard
+ * (1998) give for a share drawn in groups, at the effective size a design effect gives. Each tail
+ * takes half of what `confidence` leaves. At `effectiveTrials` equal to `trials` it is
+ * `clopperPearsonInterval`; it is no exact interval at any other size.
+ */
+export function effectiveSizeInterval(
+  successes: number,
+  trials: number,
+  effectiveTrials: number,
+  confidence: number = DEFAULT_CONFIDENCE
+): Interval {
+  if (!Number.isInteger(trials) || trials <= 0) {
+    throw new RangeError(`trials must be a whole number above zero, not ${trials}`);
+  }
+  if (!Number.isInteger(successes) || successes < 0 || successes > trials) {
+    throw new RangeError(`successes must be a whole number from 0 to ${trials}, not ${successes}`);
+  }
+  if (!(effectiveTrials > 0) || effectiveTrials > trials) {
+    throw new RangeError(`the effective trials must be above 0 and at most ${trials}`);
+  }
+  if (!(confidence > 0) || !(confidence < 1)) {
+    throw new RangeError(`confidence must be between 0 and 1, not ${confidence}`);
+  }
+  const tail = (1 - confidence) / 2;
+  const hits = (successes / trials) * effectiveTrials;
+  return {
+    lower: successes === 0 ? 0 : betaQuantile(tail, hits, effectiveTrials - hits + 1),
+    upper: successes === trials ? 1 : betaQuantile(1 - tail, hits + 1, effectiveTrials - hits),
+  };
+}
+
 /** The cases an arm decides at `threshold`: the ones its judgements agreed on at least that far. */
 export function decidedAt(judgements: readonly Judgement[], threshold: number): Judgement[] {
   return judgements.filter((one) => one.confidence >= threshold);

@@ -30,7 +30,7 @@ func NatsHubAuthConf(args *NatsHubArgs) (string, error) {
 }
 
 // ClusteredNatsHubSettings is the resolved gcp:ClusteredNatsHub configuration the external tests
-// assert. Tailnet is nil without tailnet.
+// assert. Tailnet is nil without tailnet, and Listener without a session listener.
 type ClusteredNatsHubSettings struct {
 	Name, Namespace, ServiceName, ServiceURL string
 	NatsImage, ReloaderImage, ExporterImage  string
@@ -44,22 +44,29 @@ type ClusteredNatsHubSettings struct {
 	AuthConf                                 string
 	PodSelector                              map[string]string
 	Tailnet                                  *ClusteredHubTailnetSettings
+	Listener                                 *ClusteredHubListenerSettings
 	// RouteSecretName, RouteSecretKey and RouteStage are routeAuthorization's, all empty without
 	// it.
 	RouteSecretName, RouteSecretKey, RouteStage string
 }
 
-// ClusteredHubTailnetSettings is the resolved tailnet entry, its listener's environment included.
+// ClusteredHubTailnetSettings is the resolved tailnet entry.
 type ClusteredHubTailnetSettings struct {
 	ServiceName, TailnetDNSName     string
 	Tags                            []string
 	Replicas                        int
 	TailscaleImage                  string
-	ListenerImage, MachineID        string
-	SeedSecretName, SeedSecretKey   string
-	ListenerCPU, ListenerMemory     string
-	ListenerEnv                     []string
 	TailnetNatsURL, TailnetEnvoyURL string
+}
+
+// ClusteredHubListenerSettings is the resolved session listener, its environment included,
+// wherever it was declared.
+type ClusteredHubListenerSettings struct {
+	Image, MachineID              string
+	SeedSecretName, SeedSecretKey string
+	ClientNamespaces              []string
+	CPU, Memory                   string
+	Env                           []string
 }
 
 // ResolveClusteredNatsHub resolves gcp:ClusteredNatsHub's plain inputs for the external refusal
@@ -81,12 +88,15 @@ func ResolveClusteredNatsHub(args *ClusteredNatsHubArgs) (ClusteredNatsHubSettin
 		PodSelector: clusteredHubSelector(s.name),
 	}
 	if t := s.tailnet; t != nil {
-		l := t.listener
 		settings.Tailnet = &ClusteredHubTailnetSettings{
 			ServiceName: t.serviceName, TailnetDNSName: t.tailnetDNSName, Tags: t.tags, Replicas: t.replicas,
-			TailscaleImage: t.tailscaleImage, ListenerImage: l.image, MachineID: l.machineID,
-			SeedSecretName: l.seedSecretName, SeedSecretKey: l.seedSecretKey, ListenerCPU: l.cpu, ListenerMemory: l.memory,
-			ListenerEnv: l.env, TailnetNatsURL: t.natsURL, TailnetEnvoyURL: t.envoyURL,
+			TailscaleImage: t.tailscaleImage, TailnetNatsURL: t.natsURL, TailnetEnvoyURL: t.envoyURL,
+		}
+	}
+	if l := s.listener; l != nil {
+		settings.Listener = &ClusteredHubListenerSettings{
+			Image: l.image, MachineID: l.machineID, SeedSecretName: l.seedSecretName, SeedSecretKey: l.seedSecretKey,
+			ClientNamespaces: l.clientNamespaces, CPU: l.cpu, Memory: l.memory, Env: l.env,
 		}
 	}
 	if r := s.route; r != nil {
@@ -97,6 +107,29 @@ func ResolveClusteredNatsHub(args *ClusteredNatsHubArgs) (ClusteredNatsHubSettin
 
 // ClusteredHubRouteStages are routeAuthorization.stage's names, in their order.
 var ClusteredHubRouteStages = clusteredHubRouteStageNames[:]
+
+// ClusteredHubListenerNamed is the session listener args resolve, with its refusals naming path in
+// place of the input the listener is declared at, for the test that holds the listener's token
+// check to where it is declared rather than to the name a refusal gives it: its environment, and
+// the token check it requires, its issuer, audience and accounts, each "" or nil for none.
+func ClusteredHubListenerNamed(args *ClusteredNatsHubArgs, path string) (env []string, issuer, audience string, accounts []string, err error) {
+	s, err := newClusteredHubSettings(args)
+	if err != nil {
+		return nil, "", "", nil, err
+	}
+	l, _, err := clusteredHubListenerArgs(args)
+	if err != nil {
+		return nil, "", "", nil, err
+	}
+	listener, _, err := newClusteredHubListenerSettings(args, l, path, s)
+	if err != nil {
+		return nil, "", "", nil, err
+	}
+	if c := listener.credential; c != nil {
+		return listener.env, c.issuer, c.audience, c.accounts, nil
+	}
+	return listener.env, "", "", nil, nil
+}
 
 // RefuseClusteredHubSecret is gcp:ClusteredNatsHub's check of a secret Input once it resolves.
 var RefuseClusteredHubSecret = refuseClusteredHubSecret
@@ -142,6 +175,10 @@ type DispatchSettings struct {
 	AppEphemeral       string
 	ProxyEphemeral     string
 	PprofPort          int
+	// ServerURL is DISPATCH_SERVER_URL and the url output (serverURL), and OutsideOrigin the
+	// second origin as rendered, "" when unset.
+	ServerURL     string
+	OutsideOrigin string
 }
 
 // ResolveDispatch resolves Dispatch's plain inputs for the external refusal and default tests.
@@ -168,6 +205,8 @@ func ResolveDispatch(args *DispatchArgs) (DispatchSettings, error) {
 		AppEphemeral:       s.appResources.appEphemeralStorage,
 		ProxyEphemeral:     s.appResources.proxyEphemeralStorage,
 		PprofPort:          s.pprofPort,
+		ServerURL:          s.serverURL(),
+		OutsideOrigin:      s.outsideOrigin,
 	}
 	if rolling := strategy.rollingUpdate; rolling != nil {
 		settings.RollingUpdate = &DispatchRollingUpdate{MaxUnavailable: rolling.maxUnavailable, MaxSurge: rolling.maxSurge}

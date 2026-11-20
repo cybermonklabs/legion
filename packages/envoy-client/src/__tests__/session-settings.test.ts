@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type { ActiveDispatchConfig, DispatchConfigResolution } from "../dispatch-config";
 import type { SectionOff } from "../envoy-config";
@@ -45,10 +46,13 @@ function writeFile(file: string, contents: unknown): string {
   return file;
 }
 
+/** The Dispatch bearer the chosen envoy.json's `dispatch.token` names. */
+const FILE_TOKEN = fixtureSecret("file");
+
 const dispatchOn = {
   enabled: true,
   serverUrl: "https://dispatch.example",
-  token: "file-token",
+  token: FILE_TOKEN,
 };
 const envoyOn = {
   enabled: true,
@@ -96,15 +100,16 @@ describe("sessionSettings", () => {
   // A checkout's file with its own server and token configures Dispatch for a user who has none.
   test("a missing file beside a checkout that enables Dispatch: Dispatch on, Envoy off", () => {
     const cwd = tempDir();
+    const repoToken = fixtureSecret("repo");
     writeFile(path.join(cwd, ".envoy", "envoy.json"), {
-      dispatch: { enabled: true, serverUrl: "https://repo.internal.example", token: "repo-token" },
+      dispatch: { enabled: true, serverUrl: "https://repo.internal.example", token: repoToken },
     });
     const missing = path.join(tempDir(), "envoy.json");
     const settings = sessionSettings({ path: missing, error: null }, { HOME: tempDir() }, { cwd });
     expect(withToken(settings.dispatch)).toEqual({
       enabled: true,
       url: "https://repo.internal.example",
-      token: "repo-token",
+      token: repoToken,
     });
     expect(settings.notice).toBe(`no envoy.json at ${missing}: Envoy is off`);
   });
@@ -125,7 +130,10 @@ describe("sessionSettings", () => {
   test("DISPATCH_TOKEN_FILE with no DISPATCH_URL: the start notice names the lost DISPATCH_URL", () => {
     const lost =
       "DISPATCH_TOKEN_FILE is set and DISPATCH_URL is not, so Dispatch is off: this shell lost the DISPATCH_URL it started with. Export DISPATCH_URL again, set to the Dispatch server that token is for";
-    const tokenFile = writeFile(path.join(tempDir(), "DISPATCH_TOKEN"), "pointer-token\n");
+    const tokenFile = writeFile(
+      path.join(tempDir(), "DISPATCH_TOKEN"),
+      `${fixtureSecret("pointer")}\n`
+    );
     const missing = path.join(tempDir(), "envoy.json");
     const settings = sessionSettings(
       { path: missing, error: null },
@@ -239,6 +247,25 @@ describe("sessionSettings", () => {
     expect(sessionSettings({ path: empty, error: null }, {}, { cwd: tempDir() }).notice).toBeNull();
   });
 
+  // Where the link base cannot print, the session says so once, at its start, by the setting's
+  // name: why every link its Dispatch commands print is a dispatch:// reference.
+  test("says once at the start which setting makes links print as references", () => {
+    const file = writeFile(path.join(tempDir(), "envoy.json"), { envoy: envoyOn });
+    const secret = "pw-4c7e19";
+    const at = (url: string) =>
+      sessionSettings(
+        { path: file, error: null },
+        { DISPATCH_URL: url, DISPATCH_TOKEN: "token" },
+        { cwd: tempDir() }
+      ).notice;
+    expect(at("https://dispatch.example")).toBeNull();
+    const notice = at(`https://user:${secret}@dispatch.example`);
+    expect(notice).toBe(
+      "DISPATCH_URL is not a plain http(s) URL (it carries user info, a query, a fragment, '%' or '\\'), so the links Dispatch commands print are dispatch:// references; set DISPATCH_PUBLIC_URL to a plain https URL for dashboard links"
+    );
+    expect(notice).not.toContain(secret);
+  });
+
   test("a file that cannot be read turns both off with one error", () => {
     const file = writeFile(path.join(tempDir(), "envoy.json"), "{");
     const settings = sessionSettings({ path: file, error: null }, {}, { cwd: tempDir() });
@@ -273,9 +300,10 @@ describe("sessionSettings", () => {
 
   // A seed is for NATS alone: its refusal leaves the listener on and turns off inbound messages.
   test("a refused NATS seed turns off inbound messages alone, and the notice says why", () => {
+    const listenerToken = fixtureSecret("listener");
     const file = writeFile(path.join(tempDir(), "envoy.json"), {
       dispatch: dispatchOn,
-      envoy: { ...envoyOn, token: "listener-token", natsSeed: "SUFILESEED" },
+      envoy: { ...envoyOn, token: listenerToken, natsSeed: "SUFILESEED" },
     });
     const settings = sessionSettings(
       { path: file, error: null },
@@ -285,7 +313,7 @@ describe("sessionSettings", () => {
     expect(withToken(settings.envoy)).toMatchObject({
       enabled: true,
       url: envoyOn.url,
-      token: "listener-token",
+      token: listenerToken,
       inbound: {
         off: `ENVOY_NATS_URL names other servers than ${file}'s envoy.natsUrls; set NATS_NKEY_SEED_FILE for them`,
       },
@@ -368,7 +396,7 @@ describe("sessionDispatchSettings", () => {
     const file = writeFile(path.join(tempDir(), "envoy.json"), { dispatch: dispatchOn });
     const read = sessionDispatchSettings({ path: file, error: null }, {}, { cwd });
     expect({ ...read, dispatch: withToken(read.dispatch) }).toEqual({
-      dispatch: { enabled: true, url: "https://dispatch.example", token: "file-token" },
+      dispatch: { enabled: true, url: "https://dispatch.example", token: FILE_TOKEN },
       warnings: [
         `${old} is not read: mkdir -p ${path.join(cwd, ".envoy")} && mv ${old} ${path.join(cwd, ".envoy", "envoy.json")}`,
       ],
@@ -395,8 +423,9 @@ describe("sessionDispatchSettings", () => {
   test("commands: kept never runs a token command, and takes the value a run kept", () => {
     const home = tempDir();
     const runs = path.join(home, "runs");
+    const keptToken = fixtureSecret("kept");
     const file = writeFile(path.join(home, "envoy.json"), {
-      dispatch: { ...dispatchOn, token: `!echo run >> ${runs}; echo kept-token` },
+      dispatch: { ...dispatchOn, token: `!echo run >> ${runs}; echo ${keptToken}` },
     });
     const chosen = { path: file, error: null } as const;
     const env = { HOME: home, PATH: process.env.PATH };
@@ -411,11 +440,11 @@ describe("sessionDispatchSettings", () => {
     expect(
       withToken(sessionDispatchSettings(chosen, env, { cwd: tempDir() }).dispatch)
     ).toMatchObject({
-      token: "kept-token",
+      token: keptToken,
     });
     expect(
       withToken(sessionDispatchSettings(chosen, env, { cwd: tempDir(), commands: "kept" }).dispatch)
-    ).toMatchObject({ enabled: true, token: "kept-token" });
+    ).toMatchObject({ enabled: true, token: keptToken });
   });
 });
 
@@ -481,10 +510,11 @@ describe("the OpenCode-era file", () => {
     expect(sessionSettings(chosen, envoyOn, { cwd: tempDir() }).notice).toBe(
       `no envoy.json at ${neutral}: Dispatch is off; ${move}`
     );
+    const environmentToken = fixtureSecret("dsp");
     const dispatchOn = {
       HOME: home,
       DISPATCH_URL: "https://dispatch.example",
-      DISPATCH_TOKEN: "environment-token",
+      DISPATCH_TOKEN: environmentToken,
     };
     expect(sessionSettings(chosen, dispatchOn, { cwd: tempDir() }).notice).toBe(
       `no envoy.json at ${neutral}: Envoy is off; ${move}`
@@ -513,7 +543,7 @@ describe("the OpenCode-era file", () => {
     expect(withToken(settings.dispatch)).toEqual({
       enabled: true,
       url: "https://dispatch.example",
-      token: "file-token",
+      token: FILE_TOKEN,
     });
     expect(settings.notice).toBe(
       `${old} is not read: mkdir -p ${path.join(cwd, ".envoy")} && mv ${old} ${path.join(cwd, ".envoy", "envoy.json")}`

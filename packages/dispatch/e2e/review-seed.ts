@@ -3,18 +3,22 @@
  *  about the page the other shot.
  *
  *  It builds on the fixtures that already exist rather than writing a second corpus:
- *  `seedWorkspace()` fills the Inbox, the Agents page, a broadcast, the answers, the projects and
+ *  `seedWorkspace` fills the Inbox, the Agents page, a broadcast, the answers, the projects and
  *  the issue tree, and the delivery fixtures fill `/delivery` and `/pipeline`. What it adds is
  *  the four documents the issue tabs need, and the one priority the two priority pages are read
- *  against: `seedWorkspace()` writes none, and both of those pages draw a sentence instead of a
+ *  against: `seedWorkspace` writes none, and both of those pages draw a sentence instead of a
  *  row for a deployment that has written no priority. */
 import {
   createIssueArtifact,
   createPlanReview,
   createPriority,
+  getArtifact,
+  getBroadcast,
   getIssue,
   getProjectArtifact,
   patchIssue,
+  putAgentState,
+  putDocumentRead,
 } from "./api";
 import {
   PIPELINE_AT,
@@ -77,9 +81,71 @@ function createReviewPriority() {
   });
 }
 
-/** Seeds the review corpus into an empty database; the caller resets first. */
-export async function seedReviewRoutes(): Promise<ReviewSeed> {
-  const workspace = await seedWorkspace();
+/** Writes, before any row draws a page, the read marks the pages of the shot set write as they
+ *  are drawn, so each page shows the same reads whichever pages a run drew before it. A read mark
+ *  cannot be taken back: an agent's `read_through` only moves forward and its `read_replies` only
+ *  add ids (`putUserAgentState`, `api/state.go`), and a document's read version is what the Spec
+ *  tab compares its blocks against. So a page that wrote one changed every page drawn after it -
+ *  the rail's Agents badge read "New replies 2" before the broadcast page and "New reply 1" after
+ *  it - and the visual layer, which seeds once for the whole run, held each of those two states
+ *  in the baselines of the rows on either side.
+ *
+ *  A full visual run writes three marks while its rows draw, read from its stack's request log:
+ *  the broadcast page's read of the replies its recipients wrote (`BroadcastPage.tsx`,
+ *  `useMarkShownRepliesRead`), and the Spec tab's read of the issue's spec at its newest version,
+ *  in the desktop row and again in the phone row (`useSpecMarks`). These are those writes, the same
+ *  requests the pages send; after them each page's own write changes nothing. A page of the shot
+ *  set that comes to write a mark as it draws needs that mark written here too: until it is, the
+ *  visual job's reverse-order run (`DISPATCH_E2E_VISUAL_ORDER=reverse`, e2e/visual-order.ts) fails
+ *  by the name of a row that read it. */
+async function markWhatTheShotPagesRead(
+  broadcastId: string,
+  issue: string,
+  specId: string
+): Promise<void> {
+  const broadcast = await getBroadcast(broadcastId);
+  let replies = 0;
+  for (const recipient of broadcast.recipients ?? []) {
+    // The page's own filter: a reply its session wrote, by kind and id, which is what the server
+    // takes in `read_replies` and refuses the whole write over one that fails it.
+    const shown = (recipient.replies ?? [])
+      .filter(
+        (reply) => reply.author.kind === "session" && reply.author.id === recipient.session_id
+      )
+      .map((reply) => reply.id);
+    if (shown.length > 0) {
+      await putAgentState(recipient.session_id, { read_replies: shown });
+      replies += shown.length;
+    }
+  }
+  if (replies === 0) {
+    throw new Error(
+      "seedReviewRoutes: the broadcast holds no reply its recipients wrote, so its page marks " +
+        "nothing read and the rows' Agents badge reads a state no baseline holds"
+    );
+  }
+  if (specId === "") {
+    throw new Error(`seedReviewRoutes: ${issue} has no spec for its Spec tab to read`);
+  }
+  // The server lists a document's versions oldest first, and the Spec tab shows the one with the
+  // highest number (`versionsNewestFirst`, then the first): so the mark is the highest number, read
+  // from every version, and never the list's first, which is the newest only for a one-version spec.
+  const numbers = ((await getArtifact(specId)).versions ?? []).map((version) => version.number);
+  if (numbers.length === 0) {
+    throw new Error(`seedReviewRoutes: ${issue}'s spec has no version for its Spec tab to read`);
+  }
+  await putDocumentRead(specId, Math.max(...numbers));
+}
+
+/** Seeds the review corpus into an empty database; the caller resets first. `boundMs` is the
+ *  bound of the seed's waits, which `seedWorkspace` gives each of its own: the caller's, so a
+ *  browser row's seed gives up at the bound that row's assertions use. */
+export async function seedReviewRoutes({
+  boundMs,
+}: {
+  readonly boundMs: number;
+}): Promise<ReviewSeed> {
+  const workspace = await seedWorkspace({ boundMs });
   const issue = workspace.issues.workflow;
 
   // `seedPipelineFixture()` is `seedDeliveryFixture()`'s settings row written a second time and
@@ -172,6 +238,9 @@ Each page is read once it is drawn.
   // The slug of the `Runbook` document `seedWorkspace` creates: read back rather than assumed,
   // so a rename there fails this seed instead of the page it opens.
   const runbook = await getProjectArtifact("CORE", "runbook");
+
+  // Last, so the spec's newest version is the one its tab will show.
+  await markWhatTheShotPagesRead(workspace.broadcast.id, issue, specId);
 
   return {
     broadcast: workspace.broadcast.id,

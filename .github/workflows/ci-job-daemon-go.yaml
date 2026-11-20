@@ -20,7 +20,7 @@ name: CI job daemon-go
 #
 # Everything here is what those three steps need and nothing else:
 #   * the Postgres service and LEGION_TEST_PG_DSN, BROKER_TEST_DATABASE_URL and
-#     LEGION_E2E_PG_DSN — the daemon's unit tests' store, the broker rig its agentsecrets
+#     LEGION_E2E_PG_DSN — the daemon's unit tests' store, the broker rig its cipher
 #     contract tests drive, and Stage 1's;
 #   * TESTCONTAINERS_RYUK_DISABLED, LEGION_RUN_FUZZ_ITERS and LEGION_KEPT_PROPERTY_RUNS, read by
 #     the testcontainers-backed NATS tests, classify's fuzz tests and the daemon's
@@ -91,7 +91,7 @@ jobs:
           --health-retries 5
     env:
       # One service for all three: the Go daemon's unit tests' Postgres, the broker rig its
-      # agentsecrets contract tests drive (brokertest.NewRig skips without
+      # cipher contract tests drive (ciphertest.NewRig skips without
       # BROKER_TEST_DATABASE_URL), and the Stage 1 script's. Setting LEGION_E2E_PG_DSN is what tells
       # the script not to start a container of its own — that path is the devbox's.
       LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
@@ -128,12 +128,12 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-daemon-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-daemon-{0}-', runner.os) }}
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
 
       # The tmux runtime's tests drive a real tmux server and skip without one, and the daemon
       # supervises under tmux and refuses to start without it, which is also what the Stage 1
-      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:133-134).
+      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:173-176).
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
 
@@ -228,6 +228,17 @@ jobs:
       # come to name different tests.
       - name: Test the concurrent packages under the race detector
         run: go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
+        working-directory: packages/daemon
+
+      # What the race step's packages hold that the race build cannot run, run plain by name, one
+      # go test per package (ci_job_reads.py's DAEMON_RACE_IMPOSSIBLE_*, built from the race step's
+      # package list and the source, so the two cannot drift). The first is internal/launcher's
+      # call-graph walk, under `//go:build !race`: it loads the launcher's whole program from source
+      # and builds its call graph twice, which without the detector took about a minute at a 2.3 GB
+      # peak, and the detector multiplies both.
+      - name: Test what the race build cannot run
+        run: |
+          go test -count=1 -timeout 10m -run '^(TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt)$' ./internal/launcher
         working-directory: packages/daemon
 
       # The proof builds the daemon's ./cmd/legion and boots it against the Postgres above, so it

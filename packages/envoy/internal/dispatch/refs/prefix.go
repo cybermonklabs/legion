@@ -13,12 +13,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// prefixCandidateLimit bounds what one ResolvePrefix read loads: it has to tell one match from
-// more than one and list the matches for a person to choose from, and ten is as long a list as
-// anyone reads before writing more of the id. A prefix more items carry is listed to this bound.
+// prefixCandidateLimit bounds what one ResolvePrefix read loads, and what ResolvePrefixes loads
+// for each of its ids: it has to tell one match from more than one and list the matches for a
+// person to choose from, and ten is as long a list as anyone reads before writing more of the
+// id. A prefix more items carry is listed to this bound.
 const prefixCandidateLimit = 10
 
-// prefixLimit is prefixCandidateLimit as the `limit` of every query of this file.
+// prefixLimit is prefixCandidateLimit as the `limit` of every query of this file and of
+// target_prefixes.go.
 var prefixLimit = strconv.Itoa(prefixCandidateLimit)
 
 // Candidate is one item an id prefix names, as ResolvePrefix answers with and
@@ -100,10 +102,13 @@ type Scope struct {
 
 // ResolvePrefix is the one item kind names whose id starts with prefix: an ask, a comment, a
 // message, a document (`artifact`) or a document block, looked for where scope says, as viewer.
-// Both callers of a short id go through it - the resolver that rewrites a body's short ids as it
-// is indexed (text.Resolver.Items), with the zero Viewer and the owner the reference names, and
-// the API route that resolves one id for a person or a session, with the viewer it authenticated
-// and, where its route names no owner, the whole kind.
+// Both callers that resolve one short id at a time go through it - the resolver that rewrites a
+// body's short ids as it is indexed (text.Resolver.Items), with the zero Viewer and the owner the
+// reference names, and the API route that resolves one id for a person or a session, with the
+// viewer it authenticated and, where its route names no owner, the whole kind. ResolvePrefixes
+// is the batched second copy of these queries, which GET /api/v1/reference-targets uses to
+// resolve the short ids of a whole set at once. It shares the selection rule of this function
+// (choosePrefixCandidate), so a short id names the same item through either function.
 //
 // It answers the one match, ErrPrefixAmbiguous with the matches listed (at most
 // prefixCandidateLimit of them, in id order) where two or more carry the prefix, and
@@ -120,7 +125,7 @@ type Scope struct {
 // needs; where the id is a uuid, one that differs from the prefix in case alone wins after it,
 // since a uuid's text form is lowercase hex and the prefix is read without case. A block id is
 // text its author wrote, so `Deadbeef` and `deadbeef` are two blocks and the prefix names the one
-// it is written as.
+// it is written as. That rule has one copy, choosePrefixCandidate.
 //
 // An item's prefix is read as a range on its table's uuid primary key, the prefix with its
 // hyphens where a uuid has them and the rest filled with `0` and with `f`, which that key's btree
@@ -146,6 +151,17 @@ func ResolvePrefix(ctx context.Context, q Queryer, kind string, scope Scope, pre
 	if err != nil {
 		return Candidate{}, err
 	}
+	return choosePrefixCandidate(kind, prefix, found)
+}
+
+// choosePrefixCandidate is the one item prefix names among found, every candidate of kind the
+// query of that prefix read, in id order. It is the one copy of the rule ResolvePrefix answers
+// by, and ResolvePrefixes answers each of its ids by it too, so a short id names the same item
+// either way. The id written exactly as the prefix wins; where kind is no block, an id that
+// differs from the prefix in case alone wins after it; then the one candidate, where found
+// holds one. No candidate is pgx.ErrNoRows, and two or more are ErrPrefixAmbiguous, which lists
+// them all.
+func choosePrefixCandidate(kind, prefix string, found []Candidate) (Candidate, error) {
 	for _, candidate := range found {
 		if candidate.ID == prefix {
 			return candidate, nil
@@ -325,16 +341,22 @@ func artifactPrefixCandidates(ctx context.Context, q Queryer, scope Scope, prefi
 		if err := rows.Scan(append(document.targets(), &name)...); err != nil {
 			return nil, fmt.Errorf("scan the documents %q names: %w", prefix, err)
 		}
-		candidate := Candidate{Kind: "artifact", ID: *document.id, FirstLine: contracts.OneLineSummary(name)}
-		if parent := document.parent(); parent != nil {
-			candidate.Ref = parent.Ref
-		}
-		if document.issueKey != nil {
-			candidate.IssueKey = *document.issueKey
-		}
-		found = append(found, candidate)
+		found = append(found, artifactCandidate(document, name))
 	}
 	return found, rows.Err()
+}
+
+// artifactCandidate is one document row as a candidate: addressed as the graph addresses it
+// (documentParent.parent) and owned by its issue, where an issue owns it.
+func artifactCandidate(document documentParent, name string) Candidate {
+	candidate := Candidate{Kind: "artifact", ID: *document.id, FirstLine: contracts.OneLineSummary(name)}
+	if parent := document.parent(); parent != nil {
+		candidate.Ref = parent.Ref
+	}
+	if document.issueKey != nil {
+		candidate.IssueKey = *document.issueKey
+	}
+	return candidate
 }
 
 // blockPrefixCandidates is the blocks of one version of the document scope names whose id starts
@@ -380,18 +402,25 @@ func blockPrefixCandidates(ctx context.Context, q Queryer, scope Scope, prefix s
 		if err := rows.Scan(append([]any{&blockID, &body}, document.targets()...)...); err != nil {
 			return nil, fmt.Errorf("scan the blocks of %s %q names: %w", scope.Document, prefix, err)
 		}
-		candidate := Candidate{Kind: "block", ID: blockID, FirstLine: contracts.OneLineSummary(body)}
-		if parent := document.parent(); parent != nil {
-			candidate.Ref = BlockRef(parent.Ref, blockID)
-			if document.issueKey != nil {
-				candidate.IssueKey = *document.issueKey
-			} else if document.project != "" {
-				candidate.Document = parent.Ref
-			}
-		}
-		found = append(found, candidate)
+		found = append(found, blockCandidate(blockID, body, document))
 	}
 	return found, rows.Err()
+}
+
+// blockCandidate is one block of document as a candidate, body being its text: addressed under
+// its document's reference and owned by its document's owner, the issue, or else the project
+// document itself.
+func blockCandidate(blockID, body string, document documentParent) Candidate {
+	candidate := Candidate{Kind: "block", ID: blockID, FirstLine: contracts.OneLineSummary(body)}
+	if parent := document.parent(); parent != nil {
+		candidate.Ref = BlockRef(parent.Ref, blockID)
+		if document.issueKey != nil {
+			candidate.IssueKey = *document.issueKey
+		} else if document.project != "" {
+			candidate.Document = parent.Ref
+		}
+	}
+	return candidate
 }
 
 // queryArgs are the arguments of a query this file builds by concatenation: param appends one

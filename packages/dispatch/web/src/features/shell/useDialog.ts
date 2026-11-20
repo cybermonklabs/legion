@@ -93,6 +93,13 @@ function innermostOpenDialog(): HTMLElement | null | undefined {
   return innermost;
 }
 
+/** Whether a dialog is open. Its Escape is then its own wherever the focus is: in the frame
+ *  before its deferred initial focus has moved in, or after a press on its text took the focus
+ *  to the page. A layer under it that answers Escape itself leaves the key to it. */
+export function dialogOpen(): boolean {
+  return openDialogs.size > 0;
+}
+
 export interface UseDialogOptions {
   /** Element to focus first instead of the container's first focusable descendant. */
   initialFocusRef?: RefObject<HTMLElement | null>;

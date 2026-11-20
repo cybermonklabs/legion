@@ -33,9 +33,12 @@ stead: a shared secret's, whose approver is the sentinel `anyone`, so it names n
 could end it. It also lists, to everyone, every live grant that belongs to no person: one a
 pod or a VM got without asking, under a machine login that is a service's rather than a person's.
 Nobody operates such a session and nobody approved such a grant, so without this nobody would see
-what a pod had taken. Each row names its enrollment, its secrets, how it was **Granted**
-(**Automatically**, or **Approved by** whoever decided it: an email, or `judge:<model id>` where
-the model judge decided it in an approver's stead), and when it was created and expires. Click
+what a pod had taken. A pod whose account the broker's `BROKER_POD_OPERATORS` maps to a person is
+that person's session here: its grants are listed to that person, as their own sessions' are
+([Concepts](/legion/broker/concepts/#a-persons-pod)). Each row names its enrollment, its secrets,
+how it was **Granted** (**Automatically**, or **Approved by** whoever decided it: an email, or
+`judge:<model id>` where the model judge decided it in an approver's stead), and when it was
+created and expires. Click
 **Revoke** to end one at once; the session's next read of it is refused `GRANT_NOT_LIVE`. The
 broker allows it when you are the grant's approver or its session's operator, and it allows
 anyone signed in to end a grant whose approver is `anyone`. It refuses everyone else
@@ -45,29 +48,33 @@ row reads **Ends with its machine login** instead:
 rather than that one row.
 
 ```console
-$ curl -s -X POST -H "Authorization: Bearer $(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" -d '{"approver":"ada@example.com"}' "$AGENT_SECRETS_URL/v1/grants/<grant id>/revoke-by-approver"
+$ printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" | curl -s -X POST -H @- -d '{"approver":"ada@example.com"}' "$AGENT_SECRETS_URL/v1/grants/<grant id>/revoke-by-approver"
 {"state":"revoked"}
 ```
 
 (That is the call Dispatch's server makes as its own ServiceAccount, the caller the broker lists
 in `BROKER_API_ACCOUNTS`; on the [local stack](/legion/broker/guides/run-locally/) you can make it
-yourself with the token in `$AGENT_SECRETS_ACCOUNT_TOKEN_FILE`. The broker takes the revoking
-person the body names on its caller's word, as it does for a machine login's decision: a revoke
-only takes power away, so unlike approving a secret request it needs no sign-in to the broker.)
+yourself with the token in `$AGENT_SECRETS_ACCOUNT_TOKEN_FILE`; `curl -H @-` reads the header from
+standard input, so the token is in no command line. The broker takes the revoking person the body
+names on its caller's word, as it does for a machine login's decision: a revoke only takes power
+away, so unlike approving a secret request it needs no sign-in to the broker.)
 
 ## Revoke a grant from your shell
 
 From your own shell on a machine that is logged in (not from inside an agent session),
 `agent-secrets grant list` lists the same grants as **Live grants**, and `agent-secrets grant revoke`
 ends one as **Revoke** does, withholding included. Both call the broker under the machine's login:
-the helper signs each call with the machine's credential, and refuses a process inside a registered
-session's process tree (`IN_SESSION`), so an agent's own commands cannot act as you. The check
-covers that process tree only. A process a session sends out of it, with `( cmd & )`, `setsid -f`
-or a tmux server the session started, passes it, and any process running as your user can stop the
-helper anyway. Through these commands such a process can list and revoke your own machine logins,
-never a service's machine login, and your grants, which include every grant whose approver is
-you, on any session, a service's pod among them — those you approved, and those the model judge
-approved in your stead — and every grant the judge approved in anyone's stead.
+the helper signs each call with the machine's credential. It refuses that to a process inside a
+registered session's process tree (`IN_SESSION`), so an agent's own commands cannot act as you:
+`grant list` is refused there, and `grant revoke` run there is the session's own revoke instead,
+as `agent-secrets revoke` is, which ends only a grant given to the broker identity (enrollment)
+the session signs as. The check covers that process tree only. A process a session sends out of
+it, with `( cmd & )`, `setsid -f` or a tmux server the session started, passes it, and any
+process running as your user can stop the helper anyway. Through these commands such a process
+can list and revoke your own machine logins, never a service's machine login, and your grants,
+which include every grant whose approver is you, on any session, a service's pod among them —
+those you approved, and those the model judge approved in your stead — and every grant the judge
+approved in anyone's stead.
 `agent-secrets enroll --helper` is open to any process of your user, so such a process can also
 enroll a box and read your agent secrets.
 
@@ -142,6 +149,14 @@ source: the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 decided_by: session:2b8627f4-9a2a-4c12-85bf-910144bc0b5c
 ```
 
+The session that cancels need not be the one that asked: a request belongs to the principal that
+made it, so you cancel your own request from another box, the next pod of a Legion role cancels what
+the pod before it asked for, and a machine cancels its request after its helper restarted. Another
+person, another role of the same issue and another machine of the same fleet are refused
+`NOT_YOURS`, as is every session but the one that asked when its broker enrollment records no owner,
+which is any enrollment made before the broker recorded owners
+([Concepts](/legion/broker/concepts/#requests-and-grants)).
+
 ## End a session
 
 Ending a session's enrollment revokes all of its grants and cancels all of its pending requests
@@ -162,8 +177,9 @@ in one step, and the approver's Inbox drops them. A session ends in one of four 
   ([when no broker is serving](/legion/broker/concepts/#when-no-broker-is-serving)). The
   [configuration reference](/legion/broker/reference/config/) gives both settings' defaults.
 - **Its machine login is revoked.** Whoever may revoke the machine login that enrolled it — the
-  person who approved a person's machine login, or anyone signed in for a service's — revokes that
-  login, which ends every session it enrolled ([end a machine's login](#end-a-machines-login)).
+  person who approved a person's machine login, the person `BROKER_POD_OPERATORS` maps a pod's
+  account to for that pod's login, or anyone signed in for a service's — revokes that login, which
+  ends every session it enrolled ([end a machine's login](#end-a-machines-login)).
 - **Its machine login ends, for a machine's own session.** A session a machine enrolled under the
   login its Google identity token traded for renews only while that login is live, so it also ends
   when that login passes its expiry — an hour from the token it was minted from, unless the machine
@@ -185,7 +201,8 @@ A login
 can be ended, with every session it enrolled,
 at any time: for a machine that is lost, compromised or no longer used, or a Legion daemon whose pods
 must lose their secrets now. Dispatch's machine-login page (`/credentials/machine`) lists **Machine
-logins**: every machine logged in as you, and every service's login, such as the Legion daemon's,
+logins**: every machine logged in as you, the login of each pod whose account the broker's
+`BROKER_POD_OPERATORS` maps to you, and every service's login, such as the Legion daemon's,
 shown as `legion-daemon on <host>`, each with its **Credential** id, who approved it (`No one:`
 and the ServiceAccount that logged in, for a daemon's token login), when its login was issued and
 when it expires. The host is the name its machine reported, so two logins can share it; the
@@ -201,13 +218,16 @@ its earlier logins included. Click **Revoke** on its row and confirm. The broker
   pending requests cancelled, and its next call is refused `PROOF_INVALID`.
 
 Only the person who approved a person's machine login may revoke it; the broker refuses anyone else
-`NOT_APPROVER`. Anyone signed in may revoke a service's login. A revoked login stays revoked: the
-machine runs `agent-secrets machine login` again and its person approves the new code, while the
-Legion daemon logs in again with its own Kubernetes token, which no person approves, and enrolls
-the pods it launches from then on. A worker pod already running when its login was revoked stays
-without secrets until the daemon replaces it. To keep a daemon from logging in again, remove its
-account from the broker's `BROKER_SERVICE_LOGINS` and redeploy the broker
-([Operate](/legion/broker/operate/#what-to-run)).
+`NOT_APPROVER`. Only the person `BROKER_POD_OPERATORS` maps a pod's account to may revoke that
+pod's login, and the broker refuses anyone else `NOT_APPROVER` too. Anyone signed in may revoke a
+service's login. A revoked login stays revoked: the machine runs `agent-secrets machine login`
+again and its person approves the new code, while the Legion daemon logs in again with its own
+Kubernetes token, which no person approves, and enrolls the pods it launches from then on. A worker
+pod already running when its login was revoked stays without secrets until the daemon replaces it.
+A pod whose account `BROKER_POD_OPERATORS` maps to you logs in again with its own token, under a new
+credential, the next time it enrolls, so revoking its login does not keep it out. To keep a daemon
+from logging in again, remove its account from the broker's `BROKER_SERVICE_LOGINS` and redeploy
+the broker ([Operate](/legion/broker/operate/#what-to-run)).
 
 ### A machine that logs in with its own identity
 
@@ -243,11 +263,11 @@ stops authenticating at its next call and no trade of it is answered
 ([Operate](/legion/broker/operate/#a-copied-machine-token)).
 
 From your own shell on a logged-in machine, `agent-secrets machine list` lists your own machines'
-logins, row for row as the machine-login page lists them, and `agent-secrets machine revoke` ends
-one, under that machine's login. A service's login is not listed there, and `machine revoke` of
-one is refused `NOT_FOUND` as for an id it does not know. Revoking the machine's own login (its id
-is the one `machine revoke` warns about) ends that machine's access too: its next command is
-refused `LAUNCHER_INVALID` until it logs in again.
+logins and your pods' logins, row for row as the machine-login page lists them, and
+`agent-secrets machine revoke` ends one, under that machine's login. A service's login is not
+listed there, and `machine revoke` of one is refused `NOT_FOUND` as for an id it does not know.
+Revoking the machine's own login (its id is the one `machine revoke` warns about) ends that
+machine's access too: its next command is refused `LAUNCHER_INVALID` until it logs in again.
 
 ```console
 $ agent-secrets machine list
@@ -264,40 +284,44 @@ revoked a2df6d16-adc1-434e-b479-496defb3a5c8 at the broker AGENT_SECRETS_URL nam
 The machine-login page lists the services' logins, the Legion daemon's, beside them, and revokes
 them. This one a person approved before services logged in with their own Kubernetes token; a
 daemon's token login is listed the same way with `approved_by` empty and `subject` naming its
-ServiceAccount:
+ServiceAccount. `person` is null on both rows. Only a person's pod login, a token login of an
+account that `BROKER_POD_OPERATORS` maps to a person, names that person there, and only that
+person's list holds it:
 
 ```console
-$ curl -s -H "Authorization: Bearer $(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" "$AGENT_SECRETS_URL/v1/launcher-credentials?approver=ada@example.com"
-{"credentials":[{"credential_id":"d4187389-953c-4156-90c1-1dd937e9bf0b","host":"example-host-devbox","service":null,"subject":null,"approved_by":"ada@example.com","issued_at":"2026-10-10T14:56:01.121955Z","expires_at":"2026-10-17T14:56:01.122701Z","expired":false},{"credential_id":"8f4c8ae4-b73e-4a60-a591-725667480f1a","host":"example-host-cluster","service":"legion-daemon","subject":null,"approved_by":"bob@example.com","issued_at":"2026-10-10T14:55:59.906427Z","expires_at":"2026-10-17T14:55:59.9071Z","expired":false}]}
-$ curl -s -X POST -H "Authorization: Bearer $(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" -d '{"approver":"ada@example.com"}' "$AGENT_SECRETS_URL/v1/launcher-credentials/8f4c8ae4-b73e-4a60-a591-725667480f1a/revoke-by-approver"
+$ printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" | curl -s -H @- "$AGENT_SECRETS_URL/v1/launcher-credentials?approver=ada@example.com"
+{"credentials":[{"credential_id":"d4187389-953c-4156-90c1-1dd937e9bf0b","host":"example-host-devbox","service":null,"subject":null,"person":null,"approved_by":"ada@example.com","issued_at":"2026-10-10T14:56:01.121955Z","expires_at":"2026-10-17T14:56:01.122701Z","expired":false},{"credential_id":"8f4c8ae4-b73e-4a60-a591-725667480f1a","host":"example-host-cluster","service":"legion-daemon","subject":null,"person":null,"approved_by":"bob@example.com","issued_at":"2026-10-10T14:55:59.906427Z","expires_at":"2026-10-17T14:55:59.9071Z","expired":false}]}
+$ printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" | curl -s -X POST -H @- -d '{"approver":"ada@example.com"}' "$AGENT_SECRETS_URL/v1/launcher-credentials/8f4c8ae4-b73e-4a60-a591-725667480f1a/revoke-by-approver"
 {"state":"revoked"}
 ```
 
 (Those are the calls Dispatch's server makes, as above.)
 
 `STATE` is `expired` for a login past its expiry whose sessions still run. `--json` prints the
-broker's answer, the machine-login page's rows for your own machines. On the machine whose login was
-revoked, every machine and grant command is refused from then on:
+broker's answer, the machine-login page's rows for your own machines and your pods. On the machine
+whose login was revoked, every machine and grant command is refused from then on:
 
 ```console
 $ agent-secrets machine list
-agent-secrets machine list: the launcher credential is not valid (LAUNCHER_INVALID); this machine's login is expired or revoked (run: agent-secrets machine login)
+agent-secrets machine list: the launcher credential is not valid (LAUNCHER_INVALID); this machine's launcher credential at the broker AGENT_SECRETS_URL names is expired or revoked; run: agent-secrets machine login, and have a human approve it
 ```
 
 Nothing tells the machine's helper; it finds out the next time it calls the broker. A session's
 renewal, within a third of `BROKER_LEASE_SECONDS`, is refused; revoking that session's enrollment is
 refused too, and the helper drops the credential and logs at ERROR `the broker refused the launcher
-credential (…); cleared: no session can enroll until a human approves a new machine login`. A
-helper with no session running finds out at its next refresh, within a day, or when it restarts:
-the broker refuses the refresh, and the helper drops the login, deletes its machine file and logs
-at ERROR `the broker refused the machine login's refresh: it was revoked, lapsed, or its refresh
-token was reused; cleared: no session can enroll until a human approves a new machine login`. From
-then `agent-secrets machine login-status` exits 1 and prints the cause, here a refused session call:
+credential (…); cleared: no session can enroll under this machine's credential; run: agent-secrets
+machine login, and have a human approve it`. A helper with no session running finds out at its next
+refresh, within a day, or when it restarts: the broker refuses the refresh, and the helper drops the
+login, deletes its machine file and logs at ERROR `the broker refused the machine login's refresh:
+it was revoked, lapsed, or its refresh token was reused; cleared: no session can enroll under this
+machine's credential; run: agent-secrets machine login, and have a human approve it`. A person
+signed in on the machine still enrols sessions under their own sign-in. From then
+`agent-secrets machine login-status` exits 1 and prints the cause, here a refused session call:
 
 ```console
 $ agent-secrets machine login-status
 expired
-agent-secrets machine login-status: the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); run: agent-secrets machine login
+agent-secrets machine login-status: the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); run: agent-secrets machine login, and have a human approve it
 ```
 
 The Legion daemon finds out when it next enrolls or ends a pod: the broker refuses its credential
@@ -333,7 +357,7 @@ for you again; every access token it already minted, so the sessions running the
 within seconds; and the machine login that sign-in held, so every session it enrolled ends as
 [ending a session](#end-a-session) does. Dispatch serves a revoked access token for up to five
 seconds: it asks the broker whether a token is live and reuses that answer for five seconds
-(`AffirmativeCacheTTL`, `packages/envoy/internal/brokertoken/brokertoken.go`) rather than asking
+(`AffirmativeCacheTTL`, `packages/envoy/internal/ciphertoken/brokertoken.go`) rather than asking
 once per request. Your sign-ins on other machines, and the fleet's own
 machine login, are untouched — the machine goes on reading what its service owns. Nobody sees or
 revokes anyone else's sign-ins: Dispatch names the person from its own session, so another
@@ -355,6 +379,8 @@ a sign-in of its own. Run `agent-secrets login` on the machine to sign in again.
 The sessions above are agents'. A person's own sign-in to the broker's approval page is separate:
 it lasts a day at most, is never extended, and ends when they sign out. Nobody ends someone
 else's from a page; an operator ends every browser session one login holds by running the
-broker's own subcommand in a broker pod, `envoy-broker end-sessions <login>`
-([Ending a person's sessions](/legion/broker/operate/#ending-a-persons-sessions)). Revoking a
+broker's own subcommand, `envoy-broker end-sessions <login>`, in a one-off process of the image
+with the serving broker's settings
+([Ending a person's sessions](/legion/broker/operate/#ending-a-persons-sessions) and
+[Running a subcommand](/legion/broker/operate/#running-a-subcommand)). Revoking a
 grant or a machine login does not need a broker sign-in and never ends one.

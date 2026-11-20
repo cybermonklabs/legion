@@ -17,7 +17,7 @@ import (
 // API is the live document operation surface used by Dispatch's HTTP handlers.
 type API interface {
 	SeedText(ctx context.Context, artifactID, markdown string, actor model.Actor) (string, error)
-	ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor) (string, error)
+	ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor, precondition *model.EditPrecondition) (string, error)
 	IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, error)
 	RebuildDocument(ctx context.Context, artifactID string, markdown *string, actor model.Actor) (RebuildReport, VersionResult, error)
 	InjectSchemaInvalidForTest(ctx context.Context, artifactID string) error
@@ -32,7 +32,7 @@ type API interface {
 	SettleIssueDocuments(ctx context.Context, issueKey string) error
 	WriteIssueAskStates(ctx context.Context, issueKey string, asks []model.Ask, actor model.Actor, markUnindexed bool) ([]BlockRef, error)
 	MarkReopenOwedAskDocuments(ctx context.Context, issueKey string) error
-	FollowClosedIssueVersions(ctx context.Context, issueKey string) ([]model.Event, error)
+	FollowClosedIssueVersions(ctx context.Context, issueKey string) error
 	AcquireConditionalEdit(ctx context.Context, artifactID string) (func(), error)
 	ApplyOps(ctx context.Context, artifactID string, ops []model.EditOp, actor model.Actor, precondition *model.EditPrecondition) (EditOutcome, error)
 	SetBlockAttributes(ctx context.Context, artifactID, blockID string, attributes map[string]any, actor model.Actor) error

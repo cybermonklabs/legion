@@ -4,7 +4,7 @@
  *
  *  None of them writes and reads that write back: a bulk snooze whose answer this layer would
  *  have to invent, and the thread walk whose `e` dismisses a row, stayed in `keyboard-inbox.e2e.ts`
- *  with the rest (packages/dispatch/AGENTS.md, "The stubbed layer"). Every refusal below is the
+ *  with the rest (packages/dispatch/README.md, "The stubbed layer"). Every refusal below is the
  *  row's own `page.route`, which replays as readily as it ran.
  */
 import { expect } from "@playwright/test";
@@ -275,6 +275,8 @@ test.describe("inbox selection", () => {
     // - the head's, for the row the column is showing - so it names that question without
     // the position, which is only there to tell two controls on one page apart.
     const pickers: string[] = [];
+    await expect(rows).toHaveCount(scene.rows);
+    // The count above waited for every row of the scene, so the loop walks each of them.
     for (const askId of await rows.evaluateAll((items) =>
       items.map((item) => item.getAttribute("data-inbox-row") ?? "")
     )) {

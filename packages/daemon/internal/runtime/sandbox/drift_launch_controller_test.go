@@ -39,6 +39,9 @@ import (
 // identity for the pod's life. A deployment that comes to name one, under the same instance,
 // database and login, must not leave the controller signing in as the pod itself — and since no
 // round is opened over the controller's pod, that row holds its next launch to the replacement.
+// So does the writer audience the account is impersonated with, named or dropped: it changes the
+// credential the controller's launcher signs in with, and the form that launcher runs, the
+// roles-dir form with it and the single-role form without (controllerPod.launcherContainer).
 func TestTheControllersPodIsNotLeftBehindByAConfigurationItCannotCarry(t *testing.T) {
 	const overlay = "/etc/legion-operator-roles/controller.yml"
 	roles := corev1.Volume{Name: "operator-roles", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
@@ -64,6 +67,16 @@ func TestTheControllersPodIsNotLeftBehindByAConfigurationItCannotCarry(t *testin
 		}},
 		"the session store's service account": {
 			built:    func(o *Options) { o.SessionStore = cloudSQLStore },
+			now:      func(o *Options) { o.SessionStore = cloudSQLImpersonatingStore },
+			replaces: true,
+		},
+		"the session store's writer audience": {
+			built:    func(o *Options) { o.SessionStore = cloudSQLImpersonatingStore },
+			now:      func(o *Options) { o.SessionStore = cloudSQLWriterStore },
+			replaces: true,
+		},
+		"the session store's writer audience dropped": {
+			built:    func(o *Options) { o.SessionStore = cloudSQLWriterStore },
 			now:      func(o *Options) { o.SessionStore = cloudSQLImpersonatingStore },
 			replaces: true,
 		},
@@ -117,10 +130,10 @@ func TestTheControllersPodIsNotLeftBehindByAConfigurationItCannotCarry(t *testin
 // answers nothing for it, so every facet of driftedInPod reaches it through movedInPod's rule
 // for an uncovered pod (addresses.go), and its next launch replaces it, as it always has. A
 // served owner its gh volume projects no directory for is such a facet: the controller acts as
-// the review App for every owner of the project, and one its pod holds no directory for is one
-// its `gh` reaches as nobody. It has no issue workspace and nothing to push, so nothing is lost
-// by replacing the pod where it stands — and it is replaced at its next launch, with no second
-// registration anywhere.
+// the review App for every owner that App is installed on, and one its pod holds no directory
+// for is one its `gh` reaches as nobody. It has no issue workspace and nothing to push, so
+// nothing is lost by replacing the pod where it stands — and it is replaced at its next launch,
+// with no second registration anywhere.
 func TestAControllerPodWhoseGhVolumeLacksAServedOwnerIsReplacedByItsNextLaunch(t *testing.T) {
 	g := newRig(t, nil)
 	spec := controllerSpec(t)

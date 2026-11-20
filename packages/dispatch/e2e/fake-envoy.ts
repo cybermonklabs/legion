@@ -60,6 +60,16 @@ type SessionState = "live" | "unresponsive";
 
 const SESSION_STATES: readonly SessionState[] = ["live", "unresponsive"];
 
+/** How the listener answers a send to a session. `200` takes it. `404` is its "no live session"
+ *  refusal: Dispatch then publishes a targeted message on the session's agent subject itself and
+ *  records the attempt queued, while a mention's attempt fails. `503` is the listener behind its
+ *  starting gate (`service starting`, packages/envoy/cmd/listener/main.go startingGate): Dispatch
+ *  tries it again through its take-over window and then records the attempt failed, which is the
+ *  failure a row stages to read a failed card and its Retry. */
+type SendStatus = 200 | 404 | 503;
+
+const SEND_STATUSES: readonly SendStatus[] = [200, 404, 503];
+
 /** What a send's answer says of its target's connection, in the `state` it carries beside
  *  `recipient_state` (packages/envoy/cmd/listener/api.go, sendHandler): `connected` is a session
  *  whose plugin holds its relay subject, `stopped` one the listener knows and that is not
@@ -173,7 +183,7 @@ interface FakeEnvoyState {
    *  had gone by the send, which the listener's probe finds. An id named by no entry here is
    *  `connected`. */
   readonly sendStates: Map<string, ConnectionState>;
-  readonly sendStatuses: Map<string, 200 | 404>;
+  readonly sendStatuses: Map<string, SendStatus>;
   /** How long a send to a session is held before it is answered, in milliseconds, as a listener
    *  slow to take it would; an id named by no entry here is answered at once. */
   readonly sendDelays: Map<string, number>;
@@ -318,8 +328,9 @@ function tokenOrder(sessions: readonly FakeLegionAgent[]): [number, string] {
 /** A registry read's answer for `agents`, holding the selected entries: each with `live` from the
  *  session's own registration (`registrationIsLive`) and, within its role token ordered by start,
  *  the session that replaced it and when (`replaced_by`/`replaced_at`, null for the newest), as
- *  the listener derives them at the read (`legionAgentAnswer`, `legionagents.succession`). Newest
- *  first within a role token; across tokens by role in workflow order, then by token.
+ *  the listener derives them at the read (`listenerwire.LegionAgentAnswer`,
+ *  `legionagents.succession`). Newest first within a role token; across tokens by role in workflow
+ *  order, then by token.
  *
  *  Succession is derived over every entry of each token the registry holds and the selection is
  *  applied after, so the three reads never answer one session two ways: an issue read of a token
@@ -492,6 +503,10 @@ const server = Bun.serve({
       const delay = state.sendDelays.get(message.target_session) ?? 0;
       if (delay > 0) await Bun.sleep(delay);
       const sendStatus = state.sendStatuses.get(message.target_session);
+      // A listener behind its starting gate answers every send so, whatever the session.
+      if (sendStatus === 503) {
+        return Response.json({ error: "service starting" }, { status: 503 });
+      }
       const seeded = state.sessions.find(
         (session) => session.session_id === message.target_session
       );
@@ -598,7 +613,7 @@ const server = Bun.serve({
         record?: SessionRecord;
         send_delay_ms?: number;
         send_state?: ConnectionState;
-        send_status?: 200 | 404;
+        send_status?: SendStatus;
         state?: SessionState;
         stopped?: boolean;
         last_seen?: number;
@@ -611,8 +626,8 @@ const server = Bun.serve({
         else state.liveSessions.delete(sessionID);
       }
       if (body.send_status !== undefined) {
-        if (body.send_status !== 200 && body.send_status !== 404) {
-          return Response.json({ error: "send_status must be 200 or 404" }, { status: 400 });
+        if (!SEND_STATUSES.includes(body.send_status)) {
+          return Response.json({ error: "send_status must be 200, 404 or 503" }, { status: 400 });
         }
         state.sendStatuses.set(sessionID, body.send_status);
       }

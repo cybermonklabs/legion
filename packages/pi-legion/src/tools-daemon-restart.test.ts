@@ -5,8 +5,12 @@ import path from "node:path";
 import type { LegionRole } from "@legion/contracts";
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { z } from "zod";
 import { createLegionTool } from "./tools";
+
+/** The contract the build under test speaks, which its client states on every request. */
+const CONTRACT = 60;
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
 function daemonFixture(name: string): string {
@@ -44,6 +48,8 @@ const context: SessionContext = {
 
 const COMMIT = "210d53a9d1b109df97fbb5dd5041d659dbab1323";
 const HANDOFF_ID = "0f6d2c1e-7a3b-4e59-9c8d-2b1a6e4f3d70";
+/** The claim's registration secret: random, as the daemon's is, since the pane holds it. */
+const CLAIM_SECRET = fixtureSecret("claim");
 /** The daemon's HANDOFF_NOT_NEW answer to the implementer naming its previous phase's record. */
 const NOT_NEW = `the implementer named handoff record ${HANDOFF_ID} for its previous phase of LEGION-208; write this phase's handoff with \`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\` before completing`;
 const stops: Array<() => void> = [];
@@ -66,6 +72,7 @@ function liveDaemon(refuse?: { path: string; status: number; body: object }) {
       }
       const fixture = {
         "/legion/v1/state": "state.json",
+        "/legion/v1/issues/LEGION-208/record": "issue-record.json",
         "/legion/v1/grants": "grant.json",
         "/legion/v1/handoff/complete": "handoff-complete.json",
         "/legion/v1/signoff": "signoff.json",
@@ -113,7 +120,7 @@ function restartingClient(live: string, down: string, outage: number) {
     const url = String(input);
     return fetch(sent <= outage ? url.replace(live, down) : url, init);
   }) as typeof fetch;
-  return createLegionDaemonClient(live, fetchFn);
+  return createLegionDaemonClient(live, { pluginContract: CONTRACT, fetch: fetchFn });
 }
 
 /** A virtual clock: each wait is recorded and moves time on at once. */
@@ -146,7 +153,7 @@ function toolFor(
       sessionID: "ses_208",
       tree,
       issue: "LEGION-208",
-      secret: "claim-secret",
+      secret: CLAIM_SECRET,
       claimToken: `legion-omp-legion-208-${role}`,
       generation: 1,
     }),
@@ -191,7 +198,7 @@ test("handoff_complete waits out a daemon that refuses connections while it rest
   expect(result.details).toEqual(JSON.parse(daemonFixture("handoff-complete.json")));
   expect(completed).toEqual(["ses_208"]);
   expect(live.answered).toEqual([
-    "/legion/v1/state",
+    "/legion/v1/issues/LEGION-208/record",
     "/legion/v1/grants",
     "/legion/v1/handoff/complete",
   ]);
@@ -225,7 +232,7 @@ test("handoff_complete retries a connection the daemon closed before answering, 
   expect(result.isError).toBe(true);
   expect(result.content[0]).toEqual({
     type: "text",
-    text: `POST /legion/v1/handoff/complete failed with 409 HANDOFF_ALREADY_RECORDED: ${detail} (an earlier attempt of handoff_complete lost its connection before the daemon answered, and may have been applied: read the record before calling again)`,
+    text: `POST /legion/v1/handoff/complete failed with 409 HANDOFF_ALREADY_RECORDED: ${detail} (an earlier attempt of handoff_complete lost its connection before the daemon answered, and may have been applied: read_record of your own issue says whether it landed)`,
   });
   expect(completed).toEqual([]);
   expect(live.answered.filter((route) => route === "/legion/v1/handoff/complete")).toHaveLength(1);
@@ -406,7 +413,7 @@ test("a 503 from a proxy in front of the daemon is retried like a refused connec
   const clock = virtualClock();
   const tool = toolFor(
     "architect",
-    createLegionDaemonClient(`http://127.0.0.1:${server.port}`),
+    createLegionDaemonClient(`http://127.0.0.1:${server.port}`, { pluginContract: CONTRACT }),
     clock
   );
 

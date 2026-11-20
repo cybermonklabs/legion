@@ -48,8 +48,9 @@ func TestWrittenTextReachesTheDocumentWithLineFeeds(t *testing.T) {
 				Artifact model.Artifact `json:"artifact"`
 			}
 			for _, content := range []string{"First.\n", document} {
-				response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", map[string]string{
+				response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", map[string]any{
 					"name": "notes.md", "content": eol(content),
+					"precondition": uploadBaseNamed(t, handler, "/api/v1/issues/"+key+"/artifacts", "notes.md"),
 				}, "alice")
 				ok(t, response, "upload")
 				uploaded = decodeBody[struct {

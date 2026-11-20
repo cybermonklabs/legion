@@ -220,8 +220,9 @@ func indentOutput(text string) string {
 // the DSN names. The daemon's live proofs share the named database on a CI service, whose role
 // owns it; in a Legion worker pod the server's `legion_test` role may create databases and may not
 // write the `public` schema of `postgres`, which a migration answers `permission denied for schema
-// public` (SQLSTATE 42501). The database is dropped at the end of the run; that role also cannot
-// terminate another backend, so a drop a connection outlives is reported and not a failure, and the
+// public` (SQLSTATE 42501). The database is dropped at the end of the run through testdb.Drop,
+// which waits out a session that role may not terminate, an autovacuum worker's, and a backend
+// that has not exited yet; a drop still refused after that is reported and not a failure, and the
 // database goes with the pod.
 //
 // The URL of that database is testdb.DatabaseURL's, made before the connection and the create,
@@ -261,7 +262,7 @@ func takeOwnDatabase(t *testing.T) {
 			return
 		}
 		defer drop.Close(context.Background())
-		if _, err := drop.Exec(context.Background(), "drop database "+database); err != nil {
+		if err := testdb.Drop(context.Background(), drop, database); err != nil {
 			t.Logf("the run's own database %s was left behind: %v", database, err)
 		}
 	})
@@ -303,8 +304,10 @@ func buildProofLegion(t *testing.T, root, work string) string {
 // installProofPlugins packs this checkout's two Oh My Pi plugins as the release packs them
 // (scripts/e2e/lib/pack-plugin.sh) and installs each into the run's own profile under its own
 // HOME, as scripts/e2e/lib/install-plugin-profile.sh does for a stage proof — through the Oh My Pi
-// the run's panes run rather than a mise pin, since a pod has no mise. The profile's natives are
-// linked from the shared cache, so no pane downloads a native module.
+// the run's panes run rather than a mise pin, since a pod on a worker image from before
+// dispatch://INFRA-3257 has no mise, and the mise of an image since then holds no Oh My Pi until it
+// downloads one from GitHub. The profile's natives are linked from the shared cache, so no pane
+// downloads a native module.
 func installProofPlugins(t *testing.T, root, work, home, profile, omp string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(home, ".omp"), 0o700); err != nil {

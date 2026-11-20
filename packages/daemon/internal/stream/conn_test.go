@@ -359,6 +359,70 @@ func TestAToolStepEventRecordsACallsEndAndAnUnmodelledFrameIsDropped(t *testing.
 	}
 }
 
+// Oh My Pi's message_end names the model that answered under message.provider and
+// message.model, also after a fallback moved the turn to another model: that frame becomes one
+// Answered event, at the generation the connection's hello was registered for. A user's message
+// and a message no model wrote (`<synthetic>`) name no model that answered, and push nothing.
+func TestAMessageEndNamesTheModelThatAnswered(t *testing.T) {
+	h := startListener(t, harnessOptions{})
+	p := h.connect(testToken)
+	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"user","content":"implement the plan"}}`)})
+	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","provider":"anthropic","model":"<synthetic>"}}`)})
+	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","provider":"anthropic","model":""}}`)})
+	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","provider":"second","model":"second-model"}}`)})
+	p.conn.Close()
+	want := Answered{Claim: testClaim, Provider: "second", Model: "second-model", Generation: testGeneration}
+	if got := h.next(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("event = %#v, want %#v: the user's and the synthetic message name no model that answered", got, want)
+	}
+	if got := h.next(); got != (Closed{Claim: testClaim}) {
+		t.Fatalf("event after the answer = %#v, want the close", got)
+	}
+	if rest := h.stop(); len(rest) != 0 {
+		t.Fatalf("further events = %#v, want none", rest)
+	}
+}
+
+// A provider or a model holding U+0000 names no model any store can keep: PostgreSQL's text and
+// jsonb refuse that character, and the model an answer names is written into the record of the
+// step it served. A model did answer, so such a frame is an Answered that names no model, which
+// leaves no earlier model the last; the stream says so in one line naming the claim and the field,
+// never the text, and the next answer is read as before.
+func TestAMessageEndNamingAModelNoStoreTakesAnswersWithNoModel(t *testing.T) {
+	h := startListener(t, harnessOptions{})
+	p := h.connect(testToken)
+	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","provider":"first","model":"first-model"}}`)})
+	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","provider":"second","model":"secret\u0000model"}}`)})
+	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","provider":"secret\u0000provider","model":"second-model"}}`)})
+	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","provider":"second","model":"second-model"}}`)})
+	p.conn.Close()
+	for _, want := range []Event{
+		Answered{Claim: testClaim, Provider: "first", Model: "first-model", Generation: testGeneration},
+		Answered{Claim: testClaim, Generation: testGeneration},
+		Answered{Claim: testClaim, Generation: testGeneration},
+		Answered{Claim: testClaim, Provider: "second", Model: "second-model", Generation: testGeneration},
+		Closed{Claim: testClaim},
+	} {
+		if got := h.next(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("event = %#v, want %#v: a model or a provider holding U+0000 answers with no model", got, want)
+		}
+	}
+	h.stop()
+	var dropped []string
+	for _, line := range h.logs.Lines() {
+		if strings.Contains(line, "secret") {
+			t.Errorf("a log line quotes the text a frame named: %q", line)
+		}
+		if strings.HasPrefix(line, "worker-stream: dropped the model a message_end named") {
+			dropped = append(dropped, line)
+		}
+	}
+	if len(dropped) != 2 || !strings.Contains(dropped[0], "claim="+string(testClaim)) || !strings.Contains(dropped[0], "field=message.model") ||
+		!strings.Contains(dropped[1], "claim="+string(testClaim)) || !strings.Contains(dropped[1], "field=message.provider") {
+		t.Fatalf("the lines naming the dropped models = %q, want one naming the claim and message.model, then one naming the claim and message.provider", dropped)
+	}
+}
+
 // An extension of the worker's Oh My Pi failing — the Legion plugin's session_start without the
 // daemon it needs, say — leaves the agent running without what that extension gives it, and Oh My
 // Pi says so only on its RPC stream: the daemon logs it, naming the claim, and emits no event.

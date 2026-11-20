@@ -7,19 +7,20 @@ import (
 	"slices"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // podKind is which of the runtime's two pods a Sandbox runs: an issue pod (issuePod), which runs
-// every workflow role of one issue on a disk its own pod owns and provisions the issue's
-// workspace, or the project controller's pod (controllerPod, `controller: daemon`), which runs the
-// controller alone on the volume its Sandbox owns and provisions nothing. prepare decides a
+// every workflow role of one issue on a disk its own pod owns, or its Sandbox owns where the pod
+// keeps its volume (keptVolume), and provisions the issue's workspace, or the project controller's
+// pod (controllerPod, `controller: daemon`), which runs the controller alone on the volume its
+// Sandbox owns and provisions nothing. prepare decides a
 // launch's kind once, from its claim, and a stored Sandbox's kind is the one its labels name
 // (podKindOf). Building a pod asks the launch's kind for every facet the two build differently;
 // supervision — relaunch's check of the running pod, the launchers, Probe, Suspend and the
@@ -39,8 +40,9 @@ type podKind interface {
 	// disk is the pod's one disk, mounted under the fixed name issueVolume: the claim templates the
 	// kind's Sandbox owns, which outlive its pods, and the source the pod mounts the disk from.
 	// They are returned together so that a template and the claim name that refers to it are
-	// decided in one place: the controller's one `issue` template and the claim its Sandbox makes
-	// from it, or no template at all and an ephemeral volume of the pod's own for an issue.
+	// decided in one place: the one `issue` template and the claim its Sandbox makes from it, for
+	// the controller and for an issue that keeps its volume (keptVolume), or no template at all
+	// and an ephemeral volume of the pod's own for every other issue.
 	disk(r *Runtime, l launch) (templates []volumeClaimTemplate, source corev1.VolumeSource)
 	// secretAnnotations are the annotations each of the pod's Secrets carries.
 	secretAnnotations(l launch) map[string]string
@@ -50,10 +52,7 @@ type podKind interface {
 	// initContainers are the pod's init containers, and initVolumes the volumes only they mount,
 	// besides the pod's own volume and config home.
 	initContainers(r *Runtime, l launch) []corev1.Container
-	initVolumes(r *Runtime, l launch) []corev1.Volume
-	// skillsRepository is the repository this kind's pod clones at start: the issue pod's
-	// deployment setting, or zero for the controller, which carries no skills volume.
-	skillsRepository(r *Runtime) ghrepo.Repository
+	initVolumes(l launch) []corev1.Volume
 	// container is the name of the pod's one container, which runs `legion launcher` for every
 	// role of roles, and launcherContainer that container: its command, the mounts of every role's
 	// own volumes and the pod's shared ones, and the kubelet-resolved environment (resolved).
@@ -84,18 +83,72 @@ func podKindOf(labels map[string]string) (podKind, error) {
 		labelIssue, labels[labelIssue], labelTree, labels[labelTree], labelRole, labels[labelRole])
 }
 
+// keptVolume is the one rule that decides whether a launch keeps its volume: an issue pod (kind)
+// that runs in a microVM (microVM, launch.microVM) under keep_volume (MicroVM.KeepVolume). Its
+// disk is then a claim that its Sandbox owns and that outlives the pod (issuePod.disk), and its
+// shape records the setting (podShape). A gVisor pod keeps the ephemeral volume of its own. The
+// controller's pod ignores the setting: its volume is its Sandbox's in every case
+// (controllerPod.disk).
+func keptVolume(kind podKind, microVM *MicroVM) bool {
+	_, issue := kind.(issuePod)
+	return issue && microVM != nil && microVM.KeepVolume
+}
+
+// keepsVolume is whether l's pod keeps its volume (keptVolume).
+func (l launch) keepsVolume() bool { return keptVolume(l.kind, l.microVM) }
+
+// keptTemplate is the one rule of the stored side: whether a claim template, by its name and the
+// value of its labelVolume label ("" for none), is an issue's kept volume. That is the one `issue`
+// template that issuePod.disk writes for a launch that keeps its volume, labelled volumeKept. Only
+// that write sets the label, so only an issue Sandbox owns such a template. The controller's
+// `issue` template and the one of an issue Sandbox of the release before the pod-owned disk carry
+// no such label, so neither reads as kept. Every reader of a stored Sandbox asks it, through
+// holdsKeptVolume (ownsKeptVolume) or storedOwnsKeptVolume.
+func keptTemplate(name, volume string) bool { return name == issueVolume && volume == volumeKept }
+
+// ownsKeptVolume is whether the decoded Sandbox s owns an issue's kept volume (keptTemplate).
+func ownsKeptVolume(s *sandbox) bool { return holdsKeptVolume(s.Spec.VolumeClaimTemplates) }
+
+// holdsKeptVolume is whether one of the claim templates is an issue's kept volume (keptTemplate).
+func holdsKeptVolume(templates []volumeClaimTemplate) bool {
+	return slices.ContainsFunc(templates, func(t volumeClaimTemplate) bool {
+		return keptTemplate(t.Metadata.Name, t.Metadata.Labels[labelVolume])
+	})
+}
+
+// storedOwnsKeptVolume is ownsKeptVolume of a Sandbox as the API server or the informer holds it,
+// read without a decode, for a reader that has no decoded Sandbox: decoding a whole Sandbox costs
+// tens of kilobytes and hundreds of allocations (IssueSandbox). It reads each field in place
+// (NestedFieldNoCopy, never NestedSlice, which copies every template), and a field of another type
+// reads as absent.
+func storedOwnsKeptVolume(u *unstructured.Unstructured) bool {
+	field, _, _ := unstructured.NestedFieldNoCopy(u.Object, "spec", "volumeClaimTemplates")
+	templates, _ := field.([]any)
+	for _, template := range templates {
+		object, ok := template.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _, _ := unstructured.NestedString(object, "metadata", "name")
+		volume, _, _ := unstructured.NestedString(object, "metadata", "labels", labelVolume)
+		if keptTemplate(name, volume) {
+			return true
+		}
+	}
+	return false
+}
+
 // issuePod is an issue's pod: every workflow role of the issue, working in the issue's workspace
-// on the issue's disk, the pod's own generic ephemeral volume, created with the pod and deleted
-// with it, in one container whose PID 1 is one `legion launcher` holding a connection of each
-// role's own (launcherContainer). Two init containers provision that workspace from the issue's
-// repository.
+// on the issue's disk (disk), in one container whose PID 1 is one `legion launcher` holding a
+// connection of each role's own (launcherContainer). The disk is the pod's own generic ephemeral
+// volume, created with the pod and deleted with it, or, where the pod keeps its volume
+// (keptVolume), a claim that the issue's Sandbox owns, which outlives the pod. Two init containers
+// provision that workspace from the issue's repository.
 type issuePod struct{}
 
 func (issuePod) roles() []claim.Role { return claim.Roles }
 
 func (issuePod) container() string { return runtime.IssuePodContainer }
-
-func (issuePod) skillsRepository(r *Runtime) ghrepo.Repository { return r.skills }
 
 // resources is the one issue-pod reservation.
 func (issuePod) resources(r *Runtime) corev1.ResourceRequirements { return r.resources.Issue }
@@ -106,10 +159,12 @@ func (issuePod) claimToken(project, issue string, role claim.Role) (claim.Token,
 
 // prepare refuses a spec with no repository, which the workspace is provisioned from, and resolves
 // the workspace's place on the issue's disk. It runs at every launch and expects nothing of that
-// disk, which is created with the pod and deleted with it (INFRA-80): only a new or replacement pod
-// provisions its workspace (provision, which relaunch runs only when it replaces the pod), and a
-// role launched into the live pod finds the workspace the roles before it left. docs/kubernetes.md,
-// "The disk dies with its pod", states which launch is which.
+// disk. The pod's own disk is created with the pod and deleted with it (INFRA-80). A kept volume
+// (keptVolume) outlives the pod, so a new pod of the issue finds on it what the pods before it
+// left. Only a new or replacement pod provisions its workspace (provision, which relaunch runs
+// only when it replaces the pod), and a role launched into the live pod finds the workspace the
+// roles before it left. docs/kubernetes.md, "The disk dies with its pod", states which launch is
+// which.
 func (issuePod) prepare(l *launch) error {
 	spec := l.spec
 	if spec.Repository.IsZero() {
@@ -133,17 +188,51 @@ func (issuePod) labels(project string, l launch) map[string]string {
 	}
 }
 
-// disk has no claim template: an issue's Sandbox owns no volume, so nothing of the issue's disk
-// outlives a pod (INFRA-80). The disk itself is the pod's own, a generic ephemeral volume: the
-// kubelet creates its claim when the pod starts and deletes it when the pod goes, so a suspended,
-// relaunched or swept issue leaves no volume behind and every pod starts on a workspace its init
-// containers provision afresh. Its claim template carries no metadata at all: the pinned Sandbox
-// CRD declares the template's `metadata` a bare object with no properties and no
-// preserve-unknown-fields, so a label set there is pruned by the API server without a word
-// (TestManifestMatchesTheSandboxCRD).
-func (issuePod) disk(r *Runtime, _ launch) ([]volumeClaimTemplate, corev1.VolumeSource) {
+// disk is one of two shapes, and keptVolume decides which (launch.keepsVolume).
+//
+// A launch that keeps no volume has no claim template: the issue's Sandbox owns no volume, so
+// nothing of the issue's disk outlives a pod (INFRA-80). The disk itself is the pod's own, a
+// generic ephemeral volume: the kubelet creates its claim when the pod starts and deletes it when
+// the pod goes, so a suspended, relaunched or swept issue leaves no volume behind and every pod
+// starts on a workspace its init containers provision afresh. Its claim template carries no
+// metadata at all: the pinned Sandbox CRD declares the template's `metadata` a bare object with no
+// properties and no preserve-unknown-fields, so a label set there is pruned by the API server
+// without a word (TestManifestMatchesTheSandboxCRD).
+//
+// A launch that keeps a volume (a microVM pod under keep_volume) gets what controllerPod.disk
+// gives: the one `issue` template (keptVolumeTemplates), which the issue's Sandbox owns, and the
+// claim that the Agent Sandbox controller makes from it (IssueClaimName), which the pod mounts.
+// The claim outlives the pod and goes with the Sandbox.
+//
+// Either claim is on the launch's class (diskSpec: a microVM pod's is the microVM block's).
+func (issuePod) disk(r *Runtime, l launch) ([]volumeClaimTemplate, corev1.VolumeSource) {
+	if l.keepsVolume() {
+		templates := keptVolumeTemplates(r.project, labelValue(l.spec.Issue), r.diskSpec(l))
+		return templates, corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+			ClaimName: IssueClaimName(l.spec.Claim),
+		}}
+	}
 	return nil, corev1.VolumeSource{Ephemeral: &corev1.EphemeralVolumeSource{
-		VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{Spec: r.diskSpec()},
+		VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{Spec: r.diskSpec(l)},
+	}}
+}
+
+// keptVolumeTemplates are the claim templates of an issue's kept volume, with spec as its claim:
+// the one `issue` template, labelled with project, the issue (issueLabel, the issue key as
+// labelValue writes it) and labelVolume=volumeKept, which marks the volume as kept
+// (keptTemplate). They are not the pod's own labels (labels), which carry the tree: a launch
+// relabels the Sandbox for a new tree (ensureSandbox), and the daemon's restricted identity has no
+// PVC verb to relabel the claim. The Sandbox CRD keeps the labels of a Sandbox's own claim
+// template. A launch writes them (issuePod.disk), and the boot census renders them
+// (IssueDisks.templates).
+func keptVolumeTemplates(project, issueLabel string, spec corev1.PersistentVolumeClaimSpec) []volumeClaimTemplate {
+	return []volumeClaimTemplate{{
+		Metadata: volumeClaimMetadata{Name: issueVolume, Labels: map[string]string{
+			labelProject: project,
+			labelIssue:   issueLabel,
+			labelVolume:  volumeKept,
+		}},
+		Spec: spec,
 	}}
 }
 
@@ -154,45 +243,22 @@ func (issuePod) secretAnnotations(l launch) map[string]string {
 	return map[string]string{annotationIssue: l.spec.Issue}
 }
 
-// initContainers are workspace-fetch, skills-fetch where the deployment names a skills repository,
-// and workspace-init, so the provisioning token never shares a process with anything an agent of
-// the issue can write (Stage 4b Task 4b.6b): workspace-fetch
-// mounts the provisioning Secret, its own TMPDIR, and the feed alone of the issue's volume (its
-// feedSubPath, read-write), and fills the feed — from the repository's cache when one is ready
-// (fetchEnvironment), then from GitHub the branches an issue's clone is made from, or from GitHub
-// alone; skills-fetch mounts the provisioning Secret, a TMPDIR of its own and the skills volume
-// (read-write, and read-only in the one container that follows), and clones the deployment's
-// skills marketplace into it, so every role installs its skills from a directory no agent of the
-// issue can write and no role's launch clones anything (dispatch://INFRA-1300); workspace-init
+// initContainers are workspace-fetch and workspace-init, so the provisioning token never shares a
+// process with anything an agent of the issue can write (Stage 4b Task 4b.6b): workspace-fetch, the
+// one container of the pod that holds the token, mounts the provisioning Secret, its own TMPDIR, and
+// the feed alone of the issue's volume (its feedSubPath, read-write), and fills the feed — from the
+// repository's cache when one is ready (fetchEnvironment), then from GitHub the branches an
+// issue's clone is made from, or from GitHub alone; workspace-init
 // mounts the issue's volume, the feed over it read-only, and the config home, and does all the
 // volume's work from the feed, with no credential, making the issue's clone shared with the feed
-// and starting an issue with no branch at the repository's default branch the spec names. Each
-// takes the pod's one reservation, which adds nothing to the pod's: the scheduler counts a pod's
-// request as the larger of its main containers' sum and its largest init container.
-//
-// skills-fetch runs after workspace-fetch and before workspace-init: the kubelet runs init
-// containers in order, and a skills clone that fails should fail the pod before the minutes
-// workspace-init spends on the issue's own clone.
+// and starting an issue with no branch at the repository's default branch the spec names. The
+// issue's volume is the pod's disk (disk). A new pod's own ephemeral volume is empty, and a kept
+// volume (keptVolume) holds the feed and the clone that the issue's earlier pods left. Each takes
+// the pod's one reservation, which adds nothing to the pod's: the scheduler counts a pod's request
+// as the larger of its main containers' sum and its largest init container.
 func (k issuePod) initContainers(r *Runtime, l launch) []corev1.Container {
 	legion, resources := r.tools.Legion, k.resources(r)
-	skills := []corev1.Container(nil)
-	if !r.skills.IsZero() {
-		skills = append(skills, corev1.Container{
-			Name:       skillsContainer,
-			Image:      r.image,
-			Command:    []string{legion, "workspace-init", "skills", "--repo", r.skills.String(), "--dir", SkillsDir},
-			Env:        skillsEnvironment(),
-			WorkingDir: SkillsDir,
-			VolumeMounts: []corev1.VolumeMount{
-				{Name: provisionVolume, MountPath: ProvisionDir, ReadOnly: true},
-				{Name: skillsTempVolume, MountPath: initTempDir},
-				{Name: skillsVolume, MountPath: SkillsDir},
-			},
-			Resources:       resources,
-			SecurityContext: restrictedContainer(),
-		})
-	}
-	return slices.Concat([]corev1.Container{{
+	return []corev1.Container{{
 		Name:       fetchContainer,
 		Image:      r.image,
 		Command:    []string{legion, "workspace-init", "fetch", "--repo", l.spec.Repository.String(), "--feed", FeedDir},
@@ -205,7 +271,7 @@ func (k issuePod) initContainers(r *Runtime, l launch) []corev1.Container {
 		},
 		Resources:       resources,
 		SecurityContext: restrictedContainer(),
-	}}, skills, []corev1.Container{{
+	}, {
 		Name:  initContainer,
 		Image: r.image,
 		Command: []string{
@@ -222,7 +288,7 @@ func (k issuePod) initContainers(r *Runtime, l launch) []corev1.Container {
 		},
 		Resources:       resources,
 		SecurityContext: restrictedContainer(),
-	}})
+	}}
 }
 
 // readOnlyFeed is the issue volume's feed mounted read-only at FeedDir, over the volume's own mount
@@ -232,13 +298,10 @@ func readOnlyFeed() corev1.VolumeMount {
 }
 
 // initVolumes are the provisioning material only the init containers mount: the provisioning
-// Secret, with the provisioning token and the repository cache's bearer token, and the in-memory
-// TMPDIR of each container that holds the token — workspace-fetch's, and skills-fetch's own, since
-// a TMPDIR two containers shared would be one each could read the other's one-shot credential in.
-// The skills volume, which skills-fetch fills and the launcher container reads, is here too: it is
-// the init containers' to write and no one else's. The feed is the issue volume's own (FeedDir).
-func (issuePod) initVolumes(r *Runtime, l launch) []corev1.Volume {
-	volumes := []corev1.Volume{
+// Secret, with the provisioning token and the repository cache's bearer token, and
+// workspace-fetch's in-memory TMPDIR. The feed is the issue volume's own (FeedDir).
+func (issuePod) initVolumes(l launch) []corev1.Volume {
+	return []corev1.Volume{
 		{Name: provisionVolume, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
 			SecretName: secretName(l.name),
 			Items: []corev1.KeyToPath{
@@ -248,20 +311,10 @@ func (issuePod) initVolumes(r *Runtime, l launch) []corev1.Volume {
 		}}},
 		{Name: tempVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}},
 	}
-	if !r.skills.IsZero() {
-		// The clone is on the node's disk, charged to the pod's ephemeral storage as the role
-		// homes volume is: a skills marketplace is a few megabytes of text, and a memory volume
-		// would charge it to the pod's memory for the pod's whole life.
-		volumes = append(volumes,
-			corev1.Volume{Name: skillsVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-			corev1.Volume{Name: skillsTempVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}},
-		)
-	}
-	return volumes
 }
 
-// launcherContainer is an issue pod's one container, `roles`: `legion launcher` in multi-role mode
-// (--roles-dir and one --role per role of l.roles), which reads each role's launcher token under
+// launcherContainer is an issue pod's one container, `roles`: `legion launcher` in its roles-dir
+// form for every role of l.roles (rolesDirLayout), which reads each role's launcher token under
 // its directory of RolesDir and holds a connection of its own per role, and starts each role's
 // generation in namespaces of its own (`legion launcher role-init`), where the role sees its own
 // gh, private, state and agent-secrets key directories at the fixed paths a role reads them at and
@@ -270,22 +323,79 @@ func (issuePod) initVolumes(r *Runtime, l launch) []corev1.Volume {
 // (roleHomesVolume) at RoleHomesDir holds each role's home overlay, temporary directories and own
 // config home. The pod's shared mounts are mounted once: the issue's disk, the config home
 // workspace-init writes, the feed read-only (so no agent writes what workspace-fetch, the token's
-// holder, reads), the providers, the broker's token and the exchange's, and the operator's. Every
+// holder, reads), the providers, the session writer token, the broker's token and the exchange's
+// (podTokenMounts), and the operator's. Every
 // one of them that belongs at or under the image's home — the config home, an operator's mount
 // there — is mounted under launcher.HomeMountsDir at the same relative path instead
 // (homeMountsView), so the home carries no mount: each role's namespace overlays the home, which
 // Linux refuses over a lower layer with mounts under it, and then binds each of them back at its
 // own path, but the shared config home, whose place gets the role's own copy of it
 // (launcher.ConfigHomeDir). The values the kubelet resolves are the same for every role (the
-// downward API's POD_UID), so they are set once.
+// downward API's POD_UID), so they are set once. A microVM pod's launcher is told so (--microvm),
+// and, where the block names the metadata endpoint, is told the endpoint's pool and identity
+// provider and mounts the projected token it exchanges at WorkloadIdentityDir, under RolesDir,
+// where no role's namespace shows it.
 func (k issuePod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvVar, providersMounts []corev1.VolumeMount) corev1.Container {
-	command := []string{r.tools.Legion, "launcher", connectFlag, r.streamURL, "--sandbox", l.name, "--roles-dir", RolesDir}
-	mounts := []corev1.VolumeMount{
+	shared := []corev1.VolumeMount{
 		{Name: issueVolume, MountPath: TreeRoot},
 		{Name: configVolume, MountPath: xdgConfigHome},
 		readOnlyFeed(),
 	}
-	for _, role := range l.roles {
+	var flags []string
+	var extra []corev1.VolumeMount
+	if r.testPostgres {
+		// The launcher serves the pod's own test database (launcher's testpg.go) and the roles
+		// container keeps its cluster here; no role's namespace shows this mount.
+		flags = append(flags, "--test-postgres")
+		extra = append(extra, corev1.VolumeMount{Name: testPGVolume, MountPath: TestPGDir})
+	}
+	if l.microVM != nil {
+		flags = append(flags, "--microvm")
+		if endpoint := l.microVM.Metadata; endpoint != nil {
+			flags = append(flags, "--metadata-workload-pool", endpoint.WorkloadPool, "--metadata-identity-provider", endpoint.IdentityProvider)
+			extra = append(extra, corev1.VolumeMount{Name: workloadIdentityTokenVolume, MountPath: WorkloadIdentityDir, ReadOnly: true})
+		}
+	}
+	return r.rolesDirLauncher(k, l, resolved, providersMounts, shared, flags, extra)
+}
+
+// rolesDirLauncher is the one container of a pod whose launcher runs the roles-dir form for the
+// roles of l (rolesDirLayout): an issue pod's `roles`, and the controller's `controller` where the
+// session database names a writer audience (controllerPod.rolesDirContainer). Both kinds build it
+// here, so the tokens no role may read (podTokenMounts) and the home's mounts (homeMountsView) are
+// laid out the same way in each. The launcher's command is the stream's address and the
+// Sandbox's name, the form's own words, the kind's flags, then the stop grace and the session
+// proxy's flags. Its mounts are shared, each role's own volumes, the kind's extra mounts, then the
+// tokens, the providers and the operator's mounts, in that order.
+func (r *Runtime) rolesDirLauncher(k podKind, l launch, resolved []corev1.EnvVar, providersMounts, shared []corev1.VolumeMount, flags []string, extra []corev1.VolumeMount) corev1.Container {
+	roles, own := r.rolesDirLayout(l.roles)
+	return corev1.Container{
+		Name:  k.container(),
+		Image: r.image,
+		Command: slices.Concat([]string{r.tools.Legion, "launcher", connectFlag, r.streamURL, "--sandbox", l.name}, roles, flags,
+			[]string{"--stop-grace", r.terminationGrace.String()}, r.sessionProxyFlags()),
+		Env:             resolved,
+		WorkingDir:      l.workspace,
+		VolumeMounts:    homeMountsView(slices.Concat(shared, own, extra, r.podTokenMounts(), providersMounts, r.pod.VolumeMounts)),
+		Resources:       k.resources(r),
+		SecurityContext: restrictedContainer(),
+	}
+}
+
+// rolesDirLayout is the launcher's roles-dir form for roles, the form an issue pod's container runs
+// for every workflow role, and the controller's pod for the controller where the session database
+// names a writer audience (controllerPod.launcherContainer). command is the words that name the
+// form: --roles-dir RolesDir, then one --role per role. mounts are each role's own volumes under
+// its directory of RolesDir (roleDir), at the names of launcher's layout: its launcher token and
+// its gh files read-only, its private and state directories, and its agent-secrets key directory
+// where the pod enrolls with the secrets broker; then the role homes volume at RoleHomesDir
+// (roleHomesVolumes), where role-init keeps each role's home overlay, temporary directories and
+// own config home. Nothing is mounted at the fixed paths a role reads its own at (GHConfigDir and
+// its siblings): role-init covers RolesDir in each role's namespaces and binds the role's own
+// back there, all but the launcher token, which no role's process sees.
+func (r *Runtime) rolesDirLayout(roles []claim.Role) (command []string, mounts []corev1.VolumeMount) {
+	command = []string{"--roles-dir", RolesDir}
+	for _, role := range roles {
 		command = append(command, "--role", string(role))
 		dir := roleDir(role)
 		mounts = append(mounts,
@@ -298,42 +408,13 @@ func (k issuePod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvV
 			mounts = append(mounts, corev1.VolumeMount{Name: roleVolume(agentSecretsKeyVolume, role), MountPath: dir + "/" + launcher.RoleAgentSecretsDir})
 		}
 	}
-	mounts = append(mounts, corev1.VolumeMount{Name: roleHomesVolume, MountPath: RoleHomesDir})
-	if !r.skills.IsZero() {
-		// Read-only, and that is the whole boundary: skills-fetch holds the provisioning token,
-		// and a role that could write this directory could put there what the next pod's
-		// token-holding container would run. Nothing in the pod writes it after skills-fetch.
-		mounts = append(mounts, corev1.VolumeMount{Name: skillsVolume, MountPath: SkillsDir, ReadOnly: true})
-	}
-	if r.testPostgres {
-		// The launcher serves the pod's own test database (launcher's testpg.go) and the roles
-		// container keeps its cluster here; no role's namespace shows this mount.
-		command = append(command, "--test-postgres")
-		mounts = append(mounts, corev1.VolumeMount{Name: testPGVolume, MountPath: TestPGDir})
-	}
-	if r.agentSecrets != nil {
-		mounts = append(mounts, corev1.VolumeMount{Name: agentSecretsTokenVolume, MountPath: AgentSecretsTokenDir, ReadOnly: true})
-		mounts = append(mounts, exchangeTokenMounts(r.agentSecrets)...)
-	}
-	return corev1.Container{
-		Name:            k.container(),
-		Image:           r.image,
-		Command:         slices.Concat(command, []string{"--stop-grace", r.terminationGrace.String()}, r.sessionProxyFlags()),
-		Env:             resolved,
-		WorkingDir:      l.workspace,
-		VolumeMounts:    homeMountsView(slices.Concat(mounts, providersMounts, r.pod.VolumeMounts)),
-		Resources:       k.resources(r),
-		SecurityContext: restrictedContainer(),
-	}
+	return command, append(mounts, corev1.VolumeMount{Name: roleHomesVolume, MountPath: RoleHomesDir})
 }
 
-// mainVolumes is the role homes volume: an emptyDir on the node's disk, charged to the pod's
-// ephemeral storage as a container's own filesystem is, where each role's namespace keeps its home
-// overlay's writable layer, its /tmp and /var/tmp, and its own config home (`legion launcher
-// role-init`). An overlay's writable layer cannot be the container's own root filesystem, and a
-// memory one would charge a role's /tmp to the pod's memory.
+// mainVolumes is the role homes volume (roleHomesVolumes), and the test database's where the
+// deployment serves one.
 func (issuePod) mainVolumes(r *Runtime) []corev1.Volume {
-	volumes := []corev1.Volume{{Name: roleHomesVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
+	volumes := roleHomesVolumes()
 	if r.testPostgres {
 		// The test database's cluster, on the node's disk for the same reason the role homes are:
 		// a memory volume would charge its data directory and every test's database to the pod's
@@ -344,6 +425,16 @@ func (issuePod) mainVolumes(r *Runtime) []corev1.Volume {
 		volumes = append(volumes, corev1.Volume{Name: testPGVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
 	}
 	return volumes
+}
+
+// roleHomesVolumes is the role homes volume of a pod whose launcher runs the roles-dir form
+// (rolesDirLayout): an emptyDir on the node's disk, charged to the pod's ephemeral storage as a
+// container's own filesystem is, where each role's namespace keeps its home overlay's writable
+// layer, its /tmp and /var/tmp, and its own config home (`legion launcher role-init`). An
+// overlay's writable layer cannot be the container's own root filesystem, and a memory one would
+// charge a role's /tmp to the pod's memory.
+func roleHomesVolumes() []corev1.Volume {
+	return []corev1.Volume{{Name: roleHomesVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
 }
 
 // agentEnv tells each agent its tree, issue and workspace, the issue key it stamps into its
@@ -374,7 +465,9 @@ func (issuePod) agentEnv(l launch) []corev1.EnvVar {
 // its gh — the image's `legion gh`, first on PATH, which runs the real gh at LEGION_GH_PATH — and
 // the clone's `legion git-credential` helper (workspace.GitHubCredentialHelper) read the token of
 // the owner a command names from the owner's directory under LEGION_GH_OWNERS_DIR, and every other
-// command's from GH_CONFIG_DIR, the launch's default owner's (gitHubDefault). GH_TOKEN,
+// command's from GH_CONFIG_DIR, the launch's default owner's (gitHubDefault). The helper also reads
+// a repository of an owner with no directory from GitHub with GH_CONFIG_DIR's token, and answers a
+// fork with the token of its parent's or its source's owner. GH_TOKEN,
 // GITHUB_TOKEN and GH_HOST are set to the empty string, which gh ignores, so no value the image or
 // an operator's rc file could leave in the environment outranks the files: a non-empty GH_TOKEN
 // would. No other tool path or helper is told: the agent's git and jj are the image's on PATH, and
@@ -445,8 +538,6 @@ func (controllerPod) roles() []claim.Role { return []claim.Role{claim.RoleContro
 
 func (controllerPod) container() string { return runtime.ControllerPodContainer }
 
-func (controllerPod) skillsRepository(*Runtime) ghrepo.Repository { return ghrepo.Repository{} }
-
 // resources is the controller's pod's reservation.
 func (controllerPod) resources(r *Runtime) corev1.ResourceRequirements { return r.resources.Controller }
 
@@ -475,7 +566,7 @@ func (controllerPod) labels(project string, _ launch) map[string]string {
 func (controllerPod) disk(r *Runtime, l launch) ([]volumeClaimTemplate, corev1.VolumeSource) {
 	templates := []volumeClaimTemplate{{
 		Metadata: volumeClaimMetadata{Name: issueVolume, Labels: r.labels(l)},
-		Spec:     r.diskSpec(),
+		Spec:     r.diskSpec(l),
 	}}
 	return templates, corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 		ClaimName: IssueClaimName(l.spec.Claim),
@@ -492,12 +583,16 @@ func (controllerPod) secretAnnotations(launch) map[string]string { return nil }
 // launcher looks up before it starts the child (internal/launcher), not a file on the volume.
 func (controllerPod) initContainers(*Runtime, launch) []corev1.Container { return nil }
 
-// launcherContainer is the controller's pod's one container, `controller`: `legion launcher` in
-// single-role mode, with the controller's own launcher token, private directory, state directory
-// and gh volume mounted at the fixed paths it reads them at, the gh volume read-only, its key
-// directory and the broker's token when the pod enrolls, beside the pod's volume, the config home,
-// the providers and the operator's mounts.
+// launcherContainer is the controller's pod's one container, `controller`. Where the session
+// database names no writer audience it is `legion launcher` in single-role mode, with the
+// controller's own launcher token, private directory, state directory and gh volume mounted at the
+// fixed paths it reads them at, the gh volume read-only, its key directory and the broker's token
+// when the pod enrolls, beside the pod's volume, the config home, the providers and the operator's
+// mounts. Where it names one, the container runs the roles-dir form instead (rolesDirContainer).
 func (k controllerPod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvVar, providersMounts []corev1.VolumeMount) corev1.Container {
+	if r.sessionWriterAudience() != "" {
+		return k.rolesDirContainer(r, l, resolved, providersMounts)
+	}
 	role := claim.RoleController
 	mounts := []corev1.VolumeMount{
 		{Name: issueVolume, MountPath: TreeRoot},
@@ -523,12 +618,40 @@ func (k controllerPod) launcherContainer(r *Runtime, l launch, resolved []corev1
 	}
 }
 
-// mainVolumes are none beyond the controller's own: its launcher has no namespaces to keep homes
-// in, and the pod's own test database is an issue pod's (issuePod.mainVolumes).
-func (controllerPod) mainVolumes(*Runtime) []corev1.Volume { return nil }
+// rolesDirContainer is the controller's container where the session database names a writer
+// audience: `legion launcher` in the roles-dir form for the controller alone (rolesDirLayout),
+// laid out as an issue pod lays out one of its roles. The single-role form runs its agent in the
+// container's own namespaces, where the writer token would be in the agent's view, so the launcher
+// refuses the writer audience there. In the roles-dir form role-init starts the controller's
+// generation in namespaces of its own, which cover RolesDir, and the writer token at
+// SessionWriterDir and the controller's launcher token are both under it, so the agent reads
+// neither. role-init binds the controller's own gh, private, state and agent-secrets key
+// directories back at the fixed paths the single-role form mounts them at, so this container
+// mounts nothing at those paths, and the agent sees each where it always has. The pod's volume, the
+// config home, the tokens (podTokenMounts), the providers and the operator's mounts are mounted
+// once, and every one of them at or under the image's home through homeMountsView, as in an issue
+// pod: both kinds build the container in rolesDirLauncher.
+func (k controllerPod) rolesDirContainer(r *Runtime, l launch, resolved []corev1.EnvVar, providersMounts []corev1.VolumeMount) corev1.Container {
+	return r.rolesDirLauncher(k, l, resolved, providersMounts, []corev1.VolumeMount{
+		{Name: issueVolume, MountPath: TreeRoot},
+		{Name: configVolume, MountPath: xdgConfigHome},
+	}, nil, nil)
+}
+
+// mainVolumes are none beyond the controller's own in the single-role form: its launcher has no
+// namespaces to keep homes in, and the pod's own test database is an issue pod's
+// (issuePod.mainVolumes). Where the session database names a writer audience its launcher runs the
+// roles-dir form (rolesDirContainer), whose role homes volume holds the controller's home overlay,
+// temporary directories and own config home, as an issue pod's holds each of its roles'.
+func (controllerPod) mainVolumes(r *Runtime) []corev1.Volume {
+	if r.sessionWriterAudience() == "" {
+		return nil
+	}
+	return roleHomesVolumes()
+}
 
 // initVolumes are none: the controller's pod runs no init container.
-func (controllerPod) initVolumes(*Runtime, launch) []corev1.Volume { return nil }
+func (controllerPod) initVolumes(launch) []corev1.Volume { return nil }
 
 // agentEnv tells the agent LEGION_CONTROLLER=1, its pane marker, where its gh reads its
 // credentials (ghAgentEnv), and nothing a tree agent alone needs: no tree, issue or workspace, and

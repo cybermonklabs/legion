@@ -31,19 +31,24 @@ env:
 
 jobs:
   envoy-go:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
     # prints the dump that names it. A timed-out step fails the job, so the bound is the steps
     # before it at their measured times plus its own limit: about 1 minute of setup, then the
-    # plain race-impossible step's three 10-minute runs, which is 31; after that step's measured
-    # 2 minutes the unit step's own 20 is 23; after the unit step, which runs strictly fewer
-    # packages than the 35 minutes it measured before the race lane's left it and so cannot
-    # exceed that, the store-form count's own 5 is 43 (one package, so its -timeout bounds the
-    # step); after that step's seconds, the database skip count's own timeout-minutes of 25 is 64
-    # (its -timeout bounds each package, not the step, so the step has a limit of its own, and
-    # its comment below says why 25); after that step's measured 6 minutes, natslive's default 10
-    # and the bus matrix's own 5 are 60, and the integration step's 5 is less.
-    timeout-minutes: 70
+    # plain race-impossible step's five 10-minute runs, which is 51; after that step's measured
+    # 5 minutes (about 2 before the API's and delivery's xid window tests joined it, which took
+    # 134 s and 4 s on a two-vCPU pod; the auth service's restart storm adds 17 s, and the API's
+    # claim model is not among them, running in envoy-go-claim-model) the unit step's
+    # own 20 is 26; after the unit step, which runs strictly fewer packages than the 35 minutes it
+    # measured before the race lane's left it and so cannot exceed that, the store-form count's
+    # own 5 is 46 (two packages, which go test starts at once with -p at least 2, so its -timeout
+    # bounds the step); after that step's seconds, the skip counter's test's own timeout-minutes
+    # of 15 is 56; after that step's 15 at most, the database skip count's own timeout-minutes of
+    # 30 is 86 (its -timeout bounds each package, not the step, so the step has a limit of its
+    # own, and its comment below says why 30); after that step's 30 at most, natslive's default
+    # 10, the bus matrix's own 5 and the auth service's own 5 are 106, the integration step's 5 is
+    # less, and the callout check's own 6, after the seconds those two steps measure, is less too.
+    timeout-minutes: 110
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -82,8 +87,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The server's version and the pgvector version it offers, read from the service itself, so
@@ -104,27 +109,39 @@ jobs:
             packages/envoy/internal/tests3/seaweedfs.go Image
       # The tests the race detector makes impossible, which the race job of each of these packages
       # therefore cannot make, so envoy-go keeps a plain run of exactly them: internal/bus counts
-      # HoldsSeed's allocations, which the race runtime's own allocations would be counted into,
-      # and the documents package measures the heap a room keeps, which the detector's shadow
-      # memory and instrumentation move. Those are out of the race build altogether
-      # (//go:build !race), and the two render-reuse storms run fewer seeds and fewer edits under
-      # it (raceEnabled), so this is their full-size run. The API's seven source guards, and
-      # one_expression_guard_test.go beside them, carry that tag too and are deliberately not
-      # here: they read the module's source, the text-check job runs their fifteen tests by name,
-      # and ci_job_reads.py's TEXT_CHECK_TESTS leaves exactly those out of this step rather than
-      # have each of them run twice. It comes before the unit step for the reason the API
-      # package's own run did: run beside the other package binaries,
+      # HoldsSeed's allocations, which the race runtime's own allocations would be counted into;
+      # the API's and delivery's xid window tests judge a window's gaps, which the detector
+      # stretches past any bound, so a race run checks only their shape, which this run checks as
+      # well (storetest.XidJudgesGaps, INFRA-636); and the documents package measures the heap a
+      # room keeps, which the detector's shadow memory and instrumentation move. Those are out of
+      # the race build altogether (//go:build !race), and the two render-reuse storms run fewer
+      # seeds and fewer edits under it (raceEnabled), so this is their full-size run. So is the
+      # NATS auth service's restart storm's: five hundred connections, two hundred under the
+      # detector (raceEnabled), whose instrumentation makes each in-process connect several times
+      # the cost (natscallout's race_disabled_test.go says why). The API's mention sender claim
+      # model is out of the race build too, and runs in a job of its own, envoy-go-claim-model;
+      # the API's eight source guards, and one_expression_guard_test.go beside them, carry that
+      # tag as well and are deliberately not here: they read the module's source, the text-check
+      # job runs their seventeen tests by name, and ci_job_reads.py's CLAIM_MODEL_TESTS and
+      # TEXT_CHECK_TESTS leave exactly those tests out of this step rather than have each of them
+      # run twice. It comes before the unit step for the
+      # reason the API package's own run did: run beside the other package binaries,
       # its Postgres-backed tests and the room-memory measurements queue their per-test database
       # cleanup on the service's one checkpointer, and the API's live-feed and delivery-hub tests
       # wait for the event log's safe horizon, which any open transaction on this job's Postgres
-      # delays. The two -run lists are derived in .github/scripts/ci_job_reads.py from the race
+      # delays. The five -run lists are derived in .github/scripts/ci_job_reads.py from the race
       # lane's own packages and those files' //go:build !race and raceEnabled, so a test added to
-      # either and missing here fails the ci-filters job naming this step. Measured over three
+      # either and missing here fails the ci-filters job naming this step. The restart storm took
+      # 17 s on a dev box. Measured over three
       # runs on a two-vCPU pod: the bus under a tenth of a second and the documents package 92 to
-      # 127 s, so 10 minutes each is ample.
+      # 127 s; with the xid window tests in, one run on a two-vCPU pod took the API 134.082 s and
+      # delivery 4.106 s (INFRA-636). 10 minutes each is ample.
       - name: Test what the race build cannot run at all or at full size
         run: |
+          go test -count=1 -timeout 10m -run '^(TestXidWindowAttributionMoveRecorded|TestXidWindowDeployedEventRecorded)$' ./internal/dispatch/delivery
           go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
+          go test -count=1 -timeout 10m -run '^(TestACalloutStormAfterAServerRestartAdmitsEveryConnection)$' ./internal/cipher/natscallout
+          go test -count=1 -timeout 10m -run '^(TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec)$' ./internal/dispatch/api
           go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
         working-directory: packages/envoy
       # Everything the three race jobs run is left out here, since they run it under the detector,
@@ -133,42 +150,76 @@ jobs:
       # with no database and no Bun, and a change to only what they read must not start this
       # one. So are internal/dispatch/architecture/notes, internal/runnerlog,
       # internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check, which
-      # envoy-go-checks tests on every push (NOTE_AND_SPEC_PACKAGES). The pattern is built
-      # in .github/scripts/ci_job_reads.py from the same list those
-      # jobs' own steps are built from, so what this step leaves out and what the other jobs run
-      # cannot drift apart. What is left is the rest of the module, the two longest packages of
-      # it (the API's and the documents service's) now among the ones the lane runs, so its 20
+      # envoy-go-checks tests on every push (NOTE_AND_SPEC_PACKAGES), and listenerwire and
+      # internal/wirecheck, which envoy-go-checks tests in their place (LISTENERWIRE_PACKAGES):
+      # listenerwire's clients test type-checks daemon packages, so a change to only those daemon
+      # packages starts no job with a database. The pattern is built in
+      # .github/scripts/ci_job_reads.py from the same list those jobs' own steps are built from, so
+      # what this step leaves out and what the other jobs run cannot drift apart. The broker's
+      # packages, internal/cipher and everything under it, and its command, cmd/cipherd, are left
+      # out too: the database-skips step below runs them with -json and fails on a failed test as
+      # on a skipped one, so this step ran each of them a second time (DATABASE_SKIPS_PKGS in
+      # ci_job_reads.py); that step in turn leaves out the race lane's packages under the tree, the
+      # auth service's natscallout today (DATABASE_SKIPS_PATTERN). What is left is the rest of the
+      # module, the two longest packages of it (the API's and the documents service's) now among
+      # the ones the lane runs, so its 20
       # minutes are ample. The two tests of the web app's display-tree fixture are skipped:
       # without `--check` TestWebDisplayFixture writes the committed fixture rather than checking
       # it, so a run here would ask nothing of it, and
       # TestTheWebFixtureFindsItsFilesFromAnyDirectory stats that same file, which would make it
       # a read of this job; envoy-go-checks runs both, the first with the check, and both texts
-      # are built from the same list.
+      # are built from the same list. So are the backend count's four tests of cmd/cipher,
+      # which the count step below runs in this same job and env (BACKEND_COUNT_TESTS).
       - name: Unit test envoy Go package
         run: |
-          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$'
+          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/cipher($|/)|/cmd/cipherd$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$'
         working-directory: packages/envoy
-      # Each named test runs every store form once against the GCP fake and once against the
-      # in-process AWS store, as its `aws` and `gcp` subtests (onEachStore); this step runs only
-      # those tests (-run, under backend-count.sh's own 5-minute -timeout, which the budget above
-      # counts) and counts the passes of each, so a test whose AWS half was skipped or removed
-      # reads aws=0 and fails, as the verification's check c8 requires.
+      # Each named test runs once on each store backend as its `aws` and `gcp` subtests, and each
+      # backend's rows run that backend's own code: the store forms against the GCP fake and the
+      # in-process AWS store (onEachStore) and the use chain against a broker whose settings name
+      # each store, each row that runs the command reading the injection line that names its
+      # store's kind (source.withSettings), all in ./cmd/cipher/; and GET /v1/settings
+      # answering each store's own key field beside the Google exchange audience, in
+      # ./internal/cipher/api/. This step runs only those tests in only those two packages (-run,
+      # under backend-count.sh's own 5-minute -timeout, which the budget above counts) and counts
+      # the passes of each, so a test whose AWS half was skipped or removed, or that lives in
+      # neither package, reads aws=0 and fails, as the verification's check c8 requires. It is
+      # their one run: the unit step and the database-skips step skip them by name.
       - name: Count the store-form rows on each backend
-        run: packages/envoy/scripts/backend-count.sh TestEverySecretFormNamesTheSourceItUses TestNoSecretFormAsksTheBrokerForACredential
+        run: packages/envoy/scripts/backend-count.sh ./cmd/cipher/ ./internal/cipher/api/ -- TestEverySecretFormNamesTheSourceItUses TestNoSecretFormAsksTheBrokerForACredential TestUseCommandOutsideASessionReachesTheMachineSource TestTheChainSkipsAbsenceAndStopsOnABrokenSource TestSettingsNameTheGoogleExchangeAudienceOnEitherStore
+      # The step below is the one skip counter of the module's database-backed packages, which
+      # envoy-go-race-api runs the Dispatch API through too, so its own test runs first:
+      # packages/envoy/scripts/database-skips.test.sh plants a skipped test in
+      # ./internal/cipher/api/, ./cmd/cipherd/ and ./internal/dispatch/api/ through a Go overlay and
+      # holds the counter to count it; holds it to database_skips=UNKNOWN with a variable unset
+      # and on a report that shows no run (no test of its packages ran, or one package's did not);
+      # holds it to failing on a failed test; holds its --timeout to ending a test binary; and
+      # holds a copy of it with one line of its expected-skip table deleted, in a temporary
+      # checkout of this commit, to counting that test's skip. Each control stands beside a run
+      # the counter passes, and each run is narrowed with -run to the tests it is about.
+      - name: Test the database skip counter
+        timeout-minutes: 15
+        run: packages/envoy/scripts/database-skips.test.sh
       # c8 also asks that the database broker suites run with BROKER_TEST_DATABASE_URL set and that
-      # none skips. The unit step runs them, but go test reports a skip as a pass and that step
-      # writes no report to count from, so this step runs ./internal/broker/... again with -json
-      # and fails on any skipped test there, FuzzAirlock apart (it needs a built Lean model of the
-      # airlock, and the airlock-lean job runs it). A report it cannot read prints
-      # database_skips=UNKNOWN and fails too. database-skips.sh's -timeout of 15 minutes bounds
-      # each package's test binary, and the packages run several at a time, so one that starts
-      # late ends up to 15 minutes after its own start: the step's own limit of 25 minutes leaves
-      # a package that starts within the first 10 its whole -timeout, and so its dump. Measured on
-      # a loaded dev box on 2026-11-16: 331 s for the whole step, the slowest package,
-      # internal/broker/helper, 329 s.
+      # none skips. go test reports a skip as a pass, so this step is where the broker's packages
+      # and its command run: it runs ./internal/cipher/... and ./cmd/cipherd/ with -json (less the
+      # race lane's packages under the tree, the auth service's natscallout, which envoy-go-race
+      # runs: the script's DEFAULT_EXCEPT), which the unit step above leaves out, fails on a failed
+      # test, and fails on any skipped test there
+      # but the airlock's model comparisons, which the script's EXPECTED_SKIPS names (each needs a
+      # built Lean model of the airlock, and the airlock-lean job runs them). A report that shows
+      # no run prints database_skips=UNKNOWN and fails too. Its --timeout 20m is
+      # the -timeout the unit step gave cmd/cipherd before the package moved here, so no package's
+      # limit falls: cmd/cipherd took 580 s in the unit step in CI on 2026-11-18 (job
+      # 135007706189), and the broker's packages had 15 minutes here. That -timeout bounds each
+      # package's test binary, and the packages run several at a time, so one that starts late
+      # ends up to 20 minutes after its own start: the step's own limit of 30 minutes leaves a
+      # package that starts within the first 10 its whole -timeout, and so its dump. Measured in
+      # that same job, before cmd/cipherd joined this step: 355 s for the step. Its --skip leaves
+      # out the backend count's test of ./internal/cipher/api/, which the count step above runs.
       - name: Count the database broker suites' skips
-        timeout-minutes: 25
-        run: packages/envoy/scripts/database-skips.sh
+        timeout-minutes: 30
+        run: packages/envoy/scripts/database-skips.sh --timeout 20m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$'
       # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
       # never runs it. Vetting it keeps it compiling as the package changes.
       - name: Vet agentloop's live proof (no model call)
@@ -177,7 +228,7 @@ jobs:
       # The run of the built agent-secrets against moto needs moto, so it sits behind a build tag
       # and packages/envoy/scripts/aws-moto-check.sh runs it. Vetting it keeps it compiling.
       - name: Vet agent-secrets' moto run (no moto)
-        run: go vet -tags moto ./cmd/agent-secrets/
+        run: go vet -tags moto ./cmd/cipher/
         working-directory: packages/envoy
       # internal/testnats runs its server in the test process, so the untagged step above starts
       # no container. The real-server tests, a rendered authorization on the image the hub runs
@@ -193,24 +244,38 @@ jobs:
       # nats:2.15.1-alpine image the deployment runs (INFRA-1384). The others are a session
       # consumer's own messages behind other sessions' traffic on the hub's image, the listener's
       # refusal of nats:2.10 (natsversion), and that refusal's control: on 2.10, stepped past, the
-      # consumer loses its old-form message. Each
-      # package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run the
-      # package's untagged tests, which already run elsewhere - internal/testnats in the unit step
-      # above, and internal/bus in envoy-go-race, which the unit step's grep -Ev leaves out - so
-      # the -run comes from .github/scripts/go-tagged-tests.sh, which reads the names off the
-      # source at run time, and no test name is spelled here. Each assignment is a line of its
-      # own: under bash -e it carries the script's exit status, so an empty or refused list fails
-      # the step instead of running -run "", which matches every test.
+      # consumer loses its old-form message. internal/cipher/natscallout has one too: that the
+      # image the hub runs lets a user with an empty publish allow list publish anywhere, the
+      # fail-open its guard refuses, so the guard is shown able to fail on the server production
+      # runs. Each package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run
+      # the package's untagged tests, which already run elsewhere - internal/testnats in the unit
+      # step above, and internal/bus and internal/cipher/natscallout in envoy-go-race, which the
+      # unit step's grep -Ev leaves out - so the -run comes from .github/scripts/go-tagged-tests.sh,
+      # which reads the names off the source at run time, and no test name is spelled here. Each
+      # assignment is a line of its own: under bash -e it carries the script's exit status, so an
+      # empty or refused list fails the step instead of running -run "", which matches every test.
       - name: Test the container-backed NATS matrix (natslive)
         run: |
           rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
           go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
           cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
           go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
+          callout=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/cipher/natscallout)
+          go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/cipher/natscallout/
         working-directory: packages/envoy
 
       - name: Integration test envoy (a real NATS server, in the test process)
         run: go test ./internal/integration/ -timeout 300s -count=1
+        working-directory: packages/envoy
+      # check c-callout-live of the NATS auth service's verification: the real broker (twice, one
+      # queue group), listener, Dispatch and nats-server behind the auth callout, built and started
+      # by dev-stack.sh --callout on this job's Postgres, and driven by natsprobe. It prints one
+      # PASS line per property and exits 1 on any FAIL or UNKNOWN.
+      - name: Prove the hub behind the NATS auth service on the local stack (callout-check.sh)
+        timeout-minutes: 6
+        run: bash scripts/callout-check.sh
+        env:
+          LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
         working-directory: packages/envoy
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
