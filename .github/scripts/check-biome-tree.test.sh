@@ -5,8 +5,9 @@
 # annotation, and a tree with both is named and fails. Each of 25 skipped files is named, though
 # Biome prints only 20 diagnostics by default. A file above Biome's default of 1 MiB under a nested
 # configuration that extends nothing is named, though the root limit is larger. Through a stand-in
-# Biome: the script exits with Biome's own status, and exits 2 on a size diagnostic it cannot
-# match to a file.
+# Biome: the script exits with Biome's own status; and it exits 2, never reporting the tree clean,
+# when Biome prints no summary, checks no file, or prints a size diagnostic it cannot match to a
+# file. A tree with no Biome under node_modules exits 2 too.
 #
 # Each case builds a miniature git repository under a temporary directory and symlinks the real
 # script into it, so the script under test is the file CI runs: it resolves its root from its own
@@ -161,9 +162,31 @@ check "keeps the stand-in's output" "$(contains "$out" '^Checked 1 file in 1ms')
 
 echo "case: a size diagnostic with no file header exits 2 (a stand-in Biome)"
 root=$(fixture no-header)
-stand_in "$root" 'printf "  i The size of the file is 2.9 KiB, which exceeds the configured maximum of 2.0 KiB for this project.\nChecked 0 files in 1ms. No fixes applied.\n"'
+stand_in "$root" 'printf "  i The size of the file is 2.9 KiB, which exceeds the configured maximum of 2.0 KiB for this project.\nChecked 1 file in 1ms. No fixes applied.\n"'
 run_check "$root"
 check "exits 2" "$(is "$status" 2)"
 check "says it cannot name the file" "$(contains "$out" 'no file header before it, so this check cannot name the file Biome skipped')"
+
+echo "case: a Biome run that prints no summary exits 2, not clean (a stand-in Biome)"
+root=$(fixture no-summary)
+stand_in "$root" 'exit 0'
+run_check "$root"
+check "exits 2" "$(is "$status" 2)"
+check "says it cannot tell what Biome read" "$(contains "$out" 'Biome printed no summary line, so this check cannot tell what it read')"
+check "does not call the tree clean" "$(is "$(contains "$out" 'skipped no file')" false)"
+
+echo "case: a Biome run that checks no file exits 2, not clean (a stand-in Biome)"
+root=$(fixture checked-none)
+stand_in "$root" 'echo "Checked 0 files in 1ms. No fixes applied."'
+run_check "$root"
+check "exits 2" "$(is "$status" 2)"
+check "says Biome checked no file" "$(contains "$out" 'Biome checked no file, so this check has nothing to call clean')"
+
+echo "case: a tree with no Biome under node_modules exits 2"
+root=$(fixture no-biome)
+rm "$root/node_modules"
+run_check "$root"
+check "exits 2" "$(is "$status" 2)"
+check "says to install" "$(contains "$out" 'node_modules/.bin/biome is missing.*run bun install first')"
 
 summary "check-biome-tree.sh"
