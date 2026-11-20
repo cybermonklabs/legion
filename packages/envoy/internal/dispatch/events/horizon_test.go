@@ -843,6 +843,175 @@ func TestHorizonConcurrentSafeCallsShareAnObservation(t *testing.T) {
 	}
 }
 
+// heldScriptedHorizonDB is a scriptedHorizonDB that counts the observations it is asked for and
+// holds the first, once entered closes, until release closes.
+func heldScriptedHorizonDB(script ...scriptedObservation) (db *scriptedHorizonDB, observations *atomic.Int32, entered, release chan struct{}) {
+	observations = &atomic.Int32{}
+	entered, release = make(chan struct{}), make(chan struct{})
+	db = &scriptedHorizonDB{script: script, observed: func() {
+		if observations.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+	}}
+	return db, observations, entered, release
+}
+
+// A caller that waited out an observation and wakes only after the next one has ended takes that
+// one as it ended, since it started after the call, and runs none of its own. The test holds six
+// of the seven late callers in the parking hook, before they wait on the observation in flight,
+// until the seventh has run the next observation to its end, so each of the six wakes to find it
+// ended, however the scheduler wakes them.
+func TestHorizonCallersThatWakeAfterTheNextObservationEndedTakeIt(t *testing.T) {
+	ctx := t.Context()
+	const callers = 8
+	var script []scriptedObservation
+	for i := range callers {
+		script = append(script, scriptedObservation{newest: 8, xmin: uint64(101 + i), xid: uint64(101 + i), selfProves: true})
+	}
+	db, observations, entered, release := heldScriptedHorizonDB(script...)
+	horizon := NewHorizon(db)
+	// A caller that wakes late and runs an observation of its own can park on another's, so the
+	// hook may run more than once per caller; parked holds every such call.
+	parked := make(chan struct{}, 2*callers)
+	late := make(chan struct{})
+	var parks atomic.Int32
+	horizon.afterObservationParked = func() {
+		parked <- struct{}{}
+		if parks.Add(1) < callers-1 {
+			<-late
+		}
+	}
+	errs := make(chan error, callers)
+	safe := func() {
+		_, err := horizon.Safe(ctx)
+		errs <- err
+	}
+	go safe()
+	<-entered
+	for range callers - 1 {
+		go safe()
+	}
+	for range callers - 1 {
+		<-parked
+	}
+	close(release)
+	// The first caller's answer, and that of the late caller the hook let through, which ran the
+	// next observation: once both are in, that observation has ended.
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("Safe: %v", err)
+		}
+	}
+	close(late)
+	for range callers - 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("Safe of a caller that woke after the next observation had ended: %v", err)
+		}
+	}
+	if got := observations.Load(); got != 2 {
+		t.Fatalf("%d Safe calls, %d of them woken after the next observation had ended, ran %d observations, want 2", callers, callers-2, got)
+	}
+}
+
+// A caller whose context is live takes no ended observation that its runner's cancellation
+// abandoned, even one that started after the call: it runs one of its own and returns that one's
+// answer, not a cancellation that is not its own.
+func TestHorizonACallerThatWokeLateTakesNoOtherCallersCancellation(t *testing.T) {
+	ctx := t.Context()
+	db, observations, entered, release := heldScriptedHorizonDB(
+		scriptedObservation{newest: 8, xmin: 101, xid: 101, selfProves: true},
+		scriptedObservation{err: context.Canceled},
+		scriptedObservation{newest: 8, xmin: 103, xid: 103, selfProves: true},
+	)
+	horizon := NewHorizon(db)
+	parked, late := make(chan struct{}), make(chan struct{})
+	horizon.afterObservationParked = func() {
+		close(parked)
+		<-late
+	}
+	first := make(chan error, 1)
+	go func() {
+		_, err := horizon.Safe(ctx)
+		first <- err
+	}()
+	<-entered
+	waiter := make(chan error, 1)
+	go func() {
+		_, err := horizon.Safe(ctx)
+		waiter <- err
+	}()
+	<-parked
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatalf("Safe that ran the first observation: %v", err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := horizon.Safe(cancelled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Safe on a cancelled context = %v, want its own cancellation", err)
+	}
+	close(late)
+	if err := <-waiter; err != nil {
+		t.Fatalf("Safe of the caller that woke late = %v, want the answer of an observation of its own", err)
+	}
+	if got := observations.Load(); got != 3 {
+		t.Fatalf("ran %d observations, want 3: the one waited out, the cancelled one and the late caller's own", got)
+	}
+}
+
+// Await asks observe again with the after of its call, so a caller can join an observation
+// numbered above after that its runner's cancellation then abandons. Callers whose contexts are
+// live wait that one out too and share the next, even one that wakes only after the next has
+// ended.
+func TestHorizonCallersOfAnAbandonedObservationShareTheNext(t *testing.T) {
+	ctx := t.Context()
+	runnerCtx, cancelRunner := context.WithCancel(ctx)
+	defer cancelRunner()
+	db, observations, entered, release := heldScriptedHorizonDB(
+		scriptedObservation{err: context.Canceled},
+		scriptedObservation{newest: 8, xmin: 102, xid: 102, selfProves: true},
+		scriptedObservation{newest: 8, xmin: 103, xid: 103, selfProves: true},
+	)
+	horizon := NewHorizon(db)
+	runner := make(chan error, 1)
+	go func() { runner <- horizon.observe(runnerCtx, 0) }()
+	<-entered
+	// The second caller to park is held before it waits, until the first has run the next
+	// observation to its end.
+	parked := make(chan struct{}, 2)
+	late := make(chan struct{})
+	var parks atomic.Int32
+	horizon.afterObservationParked = func() {
+		parked <- struct{}{}
+		if parks.Add(1) == 2 {
+			<-late
+		}
+	}
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() { errs <- horizon.observe(ctx, 0) }()
+	}
+	for range 2 {
+		<-parked
+	}
+	cancelRunner()
+	close(release)
+	if err := <-runner; !errors.Is(err, context.Canceled) {
+		t.Fatalf("observe whose context ended = %v, want its own cancellation", err)
+	}
+	if err := <-errs; err != nil {
+		t.Fatalf("observe of the caller that ran the next observation: %v", err)
+	}
+	close(late)
+	if err := <-errs; err != nil {
+		t.Fatalf("observe of the caller that woke after the next observation had ended: %v", err)
+	}
+	if got := observations.Load(); got != 2 {
+		t.Fatalf("ran %d observations, want 2: the abandoned one and the next, which both callers share", got)
+	}
+}
+
 // The stall warning's diagnosis query must run on a real Postgres and name a holder while one
 // is open. The holder named may be another test's on the same instance, which is older.
 func TestHorizonStallWarningNamesAnOpenTransaction(t *testing.T) {
