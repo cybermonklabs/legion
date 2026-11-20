@@ -32,11 +32,12 @@ func faultedBundleStore(t *testing.T, st *store.Store) (*store.Store, *testdb.Co
 	return faulted, fault
 }
 
-// faultedBundleRig is a store holding savedWorkspaceBundle, the same database through the fault
-// proxy, and a rig whose hop takes the bundle through the proxy and deletes it straight.
+// faultedBundleRig is a store holding savedWorkspaceBundle of an issue the rig's project records,
+// the same database through the fault proxy, and a rig whose hop takes the bundle through the
+// proxy and deletes it straight.
 func faultedBundleRig(t *testing.T) (*store.Store, *testdb.CommitFault, runtime.WorkspaceBundle, *rig) {
 	t.Helper()
-	st := migratedStore(t)
+	st := bundleStore(t)
 	saved := savedWorkspaceBundle()
 	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, saved); err != nil {
 		t.Fatalf("save the released workspace's bundle: %v", err)
@@ -45,10 +46,7 @@ func faultedBundleRig(t *testing.T) (*store.Store, *testdb.CommitFault, runtime.
 	// The hop runs inside the start, whose bound is BootTimeout: the rig's two seconds would end
 	// a hop that waits for the store before the store answers.
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle = func(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
-			return faulted.TakeWorkspaceBundleForRestore(ctx, testProject, issue, podUID, podCreated)
-		}
-		o.WorkspaceBundleRestored = st.DeleteRestoredWorkspaceBundle
+		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeBundle(faulted), st.DeleteRestoredWorkspaceBundle
 		o.BootTimeout = 15 * time.Second
 	}))
 	return st, fault, saved, g
@@ -155,7 +153,7 @@ func TestABundleTakeWhoseOutcomeIsUnknownIsSentOnceTheStoreAnswers(t *testing.T)
 // attempt may be spent. The run committed, so the row records the attempt, and a later take by the
 // same pod answers nothing, as after a send that failed halfway; the work stays in the database.
 func TestABundleTakeWhoseOutcomeStaysUnknownSaysTheAttemptMayBeSpent(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	saved := savedWorkspaceBundle()
 	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, saved); err != nil {
 		t.Fatalf("save the released workspace's bundle: %v", err)
