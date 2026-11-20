@@ -469,6 +469,32 @@ proc_walk_complaint() {
   return 1
 }
 
+# proc_walk_bound ENTRIES prints, in seconds, how long a walk of ENTRIES entries of a proc root may
+# take: procs_naming's grep of every <pid>/environ, listening_holders' find of every <pid>/fd
+# (lib/rig.sh), and refuse_leftovers' (lib/leftovers.sh) and stop_agent_daemons'
+# (parked-decision-devbox.sh) reads of every command line, environment and stat. Its two parts are
+# what such a walk waits on, each twice the slowest measured:
+#   - proc_walk_base_ms, the start of the walk's reader (timeout, then xargs and grep, or find),
+#     which is all a walk of a root of a few entries takes: 197 ms at the slowest of 40 starts of
+#     each reader over a root of one entry, in a scope held to 30% of one CPU (CPUQuota=30%), a
+#     share of the CPU below what a load of 960 leaves each runnable process on the devbox's 288
+#     CPUs, past the 860 that box has reached (2026-11-20, beside a one-minute load of 235 to 292);
+#   - proc_walk_entry_us, each entry: the slowest share of one entry in any walk measured beside
+#     the devbox's load (one-minute loads of 370 to 460: 20 walks of each kind over the host's
+#     /proc of about 22,300 processes, the slowest 3.2 s, and 20 over a forced row's root,
+#     lib/arg-max-force.sh), 0.91 ms, a forced row's walk of 24 fd directories, whose program starts
+#     weigh on each entry.
+# A walk still running then is ended with what it started and read as no answer: with no bound, a
+# /proc entry that never answers its reader, such as the environment of a process whose memory map
+# stays locked (a FIFO stands in for one in the rows), held the run's sweep, a check of a port, or
+# the exit that runs them, for ever. The bound starts no program.
+proc_walk_base_ms=394
+proc_walk_entry_us=1825
+proc_walk_bound() {
+  local ms=$((proc_walk_base_ms + $1 * proc_walk_entry_us / 1000))
+  printf '%d.%03d\n' $((ms / 1000)) $((ms % 1000))
+}
+
 # procs_naming DIR NAME… prints `PID START` (proc_start) for each process whose environment gives
 # one of the NAMEs the value DIR or a path under it (names_dir), this shell itself left out. It reads
 # the environment of every process of `${proc_root:-/proc}`: the host's /proc, unless a test points
@@ -487,7 +513,7 @@ proc_walk_complaint() {
 # should be, or one whose pid entries this user cannot see), it makes procs_naming print why and
 # fail with 2, so no caller reads an unread machine as one with nothing left.
 procs_naming() {
-  local dir=$1 proc=${proc_root:-/proc} p pid before status=0 name
+  local dir=$1 proc=${proc_root:-/proc} p pid before status=0 name bound
   local -a names=("${@:2}") naming_patterns=() naming_files=() entries=()
   # An empty DIR would match `NAME=` followed by any absolute path (names_dir).
   [ -n "$dir" ] || {
@@ -500,12 +526,20 @@ procs_naming() {
     return 2
   }
   for name in "${names[@]}"; do naming_patterns+=(-e "$name=$dir"); done
-  # `|| exit` keeps xargs's status for the wait below, and keeps a caller's ERR trap (`set -E`) from
-  # firing inside the substitution for the batches every walk has with no match.
-  mapfile -t naming_files < <(printf '%s\0' "${entries[@]}" | xargs -0 grep -lzsF "${naming_patterns[@]}" || exit)
+  bound=$(proc_walk_bound "${#entries[@]}")
+  # `|| exit` keeps the walk's status for the wait below, and keeps a caller's ERR trap (`set -E`)
+  # from firing inside the substitution for the batches every walk has with no match. timeout
+  # leads a process group of its own, so at the bound its TERM, and its KILL 5 s after, end every
+  # grep xargs started too, and it exits 124 (xargs's own 124, a grep that exited 255, grep never
+  # gives); a walk a signal ended of itself passes xargs's status through, as before the bound.
+  mapfile -t naming_files < <(printf '%s\0' "${entries[@]}" | timeout -k 5 "$bound" xargs -0 grep -lzsF "${naming_patterns[@]}" || exit)
   wait "$!" || status=$?
   case $status in
     0 | 123) ;;
+    124)
+      echo "procs_naming: the walk of ${#entries[@]} entries of $proc had not ended after ${bound}s (proc_walk_bound), so the processes naming $dir were not read" >&2
+      return 2
+      ;;
     *)
       echo "procs_naming: xargs exited $status reading $proc/<pid>/environ, so the processes naming $dir were not read" >&2
       return 2

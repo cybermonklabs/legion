@@ -54,6 +54,22 @@ function alive(pid: number): boolean {
   }
 }
 
+/** Whether `pid` still runs: /proc lists it, and not dead (Z, a zombie nothing has reaped yet, or
+ *  X); on a machine with no /proc, whether signal 0 still reaches it. A process that is no child of
+ *  this one, as a command whose own parent has exited, is reaped by whatever the kernel handed it
+ *  to, and where that is this test process, as where `bun test` runs as PID 1 of its PID
+ *  namespace, nothing ever reaps it: its zombie stays in the table, and `alive` reads it there. */
+function stillRuns(pid: number): boolean {
+  let stat: string;
+  try {
+    stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+  } catch {
+    return alive(pid);
+  }
+  const state = stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3);
+  return state !== "Z" && state !== "X";
+}
+
 describe("the command a person's message says to run", () => {
   test("is the rest of a line whose first character is the mark, trimmed as the CLI trims it", () => {
     expect(shellCommandFrom("!printf hi")).toBe("printf hi");
@@ -539,7 +555,7 @@ describe("running a person's command", () => {
       expect(runs.exitCode).toBe(0);
       const pid = Number(readFileSync(pidFile, "utf8").trim());
       expect(Number.isInteger(pid)).toBe(true);
-      expect(await untilTrue(() => !alive(pid))).toBe(true);
+      expect(await untilTrue(() => !stillRuns(pid))).toBe(true);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

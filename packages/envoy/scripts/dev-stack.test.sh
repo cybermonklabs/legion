@@ -84,17 +84,27 @@ readonly admin_url_no_query=${admin_url%%\?*}
 readonly server_url=${admin_url%/postgres*}
 
 declare -a instance_pid=()
+# proc_walk_bound, the bound of a walk of every process (scripts/e2e/lib/process-tree.sh), which
+# cleanup's pkill makes.
+# shellcheck source-path=SCRIPTDIR source=../../../scripts/e2e/lib/process-tree.sh
+. "${project_root}/scripts/e2e/lib/process-tree.sh"
 cleanup() {
   # Best-effort: if an assertion fails mid-test, leave no dev-stack.sh instance, and no stub it
   # started, running.
-  local pid
+  local pid status=0
+  local -a entries=(/proc/[0-9]*)
   for pid in "${instance_pid[@]}"; do
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
       kill -TERM "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
     fi
   done
-  pkill -f "${temporary_dir}/dev-stack\." 2>/dev/null || true
+  # The catch-all, for a stub whose instance has already gone: pkill reads every process's command
+  # line, so it is held to that walk's bound, past which a /proc entry that never answers its reader
+  # held this exit for ever.
+  timeout -k 5 "$(proc_walk_bound "${#entries[@]}")" pkill -f "${temporary_dir}/dev-stack\." 2>/dev/null || status=$?
+  [[ $status -ne 124 ]] ||
+    echo "dev-stack.test.sh: pkill had not ended at its bound (proc_walk_bound); a stub of this test may still run" >&2
   rm -rf "$temporary_dir"
 }
 trap cleanup EXIT

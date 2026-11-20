@@ -3,10 +3,12 @@
 package clitest
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
 	"os/exec"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -27,21 +29,56 @@ func inOwnGroup(cmd *exec.Cmd) {
 	}
 }
 
-// waitGroup waits until no process of the group cmd leads is left and answers true, or, when ctx
-// ends first, kills what is left and answers false. Call it once cmd.Wait has returned.
+// waitGroup waits until every process of the group cmd leads has ended and answers true, or, when
+// ctx ends first, kills what is left and answers false. Call it once cmd.Wait has returned.
 func waitGroup(ctx context.Context, cmd *exec.Cmd) bool {
-	group := -cmd.Process.Pid
+	group := cmd.Process.Pid
 	tick := time.NewTicker(groupPoll)
 	defer tick.Stop()
 	for {
-		if err := syscall.Kill(group, 0); errors.Is(err, syscall.ESRCH) {
+		if groupEnded(group) {
 			return true
 		}
 		select {
 		case <-ctx.Done():
-			_ = syscall.Kill(group, syscall.SIGKILL)
+			_ = syscall.Kill(-group, syscall.SIGKILL)
 			return false
 		case <-tick.C:
 		}
 	}
+}
+
+// groupEnded reports whether every process of group pgid has ended. Signal 0 to the group reaches
+// every member, a zombie included: a process the binary left behind is an orphan once the binary
+// exits, and its zombie waits for whatever the kernel handed it to. Where that never reaps it, as
+// where the namespace's PID 1 is a `go test` with no init above it, the zombie stays and signal 0
+// still reaches the group. So while it does, /proc is read for a member that is not dead (Z or X);
+// where /proc cannot be read, as on a system with none, the group counts as running.
+func groupEnded(pgid int) bool {
+	if errors.Is(syscall.Kill(-pgid, 0), syscall.ESRCH) {
+		return true
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return false
+	}
+	want := []byte(strconv.Itoa(pgid))
+	for _, entry := range entries {
+		if _, err := strconv.Atoi(entry.Name()); err != nil {
+			continue
+		}
+		stat, err := os.ReadFile("/proc/" + entry.Name() + "/stat")
+		if err != nil {
+			continue
+		}
+		// The fields after the command name, which ends at the last ')': state, parent, group.
+		fields := bytes.Fields(stat[bytes.LastIndexByte(stat, ')')+1:])
+		if len(fields) < 3 || !bytes.Equal(fields[2], want) {
+			continue
+		}
+		if state := fields[0]; !bytes.Equal(state, []byte("Z")) && !bytes.Equal(state, []byte("X")) {
+			return false
+		}
+	}
+	return true
 }

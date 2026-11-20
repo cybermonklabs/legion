@@ -193,9 +193,10 @@ port_answers() {
 # arguments: as arguments, past ARG_MAX (about 80,000 processes), find could not start, and the
 # `|| true` this had turned that E2BIG into no holder at all. An fd directory this user may not read
 # (another user's process) or whose process ended during the walk is none of the answer; any other
-# complaint of the walk's (proc_walk_complaint) prints and fails with 2.
+# complaint of the walk's (proc_walk_complaint) prints and fails with 2, and so does a walk still
+# running at its bound (proc_walk_bound, lib/process-tree.sh), which is ended there.
 listening_holders() {
-  local proc=${proc_root:-/proc} inodes err status=0 complaint holder table
+  local proc=${proc_root:-/proc} inodes err status=0 complaint holder table bound
   local -a holders=() tables=() entries=()
   for table in /proc/net/tcp /proc/net/tcp6; do
     [ ! -e "$table" ] || tables+=("$table")
@@ -224,13 +225,20 @@ listening_holders() {
     echo "listening_holders: no file to keep find's complaints in, so $proc was not read" >&2
     return 2
   }
+  bound=$(proc_walk_bound "${#entries[@]}")
   # shellcheck disable=SC2185 # find reads its paths from stdin (-files0-from -), not from argv
-  # `|| exit` keeps find's status and keeps a caller's ERR trap (`set -E`) from firing inside the
-  # substitution for the unreadable entries every walk meets.
-  mapfile -t holders < <(printf '%s\0' "${entries[@]}" | LC_ALL=C find -files0-from - -maxdepth 1 -lname "socket:\\[$inodes\\]" 2>"$err" || exit)
+  # `|| exit` keeps the walk's status and keeps a caller's ERR trap (`set -E`) from firing inside
+  # the substitution for the unreadable entries every walk meets. timeout leads a process group of
+  # its own and ends find at the bound with a TERM, and exits 124 then; a find a signal ended of
+  # itself (137 for a KILL) passes its status through, as it did before the bound.
+  mapfile -t holders < <(printf '%s\0' "${entries[@]}" | LC_ALL=C timeout -k 5 "$bound" find -files0-from - -maxdepth 1 -lname "socket:\\[$inodes\\]" 2>"$err" || exit)
   wait "$!" || status=$?
   complaint=
-  [ "$status" = 0 ] || complaint=$(proc_walk_complaint "$err" "$proc") || complaint=
+  case $status in
+    124) complaint="the walk of ${#entries[@]} entries had not ended after ${bound}s (proc_walk_bound)" ;;
+    0) ;;
+    *) complaint=$(proc_walk_complaint "$err" "$proc") || complaint= ;;
+  esac
   # GNU find exits 0 or 1 of its own accord; any other status is a find that a signal or the shell
   # ended, and the lines it wrote before are no answer, even when it printed no complaint.
   [ "$status" -le 1 ] || complaint=${complaint:-"find ended with status $status and printed nothing"}

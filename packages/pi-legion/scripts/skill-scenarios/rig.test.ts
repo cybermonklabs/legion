@@ -11,9 +11,16 @@ import {
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
+import {
+  argMaxForceHolds,
+  forcedLine,
+  forceEntriesBound,
+  makeForceEntries,
+  walkDeadline,
+  walkWithin,
+} from "../../../../scripts/e2e/lib/arg-max-force";
 import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
-import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
+import { linkProcesses, procRootOf } from "../../../../scripts/e2e/lib/proc-root";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
@@ -578,27 +585,59 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
     };
   };
 
+  // The proc root of the row under the force, given the force's entries here, ahead of the row and
+  // bounded as forceEntriesBound says (scripts/e2e/lib/arg-max-force.ts): their time is the disk's,
+  // and the row's own bound holds its walk alone. The row gives its run process to the root.
+  const forcedRoot = path.join(work, "forced-env-pids");
+  beforeAll(
+    () => {
+      if (!argMaxForceHolds()) return;
+      mkdirSync(forcedRoot);
+      makeForceEntries(forcedRoot, "environ", 6144);
+    },
+    forceEntriesBound([{ root: forcedRoot, entry: "environ", room: 6144 }])
+  );
+
   // Catches: a walk that hands grep every /proc/<pid>/environ at once, which under the force
   // (scripts/e2e/lib/arg-max-force.sh) cannot start and names nothing. The force cannot hold under
-  // gVisor (a Legion pod's kernel): there the row is skipped, by that name (argMaxForceHolds).
+  // gVisor (a Legion pod's kernel): there the row is skipped, by that name (argMaxForceHolds). No
+  // caller bounds that walk (stop_env_processes, which the run's exit handler and its batch's
+  // teardown run, waits on it with no bound), so the row holds it, the part of the harness after
+  // forcedLine, to run_processes's per-walk bound, walkDeadline, borrowed, not one derived for it.
   test.skipIf(!argMaxForceHolds())(
     "names a process of the run, with its start time, where a program handed every /proc/<pid>/environ would not start",
-    () => {
+    async () => {
       const dir = freshDir("env-pids");
       const scratch = freshDir("env-pids-scratch");
       const run = runProcess(dir);
       try {
         const old = 'grep -lzsF -e "SKILL_SCENARIO_RUN=$2" "$proc_root"/[0-9]*/environ';
-        const forced = groupBash(
-          `set -euo pipefail\n. ${JSON.stringify(force)}\n. ${JSON.stringify(processTree)}\n${fn("run_env_pids")}\narg_max_force environ 6144 "$1" ${JSON.stringify(old)}\nrun_env_pids "$2"`,
-          [scratch, dir],
-          procRootOf(scratch, [run.pid])
+        const forced = await walkWithin(
+          ownGroup([
+            "bash",
+            "-c",
+            `set -euo pipefail\n. ${JSON.stringify(force)}\n. ${JSON.stringify(processTree)}\n${fn("run_env_pids")}\narg_max_force environ 6144 "$1" ${JSON.stringify(old)}\necho ${JSON.stringify(forcedLine)}\nrun_env_pids "$2"`,
+            "-",
+            scratch,
+            dir,
+          ]),
+          { ...childEnv, proc_root: linkProcesses(forcedRoot, [run.pid]) },
+          walkDeadline
         );
-        expect(forced).toEqual({ code: 0, stdout: `${run.pid} ${start(run.pid)}\n`, stderr: "" });
+        expect(
+          forced.timedOut,
+          `run_env_pids under the force had not ended ${walkDeadline / 1000} s after it started (walkDeadline)`
+        ).toBe(false);
+        expect({ code: forced.code, stdout: forced.out, stderr: forced.err }).toEqual({
+          code: 0,
+          stdout: `${run.pid} ${start(run.pid)}\n`,
+          stderr: "",
+        });
       } finally {
         run.kill("SIGKILL");
       }
-    }
+    },
+    walkDeadline + 5_000
   );
 
   // Catches: a stop_env_processes that does not end what its walk names. The loop that ends each
@@ -623,6 +662,36 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
     } finally {
       run.kill("SIGKILL");
     }
+  });
+
+  // Catches: a walk of every process with no bound. stop_env_processes, which the exit handler of
+  // a run and its batch's teardown run, walks every process's environment (run_env_pids,
+  // procs_naming), and a /proc entry that never answers its reader, such as the environment of a
+  // process whose memory map stays locked, held that exit for ever; a FIFO no writer opens stands in
+  // for one here. The walk ends at its bound (proc_walk_bound, scripts/e2e/lib/process-tree.sh) and
+  // says so, and stop_env_processes says it stopped nothing and returns, so the exit goes on.
+  test("stop_env_processes returns, naming its walk's bound, where an environment never answers its reader", () => {
+    const dir = freshDir("env-fifo");
+    const proc = freshDir("env-fifo-proc");
+    mkdirSync(path.join(proc, "999999999"));
+    expect(Bun.spawnSync(["mkfifo", path.join(proc, "999999999", "environ")]).exitCode).toBe(0);
+    const rig = path.join(root, "scripts/e2e/lib/rig.sh");
+    const prelude = `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(rig)}\n${fn("stop_env_processes")}`;
+    const stopped = groupBash(
+      `${prelude}\n${fn("run_env_pids")}\nstop_env_processes "$1"; echo "status $?"`,
+      [dir],
+      proc
+    );
+    expect({ code: stopped.code, stdout: stopped.stdout }).toEqual({
+      code: 0,
+      stdout: "status 0\n",
+    });
+    expect(stopped.stderr).toMatch(
+      /^procs_naming: the walk of 1 entries of \S+ had not ended after [0-9.]+s \(proc_walk_bound\)/m
+    );
+    expect(stopped.stderr).toContain(
+      `stop_env_processes: stopped no process of the run under ${dir}`
+    );
   });
 });
 

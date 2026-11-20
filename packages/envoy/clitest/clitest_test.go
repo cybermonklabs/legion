@@ -284,12 +284,18 @@ func TestConformanceFailsOnATLSContactAfterATypo(t *testing.T) {
 }
 
 // A request that a process the binary left behind makes after the binary exited is counted
-// against the run that started it.
+// against the run that started it. That process ends once it has made its request, so the run's
+// group has ended then, and the report says no process of it still runs: where nothing reaps the
+// process's zombie, as where the namespace's PID 1 is a `go test` with no init above it, a run that
+// counted that zombie as running reported it so after its whole minute.
 func TestConformanceFailsOnARequestByAProcessLeftBehind(t *testing.T) {
 	t.Parallel()
-	requireFails(t, completionLeavesAnAsker, "", []string{"usage-error"},
+	out := requireFails(t, completionLeavesAnAsker, "", []string{"usage-error"},
 		"completion clitest-unknown-shell: made 1 request(s), want none: GET /v1/late",
 	)
+	if strings.Contains(out, "a process it started was still running") {
+		t.Errorf("the report on %s says a process the run started still runs, though the one it left behind has exited\n%s", completionLeavesAnAsker, out)
+	}
 }
 
 // A help that exits 0 and prints nothing fails the help check.

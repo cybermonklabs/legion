@@ -6352,6 +6352,7 @@ Each item below names a function, then what it does.
   its inode from the `LISTEN` row of `/proc/net/tcp` and `/proc/net/tcp6`, its holders from `/proc/*/fd`.
   The shell's glob hands every `/proc/<pid>/fd` to `find` on stdin, never as its arguments, which past ARG_MAX (about 80,000 processes) could not start, and the empty answer read as no holder.
   An fd directory this user may not read, or whose process ended during the walk, is none of the answer; any other complaint of the walk's prints and fails with 2.
+  The walk is held to `proc_walk_bound` ([`lib/process-tree.sh`](#libprocess-treesh)) for the entries it walks; one still running then is ended, named, and fails with 2, so a check of a port never waits on a process's descriptors for ever.
   It fails when no socket, or more than one, listens on PORT
 
 - `held_only_by PORT PID…`
@@ -6389,10 +6390,12 @@ Each item below names a function, then what it does.
 
 `lib/run-processes.test.ts` (`bun test scripts/e2e/lib`) runs `run_processes` over the devbox's own `/proc`, under an `ERR` trap that prints, with a `readlink` on `PATH` that records every call and answers nothing and a `grep` that counts its calls:
 it names a process that carries the run's mark and a pane-shaped one whose `XDG_CONFIG_HOME` is under the run's state, leaves a process working in the run's directory, a `tail -f` of its transcript and an unrelated one alone, runs a handful of greps and no `readlink`, and trips no trap.
-It names a marked process double-forked to pid 1, which no tree the run started holds.
+It names a marked process double-forked to pid 1 or a subreaper, which no tree the run started holds: the process's parent, read from its `/proc` status, is no longer the one that ran it, whichever process reaps orphans there, this test process too where `bun test` is PID 1 of its PID namespace.
 Under a 512 KiB stack (ARG_MAX 128 KiB) and an environment measured to fill it ([`lib/arg-max-force.sh`](#libarg-max-forcesh)), where `find /proc/[0-9]*/cwd` fails with E2BIG, it still names the run's process, and `listening_holders` still names the test process holding a listening socket; the forms they replaced name none.
+The force's entries are made in a hook ahead of those two rows, held to `forceEntriesBound`, and each row holds only its walk to `walkDeadline` (`lib/arg-max-force.ts`).
 Where the kernel does not hold an exec to ARG_MAX, as gVisor does not, those two rows are skipped by that name (`argMaxForceHolds`, [`lib/arg-max-force.sh`](#libarg-max-forcesh)).
 A `find` or a `grep` that a signal ends after part of its output makes `listening_holders` and `run_processes` exit 2, a run that has not marked itself has no processes to read, and an empty run directory names none (`marked_processes`, `procs_naming` and `names_dir` exit 2).
+An environment that never answers its reader (a FIFO) ends `run_processes`'s walk at its bound, and a `find` held past it ends `held_only_by`'s, each naming the bound and exiting 2 (`proc_walk_bound`).
 A marked process whose name holds a newline and a `) ` is still named and ended.
 `stop_marked_processes` ends the marked processes, an escaped one too, and leaves a shell and a `tail -f` under the run's directory running, not stopped;
 with a grace it gives each SIGTERM and the grace, then SIGKILLs only a survivor;
@@ -6421,14 +6424,17 @@ It reads the ignored signals through the shell's own `trap -p` of each signal, a
 The walk reads `proc_root`, a proc root of the row's own processes ([`lib/proc-root.ts`](#libproc-rootts)), never the host's `/proc`, so the row's time is its own.
 A 512 KiB stack makes ARG_MAX 128 KiB, and an exported `PADDING` fills the environment to ROOM bytes short of the largest that still lets a program of no arguments start, measured there and then.
 An exec handed every entry as an argument then fails with E2BIG, as one does unforced at about 80,000 processes, while an exec of a few arguments still starts.
-A root whose entries together are under twice ROOM gets more first: entries of its own at pids above the kernel's `pid_max`, which no process can hold, each an empty `environ` and empty `fd` and `cwd` directories, counted in the shell and made with one `mkdir`; each padding of the measurement is built in the shell too (`printf -v`), so the force starts the same few programs however many entries it needs.
+A root whose entries together are under twice ROOM gets more first (`arg_max_force_entries ENTRY ROOM`): entries of its own at pids above the kernel's `pid_max`, which no process can hold, each an empty `environ` and empty `fd` and `cwd` directories, counted in the shell and made with one `mkdir`; each padding of the measurement is built in the shell too (`printf -v`), so the force starts the same few programs however many entries it needs.
+Those four files and directories an entry are the disk's time, not the walk's: on a loaded devbox a few hundred of them took most of a row's 5 s and past it, so a test makes them in a hook ahead of its row (`makeForceEntries` in `lib/arg-max-force.ts`), held to `forceEntriesBound`, their count at twice the slowest measured cost of one (`forceEntryMs`), and `arg_max_force` then finds them there and makes none.
 The control it must pass runs there too: OLD_FORM, the command line the walk replaced, fails with E2BIG, and a program of no arguments still starts; a force that is not in force, or a shell with no `proc_root`, exits naming why.
 `lib/run-processes.test.ts` and the skill-scenario rig's `run_env_pids` row (`packages/pi-legion/scripts/skill-scenarios/rig.test.ts`) source it.
+Each such row's harness prints `forcedLine` once it is under the force, and `walkWithin` holds only what follows, its walk, to `walkDeadline`, 60 s: `wait_for_run_processes` polls `run_processes` at least 10 times in its 600 s, so a walk past 60 s runs that wait past its own deadline; `listening_holders`' and `run_env_pids`' callers bound no walk, and their rows borrow that bound.
 `lib/arg-max-force.ts`'s `argMaxForceHolds()` says whether the kernel holds that exec at all: an environment of two 100,000-byte variables under a 512 KiB stack must stop a program of no arguments, as Linux does; gVisor starts it, so there the force cannot be in force, and those rows are skipped by that name rather than failed or passed
 
 ## lib/proc-root.ts
 
 A proc root of a test's own processes, for code under test that reads `${proc_root:-/proc}`: a directory holding a link to the real `/proc/<pid>` of each process the test names (`procRootOf`), so that code reads those processes' own files and signals their real pids, and its work is the test's processes rather than the host's.
+`linkProcesses` gives a root a hook made ahead of a row, as one holding the force's entries ([`lib/arg-max-force.sh`](#libarg-max-forcesh)), the row's own processes.
 The walks of every process read it: `procs_naming` (and so `run_processes`, `marked_processes`, the sweep and the skill-scenario rig's `run_env_pids`), `listening_holders`, `refuse_leftovers`, the parked-decision proof's `stop_agent_daemons` and `lib/role-namespaces.sh`'s `role_kill_sh`.
 A walk of the host's whole `/proc` held a row to the host's process count; on this devbox at 25,474 entries `refuse_leftovers` alone took 29 s.
 Each row of `lib/run-processes.test.ts` walks a root of the processes it started and the test process, and its first row starts a marked process outside that root, which a walk that went back to the host's `/proc` would name.
@@ -6443,6 +6449,7 @@ and an entry read through `tr | grep -q` under `pipefail` reads as absent whenev
 It needs nothing of its caller's.
 Its walks of every process (`procs_naming`) read `${proc_root:-/proc}` ([`lib/proc-root.ts`](#libproc-rootts)) and hand the entries to `grep` through `xargs` in calls that fit ARG_MAX, and [`lib/rig.sh`](#librigsh)'s `listening_holders` and [`lib/leftovers.sh`](#libleftoverssh)'s `refuse_leftovers` hand them to `find` on stdin (`-files0-from -`), which needs GNU findutils 4.9 or later: on an older `find` (4.8, Ubuntu 22.04's) both always exit 2.
 Both read their `find`'s stderr with `proc_walk_complaint ERRFILE PROC`, which prints its first line that is neither an entry of PROC this user may not read nor one whose process ended during the walk, and fails when there is none.
+`procs_naming` and `listening_holders` hold their walk to `proc_walk_bound ENTRIES`, and so do `refuse_leftovers` (below) and the parked-decision proof's `stop_agent_daemons`, whose reads of every command line, environment and stat go through one `grep` for each `xargs` batch: a start-up and a cost for each entry, each twice the slowest measured beside a devbox's load (`proc_walk_base_ms`, `proc_walk_entry_us`); a walk still running then is ended with what it started and fails with 2, naming the bound, so a `/proc` entry that never answers its reader, such as the environment of a process whose memory map stays locked, ends the run's sweep, the skill-scenario rig's `stop_env_processes` at a run's exit, Stage 1's `held_only_by`, a stage's check for leftovers and the parked-decision proof's teardown by name, where it held them for ever.
 A walk or a read that cannot see the processes it reads says why and fails with 2, never reads as none: a proc root that lists no process, an `xargs` or a `find` a signal ended, an unreadable `/proc/net/tcp`, and a Linux `/proc` with no `self` (an empty tmpfs mounted there, `proc_unreadable`), where `proc_children`, `proc_descendants`, `stop_tree`, `kill_frozen`, `kill_held` and the sweep fail with 2.
 
 ```sh
@@ -6507,7 +6514,7 @@ A walk or a read that cannot see the processes it reads says why and fails with 
 
 - `names_dir DIR NAME… PID`, `procs_naming DIR NAME…`
 
-  are whether PID's environment gives one of the NAMEs the value DIR or a path under it, and `PID START` for every process whose environment does, read from every process of the machine (one `grep` per `xargs` batch, then each match read whole), failing with 2 when the walk could not read the machine.
+  are whether PID's environment gives one of the NAMEs the value DIR or a path under it, and `PID START` for every process whose environment does, read from every process of the machine (one `grep` per `xargs` batch, then each match read whole), failing with 2 when the walk could not read the machine or had not ended at its bound (`proc_walk_bound`).
   Both refuse an empty DIR with 2: `NAME=` followed by any absolute path would match it
 
 - `marked_processes DIR`, `stop_marked_processes DIR [GRACE]`
@@ -6703,8 +6710,8 @@ The check fails, through the caller's `fail`, naming each container and process 
 A driver counts as alive only while its pid is a live, non-zombie process that started no later than the container or process it would own, since pids are reused.
 Only processes in the caller's own pid namespace are read, since a pid means nothing across namespaces (an agent box's run is its own).
 What a live run started is left alone, since Stages 2 and 3 take no lock and two lanes may run one at once.
-It reads `${proc_root:-/proc}` (a test points `proc_root` at a proc root of its own, [`lib/proc-root.ts`](#libproc-rootts)), each process's command line and environment in the shell itself and the working directories of the processes neither names a run in through one `find`, so it starts no program for each process.
-A proc root that lists no process, and a `find` that failed, that a signal ended or that is too old for `-files0-from`, are reported through `fail`, naming them, with 2; a working directory of another user's process, or of one that ended during the walk, is no complaint ([`proc_walk_complaint`](#libprocess-treesh)).
+It reads `${proc_root:-/proc}` (a test points `proc_root` at a proc root of its own, [`lib/proc-root.ts`](#libproc-rootts)), each process's command line and environment through one `grep` for each `xargs` batch, and the working directories of the processes neither names a run in through one `find`, so it starts no program for each process; each of the two is held to `proc_walk_bound` ([`lib/process-tree.sh`](#libprocess-treesh)), so an entry that never answers its reader ends the check there, named, with 2.
+A proc root that lists no process, a walk past its bound, and a `grep` or a `find` that failed, that a signal ended or that is too old for `-files0-from`, are reported through `fail`, naming them, with 2; a working directory of another user's process, or of one that ended during the walk, is no complaint ([`proc_walk_complaint`](#libprocess-treesh)).
 `lib/leftovers.test.ts` holds each, and the reading of each of the three places a process names its run
 
 ## lib/operator-dispatch.sh

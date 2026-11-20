@@ -29,7 +29,7 @@ take_box_login_lock() {
   if ! flock -n "$box_login_lock_fd"; then
     holder=$(<"$file") || holder=
     pid=${holder%% *}
-    if [[ $pid =~ ^[0-9]+$ ]] && cmd=$(ps -o args= -p "$pid" 2>/dev/null) && [ -n "$cmd" ]; then
+    if [[ $pid =~ ^[0-9]+$ ]] && cmd=$(box_login_args "$pid") && [ -n "$cmd" ]; then
       echo "take_box_login_lock: another box-login proof holds $file: pid $pid ($cmd); one box-login proof runs at a time" >&2
     elif [[ $pid =~ ^[0-9]+$ ]]; then
       echo "take_box_login_lock: another box-login proof holds $file: pid $pid (${holder#* }) has exited, and a process it started still holds the lock; one box-login proof runs at a time" >&2
@@ -40,7 +40,24 @@ take_box_login_lock() {
     return 1
   fi
   # Same inode, so the lock the descriptor holds stays; the content names this holder.
-  printf '%s %s\n' "$$" "$(ps -o args= -p "$$" 2>/dev/null || echo "$0")" >"$file"
+  printf '%s %s\n' "$$" "$(box_login_args "$$" || echo "$0")" >"$file"
+}
+
+# box_login_args PID prints PID's command line, its arguments joined by spaces, and fails when PID
+# names no process or one with no arguments (a zombie). It reads /proc/PID/cmdline in this shell,
+# so it reads that one process: procps-ng's `ps -o args= -p PID`, which this used before, opens the
+# stat of every process on the machine (18,004 of them for one pid, 1.1 to 2.3 s at 18,000
+# processes and a one-minute load of 330, 2026-11-20), and the two such calls a refused stage's
+# first lines make took install-box-login-route.test.ts's lock rows past Bun's 5 s. A host with no
+# /proc (macOS) asks ps.
+box_login_args() {
+  local -a args
+  if [ ! -d /proc/self ]; then
+    ps -o args= -p "$1" 2>/dev/null
+    return
+  fi
+  { mapfile -d '' -t args <"/proc/$1/cmdline"; } 2>/dev/null && [ "${#args[@]}" -gt 0 ] || return 1
+  printf '%s\n' "${args[*]}"
 }
 
 # box_login_stop_grace is how long, in seconds, a box-login run's teardown gives its processes after

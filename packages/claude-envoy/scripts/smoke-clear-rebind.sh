@@ -97,6 +97,24 @@ await_entries() {
   return 1
 }
 
+# channel_server_of PID prints the first child of PID whose command line runs
+# dist/envoy-channel.js, and fails when none does. It reads PID's own children
+# (/proc/PID/task/*/children) and each child's command line, so it reads those processes alone:
+# `pgrep -P PID -f`, which this used before, reads the stat of every process on the machine, over
+# a second at 18,000 processes on a loaded devbox, with no bound.
+channel_server_of() {
+  local child
+  local -a children=() args=()
+  read -r -a children < <(cat /proc/"$1"/task/*/children 2>/dev/null) || true
+  for child in "${children[@]}"; do
+    { mapfile -d '' -t args <"/proc/${child}/cmdline"; } 2>/dev/null || continue
+    [[ " ${args[*]} " == *dist/envoy-channel.js* ]] || continue
+    printf '%s\n' "$child"
+    return 0
+  done
+  return 1
+}
+
 answer_startup_dialogs() {
   local deadline=$((SECONDS + startup_timeout)) pane
   while (( SECONDS < deadline )); do
@@ -130,7 +148,7 @@ answer_startup_dialogs || fail "Claude did not reach its prompt within ${startup
 before="$(await_entries "$registration_timeout" 'if length == 1 then .[0].session_id else empty end')" \
   || fail "no single registry entry for ${workdir} within ${registration_timeout}s: $(entries)"
 session_ids+=("$before")
-server_pid="$(pgrep -P "$claude_pid" -f 'dist/envoy-channel.js' | head -1)" || true
+server_pid="$(channel_server_of "$claude_pid")" || true
 [[ -n "$server_pid" ]] || fail "no channel server process (dist/envoy-channel.js) under Claude pid ${claude_pid}"
 printf 'registered %s\n' "$before"
 

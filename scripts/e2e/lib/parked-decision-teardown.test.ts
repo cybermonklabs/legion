@@ -301,3 +301,22 @@ test.skipIf(skipWithout("python3"))(
   },
   30_000
 );
+
+// stop_agent_daemons reads every process's stat for its session (and each broker session member's
+// environment), and a /proc entry that never answers its reader, such as a stat of a process whose
+// task is stuck, held the run's teardown for ever; a FIFO no writer opens stands in for one here,
+// beside this test process's own entry, whose environment run_processes reads first. The walk ends
+// at its bound (proc_walk_bound, lib/process-tree.sh), says so, and the function fails with 2.
+test("stop_agent_daemons ends at its walk's bound, saying so, where a stat never answers its reader", () => {
+  const work = join(dir, "fifo-stat");
+  mkdirSync(join(work, "runtime"), { recursive: true });
+  writeFileSync(join(work, "runtime", "broker.pid"), JSON.stringify({ pid: 999999998 }));
+  const proc = procRootOf(dir, [process.pid]);
+  mkdirSync(join(proc, "999999999"));
+  expect(Bun.spawnSync(["mkfifo", join(proc, "999999999", "stat")]).exitCode).toBe(0);
+  const stopped = harness(work, "stop_agent_daemons", proc);
+  expect(stopped.code).toBe(2);
+  expect(stopped.stderr).toMatch(
+    /^stop_agent_daemons: the walk of every stat under \S+ had not ended after [0-9.]+s \(proc_walk_bound\), so no broker session was stopped$/m
+  );
+});

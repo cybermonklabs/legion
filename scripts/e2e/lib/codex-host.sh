@@ -229,20 +229,36 @@ codex_cwd() {
 
 # codex_server_pid LABEL: the process of that session's plugin MCP server: the one the stand-in
 # names in its ready line, or, for a real Codex, the installed plugin's envoy-channel.js running in
-# that session's Codex home.
+# that session's Codex home, found below the session's tmux pane (the Codex process tmux runs),
+# each process's children read from its /proc/PID/task/*/children and its command line from
+# /proc/PID/cmdline. Nothing walks every process of the machine: `pgrep -f`, which this used
+# before, reads every process's command line, with no bound, and a /proc entry that never answers
+# its reader held it for ever.
 codex_server_pid() {
-  local pid
+  local pane pid
+  local -a queue=() kids=() args=()
   if [ "$hosts" = plugins ]; then
     jq -r 'select(.ready == true) | .serverPid' "${client_out[$1]}" 2>/dev/null | head -n 1
     return 0
   fi
-  for pid in $(pgrep -f 'dist/envoy-channel\.js --host codex'); do
-    case $(readlink "/proc/$pid/cwd" 2>/dev/null)/ in
-      "$codex_root/$1/"*)
-        echo "$pid"
-        return 0
-        ;;
-    esac
+  pane=$("$tmux_bin" -S "$codex_tmux_dir/$1" display-message -p -t codex '#{pane_pid}' 2>/dev/null) &&
+    [[ $pane =~ ^[0-9]+$ ]] || return 1
+  queue=("$pane")
+  while [ "${#queue[@]}" -gt 0 ]; do
+    pid=${queue[0]}
+    queue=("${queue[@]:1}")
+    { mapfile -d '' -t args <"/proc/$pid/cmdline"; } 2>/dev/null || continue
+    if [[ "${args[*]}" == *"dist/envoy-channel.js --host codex"* ]]; then
+      case $(readlink "/proc/$pid/cwd" 2>/dev/null)/ in
+        "$codex_root/$1/"*)
+          echo "$pid"
+          return 0
+          ;;
+      esac
+    fi
+    kids=()
+    read -r -a kids < <(cat /proc/"$pid"/task/*/children 2>/dev/null) || true
+    queue+=(${kids[@]+"${kids[@]}"})
   done
   return 1
 }

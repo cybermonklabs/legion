@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -169,5 +169,42 @@ test.skipIf(skip)(
       findStub(`/usr/bin/find "$@"\necho "find: '$proc_root/1/cwd': Permission denied" >&2\nexit 1`)
     );
     expect(unreadable).toEqual({ out: "status 0\n", err: "" });
+  }
+);
+
+// The walk of every process is held to its bound (proc_walk_bound, lib/process-tree.sh), and so is
+// each of its two parts: a /proc entry that never answers its reader held the check, and the stage
+// driver that runs it, for ever. A FIFO no writer opens stands in for a command line whose process
+// holds its memory map locked, behind a namespace link of this shell's own, so the entry counts as
+// one of this pid namespace; and a find held past the bound stands in for a working directory's.
+// Each ends at the bound, named, with 2.
+test.skipIf(skip)(
+  "a command line that never answers its reader ends the walk at its bound, naming it, with 2",
+  async () => {
+    const root = procRootOf(dir, [await sleeper()]);
+    const fake = join(root, "999999999");
+    mkdirSync(fake);
+    symlinkSync("/proc/self/ns", join(fake, "ns"));
+    expect(Bun.spawnSync(["mkfifo", join(fake, "cmdline"), join(fake, "environ")]).exitCode).toBe(
+      0
+    );
+    const r = check(root);
+    expect(r.err).toBe("");
+    expect(r.out).toMatch(
+      new RegExp(
+        `^refuse_leftovers: the walk of 2 entries of \\S+ had not ended after [0-9.]+s \\(proc_walk_bound\\), so whether an earlier ${prefix} run left processes running was not read\\nstatus 2\\n$`
+      )
+    );
+  }
+);
+test.skipIf(skip)(
+  "a find of the working directories held past the walk's bound is ended there, named, with 2",
+  async () => {
+    const root = procRootOf(dir, [await sleeper()]);
+    const r = check(root, findStub("sleep 70"));
+    expect(r.err).toBe("");
+    expect(r.out).toMatch(
+      /^refuse_leftovers: find exited 124 reading the working directories under \S+: the walk of 1 entries had not ended after [0-9.]+s \(proc_walk_bound\)\nstatus 2\n$/
+    );
   }
 );

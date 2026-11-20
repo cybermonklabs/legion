@@ -619,16 +619,26 @@ describe("userConfigChain", () => {
     throw new Error(`jj wrapper did not write ${pidFile}`);
   }
 
-  // Real-time polling is required here: the wrapper's pidfile and the kernel reaping its child
+  // Real-time polling is required here: the wrapper's pidfile and the kernel ending its child
   // are external OS state, which Bun's fake timers cannot advance.
-  /** The kernel has reaped the child once signal 0 says it no longer exists. */
+  /** The child has stopped once /proc lists it dead (Z, a zombie nothing has reaped yet, or X), or
+   * lists it not at all and signal 0 no longer reaches it, which also answers on a machine with
+   * no /proc. The child is no child of this process: once the wrapper is gone, its zombie waits
+   * for whatever it was reparented to, which signal 0 still reaches, and where that is this test
+   * process, as where `bun test` runs as PID 1 of its PID namespace, nothing ever reaps it. */
   async function stops(pid: number): Promise<boolean> {
     const deadline = Date.now() + 3_000;
     while (Date.now() < deadline) {
-      try {
-        process.kill(pid, 0);
-      } catch {
-        return true;
+      const stat = await readFile(`/proc/${pid}/stat`, "utf8").catch(() => undefined);
+      if (stat === undefined) {
+        try {
+          process.kill(pid, 0);
+        } catch {
+          return true;
+        }
+      } else {
+        const state = stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3);
+        if (state === "Z" || state === "X") return true;
       }
       await Bun.sleep(10);
     }

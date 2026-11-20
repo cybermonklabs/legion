@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
-import { closeSync, constants, openSync, writeSync } from "node:fs";
+import { closeSync, constants, openSync, readdirSync, readFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import {
   type FakeDispatchServer,
@@ -54,6 +54,55 @@ function processAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+/** A process's state letter and process group, as its /proc stat reads them. */
+interface ProcStat {
+  readonly state: string;
+  readonly group: string;
+}
+
+/** `pid`'s stat, read past the last `)` of /proc/<pid>/stat, or undefined where /proc lists no
+ *  such process. */
+function statOf(pid: number | string): ProcStat | undefined {
+  let stat: string;
+  try {
+    stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+  } catch {
+    return undefined;
+  }
+  const [state = "", , group = ""] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+  return { state, group };
+}
+
+/** Whether `pid` has ended: /proc lists it dead (Z, a zombie nothing has reaped yet, or X), or
+ *  lists it not at all and signal 0 no longer reaches it, which also answers on a machine with no
+ *  /proc. A grandchild left an orphan is reaped by whatever the kernel hands it to, which is this
+ *  test process where it runs as PID 1 of its PID namespace, and the runtime reaps only the
+ *  children it started, so that zombie stays, and signal 0 still reaches it. */
+function ended(pid: number): boolean {
+  const stat = statOf(pid);
+  if (stat === undefined) return !processAlive(pid);
+  return stat.state === "Z" || stat.state === "X";
+}
+
+/** Whether every process of group `pgid` has ended (`ended`). Signal 0 to the group reaches a
+ *  zombie member too, so while it does, the group's members are read from /proc one by one; a
+ *  machine with no /proc to read them from answers that the group runs. */
+function groupEnded(pgid: number): boolean {
+  if (!groupAlive(pgid)) return true;
+  let entries: string[];
+  try {
+    entries = readdirSync("/proc").filter((entry) => /^[0-9]+$/u.test(entry));
+  } catch {
+    return false;
+  }
+  return entries.every((entry) => {
+    const stat = statOf(entry);
+    return (
+      stat === undefined || stat.group !== String(pgid) || stat.state === "Z" || stat.state === "X"
+    );
+  });
 }
 
 /** The pid of a process the supervisor started. `node:child_process` types it as optional, since
@@ -304,12 +353,13 @@ describe("Supervisor.stop", () => {
           );
 
           // The grandchild is no child of the supervisor: once its parent is gone, its zombie
-          // answers `kill(pid, 0)` until init reaps it, which raises no event here and can come
-          // after the return. So the leader's group, the grandchild in it, is read until it is
-          // gone.
+          // answers `kill(pid, 0)` until whatever it was handed to reaps it, which raises no
+          // event here, can come after the return, and never comes where that is this test
+          // process (`ended`). So the leader's group, the grandchild in it, is read until every
+          // process of it has ended.
           await eventually(
             `the group of the leader ${leader}, its grandchild ${alone} included, to end`,
-            () => !groupAlive(leader) && !processAlive(alone)
+            () => groupEnded(leader) && ended(alone)
           );
         } finally {
           killLeft(-leader);
@@ -319,7 +369,7 @@ describe("Supervisor.stop", () => {
       },
       // Five waits the short bound of `eventually` ends, one after another: the grandchild's pid
       // in its file, the held leader's pid in its file, the other leader's exit, the stop's
-      // return, then the leader's group leaving the process table.
+      // return, then the end of every process of the leader's group.
       rowLimit("short", "short", "short", "short", "short")
     );
   }

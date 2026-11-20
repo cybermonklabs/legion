@@ -3,9 +3,16 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { argMaxForceHolds } from "./arg-max-force";
+import {
+  argMaxForceHolds,
+  forcedLine,
+  forceEntriesBound,
+  makeForceEntries,
+  walkDeadline,
+  walkWithin,
+} from "./arg-max-force";
 import { ownGroup, untilRunning } from "./own-group";
-import { procRootOf } from "./proc-root";
+import { linkProcesses, procRootOf } from "./proc-root";
 
 // run_processes (lib/rig.sh) names the processes of a run still alive, and stop_marked_processes
 // (lib/process-tree.sh) ends them: each that carries the run's mark, LEGION_E2E_RUN=$work, which the
@@ -41,6 +48,26 @@ beforeAll(() => {
     { mode: 0o755 }
   );
 });
+
+// The proc roots of the two rows under the force (lib/arg-max-force.sh), each given the force's
+// entries here, ahead of its row, and bounded as forceEntriesBound says: for the first, about 700
+// files and directories, whose time is the disk's, and which took most of that row's 5 s and past
+// it at one-minute loads of 475 to 535 while they were made inside the row. Each row then gives its
+// own processes to its root (linkProcesses), and its own bound holds its walk alone.
+const forced = {
+  environ: { root: join(dir, "forced-environ"), entry: "environ", room: 6144 },
+  fd: { root: join(dir, "forced-fd"), entry: "fd", room: 1024 },
+} as const;
+beforeAll(
+  () => {
+    if (skip || !argMaxForceHolds()) return;
+    for (const { root, entry, room } of Object.values(forced)) {
+      mkdirSync(root);
+      makeForceEntries(root, entry, room);
+    }
+  },
+  forceEntriesBound(Object.values(forced))
+);
 
 // Every process a row starts, with its start time read when it is recorded, killed when the row ends
 // whatever it ended on, and only while its pid is still the process that started then: a sweep has
@@ -95,6 +122,14 @@ function state(pid: number): string {
     return "gone";
   }
 }
+// parentOf is PID's parent, the PPid line of its /proc status, or undefined once PID is gone.
+function parentOf(pid: number): string | undefined {
+  try {
+    return /^PPid:\s*([0-9]+)$/m.exec(readFileSync(`/proc/${pid}/status`, "utf8"))?.[1];
+  } catch {
+    return undefined;
+  }
+}
 // gone says whether PID has ended, a zombie counting as ended, within five seconds.
 async function gone(pid: number): Promise<boolean> {
   for (let i = 0; i < 100; i++) {
@@ -104,17 +139,17 @@ async function gone(pid: number): Promise<boolean> {
   return false;
 }
 
-// harness runs BODY in a bash with lib/rig.sh and lib/arg-max-force.sh sourced for the run
-// directory WORK, marked as a run marks itself (LEGION_E2E_RUN), under the drivers' `set -Eeuo
-// pipefail` and an ERR trap that prints, and answers its exit code and output. WORK comes in through
-// the environment, and the mark is exported only once the shell runs, so the harness's own process
-// carries no mark. PATH, when given, comes first. The walks read `proc_root`, a proc root of the
-// row's own processes (lib/proc-root.ts): every process the row recorded so far and this test
-// process, so a row's time is its own and not the host's process count. ROOT, when given, is that
-// root instead.
-function harness(work: string, body: string, path = "", procRoot = rowRoot()) {
-  const ran = Bun.spawnSync(
-    ownGroup([
+// harness runs BODY (harnessCommand's argv and environment) in a bash with lib/rig.sh and
+// lib/arg-max-force.sh sourced for the run directory WORK, marked as a run marks itself
+// (LEGION_E2E_RUN), under the drivers' `set -Eeuo pipefail` and an ERR trap that prints, and
+// answers its exit code and output. WORK comes in through the environment, and the mark is exported
+// only once the shell runs, so the harness's own process carries no mark. PATH, when given, comes
+// first. The walks read `proc_root`, a proc root of the row's own processes (lib/proc-root.ts):
+// every process the row recorded so far and this test process, so a row's time is its own and not
+// the host's process count. ROOT, when given, is that root instead.
+function harnessCommand(work: string, body: string, path: string, procRoot: string) {
+  return {
+    argv: ownGroup([
       "bash",
       "-c",
       `set -Eeuo pipefail
@@ -126,17 +161,30 @@ work=$WORK
 export LEGION_E2E_RUN=$work
 ${body}`,
     ]),
-    {
-      env: {
-        PATH: `${path}${path ? ":" : ""}${process.env.PATH ?? ""}`,
-        WORK: work,
-        proc_root: procRoot,
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    }
-  );
+    env: {
+      PATH: `${path}${path ? ":" : ""}${process.env.PATH ?? ""}`,
+      WORK: work,
+      proc_root: procRoot,
+    },
+  };
+}
+function harness(work: string, body: string, path = "", procRoot = rowRoot()) {
+  const { argv, env } = harnessCommand(work, body, path, procRoot);
+  const ran = Bun.spawnSync(argv, { env, stdout: "pipe", stderr: "pipe" });
   return { code: ran.exitCode, out: ran.stdout.toString(), err: ran.stderr.toString() };
+}
+// forcedHarness runs FORCE, the row's call of arg_max_force, then WALK, in a harness over ROOT, a
+// proc root the hook gave the force's entries, now holding every process the row recorded and this
+// test process too, and holds WALK alone to walkDeadline (walkWithin).
+function forcedHarness(work: string, root: string, force: string, walk: string) {
+  linkProcesses(root, [...started.held.map(({ pid }) => pid), process.pid]);
+  const { argv, env } = harnessCommand(
+    work,
+    `${force}\necho ${JSON.stringify(forcedLine)}\n${walk}`,
+    "",
+    root
+  );
+  return walkWithin(argv, env, walkDeadline);
 }
 // rowRoot is a fresh proc root holding every process the row recorded and this test process.
 function rowRoot(): string {
@@ -203,13 +251,17 @@ test.skipIf(skip)(
     const work = join(dir, "escaped");
     mkdirSync(work);
     const pidFile = join(dir, "escaped.pid");
+    const ranItFile = join(dir, "escaped.ran-it");
+    // The subshell that forks the daemon reads the daemon's parent from its /proc status while
+    // the subshell still runs, which is the subshell itself, and then ends.
     const forked = Bun.spawnSync(
       ownGroup([
         "bash",
         "-c",
-        `( (exec sleep 60 </dev/null >/dev/null 2>&1) & echo $! >"$1" ) </dev/null >/dev/null 2>&1`,
+        `( (exec sleep 60 </dev/null >/dev/null 2>&1) & echo $! >"$1"; while read -r k v; do [ "$k" != PPid: ] || echo "$v"; done </proc/$!/status >"$2" ) </dev/null >/dev/null 2>&1`,
         "fork",
         pidFile,
+        ranItFile,
       ]),
       {
         env: { PATH: process.env.PATH ?? "", LEGION_E2E_RUN: work },
@@ -220,11 +272,15 @@ test.skipIf(skip)(
     expect(forked.exitCode).toBe(0);
     const pid = Number(readFileSync(pidFile, "utf8").trim());
     started.push(pid);
-    // Its parent, the subshell, has ended, so nothing the test started is its parent any more.
-    const parent = readFileSync(`/proc/${pid}/stat`, "utf8")
-      .replace(/^[\s\S]*\) /, "")
-      .split(" ")[1];
-    expect(parent).not.toBe(String(process.pid));
+    // With the subshell gone, the kernel gave the daemon to whatever reaps orphans here: the pid
+    // namespace's init, a subreaper above the test, or this test process where it is either, as
+    // `bun test` is where it runs as PID 1 of its namespace. Whichever it is, the daemon has left
+    // every tree the run started once its parent is no longer the process that ran it.
+    const ranIt = readFileSync(ranItFile, "utf8").trim();
+    expect(ranIt).toMatch(/^[1-9][0-9]*$/);
+    const parent = parentOf(pid);
+    expect(parent).toMatch(/^[0-9]+$/);
+    expect(parent).not.toBe(ranIt);
     const r = harness(work, "run_processes");
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
@@ -234,9 +290,15 @@ test.skipIf(skip)(
 
 // The force cannot hold under gVisor (a Legion pod's kernel), which starts a program past ARG_MAX:
 // there these two rows are skipped, by this name (argMaxForceHolds), rather than failed or passed.
+//
+// Each row's own bound holds its walk alone, the part of its harness after forcedLine: walkDeadline
+// (lib/arg-max-force.ts), the most one run_processes may take where a run waits on it longest.
+// Before that line the harness puts itself under the force, a dozen programs of no disk work once
+// the hook has made the entries, which Bun's default 5 s for the rest of a row holds with the row's
+// own few reads; so a walk that hangs fails on its deadline, which names it.
 test.skipIf(skip || !argMaxForceHolds())(
   "names every marked process of the run where argv and the environment past ARG_MAX would stop a program handed every /proc entry",
-  () => {
+  async () => {
     // The force (lib/arg-max-force.sh): an exec handed every <pid> entry of the row's proc root as an
     // argument fails with E2BIG, as `find /proc/[0-9]*/cwd` did unforced at about 80,000 processes,
     // while an exec of a few arguments still starts; the root's own synthetic entries, not the host's
@@ -245,39 +307,113 @@ test.skipIf(skip || !argMaxForceHolds())(
     const work = join(dir, "e2big");
     mkdirSync(work);
     const inside = spawn(["sleep", "60"], { cwd: work, env: { LEGION_E2E_RUN: work } });
-    const r = harness(
+    const r = await forcedHarness(
       work,
-      `arg_max_force environ 6144 "$work" ${JSON.stringify(String.raw`find "$proc_root"/[0-9]*/cwd -maxdepth 0 -printf '%h %l\0'`)}
-run_processes`
+      forced.environ.root,
+      `arg_max_force environ 6144 "$work" ${JSON.stringify(String.raw`find "$proc_root"/[0-9]*/cwd -maxdepth 0 -printf '%h %l\0'`)}`,
+      "run_processes"
     );
+    expect(
+      r.timedOut,
+      `run_processes under the force had not ended ${walkDeadline / 1000} s after it started (walkDeadline)`
+    ).toBe(false);
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
     expect(pids(r.out)).toContain(String(inside));
-  }
+  },
+  walkDeadline + 5_000
 );
 
 test.skipIf(skip || !argMaxForceHolds())(
   "listening_holders names the holder of a listening socket where a program handed every /proc/<pid>/fd would not start",
-  () => {
+  async () => {
     // listening_holders (lib/rig.sh) walks every process for the one holding a socket, held_only_by's
     // reading of a port. Under the same force, over the row's proc root and its synthetic entries,
     // its walk must still name this test process, which holds the listener, or fail naming why; no
-    // holder at all is the defect.
+    // holder at all is the defect. No caller bounds that walk (held_only_by, called by
+    // stage1-skeleton.sh's held_by_daemon_and_keeper, waits on it with no bound), so the row's
+    // bound is run_processes's per-walk bound, walkDeadline, borrowed, not one derived for it.
     const work = join(dir, "holders");
     mkdirSync(work);
     const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
     try {
-      const r = harness(
+      const r = await forcedHarness(
         work,
-        `arg_max_force fd 1024 "$work" ${JSON.stringify(String.raw`find "$proc_root"/[0-9]*/fd -maxdepth 1 -lname 'socket:\[0\]'`)}
-listening_holders ${listener.port}`
+        forced.fd.root,
+        `arg_max_force fd 1024 "$work" ${JSON.stringify(String.raw`find "$proc_root"/[0-9]*/fd -maxdepth 1 -lname 'socket:\[0\]'`)}`,
+        `listening_holders ${listener.port}`
       );
+      expect(
+        r.timedOut,
+        `listening_holders under the force had not ended ${walkDeadline / 1000} s after it started (walkDeadline)`
+      ).toBe(false);
       expect(r.err).toBe("");
       expect(r.code).toBe(0);
       expect(pids(r.out)).toContain(String(process.pid));
     } finally {
       listener.stop(true);
     }
+  },
+  walkDeadline + 5_000
+);
+
+test.skipIf(skip)(
+  "held_only_by ends at its walk's bound, saying so, where the walk of every process's descriptors is held past it",
+  () => {
+    // held_only_by (lib/rig.sh), stage1-skeleton.sh's check of the daemon's port, walks every
+    // process's descriptors (listening_holders), and no bound held that walk: its time was the
+    // host's process count and their descriptors'. Its find opens no file, so no FIFO holds it;
+    // a find first on PATH that runs for 70 s stands in for a walk held past the bound of a root of
+    // one entry (proc_walk_bound, lib/process-tree.sh). The walk ends there, says so, and
+    // held_only_by fails with 2, which no check reads as the port's holders.
+    const work = join(dir, "slow-holders");
+    mkdirSync(work);
+    const bin = join(dir, "slow-find");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "find"), "#!/bin/sh\nexec sleep 70\n", { mode: 0o755 });
+    const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+    try {
+      const r = harness(
+        work,
+        `st=0; held_only_by ${listener.port} ${process.pid} 2>"$work/held.err" || st=$?; echo "held_only_by $st"`,
+        bin,
+        procRootOf(dir, [process.pid])
+      );
+      expect(r.err).toBe("");
+      expect(r.out).toBe("held_only_by 2\n");
+      expect(readFileSync(join(work, "held.err"), "utf8")).toMatch(
+        /^listening_holders: find exited 124 reading \S+: the walk of 1 entries had not ended after [0-9.]+s \(proc_walk_bound\)$/m
+      );
+    } finally {
+      listener.stop(true);
+    }
+  }
+);
+
+test.skipIf(skip)(
+  "run_processes ends at its walk's bound, saying so, where an environment never answers its reader",
+  () => {
+    // run_processes, which the run's sweep and its teardown's wait read, walks every process's
+    // environment (procs_naming), and a /proc entry that never answers its reader, such as the
+    // environment of a process whose memory map stays locked, held it for ever; a FIFO no writer
+    // opens stands in for one here. The walk ends at its bound (proc_walk_bound) and says so, and
+    // run_processes fails with 2, which no caller reads as a run with nothing left.
+    const work = join(dir, "fifo-environ");
+    mkdirSync(work);
+    const root = procRootOf(dir, [process.pid]);
+    mkdirSync(join(root, "999999999"));
+    expect(Bun.spawnSync(["mkfifo", join(root, "999999999", "environ")]).exitCode).toBe(0);
+    const r = harness(
+      work,
+      `st=0; run_processes >/dev/null 2>"$work/rp.err" || st=$?; echo "run_processes $st"`,
+      "",
+      root
+    );
+    expect(r.err).toBe("");
+    expect(r.out).toBe("run_processes 2\n");
+    expect(readFileSync(join(work, "rp.err"), "utf8")).toMatch(
+      /^procs_naming: the walk of 2 entries of \S+ had not ended after [0-9.]+s \(proc_walk_bound\)/m
+    );
   }
 );
 

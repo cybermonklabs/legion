@@ -748,12 +748,19 @@ describe.skipIf(skip)("proc_start and the environment readers", () => {
   test(
     "proc_start gives a zombie no start and a live process its own",
     () => {
+      // The zombie is a child whose parent has become `sleep`, which reaps nothing: the child is
+      // killed only once its parent's bash has exec'd sleep. A child that ends while its parent is
+      // still bash is reaped by that bash at once and is never a zombie, which under load took the
+      // ten seconds this row waits for one.
       const r = run(`
-bash -c 'sleep 600 & "$0" 0 </dev/null >/dev/null 2>&1 & echo $!; exec sleep 600' "$program" </dev/null >"$scratch/zombie" 2>/dev/null &
+bash -c '"$0" 600 </dev/null >/dev/null 2>&1 & echo $!; exec sleep 600' "$program" </dev/null >"$scratch/zombie" 2>/dev/null &
 parent=$!
 started+=("$parent")
-until_true 10 "the child to be a zombie" sh -c 'read -r z <"$1" && read -r s </proc/$z/stat && s=\${s##*) } && [ "\${s%% *}" = Z ]' sh "$scratch/zombie"
+sleep_exe=$(readlink -f "$(command -v sleep)")
+until_true 10 "the child's parent to run sleep" sh -c '[ -s "$1" ] && [ "$(readlink /proc/$2/exe)" = "$3" ]' sh "$scratch/zombie" "$parent" "$sleep_exe"
 read -r zombie <"$scratch/zombie"
+builtin kill -KILL "$zombie"
+until_true 10 "the child to be a zombie" sh -c 'read -r s </proc/$1/stat && s=\${s##*) } && [ "\${s%% *}" = Z ]' sh "$zombie"
 echo "zombie: [$(proc_start "$zombie")]"
 echo "live: [$(proc_start "$parent")] [$(start_of "$parent")]"
 `);

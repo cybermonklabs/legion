@@ -1245,15 +1245,27 @@ describe("a ! command in envoy.json", () => {
     return readdirSync(scratch);
   }
 
-  /** Whether the process with this pid is gone within a second: a killed orphan is a zombie until
-   * the process it was reparented to reaps it, and `kill(pid, 0)` still answers for a zombie. */
+  /** Whether the process with this pid has ended within a second: /proc lists it dead (Z, a
+   * zombie nothing has reaped yet, or X), or lists it not at all and signal 0 no longer reaches
+   * it, which also answers on a machine with no /proc. A killed orphan stays a zombie until the
+   * process it was reparented to reaps it, and `kill(pid, 0)` still answers for a zombie; where
+   * that process is this test process, as where `bun test` runs as PID 1 of its PID namespace,
+   * nothing ever reaps it, since Bun reaps only the children it started. */
   function gone(pid: number): boolean {
     for (const deadline = Date.now() + 1_000; Date.now() < deadline; Bun.sleepSync(20)) {
+      let stat: string;
       try {
-        process.kill(pid, 0);
+        stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
       } catch {
-        return true;
+        try {
+          process.kill(pid, 0);
+          continue;
+        } catch {
+          return true;
+        }
       }
+      const state = stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3);
+      if (state === "Z" || state === "X") return true;
     }
     return false;
   }
