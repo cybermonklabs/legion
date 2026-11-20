@@ -331,3 +331,37 @@ func TestTheEnrollmentIDsPrintOnOneLine(t *testing.T) {
 		everyLineIsOne(t, "login's stdout", stdout.String(), 1)
 	})
 }
+
+// TestTheExecFormNamesARequestItLeavesWaitingBesideAnUncleanAddress: beside an AGENT_SECRETS_URL
+// that Clean refuses and that carries no credential - a host name with a trailing dot - the exec
+// form that stops while its request waits still prints the request's id where it has the shape
+// of an id the broker makes, and the command that reads it again, which runs when pasted. An id
+// of another shape is not printed, and the hint says so in place of a command that would not run.
+func TestTheExecFormNamesARequestItLeavesWaitingBesideAnUncleanAddress(t *testing.T) {
+	const shaped = "0123456789abcdef0123456789abcdef"
+	planted := "hunter2pw-" + "execid-" + "4c2d"
+	for _, row := range []struct {
+		name, id string
+		says     []string
+		hidden   []string
+	}{
+		{"an id of the broker's shape", shaped,
+			[]string{"request " + shaped + " to ", "nothing was run. Check it with: agent-secrets status " + shaped}, nil},
+		{"an id of another shape", planted,
+			[]string{"request " + brokeraddr.WordsNotPrinted, "Check it with agent-secrets status and the request's id, which is not printed"}, []string{planted}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			srv := forgedBroker(t, map[string]any{"POST /v1/requests": map[string]any{"request_id": row.id, "state": "pending"}})
+			unclean := strings.Replace(srv.URL, "127.0.0.1", "localhost.", 1)
+			if brokeraddr.New(unclean).Clean() {
+				t.Fatalf("%s is clean; the test needs an address Clean refuses", unclean)
+			}
+			t.Setenv("AGENT_SECRETS_URL", unclean)
+			var stdout, stderr bytes.Buffer
+			if code := run([]string{"--reason", "need it", "--wait", "0s", "SOME_SECRET", "--", "true"}, &stdout, &stderr); code != exitPending {
+				t.Fatalf("exit %d, stderr %q; want %d", code, stderr.String(), exitPending)
+			}
+			wantNamedNotPrinted(t, "stderr", stderr.String(), row.says, row.hidden...)
+		})
+	}
+}

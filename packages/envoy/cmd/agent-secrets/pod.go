@@ -298,7 +298,7 @@ func enrolPod(service, tokenFile, out string, base brokeraddr.Address, prefix st
 		prefix, shellWord(out), shellWord(tokenFile))
 	// The enrollment is the broker's, so it prints as the broker's address lets its answer print
 	// (brokeraddr.Address.Words); the file above keeps it as it came.
-	fmt.Fprintln(stdout, base.Words(enrollmentID))
+	fmt.Fprintln(stdout, idWords(base, enrollmentID))
 	return 0
 }
 

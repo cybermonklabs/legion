@@ -46,8 +46,8 @@ func grantedLifetime(ctx context.Context, c *client, signer Signer, result Reque
 		given = fmt.Sprintf("a lifetime of %ds", *result.LifetimeSeconds)
 	}
 	// The request and grant ids are the broker's, so each prints as the broker's address lets its
-	// answer print (brokeraddr.Address.Words); the calls below take them as they came.
-	words := c.baseURL.Words
+	// answer print, or by its shape (idWords); the calls below take them as they came.
+	words := func(id string) string { return idWords(c.baseURL, id) }
 	mismatch := fmt.Sprintf("the broker gave request %s %s, not --ttl %ds", words(result.RequestID), given, *ttl)
 	const why = "the broker or this machine's agent-secrets-helper is from before --ttl; restart the helper on the pinned release, or request without --ttl"
 	switch {

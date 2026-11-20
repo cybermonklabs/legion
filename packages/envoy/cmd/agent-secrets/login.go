@@ -128,7 +128,7 @@ func login(ctx context.Context, stdout, stderr io.Writer) error {
 	// The enrollment is the broker's, so it prints as the broker's address lets its answer print
 	// (brokeraddr.Address.Words); the record keeps it as it came. The person is the one Google's
 	// identity token names.
-	fmt.Fprintf(stdout, "%s is signed in on this machine (enrollment %s)\n", record.Person, base.Words(record.EnrollmentID))
+	fmt.Fprintf(stdout, "%s is signed in on this machine (enrollment %s)\n", record.Person, idWords(base, record.EnrollmentID))
 	return nil
 }
 

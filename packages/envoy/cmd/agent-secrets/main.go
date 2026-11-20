@@ -94,6 +94,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -739,7 +740,7 @@ func writeVerbatim(w io.Writer, raw []byte) {
 // jsonFlag is --json's usage line wherever a form prints the broker's answer: the body as the
 // broker wrote it, every field, where the form's own lines print each value as the broker's
 // address lets its answer print (brokeraddr.Address.Words). The flag asks for the body by name.
-const jsonFlag = "print the broker's response body verbatim: every field as the broker wrote it, none withheld, even beside an AGENT_SECRETS_URL that carries a credential"
+const jsonFlag = "print the broker's response body verbatim: every field as the broker wrote it, none withheld, even beside an AGENT_SECRETS_URL that is not a plain http(s) URL"
 
 // nextBackoff advances the backoff the poll loops of this package keep: two seconds, doubling
 // to a ten-second cap. `machine login` sleeps it between reads of its helper; the exec form's
@@ -961,7 +962,7 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 		// repeat in any value. It was redact.OneLine alone until the values beside a
 		// credentialed address were found to print whole; --json still prints the body as it
 		// came, since it is asked for by name.
-		fmt.Fprintf(stdout, "request_id: %s\nstate: %s\nsource: %s\n", c.baseURL.Words(result.RequestID), c.baseURL.Words(result.State), c.source(ctx))
+		fmt.Fprintf(stdout, "request_id: %s\nstate: %s\nsource: %s\n", idWords(c.baseURL, result.RequestID), c.baseURL.Words(result.State), c.source(ctx))
 		printDetail(stdout, c.baseURL, result.Detail)
 		if result.State == "pending" {
 			fmt.Fprintln(stdout, waitingOn(c.baseURL, result.Approver, result.ApproveURL, result.JudgeDeciding))
@@ -1012,7 +1013,7 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, waitingOn(c.baseURL, result.Approver, result.ApproveURL, result.JudgeDeciding))
 	}
 	if result.GrantID != nil {
-		fmt.Fprintf(stdout, "grant_id: %s\n", c.baseURL.Words(*result.GrantID))
+		fmt.Fprintf(stdout, "grant_id: %s\n", idWords(c.baseURL, *result.GrantID))
 	}
 	if result.Decision != nil {
 		fmt.Fprintf(stdout, "decided_by: %s\n", c.baseURL.Words(result.Decision.By))
@@ -1124,13 +1125,13 @@ func cmdSelf(name string, args []string, stdout, stderr io.Writer) int {
 	}
 	words := c.baseURL.Words
 	fmt.Fprintf(stdout, "enrollment_id: %s\nkind: %s\noperator: %s\nlease_expires_at: %s\nsource: %s\n",
-		words(result.EnrollmentID), words(result.Kind), words(operator), result.LeaseExpiresAt.Format(time.RFC3339), c.source(ctx))
+		idWords(c.baseURL, result.EnrollmentID), words(result.Kind), words(operator), result.LeaseExpiresAt.Format(time.RFC3339), c.source(ctx))
 	for _, g := range result.Grants {
 		if g.ExpiresAt == nil {
-			fmt.Fprintf(stdout, "grant: %s (request %s, until this session ends)\n", words(g.GrantID), words(g.RequestID))
+			fmt.Fprintf(stdout, "grant: %s (request %s, until this session ends)\n", idWords(c.baseURL, g.GrantID), idWords(c.baseURL, g.RequestID))
 			continue
 		}
-		fmt.Fprintf(stdout, "grant: %s (request %s, expires %s)\n", words(g.GrantID), words(g.RequestID), g.ExpiresAt.Format(time.RFC3339))
+		fmt.Fprintf(stdout, "grant: %s (request %s, expires %s)\n", idWords(c.baseURL, g.GrantID), idWords(c.baseURL, g.RequestID), g.ExpiresAt.Format(time.RFC3339))
 	}
 	return 0
 }
@@ -1223,9 +1224,9 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 
 	state, grantID, requestID, detail := result.State, result.GrantID, result.RequestID, result.Detail
 	// shownID is the request's id as the lines below print it: the broker's, so as its address
-	// lets its answer print (brokeraddr.Address.Words). requestID itself is what the polls ask
-	// after.
-	shownID := c.baseURL.Words(requestID)
+	// lets its answer print, and beside an address that does not, whole where it has the broker's
+	// id shape (idWords). requestID itself is what the polls ask after.
+	shownID := idWords(c.baseURL, requestID)
 	// pollErr is the last status poll's failure while the polls fail in a way a retry can cure
 	// (retryable), and nil once one reads the request again. Such a poll does not end the wait:
 	// the approver may still decide before --wait runs out, and a grant this command has stopped
@@ -1283,10 +1284,10 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	case "granted":
 	case "pending":
 		if pollErr != nil {
-			fmt.Fprintf(stderr, "agent-secrets: the wait for request %s to %s ran out while its status could not be read: %v; nothing was run. Check it with: agent-secrets status %s\n", shownID, src(), pollErr, shownID)
+			fmt.Fprintf(stderr, "agent-secrets: the wait for request %s to %s ran out while its status could not be read: %v; nothing was run. %s\n", shownID, src(), pollErr, statusHint(c.baseURL, requestID))
 			return exitPending
 		}
-		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is still waiting for approval; nothing was run. Check it with: agent-secrets status %s\n", shownID, src(), shownID)
+		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is still waiting for approval; nothing was run. %s\n", shownID, src(), statusHint(c.baseURL, requestID))
 		return exitPending
 	case "denied":
 		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was denied%s\n", shownID, src(), deniedBecause(c.baseURL, detail))
@@ -1446,6 +1447,39 @@ func printDetail(stdout io.Writer, base brokeraddr.Address, detail *string) {
 		return
 	}
 	fmt.Fprintf(stdout, "detail: %s\n", base.Words(*detail))
+}
+
+// brokerIDShape is the shape of an id the broker makes: answer.NewID's 32 lower-case hex digits,
+// a request's and a grant's, or a UUID, an enrollment's and a launcher credential's.
+var brokerIDShape = regexp.MustCompile(`^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$`)
+
+// idWords is id, a request's, grant's or enrollment's id the broker answered, as a message prints
+// it: as base lets the broker's words print (brokeraddr.Address.Words), and beside an address that
+// does not let them print, still whole where it has the shape of an id the broker makes
+// (brokerIDShape). Such an id is no credential, and a person needs it to follow the request
+// (statusHint): base can be no credential's place at all, only an address Clean refuses, such as a
+// host with an underscore.
+func idWords(base brokeraddr.Address, id string) string {
+	if !base.Clean() && brokerIDShape.MatchString(id) {
+		return id
+	}
+	return base.Words(id)
+}
+
+// statusHint is the command that reads requestID's state again, as a person pastes it: agent-secrets
+// status and the id, quoted for the shell, where the id prints as it is (idWords); beside a clean
+// address, an id with a control character in it Go-quoted, as the lines before it print it; and
+// beside an address that is not clean, for an id not of the broker's shape, the form to run and
+// that its id is not printed, since a command with no id would not run.
+func statusHint(base brokeraddr.Address, requestID string) string {
+	shown := idWords(base, requestID)
+	switch {
+	case shown == requestID:
+		return "Check it with: agent-secrets status " + shellWord(requestID)
+	case base.Clean():
+		return "Check it with: agent-secrets status " + shown
+	}
+	return "Check it with agent-secrets status and the request's id, which is not printed: the broker's address is not clean, and the id is not one of the shape the broker makes"
 }
 
 // sessionIdentityVars are the AGENT_SECRETS_* variables the exec form's child keeps: the broker's
