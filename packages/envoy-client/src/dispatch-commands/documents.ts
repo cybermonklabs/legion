@@ -456,7 +456,7 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
   // `Applied 2 ops` no longer reads the same whether the edit wrote a list or a paragraph of
   // dashes. A batch that changed nothing carries none, and an older server omits the field,
   // which reads as it always did. It is printed under the decision-block lines, since up to
-  // 2000 bytes of markdown between the first line and them would break the promise the tool
+  // 2,000 characters of markdown between the first line and them would break the promise the tool
   // description makes of them: that they come after the result's first line
   // (packages/contracts/src/dispatch-tools.ts).
   const written = edited.written;

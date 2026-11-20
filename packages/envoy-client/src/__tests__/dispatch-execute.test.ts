@@ -10651,7 +10651,8 @@ describe("executeDispatchTool", () => {
   // `Applied 1 ops (version 3)` reads the same whether the edit wrote a list or a paragraph of
   // dashes, so the server reads back what it wrote and the command prints it (INFRA-1520 R6). It
   // prints under the decision-block lines: the tool description promises those come after the
-  // result's first line, and up to 2000 bytes of markdown above them would not keep that promise.
+  // result's first line, and up to 2,000 characters of markdown above them would not keep that
+  // promise.
   test("prints the decision block's check under the Applied line and the markdown it wrote under that", async () => {
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const path = new URL(String(url)).pathname;

@@ -1,15 +1,29 @@
 package text
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // HeadRunes returns value cut to its first limit runes; a value at or under the
-// limit is returned unchanged.
+// limit is returned unchanged. The cut is a slice of value, so it copies nothing,
+// unless the part it keeps holds a byte that is not UTF-8: that part is converted
+// through []rune, which writes each such byte as U+FFFD.
 func HeadRunes(value string, limit int) string {
-	runes := []rune(value)
-	if len(runes) <= limit {
-		return value
+	invalid := false
+	for offset, r := range value {
+		if limit <= 0 {
+			if invalid {
+				return string([]rune(value[:offset]))
+			}
+			return value[:offset]
+		}
+		if r == utf8.RuneError && !strings.HasPrefix(value[offset:], "\uFFFD") {
+			invalid = true
+		}
+		limit--
 	}
-	return string(runes[:limit])
+	return value
 }
 
 // HeadWords returns value cut to its first limit runes at a word boundary, and whether it cut:

@@ -57,9 +57,9 @@ func setIssueStatus(t *testing.T, handler http.Handler, issueKey, status string)
 }
 
 // createWorkingIssue is createAdviceIssue with the issue moved into the workflow, which is where
-// a tree whose gate holds a READY back stands. An issue Dispatch still shows in `triage` is out
-// of the workflow, so its gates hold nothing back and the advice names none of them: a row that
-// left its issue there would pass whatever the record said.
+// a tree whose gate holds a READY back stands. The advice names a gate in any status but done
+// (TestAGateIsLiveWhileItsIssueIsNotDone), so the move changes no row's answer: it puts each row
+// on the issue a running tree's gate stands on.
 func createWorkingIssue(t *testing.T, handler http.Handler, project, title string, spec *string) struct {
 	Key               string           `json:"key"`
 	PrimaryArtifactID string           `json:"primary_artifact_id"`
@@ -386,34 +386,6 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		want := []supersededApprovalGate{{Issue: live.Key, Step: model.GatedStepSpec}}
 		if !slices.Equal(superseded.DesignGates, want) {
 			t.Fatalf("design_gates = %#v, want %#v: a gate on a done issue holds no READY back", superseded.DesignGates, want)
-		}
-	})
-
-	t.Run("a gate on an issue parked out of the workflow names none", func(t *testing.T) {
-		// Nothing clears a parked issue's gate rows: the daemon suspends its claims and deletes
-		// none, its boot republishes them for as long as it stays parked, and only the
-		// re-admission that brings the tree back clears them. Every status that takes an issue
-		// out of the workflow reads the same way here, done among them.
-		for _, status := range model.IssueStatusesOutOfWorkflow {
-			t.Run(status, func(t *testing.T) {
-				live := createWorkingIssue(t, handler, "DGATE", "The gate still open", &spec)
-				parked := createWorkingIssue(t, handler, "DGATE", "The gate of a tree that runs nothing", &spec)
-				publishDesignGates(t, handler, live.Key, []issueDesignGate{
-					{Step: model.GatedStepSpec, ArtifactID: live.PrimaryArtifactID},
-				})
-				publishDesignGates(t, handler, parked.Key, []issueDesignGate{
-					{Step: model.GatedStepCriteria, ArtifactID: live.PrimaryArtifactID},
-				})
-				setIssueStatus(t, handler, parked.Key, status)
-				approved := approveAdviceDocument(t, handler, live.PrimaryArtifactID)
-
-				superseded := supersededByEdit(t, handler, live.PrimaryArtifactID, "A sentence only the open gate waits on.", approved)
-				want := []supersededApprovalGate{{Issue: live.Key, Step: model.GatedStepSpec}}
-				if !slices.Equal(superseded.DesignGates, want) {
-					t.Fatalf("design_gates = %#v, want %#v: a gate on an issue in %s holds no READY back",
-						superseded.DesignGates, want, status)
-				}
-			})
 		}
 	})
 
