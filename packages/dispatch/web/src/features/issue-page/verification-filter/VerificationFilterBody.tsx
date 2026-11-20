@@ -40,7 +40,6 @@ import { chipWords } from "../node-row-chip";
 import { shortDay } from "../node-time";
 import { authorText, pageChrome } from "../page-structure";
 import {
-  ANSWER_LINES,
   authorKind,
   type CheckState,
   CONTROL_LABELS,
@@ -49,6 +48,7 @@ import {
   GLYPH_TOKENS,
   NODE_STATE_WORDS,
   NODE_TYPE_NAMES,
+  STATE_LINES,
   type StatementState,
   sentenceCase,
   VERIFICATION_WORDS,
@@ -635,18 +635,18 @@ function checkRowId(statement: string, check: string): string {
   return `${statement} ${check}`;
 }
 
-/** What the body says of each read that failed before it first answered, in the page's words:
- *  the statements for the coverage read, as the Spec view says it, the results for the results
- *  read, and the checks for the blocks read of the Verification document, without which no check
- *  can be placed under the statement it serves. */
+/** What the body says of each read that failed before it first answered, in the outline's own
+ *  words for that read (`STATE_LINES`): which checks serve each statement for the coverage read,
+ *  the checks' results for the results read, and the Verification document for the blocks read,
+ *  without which no check can be placed under the statement it serves. */
 const UNREADABLE_LINES: Readonly<Record<VerificationRead, string>> = {
-  blocks: ANSWER_LINES.checks_unreadable,
-  coverage: ANSWER_LINES.statements_unreadable,
-  results: ANSWER_LINES.results_unreadable,
+  blocks: STATE_LINES.verification_unreadable,
+  coverage: STATE_LINES.coverage_unreadable,
+  results: STATE_LINES.results_unreadable,
 };
 
 /** The one order the body says the reads that failed in, whatever order it is given them in:
- *  the statements' read, then the results', then the checks' blocks. */
+ *  the coverage read, then the results read, then the Verification document's blocks read. */
 const UNREADABLE_ORDER: readonly VerificationRead[] = ["coverage", "results", "blocks"];
 
 /** The seven states a check can be in, in the order the page declares them. */

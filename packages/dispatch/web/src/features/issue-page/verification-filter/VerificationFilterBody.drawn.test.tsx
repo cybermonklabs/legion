@@ -24,7 +24,6 @@ import { measureNearWords } from "../clamp-fixtures";
 import type { TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import {
-  ANSWER_LINES,
   BLOCK_ATTRIBUTE_LABELS,
   CHECK_WHEN_WORDS,
   type CheckState,
@@ -37,6 +36,7 @@ import {
   NODE_TYPE_NAMES,
   RESULT_STANDS_WORDS,
   RESULT_VERDICT_WORDS,
+  STATE_LINES,
   sentenceCase,
   VERIFICATION_WORDS,
 } from "../page-words";
@@ -139,9 +139,7 @@ function bodyOf(
   );
   return (
     <QueryClientProvider client={client}>
-      <MemoryRouter>
-        {staged ? <ViewStage>{slot}</ViewStage> : slot}
-      </MemoryRouter>
+      <MemoryRouter>{staged ? <ViewStage>{slot}</ViewStage> : slot}</MemoryRouter>
     </QueryClientProvider>
   );
 }
@@ -1407,16 +1405,17 @@ test("a read that fails before it first answers says so with a Retry, for each o
   const user = userEvent.setup();
   const met = passing("c-one");
   const statements = [statementNode("r1", "The page draws it.", [checkNode(met)])];
-  // The page's words for each read: the Spec view's two, and the checks for the blocks read.
+  // The outline's words for each read (`STATE_LINES`): which checks serve each statement, the
+  // checks' results, and the Verification document for the blocks read.
   const words: Readonly<Record<VerificationRead, string>> = {
-    blocks: ANSWER_LINES.checks_unreadable,
-    coverage: ANSWER_LINES.statements_unreadable,
-    results: ANSWER_LINES.results_unreadable,
+    blocks: STATE_LINES.verification_unreadable,
+    coverage: STATE_LINES.coverage_unreadable,
+    results: STATE_LINES.results_unreadable,
   };
   expect([words.coverage, words.results, words.blocks]).toEqual([
-    "Could not load the statements.",
-    "Could not load the results.",
-    "Could not load the checks.",
+    "Could not load which checks serve each statement.",
+    "Could not load the checks' results.",
+    "Could not load the verification document.",
   ]);
   /** Each failed-read line the body draws, in order: the read it names, its words (the alert's
    *  own text, which the shared line draws as the alert itself) and the name of each of its

@@ -665,13 +665,6 @@ export const ANSWER_LINES = freeze({
    *  read, and when they could not be (`HistoryHandoff.tsx`). */
   loading_handoff: "Loading handoff…",
   handoff_unreadable: "Could not load the handoff.",
-  /** What the Verification view says when its Verification document's blocks could not be
-   *  read, so it cannot say which statement each check serves. */
-  checks_unreadable: "Could not load the checks.",
-  /** What the Spec view says when the spec's blocks or their coverage could not be read. */
-  statements_unreadable: "Could not load the statements.",
-  /** What the Spec view says when the results could not be read, so it marks no statement. */
-  results_unreadable: "Could not load the results.",
   /** What the list of what references the focused row says while its read, which the reader
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",

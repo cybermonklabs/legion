@@ -3,7 +3,6 @@ import AxeBuilder from "@axe-core/playwright";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { chipWords } from "../web/src/features/issue-page/node-row-chip";
 import {
-  ANSWER_LINES,
   CHECK_WHEN_WORDS,
   type CheckState,
   CONTROL_LABELS,
@@ -12,6 +11,7 @@ import {
   GLYPH_TOKENS,
   NODE_STATE_WORDS,
   PRESET_NAMES,
+  STATE_LINES,
   VERIFICATION_WORDS,
 } from "../web/src/features/issue-page/page-words";
 import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
@@ -1168,8 +1168,8 @@ test("the Verification view says nothing of a check's statements before the Veri
     ).toHaveCount(1);
     await expect(
       failedLine,
-      "the failed-read line does not say the view could not load the checks"
-    ).toContainText(ANSWER_LINES.checks_unreadable);
+      "the failed-read line does not say the view could not load the verification document"
+    ).toContainText(STATE_LINES.verification_unreadable);
     await expect(retry, "the blocks read's failed-read line draws no Retry").toHaveCount(1);
     await expect(
       verificationUnreadable(page),
