@@ -613,7 +613,7 @@ func (s *server) forgetSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := m.Claim()
-	if req.Session != c.Session {
+	if !c.HoldsSession(req.Session) {
 		writeJSON(w, http.StatusConflict, errorBody(fmt.Sprintf(
 			"forget-session refused: %s records session %s; pass --session %s to start fresh", c.Token, c.Session, c.Session)))
 		return

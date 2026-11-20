@@ -374,8 +374,8 @@ func seedTickIssue(t *testing.T, pool *store.Pool, issue record.Issue) {
 func seedTickMirror(t *testing.T, pool *store.Pool, key, status string, seq int64, blocked ...string) {
 	t.Helper()
 	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
-		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchIssueRow{
-			Key: key, Project: "CAPTURE", Status: status, Blockers: blocked, Seq: seq})
+		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: key, Project: "CAPTURE", Seq: seq,
+			Status: record.Carry(status), Parent: record.Carry(""), Blockers: record.Carry(blocked)})
 	}); err != nil {
 		t.Fatalf("seed the mirror row of %s: %v", key, err)
 	}

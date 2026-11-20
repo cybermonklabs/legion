@@ -2,12 +2,16 @@ import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the submit site below is a form submitted with no control pressed, which user-event has no form for
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
+import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import type { Project } from "../../api/types";
+import { projectDefaultAssigneesQuery } from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
+import type { Project, ProjectDefaultAssignee } from "../../api/types";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { ProjectsSection } from "./ProjectsSection";
 
@@ -73,6 +77,97 @@ test("a create answered KEY_COMMITTED clears the form, says the project was made
     listProjects.mockRestore();
     listDefaults.mockRestore();
     createProject.mockRestore();
+  }
+});
+
+// A defaults read asked while a pick's save is out - after the press cancelled the reads out then
+// - can reach Dispatch before the save and still be out when the save's answer lands. Landing
+// after the answer, it would put back the person the pick replaced. The answer gives that read up
+// and asks for the defaults again. Dispatch's own client, as the app runs, holds each refetch
+// behind the read out rather than cancelling it, so no refetch drops that read's answer either.
+test("a defaults read asked while a pick saved does not put back the assignee the pick replaced", async () => {
+  const user = userEvent.setup();
+  const alice: ProjectDefaultAssignee[] = [{ assignee: "alice", project: "CORE" }];
+  const bob: ProjectDefaultAssignee[] = [{ assignee: "bob", project: "CORE" }];
+  const staleRead = Promise.withResolvers<ProjectDefaultAssignee[]>();
+  const freshRead = Promise.withResolvers<ProjectDefaultAssignee[]>();
+  const saved = Promise.withResolvers<ProjectDefaultAssignee>();
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
+  const listDefaults = spyOn(api, "listProjectDefaultAssignees")
+    .mockResolvedValueOnce(alice)
+    .mockReturnValueOnce(staleRead.promise)
+    .mockReturnValueOnce(freshRead.promise)
+    .mockResolvedValueOnce(bob);
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([
+    { login: "alice" },
+    { login: "bob" },
+  ]);
+  const putDefault = spyOn(api, "putProjectDefaultAssignee").mockReturnValue(saved.promise);
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ProjectsSection />
+      </QueryClientProvider>
+    );
+    const control = await screen.findByRole<HTMLSelectElement>("combobox", {
+      name: "Default assignee of CORE",
+    });
+    await waitFor(() => expect(control.value).toBe("alice"));
+    // Reaching for the picker reads who may be picked.
+    await user.click(control);
+    await waitFor(() => expect(within(control).getByRole("option", { name: "bob" })).toBeDefined());
+    await user.selectOptions(control, "bob");
+    await waitFor(() =>
+      expect(putDefault).toHaveBeenCalledWith("CORE", { assignee: "bob" }, keyedAttempt)
+    );
+
+    // Asked while the save is out, as another surface's refresh would ask it.
+    await act(async () => {
+      void queryClient.invalidateQueries({ queryKey: projectDefaultAssigneesQuery().queryKey });
+    });
+    expect(listDefaults).toHaveBeenCalledTimes(2);
+    // The save's answer gives that read up and asks for the defaults again, after the save.
+    await act(async () => {
+      saved.resolve({ assignee: "bob", project: "CORE" });
+    });
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect(control.value).toBe("bob");
+
+    // That read reached Dispatch before the save did, and answers the person from before it.
+    await act(async () => {
+      staleRead.resolve(alice);
+      await settle();
+    });
+    expect(control.value).toBe("bob");
+    expect(listDefaults).toHaveBeenCalledTimes(3);
+
+    // The read asked again answers what the save left. The refetch the save made as it settled
+    // waited behind it, and asks once it is in: Dispatch still holds the save then.
+    await act(async () => {
+      freshRead.resolve(bob);
+    });
+    await waitFor(() => expect(listDefaults).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(control.value).toBe("bob");
+    expect(
+      queryClient.getQueryData<ProjectDefaultAssignee[]>(projectDefaultAssigneesQuery().queryKey)
+    ).toEqual(bob);
+  } finally {
+    cleanup();
+    queryClient.clear();
+    listProjects.mockRestore();
+    listDefaults.mockRestore();
+    listUsers.mockRestore();
+    putDefault.mockRestore();
+    whoAmI.mockRestore();
   }
 });
 

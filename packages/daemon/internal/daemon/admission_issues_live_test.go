@@ -221,13 +221,17 @@ func (r *admissionIssuesLive) seedTrees() {
 	// reads a parent's children from the mirror rather than from Dispatch, so the two filed
 	// children have a row each naming the parent whose first phase they hold.
 	r.write("the Dispatch mirror of the board", func(tx pgx.Tx) error {
-		for _, row := range []record.DispatchIssueRow{
-			{Key: r.root, Project: r.cfg.Project, Status: "in_progress", Seq: 1},
-			{Key: r.accepting, Project: r.cfg.Project, Status: "needs_review", Seq: 1},
-			{Key: r.childOne, Project: r.cfg.Project, Status: "backlog", Parent: r.root, Seq: 1},
-			{Key: r.childTwo, Project: r.cfg.Project, Status: "backlog", Parent: r.root, Seq: 1},
+		for _, reading := range []record.DispatchReading{
+			{Key: r.root, Project: r.cfg.Project, Seq: 1,
+				Status: record.Carry("in_progress"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)},
+			{Key: r.accepting, Project: r.cfg.Project, Seq: 1,
+				Status: record.Carry("needs_review"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)},
+			{Key: r.childOne, Project: r.cfg.Project, Seq: 1,
+				Status: record.Carry("backlog"), Parent: record.Carry(r.root), Blockers: record.Carry[[]string](nil)},
+			{Key: r.childTwo, Project: r.cfg.Project, Seq: 1,
+				Status: record.Carry("backlog"), Parent: record.Carry(r.root), Blockers: record.Carry[[]string](nil)},
 		} {
-			if err := r.records.PutDispatchIssue(ctx, tx, row); err != nil {
+			if err := r.records.PutDispatchIssue(ctx, tx, reading); err != nil {
 				return err
 			}
 		}

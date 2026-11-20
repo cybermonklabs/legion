@@ -360,10 +360,24 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     await page.setViewportSize(viewportAt(390));
     await gotoIssue(page, `/issues/${key}`);
     await expect(iconRail(page), "the phone draws the rail").toHaveCount(0);
+    // The header's own "Open navigation" is the frame's; one outside the header is
+    // today's compact bar's.
+    const openNavigation = { exact: true, name: "Open navigation" };
     await expect(
-      page.getByRole("button", { exact: true, name: "Open navigation" }),
-      "the frame draws today's compact bar at 390 px"
-    ).toHaveCount(0);
+      page.locator("[data-issue-header]").getByRole("button", openNavigation),
+      "the header draws no navigation control at 390 px"
+    ).toHaveCount(1);
+    await expect
+      .poll(
+        () =>
+          page
+            .getByRole("button", openNavigation)
+            .evaluateAll(
+              (all) => all.filter((one) => one.closest("[data-issue-header]") === null).length
+            ),
+        { message: "the frame draws today's compact bar at 390 px" }
+      )
+      .toBe(0);
     await focusNothing(page);
     await page.keyboard.press("Shift+M");
     const phoneDetails = page.getByRole("dialog", { exact: true, name: "Details" });

@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -847,7 +848,14 @@ func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []recor
 // is coming for any of it, ever, so every summary applies now instead of holding a key nothing
 // will later release. target and position are the caller's own single measurement of the stream
 // and the Dispatch consumer, taken once for the whole call, not per issue.
+//
+// The listing reaches admission outside intake.ApplyFact, so each summary takes the store's own
+// rule here as a fact takes it there (storetext.Strings), before anything compares it with a
+// record: a title, a rank or a status the rule changes is stored as the rule makes it, and
+// compared as listed it would be written again at every boot. That holds for a summary Reconcile
+// defers too, which release applies later from memory.
 func (a *Admission) Reconcile(ctx context.Context, tx pgx.Tx, summaries []intake.DispatchIssue, target int64, position intake.DispatchConsumerPosition) error {
+	summaries = storetext.Strings(summaries)
 	issues, err := a.store.LiveIssues(ctx, tx, a.project)
 	if err != nil {
 		return fmt.Errorf("list admission issues: %w", err)

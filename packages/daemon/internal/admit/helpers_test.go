@@ -58,9 +58,9 @@ func (e engineStub) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (int
 
 const testProject = "LEGION"
 
-// handed is the label set of an issue handed to Legion.
-// handed is the label list intake.DispatchIssue.Labels once carried; the wire types now
-// resolve HandedOver at the decode/client boundary, so tests set it directly.
+// handed is HandedOver of an issue handed to Legion. The wire types resolve it from the issue's
+// labels at the decode and client boundary, and every decision reads that bool, so tests set it
+// directly.
 const handed = true
 
 var fixedNow = time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)

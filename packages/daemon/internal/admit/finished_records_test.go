@@ -48,11 +48,13 @@ func seedRunningProject(t *testing.T, pool *pgxpool.Pool, finished bool) {
 			if err := records.PutIssue(ctx, tx, issue); err != nil {
 				t.Fatalf("record %s: %v", issue.Key, err)
 			}
-			if err := records.PutDispatchIssue(ctx, tx, record.DispatchIssueRow{Key: issue.Key, Project: testProject, Status: issue.Status, Blockers: waits, Seq: 1}); err != nil {
+			if err := records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: issue.Key, Project: testProject, Seq: 1,
+				Status: record.Carry(issue.Status), Parent: record.Carry(""), Blockers: record.Carry(waits)}); err != nil {
 				t.Fatalf("mirror %s: %v", issue.Key, err)
 			}
 		}
-		if err := records.PutDispatchIssue(ctx, tx, record.DispatchIssueRow{Key: waitedOn, Project: testProject, Status: "todo", Seq: 1}); err != nil {
+		if err := records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: waitedOn, Project: testProject, Seq: 1,
+			Status: record.Carry("todo"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)}); err != nil {
 			t.Fatalf("mirror %s: %v", waitedOn, err)
 		}
 		for i := range runningTrees {

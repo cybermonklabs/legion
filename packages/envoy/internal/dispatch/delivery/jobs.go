@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -259,7 +260,7 @@ func (j *JobIntake) fire(key runKey, run *pendingRun) {
 // only when the same listing shows every job finished, so a listing taken before the run ended
 // never marks the run complete because another consumer recorded its end meanwhile.
 func (j *JobIntake) read(ctx context.Context, key runKey, production Production) {
-	owner, repo, err := splitRepo(key.repo)
+	owner, repo, err := refs.SplitGitHubRepo(key.repo)
 	if err != nil {
 		slog.Error("dispatch delivery: job run repository", "repo", key.repo, "error", err)
 		return

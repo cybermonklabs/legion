@@ -23,6 +23,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -339,8 +340,9 @@ type HeldWorkspaceBundleDrop func(ctx context.Context, issue, podUID string, kep
 // launcher cannot name another role, issue or pod.
 //
 // It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
-// of the daemon's own packages, so the import is acyclic, and a second copy of the report would
-// be one more shape to keep in step for no reader that needs it.
+// of the daemon's own packages but internal/redact, which imports nothing of the daemon's, so the
+// import is acyclic, and a second copy of the report would be one more shape to keep in step for
+// no reader that needs it.
 //
 // An error, a store that did not answer among them, is returned to the session, which logs it
 // and drops the report: nothing acknowledges the frame, so the launcher does not send it again,
@@ -356,9 +358,10 @@ type MemoryGuardKilled func(ctx context.Context, issue string, token claim.Token
 // roles container a new counting line for the daemon's notice bounds, is inside the report.
 //
 // It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
-// of the daemon's own packages, so this import is acyclic, and a third near-copy of the report —
-// the wire's, the runtime's and the record's — would be three shapes to keep in step where two
-// are already the price of a durable notice.
+// of the daemon's own packages but internal/redact, which imports nothing of the daemon's, so
+// this import is acyclic, and a third near-copy of the report — the wire's, the runtime's and the
+// record's — would be three shapes to keep in step where two are already the price of a durable
+// notice.
 //
 // A store that does not answer is logged and the report is dropped there. The launcher cannot
 // hold it again once the daemon has read it, and it is not asked to: the trimmer sweeps on, and
@@ -681,7 +684,8 @@ type Observation struct {
 	//
 	// It is bounded at PodEndRunes, which is a kubelet message with room to spare: the eviction
 	// message above is 120 runes, and the longest the kubelet writes names each resource it
-	// reclaimed. A longer one is cut at that bound with an ellipsis.
+	// reclaimed. A longer one is cut at that bound with an ellipsis, once the URL rule has read it
+	// whole (PodEnd).
 	PodEnd string
 }
 
@@ -697,9 +701,13 @@ const PodEndRunes = 400
 
 // PodEnd is reason and message as Observation.PodEnd holds them, bounded at PodEndRunes: the
 // reason alone when there is no message, "" when there is no reason, and a value cut at the
-// bound with an ellipsis when the two together pass it. Both the runtime that observes a pod and
-// any test that asserts on the field build the value here, so one rule decides what a claim and
-// a notice carry.
+// bound with an ellipsis when the two together pass it. The joined text is cut by redact.Runes,
+// which gives it whole through the URL rule (redact.URLCredentials) before the cut, so a URL the
+// cut falls inside has lost its userinfo and its query already: a cut made first could end inside
+// a URL's userinfo, before its "@", and leave the start of a user name or a password where the
+// rule the claim keeps the value under (storetext.FarSideText) reads it as the URL's host. Both
+// the runtime that observes a pod and any test that asserts on the field build the value here, so
+// one rule decides what a claim and a notice carry.
 func PodEnd(reason, message string) string {
 	if reason == "" {
 		return ""
@@ -708,11 +716,7 @@ func PodEnd(reason, message string) string {
 	if message != "" {
 		end += ": " + message
 	}
-	runes := []rune(end)
-	if len(runes) <= PodEndRunes {
-		return end
-	}
-	return string(runes[:PodEndRunes-1]) + "…"
+	return redact.Runes(end, PodEndRunes)
 }
 
 // GitIdentity is the author a worker's commits carry.

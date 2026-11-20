@@ -42,7 +42,7 @@ func TestADrainThatFailedAForwardLeavesThatCopyAndTheRestToTheNextDrain(t *testi
 	var keys []string
 	for i := range copies {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("kept-forward-failed-%02d", i))
-		if _, kept := keepRoleMessage(harness.config, role, item); !kept {
+		if _, err := keepRoleMessage(harness.config, role, item); err != nil {
 			t.Fatalf("keep copy %d; the listener log says why:\n%s", i, harness.logs.String())
 		}
 		keys = append(keys, roleForwardDedupePrefix+item.DedupeKey)
@@ -116,7 +116,7 @@ func TestADrainThatEndedBetweenItsForwardAndItsConfirmLeavesTheHolderOneStoredCo
 		holder = "ses_kept_confirm_lost"
 	)
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-confirm-lost-00")
-	if _, kept := keepRoleMessage(harness.config, role, item); !kept {
+	if _, err := keepRoleMessage(harness.config, role, item); err != nil {
 		t.Fatalf("keep the copy; the listener log says why:\n%s", harness.logs.String())
 	}
 	key := roleForwardDedupePrefix + item.DedupeKey
@@ -202,7 +202,7 @@ func TestAClaimNoDrainReleasedHoldsTheLaneUntilItsWindowHasPassed(t *testing.T) 
 		holder = "ses_kept_claim_abandoned"
 	)
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-claim-abandoned-00")
-	if _, kept := keepRoleMessage(harness.config, role, item); !kept {
+	if _, err := keepRoleMessage(harness.config, role, item); err != nil {
 		t.Fatalf("keep the copy; the listener log says why:\n%s", harness.logs.String())
 	}
 	key := roleForwardDedupePrefix + item.DedupeKey
