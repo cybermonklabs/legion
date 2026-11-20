@@ -258,18 +258,59 @@ function preconditionKept(value: unknown): boolean {
   return (typeof precondition.document === "string") !== Array.isArray(precondition.blocks);
 }
 
+/** The keys a replace operation takes. Every other key an operation may carry is another
+ *  operation's, so a replace that carries one sends text that replace never writes. */
+const REPLACE_OP_KEYS: Readonly<Record<string, true>> = {
+  op: true,
+  find: true,
+  with: true,
+  occurrence: true,
+};
+
+const REPLACE_OP_RULE =
+  'A replace names with and takes find, with and occurrence alone: with "" deletes the match on purpose, and a replace without with, or with its new text under another key such as markdown, would delete the match too.';
+
+/** The refusal of each replace operation of `value` that names no with or carries a key replace
+ *  does not take, each by its index in ops, or undefined when every replace keeps the rule. */
+function replaceOpsProblem(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null || !("ops" in value)) return undefined;
+  const ops = value.ops;
+  if (!Array.isArray(ops)) return undefined;
+  const problems: string[] = [];
+  ops.forEach((op: unknown, index) => {
+    if (typeof op !== "object" || op === null || !("op" in op) || op.op !== "replace") return;
+    const foreign = Object.entries(op)
+      .filter(([key, held]) => REPLACE_OP_KEYS[key] !== true && held !== undefined)
+      .map(([key]) => key);
+    if (foreign.length > 0) {
+      problems.push(
+        `ops[${index}] is a replace carrying ${foreign.join(" and ")}, which replace does not take: it takes find, with and occurrence, and its new text goes in with.`
+      );
+    }
+    if (!("with" in op) || op.with === undefined) {
+      problems.push(
+        `ops[${index}] is a replace with no with, which would delete the text find matches: write the new text in with, or with "" to delete it on purpose.`
+      );
+    }
+  });
+  return problems.length === 0 ? undefined : problems.join(" ");
+}
+
 function documentEditProblem(value: unknown): string | undefined {
+  const replaceProblem = replaceOpsProblem(value);
   return brokenParts([
     [documentEditOwner.check(value), documentEditOwner.message],
     [preconditionKept(value), PRECONDITION_RULE],
+    [replaceProblem === undefined, replaceProblem ?? REPLACE_OP_RULE],
   ]);
 }
 
 const documentEditValidation: NonNullable<DispatchToolSpec["validation"]> = {
   check: (value) => documentEditProblem(value) === undefined,
-  message: `${documentEditOwner.message} ${PRECONDITION_RULE}`,
+  message: `${documentEditOwner.message} ${PRECONDITION_RULE} ${REPLACE_OP_RULE}`,
   refusal: (value) =>
-    documentEditProblem(value) ?? `${documentEditOwner.message} ${PRECONDITION_RULE}`,
+    documentEditProblem(value) ??
+    `${documentEditOwner.message} ${PRECONDITION_RULE} ${REPLACE_OP_RULE}`,
 };
 
 /** dispatch_comment: the document-owner rule, `turn` only alongside `reply_to_ask`, and the
@@ -1529,7 +1570,7 @@ export const dispatchToolSpecs = [
               with: z
                 .string()
                 .describe(
-                  "Replacement text for replace: inside a code block, the code's literal text as sent (line breaks at its end do not survive a read); elsewhere parsed as markdown, as insert's markdown is. Text that parses to one paragraph is written inside the matched block, where a backslash escape keeps prose that merely looks like a marker, a leading '[x] ' or '[ ] ' over a task item's text matched from its start sets the item's checkbox, and any non-empty value that renders to no text is refused - only an empty value deletes the match. Text that parses to blocks ('---' over a paragraph, a list, a table, two paragraphs) writes those blocks where the match sits, fitted as the editor fits them, and is refused, with the document unchanged, where the block holding the match cannot hold them: a heading, any cell of a table, and a typed block whose content rule they break. A leading marker of the same kind as the matched block's own is refused either way, since the block renders it already, unless it is a heading rename (where a level named by find is what lets with change it) or an item find's own marker selected. A CR LF or a lone carriage return in it is written as a line feed."
+                  "Replacement text for replace, which every replace names: an empty value deletes the match on purpose. A replace takes op, find, with and occurrence alone, and one without with, or carrying any other key whatever it holds, is refused before it is sent, and by the server with 400 REPLACE_FIELDS, the document unchanged. Inside a code block, with is the code's literal text as sent (line breaks at its end do not survive a read); elsewhere parsed as markdown, as insert's markdown is. Text that parses to one paragraph is written inside the matched block, where a backslash escape keeps prose that merely looks like a marker, a leading '[x] ' or '[ ] ' over a task item's text matched from its start sets the item's checkbox, and any non-empty value that renders to no text is refused - only an empty value deletes the match. Text that parses to blocks ('---' over a paragraph, a list, a table, two paragraphs) writes those blocks where the match sits, fitted as the editor fits them, and is refused, with the document unchanged, where the block holding the match cannot hold them: a heading, any cell of a table, and a typed block whose content rule they break. A leading marker of the same kind as the matched block's own is refused either way, since the block renders it already, unless it is a heading rename (where a level named by find is what lets with change it) or an item find's own marker selected. A CR LF or a lone carriage return in it is written as a line feed."
                 )
                 .optional(),
               occurrence: z
