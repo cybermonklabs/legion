@@ -11,11 +11,11 @@ import { ApiError, api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import type { ClaimHolderLiveness, Issue, IssueClaim, IssueDetails } from "../../api/types";
 import { dangerText, pageFailedText, pageHeaderControl } from "../../theme/classes";
+import { runningAgent } from "../credentials/agent-fixture";
 import { stateForIssue } from "../issue/pins";
 import { MarginProvider } from "../margin/margin-context";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { IssueClaimControl } from "./IssueClaimControl";
-import { running, unresponsive } from "./issue-fixtures";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
@@ -120,7 +120,7 @@ function claimRow(
 test("a claimed issue names its holder and releases the claim from Details", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    running("session-one", "Implementer"),
+    runningAgent({ session_id: "session-one", title: "Implementer" }),
   ]);
   const release = spyOn(api, "releaseIssueClaim").mockResolvedValue({ ...base, claim: null });
   const view = claimRow({ ...base, claim });
@@ -161,7 +161,7 @@ test("a claimed issue names its holder and releases the claim from Details", asy
 test("a holder the registry no longer lists reads as not running", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    running("session-two", "Someone else"),
+    runningAgent({ session_id: "session-two", title: "Someone else" }),
   ]);
   const view = claimRow({ ...base, claim });
   try {
@@ -185,7 +185,7 @@ test("a holder the registry no longer lists reads as not running", async () => {
 test("a release that fails says so and offers a retry", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    running("session-one", "Implementer"),
+    runningAgent({ session_id: "session-one", title: "Implementer" }),
   ]);
   const release = spyOn(api, "releaseIssueClaim").mockRejectedValue(new Error("network error"));
   const view = claimRow({ ...base, claim });
@@ -211,7 +211,7 @@ test("a release that fails says so and offers a retry", async () => {
 test("a failed release is said in the page's colours, with Retry", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    running("session-one", "Implementer"),
+    runningAgent({ session_id: "session-one", title: "Implementer" }),
   ]);
   const release = spyOn(api, "releaseIssueClaim").mockRejectedValue(new Error("network error"));
   const view = claimRow({ ...base, claim });
@@ -244,7 +244,7 @@ test("a failed release is said in the page's colours, with Retry", async () => {
 test("a release Dispatch refuses says Dispatch's reason beside its words", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    running("session-one", "Implementer"),
+    runningAgent({ session_id: "session-one", title: "Implementer" }),
   ]);
   const reason = "bob claimed this issue at 2026-09-24T06:00:00Z; ask bob to release it";
   const release = spyOn(api, "releaseIssueClaim").mockRejectedValue(
@@ -276,7 +276,7 @@ test("a release Dispatch refuses says Dispatch's reason beside its words", async
 test("Release keeps the focus while its release is out, refuses a press, and a second press sends none", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    running("session-one", "Implementer"),
+    runningAgent({ session_id: "session-one", title: "Implementer" }),
   ]);
   const released = Promise.withResolvers<Issue>();
   const release = spyOn(api, "releaseIssueClaim").mockImplementation(() => released.promise);
@@ -324,7 +324,7 @@ test("Release keeps the focus while its release is out, refuses a press, and a s
 test("the failed release's Retry keeps the focus while the release is out and fails again, and hands it to None once the release lands", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    running("session-one", "Implementer"),
+    runningAgent({ session_id: "session-one", title: "Implementer" }),
   ]);
   const release = spyOn(api, "releaseIssueClaim").mockRejectedValueOnce(new Error("network error"));
   const view = claimRow({ ...base, claim });
@@ -405,7 +405,7 @@ test("the failed release's Retry keeps the focus while the release is out and fa
 test("a release that lands with no answer hands Retry's focus to Release, and Release's to None once the claim is read gone", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    running("session-one", "Implementer"),
+    runningAgent({ session_id: "session-one", title: "Implementer" }),
   ]);
   const release = spyOn(api, "releaseIssueClaim").mockRejectedValueOnce(new Error("network error"));
   const view = claimRow({ ...base, claim });
@@ -452,7 +452,7 @@ test("a release that lands with no answer hands Retry's focus to Release, and Re
 test("the claim shows the holder's live title, not the one stamped on the claim", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    running("session-one", "Live registry title"),
+    runningAgent({ session_id: "session-one", title: "Live registry title" }),
   ]);
   const view = claimRow({ ...base, claim });
   try {
@@ -489,7 +489,12 @@ test("a holder that missed its heartbeats reads as unresponsive since its last h
   // Six minutes of silence: inside the claim's grace, so the server would still refuse a take.
   const lastSeen = Date.now() - 6 * 60_000;
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    unresponsive("session-one", "Implementer", lastSeen),
+    runningAgent({
+      session_id: "session-one",
+      title: "Implementer",
+      last_seen: lastSeen,
+      state: "unresponsive",
+    }),
   ]);
   // Drawn as Details draws it, inside `NoTooltips`: the chip says in its words what a tooltip
   // would have held, and carries no `title`, since the issue page raises no tooltip.
@@ -547,7 +552,12 @@ test("an unresponsive holder past its takeable moment reads takeable now, still 
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const lastSeen = Date.now() - (ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS + 60_000);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    unresponsive("session-one", "Implementer", lastSeen),
+    runningAgent({
+      session_id: "session-one",
+      title: "Implementer",
+      last_seen: lastSeen,
+      state: "unresponsive",
+    }),
   ]);
   // Drawn as Details draws it, inside `NoTooltips`: the chip says the page's words and carries
   // no `title`, since the issue page raises no tooltip.
@@ -582,7 +592,12 @@ test("the moment the issue comes free is drawn as a date and a time, so the chip
   // server still refuses the take.
   const lastSeen = Date.now() - ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS + 30_000;
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    unresponsive("session-one", "Implementer", lastSeen),
+    runningAgent({
+      session_id: "session-one",
+      title: "Implementer",
+      last_seen: lastSeen,
+      state: "unresponsive",
+    }),
   ]);
   const view = claimRow({ ...base, claim });
   try {

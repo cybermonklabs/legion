@@ -8,7 +8,7 @@ import { ApiError, api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
 import type { Query } from "../../api/paths";
 import type { DispatchEvent, UserIssueState, UserState } from "../../api/types";
-import { running } from "../issue-page/issue-fixtures";
+import { runningAgent } from "../credentials/agent-fixture";
 import { writesOf } from "../writes/write-store";
 import { ActivityTab } from "./ActivityTab";
 
@@ -126,7 +126,7 @@ test("ActivityTab names a session author by its registered title", async () => {
     message(1, { id: "e2e-long-title-session", kind: "session" }),
   ]);
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([
-    running("e2e-long-title-session", "Reviewing PR #1478"),
+    runningAgent({ session_id: "e2e-long-title-session", title: "Reviewing PR #1478" }),
   ]);
   const view = renderTab({});
 

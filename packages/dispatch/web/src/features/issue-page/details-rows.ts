@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 
 import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
+import { firstUsable } from "./usable-control";
 
 /** The attribute each row of Details carries, by the property it holds (`IssueMargin.tsx`), so
  *  a control elsewhere on the page can open Details at that row. */
@@ -16,16 +17,12 @@ export type DetailsRow = "collaborators" | "labels" | "parent" | "route";
  *  closed section, which is hidden, is shown and can take the focus. */
 export const DETAILS_ROW_REQUEST_EVENT = "details-row-request";
 
-/** The controls of a row of Details that take a press, in the order the row draws them: the
- *  first is the one the opener focuses or presses (`useOpenDetailsAt`). */
-export const ROW_CONTROL_SELECTOR =
-  ":is(input, textarea, select, button:not(:disabled), a[href]):not([aria-disabled=true])";
-
 /**
  * Opens Details at one of its rows: the drawer opens, it is asked for the row
  * (`DETAILS_ROW_REQUEST_EVENT`), the row is brought into its view, and the
- * focus goes to the row's first control - or, with `press`, that control is pressed, as the
- * labels key presses Edit labels - so the reader is where the control that sent them said
+ * focus goes to the row's first control that takes a press (`usableControl`) - or, with `press`,
+ * that control is pressed, as the labels key presses Edit labels - so the reader is where the
+ * control that sent them said
  * (R13). The focus is placed two frames on, after the drawer has given it
  * to its own Close as it opens (`Margin.tsx`) and after the row's editor, where one opens, has
  * mounted. Outside a shell that draws Details the panel is in the page's own column, and the
@@ -48,7 +45,9 @@ export function useOpenDetailsAt(): (row: DetailsRow, press?: boolean) => void {
           );
           if (found === null) return;
           found.scrollIntoView({ block: "nearest" });
-          const control = found.querySelector<HTMLElement>(ROW_CONTROL_SELECTOR);
+          const control = firstUsable(
+            ...found.querySelectorAll<HTMLElement>("input, textarea, select, button, a[href]")
+          );
           if (press) control?.click();
           else control?.focus({ preventScroll: true });
         })

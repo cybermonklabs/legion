@@ -20,8 +20,11 @@ export const USABLE_CONTROL_ATTRIBUTES = [
 /**
  * Whether `control` takes a press now: the one rule Add's entries and the key `l` read before
  * they list, offer or press a control another component draws, so what is offered is exactly
- * what a press opens. Details reads it too, before it hands on a focus the priority's line held
- * (`IssueMargin.tsx`). A control is usable while it is on the page; neither `disabled` nor busy
+ * what a press opens. Every hand-off of a focus in Details reads it too: those of
+ * `IssueMargin.tsx` and `BlockedByControl.tsx`, and the one that moves a focus from a control
+ * that takes no press once the issue closes (`IssueMargin.tsx`). So does the opener of a row
+ * (`details-rows.ts`), for the control it focuses or presses. A control is usable while it is on
+ * the page; neither `disabled` nor busy
  * (`aria-disabled="true"`, as the page's controls are while they save: the `refused:` variant of
  * `styles.css` reads the same pair); under no element, itself included, that is `hidden`,
  * `inert` or `aria-hidden="true"`; and drawn (`checkVisibility()`, with `visibility: hidden`

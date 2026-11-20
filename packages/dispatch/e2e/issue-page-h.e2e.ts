@@ -635,7 +635,7 @@ test("every property with a value is visible in Details at every width @phone", 
       // button whose press opens the box, named by the repository it shows and what it sets.
       const repository = detailsRow(page, PROPERTY_LABELS.repository).getByRole("button", {
         exact: true,
-        name: repoTextControlName(REPOSITORY, one),
+        name: repoTextControlName(one, { resolvedRepo: REPOSITORY, words: { CONTROL_LABELS } }),
       });
       const values: readonly (readonly [string, Locator])[] = [
         ["the repository", repository],
@@ -1194,7 +1194,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     await expect(
       detailsRow(page, PROPERTY_LABELS.repository).getByRole("button", {
         exact: true,
-        name: repoTextControlName(CONTROL_LABELS.none, two),
+        name: repoTextControlName(two, { resolvedRepo: null, words: { CONTROL_LABELS } }),
       }),
       "TWO resolves to no repository, but its Repository row does not read None"
     ).toHaveText(CONTROL_LABELS.none);

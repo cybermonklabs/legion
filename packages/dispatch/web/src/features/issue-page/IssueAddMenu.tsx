@@ -334,10 +334,15 @@ export function IssueAddMenu({
       // no repository, else the repository it inherits. Outside it, and inside it while the box
       // is open or holds a draft or a write that is out, the row draws the box itself. The text
       // is tried first, so the entry presses it rather than finding no box.
-      const text = details.resolved_repo ?? CONTROL_LABELS.none;
       fields.push({
         label: PROPERTY_LABELS.repository,
-        ...atControl(repoTextControlName(text, details.key), repoControlName(details.key)),
+        ...atControl(
+          repoTextControlName(details.key, {
+            resolvedRepo: details.resolved_repo,
+            words: { CONTROL_LABELS },
+          }),
+          repoControlName(details.key)
+        ),
       });
     }
     if ((details.components.ids ?? []).length === 0) {

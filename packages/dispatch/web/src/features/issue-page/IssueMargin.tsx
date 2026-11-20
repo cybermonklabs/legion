@@ -171,9 +171,10 @@ export function IssueMarginCards({
  * the history each have one of the three places `details-more.tsx` exports.
  *
  * The details slot draws it once and appends it to the shell's drawer, so nothing in it is
- * thrown away as the reader closes and opens Details. What it reads that the header does not -
- * the titles of the issues around this one, and its links on GitHub - it reads only while
- * Details is open, so a load that leaves Details shut costs no request for it.
+ * thrown away as the reader closes and opens Details. The titles of the issues this one waits
+ * on, what waits on it and its links on GitHub it reads only while Details and its Development
+ * are open, and what references the issue only while References is open with its Referenced by
+ * list, so a load that leaves Details shut costs no request for any of them.
  */
 export function IssueMarginPanel({
   documentArtifact,
@@ -256,14 +257,15 @@ export function IssueMarginPanel({
     )
   );
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
-  // What Details reads beyond the issue - the titles of the issues this one waits on, what waits
-  // on it, and its links on GitHub - only while the drawer is open, so a load that leaves it shut
-  // costs no request for it.
+  // Three reads Details makes beyond the issue - the titles of the issues this one waits on, what
+  // waits on it, and its links on GitHub - are made only while the drawer is open, so a load that
+  // leaves it shut costs no request for them.
   const reading = useMarginDrawer()?.open === true;
-  // A closed section keeps its rows, hidden (`PropertySection`), and each of those reads is of a
-  // row in Development - a link reads GitHub as it is drawn - so each is made only while
-  // Development is open too: a reader who keeps the section closed costs no request, nor any read
-  // again on an event, for rows they cannot see.
+  // A closed section keeps its rows, hidden (`PropertySection`), and each of those three reads is
+  // of a row in Development - a link reads GitHub as it is drawn - so each is made only while
+  // Development is open too: a reader who keeps the section closed costs none of the three, nor
+  // any of them again on an event. The section's other rows make their own reads, as they do
+  // while Details itself is closed.
   const readingDevelopment = reading && sections.isOpen("development");
   const blockers = issue.blocked_by ?? [];
   const blockerTitles = useQuery({
@@ -556,7 +558,7 @@ export function IssueMarginPanel({
             </p>
           ) : null}
         </Row>
-        <Row glyph="⊘" label={PROPERTY_LABELS.blocked_by} valueRef={blockedByValue}>
+        <Row glyph={SMALL_GLYPH} label={PROPERTY_LABELS.blocked_by} valueRef={blockedByValue}>
           <BlockedByControl
             draft={blockedByDraft}
             editing={blockedByEditing}

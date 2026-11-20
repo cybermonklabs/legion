@@ -9,7 +9,7 @@ import { MemoryRouter } from "react-router-dom";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { api } from "../../api/client";
 import type { ClaimHolderLiveness, Issue, IssueClaim, IssueDetails } from "../../api/types";
-import { running, unresponsive } from "../issue-page/issue-fixtures";
+import { runningAgent } from "../credentials/agent-fixture";
 import { MarginProvider } from "../margin/margin-context";
 import { claimIsTakeable } from "./ClaimChip";
 import { IssueHeader } from "./IssueHeader";
@@ -120,7 +120,7 @@ function header(
 test("a claimed issue names its holder and releases the claim from the header", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    running("session-one", "Implementer"),
+    runningAgent({ session_id: "session-one", title: "Implementer" }),
   ]);
   const release = spyOn(api, "releaseIssueClaim").mockResolvedValue({ ...base, claim: null });
   const view = header({ ...base, claim });
@@ -156,7 +156,7 @@ test("a claimed issue names its holder and releases the claim from the header", 
 test("a holder the registry no longer lists reads as not running", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    running("session-two", "Someone else"),
+    runningAgent({ session_id: "session-two", title: "Someone else" }),
   ]);
   const view = header({ ...base, claim });
   try {
@@ -179,7 +179,7 @@ test("a holder the registry no longer lists reads as not running", async () => {
 test("a release that fails says so and offers a retry", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    running("session-one", "Implementer"),
+    runningAgent({ session_id: "session-one", title: "Implementer" }),
   ]);
   const release = spyOn(api, "releaseIssueClaim").mockRejectedValue(new Error("network error"));
   const view = header({ ...base, claim });
@@ -202,19 +202,7 @@ test("a release that fails says so and offers a retry", async () => {
 test("the claim shows the holder's live title, not the one stamped on the claim", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    {
-      session_id: "session-one",
-      title: "Live registry title",
-      dir: "/w",
-      host: "host",
-      machine_id: "host",
-      roles: [],
-      capabilities: [],
-      last_seen: 1,
-      open_asks: 0,
-      last_activity: null,
-      state: "live",
-    },
+    runningAgent({ session_id: "session-one", title: "Live registry title" }),
   ]);
   const view = header({ ...base, claim });
   try {
@@ -251,7 +239,12 @@ test("a holder that missed its heartbeats reads as unresponsive since its last h
   // Six minutes of silence: inside the claim's grace, so the server would still refuse a take.
   const lastSeen = Date.now() - 6 * 60_000;
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    unresponsive("session-one", "Implementer", lastSeen),
+    runningAgent({
+      session_id: "session-one",
+      title: "Implementer",
+      last_seen: lastSeen,
+      state: "unresponsive",
+    }),
   ]);
   const view = header({ ...base, claim });
   try {
@@ -301,7 +294,12 @@ test("an unresponsive holder past its takeable moment reads takeable now, still 
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const lastSeen = Date.now() - (ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS + 60_000);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    unresponsive("session-one", "Implementer", lastSeen),
+    runningAgent({
+      session_id: "session-one",
+      title: "Implementer",
+      last_seen: lastSeen,
+      state: "unresponsive",
+    }),
   ]);
   const view = header({ ...base, claim });
   try {

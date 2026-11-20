@@ -3,6 +3,7 @@ import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { QueryError } from "../../components/QueryError";
+import type { PageWords } from "../../components/tooltips";
 import { usePageWords, useTooltips } from "../../components/tooltips";
 import {
   dangerText,
@@ -75,13 +76,26 @@ export function repoControlName(issueKey: string): string {
   return `Repository of ${issueKey}`;
 }
 
-/** The name of the button drawn in the box's place: the text it shows, then the box's name. */
-export function repoTextControlName(text: string, issueKey: string): string {
-  return `${text}, ${repoControlName(issueKey)}`;
+/** The name of the button a row of Details draws in the box's place: the text it shows, then the
+ *  box's name - `None, Repository of <KEY>` while the issue resolves to no repository, else
+ *  `<owner/name>, Repository of <KEY>`. It takes the issue's state rather than the text, so the
+ *  rule for which text the button shows is written here once, and the new issue page's add menu,
+ *  which finds the button by this name, names the text the button draws. The words are the
+ *  page's list's, passed in, since this file imports nothing of that list
+ *  (`components/tooltips.tsx`). */
+export function repoTextControlName(
+  issueKey: string,
+  state: {
+    readonly resolvedRepo: string | null;
+    readonly words: Pick<PageWords, "CONTROL_LABELS">;
+  }
+): string {
+  return `${state.resolvedRepo ?? state.words.CONTROL_LABELS.none}, ${repoControlName(issueKey)}`;
 }
 
-/** A failed read or write of the repository control, as the control hands it to a host that says
- *  it in a line of its own (`sayFailure`). */
+/** What the repository control hands a host that says its failures in a line of its own
+ *  (`sayFailure`): the read of the repositories Dispatch maps to projects, failed or not, and a
+ *  write that stands refused. */
 export type RepoControlFailure =
   | {
       readonly kind: "read";
@@ -383,7 +397,7 @@ export function RepoControl({
       )}
       {showsNone ? (
         <button
-          aria-label={repoTextControlName(page.CONTROL_LABELS.none, issueKey)}
+          aria-label={repoTextControlName(issueKey, { resolvedRepo, words: page })}
           className={`min-h-11 rounded-sm outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${ON_PAGE.none} ${focusVisibleRing}`}
           disabled={disabled}
           ref={noneControl}
@@ -430,7 +444,7 @@ export function RepoControl({
             // the text did, breaking anywhere so that a name with no space in it wraps too.
             <button
               aria-describedby={descriptionId}
-              aria-label={repoTextControlName(resolvedRepo, issueKey)}
+              aria-label={repoTextControlName(issueKey, { resolvedRepo, words: page })}
               className={`min-h-11 min-w-0 max-w-full rounded-sm text-left font-mono text-xs [overflow-wrap:anywhere] outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${repo === null ? ON_PAGE.inherited : ON_PAGE.own} ${focusVisibleRing}`}
               disabled={disabled}
               ref={textControl}

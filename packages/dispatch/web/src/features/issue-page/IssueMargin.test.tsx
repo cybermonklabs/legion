@@ -52,12 +52,7 @@ import { userPreferenceStorageKey } from "../shell/userPreference";
 import { blockedByControlName } from "./BlockedByControl";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
-import {
-  DETAILS_ROW_ATTRIBUTE,
-  DETAILS_ROW_REQUEST_EVENT,
-  type DetailsRow,
-  ROW_CONTROL_SELECTOR,
-} from "./details-rows";
+import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel, PARENT_ERROR_ID } from "./IssueMargin";
 import { narrowIssue, patchAnswer } from "./issue-fixtures";
@@ -79,7 +74,7 @@ import {
 } from "./page-words";
 import { architecture, offPageColours } from "./shared-controls-fixture";
 import { DetailsSlot } from "./slots/details";
-import { usableControl } from "./usable-control";
+import { firstUsable, usableControl } from "./usable-control";
 import { blockedByRefusal } from "./useIssueBlockedBy";
 import { type IssueHeaderWrites, useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
@@ -227,6 +222,16 @@ function rowAt(row: DetailsRow): HTMLElement {
   const found = document.querySelector(`[${DETAILS_ROW_ATTRIBUTE}="${row}"]`);
   if (!(found instanceof HTMLElement)) throw new Error(`Details draws no ${row} row`);
   return found;
+}
+
+/** The control of `row` that the opener of a row focuses or presses (`useOpenDetailsAt`): the
+ *  first, in the order the row draws them, that takes a press, else `null`. */
+function rowControl(row: Element | null): HTMLElement | null {
+  return (
+    firstUsable(
+      ...(row?.querySelectorAll<HTMLElement>("input, textarea, select, button, a[href]") ?? [])
+    ) ?? null
+  );
 }
 
 /** Every Escape that reaches the window from now on, by whether a control marked it taken: the
@@ -497,7 +502,7 @@ test("closing Development hides its rows and keeps the repository box's refused 
   try {
     await user.click(
       await screen.findByRole("button", {
-        name: repoTextControlName(CONTROL_LABELS.none, "CORE-1"),
+        name: repoTextControlName("CORE-1", { resolvedRepo: null, words: { CONTROL_LABELS } }),
       })
     );
     const typed = await screen.findByRole("combobox", { name: repoControlName("CORE-1") });
@@ -2622,7 +2627,7 @@ test("Add lists Repository on an empty repository row and presses None, which op
     );
     expect(listRepoProjects).toHaveBeenCalled();
     const none = within(detailsRow(PROPERTY_LABELS.repository)).getByRole("button", {
-      name: repoTextControlName(CONTROL_LABELS.none, "CORE-1"),
+      name: repoTextControlName("CORE-1", { resolvedRepo: null, words: { CONTROL_LABELS } }),
     });
     expect(none, "the empty Repository row does not read None").toHaveTextContent(
       CONTROL_LABELS.none
@@ -2692,7 +2697,7 @@ test("Add lists Repository on a row that inherits its repository and presses its
     await screen.findByRole("link", { name: "CORE-3" });
     await waitFor(() => expect(priorities).toHaveBeenCalled());
     const text = await within(detailsRow(PROPERTY_LABELS.repository)).findByRole("button", {
-      name: repoTextControlName("acme/web", "CORE-1"),
+      name: repoTextControlName("CORE-1", { resolvedRepo: "acme/web", words: { CONTROL_LABELS } }),
     });
     expect(text, "the Repository row does not draw the repository it inherits").toHaveTextContent(
       "acme/web"
@@ -2788,7 +2793,7 @@ test("a repository Dispatch refuses is said in the page's colours, with Retry", 
   try {
     await user.click(
       await screen.findByRole("button", {
-        name: repoTextControlName(CONTROL_LABELS.none, "CORE-1"),
+        name: repoTextControlName("CORE-1", { resolvedRepo: null, words: { CONTROL_LABELS } }),
       })
     );
     await user.click(await screen.findByRole("combobox", { name: repoControlName("CORE-1") }));
@@ -2876,7 +2881,7 @@ test("the mappings' Retry keeps the focus while the read is out, and hands it to
       "the mappings answered, and the focus fell to the page rather than to the row's control"
     ).toBe(
       within(row).getByRole("button", {
-        name: repoTextControlName(CONTROL_LABELS.none, "CORE-1"),
+        name: repoTextControlName("CORE-1", { resolvedRepo: null, words: { CONTROL_LABELS } }),
       })
     );
   } finally {
@@ -2893,7 +2898,7 @@ test("the mappings' Retry keeps the focus while the read is out, and hands it to
 // the write is out, and from there to the row's text once the repository lands.
 test("a refused repository's Retry hands the focus to the row's box as its line goes", async () => {
   const user = userEvent.setup();
-  const { patchIssue, restore } = stubIssueApi();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
   patchIssue.mockImplementationOnce(() =>
     Promise.reject(new ApiError(400, { code: "INVALID_ISSUE", error: "repository refused" }))
   );
@@ -2903,7 +2908,7 @@ test("a refused repository's Retry hands the focus to the row's box as its line 
   try {
     await user.click(
       await screen.findByRole("button", {
-        name: repoTextControlName(CONTROL_LABELS.none, "CORE-1"),
+        name: repoTextControlName("CORE-1", { resolvedRepo: null, words: { CONTROL_LABELS } }),
       })
     );
     await user.click(await screen.findByRole("combobox", { name: repoControlName("CORE-1") }));
@@ -2929,7 +2934,11 @@ test("a refused repository's Retry hands the focus to the row's box as its line 
       "the refusal's line went, and the focus fell to the page rather than to the row's box"
     ).toBe(within(row).getByRole("combobox", { name: repoControlName("CORE-1") }));
 
-    await act(async () => retried.resolve(narrowIssue({ ...issue, repo: "acme/web" })));
+    // Dispatch answers the write, and every read of the issue after it, with the issue's own
+    // repository as the one it resolves to.
+    const landed = { ...issue, repo: "acme/web", resolved_repo: "acme/web" };
+    getIssue.mockResolvedValue(landed);
+    await act(async () => retried.resolve(narrowIssue(landed)));
     await waitFor(() =>
       expect(
         within(row).queryByRole("combobox", { name: repoControlName("CORE-1") }),
@@ -2937,9 +2946,16 @@ test("a refused repository's Retry hands the focus to the row's box as its line 
       ).not.toBeInTheDocument()
     );
     expect(
-      row.contains(document.activeElement),
+      document.activeElement,
       "the repository landed, and the focus fell to the page rather than to the row's control"
-    ).toBe(true);
+    ).toBe(
+      within(row).getByRole("button", {
+        name: repoTextControlName("CORE-1", {
+          resolvedRepo: "acme/web",
+          words: { CONTROL_LABELS },
+        }),
+      })
+    );
   } finally {
     stopBlurring();
     unmount();
@@ -2961,7 +2977,7 @@ test("a repository refused because the issue closed is said without Retry", asyn
   try {
     await user.click(
       await screen.findByRole("button", {
-        name: repoTextControlName(CONTROL_LABELS.none, "CORE-1"),
+        name: repoTextControlName("CORE-1", { resolvedRepo: null, words: { CONTROL_LABELS } }),
       })
     );
     await user.click(await screen.findByRole("combobox", { name: repoControlName("CORE-1") }));
@@ -3566,14 +3582,12 @@ test("on an issue with no component, the Add menu's Components reaches the picke
 test("the Parent row's first control opens the parent's editor, before the parent's link", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  const firstControl = (row: Element | null) =>
-    row?.querySelector<HTMLElement>(ROW_CONTROL_SELECTOR);
 
   try {
     const empty = renderDetails();
     await screen.findByText(PROPERTY_LABELS.parent, { selector: "[data-page-chrome]" });
     const none = document.querySelector(`[${DETAILS_ROW_ATTRIBUTE}="parent"]`);
-    expect(firstControl(none)).toHaveTextContent(CONTROL_LABELS.set_parent);
+    expect(rowControl(none)).toHaveTextContent(CONTROL_LABELS.set_parent);
     expect(none).toHaveTextContent(CONTROL_LABELS.none);
     empty.unmount();
 
@@ -3582,7 +3596,7 @@ test("the Parent row's first control opens the parent's editor, before the paren
     const link = await screen.findByRole("link", { name: "CORE-2" });
     const row = link.closest(`[${DETAILS_ROW_ATTRIBUTE}="parent"]`);
     expect(row, "the parent's link is outside the Parent row").not.toBeNull();
-    const control = firstControl(row);
+    const control = rowControl(row);
     expect(control).toHaveTextContent(CONTROL_LABELS.edit_parent);
     expect(
       (control?.compareDocumentPosition(link) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -3660,7 +3674,7 @@ test("Details clears the parent with an empty editor save", async () => {
     // The row's first control is the one the header's Set parent issue presses.
     await waitFor(() =>
       expect(
-        detailsRow(PROPERTY_LABELS.parent).querySelector(ROW_CONTROL_SELECTOR),
+        rowControl(detailsRow(PROPERTY_LABELS.parent)),
         "the Parent row still offers to edit a parent the issue no longer has"
       ).toHaveTextContent(CONTROL_LABELS.set_parent)
     );
@@ -3950,7 +3964,7 @@ test("leaving the parent's or the route's editor gives the focus back to its row
   const user = userEvent.setup();
   const { restore } = stubIssueApi();
   const { unmount } = renderDetails();
-  const control = (row: DetailsRow) => rowAt(row).querySelector(ROW_CONTROL_SELECTOR);
+  const control = (row: DetailsRow) => rowControl(rowAt(row));
 
   try {
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.set_parent }));
