@@ -230,6 +230,12 @@ type deliveryHub struct {
 	closed bool
 	// generation is the running generation, nil while no conn holds a sub.
 	generation *hubGeneration
+	// ran is set as the first generation starts, and stays set. Nothing in production reads it:
+	// a test that reads the whole database before and after a request (databaseFingerprint)
+	// refuses a server whose hub ran, since a generation's worker records a deploy run's warning
+	// (firstToWarn) on the generation's context, and an insert under way when a stop cancels that
+	// context can still commit after the worker has returned.
+	ran bool
 }
 
 // hubGeneration is one run of the hub. ctx, stop and the channels are set once at its start; the
@@ -458,6 +464,7 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 	go func() { defer h.running.Done(); h.work(g) }()
 	h.seedEvents(g)
 	h.generation = g
+	h.ran = true
 	return g
 }
 

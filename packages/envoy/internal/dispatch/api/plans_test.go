@@ -525,9 +525,8 @@ func TestARatingReasonHoldingANulIsRefused(t *testing.T) {
 // actor.origin.cwd, on the plan write and on the rating write, with nothing written; the same body
 // with the NUL taken out lands, which is the control.
 func TestARepeatedMemberHidesNoNulFromAPlanOrARating(t *testing.T) {
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
-	awaitBackgroundWrites(t, served)
 	daemon := `{"kind":"session","id":"legion-daemon:LEG"`
 	for _, route := range []struct {
 		name, target, fields string
@@ -550,10 +549,10 @@ func TestARepeatedMemberHidesNoNulFromAPlanOrARating(t *testing.T) {
 					return json.RawMessage(`{"actor":` + fmt.Sprintf(actor.actor, cwd) + `,` + route.fields + `}`)
 				}
 				target := fmt.Sprintf(route.target, uuid.NewString())
-				before := databaseFingerprint(t, database)
+				before := databaseFingerprint(t, served)
 				refused := sessionRequest(t, handler, http.MethodPut, target, body(`a\u0000b`))
 				assertRefusal(t, "PUT "+target, refused.Code, refused.Body.Bytes(), "NUL_CHARACTER", "actor.origin.cwd")
-				assertUnchanged(t, "PUT "+target, before, databaseFingerprint(t, database))
+				assertUnchanged(t, "PUT "+target, before, databaseFingerprint(t, served))
 				if clean := sessionRequest(t, handler, http.MethodPut, target, body("ab")); clean.Code != http.StatusOK {
 					t.Fatalf("the body with no NUL: status=%d body=%s, want 200", clean.Code, clean.Body.String())
 				}

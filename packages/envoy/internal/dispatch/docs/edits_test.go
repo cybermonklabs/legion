@@ -34,6 +34,7 @@ func TestApplyOpsEditsLiveDocumentAndSettlesVersion(t *testing.T) {
 		t.Fatalf("applied = %#v, %v", applied, err)
 	}
 	waitForDocumentText(t, service, artifactID, "TWO one\n\n!\n")
+	settleArmedNow(t, service, artifactID)
 	version := waitForDocumentVersion(t, service.store, artifactID, 2)
 	if len(version.Authors) != 1 || version.Authors[0] != actor {
 		t.Fatalf("authors = %#v", version.Authors)

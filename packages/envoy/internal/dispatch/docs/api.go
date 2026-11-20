@@ -8,6 +8,7 @@ package docs
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -51,6 +52,7 @@ type API interface {
 	NamedVersion(ctx context.Context, artifactID, summary string, actor model.Actor) (VersionResult, error)
 	Evict(ctx context.Context, artifactID string) error
 	Quiesce(ctx context.Context) error
+	AwaitBackgroundWrites(ctx context.Context, soon time.Time) (BackgroundQuiet, error)
 }
 
 // VersionResult is a written document version together with what its markdown moved in the

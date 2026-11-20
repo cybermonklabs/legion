@@ -167,6 +167,7 @@ func TestReplaceTextUpdatesLiveDocumentAndSettlesVersion(t *testing.T) {
 		t.Fatalf("replace text: %v", err)
 	}
 	waitForDocumentText(t, service, artifactID, "# Replaced\n")
+	settleArmedNow(t, service, artifactID)
 	version := waitForDocumentVersion(t, service.store, artifactID, 2)
 	if version.Named || len(version.Authors) != 1 || version.Authors[0] != actor {
 		t.Fatalf("settled version = %#v, want unnamed version authored by %v", version, actor)
@@ -468,6 +469,7 @@ func TestSnapshotVersionDoesNotAttributeUnchangedDocument(t *testing.T) {
 	if _, err := joinedReplaceText(service, artifactID, "after", editor); err != nil {
 		t.Fatalf("replace document: %v", err)
 	}
+	settleArmedNow(t, service, artifactID)
 	version = waitForDocumentVersion(t, service.store, artifactID, 2)
 	if len(version.Authors) != 1 || version.Authors[0] != editor {
 		t.Fatalf("settled version authors = %#v, want only %v", version.Authors, editor)
@@ -1068,6 +1070,7 @@ func TestSettledVersionNamesChangedReferenceTargets(t *testing.T) {
 		artifactID, "# First\n\nWaiting on dispatch://DOC-1/ask/"+askID+".", actor); err != nil {
 		t.Fatalf("replace text: %v", err)
 	}
+	settleArmedNow(t, service, artifactID)
 	waitForDocumentVersion(t, service.store, artifactID, 2)
 
 	var payload []byte

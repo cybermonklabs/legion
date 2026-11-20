@@ -515,6 +515,12 @@ type server struct {
 	deliveryHub *deliveryHub
 	// liveSockets is every open GET /ws/live socket, which the test hooks close.
 	liveSockets liveSocketSet
+	// heartbeats counts the resolutions of a live or document socket's caller its heartbeat runs
+	// (whileCallerResolves), each until it returns. Nothing in production reads it: a test that
+	// reads the whole database before and after a request (databaseFingerprint) waits for it, since
+	// a resolution can write (a personal agent token's last use) and one under way when its socket
+	// closed runs on to its end.
+	heartbeats backgroundWork
 	// liveKinds starts a live socket's subscriptions to the views beside the delivery views, by
 	// kind (live_subscriptions.go); a kind it does not hold is refused.
 	liveKinds map[string]liveKind
@@ -548,12 +554,17 @@ type server struct {
 	// on every server register mounts.
 	mentions *mentionSender
 	// detached is everything a request started that runs on past its client: every keyed write's
-	// handler (keyedWrites, which runs it on a context the client's going away does not cancel) and
+	// handler (keyedWrites, which runs it on a context the client's going away does not cancel),
 	// every delivery a handler started and did not wait for (a broadcast's recipients, a sweep's
-	// resumed attempts). Each runs on a context the request's end does not cancel, and shutdown
-	// waits for them (waitBackground) before the database pool closes, so a deploy finishes them as
-	// http.Server.Shutdown finishes the requests in flight. A send bound to lifetime instead
-	// was cut off by SIGTERM, which cancels that context before the HTTP drain even begins.
+	// resumed attempts), and every other piece of a request's work that can outlive its answer and
+	// write: a related-item check's pick, meaning stage and cross-project leg (runRelatedCheck), the
+	// term-statistics refresh a pick starts or joins (ensureSearchTermStats), a display-tree store
+	// (displayTreeReader.storeOf), a related record's retry (retryRecord) and the route roster
+	// fetch (readRouteRoster). Each runs on a context the request's end does not cancel, and
+	// shutdown waits for them (waitBackground) before the database pool closes, so a deploy
+	// finishes them as http.Server.Shutdown finishes the requests in flight. A send bound to
+	// lifetime instead was cut off by SIGTERM, which cancels that context before the HTTP drain
+	// even begins.
 	detached backgroundWork
 	// requestKeyLease, requestKeyRenewal and requestKeyRunLimit replace a keyed request's lease
 	// (IdempotencyLease, a minute), how often a running handler renews it (keyedLeaseRenewal) and
@@ -709,10 +720,10 @@ type Background struct {
 // waitBackground waits for every keyed handler and every delivery a request left running past
 // its client, then for every live socket and the subscriptions it ran, serving none that opens from
 // then on (liveSocketSet.wait), then for the hub's goroutines, the relay's and the test hooks'
-// listener. The detached work comes first because it is the only work lifetime does not stop: a
-// keyed handler is bounded by keyedHandlerLimit, a delivery by the listener client's receipt
-// timeout per recipient, and each reads and writes through the database pool this wait is holding
-// open for it.
+// listener. The detached work comes first because some of it is the only work lifetime does not
+// stop: a keyed handler is bounded by keyedHandlerLimit, a delivery by the listener client's
+// receipt timeout per recipient, a related-item check's goroutines by its allowance, and each
+// reads and writes through the database pool this wait is holding open for it.
 func (s *server) waitBackground() {
 	s.detached.wait()
 	s.liveSockets.wait()
@@ -982,6 +993,10 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 // the handler, which holds pooled connections of its own while it admits the socket, so it marks a
 // context of its own for the pool (store.ErrNestedAcquire), and it resolves on a context detached
 // from the access-log line, which names the caller the socket was admitted as (accesslog.Detached).
+// A resolution under way when the connection closes runs to its end: its context is one the close
+// does not cancel, which only the server's lifetime ends, so it returns after the statements it
+// sent have, never while one it cut off could still commit. The server counts each resolution from
+// before it reads whether the connection is still open until it returns (server.heartbeats).
 //
 // A refusal that is only the credential's own life ending (identity.ErrCredentialExpired: an IAP
 // assertion, which lives about ten minutes while IAP signs a fresh one for every request it
@@ -996,8 +1011,12 @@ func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, ha
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, closeConnection := context.WithCancelCause(r.Context())
 		defer closeConnection(nil)
-		check := r.WithContext(store.WithTransactionTracking(accesslog.Detached(ctx)))
+		resolving, stopResolving := context.WithCancel(context.WithoutCancel(ctx))
+		endWithLifetime := context.AfterFunc(s.lifetime, stopResolving)
+		check := r.WithContext(store.WithTransactionTracking(accesslog.Detached(resolving)))
 		go func() {
+			defer stopResolving()
+			defer endWithLifetime()
 			heartbeat := time.NewTicker(s.deps.StreamHeartbeat)
 			defer heartbeat.Stop()
 			for {
@@ -1009,7 +1028,14 @@ func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, ha
 					// the request, which for a broker-issued token on the live socket asks the
 					// broker's answer alone rather than the proof the upgrade already spent
 					// (callerStillResolves).
-					if err := stillResolves(check); err != nil {
+					s.heartbeats.start()
+					if ctx.Err() != nil {
+						s.heartbeats.done()
+						return
+					}
+					err := stillResolves(check)
+					s.heartbeats.done()
+					if err != nil {
 						if errors.Is(err, identity.ErrCredentialExpired) {
 							closeConnection(errCredentialExpired)
 						} else {

@@ -25,20 +25,14 @@ import (
 
 func newInteractionHandler(t *testing.T, makeDocs func(*store.Store) docs.API) (http.Handler, *store.Store) {
 	t.Helper()
-	handler, database, _ := newInteractionDeps(t, makeDocs)
+	handler, database, _, _ := newInteractionServer(t, makeDocs)
 	return handler, database
 }
 
-// newInteractionDeps is newInteractionHandler, answering also the Deps it registered, for a test
-// that must run one request on a connection of its own (oneConnectionHandler).
-func newInteractionDeps(t *testing.T, makeDocs func(*store.Store) docs.API) (http.Handler, *store.Store, Deps) {
-	t.Helper()
-	handler, database, deps, _ := newInteractionServer(t, makeDocs)
-	return handler, database, deps
-}
-
-// newInteractionServer is newInteractionDeps, answering also the server it registered, for a test
-// that waits out the writes its requests leave running past their answers (awaitBackgroundWrites).
+// newInteractionServer is newInteractionHandler, answering also the Deps and the server it
+// registered: the Deps for a test that must run one request on a connection of its own
+// (oneConnectionHandler), and the server for one that waits out its background writes before it
+// reads the database (databaseFingerprint, awaitBackgroundWrites).
 func newInteractionServer(t *testing.T, makeDocs func(*store.Store) docs.API) (http.Handler, *store.Store, Deps, *server) {
 	t.Helper()
 	database := storetest.Open(t)
@@ -58,9 +52,9 @@ func newInteractionServer(t *testing.T, makeDocs func(*store.Store) docs.API) (h
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	mux := http.NewServeMux()
-	srv := register(mux, t.Context(), deps)
-	t.Cleanup(srv.waitBackground)
-	return mux, database, deps, srv
+	served := register(mux, t.Context(), deps)
+	t.Cleanup(served.waitBackground)
+	return mux, database, deps, served
 }
 
 // replacementPrecondition is the token a replacement names: the one the document stands at now,

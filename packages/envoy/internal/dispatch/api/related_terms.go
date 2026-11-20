@@ -425,8 +425,13 @@ func RunSearchTermStatsRefresh(ctx context.Context, pool *store.Pool, interval t
 // meanwhile; many checks of that project then cost one refresh, not one each. The refresh runs on
 // the server's lifetime, bounded by one interval, by which the leased pass would have refreshed
 // the project anyway.
+//
+// The refresh is the server's detached work (server.detached) from this call until it ends,
+// whether this call started it or joined one already running: the count starts here, before the
+// caller goes on, so a wait for the server's background writes that begins once the caller has
+// returned still finds the refresh, though it commits after the request that started it answered.
 func (s *server) ensureSearchTermStats(project string) <-chan singleflight.Result {
-	return s.termStats.DoChan(project, func() (any, error) {
+	refreshed := s.termStats.DoChan(project, func() (any, error) {
 		ctx, cancel := context.WithTimeout(s.lifetime, SearchTermStatsInterval)
 		defer cancel()
 		started := time.Now()
@@ -441,6 +446,9 @@ func (s *server) ensureSearchTermStats(project string) <-chan singleflight.Resul
 			"duration", time.Since(started).Round(time.Millisecond))
 		return result.Items, nil
 	})
+	ended := make(chan singleflight.Result, 1)
+	s.detached.goDetached(func() { ended <- <-refreshed })
+	return ended
 }
 
 // relatedExclusion names the check's source owner, whose items are left out of df and out of the

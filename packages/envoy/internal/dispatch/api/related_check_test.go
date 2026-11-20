@@ -506,7 +506,7 @@ func TestRelatedCheckBoundsPastTheAllowanceIsNotMadeAndRecorded(t *testing.T) {
 	source := createSearchIssue(t, handler, "STUCK", "Zymurgy ledger totals drift", "")
 	// The creates' own checks may have started a refresh of the statistics; wait it out and
 	// refresh them here, so the check below starts none behind the lock.
-	awaitTermStatsRefresh(t, served, "STUCK")
+	awaitBackgroundWrites(t, served)
 	refreshTermStats(t, database, "STUCK")
 	srv := directServer(deps)
 	srv.suggestionTimeout = 500 * time.Millisecond
@@ -557,7 +557,7 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 	source := createSearchIssue(t, handler, "GONE", "Zymurgy ledger totals drift", "")
 	// The creates' own checks may have started a refresh of the statistics; wait it out and
 	// refresh them here, so the check below starts none and its pick is the one waiter on the lock.
-	awaitTermStatsRefresh(t, served, "GONE")
+	awaitBackgroundWrites(t, served)
 	refreshTermStats(t, database, "GONE")
 	srv := directServer(deps)
 	srv.suggestionTimeout = time.Minute
@@ -630,7 +630,7 @@ func TestRelatedCheckBoundsDecisionBlocksPastTheAllowanceAreRecordedTimeout(t *t
 	issue := createAdviceIssue(t, handler, "DBTO", "Quarterly planning", &spec)
 	// The creates' own checks may have started a refresh of the statistics; wait it out and
 	// refresh them here, so the blocks' checks start none behind the lock below.
-	awaitTermStatsRefresh(t, served, "DBTO")
+	awaitBackgroundWrites(t, served)
 	refreshTermStats(t, database, "DBTO")
 	srv := directServer(deps)
 	srv.suggestionTimeout = 500 * time.Millisecond

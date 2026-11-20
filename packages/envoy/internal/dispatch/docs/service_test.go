@@ -46,13 +46,20 @@ func headerIdentity(database *store.Store) identity.HeaderIdentity {
 // newTestServiceOn registers one, and a caller that shuts its service down by hand (a seeding
 // service a test ends before it swaps the manifest, newAdmissionServer) builds New with these
 // directly.
+//
+// Settle is an hour, so no settlement runs in a test unless the test asks for one: a settlement
+// stamps block ids and writes doc_updates, versions and events, and one a timer starts between
+// two of a test's reads would read as the write of the step between them. A test that needs a
+// settlement runs it (settleCurrentGeneration, settleNow); one that needs a settlement the
+// service arms on its own runs it now and waits for it with the service's own wait
+// (settleArmedNow); one that tests the timer sets a short delay of its own.
 func testServiceDeps(database *store.Store) Deps {
 	return Deps{
 		Store:     database,
 		Events:    events.NewBroker(),
 		Identity:  headerIdentity(database),
 		ServerURL: "https://dispatch.example",
-		Settle:    20 * time.Millisecond,
+		Settle:    time.Hour,
 	}
 }
 
@@ -3861,6 +3868,7 @@ func TestSettleRendersTreeAndWritesVersion(t *testing.T) {
 	seedServiceText(t, service, artifactID, "before")
 	alignLatestVersionWithUpdates(t, service, artifactID)
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
+	settleArmedNow(t, service, artifactID)
 	version := waitForDocumentVersion(t, service.store, artifactID, 2)
 	var markdown string
 	if err := service.store.Pool.QueryRow(context.Background(), `select markdown from artifact_versions where artifact_id = $1 and number = 2`, artifactID).Scan(&markdown); err != nil {
@@ -4721,6 +4729,7 @@ func TestSettlePersistsPendingAuthorAfterDisconnect(t *testing.T) {
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
 	service.removeConnection(artifactID, connectionID)
 
+	settleArmedNow(t, service, artifactID)
 	version := waitForDocumentVersion(t, service.store, artifactID, 2)
 	if len(version.Authors) != 1 || version.Authors[0] != actor {
 		t.Fatalf("settled version authors = %#v, want %v", version.Authors, actor)
@@ -4733,6 +4742,7 @@ func TestSettleWritesDirtyVersionWithoutPendingAuthors(t *testing.T) {
 
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
 
+	settleArmedNow(t, service, artifactID)
 	version := waitForDocumentVersion(t, service.store, artifactID, 2)
 	if len(version.Authors) != 0 {
 		t.Fatalf("settled version authors = %#v, want none", version.Authors)
@@ -4751,6 +4761,7 @@ func TestConnectedActorIsPendingAfterEachDocumentUpdate(t *testing.T) {
 	for number, markdown := range []string{"after first update", "after second update"} {
 		editLiveTree(t, service, artifactID, replaceRun(current, markdown))
 		current = markdown
+		settleArmedNow(t, service, artifactID)
 		version := waitForDocumentVersion(t, service.store, artifactID, number+2)
 		if len(version.Authors) != 1 || version.Authors[0] != actor {
 			t.Fatalf("version %d authors = %#v, want %v", number+2, version.Authors, actor)
@@ -5019,6 +5030,44 @@ func settleNow(service *Service, artifactID string) {
 	generation := state.roomGeneration
 	state.mu.Unlock()
 	service.settleRoom(artifactID, generation)
+}
+
+// settleArmedNow runs at once the settlement service holds armed for each of rooms, which the
+// fixture's delay (testServiceDeps) arms for an hour away, and waits with the service's own wait
+// (AwaitBackgroundWrites) for them, and for every settlement they arm in turn within a second of
+// now, to end. A test whose step makes the service arm a settlement of its own - a copy's, once its
+// source's block leaves its document - calls it where that settlement must have run. It fails
+// naming a room the service holds no settlement armed for, so a test never reads the result of a
+// settlement nothing armed.
+func settleArmedNow(t *testing.T, service *Service, rooms ...string) {
+	t.Helper()
+	armed := map[string]bool{}
+	service.timerMu.Lock()
+	for _, timer := range service.timers {
+		armed[timer.room] = true
+	}
+	service.timerMu.Unlock()
+	for _, room := range rooms {
+		if !armed[room] {
+			t.Fatalf("the service holds no settlement armed for %s", room)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	settleNowAndWait(t, ctx, service, rooms...)
+}
+
+// settleNowAndWait runs the settlement of each of rooms at once, armed or not, and waits with the
+// service's own wait (AwaitBackgroundWrites), within ctx, for it, and for every settlement it arms
+// in turn within a second of now, to end.
+func settleNowAndWait(t *testing.T, ctx context.Context, service *Service, rooms ...string) {
+	t.Helper()
+	for _, room := range rooms {
+		service.SettleNow(room)
+	}
+	if _, err := service.AwaitBackgroundWrites(ctx, time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("wait for the settlements run now: %v", err)
+	}
 }
 
 // appendBlocks returns a live edit that appends the blocks parsed from markdown, stamped with
@@ -5497,12 +5546,15 @@ func TestShutdownThatCutsASettlementShortLeavesItToTheNextLoad(t *testing.T) {
 // resumption's age belongs to a settlement its writer is about to run, and is left to it.
 func TestResumptionSettlesAnOwedDocumentNobodyOpens(t *testing.T) {
 	service, artifactID := newTestService(t)
+	// The resumption arms each owed settlement after the service's settle delay; the test reads
+	// across that delay, so it sets one short enough to read across.
+	service.settle = 20 * time.Millisecond
 	seedServiceText(t, service, artifactID,
 		":::ask{#ask-block urgency=\"high\" multiple=\"false\" state=\"open\"}\nWhich transport?\n:::\n")
 	if err := service.resumeOwedSettlements(context.Background(), time.Hour); err != nil {
 		t.Fatalf("resume settlements owed for an hour: %v", err)
 	}
-	// Ten times the test service's settle delay.
+	// Ten times the settle delay set above.
 	time.Sleep(200 * time.Millisecond)
 	if asks := indexedAsks(t, service, artifactID); asks != 0 {
 		t.Fatalf("the resumption settled a document owing one for less than its age: %d asks indexed", asks)
@@ -6273,6 +6325,9 @@ func TestTreeOfRefusesAnUnloadedDocument(t *testing.T) {
 // on its own.
 func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
 	service, artifactID := newTestService(t)
+	// The settlement this test evicts under runs on the service's own timer, armed by the live
+	// edit below.
+	service.settle = 20 * time.Millisecond
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
 	var evicted atomic.Int32

@@ -389,6 +389,19 @@ func (h *Horizon) Safe(ctx context.Context) (int64, error) {
 	return h.safe, nil
 }
 
+// Busy answers whether an observation is in flight, or the write of an H one proved
+// (PersistProven) is under way. Nothing in production calls it: a test that reads the whole
+// database before and after a request (the API tests' databaseFingerprint) waits for it to answer
+// false, so that no event_horizon row an observer the request did not wait for persists - the last
+// read of an event stream relay generation that stopped meanwhile - lands between its two reads.
+// run marks the write under way under the lock that ends the observation's flight, so no moment
+// between an observation and its write answers false.
+func (h *Horizon) Busy() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.inFlight != nil || h.persisting
+}
+
 // Await returns H once an observation taken during this call is proven safe, so H is at or
 // above every id committed before the call. It returns early with ctx's error, or with an
 // observation's error once every observation has failed for horizonAwaitFailFor.

@@ -71,10 +71,12 @@ const (
 	compactUnfoldable
 )
 
-// compactResult is a compaction's outcome and how many rows it deleted.
+// compactResult is a compaction's outcome and how many rows it deleted, and for rows it found do
+// not fold (compactUnfoldable) at a fold point not judged before, why (compactFold.misread).
 type compactResult struct {
 	outcome compactOutcome
 	deleted int
+	misread error
 }
 
 // rowVersion names a row: its version and the transaction that wrote it, Postgres's xmin, which
@@ -157,7 +159,7 @@ func (p *PgVersioned) compactRoom(ctx context.Context, room string, rule compact
 	}
 	if folded.misread != nil {
 		p.recordUnfoldable(room, folded.point(), folded.misread)
-		return compactResult{outcome: compactUnfoldable}, p.passRoomLock(ctx, pool, room, wait)
+		return compactResult{outcome: compactUnfoldable, misread: folded.misread}, p.passRoomLock(ctx, pool, room, wait)
 	}
 	result, err := p.writeCompaction(ctx, pool, room, wait, folded)
 	if err == nil && result.outcome == compactCompacted {

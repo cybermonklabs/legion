@@ -408,7 +408,7 @@ func TestARewordlessHandBackKeepsTheQuestionsRevision(t *testing.T) {
 // OpenApprovalAsk waits for, then starts the human's comment, which queues on the owner row.
 func TestAReplyQueuedBehindAHandBackTakesTheTurn(t *testing.T) {
 	ctx := context.Background()
-	handler, database, deps := newInteractionDeps(t, nil)
+	handler, database, deps, _ := newInteractionServer(t, nil)
 	issue := createInteractionIssue(t, handler, "TEST", "Racing hand-back", "A spec")
 	approvalRequest := func(through http.Handler) *httptest.ResponseRecorder {
 		return sessionRequest(t, through, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/approval-requests",

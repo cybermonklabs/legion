@@ -812,6 +812,8 @@ func TestACopiedAskBlocksAuthorIsKeptForTheAskItOpensOnceItsSourceIsRetracted(t 
 		return tree
 	})
 	settleCurrentGeneration(t, service, original)
+	// The source's settlement arms the copy's, which opens the block's own ask.
+	settleArmedNow(t, service, copied)
 	requireOneOpenAskOn(t, service, "shared", copied)
 	// The ask row is visible once the copy's settlement commits, and that settlement forgets the
 	// room's owed author as it commits, under the room's lock (consumeAskAuthorsLocked); the room

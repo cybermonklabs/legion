@@ -33,8 +33,8 @@ func TestEveryRoomStateHolderKeepsADetachedState(t *testing.T) {
 			hold: func(service *Service, state *roomState) {
 				service.settleWG.Add(1)
 				timerID := service.nextSettleTimer.Add(1)
-				service.registerSettleTimer(timerID)
 				timer := time.NewTimer(time.Hour)
+				service.registerSettleTimer(timerID, "the held room", time.Now().Add(time.Hour))
 				service.attachSettleTimer(timerID, timer)
 				state.settle = timer
 			},

@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -174,6 +175,10 @@ type ttlCache[K comparable, V any] struct {
 	mu    sync.Mutex
 	items map[K]ttlCacheEntry[V]
 	group singleflight.Group
+	// flights counts each call of get from before it joins a fetch until that fetch has answered,
+	// the call of a caller that left first included, since the fetch goes on without it and a
+	// rate limit it meets is recorded in the database (Client.Fetching).
+	flights atomic.Int32
 }
 
 type ttlCacheEntry[V any] struct {
@@ -215,6 +220,7 @@ func (c *ttlCache[K, V]) get(ctx context.Context, key K, fetch func(context.Cont
 		return zero, err
 	}
 	shared := context.WithoutCancel(ctx)
+	c.flights.Add(1)
 	results := c.group.DoChan(fmt.Sprint(key), func() (any, error) {
 		// Re-check: a sibling caller may have already refreshed this key while this one waited
 		// to acquire the singleflight call.
@@ -232,8 +238,15 @@ func (c *ttlCache[K, V]) get(ctx context.Context, key K, fetch func(context.Cont
 	})
 	select {
 	case <-ctx.Done():
+		// singleflight hands every caller's channel the fetch's one answer, so this receive ends
+		// once the fetch has.
+		go func() {
+			<-results
+			c.flights.Add(-1)
+		}()
 		return zero, ctx.Err()
 	case result := <-results:
+		c.flights.Add(-1)
 		if result.Err != nil {
 			return zero, result.Err
 		}
@@ -246,6 +259,23 @@ func (c *ttlCache[K, V]) forget(key K) {
 	c.mu.Lock()
 	delete(c.items, key)
 	c.mu.Unlock()
+}
+
+// Fetching answers whether a fetch of the client's caches runs (ttlCache.flights), the fetch of a
+// caller that left first included: it goes on without that caller, and a rate limit it meets is
+// recorded in github_rate_limits (Limits). Nothing in production calls it: a test that reads the
+// whole database before and after a request (the API tests' databaseFingerprint) waits for it to
+// answer false. A nil client fetches nothing.
+func (c *Client) Fetching() bool {
+	if c == nil {
+		return false
+	}
+	return c.repositories.fetching() || c.installations.fetching() || c.installationRepos.fetching()
+}
+
+// fetching answers whether a call of get waits on a fetch, or left one running (flights).
+func (c *ttlCache[K, V]) fetching() bool {
+	return c != nil && c.flights.Load() > 0
 }
 
 // Limits is the GitHub rate limits every process obeys together (ratelimit.Store, over

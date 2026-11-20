@@ -183,6 +183,7 @@ func (s *Service) ProcessID() string {
 // rooms resident in this process, and the hub's connection is this process's membership
 // (roomSyncMembers).
 func (s *Service) RegisterRoomSync(hub *pglisten.Hub) (run func(ctx context.Context)) {
+	s.roomSyncRegistered.Store(true)
 	return newRoomSync(s).register(hub)
 }
 

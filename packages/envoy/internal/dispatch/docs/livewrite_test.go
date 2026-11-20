@@ -149,6 +149,7 @@ func TestARolledBackWriteIsNoAuthorOfTheNextVersion(t *testing.T) {
 	if _, err := joinedReplaceText(service, artifactID, "after", alice); err != nil {
 		t.Fatalf("replace text: %v", err)
 	}
+	settleArmedNow(t, service, artifactID)
 	version := waitForDocumentVersion(t, service.store, artifactID, 2)
 	if !reflect.DeepEqual(version.Authors, []model.Actor{alice}) {
 		t.Fatalf("version 2 authors = %#v, want only %v", version.Authors, alice)

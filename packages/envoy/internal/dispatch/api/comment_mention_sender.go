@@ -276,6 +276,11 @@ type mentionSender struct {
 	// what capacity bounds, so a send in flight keeps its place, a send that must wait always has
 	// room to park (park), and the owner's later sends never pass it.
 	held map[mentionKey]mentionClaimState
+	// refreshing counts the claim refreshes whose statement runs (refreshHeldClaims): it writes
+	// the claims it named without the lock, so for its length a send it named may have left held
+	// while its row can still take a claim. A wait for the server's background writes (the API
+	// tests' databaseFingerprint) reads it beside held.
+	refreshing int
 	// closed is set by wait; nothing starts after it, and stopped is closed with it.
 	closed  bool
 	stopped chan struct{}

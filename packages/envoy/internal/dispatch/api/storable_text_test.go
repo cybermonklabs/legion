@@ -141,7 +141,6 @@ func TestEveryStoringRouteRefusesANulInItsText(t *testing.T) {
 	// The mention's send runs after its response (mentionSender) and writes its comment.delivery
 	// event then; it must land before the rows below compare the tables around each refusal.
 	settledCommentDeliveries(t, database, f.mention)
-	awaitBackgroundWrites(t, served)
 	session := func(id string) map[string]any { return map[string]any{"kind": "session", "id": id} }
 	issue := "/api/v1/issues/" + f.issue
 	spec := "/api/v1/artifacts/" + f.spec
@@ -231,10 +230,10 @@ func TestEveryStoringRouteRefusesANulInItsText(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			request := row.request.method + " " + row.request.target
-			before := databaseFingerprint(t, database)
+			before := databaseFingerprint(t, served)
 			response := row.request.send(t, handler)
 			assertRefusal(t, request, response.Code, response.Body.Bytes(), "NUL_CHARACTER", row.field)
-			assertUnchanged(t, request, before, databaseFingerprint(t, database))
+			assertUnchanged(t, request, before, databaseFingerprint(t, served))
 		})
 	}
 }
@@ -268,9 +267,8 @@ func TestAReadRefusesANulInItsParameters(t *testing.T) {
 // type. Each failed with a 500 or, for the markdown file, panicked the document writer and dropped
 // the connection. A markdown file stores no part header, so its Content-Type is not checked.
 func TestCallerTextThatIsNotUTF8IsRefused(t *testing.T) {
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "Not UTF-8", "before\n")
-	awaitBackgroundWrites(t, served)
 	artifacts := "/api/v1/issues/" + issue.Key + "/artifacts"
 	for _, row := range []struct {
 		name    string
@@ -285,10 +283,10 @@ func TestCallerTextThatIsNotUTF8IsRefused(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			request := row.request.method + " " + row.request.target
-			before := databaseFingerprint(t, database)
+			before := databaseFingerprint(t, served)
 			response := row.request.send(t, handler)
 			assertRefusal(t, request, response.Code, response.Body.Bytes(), "INVALID_UTF8", row.field)
-			assertUnchanged(t, request, before, databaseFingerprint(t, database))
+			assertUnchanged(t, request, before, databaseFingerprint(t, served))
 		})
 	}
 	markdown := multipartRequest(t, handler, artifacts, map[string]string{"name": "typed.md"}, "typed.md", "text/markdown; x=\"a\xffb\"", []byte("# Typed\n"), "alice")

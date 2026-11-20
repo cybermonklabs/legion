@@ -438,7 +438,12 @@ func (s *server) runRelatedCheck(
 	stagesStarted := time.Now()
 	pick := &relatedPick{ready: make(chan struct{})}
 	keyword := make(chan relatedStage, 1)
-	go func() {
+	// The pick, the meaning stage and the cross-project leg each run on a goroutine the check can
+	// leave behind at its allowance, so each is the server's detached work (server.detached): the
+	// pick may start the project's term-statistics refresh (ensureSearchTermStats) and a leg may
+	// store display trees (displayTreeReader.storeOf), and a wait for the server's background
+	// writes must see either however late it comes.
+	s.detached.goDetached(func() {
 		pick.terms, pick.err = s.pickRelatedTerms(keywordCtx, s.deps.Store.Pool, project, input.text, input.title, exclusion, probeUnknownTerms)
 		close(pick.ready)
 		stage := relatedStage{err: pick.err}
@@ -453,7 +458,7 @@ func (s *server) runRelatedCheck(
 		}
 		stage.took = time.Since(stagesStarted)
 		keyword <- stage
-	}()
+	})
 
 	// Stage 2 runs on a context of its own ending at relatedMeaningAllowance from the check's
 	// start (server.meaningBound in a test), so the embedding and the meaning query both stop
@@ -508,11 +513,11 @@ func (s *server) runRelatedCheck(
 		// relatedMeaningStage hands the leg's answer over on the stage it answers
 		// (relatedStage.cross), and the leg runs on until the check's wait for it is over.
 		meaning = make(chan relatedStage, 1)
-		go func() {
+		s.detached.goDetached(func() {
 			stage := s.relatedMeaningStage(meaningRead, crossRead, project, input.text, pick, excluded, input.trees != nil)
 			stage.took = time.Since(stagesStarted)
 			meaning <- stage
-		}()
+		})
 	}
 
 	select {
@@ -670,7 +675,7 @@ func (s *server) relatedMeaningStage(
 		// its wait for the leg is over: an overrunning query then gives its pool connection
 		// back at the grace rather than at the meaning deadline.
 		cross = make(chan []model.SearchResult, 1)
-		go func() {
+		s.detached.goDetached(func() {
 			reader := s.readDisplayTrees(crossRead, trees)
 			results, err := s.relatedOtherProjects(crossRead, vector, project, s.deps.Embedder.Identity(), reader)
 			if err != nil {
@@ -680,7 +685,7 @@ func (s *server) relatedMeaningStage(
 			// the answers by the time any other goroutine can read one.
 			reader.resolve()
 			cross <- results
-		}()
+		})
 	}
 	select {
 	case <-pick.ready:

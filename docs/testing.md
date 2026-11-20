@@ -499,6 +499,16 @@ A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): 
 `DISPATCH_TEST_DATABASE_URL` names can hold other databases, such as the local Dispatch's on
 `packages/envoy/scripts/dev-postgres.sh`'s container.
 
+A transaction id is the whole server's, not one database's,
+so a test that needs no transaction id but its own to be open on its server cannot share one:
+the events package's two tests whose lone observation must prove itself
+(`TestHorizonProvesItsOwnObservationOnAQuietInstance` and
+`TestAPersistedHorizonIsReadByALaterProcessAndNotAcrossAReset`)
+take their database from a second server, which `DISPATCH_TEST_QUIET_DATABASE_URL` names and
+no other test uses.
+CI's envoy-go job runs it as a second Postgres service.
+With the variable unset, the two tests skip, and fail on GitHub Actions, naming it.
+
 ## A Go test that opens a NATS client
 
 The daemon's NATS tests share one server per test binary, and `packages/daemon/internal/testnats`

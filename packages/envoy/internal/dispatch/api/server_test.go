@@ -14,7 +14,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -483,77 +482,6 @@ func multipartRequest(t *testing.T, handler http.Handler, target string, fields 
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	return response
-}
-
-// databaseFingerprint hashes every row of every table, so a test can tell a request wrote nothing
-// anywhere: no row inserted, updated or deleted. A test whose earlier requests left writes running
-// waits them out before its first fingerprint (awaitBackgroundWrites): one that commits between two
-// fingerprints reads as the write of the request between them.
-func databaseFingerprint(t *testing.T, database *store.Store) map[string]string {
-	t.Helper()
-	ctx := context.Background()
-	rows, err := database.Pool.Query(ctx, `select tablename from pg_tables where schemaname = 'public'`)
-	if err != nil {
-		t.Fatalf("list tables: %v", err)
-	}
-	tables, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatalf("read table names: %v", err)
-	}
-	if len(tables) == 0 {
-		t.Fatal("the schema has no tables; a fingerprint of it proves nothing")
-	}
-	fingerprint := make(map[string]string, len(tables))
-	for _, table := range tables {
-		var digest string
-		if err := database.Pool.QueryRow(ctx, fmt.Sprintf(
-			`select count(*) || ':' || coalesce(md5(string_agg(t::text, ',' order by t::text)), '') from %s t`,
-			pgx.Identifier{table}.Sanitize(),
-		)).Scan(&digest); err != nil {
-			t.Fatalf("fingerprint %s: %v", table, err)
-		}
-		fingerprint[table] = digest
-	}
-	return fingerprint
-}
-
-// assertUnchanged fails for each table whose rows differ between two fingerprints of one database.
-func assertUnchanged(t *testing.T, request string, before, after map[string]string) {
-	t.Helper()
-	for _, table := range slices.Sorted(maps.Keys(after)) {
-		if before[table] != after[table] {
-			t.Errorf("%s changed table %s", request, table)
-		}
-	}
-}
-
-// awaitBackgroundWrites waits for every write srv's earlier requests left running past their
-// answers: the term-statistics refresh a related-item check starts for a project with no statistics
-// yet (ensureSearchTermStats), which commits search_term_stats and search_term_totals rows when it
-// finishes, and every detached run (srv.detached), such as a related_checks record's retry.
-func awaitBackgroundWrites(t *testing.T, srv *server) {
-	t.Helper()
-	rows, err := srv.deps.Store.Pool.Query(context.Background(), `select key from projects`)
-	if err != nil {
-		t.Fatalf("list projects: %v", err)
-	}
-	projects, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatalf("read project keys: %v", err)
-	}
-	for _, project := range projects {
-		awaitTermStatsRefresh(t, srv, project)
-	}
-	idle := make(chan struct{})
-	go func() {
-		srv.detached.wait()
-		close(idle)
-	}()
-	select {
-	case <-idle:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the server's detached work did not end")
-	}
 }
 
 // assertRefusal checks an answer is 400 with code and an error naming field first.

@@ -1,0 +1,20 @@
+kind: Changed
+body: |-
+  Dispatch's shutdown waits for more of a request's work that runs on past its answer before it
+  closes the database pool: the related-item check's keyword pick, meaning stage and
+  cross-project leg, the term-statistics refresh a pick starts or joins, and the route roster
+  fetch are now counted as the server's detached work, which it already waited for, and the
+  architecture importer's Close also waits for each sync call until the flight it joined has
+  answered. Each of them could otherwise still write after its request answered. A socket
+  heartbeat's check of its caller that is under way when the socket closes now runs to its end
+  rather than being cut off mid-statement. The document service gains `AwaitBackgroundWrites`,
+  which waits for the settlements, evictions, room stores, document sockets and compaction it
+  runs in the background, compacts a document whose rows a compaction may already fold, fails
+  naming a document whose aged rows do not fold, and answers the next write it leaves armed;
+  `SettleAfter` arms a document's settlement a span ahead; the event horizon gains `Busy`, the
+  architecture importer `Syncing` and the GitHub App client `Fetching`, which say whether an
+  observation or its write, a sync or a cached lookup a caller left is under way. Nothing in
+  production calls them: the API's tests wait with them before they compare the whole database.
+time: 2026-11-19T16:59:57Z
+custom:
+    Issue: pr4503

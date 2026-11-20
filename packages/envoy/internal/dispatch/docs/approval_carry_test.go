@@ -647,25 +647,28 @@ func answerBlockAs(t *testing.T, service *Service, artifactID, blockID, login st
 const regionSpec = "Context\n\n:::ask{#region urgency=\"low\" multiple=\"false\"}\nWhich region goes first?\n\n- East: The quiet one.\n- West: The busy one.\n:::\n"
 
 // seededRegionDocument creates regionSpec as a document, starts a service that settles a live
-// write after settle, seeds the document's live text with the same markdown, and returns the
-// store, the service and the document's id once settlement has indexed the block as an ask of the
-// document - the row the carry reads.
-func seededRegionDocument(t *testing.T, settle time.Duration) (*store.Store, *Service, string) {
+// write after an hour, seeds the document's live text with the same markdown, runs its settlement
+// now and returns the store, the service and the document's id once that settlement has indexed
+// the block as an ask of the document - the row the carry reads. No other settlement runs in a
+// test of it: one between the test's answer, its repeat and its named version would repair or
+// version the repeat on its own.
+func seededRegionDocument(t *testing.T) (*store.Store, *Service, string) {
 	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, regionSpec)
-	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: settle})
+	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, regionSpec)
-	// Settlement indexes the block as an ask of this document, the row the carry reads.
-	service.ScheduleSettlement(artifactID)
-	waitFor(t, 3*time.Second, "settlement to index the block", func() bool {
-		var rows int
-		if err := database.Pool.QueryRow(context.Background(), `select count(*) from asks where block_artifact_id = $1 and block_id = 'region'`, artifactID).Scan(&rows); err != nil {
-			t.Fatal(err)
-		}
-		return rows == 1
-	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	settleNowAndWait(t, ctx, service, artifactID)
+	var rows int
+	if err := database.Pool.QueryRow(context.Background(), `select count(*) from asks where block_artifact_id = $1 and block_id = 'region'`, artifactID).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("the seeded document's settlement indexed %d asks under region, want 1", rows)
+	}
 	return database, service, artifactID
 }
 
@@ -689,7 +692,7 @@ func appendSecondRegionAsk(t *testing.T) func(*pmdoc.Node) *pmdoc.Node {
 // read. The same version without the repeat carries, so the repeat alone is what refuses.
 func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 	run := func(t *testing.T, repeat bool) (reviews, approvals int) {
-		database, service, artifactID := seededRegionDocument(t, 20*time.Millisecond)
+		database, service, artifactID := seededRegionDocument(t)
 		approveStoredVersion(t, database, artifactID, 1, "alice")
 
 		answerBlockAs(t, service, artifactID, "region", "alice", []string{"East"})

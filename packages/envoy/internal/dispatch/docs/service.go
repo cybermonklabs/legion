@@ -350,6 +350,11 @@ type Service struct {
 	// one window in which a writer of the row can reach the record's reading and the row's
 	// alike.
 	betweenCloseSnapshotReads func(room string)
+	// betweenBackgroundReads runs in a look for the service's background writes between its
+	// reads of the registers (the settlement timers and each room's record) and its reads of the
+	// counts (settleCallbacks, evicting, serving, the compaction step), the one window in which a
+	// writer can leave a register for a count (runningBackgroundWrite). Nil outside tests.
+	betweenBackgroundReads func()
 	// settlementWoke runs at each wake of a wait for a room's appends: each time the room's idle
 	// signal wakes waitForPendingUpdates or waitForDurableAppends - a settlement's waits, and
 	// Shutdown's drain, which waits through the second. Nil outside tests; tests count the wake-ups
@@ -407,9 +412,28 @@ type Service struct {
 	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks).
 	now      func() time.Time
 	settleWG sync.WaitGroup
+	// settleCallbacks counts the settlement timers whose callback is running, from its first
+	// statement to its last: the register drops a fired timer before the callback's last work
+	// (retireSettlementRoom), so a wait for the service's background writes
+	// (AwaitBackgroundWrites) reads this as well.
+	settleCallbacks atomic.Int32
 	// evictWG counts the forced evictions failRoomLocked spawns. They flush the room through
 	// the store, so shutdown joins them before it closes.
 	evictWG sync.WaitGroup
+	// evicting counts the eviction goroutines running now, whether or not evictWG joins them, for
+	// a wait for the service's background writes (AwaitBackgroundWrites), which must not Wait on
+	// evictWG beside an Add from zero.
+	evicting atomic.Int32
+	// serving counts the document sockets ServeHTTP serves, from its first statement to its last:
+	// a socket's peer updates, the parked bytes they leave (storeParked), its last browser's
+	// settlement (settleLastPeer) and the retirement of a room that settlement loaded
+	// (retireSettlementRoom) all write on the socket's own goroutines, which a wait for the
+	// service's background writes (AwaitBackgroundWrites) sees only through this.
+	serving atomic.Int32
+	// roomSyncRegistered says the process registered this service's room sync
+	// (RegisterRoomSync): another process's notification can then make it write at any moment,
+	// which no wait of this process sees (AwaitBackgroundWrites).
+	roomSyncRegistered atomic.Bool
 	// gateMu makes "is the service stopping?" and the Add that follows it one step, against
 	// Shutdown's store. sync.WaitGroup panics if an Add from zero lands while a Wait is
 	// registered, and without this the check and the Add straddle the store.
@@ -426,7 +450,7 @@ type Service struct {
 	timerMu         sync.Mutex
 	// timers reserve their ID before creating an immediate timer, whose callback
 	// can run before time.AfterFunc returns the *time.Timer to its caller.
-	timers     map[uint64]*time.Timer
+	timers     map[uint64]settleTimer
 	suppressMu sync.Mutex
 	suppressed map[string][]*suppressSlot
 	// serviceOrigins holds the transaction origins of the service's own in-flight Server.Apply
@@ -875,7 +899,7 @@ func New(deps Deps) *Service {
 		settle:            settle,
 		markWait:          markWait,
 		now:               time.Now,
-		timers:            make(map[uint64]*time.Timer),
+		timers:            make(map[uint64]settleTimer),
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		editNoticeQuiet:   editNoticeQuiet,
 		reads:             newDocumentReads(readBudget),
@@ -1417,7 +1441,7 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 	generation := state.roomGeneration
 	s.stopSettleTimer(state.settle)
 	timerID := s.nextSettleTimer.Add(1)
-	s.registerSettleTimer(timerID)
+	s.registerSettleTimer(timerID, room, time.Now().Add(delay))
 	// The callback holds the service and the room's state weakly. Stopping a timer does not free
 	// its callback: the runtime keeps a stopped timer in the heap of the P that armed it until that
 	// P next clears its stopped timers or the timer's time comes, and when an idle P next runs
@@ -1433,6 +1457,10 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 		if s == nil {
 			return
 		}
+		// Counted until the callback's last statement: the register drops the timer in the
+		// deferred close below, before that close's own work ends (AwaitBackgroundWrites).
+		s.settleCallbacks.Add(1)
+		defer s.settleCallbacks.Add(-1)
 		defer s.settleWG.Done()
 		// An armed timer holds its state (unusedLocked), so the state can go only once the timer
 		// has left the register, and so can a room a late departure's settlement loaded, which
@@ -1453,16 +1481,27 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 	s.attachSettleTimer(timerID, timer)
 }
 
-func (s *Service) registerSettleTimer(timerID uint64) {
+// settleTimer is one entry of the settlement timer register: the timer, nil between its
+// registration and attachSettleTimer, the room it settles and when it is due, which a wait for the
+// service's background writes reads to tell a settlement about to run from one armed for later
+// (AwaitBackgroundWrites).
+type settleTimer struct {
+	timer *time.Timer
+	room  string
+	due   time.Time
+}
+
+func (s *Service) registerSettleTimer(timerID uint64, room string, due time.Time) {
 	s.timerMu.Lock()
-	s.timers[timerID] = nil
+	s.timers[timerID] = settleTimer{room: room, due: due}
 	s.timerMu.Unlock()
 }
 
 func (s *Service) attachSettleTimer(timerID uint64, timer *time.Timer) {
 	s.timerMu.Lock()
-	if _, found := s.timers[timerID]; found {
-		s.timers[timerID] = timer
+	if registered, found := s.timers[timerID]; found {
+		registered.timer = timer
+		s.timers[timerID] = registered
 	}
 	s.timerMu.Unlock()
 }
@@ -1504,7 +1543,7 @@ func (s *Service) takeSettleTimer(timer *time.Timer) bool {
 	s.timerMu.Lock()
 	defer s.timerMu.Unlock()
 	for timerID, armed := range s.timers {
-		if armed != timer {
+		if armed.timer != timer {
 			continue
 		}
 		if !timer.Stop() {
@@ -1519,9 +1558,9 @@ func (s *Service) takeSettleTimer(timer *time.Timer) bool {
 func (s *Service) stopAllSettleTimers() {
 	s.timerMu.Lock()
 	timers := make([]*time.Timer, 0, len(s.timers))
-	for _, timer := range s.timers {
-		if timer != nil {
-			timers = append(timers, timer)
+	for _, armed := range s.timers {
+		if armed.timer != nil {
+			timers = append(timers, armed.timer)
 		}
 	}
 	s.timerMu.Unlock()
@@ -1541,7 +1580,7 @@ func (s *Service) isSettleTimerArmed(timer *time.Timer) bool {
 	s.timerMu.Lock()
 	defer s.timerMu.Unlock()
 	for _, armed := range s.timers {
-		if armed == timer {
+		if armed.timer == timer {
 			return true
 		}
 	}
@@ -1585,10 +1624,13 @@ func (s *Service) rearmSettle(room string) {
 	s.scheduleSettleLocked(room, state)
 }
 
-// settleAfter arms the document's settlement to run after delay, replacing the timer armed for it,
+// SettleAfter arms the document's settlement to run after delay, replacing the timer armed for it,
 // unless the service or the room is shutting down. It arms the timer whatever the room's appends
 // are doing: a settlement that finds them in flight waits for them itself (settleRoomWithin).
-func (s *Service) settleAfter(artifactID string, delay time.Duration) {
+// Nothing in production calls it but SettleNow. The API tests of a wait for the service's
+// background writes (database_fingerprint_wait_test.go) arm a settlement a short span ahead with
+// it, so that a wait which did not wait for that settlement is already reading when it writes.
+func (s *Service) SettleAfter(artifactID string, delay time.Duration) {
 	if s.stopping.Load() || s.shuttingDown(artifactID) {
 		return
 	}
@@ -2321,13 +2363,13 @@ func (s *Service) ScheduleSettlement(artifactID string) {
 }
 
 // SettleNow arms the document's settlement to run at once rather than at the end of the settle
-// window (settleAfter with no delay): it replaces the timer a write armed, and a settlement with
+// window (SettleAfter with no delay): it replaces the timer a write armed, and a settlement with
 // nothing owed writes nothing. A settlement armed this way waits for the room's appends as any
 // other does (settleRoomWithin). Nothing in production calls it. It exists for tests that hold a
 // write unsettled across a window wide enough to land another write in it: once that write has
 // landed, the test settles the document now instead of waiting the window out.
 func (s *Service) SettleNow(artifactID string) {
-	s.settleAfter(artifactID, 0)
+	s.SettleAfter(artifactID, 0)
 }
 
 type BlockIDBackfill struct {
@@ -2753,7 +2795,9 @@ func (s *Service) refuseClosedIssueAppend(room string, instance *roomInstance) {
 	// Shutdown joins the close, as it does a failed room's eviction (failRoomLocked); one that
 	// begins after Shutdown stopped accepting work runs unjoined, since the room still must close.
 	tracked := s.addUnlessStopping(&s.evictWG)
+	s.evicting.Add(1)
 	go func() {
+		defer s.evicting.Add(-1)
 		if tracked {
 			defer s.evictWG.Done()
 		}
@@ -2887,7 +2931,9 @@ func (s *Service) closeRoomOnReplacedHistory(room string, instance *roomInstance
 	if !s.addUnlessStopping(&s.evictWG) {
 		return
 	}
+	s.evicting.Add(1)
 	go func() {
+		defer s.evicting.Add(-1)
 		defer s.evictWG.Done()
 		live := s.srv.GetDoc(room)
 		if live == nil || s.instanceOf(live) != instance {
@@ -3327,7 +3373,9 @@ func (s *Service) failRoomLocked(room string, state *roomState, cause error) {
 	// awaitRoomRecovery blocks every reader of a failed room on the close(done) below, and a
 	// gated eviction that never ran would strand them. Only the joining is skipped.
 	tracked := s.addUnlessStopping(&s.evictWG)
+	s.evicting.Add(1)
 	go func() {
+		defer s.evicting.Add(-1)
 		if tracked {
 			defer s.evictWG.Done()
 		}

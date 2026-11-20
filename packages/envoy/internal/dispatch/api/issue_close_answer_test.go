@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -19,9 +20,11 @@ import (
 // later read of the issue must all name the sequence that event took, which a count of the events
 // the route itself queued answers short. The reopen moves the issue the close left done, so the
 // two moves run in order against the one issue, not as subtests a reader could run alone, and
-// each failure names the move it came from.
+// each failure names the move it came from. The settlement a write arms is kept out of the test,
+// an hour away: the test's reads before and after each move would otherwise race it, which writes
+// events on the issue and refreshes the anchor the test made stale before the move does.
 func TestClosingAndReopeningAnswerTheSequenceTheWritePhaseCommitted(t *testing.T) {
-	f := newCloseAsksFixture(t)
+	f := newCloseAsksFixtureSettlingAfter(t, time.Hour)
 	anchored := createThreadComment(t, f.handler, f.issue, map[string]any{
 		"body":   "Does this still hold?",
 		"anchor": map[string]any{"artifact": "spec", "quote": "Context"},

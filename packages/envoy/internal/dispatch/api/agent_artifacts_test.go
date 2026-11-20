@@ -266,9 +266,9 @@ func planReadsIndex(t *testing.T, planJSON json.RawMessage, index string) bool {
 // anything is written, as is a session id no reference could carry. Its artifacts take no
 // comment or ask, which only an issue's or a project's documents hold.
 func TestAnAgentsConversationRefusesADocumentAndAnInvalidSessionID(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	base := "/api/v1/agents/" + agentSession + "/artifacts"
-	before := databaseFingerprint(t, database)
+	before := databaseFingerprint(t, served)
 
 	for name, response := range map[string]*httptest.ResponseRecorder{
 		"inline JSON":   dispatchRequest(t, handler, http.MethodPost, base, map[string]string{"name": "notes.md", "content": "# Notes"}, "alice"),
@@ -291,7 +291,7 @@ func TestAnAgentsConversationRefusesADocumentAndAnInvalidSessionID(t *testing.T)
 			}
 		}
 	}
-	assertUnchanged(t, "a refused agent upload", before, databaseFingerprint(t, database))
+	assertUnchanged(t, "a refused agent upload", before, databaseFingerprint(t, served))
 
 	uploaded := multipartRequest(t, handler, base, map[string]string{"name": "shot.png"}, "shot.png", "image/png", []byte("png"), "alice")
 	if uploaded.Code != http.StatusCreated {

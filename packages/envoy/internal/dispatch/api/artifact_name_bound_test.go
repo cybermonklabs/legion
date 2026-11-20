@@ -46,7 +46,7 @@ func nameBoundTargets(issueKey, session string) []nameBoundTarget {
 // one, and writes nothing. A name whose key is exactly the bound is stored, read back by its slug,
 // and takes a second version.
 func TestANewArtifactNamePastTheBoundIsRefused(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "CORE", "Long artifact names", "Context paragraph.\n")
 	const session = "session-0123456789abcdef"
 	bound := fmt.Sprintf("past the %d bytes", maxNewArtifactKeyBytes)
@@ -56,24 +56,16 @@ func TestANewArtifactNamePastTheBoundIsRefused(t *testing.T) {
 			t.Fatalf("%s: status=%d body=%.400s, want 400 INVALID_ARTIFACT %q", what, response.Code, response.Body.String(), bound)
 		}
 	}
-	// What an upload writes; a document the test stored before settles in the background, which
-	// writes doc_settlements_pending whenever it likes.
-	stored := func(t *testing.T) map[string]string {
-		t.Helper()
-		all := databaseFingerprint(t, database)
-		return map[string]string{"artifacts": all["artifacts"], "artifact_versions": all["artifact_versions"], "events": all["events"], "refs": all["refs"]}
-	}
-
 	for _, target := range nameBoundTargets(issue.Key, session) {
 		t.Run(target.name, func(t *testing.T) {
 			// The hex names slug to themselves, so a name of the bound less `<owner>/` gives a key of
 			// exactly the bound.
 			atBound := randomBlockID(t, maxNewArtifactKeyBytes-len(target.owner+"/"))
-			before := stored(t)
+			before := databaseFingerprint(t, served)
 			refused(t, "a name of 3000 characters", target.upload(t, handler, target.base, randomBlockID(t, 3000)))
 			refused(t, "a name one byte past the bound", target.upload(t, handler, target.base, randomBlockID(t, maxNewArtifactKeyBytes+1)))
 			refused(t, "a name whose key is one byte past the bound", target.upload(t, handler, target.base, atBound+"a"))
-			assertUnchanged(t, "a refused name", before, stored(t))
+			assertUnchanged(t, "a refused name", before, databaseFingerprint(t, served))
 
 			created := target.upload(t, handler, target.base, atBound)
 			if created.Code != http.StatusCreated {
@@ -101,9 +93,9 @@ func TestANewArtifactNamePastTheBoundIsRefused(t *testing.T) {
 
 			// Another name slugging to the same slug takes it with a suffix, which would put the key
 			// past the bound.
-			before = stored(t)
+			before = databaseFingerprint(t, served)
 			refused(t, "a name whose slug, suffixed, puts the key past the bound", target.upload(t, handler, target.base, atBound+"!"))
-			assertUnchanged(t, "a refused suffixed slug", before, stored(t))
+			assertUnchanged(t, "a refused suffixed slug", before, databaseFingerprint(t, served))
 		})
 	}
 }

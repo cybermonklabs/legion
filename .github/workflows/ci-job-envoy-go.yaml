@@ -61,8 +61,27 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # A second server, which only the events package's two tests that need a quiet horizon use
+      # (DISPATCH_TEST_QUIET_DATABASE_URL, horizon_test.go's quietStore). A transaction id is the
+      # whole server's, so on the server above, which every package of the unit step shares, any
+      # other test's open transaction, or storetest's drop of an earlier test's database, keeps
+      # those tests' lone observation from proving itself for as long as it stays open. A service
+      # rather than a testpg container: this job already gives its tests Postgres as a service, and
+      # a separate issue removes the module's Postgres containers (internal/testnats/nats_test.go,
+      # the comment of TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime).
+      postgres-quiet:
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      DISPATCH_TEST_QUIET_DATABASE_URL: postgres://postgres:ci@localhost:5433/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
       # clean up, and its image would be one more registry pull a test could fail on.

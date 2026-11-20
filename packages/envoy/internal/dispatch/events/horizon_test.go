@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"slices"
 	"strconv"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // The xmax hole, scripted with the counterexample the package documentation names. T2 took
@@ -457,14 +459,13 @@ func TestHorizonStaysBelowAnOpenLowerWrite(t *testing.T) {
 // snapshot was taken, and the id the snapshot saw is final at once. H must then reach a freshly
 // committed event after a single Safe, with no gap left open and nothing to observe again for.
 //
-// Transaction ids are instance-wide, so another test's write (another package's tests share the
-// Postgres instance and run beside this one), or this process's background database drops, can
-// hold one while the observation runs and leave a snapshot that proves nothing. The quiet case is
-// therefore built again, pausing between attempts so those transactions can end, for up to
-// thirty seconds, and the test logs the attempt it took. Twenty attempts back to back were not
-// enough when the module's packages ran together on two CPUs.
+// Transaction ids are the whole server's, so the test runs on a server no other test uses
+// (quietStore): on a shared one, another package's write or storetest's drop of an earlier test's
+// database can hold an id open for as long as it lasts, and leave every snapshot proving nothing.
+// The quiet case is still built again, pausing between attempts, for up to thirty seconds, and
+// the test logs the attempt it took.
 func TestHorizonProvesItsOwnObservationOnAQuietInstance(t *testing.T) {
-	database := storetest.Open(t)
+	database := quietStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
@@ -1202,9 +1203,11 @@ func TestWriterFloorIgnoresATransactionThatHasInsertedNoEvent(t *testing.T) {
 
 // A Horizon that persists writes its H to event_horizon once it advances, and another Horizon (a
 // later process) reads it: every event at or below it is final, whichever process proved it. A
-// value of a log since reset is not read: its event is gone, or carries another created_at.
+// value of a log since reset is not read: its event is gone, or carries another created_at. The
+// first Horizon must prove an H, which a transaction id held open anywhere on the server keeps
+// back, so the test runs on a server no other test uses (quietStore).
 func TestAPersistedHorizonIsReadByALaterProcessAndNotAcrossAReset(t *testing.T) {
-	database := storetest.Open(t)
+	database := quietStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	first := NewHorizon(database.Pool)
@@ -1374,4 +1377,39 @@ func TestAPersistOfAnOldLogsHorizonWritesNothingAfterTheLogIsReset(t *testing.T)
 	if got, err := horizon.Persisted(ctx); err != nil || got != 0 {
 		t.Fatalf("Persisted after a reset = %d, %v; want 0", got, err)
 	}
+}
+
+// quietDatabaseURLEnv names a PostgreSQL server no other test uses, for the tests that need no
+// transaction id but their own to be open on their server (quietStore). CI's envoy-go job runs it
+// as a second Postgres service beside the one DISPATCH_TEST_DATABASE_URL names, which every other
+// Postgres-backed test of the job shares.
+const quietDatabaseURLEnv = "DISPATCH_TEST_QUIET_DATABASE_URL"
+
+// quietStore is a migrated store on a database of the test's own on the server
+// quietDatabaseURLEnv names, closed and dropped when the test ends. A transaction id is the whole
+// server's, not one database's, so a test whose observation must prove itself alone cannot run
+// beside other tests' transactions, as it would on the shared server. With the variable unset it
+// skips the test, and fails it on GitHub Actions, naming the variable (testdb.SkipOutsideCI).
+func quietStore(t *testing.T) *store.Store {
+	t.Helper()
+	raw := os.Getenv(quietDatabaseURLEnv)
+	if raw == "" {
+		testdb.SkipOutsideCI(t, "%s names no PostgreSQL server: this test needs a server whose transaction ids no other test holds", quietDatabaseURLEnv)
+	}
+	server, err := url.Parse(raw)
+	if err != nil {
+		// url.Parse's own error quotes the URL it was given, which carries a credential.
+		t.Fatalf("parse %s: %v", quietDatabaseURLEnv, errors.Unwrap(err))
+	}
+	server.Path = "/postgres"
+	ctx := context.Background()
+	database, err := store.Open(ctx, testdb.DatabaseOn(t, server.String(), "quiet"))
+	if err != nil {
+		t.Fatalf("open a database on the server %s names: %v", quietDatabaseURLEnv, err)
+	}
+	t.Cleanup(database.Pool.Close)
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatalf("migrate the database on the server %s names: %v", quietDatabaseURLEnv, err)
+	}
+	return database
 }

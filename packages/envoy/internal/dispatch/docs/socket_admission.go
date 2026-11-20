@@ -170,6 +170,10 @@ func socketRoom(r *http.Request) string {
 // alone - another transport, or another handler that reaches a room name by a path of its own,
 // opens a room under whatever name it passes, and no code here can stop that.
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Counted from here to the last of the deferred calls below, the retirement of a room the
+	// socket's last browser's settlement loaded among them (AwaitBackgroundWrites).
+	s.serving.Add(1)
+	defer s.serving.Add(-1)
 	if s.hostname != "" {
 		w.Header().Set(ProcessHeader, s.hostname)
 		w = &processHeaderWriter{ResponseWriter: w, line: []byte(ProcessHeader + ": " + s.hostname + "\r\n")}

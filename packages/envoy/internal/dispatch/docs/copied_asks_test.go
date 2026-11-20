@@ -336,6 +336,8 @@ func TestABlockPastedThenCutOpensItsAskOnTheDocumentItWasPastedInto(t *testing.T
 		return tree
 	})
 	settleCurrentGeneration(t, service, original)
+	// The first document's settlement arms the copy's, which opens the block's own ask.
+	settleArmedNow(t, service, pasted)
 	requireOneOpenAskOn(t, service, "moved", pasted)
 }
 
@@ -354,6 +356,8 @@ func TestACopyOpensItsOwnAskWhenItsOpenSourceLeavesItsDocument(t *testing.T) {
 		return tree
 	})
 	settleCurrentGeneration(t, service, original)
+	// The source's settlement arms the copy's, which opens the open block's own ask.
+	settleArmedNow(t, service, copied)
 	requireOneOpenAskOn(t, service, "copy-open", copied)
 	if count := asksOn(t, service, copied); count != 1 {
 		t.Fatalf("the copy holds %d asks, want only the open block's own", count)
@@ -986,6 +990,8 @@ func TestThreeCopiesOfARetractedAskShareTheOneAskTheFirstOpens(t *testing.T) {
 		return tree
 	})
 	settleCurrentGeneration(t, service, original)
+	// The source's settlement arms each copy's; they run at once, as their timers would.
+	settleArmedNow(t, service, copies...)
 
 	var open []string
 	var shown map[string]string

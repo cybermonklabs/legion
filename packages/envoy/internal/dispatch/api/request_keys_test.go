@@ -160,7 +160,7 @@ func TestAKeyReusedForAnotherRequestIsRefused(t *testing.T) {
 	if first := rig.send(t, "a", map[string]any{"n": 1}, "alice", "reused"); first.Code != http.StatusCreated {
 		t.Fatalf("first: status=%d body=%s", first.Code, first.Body.String())
 	}
-	before := databaseFingerprint(t, rig.database)
+	before := databaseFingerprint(t, rig.server)
 	for name, request := range map[string]struct {
 		target string
 		body   any
@@ -178,7 +178,7 @@ func TestAKeyReusedForAnotherRequestIsRefused(t *testing.T) {
 			}
 		})
 	}
-	assertUnchanged(t, "a reused key", before, databaseFingerprint(t, rig.database))
+	assertUnchanged(t, "a reused key", before, databaseFingerprint(t, rig.server))
 	if runs := rig.runs.Load(); runs != 1 {
 		t.Fatalf("the handler ran %d times, want once", runs)
 	}

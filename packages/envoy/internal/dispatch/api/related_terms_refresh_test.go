@@ -196,7 +196,7 @@ func TestRefreshAppliesEveryKindOfChangeAsAFullRebuildCountsIt(t *testing.T) {
 	const project = "TERM"
 	issue := createInteractionIssue(t, handler, project, "Astrolabe survey", "The astrolabe measures altitude.\n")
 	document := createProjectDocument(t, handler, project, "atlas.md", "# Atlas\n\nThe plateau ranges north.\n")
-	awaitTermStatsRefresh(t, srv, project)
+	awaitBackgroundWrites(t, srv)
 	refreshTermStatsPass(t, database, project)
 
 	var comment, ask, message string
@@ -268,7 +268,7 @@ func TestRefreshAppliesEveryKindOfChangeAsAFullRebuildCountsIt(t *testing.T) {
 	} {
 		t.Run(change.name, func(t *testing.T) {
 			change.apply(t)
-			awaitTermStatsRefresh(t, srv, project)
+			awaitBackgroundWrites(t, srv)
 			applied := refreshTermStatsPass(t, database, project)
 			if applied.Mode != searchTermModeStep || applied.Changes == 0 {
 				t.Fatalf("the pass ran mode=%s changes=%d, want a step that applied something", applied.Mode, applied.Changes)
@@ -309,7 +309,7 @@ func TestRefreshFromTheRelatedCheckAppliesTheQueuedChanges(t *testing.T) {
 	handler, database, srv := relatedTermsServer(t)
 	const project = "ENSURE"
 	issue := createInteractionIssue(t, handler, project, "Astrolabe survey", "The astrolabe measures altitude.\n")
-	awaitTermStatsRefresh(t, srv, project)
+	awaitBackgroundWrites(t, srv)
 	refreshTermStatsPass(t, database, project)
 
 	if _, err := database.Pool.Exec(context.Background(), `

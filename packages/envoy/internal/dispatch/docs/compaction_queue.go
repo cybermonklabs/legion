@@ -72,15 +72,24 @@ type compactionCheck struct {
 	due bool
 	// aged says one of them is older than compactTail, so a compaction would fold something.
 	aged bool
+	// untilAged is how long until one of them is older than compactTail: the first moment a
+	// compaction under the tail rule can fold the room's rows, whether the queue's retry, a room's
+	// close or a forced eviction runs it, since the fold point it picks is the newest row older
+	// than compactTail (compactRule) and folds nothing when that is the first. Zero or less once
+	// one is (aged), and zero when the room has no row after its first. A wait for the service's
+	// background writes reads it (AwaitBackgroundWrites).
+	untilAged time.Duration
 	// untilDue is how long until the room is due, while it has rows after its first and is not.
 	untilDue time.Duration
 }
 
 // checkCompaction reads, in one statement on the compaction pool, whether the room is due a
 // compaction and, if not, when it will be: the earlier of its oldest row after the first leaving
-// compactMaxTailAge and its compactMinRows-th oldest leaving compactTail. Both read created_at
-// against the database's now(), the clock the compaction's fold point is chosen by (compactRule),
-// and it reads the rows at or below the head that compaction folds under (headVersion).
+// compactMaxTailAge and its compactMinRows-th oldest leaving compactTail; and when its oldest row
+// after the first leaves compactTail, which is when a compaction can first fold anything. Each
+// reads created_at against the database's now(), the clock the compaction's fold point is chosen
+// by (compactRule), and it reads the rows at or below the head that compaction folds under
+// (headVersion).
 func (s *Service) checkCompaction(ctx context.Context, room string) (compactionCheck, error) {
 	pool, err := s.store.Pool.Compaction()
 	if err != nil {
@@ -89,7 +98,7 @@ func (s *Service) checkCompaction(ctx context.Context, room string) (compactionC
 	var check compactionCheck
 	var aged int64
 	var pastMaxAge bool
-	var seconds *float64
+	var dueSeconds, agedSeconds *float64
 	if err := pool.QueryRow(ctx, `
 		with later as (
 			select created_at, row_number() over (order by created_at, version) as age_rank
@@ -103,15 +112,19 @@ func (s *Service) checkCompaction(ctx context.Context, room string) (compactionC
 			extract(epoch from least(
 				min(created_at) + make_interval(secs => $3),
 				min(created_at) filter (where age_rank = $4) + make_interval(secs => $2)
-			) - now())::float8
+			) - now())::float8,
+			extract(epoch from min(created_at) + make_interval(secs => $2) - now())::float8
 		from later
-	`, room, compactTail.Seconds(), compactMaxTailAge.Seconds(), int64(compactMinRows)).Scan(&check.later, &aged, &pastMaxAge, &seconds); err != nil {
+	`, room, compactTail.Seconds(), compactMaxTailAge.Seconds(), int64(compactMinRows)).Scan(&check.later, &aged, &pastMaxAge, &dueSeconds, &agedSeconds); err != nil {
 		return compactionCheck{}, fmt.Errorf("check the document's compaction: %w", err)
 	}
 	check.aged = aged > 0
 	check.due = pastMaxAge || aged >= compactMinRows
-	if seconds != nil {
-		check.untilDue = time.Duration(*seconds * float64(time.Second))
+	if dueSeconds != nil {
+		check.untilDue = time.Duration(*dueSeconds * float64(time.Second))
+	}
+	if agedSeconds != nil {
+		check.untilAged = time.Duration(*agedSeconds * float64(time.Second))
 	}
 	return check, nil
 }
@@ -484,6 +497,14 @@ func (q *compactionQueue) pause(ctx context.Context) (resume func()) {
 		q.mu.Unlock()
 		q.signal()
 	}
+}
+
+// stepping answers whether a step is in flight, which a wait for the service's background writes
+// waits out (AwaitBackgroundWrites) before it compacts a room a step may be compacting.
+func (q *compactionQueue) stepping() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.current != nil
 }
 
 // compactionHeap orders the rooms waiting in the queue by when each is next checked.

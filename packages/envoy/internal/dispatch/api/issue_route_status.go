@@ -219,8 +219,10 @@ func (s *server) readRouteRoster(ctx context.Context) (routeRoster, error) {
 		// the request that started it, whose end must not end it and whose values (its
 		// transaction-tracking mark among them) belong to that request alone; the fetch bound
 		// still limits it, and a shutdown ends it. now, the database's clock on the read that
-		// found the row stale, is when its call counts as sent.
-		go s.fetchRouteRoster(s.lifetime, fetch, now)
+		// found the row stale, is when its call counts as sent. It stores the listener's answer
+		// after a read that stopped waiting at its own bound may have answered, so it is the
+		// server's detached work (server.detached), which a wait for its background writes sees.
+		s.detached.goDetached(func() { s.fetchRouteRoster(s.lifetime, fetch, now) })
 	}
 	cache.mu.Unlock()
 	select {

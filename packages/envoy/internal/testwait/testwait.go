@@ -5,10 +5,14 @@
 // is not a failure, and a condition that never holds still fails, naming what it waited for.
 // Eventually is the wait a test usually wants; WithinPolling takes a bound and a pace of its
 // own; Holds answers rather than fails, for a caller whose failure text is its own; and Bounded
-// is the clamp alone, for a wait that holds the rest itself.
+// is the clamp alone, for a wait that holds the rest itself. FailureOf and FailureWithin run a
+// wait, or any helper, that fails its test through Fatal and answer what it failed with: a test
+// of a helper's refusal reads the refusal's own words.
 package testwait
 
 import (
+	"fmt"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -71,4 +75,58 @@ func waitUntil(deadline time.Time, poll time.Duration, condition func() bool) bo
 		time.Sleep(poll)
 	}
 	return condition()
+}
+
+// FailureOf runs subject with a recorder in place of t, on a goroutine of its own, and answers
+// what subject failed with through Fatal or Fatalf, or "" when it returned. The recorder ends
+// subject's goroutine at the failure, as t.Fatal ends the test's, so nothing after the failure
+// runs; every other method of t, Errorf and Logf among them, reaches t itself. FailureOf waits for
+// subject however long it runs, so subject bounds its own wait.
+func FailureOf(t testing.TB, subject func(t testing.TB)) string {
+	t.Helper()
+	recorded, ended := startRecorded(t, subject)
+	<-ended
+	return recorded.message
+}
+
+// FailureWithin is FailureOf for a subject with no bound of its own: when subject has not ended
+// within bound, the test fails, saying that what still runs.
+func FailureWithin(t testing.TB, bound time.Duration, what string, subject func(t testing.TB)) string {
+	t.Helper()
+	recorded, ended := startRecorded(t, subject)
+	select {
+	case <-ended:
+	case <-time.After(bound):
+		t.Fatalf("%s still runs after %s", what, bound)
+	}
+	return recorded.message
+}
+
+// fatalRecorder is t with Fatal and Fatalf recorded and the goroutine ended, as t.Fatal does.
+type fatalRecorder struct {
+	testing.TB
+	message string
+}
+
+func (f *fatalRecorder) Fatal(args ...any) {
+	f.message = fmt.Sprint(args...)
+	runtime.Goexit()
+}
+
+func (f *fatalRecorder) Fatalf(format string, args ...any) {
+	f.message = fmt.Sprintf(format, args...)
+	runtime.Goexit()
+}
+
+// startRecorded runs subject with a fatalRecorder over t on a goroutine of its own, and answers
+// the recorder and a channel closed once subject has ended, by its return or by its Fatal: the
+// close is deferred, so the recorder's runtime.Goexit runs it too.
+func startRecorded(t testing.TB, subject func(t testing.TB)) (*fatalRecorder, <-chan struct{}) {
+	recorded := &fatalRecorder{TB: t}
+	ended := make(chan struct{})
+	go func() {
+		defer close(ended)
+		subject(recorded)
+	}()
+	return recorded, ended
 }

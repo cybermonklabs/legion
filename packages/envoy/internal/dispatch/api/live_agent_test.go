@@ -140,7 +140,7 @@ func TestAgentStreamWritesNothingToPostgres(t *testing.T) {
 
 	// The relay's promise is that a session's conversation reaches a viewer and is never written
 	// down, so the proof is that not one row changes anywhere while frames flow.
-	before := databaseFingerprint(t, rig.database)
+	before := databaseFingerprint(t, rig.served)
 
 	client := rig.dial(t, asUser("alice"))
 	client.subscribeAgent(t, "agent", plannerSessionID)
@@ -151,12 +151,7 @@ func TestAgentStreamWritesNothingToPostgres(t *testing.T) {
 	_ = client.conn.Close()
 	rig.sockets(t, 0)
 
-	after := databaseFingerprint(t, rig.database)
-	for name, digest := range after {
-		if digest != before[name] {
-			t.Fatalf("relaying a session's conversation wrote to %s", name)
-		}
-	}
+	assertUnchanged(t, "relaying a session's conversation", before, databaseFingerprint(t, rig.served))
 }
 
 // A caller with no credential never gets a socket at all, so it never reaches the session it

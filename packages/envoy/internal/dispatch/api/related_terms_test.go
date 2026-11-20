@@ -29,17 +29,6 @@ func refreshTermStats(t *testing.T, database *store.Store, project string) int {
 	return refreshTermStatsPass(t, database, project).Items
 }
 
-// awaitTermStatsRefresh waits for the refresh of project's statistics srv has running, if any,
-// to end, and starts none of its own.
-func awaitTermStatsRefresh(t *testing.T, srv *server, project string) {
-	t.Helper()
-	select {
-	case <-srv.termStats.DoChan(project, func() (any, error) { return nil, nil }):
-	case <-time.After(30 * time.Second):
-		t.Fatalf("the refresh of %s's statistics did not end", project)
-	}
-}
-
 // pickTerms picks from text as an ask's question is picked: the whole text is its title.
 func pickTerms(t *testing.T, srv *server, project, text string, exclude relatedExclusion) relatedTerms {
 	t.Helper()
@@ -181,7 +170,7 @@ func TestRelatedTermsProbeLexemesWrittenSinceTheRefresh(t *testing.T) {
 	createSearchIssue(t, handler, "PROBE", "Harbour crane schedule", "")
 	// The issue's check found no statistics and started a refresh; one ending after the test's
 	// would count the items written since.
-	awaitTermStatsRefresh(t, srv, "PROBE")
+	awaitBackgroundWrites(t, srv)
 	refreshTermStats(t, database, "PROBE")
 	createSearchIssue(t, handler, "PROBE", "Flamingo enclosure", "")
 	document := createProjectDocument(t, handler, "PROBE", "Island notes", "# Notes\nZanzibar ferries.\n")
@@ -212,7 +201,7 @@ func TestRelatedTermsProbeAProjectWithNoStatisticsAndStartItsRefresh(t *testing.
 	createSearchIssue(t, handler, "FRESH", "Lighthouse lens", "")
 	// The issue's own check found no statistics and started a refresh: wait it out and drop
 	// what it wrote, so the pick below finds none.
-	awaitTermStatsRefresh(t, srv, "FRESH")
+	awaitBackgroundWrites(t, srv)
 	if _, err := database.Pool.Exec(context.Background(), `
 		delete from search_term_stats where project_key = 'FRESH';
 		delete from search_term_totals where project_key = 'FRESH'`); err != nil {
@@ -228,7 +217,7 @@ func TestRelatedTermsProbeAProjectWithNoStatisticsAndStartItsRefresh(t *testing.
 	}
 	// Nothing else refreshes the project now, so totals present once no refresh runs are the
 	// ones the refresh the pick started wrote.
-	awaitTermStatsRefresh(t, srv, "FRESH")
+	awaitBackgroundWrites(t, srv)
 	var items int
 	if err := database.Pool.QueryRow(context.Background(), `select items from search_term_totals where project_key = 'FRESH'`).Scan(&items); err != nil {
 		t.Fatalf("read the refreshed totals: %v", err)

@@ -106,7 +106,7 @@ func TestAStateWithNoTimerIsReleasedWhileAnotherRoomArmsOne(t *testing.T) {
 	service, _ := newRoomReleaseService(t)
 	const id = "00000000-0000-4000-8000-000000000513"
 	timerID := service.nextSettleTimer.Add(1)
-	service.registerSettleTimer(timerID)
+	service.registerSettleTimer(timerID, "another room", time.Now().Add(time.Hour))
 	t.Cleanup(func() { service.unregisterSettleTimer(timerID) })
 	state := service.lockState(id)
 	service.unlockState(id, state)

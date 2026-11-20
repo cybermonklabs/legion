@@ -140,7 +140,8 @@ func (m *mentionSender) keepClaims() {
 // reads committed rows past a lease, sees it live sooner, never later, and the lane's bound send
 // accepts any claim at or past the one it carries within a lease (model.DeliveryClaimSinceSQL).
 // Its result is recorded only for a key whose claim the map still holds as the snapshot took it,
-// so a claim written meanwhile - a keyed repeat's (queueLocked) - is never set back.
+// so a claim written meanwhile - a keyed repeat's (queueLocked) - is never set back. The statement
+// is counted for its length (refreshing), since a send it named can leave held while it writes.
 //
 // A statement that answers an error may have committed all the same, so it leaves every claim it
 // named that the map still holds unknown (mentionClaimState.unsure), never assumed, and the
@@ -160,16 +161,19 @@ func (m *mentionSender) refreshHeldClaims(ctx context.Context) {
 		queued = append(queued, mentionClaim{key: key, claimedAt: state.claimed})
 		snapshot[key] = state.claimed
 	}
-	m.mu.Unlock()
 	if len(queued) == 0 {
+		m.mu.Unlock()
 		return
 	}
+	m.refreshing++
+	m.mu.Unlock()
 	refreshed, err := m.refresh(ctx, queued)
 	if err != nil {
 		slog.Error("dispatch: write the claims of the queued comment mentions again; the claims it named are unknown until read",
 			"attempts", len(queued), "error", err)
 	}
 	m.mu.Lock()
+	m.refreshing--
 	if err != nil {
 		for key, claimed := range snapshot {
 			if state, mine := m.held[key]; mine && state.claimed.Equal(claimed) {

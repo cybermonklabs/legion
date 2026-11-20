@@ -1,10 +1,10 @@
-// flight.go holds the shared sync the callers of one architecture source join: the counter Close
-// waits on, what a flight hands every caller that joined it, the newest ended flight of each
-// source while a call of it runs, the flight itself — the contexts it runs on and its
-// errSuperseded retry chain — and each attempt the flight makes (syncOnce), with the record of
-// its failure on the source row (failed). The Importer type, Sync and Close stay in
-// importer.go: they are the type's own surface, beside the row locks and projection writes an
-// attempt calls.
+// flight.go holds the shared sync the callers of one architecture source join: what a flight
+// hands every caller that joined it, the newest ended flight of each source while a call of it
+// runs, the flight itself — the contexts it runs on and its errSuperseded retry chain — and each
+// attempt the flight makes (syncOnce), with the record of its failure on the source row (failed).
+// The Importer type, Sync and Close stay in importer.go: they are the type's own surface, beside
+// the reads of a source. The count Close waits on is in sync_count.go, and the row locks and
+// projection writes an attempt calls are in writes.go.
 
 package architecture
 
@@ -19,60 +19,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
-
-// syncCount counts the flights running and waits for none to be left. It has
-// the shape of backgroundWork in api/server.go, and for its reason: a
-// sync.WaitGroup is not it, because a flight may start while a wait is
-// already waiting, and Add after Wait began is what a WaitGroup forbids.
-// begin refuses once Close has begun, so a flight whose goroutine starts
-// after Close took its decision does nothing rather than write into a
-// closing pool.
-type syncCount struct {
-	mu      sync.Mutex
-	closing bool
-	running int
-	// idle is closed when running last fell to zero, and replaced when a
-	// flight starts again.
-	idle chan struct{}
-}
-
-func (c *syncCount) begin() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closing {
-		return false
-	}
-	if c.running == 0 {
-		c.idle = make(chan struct{})
-	}
-	c.running++
-	return true
-}
-
-func (c *syncCount) done() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.running--
-	if c.running == 0 {
-		close(c.idle)
-	}
-}
-
-// stop refuses every later flight and waits for the running ones to end.
-func (c *syncCount) stop() {
-	c.mu.Lock()
-	c.closing = true
-	c.mu.Unlock()
-	for {
-		c.mu.Lock()
-		running, idle := c.running, c.idle
-		c.mu.Unlock()
-		if running == 0 {
-			return
-		}
-		<-idle
-	}
-}
 
 // syncFlight is one shared sync of one source: what the flight hands every
 // caller that joined it, with the flight's error. Every write to it happens

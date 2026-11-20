@@ -289,9 +289,9 @@ func measureRoom(t *testing.T, agent *loadAgent) roomMemory {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	waitForLandedAppends(t, service, artifactID)
-	// The settlement runs service.settle (20ms) after the last write; give it time to start
-	// before waiting for it to clear what it owes.
-	time.Sleep(500 * time.Millisecond)
+	// The writes arm the document's settlement, which the fixture's delay holds an hour away: run
+	// it now, wait for it with the service's own wait, then check it cleared what it owes.
+	settleNowAndWait(t, ctx, service, artifactID)
 	waitFor(t, 2*time.Minute, "the document's settlement", func() bool {
 		owed, err := settlementPending(ctx, service.store.Pool, artifactID)
 		return err == nil && !owed
