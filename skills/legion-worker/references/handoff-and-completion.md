@@ -1,14 +1,6 @@
-# The handoff, the completion, and a refused completion
+# When your phase ends, and a refused completion
 
-Read it before you record the handoff your role prompt names or complete (step 5 of `skill://legion-worker`), when your phase ends, and when `handoff_complete` refuses your completion.
-
-## The handoff
-
-A handoff is never a commit and never a result: what you ran is a result you record against one of the issue's checks with `dispatch result`, and `skill://legion-worker/references/pr-body.md#what-a-result-is` defines a check and a result. To change a handoff already recorded, read it with `dispatch handoff-read`, edit the body, and record it whole again: each `dispatch handoff-write` adds a version, and `handoff_complete` reports the newest.
-
-## Push any work, then complete
-
-`handoff_complete` is your only way to end a phase: add no label, keep no status of your own and run no loop of your own, since the daemon owns the issue's state and the architect its decomposition and gates.
+Read it when your phase ends, and when `handoff_complete` refuses your completion.
 
 ## When your phase ends
 
