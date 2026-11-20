@@ -18,7 +18,7 @@ const ownerMe = "me"
 // checkOwnerTier answers the owner --owner names - me, shared, or a person's email, lowercased,
 // which must be one the broker accepts as a person owner (policy.ValidPersonOwner) - and refuses
 // any other --owner and a --tier that is neither agent nor human; "" passes either, for a form
-// where it is optional.
+// where it is optional. A value it refuses is not printed, as no tag flag's is (valueNotPrinted).
 func checkOwnerTier(owner, tier string) (string, error) {
 	var errs []error
 	switch lower := strings.ToLower(owner); {
@@ -26,15 +26,33 @@ func checkOwnerTier(owner, tier string) (string, error) {
 	case policy.ValidPersonOwner(lower):
 		owner = lower
 	default:
-		errs = append(errs, fmt.Errorf("--owner is %s, %s or a person's email, not %q", ownerMe, policy.OwnerShared, owner))
+		errs = append(errs, fmt.Errorf("--owner is %s, %s or a person's email %s", ownerMe, policy.OwnerShared, valueNotPrinted))
 	}
 	if tier != "" && tier != policy.TierAgent && tier != policy.TierHuman {
-		errs = append(errs, fmt.Errorf("--tier is %s or %s, not %q", policy.TierAgent, policy.TierHuman, tier))
+		errs = append(errs, fmt.Errorf("--tier is %s or %s %s", policy.TierAgent, policy.TierHuman, valueNotPrinted))
 	}
 	if len(errs) > 0 {
 		return "", usageErr{errors.Join(errs...)}
 	}
 	return owner, nil
+}
+
+// valueNotPrinted is how a refusal of a tag flag's value, or of a NAME, stands in for that value:
+// a flag's value is where a person who pasted a credential in the wrong place puts it, so every
+// such refusal names the flag and the rule the value broke, never the value.
+const valueNotPrinted = "(the value is not printed)"
+
+// ruleOf is err, a refusal of one of internal/broker/policy's tag parsers, as a form prints it: the
+// first of rules err is, the parser's own sentinel naming the rule, and never the parser's text,
+// which quotes the entry it refused ("not %q"). An error that is none of rules prints as fixed
+// text.
+func ruleOf(err error, rules ...error) string {
+	for _, rule := range rules {
+		if errors.Is(err, rule) {
+			return rule.Error() + " " + valueNotPrinted
+		}
+	}
+	return "the value does not parse " + valueNotPrinted
 }
 
 // tagNone is the value of --type, --github-owners, --requesters, --scopes, --admin,
@@ -47,7 +65,7 @@ func checkType(secretType string) error {
 	if secretType == "" || secretType == tagNone || policy.ValidType(secretType) {
 		return nil
 	}
-	return usageErr{fmt.Errorf("--type is %s or %s, not %q", strings.Join(policy.Types, ", "), tagNone, secretType)}
+	return usageErr{fmt.Errorf("--type is %s or %s %s", strings.Join(policy.Types, ", "), tagNone, valueNotPrinted)}
 }
 
 // checkMaxGrant is --max-grant's rule, the broker's own (policy.ParseMaxGrant), or none where
@@ -78,13 +96,13 @@ func checkGitHubOwners(owners string, orNone bool) (string, error) {
 			continue
 		}
 		if orNone {
-			return "", usageErr{fmt.Errorf("--github-owners %q: none removes the tag and is given alone, as --github-owners none; a GitHub login list names no none", owners)}
+			return "", usageErr{fmt.Errorf("--github-owners: none removes the tag and is given alone, as --github-owners none; a GitHub login list names no none %s", valueNotPrinted)}
 		}
-		return "", usageErr{fmt.Errorf("--github-owners %q: none names no GitHub account, and removes the tag only on retag; a github-app secret needs at least one login", owners)}
+		return "", usageErr{fmt.Errorf("--github-owners: none names no GitHub account, and removes the tag only on retag; a github-app secret needs at least one login %s", valueNotPrinted)}
 	}
 	parsed, err := policy.ParseGitHubOwners(owners)
 	if err != nil {
-		return "", usageErr{fmt.Errorf("--github-owners: %w", err)}
+		return "", usageErr{errors.New("--github-owners: " + ruleOf(err, policy.ErrGitHubOwnersComma, policy.ErrGitHubOwnersLogin, policy.ErrGitHubOwnersMissing))}
 	}
 	return parsed, nil
 }
@@ -134,13 +152,13 @@ func checkRequesters(list string, orNone bool) (string, error) {
 			continue
 		}
 		if orNone {
-			return "", usageErr{fmt.Errorf("--requesters %q: none removes the tag and is given alone, as --requesters none; a requesters list names no none", list)}
+			return "", usageErr{fmt.Errorf("--requesters: none removes the tag and is given alone, as --requesters none; a requesters list names no none %s", valueNotPrinted)}
 		}
-		return "", usageErr{fmt.Errorf("--requesters %q: none names no person or service, and removes the tag only on retag; leave --requesters off to let every session the owner and tier allow ask", list)}
+		return "", usageErr{fmt.Errorf("--requesters: none names no person or service, and removes the tag only on retag; leave --requesters off to let every session the owner and tier allow ask %s", valueNotPrinted)}
 	}
 	parsed, err := policy.ParseRequesterShapes(list)
 	if err != nil {
-		return "", usageErr{fmt.Errorf("--requesters: %w", err)}
+		return "", usageErr{errors.New("--requesters: " + ruleOf(err, policy.ErrRequestersComma, policy.ErrRequestersEntry, policy.ErrRequestersMissing))}
 	}
 	return parsed, nil
 }
@@ -171,13 +189,13 @@ func checkScopes(scopes string, orNone bool) (string, error) {
 			continue
 		}
 		if orNone {
-			return "", usageErr{fmt.Errorf("--scopes %q: none removes the tag and is given alone, as --scopes none; a scope list names no none", scopes)}
+			return "", usageErr{fmt.Errorf("--scopes: none removes the tag and is given alone, as --scopes none; a scope list names no none %s", valueNotPrinted)}
 		}
-		return "", usageErr{fmt.Errorf("--scopes %q: none names no OAuth scope, and removes the tag only on retag; leave --scopes off to mint the cloud-platform scope alone", scopes)}
+		return "", usageErr{fmt.Errorf("--scopes: none names no OAuth scope, and removes the tag only on retag; leave --scopes off to mint the cloud-platform scope alone %s", valueNotPrinted)}
 	}
 	parsed, err := policy.ParseScopes(scopes)
 	if err != nil {
-		return "", usageErr{fmt.Errorf("--scopes: %w", err)}
+		return "", usageErr{errors.New("--scopes: " + ruleOf(err, policy.ErrScopesComma, policy.ErrScopesEntry, policy.ErrScopesDuplicate, policy.ErrScopesMissing))}
 	}
 	return parsed, nil
 }
@@ -192,9 +210,9 @@ func checkAdmin(admin string, orNone bool) error {
 		return nil
 	}
 	if orNone {
-		return usageErr{fmt.Errorf("--admin is %s or %s, not %q, or the broker refuses the secret as %s", adminTrue, tagNone, admin, policy.ReasonAdminMalformed)}
+		return usageErr{fmt.Errorf("--admin is %s or %s %s, or the broker refuses the secret as %s", adminTrue, tagNone, valueNotPrinted, policy.ReasonAdminMalformed)}
 	}
-	return usageErr{fmt.Errorf("--admin is %s, not %q, or the broker refuses the secret as %s; leave --admin off for a secret whose grant is no administrator's", adminTrue, admin, policy.ReasonAdminMalformed)}
+	return usageErr{fmt.Errorf("--admin is %s %s, or the broker refuses the secret as %s; leave --admin off for a secret whose grant is no administrator's", adminTrue, valueNotPrinted, policy.ReasonAdminMalformed)}
 }
 
 // checkTagsFor applies the broker's cross-tag rules (policy.TagRules) to the tags a secret will
@@ -373,5 +391,5 @@ func checkDefaultGrant(value string, orNone bool) error {
 	if value == "" || value == policy.DefaultGrantSession || (orNone && value == tagNone) {
 		return nil
 	}
-	return usageErr{fmt.Errorf("--default-grant: %q is not session", value)}
+	return usageErr{fmt.Errorf("--default-grant is %s %s", policy.DefaultGrantSession, valueNotPrinted)}
 }

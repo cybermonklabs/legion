@@ -186,14 +186,17 @@ func secretFlags(form string, stderr io.Writer) *flagSet {
 	return newFlagSet(form, stderr)
 }
 
-// secretName is the one NAME a form takes, and its slug: the secret's name under the prefix.
+// secretName is the one NAME a form takes, and its slug: the secret's name under the prefix. A
+// NAME that is no secret name is refused with the rule it broke and not printed, as a tag flag's
+// value is not (valueNotPrinted): a NAME is where a person who pasted the value in place of the
+// name puts it.
 func secretName(positional []string) (name, slug string, err error) {
 	if len(positional) != 1 {
 		return "", "", usageErr{errors.New("exactly one secret NAME is required")}
 	}
 	slug, err = policy.NameToSlug(positional[0])
 	if err != nil {
-		return "", "", usageErr{fmt.Errorf("%q: %w", positional[0], err)}
+		return "", "", usageErr{fmt.Errorf("NAME (not printed): %w", err)}
 	}
 	return positional[0], slug, nil
 }
