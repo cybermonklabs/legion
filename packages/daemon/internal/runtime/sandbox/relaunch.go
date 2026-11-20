@@ -104,8 +104,8 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // Replacing a live pod — its Sandbox Running, the pod its own, not ended, its init containers
 // passed, and not a pod its node never started (neverStarted) — ends the process of every role
 // still running in it, wherever its turn stood, so the Suspended patch that replaces it names it on
-// the Sandbox in the same write (suspendDisplacing): evaluate then reports each of those roles
-// ended by the daemon's replacement (Displaced), which the supervisor resumes uncharged
+// the Sandbox in the same write (displacing, suspendAnnotating): evaluate then reports each of
+// those roles ended by the daemon's replacement (Displaced), which the supervisor resumes uncharged
 // (LEGION-729). A pod already ended, or never the Sandbox's, is named nothing displaced: its roles
 // ended with it. Nor is a pod that never started, where no role ran: the launch that waited the
 // pod's start bound on it (startBound) was charged, and the next one replaces it rather than
@@ -163,8 +163,8 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // failed on the volume for a cause local to it (localInitFailure). It does so too where the Sandbox
 // carries the reset mark (volumeResetAnnotation), which ReplacePod or the release wrote when they
 // took such a pod down. A launch that resets the volume for the pod's fault writes the mark too,
-// before it deletes the Sandbox: in the patch that suspends a Running Sandbox
-// (suspendRecordingEnd), and in a patch of its own for a Sandbox already Suspended (annotate). So
+// before it deletes the Sandbox (suspendOver): in the patch that suspends a Running Sandbox
+// (suspendRecordingEnd), and in a patch of its own for a Sandbox already Suspended. So
 // a launch that stops before its delete leaves the reset to the next launch. A fault on a kept
 // volume stays there for each later pod of the issue, and only a new volume cures it. Such a pod is
 // not live, so the launch replaces it in any case. The Sandbox that the reset creates carries no
@@ -277,7 +277,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if replace {
 		switch {
 		case live:
-			suspended, err := r.suspendDisplacing(bounded, s, pod.UID, launchReplacement)
+			suspended, err := r.suspendAnnotating(bounded, s, displacing(pod.UID, launchReplacement))
 			if err != nil {
 				return fail("suspend its sandbox", err)
 			}
@@ -292,12 +292,11 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		default:
 			// A Sandbox already Suspended takes no suspension patch that could carry the reset
 			// mark, so a launch that resets its kept volume for the pod's fault writes the mark in
-			// a patch of its own, before it waits the pod out and deletes the Sandbox. A launch
-			// that stops before that delete thus leaves the reset to the next launch.
-			if fault := volumeFault(s, pod); fault != "" && s.Annotations[volumeResetAnnotation] == "" {
-				if s, err = r.annotate(bounded, s, map[string]*string{volumeResetAnnotation: &fault}); err != nil {
-					return fail("mark its kept volume for the reset", err)
-				}
+			// a patch of its own (suspendOver), before it waits the pod out and deletes the
+			// Sandbox. A launch that stops before that delete thus leaves the reset to the next
+			// launch.
+			if s, err = r.suspendOver(bounded, s, pod, nil); err != nil {
+				return fail("mark its kept volume for the reset", err)
 			}
 		}
 		old, err := r.awaitPodGone(bounded, s)
@@ -633,10 +632,20 @@ func (r *Runtime) stillFetching(pod *corev1.Pod) string {
 // waits out an API server answering it overloaded (resend), but no longer than that, so a daemon
 // stop never waits a boot timeout on it. A suspension that still fails is logged; the next
 // relaunch suspends the Sandbox in any case.
+//
+// The suspension is sent as for a Running Sandbox, whatever s says, since the Running patch may
+// have been applied, over the pod the store holds as it stands before the suspension
+// (suspendOver). A pod that the patch made and whose init container failed on the kept volume for
+// a cause local to it (volumeFault) thus leaves the reset mark (volumeResetAnnotation), as
+// ReplacePod and the release leave it: the next launch reads no pod once the suspension has taken
+// this one down, and it resets the volume on the mark. Every other failed launch sends setMode's
+// patch alone.
 func (r *Runtime) suspendFailedLaunch(ctx context.Context, token claim.Token, s *sandbox) {
 	suspending, cancel := call(context.WithoutCancel(ctx))
 	defer cancel()
-	if err := r.setMode(suspending, s, modeSuspended); err != nil {
+	sent := *s
+	sent.Spec.OperatingMode = modeRunning
+	if _, err := r.suspendOver(suspending, &sent, r.storedPod(s.Name), nil); err != nil {
 		r.log.Error("sandbox runtime: could not suspend the sandbox of a failed launch", "claim", token, "err", err)
 	}
 }
@@ -1399,29 +1408,19 @@ const (
 	roundReplacement  replacementKind = true
 )
 
-// suspendDisplacing sets the Sandbox read as s Suspended and names uid on it as the live pod that
-// suspension replaces (displacedAnnotation), in one JSON merge patch: the API server applies both
-// or neither, so a refused suspension names no pod, and a merge patch sets the one annotation key
-// whatever other annotations the Sandbox carries, or none. A round's replacement names uid under
-// the round's own mark in that same write (roundDisplacedAnnotation, roundReplacement), which a
-// launch's replacement never writes. It carries s's uid, which the API server refuses to change
-// on a live object, so a Sandbox deleted and recreated in between is never written: the fence
-// recordAddresses keeps. It returns the Sandbox as the patch left it, the one copy that carries
-// the name: a migrating launch reads it from there onto the Sandbox it creates in its place
-// (replaceSupersededSandbox).
-func (r *Runtime) suspendDisplacing(ctx context.Context, s *sandbox, uid types.UID, kind replacementKind) (*sandbox, error) {
-	return r.suspendAnnotating(ctx, s, displacing(uid, kind))
-}
-
-// displacing is the annotations of a suspension that replaces the live pod uid for kind
-// (suspendDisplacing): uid as the displaced pod (displacedAnnotation), and for a round's
-// replacement as the round's too (roundDisplacedAnnotation). ReplacePod adds the reset mark to
-// them where the pod failed on a kept volume (volumeResetAnnotation, volumeFault), so that the one
-// merge patch carries the mark as well.
-func displacing(uid types.UID, kind replacementKind) map[string]string {
-	annotations := map[string]string{displacedAnnotation: string(uid)}
+// displacing is the annotations of a suspension that replaces the live pod uid for kind: uid as
+// the displaced pod (displacedAnnotation), and for a round's replacement as the round's too
+// (roundDisplacedAnnotation), which a launch's replacement never writes. Sent in the one merge
+// patch that suspends the Sandbox (suspendAnnotating), they are applied with the suspension or
+// not at all, so a refused suspension names no pod. The patch's copy of the Sandbox is the one
+// that carries the name: a migrating launch reads it from there onto the Sandbox it creates in
+// its place (replaceSupersededSandbox). ReplacePod sends them through suspendOver, which adds the
+// reset mark where the pod failed on a kept volume (volumeResetAnnotation, volumeFault).
+func displacing(uid types.UID, kind replacementKind) map[string]*string {
+	displaced := string(uid)
+	annotations := map[string]*string{displacedAnnotation: &displaced}
 	if kind == roundReplacement {
-		annotations[roundDisplacedAnnotation] = string(uid)
+		annotations[roundDisplacedAnnotation] = &displaced
 	}
 	return annotations
 }
@@ -1431,59 +1430,86 @@ func displacing(uid types.UID, kind replacementKind) map[string]string {
 // reason (runtime.PodEnd) has that end recorded in the same JSON merge patch (endedPodAnnotation,
 // endedPodEndAnnotation), so the API server applies the suspension and the record together or
 // neither. A pod that failed on the Sandbox's kept volume for a cause local to it (volumeFault)
-// has the reset mark (volumeResetAnnotation) written in that same patch, as ReplacePod writes it.
-// The launch resets such a volume only after the pod is gone (replaceSupersededSandbox). A launch
-// that stops before that delete thus leaves the mark, and the next launch, which reads no pod or
-// one that is being deleted, resets the volume on it (volumeReset). Any other pod is suspended over
-// as setMode does, recording nothing.
+// has the reset mark (volumeResetAnnotation) written in that same patch (suspendOver), as
+// ReplacePod writes it. The launch resets such a volume only after the pod is gone
+// (replaceSupersededSandbox). A launch that stops before that delete thus leaves the mark, and the
+// next launch, which reads no pod or one that is being deleted, resets the volume on it
+// (volumeReset). Any other pod is suspended over as setMode does, recording nothing.
 func (r *Runtime) suspendRecordingEnd(ctx context.Context, s *sandbox, pod *corev1.Pod) error {
-	end := ""
+	var annotations map[string]*string
 	if ownedBy(pod, s.UID) {
-		end = runtime.PodEnd(pod.Status.Reason, pod.Status.Message)
+		if end := runtime.PodEnd(pod.Status.Reason, pod.Status.Message); end != "" {
+			ended := string(pod.UID)
+			annotations = map[string]*string{endedPodAnnotation: &ended, endedPodEndAnnotation: &end}
+		}
 	}
-	fault := volumeFault(s, pod)
-	if end == "" && fault == "" {
-		return r.setMode(ctx, s, modeSuspended)
-	}
-	annotations := map[string]string{}
-	if end != "" {
-		annotations[endedPodAnnotation], annotations[endedPodEndAnnotation] = string(pod.UID), end
-	}
-	if fault != "" {
-		annotations[volumeResetAnnotation] = fault
-	}
-	_, err := r.suspendAnnotating(ctx, s, annotations)
+	_, err := r.suspendOver(ctx, s, pod, annotations)
 	return err
 }
 
+// suspendOver sets the Sandbox read as s Suspended to take pod down, and sets each of annotations
+// on it. pod is the Sandbox's pod as it stands before the suspension, or nil for none. Where pod
+// failed on the Sandbox's kept volume for a cause local to it (volumeFault), the reset mark
+// (volumeResetAnnotation) is one of those annotations: the launch after the suspension reads no
+// pod, or one that is being deleted, and resets the volume on the mark (volumeReset). It is the
+// one writer of the mark, for every act that takes a pod of a kept volume down: a launch that
+// replaces a pod that is not live (suspendRecordingEnd, relaunch), a launch that failed after its
+// Running patch (suspendFailedLaunch), the update round's ReplacePod, and the release
+// (endIssuePod).
+//
+// A Sandbox that is not Suspended takes one merge patch of the mode and the annotations
+// (suspendAnnotating), or setMode's patch where there is no annotation. A Sandbox already
+// Suspended takes a merge patch of the annotations alone (annotate), of those it does not carry
+// with the same value already, and no write where there is none. It returns the Sandbox as the
+// patch left it, and s where it wrote no merge patch.
+func (r *Runtime) suspendOver(ctx context.Context, s *sandbox, pod *corev1.Pod, annotations map[string]*string) (*sandbox, error) {
+	if fault := volumeFault(s, pod); fault != "" {
+		if annotations == nil {
+			annotations = map[string]*string{}
+		}
+		annotations[volumeResetAnnotation] = &fault
+	}
+	if s.mode() != modeSuspended {
+		if len(annotations) == 0 {
+			return s, r.setMode(ctx, s, modeSuspended)
+		}
+		return r.suspendAnnotating(ctx, s, annotations)
+	}
+	for key, value := range annotations {
+		if held, carried := s.Annotations[key]; carried && value != nil && held == *value {
+			delete(annotations, key)
+		}
+	}
+	if len(annotations) == 0 {
+		return s, nil
+	}
+	return r.annotate(ctx, s, annotations)
+}
+
 // suspendAnnotating sets the Sandbox read as s Suspended and sets each of annotations on it, in
-// one JSON merge patch: the API server applies both or neither, and a merge patch sets those keys
-// whatever other annotations the Sandbox carries, or none. It carries s's uid, which the API
-// server refuses to change on a live object, so a Sandbox deleted and recreated in between is
-// never written: the fence recordAddresses keeps. It returns the Sandbox as the patch left it.
-func (r *Runtime) suspendAnnotating(ctx context.Context, s *sandbox, annotations map[string]string) (*sandbox, error) {
-	body, err := json.Marshal(map[string]any{
-		"metadata": map[string]any{"uid": string(s.UID), "annotations": annotations},
-		"spec":     map[string]any{"operatingMode": modeSuspended},
-	})
-	if err != nil {
-		return nil, err
-	}
-	patched, err := r.sandboxClient().Patch(ctx, s.Name, types.MergePatchType, body, metav1.PatchOptions{})
-	if err != nil {
-		return nil, err
-	}
-	return decodeSandbox(patched)
+// one merge patch (mergePatch): the API server applies both or neither.
+func (r *Runtime) suspendAnnotating(ctx context.Context, s *sandbox, annotations map[string]*string) (*sandbox, error) {
+	return r.mergePatch(ctx, s, modeSuspended, annotations)
 }
 
 // annotate sets each of annotations on the Sandbox read as s, and removes each whose value is nil,
-// in one JSON merge patch that changes nothing else. It carries s's uid, which the API server
-// refuses to change on a live object, so a Sandbox deleted and created again in between is never
-// written. It returns the Sandbox as the patch left it.
+// in one merge patch that changes nothing else (mergePatch).
 func (r *Runtime) annotate(ctx context.Context, s *sandbox, annotations map[string]*string) (*sandbox, error) {
-	body, err := json.Marshal(map[string]any{
-		"metadata": map[string]any{"uid": string(s.UID), "annotations": annotations},
-	})
+	return r.mergePatch(ctx, s, "", annotations)
+}
+
+// mergePatch is the one JSON merge patch of the Sandbox read as s: it sets each of annotations on
+// it and removes each whose value is nil, and sets its mode to mode where mode is not "". A merge
+// patch sets those keys whatever other annotations the Sandbox carries, or none, and changes
+// nothing else. It carries s's uid, which the API server refuses to change on a live object, so a
+// Sandbox deleted and created again in between is never written: the fence recordAddresses keeps.
+// It returns the Sandbox as the patch left it.
+func (r *Runtime) mergePatch(ctx context.Context, s *sandbox, mode string, annotations map[string]*string) (*sandbox, error) {
+	patch := map[string]any{"metadata": map[string]any{"uid": string(s.UID), "annotations": annotations}}
+	if mode != "" {
+		patch["spec"] = map[string]any{"operatingMode": mode}
+	}
+	body, err := json.Marshal(patch)
 	if err != nil {
 		return nil, err
 	}

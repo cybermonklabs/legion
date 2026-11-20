@@ -367,8 +367,10 @@ const (
 // launch then reads no pod. A launch that resets the volume for the pod's fault writes it before
 // its delete too, because a launch can stop before that delete: in the patch that suspends a
 // Running Sandbox (suspendRecordingEnd), and in a patch of its own for a Sandbox already Suspended
-// (relaunch). The next launch resets the volume on the mark (volumeReset): it deletes the Sandbox,
-// with the claim it owns, and creates a new one, which carries no mark.
+// (relaunch). A launch that failed after its Running patch writes it from the pod that patch made
+// (suspendFailedLaunch). Each of them writes it through suspendOver. The next launch resets the
+// volume on the mark (volumeReset): it deletes the Sandbox, with the claim it owns, and creates a
+// new one, which carries no mark.
 const volumeResetAnnotation = "legion.dev/volume-reset"
 
 // secretsReleasedAnnotation is the release's record on the Sandbox of an issue's kept volume that

@@ -1083,12 +1083,10 @@ func TestNewSecretsLoginLogsInWithTheDaemonsToken(t *testing.T) {
 	if enroller == nil || client == nil {
 		t.Fatal("want an enroller and a client")
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for !strings.Contains(logged.String(), "agent-secrets: logged in with the daemon's ServiceAccount token") || client.LoginStatus().State != "issued" {
-		if time.Now().After(deadline) {
-			t.Fatalf("log = %s, state %q; want the token login logged and issued", logged.String(), client.LoginStatus().State)
-		}
-		time.Sleep(time.Millisecond)
+	if !testwait.Holds(2*time.Second, time.Millisecond, func() bool {
+		return strings.Contains(logged.String(), "agent-secrets: logged in with the daemon's ServiceAccount token") && client.LoginStatus().State == "issued"
+	}) {
+		t.Fatalf("log = %s, state %q; want the token login logged and issued", logged.String(), client.LoginStatus().State)
 	}
 	mu.Lock()
 	defer mu.Unlock()

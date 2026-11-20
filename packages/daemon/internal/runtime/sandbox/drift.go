@@ -328,7 +328,7 @@ func (r *Runtime) shapeDrift(s *sandbox, key podShapeKey) []string {
 //
 // The one suspended Sandbox that is not gone is the one this round's own ReplacePod suspended: it
 // names the locator's own pod under the mark only that act writes (roundDisplacedAnnotation,
-// suspendDisplacing) and it is waiting that pod out. Such a pod is answered for as a pod that is
+// displacing) and it is waiting that pod out. Such a pod is answered for as a pod that is
 // there and has not drifted — no reasons and no error — so a sweep that reads the Sandbox between
 // the suspension and the pod's end ends the round as the replacement it is. Any other suspended
 // Sandbox is some other act's: an operator's suspension, a tree moved on, or a launch replacing
@@ -423,9 +423,9 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 //
 // The pod may show that an init container failed on the Sandbox's kept volume for a cause local
 // to it (volumeFault, localInitFailure). The same patch then writes the reset mark on the Sandbox
-// (volumeResetAnnotation), from the pod as it stood before the suspension. The launch after the
-// round reads no pod, and it resets the volume on the mark (volumeReset). Every other pod is
-// suspended over with the two names alone.
+// (volumeResetAnnotation, suspendOver), from the pod as it stood before the suspension. The launch
+// after the round reads no pod, and it resets the volume on the mark (volumeReset). Every other
+// pod is suspended over with the two names alone.
 //
 // due is asked last of all, under the pod's launch turn and one statement before the suspension,
 // and its error is returned having written nothing. That is where it belongs rather than at the
@@ -465,11 +465,7 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 	if err := due(ctx); err != nil {
 		return err
 	}
-	annotations := displacing(v.pod.UID, roundReplacement)
-	if fault := volumeFault(s, v.pod); fault != "" {
-		annotations[volumeResetAnnotation] = fault
-	}
-	if _, err := r.suspendAnnotating(ctx, s, annotations); err != nil {
+	if _, err := r.suspendOver(ctx, s, v.pod, displacing(v.pod.UID, roundReplacement)); err != nil {
 		return fmt.Errorf("replace %s's pod: suspend its sandbox: %w", k.Claim, err)
 	}
 	if _, err := r.awaitPodGone(ctx, s); err != nil {

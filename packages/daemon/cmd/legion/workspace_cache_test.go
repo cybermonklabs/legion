@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // cmdCacheToken is the bearer token the cache command's tests hand the cache, and the fetch's
@@ -217,21 +218,18 @@ func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 
 	address := ""
 	deadline := time.Now().Add(winitWait)
-	for address == "" {
+	if !testwait.Holds(winitWait, 10*time.Millisecond, func() bool {
 		for _, line := range strings.Split(stdout.String(), "\n") {
 			if found, ok := strings.CutPrefix(line, "workspace-init cache: serving acme/widgets on "); ok {
 				address = found
 			}
 		}
-		if address == "" {
-			if time.Now().After(deadline) {
-				t.Fatalf("cache never said where it serves: stdout %q, stderr %q", stdout.String(), stderr.String())
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
+		return address != ""
+	}) {
+		t.Fatalf("cache never said where it serves: stdout %q, stderr %q", stdout.String(), stderr.String())
 	}
 	var health repocache.Health
-	for !health.Ready {
+	if !testwait.Holds(time.Until(deadline), 20*time.Millisecond, func() bool {
 		request, err := http.NewRequest(http.MethodGet, "http://"+address+"/healthz", nil)
 		if err != nil {
 			t.Fatal(err)
@@ -245,10 +243,9 @@ func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the cache never became ready: %+v; stdout %q, stderr %q", health, stdout.String(), stderr.String())
-		}
-		time.Sleep(20 * time.Millisecond)
+		return health.Ready
+	}) {
+		t.Fatalf("the cache never became ready: %+v; stdout %q, stderr %q", health, stdout.String(), stderr.String())
 	}
 	if want := v.git(t, "--git-dir="+v.env["WINIT_REMOTE"], "rev-parse", "main"); health.Head != want || health.Repo != winitRepo {
 		t.Fatalf("/healthz = %+v, want acme/widgets at the remote's main %s", health, want)

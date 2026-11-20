@@ -792,7 +792,7 @@ func TestIssuePodIsThePodTheIssuesSandboxHoldsNow(t *testing.T) {
 // A pod under a suspended Sandbox is on its way out, and the round over it decides nothing true
 // — unless the suspension is that round's own replacement. ReplacePod suspends the Sandbox and
 // names the displaced pod on it under the round's own mark in one write (roundDisplacedAnnotation,
-// suspendDisplacing) and then waits the pod out, so between those two the Sandbox is suspended,
+// displacing) and then waits the pod out, so between those two the Sandbox is suspended,
 // names this very pod for the round, and the pod is still there: that is the round's own
 // replacement in flight, and it reads as a pod that is there and has not drifted, which is what
 // ends the round as the replacement it is. The same Sandbox suspended by anything else — an
@@ -838,7 +838,7 @@ func TestPodDriftReadsASuspendedSandboxAsItsOwnReplacementOrAsAGonePod(t *testin
 	suspended("it suspended naming no replaced pod", func(s *sandbox) bool { return s.Annotations[displacedAnnotation] == "" })
 	gone("a suspended sandbox naming no replaced pod")
 
-	if _, err := g.r.suspendDisplacing(g.ctx, g.sandbox(name), types.UID(loc.Sandbox.PodUID), launchReplacement); err != nil {
+	if _, err := g.r.suspendAnnotating(g.ctx, g.sandbox(name), displacing(types.UID(loc.Sandbox.PodUID), launchReplacement)); err != nil {
 		t.Fatalf("name the locator's own pod as the one a launch replaced: %v", err)
 	}
 	suspended("a launch's replacement of the locator's own pod", func(s *sandbox) bool {
@@ -847,7 +847,7 @@ func TestPodDriftReadsASuspendedSandboxAsItsOwnReplacementOrAsAGonePod(t *testin
 	})
 	gone("a pod a launch's replacement suspended the sandbox over")
 
-	if _, err := g.r.suspendDisplacing(g.ctx, g.sandbox(name), "uid-pod-earlier", roundReplacement); err != nil {
+	if _, err := g.r.suspendAnnotating(g.ctx, g.sandbox(name), displacing("uid-pod-earlier", roundReplacement)); err != nil {
 		t.Fatalf("name an earlier pod as the one the daemon replaced: %v", err)
 	}
 	suspended("it naming an earlier replaced pod", func(s *sandbox) bool {
@@ -855,7 +855,7 @@ func TestPodDriftReadsASuspendedSandboxAsItsOwnReplacementOrAsAGonePod(t *testin
 	})
 	gone("a suspended sandbox naming another pod as the one its round replaced")
 
-	if _, err := g.r.suspendDisplacing(g.ctx, g.sandbox(name), types.UID(loc.Sandbox.PodUID), roundReplacement); err != nil {
+	if _, err := g.r.suspendAnnotating(g.ctx, g.sandbox(name), displacing(types.UID(loc.Sandbox.PodUID), roundReplacement)); err != nil {
 		t.Fatalf("name the locator's own pod as the one this round replaced: %v", err)
 	}
 	suspended("it naming the locator's own pod for its round", func(s *sandbox) bool {
@@ -875,7 +875,7 @@ func TestPodDriftReadsASuspendedSandboxAsItsOwnReplacementOrAsAGonePod(t *testin
 // pushed, and a round that ended as its own replacement would report nothing lost.
 //
 // Both are driven through the callers themselves, never by writing the annotations here: a future
-// caller of suspendDisplacing that forgets which kind of replacement it is making fails this.
+// caller of displacing that forgets which kind of replacement it is making fails this.
 // The launch is a Resume into a pod whose launcher dials the stream the daemon has left, the kind
 // of drift no round answers — its workers cannot be reached to be asked anything — and so the one
 // that makes a launch replace an issue pod where it stands (movedInPod). The operator's volume

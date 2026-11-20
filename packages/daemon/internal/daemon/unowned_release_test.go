@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -603,13 +604,9 @@ func TestAnUnownedReleaseLeavesAKeptSuspendedSandboxAlone(t *testing.T) {
 			}
 			api.requireServed(t)
 
-			deadline := time.Now().Add(10 * time.Second)
-			for _, present := rt.IssueSandbox(rig.issue.Key); present; _, present = rt.IssueSandbox(rig.issue.Key) {
-				if time.Now().After(deadline) {
-					t.Fatal("the runtime still answers the released kept Sandbox present 10 s after the release recorded the deleted Secrets")
-				}
-				time.Sleep(10 * time.Millisecond)
-			}
+			testwait.WithinPolling(t, 10*time.Second, 10*time.Millisecond,
+				"the runtime to answer the released kept Sandbox absent once the release recorded the deleted Secrets",
+				func() bool { _, present := rt.IssueSandbox(rig.issue.Key); return !present })
 			held(t, "the release has deleted the Sandbox's Secrets and recorded it")
 		})
 	}
@@ -695,13 +692,8 @@ func TestAReleasedKeptSandboxWhoseLaunchFailedIsReleasedOnce(t *testing.T) {
 	// answers waits until the runtime answers the issue's Sandbox present, or absent.
 	answers := func(t *testing.T, rig *idleRig, rt *sandbox.Runtime, present bool) {
 		t.Helper()
-		deadline := time.Now().Add(10 * time.Second)
-		for _, got := rt.IssueSandbox(rig.issue.Key); got != present; _, got = rt.IssueSandbox(rig.issue.Key) {
-			if time.Now().After(deadline) {
-				t.Fatalf("the runtime answers the issue's Sandbox present %t after 10 s, want %t", got, present)
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
+		testwait.WithinPolling(t, 10*time.Second, 10*time.Millisecond, fmt.Sprintf("the runtime to answer the issue's Sandbox present %t", present),
+			func() bool { _, got := rt.IssueSandbox(rig.issue.Key); return got == present })
 	}
 	// holds fails the test unless, once the runtime has seen the record, a pass over the issue
 	// writes no row.

@@ -4490,7 +4490,7 @@ architect, planner, implementer, tester, reviewer, merger):
      Each transfer from GitHub is tried again up to four times after a transient failure, within that bound.
      It holds the provisioning token, and no other process of the pod does ([Trust model](#trust-model-the-provisioning-token)).
 
-2. `workspace-init` provisions the issue's clone and its jj workspace on the pod's own disk from the read-only feed, taking no lock and waiting on no other pod: no other pod mounts that disk.
+2. `workspace-init` provisions the issue's clone and jj workspace on the pod's disk from the read-only feed, taking no lock and waiting on no other pod: no other pod mounts the disk at the same time.
    The clone is a local `git clone --no-checkout` of the feed, so it holds no working tree at all: nothing in it but `.git` and `.jj`.
    Git hard-links the feed's object files when the filesystem allows, but the clone owns those links, so replacing the feed cannot remove history its refs need;
    it has no `.git/objects/info/alternates`.
@@ -4501,7 +4501,7 @@ architect, planner, implementer, tester, reviewer, merger):
    The pod therefore writes the repository's working copy once, in the issue's own workspace, rather than twice.
    Its environment is the image's `PATH` and the XDG base directories (`initEnvironment`, `manifest.go`);
    nothing names a role, a generation, a lock wait, another issue's workspace, or anything the disk is expected to hold already
-   — the disk is created with the pod, so every provision is the issue's first.
+   — except on [a kept volume](#a-kept-volume-on-a-microvm-pod), the disk is created with the pod, so every provision is the issue's first.
    The workspace starts at whatever commit GitHub holds the issue's branch, `legion/<KEY>`, at:
    the daemon's `issue_branch` row creates it at the issue's base branch, the default branch as GitHub names it (`default_branch`, `release/v7.1` as readily as `main`), and moves no branch GitHub has,
    so whoever wants work to start at another commit creates `legion/<KEY>` there first, for a root before the issue is admitted, for a child before its first phase starts, after the tree's gate opens;
@@ -4509,7 +4509,7 @@ architect, planner, implementer, tester, reviewer, merger):
    Before any git or jj runs it removes every git lock file (`<file>.lock`) in the clone's git directory and in the issue's own worktree entry of it, and logs each with its path and age (`RemoveStaleGitLocks`, `internal/workspace/stalelock.go`):
    the kubelet retries a failed init container on the pod it failed in, so a first attempt killed mid-fetch leaves its locks on the same disk the retry works on, and every later write of a locked file fails on it
    — when the retry runs before the daemon replaces the pod, which it does within seconds of reading the failure (see `workspace-fetch` above).
-   No process can hold one when the retry runs, since the pod's `roles` container has not started and no other pod mounts the disk.
+   No process can hold one: the `roles` container has not started, and no other pod mounts the disk.
    Another worktree entry of the clone keeps its locks;
    when a clone it finds has no entry whose `gitdir` names the workspace (its own entry unreadable among the reasons), it writes one line saying why and fails nothing for it,
    unless the workspace has no directory yet (a first attempt killed before it added the workspace);
@@ -4903,7 +4903,7 @@ A stop mid-build — the launcher's one SIGTERM to the role's process group
 it waits for that release at least 3 s and at most what the pod's `terminationGracePeriodSeconds` (`worker_stop_timeout_seconds`, which the launcher passes the shim as `--stop-grace`) leaves once the agent's 5 s grace and the 1 s stdout drain are spent (4 s with the default 10 s).
 The whole stop fits inside the grace from 9 s up, so the daemon refuses a smaller `worker_stop_timeout_seconds` under `runtime: kubernetes` at configuration load (`legion config check` says so, quoting the key and the floor), and the relaunch is never told a live build holds the workspace;
 it runs the warm-up again, and `status` on the index that stop left on the pod's disk answers complete, so nothing runs, or reports it partial, which `codegraph index` repairs.
-A relaunch in a new pod finds no index and builds one, as the issue's first pod did.
+A relaunch in a new pod finds no index and builds one, as the issue's first pod did, except on [a kept volume](#a-kept-volume-on-a-microvm-pod), where it finds the index that the earlier pod left.
 The tester's `affected` and the reviewer's `impact`/`callers` queries answer once `codegraph status --json` reports `index.state: "complete"`;
 before that a role falls back to grep, as its prompt says.
 The init containers never call `codegraph`.
@@ -5871,7 +5871,7 @@ at the defaults, two pods fit a floor node and `limits.cpu: 256` places about 80
 `admission_cap` counts the issues the daemon has started, not the pods: an issue holds no admission slot past its review, in `accepting`, `retro` or `merging`, and, save three roots that keep theirs, none while it waits on another issue before then (root `AGENTS.md`, "Admission" in the Issue Lifecycle section), and its pod can stand where it holds no slot — through its acceptance, its retro and its merge; while it waits on another issue, from the release of its slot for that wait until it takes a slot again; while it owes its worker a start and waits in the line for a slot, as after a merge sends it back to work; and, past the close, during each look of its production check.
 So the issue pods a deployment runs at once are at most `admission_cap`, plus the issues standing past their review, plus the issues that released their slot to wait on another issue, plus the issues owed a start that wait in the line for a slot, plus the production-check looks open at that moment.
 Fewer run than that bound, for two reasons.
-Under the default idle release a pod with no turn in progress and no turn due for ten minutes is released with its disk while its slot stands, and the daemon makes the pod again at that issue's next turn; `idle_minutes: 0` turns the release off, and a pod then stands from its issue's first role start to its close, and again for each look of a production check after it.
+Under the default idle release a pod with no turn in progress and no turn due for ten minutes is released with its disk (a [kept volume](#a-kept-volume-on-a-microvm-pod) stays) while its slot stands, and the daemon makes the pod again at that issue's next turn; `idle_minutes: 0` turns the release off, and a pod then stands from its issue's first role start to its close, and again for each look of a production check after it.
 And an open issue of a live tree is not a running pod by itself: a child the daemon has not started yet has no slot and no pod, and neither has any issue of a tree whose root still waits in the line.
 A pod the pool cannot place stays `Pending`, unscheduled;
 once it has been for longer than `worker_boot_timeout_seconds` the boot watchdog reads it dead ([Liveness rules](#liveness-rules)), one launch failure, its relaunch meets the same pool, and the claim fails once its launch failures run out

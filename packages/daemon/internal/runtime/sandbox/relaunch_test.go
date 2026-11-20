@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -665,12 +666,10 @@ func TestASiblingReadBetweenAMigratingLaunchsDeleteAndCreateIsDisplaced(t *testi
 			// The launch has seen the delete through and has yet to send its create. The probe's own
 			// confirming read comes through this hook too, so it is marked first.
 			probed.Store(true)
-			for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-				if s, _ := g.r.storedSandbox(name); s == nil {
-					storeHeldIt = false
-					break
-				}
-			}
+			storeHeldIt = !testwait.Holds(time.Second, 5*time.Millisecond, func() bool {
+				s, _ := g.r.storedSandbox(name)
+				return s == nil
+			})
 			inGap, gapErr = g.r.Probe(g.ctx, sibling)
 		},
 	}
@@ -720,12 +719,10 @@ func TestAGapReadOfARoleOfAnotherPodThanTheReplacementEndedIsNotDisplaced(t *tes
 				return
 			}
 			probed.Store(true)
-			for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-				if s, _ := g.r.storedSandbox(name); s == nil {
-					storeHeldIt = false
-					break
-				}
-			}
+			storeHeldIt = !testwait.Holds(time.Second, 5*time.Millisecond, func() bool {
+				s, _ := g.r.storedSandbox(name)
+				return s == nil
+			})
 			inGap, gapErr = g.r.Probe(g.ctx, older)
 		},
 	}

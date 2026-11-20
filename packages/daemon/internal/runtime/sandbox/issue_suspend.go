@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -46,9 +47,10 @@ func (r *Runtime) SuspendIssue(ctx context.Context, issue, tree string, authoriz
 //
 // The pod may show that an init container failed on the kept volume for a cause local to it
 // (volumeFault, localInitFailure). The release then writes the reset mark (volumeResetAnnotation)
-// in the patch that suspends the Sandbox, from the pod as it stood before the suspension. It sends
-// that patch also when the Sandbox is already Suspended. The issue's next launch reads no pod, and
-// it resets the volume on the mark (volumeReset). A close (SuspendIssue) writes no mark, because it
+// in the patch that suspends the Sandbox, from the pod as it stood before the suspension. For a
+// Sandbox that is already Suspended, it writes the mark in a patch of its own, unless the
+// Sandbox carries that mark already (suspendOver). The issue's next launch reads no pod, and it
+// resets the volume on the mark (volumeReset). A close (SuspendIssue) writes no mark, because it
 // deletes the Sandbox and the volume with it.
 func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
 	return r.endIssuePod(ctx, issue, tree, authorize, true)
@@ -58,11 +60,12 @@ func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authoriz
 // its launch turn, and then the issue's Sandbox deleted, or kept where keep is true and the
 // Sandbox owns a kept volume. Under the turn, authorize is asked first and false acts on nothing.
 // A Sandbox already gone is done. One labelled with another project, issue or tree is refused. The
-// Sandbox is set Suspended, in the one write of its mode here, and its pod is waited out. That
-// write is setMode's JSON patch, which endIssuePod sends only when the Sandbox it read is not
-// Suspended yet. A release whose pod failed on the kept volume (volumeFault) sends one merge patch
-// of the mode and the reset mark in its place (suspendAnnotating), also for a Sandbox already
-// Suspended. A release that keeps the Sandbox sends one merge patch more once it has deleted the
+// Sandbox is set Suspended in the one write of its mode here (suspendOver), and its pod is waited
+// out. That write is setMode's JSON patch for a Sandbox that is not Suspended yet, and nothing for
+// one that is. A release reads the stored pod for that write and a close reads none, so a release
+// whose pod failed on the kept volume (volumeFault) sends one merge patch of the mode and the
+// reset mark in its place, or of the mark alone for a Sandbox already Suspended that does not
+// carry it. A release that keeps the Sandbox sends one merge patch more once it has deleted the
 // Secrets, which records that delete (annotate, secretsReleasedAnnotation) and changes no mode.
 func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error), keep bool) error {
 	act := "suspend"
@@ -97,20 +100,14 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 		return fmt.Errorf("%s issue %s: Sandbox %s does not belong to this issue and tree", act, issue, s.Name)
 	}
 	// The pod as it stands before the suspension takes it down: the issue's next launch reads no
-	// pod, so a release marks a kept volume that the pod shows failed for the launch to reset.
-	fault := ""
+	// pod, so a release marks a kept volume that the pod shows failed for the launch to reset. A
+	// close deletes the Sandbox and the volume with it, so it reads no pod and writes no mark.
+	var pod *corev1.Pod
 	if keep {
-		fault = volumeFault(s, r.storedPod(name))
+		pod = r.storedPod(name)
 	}
-	switch {
-	case fault != "":
-		if _, err := r.suspendAnnotating(ctx, s, map[string]string{volumeResetAnnotation: fault}); err != nil {
-			return fmt.Errorf("%s issue %s: %w", act, issue, err)
-		}
-	case s.mode() != modeSuspended:
-		if err := r.setMode(ctx, s, modeSuspended); err != nil {
-			return fmt.Errorf("%s issue %s: %w", act, issue, err)
-		}
+	if _, err := r.suspendOver(ctx, s, pod, nil); err != nil {
+		return fmt.Errorf("%s issue %s: %w", act, issue, err)
 	}
 	if _, err := r.awaitPodGone(ctx, s); err != nil {
 		return err

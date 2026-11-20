@@ -116,10 +116,9 @@ func issuePodInitExit(cmd *cobra.Command, err error, stderr io.Writer) int {
 	return code
 }
 
-// workspaceInit validates everything before it touches the disk, --repo first, and refuses to
-// run where the provisioning token is pointed at: this is the process that runs git and jj against
-// what every agent of the issue can write. Each refusal has a cause outside the issue's volume
-// (workspace.ErrOutsideVolume). Then it removes the git locks an interrupted git or jj left and
+// workspaceInit validates everything before it touches the disk (provisionInputs), and each
+// refusal there has a cause outside the issue's volume (workspace.ErrOutsideVolume), which it
+// marks once for all of them. Then it removes the git locks an interrupted git or jj left and
 // provisions from the feed, an issue with no branch at defaultBranch. It makes no other
 // directory. An ephemeral disk is the pod's own and starts empty, so the workspace this
 // provisions is the only thing on it a role reads. A kept volume (keep_volume) holds the clone and
@@ -133,44 +132,20 @@ func issuePodInitExit(cmd *cobra.Command, err error, stderr io.Writer) int {
 // disk, so a first attempt killed mid-fetch leaves exactly those locks for the retry to clear. An
 // earlier pod that was stopped on a kept volume leaves its locks for the next pod in the same way.
 func workspaceInit(ctx context.Context, issue, repo, defaultBranch, root, credentialHelper, feed string, stdout io.Writer) error {
-	repository, err := ghrepo.Parse("--repo", repo)
+	inputs, err := provisionInputs(issue, repo, defaultBranch, root, credentialHelper, feed)
 	if err != nil {
-		return workspace.OutsideVolume(err)
-	}
-	if !legionclaim.IsIssueKey(issue) {
-		return workspace.OutsideVolume(fmt.Errorf("--issue must be a Dispatch issue key like LEGION-1 (got %q)", issue))
-	}
-	if !filepath.IsAbs(root) {
-		return workspace.OutsideVolume(fmt.Errorf("--root must be an absolute path (got %q)", root))
-	}
-	if credentialHelper == "" {
-		return workspace.OutsideVolume(fmt.Errorf("--credential-helper is required: %s", workspaceProvisionUsage))
-	}
-	if !filepath.IsAbs(feed) {
-		return workspace.OutsideVolume(fmt.Errorf("--feed must be an absolute path (got %q)", feed))
-	}
-	if defaultBranch == "" {
-		return workspace.OutsideVolume(fmt.Errorf("--default-branch is required: %s", workspaceProvisionUsage))
-	}
-	if _, set := os.LookupEnv(provisionTokenFileEnv); set {
-		return workspace.OutsideVolume(errors.New(provisionTokenFileEnv + " is set: provisioning runs without the provisioning token, which `workspace-init fetch` alone holds"))
-	}
-	tools, err := provisioningTools("git", "jj")
-	if err != nil {
-		return workspace.OutsideVolume(err)
-	}
-	located, err := workspace.Location(root, repository, issue)
-	if err != nil {
+		// Every check before the first write to the volume is provisionInputs', so this one mark
+		// covers each of them, and a check added there later too (issuePodInitExit).
 		return workspace.OutsideVolume(err)
 	}
 
 	log := func(line string) { fmt.Fprintln(stdout, "workspace-init: "+line) }
-	if err := workspace.RemoveStaleGitLocks(located, time.Now(), log); err != nil {
+	if err := workspace.RemoveStaleGitLocks(inputs.located, time.Now(), log); err != nil {
 		return err
 	}
-	run := workspace.NewRunner(provisionBudget, tools)
+	run := workspace.NewRunner(provisionBudget, inputs.tools)
 	provisioned, err := workspace.Provision(ctx, run, workspace.Request{
-		StateDir: root, Repo: repository, Issue: issue, DefaultBranch: defaultBranch, CredentialHelper: credentialHelper,
+		StateDir: root, Repo: inputs.repository, Issue: issue, DefaultBranch: defaultBranch, CredentialHelper: credentialHelper,
 		Source: workspace.FromFeed(feed), Log: log,
 	})
 	if err != nil {
@@ -178,6 +153,52 @@ func workspaceInit(ctx context.Context, issue, repo, defaultBranch, root, creden
 	}
 	fmt.Fprintf(stdout, "workspace-init: %s on %s from %s\n", provisioned.Dir, provisioned.Bookmark, provisioned.DefaultBranch)
 	return nil
+}
+
+// provisionInput is what `provision` reads before it touches the volume: the repository, the
+// tools it runs and the issue's workspace on the volume.
+type provisionInput struct {
+	repository ghrepo.Repository
+	tools      map[string]string
+	located    workspace.Workspace
+}
+
+// provisionInputs is every check `provision` makes before it touches the volume, --repo first,
+// and what those checks read. It refuses to run where the provisioning token is pointed at: this
+// is the process that runs git and jj against what every agent of the issue can write. It writes
+// nothing, so no refusal of it has a cause on the volume.
+func provisionInputs(issue, repo, defaultBranch, root, credentialHelper, feed string) (provisionInput, error) {
+	repository, err := ghrepo.Parse("--repo", repo)
+	if err != nil {
+		return provisionInput{}, err
+	}
+	if !legionclaim.IsIssueKey(issue) {
+		return provisionInput{}, fmt.Errorf("--issue must be a Dispatch issue key like LEGION-1 (got %q)", issue)
+	}
+	if !filepath.IsAbs(root) {
+		return provisionInput{}, fmt.Errorf("--root must be an absolute path (got %q)", root)
+	}
+	if credentialHelper == "" {
+		return provisionInput{}, fmt.Errorf("--credential-helper is required: %s", workspaceProvisionUsage)
+	}
+	if !filepath.IsAbs(feed) {
+		return provisionInput{}, fmt.Errorf("--feed must be an absolute path (got %q)", feed)
+	}
+	if defaultBranch == "" {
+		return provisionInput{}, fmt.Errorf("--default-branch is required: %s", workspaceProvisionUsage)
+	}
+	if _, set := os.LookupEnv(provisionTokenFileEnv); set {
+		return provisionInput{}, errors.New(provisionTokenFileEnv + " is set: provisioning runs without the provisioning token, which `workspace-init fetch` alone holds")
+	}
+	tools, err := provisioningTools("git", "jj")
+	if err != nil {
+		return provisionInput{}, err
+	}
+	located, err := workspace.Location(root, repository, issue)
+	if err != nil {
+		return provisionInput{}, err
+	}
+	return provisionInput{repository: repository, tools: tools, located: located}, nil
 }
 
 // provisioningTools resolves the named tools a provisioning step runs from PATH — in an init

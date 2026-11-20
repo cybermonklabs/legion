@@ -1,14 +1,14 @@
 package sandbox
 
 import (
-	"reflect"
+	"errors"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	k8stesting "k8s.io/client-go/testing"
 
@@ -106,13 +106,7 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 	// fail edits the issue's pod as edit says, and waits until the pod store holds the edit.
 	fail := func(t *testing.T, g *rig, edit func(*corev1.Pod)) {
 		t.Helper()
-		want := g.pod(name).DeepCopy()
-		edit(want)
-		g.update(g.pod(name), edit)
-		g.eventually("the pod store to see the failed init container", func() bool {
-			p := g.r.storedPod(name)
-			return p != nil && reflect.DeepEqual(p.Status, want.Status) && (p.DeletionTimestamp == nil) == (want.DeletionTimestamp == nil)
-		})
+		g.editPod(name, "the pod store to see the failed init container", edit)
 	}
 	// goesOnSuspension makes the cluster finish the end of the issue's pod, which the test marked as
 	// being deleted, when a patch suspends its Sandbox. The rig's controller ends only the pods that
@@ -352,23 +346,7 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 	t.Run("workspace-init ended 1 under a Sandbox already Suspended, and the launch stopped before its delete", func(t *testing.T) {
 		first, old, _ := launched(t, kept, &logBuffer{})
 		fail(t, first, status(corev1.PodPending, fetched, initFailed))
-		object, err := first.dyn.Tracker().Get(sandboxGVR, testNamespace, name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// The second rig's API stamps uids from its own count, so the copies carry a uid of their
-		// own, which no Sandbox that rig creates holds.
-		suspended := object.(*unstructured.Unstructured).DeepCopy()
-		suspended.SetResourceVersion("")
-		suspended.SetUID("uid-sandbox-suspended")
-		if err := unstructured.SetNestedField(suspended.Object, modeSuspended, "spec", "operatingMode"); err != nil {
-			t.Fatal(err)
-		}
-		pod := first.pod(name).DeepCopy()
-		pod.ResourceVersion = ""
-		pod.OwnerReferences[0].UID = suspended.GetUID()
-		first.stop()
-		g := newRig(t, []k8sruntime.Object{suspended, pod}, withoutController(), withOptions(kept))
+		g, _ := first.suspendedCopy(name, kept)
 		before := g.sandbox(name)
 		g.eventually("the pod store to hold the failed pod", func() bool { return g.r.storedPod(name) != nil })
 		spec := workerSpec(t)
@@ -403,6 +381,77 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 			t.Fatalf("after the next launch the issue's Sandbox is %+v, want one with a new uid in place of %s", s, before.UID)
 		}
 	})
+
+	// A launch that fails once its Running patch was sent suspends the Sandbox again
+	// (suspendFailedLaunch), and the pod that the patch made goes with that suspension. When the
+	// init container of that pod failed on the kept volume first, the next launch reads no pod. So
+	// the suspension writes the reset mark from the pod, and the next launch resets the volume on
+	// the mark. A failed launch whose pod shows no such failure writes no mark, and the next launch
+	// keeps the volume. Each rig suspends the Sandbox of its first launch, so that the next launch
+	// sends a Running patch. The API server applies that patch, and the launch loses its answer once
+	// the pod store holds the pod that the patch made, with edit applied to it.
+	for _, tc := range []struct {
+		name   string
+		edit   func(*corev1.Pod)
+		resets bool
+	}{
+		{"workspace-init ended 1 in the pod of a launch that failed after its Running patch", status(corev1.PodPending, fetched, initFailed), true},
+		{"the init containers passed in the pod of a launch that failed after its Running patch", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := &logBuffer{}
+			g, _, _ := launched(t, kept, log)
+			if err := g.r.setMode(g.ctx, g.sandbox(name), modeSuspended); err != nil {
+				t.Fatal(err)
+			}
+			g.eventually("the pod of the Suspended Sandbox to go", func() bool { return g.pod(name) == nil && g.r.storedPod(name) == nil })
+			apply := k8stesting.ObjectReaction(generationTracker{g.dyn.Tracker()})
+			var lost atomic.Bool
+			made := ""
+			g.dyn.PrependReactor("patch", "sandboxes", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {
+				patch := a.(k8stesting.PatchAction)
+				if patch.GetName() != name || !modePatched(t, string(patch.GetPatch()), modeRunning) || !lost.CompareAndSwap(false, true) {
+					return false, nil, nil
+				}
+				if _, _, err := apply(a); err != nil {
+					return true, nil, err
+				}
+				g.eventually("the pod that the Running patch made", func() bool { return g.pod(name) != nil })
+				made = string(g.pod(name).UID)
+				if tc.edit != nil {
+					g.editPod(name, "the pod store to see the failed init container", tc.edit)
+				}
+				g.eventually("the pod store to hold the pod that the Running patch made", func() bool {
+					p := g.r.storedPod(name)
+					return p != nil && string(p.UID) == made
+				})
+				return true, nil, errors.New("the answer to the Running patch was lost")
+			})
+			spec := workerSpec(t)
+			spec.Generation = 2
+			g.launcher(spec.Claim)
+			if err := failedLaunchOn(t, g, g.ctx, spec); err == nil || !strings.Contains(err.Error(), "set its sandbox running") {
+				t.Fatalf("the launch = %v, want it to fail at its Running patch", err)
+			}
+			value, marked := mark(g)
+			if want := initContainer + " exited 1 in pod " + made; tc.resets && value != want {
+				t.Fatalf("the failed launch left the mark %q on the Sandbox, want %q", value, want)
+			}
+			if !tc.resets && marked {
+				t.Fatalf("the failed launch marked the Sandbox with %q for a pod whose init containers passed", value)
+			}
+			g.eventually("the pod of the failed launch to go", func() bool { return g.pod(name) == nil && g.r.storedPod(name) == nil })
+			before := g.sandbox(name)
+			g.clearActions()
+			spec.Generation = 3
+			loc := g.spawn(spec)
+			if tc.resets {
+				reset(t, g, log, loc, before, made, initContainer)
+			} else {
+				keeps(t, g, log, loc, before, made, true)
+			}
+		})
+	}
 
 	t.Run("workspace-init ended 2", func(t *testing.T) {
 		log := &logBuffer{}

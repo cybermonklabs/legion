@@ -2,7 +2,6 @@ package sandbox
 
 import (
 	"errors"
-	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -10,7 +9,6 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	k8stesting "k8s.io/client-go/testing"
 )
@@ -35,13 +33,7 @@ func TestAKeptVolumeIsResetAfterALaunchThatStoppedBeforeTheReset(t *testing.T) {
 			{Name: initContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}}},
 		}}
 	}
-	want := g.pod(name).DeepCopy()
-	edit(want)
-	g.update(g.pod(name), edit)
-	g.eventually("the pod store to see the failed workspace-init", func() bool {
-		p := g.r.storedPod(name)
-		return p != nil && reflect.DeepEqual(p.Status, want.Status)
-	})
+	g.editPod(name, "the pod store to see the failed workspace-init", edit)
 	before := g.sandbox(name)
 	if before.mode() != modeRunning {
 		t.Fatalf("the issue's Sandbox is %s before the launch, want Running", before.mode())
@@ -81,13 +73,7 @@ func TestAKeptVolumeIsResetAfterALaunchThatStoppedBeforeTheReset(t *testing.T) {
 		if err := g.r.Suspend(g.ctx, old); err != nil {
 			t.Fatal(err)
 		}
-		want := g.pod(name).DeepCopy()
-		edit(want)
-		g.update(g.pod(name), edit)
-		g.eventually("the pod store to see the failed workspace-init", func() bool {
-			p := g.r.storedPod(name)
-			return p != nil && reflect.DeepEqual(p.Status, want.Status)
-		})
+		g.editPod(name, "the pod store to see the failed workspace-init", edit)
 		before := g.sandbox(name)
 		if before.mode() != modeRunning {
 			t.Fatalf("the issue's Sandbox is %s before the launch, want Running", before.mode())
@@ -141,31 +127,8 @@ func TestAKeptVolumeIsResetAfterALaunchThatStoppedBeforeTheReset(t *testing.T) {
 		if err := first.r.Suspend(first.ctx, old); err != nil {
 			t.Fatal(err)
 		}
-		want := first.pod(name).DeepCopy()
-		edit(want)
-		first.update(first.pod(name), edit)
-		first.eventually("the pod store to see the failed workspace-init", func() bool {
-			p := first.r.storedPod(name)
-			return p != nil && reflect.DeepEqual(p.Status, want.Status)
-		})
-		object, err := first.dyn.Tracker().Get(sandboxGVR, testNamespace, name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// The second rig's API stamps uids from its own count, so the copies carry a uid that no
-		// Sandbox that rig creates holds.
-		copied := object.(*unstructured.Unstructured).DeepCopy()
-		copied.SetResourceVersion("")
-		copied.SetUID("uid-sandbox-suspended")
-		if err := unstructured.SetNestedField(copied.Object, modeSuspended, "spec", "operatingMode"); err != nil {
-			t.Fatal(err)
-		}
-		pod := first.pod(name).DeepCopy()
-		pod.ResourceVersion = ""
-		pod.OwnerReferences[0].UID = copied.GetUID()
-		first.stop()
-
-		g := newRig(t, []k8sruntime.Object{copied, pod}, withoutController(), withOptions(keptVolumes(SandboxMicroVM)))
+		first.editPod(name, "the pod store to see the failed workspace-init", edit)
+		g, copied := first.suspendedCopy(name, keptVolumes(SandboxMicroVM))
 		g.eventually("the pod store to hold the failed pod", func() bool { return g.r.storedPod(name) != nil })
 		var deletes atomic.Int32
 		g.dyn.PrependReactor("patch", "sandboxes", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {

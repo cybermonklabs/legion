@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"reflect"
 	"slices"
 	"testing"
 
@@ -56,13 +55,7 @@ func TestAKeptVolumeOutlivesAnInitContainerTheKubeletLost(t *testing.T) {
 			edit := func(p *corev1.Pod) {
 				p.Status = corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: tc.statuses}
 			}
-			want := g.pod(name).DeepCopy()
-			edit(want)
-			g.update(g.pod(name), edit)
-			g.eventually("the pod store to see the lost init container", func() bool {
-				p := g.r.storedPod(name)
-				return p != nil && reflect.DeepEqual(p.Status, want.Status)
-			})
+			g.editPod(name, "the pod store to see the lost init container", edit)
 			g.clearActions()
 			spec := workerSpec(t)
 			spec.Generation = 2
@@ -94,13 +87,7 @@ func TestAKeptVolumeOutlivesAnInitContainerTheKubeletLost(t *testing.T) {
 				Name: initContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "Error"}},
 			}}}
 		}
-		want := g.pod(name).DeepCopy()
-		edit(want)
-		g.update(g.pod(name), edit)
-		g.eventually("the pod store to see the failed init container", func() bool {
-			p := g.r.storedPod(name)
-			return p != nil && reflect.DeepEqual(p.Status, want.Status)
-		})
+		g.editPod(name, "the pod store to see the failed init container", edit)
 		g.clearActions()
 		spec := workerSpec(t)
 		spec.Generation = 2

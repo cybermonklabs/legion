@@ -1011,6 +1011,43 @@ func (g *rig) update(pod *corev1.Pod, edit func(*corev1.Pod)) {
 	}
 }
 
+// editPod edits the pod name in the tracker as edit says, and waits until the pod store holds the
+// edit, which what names for the wait's failure: the same status, and a deletionTimestamp where the
+// edit set one.
+func (g *rig) editPod(name, what string, edit func(*corev1.Pod)) {
+	g.t.Helper()
+	want := g.pod(name).DeepCopy()
+	edit(want)
+	g.update(g.pod(name), edit)
+	g.eventually(what, func() bool {
+		p := g.r.storedPod(name)
+		return p != nil && reflect.DeepEqual(p.Status, want.Status) && (p.DeletionTimestamp == nil) == (want.DeletionTimestamp == nil)
+	})
+}
+
+// suspendedCopy stops g and is a second rig, made with config, that runs no controller and holds
+// copies of the Sandbox name and of its pod as g's API holds them, the Sandbox set Suspended. It
+// answers that rig and the copy of the Sandbox. The second rig's API stamps uids from its own
+// count, so the copies carry a uid of their own, which no Sandbox that rig creates holds.
+func (g *rig) suspendedCopy(name string, config func(*Options)) (*rig, *unstructured.Unstructured) {
+	g.t.Helper()
+	object, err := g.dyn.Tracker().Get(sandboxGVR, testNamespace, name)
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	suspended := object.(*unstructured.Unstructured).DeepCopy()
+	suspended.SetResourceVersion("")
+	suspended.SetUID("uid-sandbox-suspended")
+	if err := unstructured.SetNestedField(suspended.Object, modeSuspended, "spec", "operatingMode"); err != nil {
+		g.t.Fatal(err)
+	}
+	pod := g.pod(name).DeepCopy()
+	pod.ResourceVersion = ""
+	pod.OwnerReferences[0].UID = suspended.GetUID()
+	g.stop()
+	return newRig(g.t, []k8sruntime.Object{suspended, pod}, withoutController(), withOptions(config)), suspended
+}
+
 // sandbox is the Sandbox named name in the tracker, or nil.
 func (g *rig) sandbox(name string) *sandbox {
 	object, err := g.dyn.Tracker().Get(sandboxGVR, testNamespace, name)
@@ -1402,7 +1439,7 @@ func sandboxLocator(token claim.Token, uid string) runtime.Locator {
 
 // isMergePatch is whether a Sandbox patch body is a JSON merge patch, an object, rather than a JSON
 // patch, an array of operations: a role's address record (recordAddresses) or the suspension that
-// names a displaced pod (suspendDisplacing).
+// names a displaced pod (displacing, suspendAnnotating).
 func isMergePatch(body string) bool {
 	return strings.HasPrefix(strings.TrimSpace(body), "{")
 }

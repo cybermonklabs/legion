@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // volumeSeam is the daemon's VolumeReported as a test holds it: every report it was given, in
@@ -110,16 +111,12 @@ func TestTheLauncherServesAVolumeReportAndHandsItToTheSeam(t *testing.T) {
 	if err := writer.WriteFrame(shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: 7}}); err != nil {
 		t.Fatalf("write the state frame after the report: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	if !testwait.Holds(5*time.Second, 5*time.Millisecond, func() bool {
 		state, connected := launchers.state(workerToken, "pod-uid")
-		if connected && state.Child != nil && state.Child.Generation == 7 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("after the volume report the launcher is connected=%t state=%+v, want the connection still serving", connected, state)
-		}
-		time.Sleep(5 * time.Millisecond)
+		return connected && state.Child != nil && state.Child.Generation == 7
+	}) {
+		state, connected := launchers.state(workerToken, "pod-uid")
+		t.Fatalf("after the volume report the launcher is connected=%t state=%+v, want the connection still serving", connected, state)
 	}
 }
 
@@ -192,16 +189,12 @@ func TestALauncherWithNoVolumeSeamStillServesTheReport(t *testing.T) {
 	if err := writer.WriteFrame(shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: 3}}); err != nil {
 		t.Fatalf("write the state frame after the report: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	if !testwait.Holds(5*time.Second, 5*time.Millisecond, func() bool {
 		state, connected := launchers.state(workerToken, "pod-uid")
-		if connected && state.Child != nil && state.Child.Generation == 3 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the launcher with no volume seam is connected=%t state=%+v after a report, want the connection still serving", connected, state)
-		}
-		time.Sleep(5 * time.Millisecond)
+		return connected && state.Child != nil && state.Child.Generation == 3
+	}) {
+		state, connected := launchers.state(workerToken, "pod-uid")
+		t.Fatalf("the launcher with no volume seam is connected=%t state=%+v after a report, want the connection still serving", connected, state)
 	}
 }
 
@@ -266,15 +259,11 @@ func TestAVolumeReportTheFramesRuleRefusesIsDroppedAndLeavesTheConnection(t *tes
 	if err := writer.WriteFrame(shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: 9}}); err != nil {
 		t.Fatalf("write the state frame after the dropped reports: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	if !testwait.Holds(5*time.Second, 5*time.Millisecond, func() bool {
 		state, connected := launchers.state(workerToken, "pod-uid")
-		if connected && state.Child != nil && state.Child.Generation == 9 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("after a report the frame's rule refuses the launcher is connected=%t state=%+v, want the connection still serving", connected, state)
-		}
-		time.Sleep(5 * time.Millisecond)
+		return connected && state.Child != nil && state.Child.Generation == 9
+	}) {
+		state, connected := launchers.state(workerToken, "pod-uid")
+		t.Fatalf("after a report the frame's rule refuses the launcher is connected=%t state=%+v, want the connection still serving", connected, state)
 	}
 }
