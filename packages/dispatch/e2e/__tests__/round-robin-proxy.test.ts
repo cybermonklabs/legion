@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { Server, Subprocess } from "bun";
 
@@ -149,6 +150,7 @@ const childHome = temporaryDirectory("round-robin-proxy-home");
 beforeAll(async () => {
   proxy = Bun.spawn(["bun", proxyScript], {
     env: {
+      ...bunCacheOff,
       PATH: process.env.PATH ?? "",
       HOME: childHome,
       TMPDIR: tmpdir(),
@@ -437,7 +439,13 @@ describe("DISPATCH_E2E_PROCESSES", () => {
     runBounded({
       argv,
       bound: "short",
-      env: { PATH: process.env.PATH ?? "", HOME: childHome, TMPDIR: tmpdir(), ...env },
+      env: {
+        ...bunCacheOff,
+        PATH: process.env.PATH ?? "",
+        HOME: childHome,
+        TMPDIR: tmpdir(),
+        ...env,
+      },
       from: import.meta.url,
     });
   // A process of its own per import: the refusal is the module's evaluation, which runs once.

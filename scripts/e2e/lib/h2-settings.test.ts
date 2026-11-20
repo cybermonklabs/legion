@@ -5,6 +5,7 @@ import https from "node:https";
 import net, { type AddressInfo } from "node:net";
 import { join } from "node:path";
 import tls from "node:tls";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
@@ -67,7 +68,7 @@ async function run(
   env: Record<string, string> = { NODE_EXTRA_CA_CERTS: certFile }
 ): Promise<{ readonly code: number; readonly stdout: string; readonly stderr: string }> {
   const child = Bun.spawn([process.execPath, probe, ...args], {
-    env: { PATH: process.env.PATH ?? "", HOME: scratch, ...env },
+    env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: scratch, ...env },
     stderr: "pipe",
     stdout: "pipe",
   });

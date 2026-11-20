@@ -43,6 +43,7 @@ env:
       "test-fixtures": "test_fixtures",
       "conflicts-script": "conflicts_script",
       "sessions-script": "sessions_script",
+      "bun-cache-census": "bun_cache_census",
       "broker-client": "broker_client",
       "envoy-client": "envoy_client",
       "pi-shared": "pi_shared",
@@ -169,6 +170,9 @@ jobs:
       contracts: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.contracts }}
       test_fixtures: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.test_fixtures }}
       conflicts_script: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.conflicts_script }}
+      # The Bun transpiler-cache census of every Bun suite, which the suites' own jobs run bare: no
+      # `full-ci` term, only the dispatched one above.
+      bun_cache_census: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.bun_cache_census }}
       broker_client: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.broker_client }}
       envoy_client: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_client }}
       pi_shared: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.pi_shared }}
@@ -461,6 +465,19 @@ jobs:
       actions: read
       checks: write
     uses: ./.github/workflows/ci-job-sessions-script.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
+  # Every Bun suite under the Bun transpiler-cache census (scripts/bun-cache-census.ts), which the
+  # suites' own jobs run bare, since the census slows a suite; the called file's head says why.
+  bun-cache-census:
+    needs: changes
+    if: needs.changes.outputs.bun_cache_census == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-bun-cache-census.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
@@ -913,6 +930,7 @@ jobs:
       - test-fixtures
       - conflicts-script
       - sessions-script
+      - bun-cache-census
       - broker-client
       - envoy-client
       - pi-shared

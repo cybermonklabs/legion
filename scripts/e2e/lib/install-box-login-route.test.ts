@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // The box-login route's own installer, against a fake operator home in a temp directory: never the
@@ -83,7 +84,7 @@ function install({
       "--operator-home",
       operatorHome,
     ],
-    { env: { PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: callerHome } }
+    { env: { ...bunCacheOff, PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: callerHome } }
   );
   return {
     agent,
@@ -236,7 +237,7 @@ describe("the box-login model route installer", () => {
     "--operator-home",
   ])("refuses %s with no value as an argument error (exit 2), not an unbound variable", (flag) => {
     const result = Bun.spawnSync(["bash", join(lib, "install-box-login-route.sh"), flag], {
-      env: { PATH: process.env.PATH ?? "", HOME: callerHome },
+      env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: callerHome },
     });
     expect(result.exitCode).toBe(2);
     expect(result.stderr.toString()).toContain(`${flag} needs a value`);
@@ -312,6 +313,7 @@ describe("a box-login stage proof refused at its first lines", () => {
     const evidence = join(dir, `evidence-${script}-${Object.keys(env).join("-")}`);
     const child = Bun.spawnSync(["bash", join(e2e, script)], {
       env: {
+        ...bunCacheOff,
         PATH: process.env.PATH ?? "",
         HOME: callerHome,
         LEGION_E2E_MODEL_ROUTE: "box-login",
@@ -331,7 +333,7 @@ describe("a box-login stage proof refused at its first lines", () => {
   test.each(scripts)("%s takes the lock before it makes any run state", async (script) => {
     const holder = Bun.spawn(
       ["bash", "-c", helpers(lockFile, "take_box_login_lock && echo ready && exec sleep 60")],
-      { stdout: "pipe", env: { PATH: process.env.PATH ?? "", HOME: callerHome } }
+      { stdout: "pipe", env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: callerHome } }
     );
     try {
       await holder.stdout.getReader().read();

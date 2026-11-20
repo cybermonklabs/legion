@@ -12,6 +12,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { randomBytes } from "node:crypto"
 import { writeFileSync } from "node:fs"
 import * as path from "node:path"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 
 const servers: { stop: (closeActive?: boolean) => void }[] = []
@@ -30,7 +31,13 @@ async function send(url: string): Promise<{ exitCode: number; stderr: string; st
     JSON.stringify({ envoy: { enabled: true, url }, dispatch: { enabled: false } }),
   )
   const child = Bun.spawn(["bun", command, "ses_target", "hello"], {
-    env: { PATH: process.env["PATH"] ?? "", HOME: home, TMPDIR: home, ENVOY_CONFIG_FILE: config },
+    env: {
+      ...bunCacheOff,
+      PATH: process.env["PATH"] ?? "",
+      HOME: home,
+      TMPDIR: home,
+      ENVOY_CONFIG_FILE: config,
+    },
     stdout: "pipe",
     stderr: "pipe",
   })

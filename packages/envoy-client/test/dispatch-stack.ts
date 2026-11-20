@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
 import * as path from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { SQL, type Subprocess } from "bun";
@@ -142,6 +143,7 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
         command: [path.join(bin, "dispatch")],
         cwd: ENVOY_MODULE,
         env: {
+          ...bunCacheOff,
           PATH: SHELL_PATH,
           HOME: home,
           DATABASE_URL: databaseUrl.toString(),

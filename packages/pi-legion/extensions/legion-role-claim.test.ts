@@ -8,6 +8,7 @@ import {
   HEARTBEAT_RETRY_MIN_MS,
 } from "@legion/envoy-client/envoy-settings";
 import type { ZodNumberProperty } from "@legion/pi-shared/pi-types";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { captureEnvironment, type EnvironmentRestore } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -155,6 +156,7 @@ const originalEnvironment = {
   LEGION_TREE: process.env.LEGION_TREE,
   LEGION_STATE_DIR: process.env.LEGION_STATE_DIR,
   HOME: process.env.HOME,
+  BUN_RUNTIME_TRANSPILER_CACHE_PATH: process.env.BUN_RUNTIME_TRANSPILER_CACHE_PATH,
   DISPATCH_URL: process.env.DISPATCH_URL,
   DISPATCH_TOKEN: process.env.DISPATCH_TOKEN,
   DISPATCH_STATE_DIR: process.env.DISPATCH_STATE_DIR,
@@ -164,6 +166,7 @@ const originalEnvironment = {
 let dispatchState = "";
 beforeEach(() => {
   process.env.HOME = "/nonexistent-home-for-legion-tests";
+  Object.assign(process.env, bunCacheOff);
   delete process.env.DISPATCH_URL;
   delete process.env.DISPATCH_TOKEN;
   dispatchState = mkdtempSync(join(tmpdir(), "legion-role-claim-dispatch-"));

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { SessionAnswer } from "@legion/contracts"
 import { renderSessionAnswers } from "@legion/envoy-client/session-answers"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 
 // What people wrote to a session, on the real Claude Code (hooks/session-hook.ts
@@ -292,6 +293,7 @@ async function setUp(): Promise<{
     standin,
     work: work as string,
     env: {
+      ...bunCacheOff,
       PATH: process.env["PATH"] ?? "",
       HOME: home as string,
       CLAUDE_CONFIG_DIR: config as string,

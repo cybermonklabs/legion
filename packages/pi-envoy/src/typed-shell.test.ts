@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isShellCommandReport } from "@legion/contracts";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { procmgr } from "@oh-my-pi/pi-utils";
 import {
   runShellCommand,
@@ -160,7 +161,9 @@ describe("running a person's command", () => {
     await Bun.write(join(home, ".profile"), profile);
     await Bun.write(join(home, ".zprofile"), profile);
     const before = process.env.HOME;
+    const beforeCache = process.env.BUN_RUNTIME_TRANSPILER_CACHE_PATH;
     process.env.HOME = home;
+    Object.assign(process.env, bunCacheOff);
     try {
       const result = await runShellCommand('pwd -P; printf %s "$TYPED_SHELL_TEST_PROFILE"', {
         cwd: directory,
@@ -170,6 +173,8 @@ describe("running a person's command", () => {
     } finally {
       if (before === undefined) delete process.env.HOME;
       else process.env.HOME = before;
+      if (beforeCache === undefined) delete process.env.BUN_RUNTIME_TRANSPILER_CACHE_PATH;
+      else process.env.BUN_RUNTIME_TRANSPILER_CACHE_PATH = beforeCache;
       rmSync(home, { recursive: true, force: true });
       rmSync(directory, { recursive: true, force: true });
     }

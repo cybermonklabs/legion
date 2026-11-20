@@ -5,6 +5,10 @@
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
+    "./bun-child-environment": {
+      "types": "./src/bun-child-environment.ts",
+      "bun": "./src/bun-child-environment.ts"
+    },
     "./environment": {
       "types": "./src/environment.ts",
       "bun": "./src/environment.ts"

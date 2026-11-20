@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { DISPATCH_FIRST_MARKER } from "@legion/envoy-client/dispatch-first"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 
 const packageRoot = resolve(import.meta.dir, "..")
@@ -20,7 +21,7 @@ async function runHook(
   mode = "dispatch-first",
 ): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
   const run = Bun.spawn(["bun", hookEntry, mode], {
-    env: { PATH: process.env["PATH"] ?? "", ...env },
+    env: { ...bunCacheOff, PATH: process.env["PATH"] ?? "", ...env },
     stdin: new TextEncoder().encode(JSON.stringify(input)),
     stdout: "pipe",
     stderr: "pipe",

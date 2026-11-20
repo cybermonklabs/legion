@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import {
   type AppCredentialSource,
   type AppRole,
@@ -80,7 +81,7 @@ const keyApp = (id: string, command = `cat -- ${join(dir, `key-${id}.pem`)}`) =>
 // closed-stdin case expects nothing.
 async function run(path: string, env: Record<string, string> = {}, api = standIn) {
   const child = Bun.spawn(["bun", script, path, api], {
-    env: { PATH: process.env.PATH ?? "", HOME: home, ...env },
+    env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: home, ...env },
     stdin: new Blob(["stdin-leak"]),
     stdout: "pipe",
     stderr: "pipe",
@@ -110,6 +111,7 @@ read_app_logins
 ${then}`;
   const child = Bun.spawn(["bash", "-c", shell], {
     env: {
+      ...bunCacheOff,
       PATH: process.env.PATH ?? "",
       HOME: home,
       LIB: join(import.meta.dir, "workflow.sh"),
@@ -197,7 +199,7 @@ describe("app-logins.ts", () => {
   const behindReader = async (body: string, stall: number) => {
     const shell = `{\n${body}\n} 2>&1 | { sleep ${stall}; cat; }`;
     const child = Bun.spawn(["bash", "-c", shell], {
-      env: { PATH: process.env.PATH ?? "", HOME: home },
+      env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: home },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -314,7 +316,7 @@ describe("app-logins.ts", () => {
   test("a caller that stopped reading stderr still gets the logins and exit 0", async () => {
     const relayed = `printf 'relayed\\n' >&2; cat ${join(dir, "release-101.json")}`;
     const child = Bun.spawn(["bun", script, config(app("101", relayed), app("202")), standIn], {
-      env: { PATH: process.env.PATH ?? "", HOME: home },
+      env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: home },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -557,7 +559,7 @@ describe("app-logins.ts", () => {
     const path = join(dir, `legion-${++configs}.yaml`);
     writeFileSync(path, `github_apps:\n  implement:\n${app("101")}\n`);
     const one = Bun.spawn(["bun", script, "--roles", "implement", path, standIn], {
-      env: { PATH: process.env.PATH ?? "", HOME: home },
+      env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: home },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -571,7 +573,7 @@ describe("app-logins.ts", () => {
     expect(JSON.parse(stdout)).toEqual({ implement: "example-implement[bot]" });
     for (const roles of ["merger", "implement,implement", ""]) {
       const bad = Bun.spawnSync(["bun", script, "--roles", roles, path], {
-        env: { PATH: process.env.PATH ?? "", HOME: home },
+        env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: home },
         stderr: "pipe",
       });
       expect(bad.exitCode).toBe(2);

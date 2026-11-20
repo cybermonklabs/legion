@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
@@ -36,6 +37,7 @@ function run(argv: string[], env: Record<string, string>) {
     bound: "short",
     cwd: dispatchPackage,
     env: {
+      ...bunCacheOff,
       PATH: process.env.PATH ?? "",
       HOME: home,
       // The child writes under its temporary directory, which on a machine whose TMPDIR names

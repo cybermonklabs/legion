@@ -16,6 +16,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { appCredentialSources } from "./app-logins";
 import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./script-functions";
 import {
@@ -141,6 +142,7 @@ function spawnGithubApps(inputs: Record<string, string | undefined>, then: strin
   // lib's own `compgen -e` strip list and hide whether the lib's default entries are swept: the
   // child starts with no App secret of any kind, and only a case's inputs put one back.
   const env: Record<string, string | undefined> = {
+    ...bunCacheOff,
     PATH: `${fakeBin}:${process.env.PATH}`,
     HOME: home,
     LIB: join(import.meta.dir, "github-apps.sh"),
@@ -970,7 +972,7 @@ echo "logins $github_app_logins"`
     // And that command needs nothing of the operator's environment, which is the whole point: it
     // is run under the HOME the daemon's own environment would give it.
     const ran = Bun.spawnSync([...busyboxSh, "-c", sources.review?.command ?? ""], {
-      env: { PATH: process.env.PATH, HOME: "/nonexistent" },
+      env: { ...bunCacheOff, PATH: process.env.PATH, HOME: "/nonexistent" },
       stdout: "pipe",
       stderr: "pipe",
     });

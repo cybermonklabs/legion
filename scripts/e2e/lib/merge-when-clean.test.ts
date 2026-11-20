@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // merge_when_clean and await_merger_merge (lib/workflow.sh) against a fake gh first on PATH.
@@ -126,6 +127,7 @@ function run(reads: PullRequest[], flags = "--squash --delete-branch", fake: Fak
   const script = `${prelude}${fake.fn ?? "merge_when_clean"} "$repo" 7 ${flags}${record}`;
   const result = Bun.spawnSync(["bash", "-c", script], {
     env: {
+      ...bunCacheOff,
       PATH: `${bin}:${process.env.PATH}`,
       HOME: state,
       LIB: lib,

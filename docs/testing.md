@@ -124,6 +124,24 @@ itself, whose tests import its sources by relative path.
   names on `process.env` itself, and hands `versionControlNames` to `restoreEnvironment` so the next
   file finds its own again.
 
+- A test that starts a process under a HOME or an `XDG_CACHE_HOME` of the test's own puts
+  `...bunCacheOff` (`@legion/test-fixtures/bun-child-environment`) first in that process's
+  environment; a test that moves its own process's HOME also runs
+  `Object.assign(process.env, bunCacheOff)` and puts the key back with HOME. Bun keeps its runtime
+  transpiler cache under HOME (`$HOME/.bun/install/cache/@t@`, or `$XDG_CACHE_HOME/bun/@t@`), and a
+  HOME a test made is empty, so each Bun child writes each module larger than 4 KB it transpiles
+  into the test's directory, and the test's removal deletes it again: 152 files for one start of
+  the Claude Envoy session hook. No row checks that work, and on a slow disk it is what times a row
+  out. The key goes to a process that is not Bun too (a shell, `python3`, `claude`), since a Bun it
+  starts inherits it. `bun scripts/bun-cache-census.ts -- <command>` runs a command under `strace`
+  and fails it when a Bun process it starts runs under a HOME or an `XDG_CACHE_HOME` of its own
+  without `BUN_RUNTIME_TRANSPILER_CACHE_PATH=0`, or a cache file is written outside the runner's
+  own cache. In CI the suites' own jobs run them bare, since the census slows a suite, and the
+  `bun-cache-census` job runs every Bun suite under it, each from the directory and with the
+  environment of its own job, and the census's own test bare, since a traced process cannot run
+  `strace`. That job judges the census alone: a suite that fails under the trace prints its exit,
+  and its own job judges it.
+
 - Take a port from the kernel: bind port 0, read back the port the listener reports, and hold that
   listener from the moment it binds, so nothing else on the machine can take the port between the
   question and the row that asks it (`stubBroker` in

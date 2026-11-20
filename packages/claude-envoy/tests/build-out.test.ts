@@ -4,6 +4,7 @@ import { existsSync } from "node:fs"
 import { lstat, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 
 const packageRoot = resolve(import.meta.dir, "..")
 const buildScript = join(packageRoot, "scripts", "build.ts")
@@ -44,7 +45,7 @@ test("--out keeps bin/dispatch executable, and it runs the built CLI", async () 
   expect((await stat(shim)).mode & 0o111).toBe(0o111)
   const run = Bun.spawn([shim, "--help"], {
     cwd: scratch,
-    env: { PATH: process.env["PATH"] ?? "", HOME: scratch },
+    env: { ...bunCacheOff, PATH: process.env["PATH"] ?? "", HOME: scratch },
     stdout: "pipe",
     stderr: "pipe",
   })

@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
@@ -139,7 +140,7 @@ ${fn("death_charge")}
 ${fn("hold_end_charged")}
 ${body}`,
     ],
-    { env: { PATH: process.env.PATH ?? "", HOME: dir, ...env } }
+    { env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: dir, ...env } }
   );
   const delivered = existsSync(calls)
     ? readFileSync(calls, "utf8")

@@ -1,0 +1,259 @@
+name: CI job bun-cache-census
+
+# The steps of ci.yaml's `bun-cache-census` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# Every Bun suite CI runs, each from the directory and with the environment its own job runs it
+# with, under the Bun transpiler-cache census (scripts/bun-cache-census.ts). The census runs the
+# suite under strace and finds each Bun process a test starts under a HOME or an XDG_CACHE_HOME
+# of its own without bunCacheOff (@legion/test-fixtures/bun-child-environment), and each
+# transpiler cache file written outside the runner's own cache. Such a child writes Bun's cache
+# into the test's directory, which the test then deletes: work no row checks, and on a slow disk
+# what times a row out (docs/testing.md, "Bun tests").
+#
+# The suites' own jobs run them bare, since the census slows a suite: on 4 CPUs, three rounds
+# each, it took a suite from 1.3 to 7 times its plain time. So the census has this job, whose
+# filter, bun_cache_census, names the suites' test files and the helpers that start a test's
+# children: a change that can add such a start selects it, and a change to a Go file does not.
+#
+# Each census step judges the census alone. A suite that fails under strace (a row with a tight
+# deadline, slowed by the trace) prints its exit and lets the step go on: that suite's own job
+# runs it bare and judges it. The census still fails the step for a violation, and with exit 2
+# when strace is missing or its trace saw no program start. Each census step runs whatever the
+# steps before it did once the set-up succeeded, so one run names every suite with a violation.
+# The census's own test runs bare, since a traced process cannot run strace.
+#
+# The limit is the sum of the steps' bounds, cybermonklabs/legion#4582's rule: each step's
+# `timeout-minutes`, and 6 minutes for the runner's pulls of the two service images (180 s each,
+# #4582's measured bound). A set-up step's bound is twice its slowest time in the suites' own
+# jobs of run 44749308547, rounded up to the minute; a census step's is twice the suite's time
+# in that run times the census's measured cost (its median time under the census over its median
+# plain time), rounded up to the minute, and at least 1 minute.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# As ci-job-pi-legion.yaml's: a go command falls through to the module's source after any error.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  bun-cache-census:
+    runs-on: ubuntu-24.04
+    # 6 minutes for the two service pulls, 1 for the job's own set-up and clean-up, and the
+    # steps' limits below: 20 for the set-up, 1 for the census's own test, 147 for the census
+    # steps, and 1 for the ci-ok report.
+    timeout-minutes: 176
+    # The services the suites' own jobs give them: the NATS server of pi-envoy's and pi-legion's
+    # Oh My Pi rows, and the Postgres of the session message-wait suite. Each step names the
+    # service in its own environment, as the suite's own job does, so no other suite reads it.
+    services:
+      nats:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
+        ports: ["4222:4222"]
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+        timeout-minutes: 1
+      # The Claude Envoy suite's answers-claude.test.ts runs the pinned Claude Code
+      # (.github/actions/install-claude-code).
+      - uses: ./.github/actions/install-claude-code
+        timeout-minutes: 1
+      # pi-shared's jj row, and the mise install-omp installs the Oh My Pi pin through.
+      - uses: ./.github/actions/install-jj
+        timeout-minutes: 1
+      # pi-envoy's and pi-legion's Oh My Pi rows (packages/pi-shared/test/omp-harness.ts).
+      - uses: ./.github/actions/install-omp
+        timeout-minutes: 1
+      # pi-legion's daemon-pane rows run `go run` inside packages/daemon, and scripts/e2e/lib's
+      # held-port.test.ts builds the real envoy-listener.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        timeout-minutes: 1
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+      # go-daemon, shared with typecheck, daemon-go and pi-legion.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        timeout-minutes: 1
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
+      # zsh for claude-envoy's and the dashboard's zsh rows, tmux for pi-envoy's tmux-place row,
+      # and strace for the census: the zsh and tmux the suites' own jobs install, and strace, which
+      # the runner image lists in none of its packages (actions/runner-images,
+      # images/ubuntu/Ubuntu2404-Readme.md, "Installed apt packages"). Each wait on the network is
+      # bounded and tried three times, and the install then runs from what was downloaded, with no
+      # network, so no bound can stop dpkg mid-write: 60 s an attempt is #4582's apt bound, twice
+      # its slowest measured apt step. Its bound: 245 s for each of the two fetches (three
+      # attempts of 60 s, each killed 15 s after its bound, and 10 s between them) and 60 s for the
+      # install, twice the slowest apt install of the suites' own jobs (19 s), 550 s in all.
+      - name: Install zsh, tmux and strace
+        timeout-minutes: 10
+        run: |
+          fetch() {
+            for attempt in 1 2 3; do
+              sudo timeout -k 15 60 "$@" && return 0
+              echo "attempt $attempt of 3 failed: $*" >&2
+              [ "$attempt" = 3 ] || sleep 10
+            done
+            return 1
+          }
+          fetch apt-get update --error-on=any
+          fetch apt-get install --download-only -y --no-install-recommends zsh tmux strace
+          sudo apt-get install --no-download -y --no-install-recommends zsh tmux strace
+      - run: bun install --frozen-lockfile
+        timeout-minutes: 1
+      # Every entry, a superset of the dashboard job's build:dispatch.
+      - name: Build contracts
+        timeout-minutes: 1
+        run: bun run build
+        working-directory: packages/contracts
+      # The Envoy client's credential rows run this image, as that suite's own job pulls it.
+      - name: Pre-pull the NATS image the Envoy client's credential tests run
+        id: prepared
+        timeout-minutes: 1
+        run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
+
+      - name: Test the Bun transpiler-cache census
+        if: ${{ !cancelled() && steps.prepared.outcome == 'success' }}
+        timeout-minutes: 1
+        run: bun test scripts/bun-cache-census.test.ts
+
+      - name: Census of the shared test fixtures' suite
+        if: ${{ !cancelled() && steps.prepared.outcome == 'success' }}
+        timeout-minutes: 1
+        working-directory: packages/test-fixtures
+        run: bun ../../scripts/bun-cache-census.ts -- sh -c 'bun run test || echo "the suite failed under strace with exit $?, which its own job judges" >&2'
+      - name: Census of the broker client's suite
+        if: ${{ !cancelled() && steps.prepared.outcome == 'success' }}
+        timeout-minutes: 1
+        working-directory: packages/broker-client
+        run: bun ../../scripts/bun-cache-census.ts -- sh -c 'bun run test || echo "the suite failed under strace with exit $?, which its own job judges" >&2'
+      - name: Census of the contracts suite
+        if: ${{ !cancelled() && steps.prepared.outcome == 'success' }}
+        timeout-minutes: 1
+        working-directory: packages/contracts
+        run: bun ../../scripts/bun-cache-census.ts -- sh -c 'bun run test || echo "the suite failed under strace with exit $?, which its own job judges" >&2'
+      - name: Census of the Claude Envoy plugin's suite
+        if: ${{ !cancelled() && steps.prepared.outcome == 'success' }}
+        timeout-minutes: 10
+        working-directory: packages/claude-envoy
+        run: bun ../../scripts/bun-cache-census.ts -- sh -c 'bun run test || echo "the suite failed under strace with exit $?, which its own job judges" >&2'
+      - name: Census of the Envoy client's suite
+        if: ${{ !cancelled() && steps.prepared.outcome == 'success' }}
+        timeout-minutes: 6
+        working-directory: packages/envoy-client
+        env:
+          LEGION_E2E: "1"
+        run: bun ../../scripts/bun-cache-census.ts -- sh -c 'bun run test || echo "the suite failed under strace with exit $?, which its own job judges" >&2'
+      - name: Census of pi-envoy's suite
+        if: ${{ !cancelled() && steps.prepared.outcome == 'success' }}
+        timeout-minutes: 15
+        working-directory: packages/pi-envoy
+        env:
+          LEGION_TEST_NATS_URL: nats://127.0.0.1:4222
+        run: bun ../../scripts/bun-cache-census.ts -- sh -c 'bun run test || echo "the suite failed under strace with exit $?, which its own job judges" >&2'
+      - name: Census of pi-legion's suite
+        if: ${{ !cancelled() && steps.prepared.outcome == 'success' }}
+        timeout-minutes: 76
+        working-directory: packages/pi-legion
+        env:
+          LEGION_TEST_NATS_URL: nats://127.0.0.1:4222
+        run: bun ../../scripts/bun-cache-census.ts -- sh -c 'bun run test || echo "the suite failed under strace with exit $?, which its own job judges" >&2'
+      - name: Census of pi-shared's suite
+        if: ${{ !cancelled() && steps.prepared.outcome == 'success' }}
+        timeout-minutes: 1
+        working-directory: packages/pi-shared
+        run: bun ../../scripts/bun-cache-census.ts -- sh -c 'bun run test || echo "the suite failed under strace with exit $?, which its own job judges" >&2'
+      - name: Census of the proof editor's suite
+        if: ${{ !cancelled() && steps.prepared.outcome == 'success' }}
+        timeout-minutes: 2
+        working-directory: packages/proof-editor
+        run: bun ../../scripts/bun-cache-census.ts -- sh -c 'bun run test || echo "the suite failed under strace with exit $?, which its own job judges" >&2'
+      - name: Census of the dispatch dashboard's suite
+        if: ${{ !cancelled() && steps.prepared.outcome == 'success' }}
+        timeout-minutes: 13
+        working-directory: packages/dispatch
+        run: bun ../../scripts/bun-cache-census.ts -- sh -c 'bun run test || echo "the suite failed under strace with exit $?, which its own job judges" >&2'
+      - name: Census of the Claude Code plugin's build input list test
+        if: ${{ !cancelled() && steps.prepared.outcome == 'success' }}
+        timeout-minutes: 1
+        working-directory: packages/claude-envoy
+        run: bun ../../scripts/bun-cache-census.ts -- sh -c 'bun test tests/build-inputs.test.ts || echo "the suite failed under strace with exit $?, which its own job judges" >&2'
+      - name: Census of the third-party notices test
+        if: ${{ !cancelled() && steps.prepared.outcome == 'success' }}
+        timeout-minutes: 1
+        run: bun scripts/bun-cache-census.ts -- sh -c 'bun test scripts/third-party-notices.test.ts || echo "the suite failed under strace with exit $?, which its own job judges" >&2'
+      - name: Census of the semantic line-break checker's test
+        if: ${{ !cancelled() && steps.prepared.outcome == 'success' }}
+        timeout-minutes: 1
+        run: bun scripts/bun-cache-census.ts -- sh -c 'bun test scripts/semantic-line-breaks.test.ts || echo "the suite failed under strace with exit $?, which its own job judges" >&2'
+      - name: Census of the priorities seed's test
+        if: ${{ !cancelled() && steps.prepared.outcome == 'success' }}
+        timeout-minutes: 1
+        run: bun scripts/bun-cache-census.ts -- sh -c 'bun test scripts/priorities-seed.test.ts || echo "the suite failed under strace with exit $?, which its own job judges" >&2'
+      - name: Census of the guides' semantic line-break test
+        if: ${{ !cancelled() && steps.prepared.outcome == 'success' }}
+        timeout-minutes: 1
+        run: bun scripts/bun-cache-census.ts -- sh -c 'bun test scripts/semantic-line-breaks.guides.test.ts || echo "the suite failed under strace with exit $?, which its own job judges" >&2'
+      - name: Census of the Dispatch census script's suite
+        if: ${{ !cancelled() && steps.prepared.outcome == 'success' }}
+        timeout-minutes: 1
+        run: bun scripts/bun-cache-census.ts -- sh -c 'bun test scripts/dispatch || echo "the suite failed under strace with exit $?, which its own job judges" >&2'
+      - name: Census of the approval-eval statistics' suite
+        if: ${{ !cancelled() && steps.prepared.outcome == 'success' }}
+        timeout-minutes: 1
+        run: bun scripts/bun-cache-census.ts -- sh -c 'bun test scripts/approval-eval || echo "the suite failed under strace with exit $?, which its own job judges" >&2'
+      - name: Census of the live proofs' libraries' suite
+        if: ${{ !cancelled() && steps.prepared.outcome == 'success' }}
+        timeout-minutes: 12
+        run: bun scripts/bun-cache-census.ts -- sh -c 'bun test scripts/e2e/lib || echo "the suite failed under strace with exit $?, which its own job judges" >&2'
+      - name: Census of the conflict measurement script's suite
+        if: ${{ !cancelled() && steps.prepared.outcome == 'success' }}
+        timeout-minutes: 1
+        run: bun scripts/bun-cache-census.ts -- sh -c 'bun test scripts/conflicts || echo "the suite failed under strace with exit $?, which its own job judges" >&2'
+      - name: Census of the session message-wait script's suite
+        if: ${{ !cancelled() && steps.prepared.outcome == 'success' }}
+        timeout-minutes: 1
+        env:
+          LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+        run: bun scripts/bun-cache-census.ts -- sh -c 'bun test scripts/sessions || echo "the suite failed under strace with exit $?, which its own job judges" >&2'
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        timeout-minutes: 1
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: bun-cache-census
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

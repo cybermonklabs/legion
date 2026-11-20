@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
@@ -44,6 +45,7 @@ async function runEntry(): Promise<{ code: number; stdout: Uint8Array; stderr: s
     ["bash", "-c", 'set -o pipefail; "$1" "$0" projects | cat', ENTRY, process.execPath],
     {
       env: {
+        ...bunCacheOff,
         PATH: process.env.PATH,
         HOME: state,
         DISPATCH_STATE_DIR: state,

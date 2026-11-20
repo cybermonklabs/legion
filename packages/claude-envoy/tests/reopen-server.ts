@@ -8,6 +8,7 @@ import { join, resolve } from "node:path"
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import type { DeliveryRequest } from "@legion/envoy-client/transport"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import {
   codexSessionRecordFile,
@@ -241,6 +242,7 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
   const server = Bun.spawn(["bun", entry, ...(options.args ?? [])], {
     cwd: stateDirectory,
     env: {
+      ...bunCacheOff,
       PATH: process.env["PATH"] ?? "",
       HOME: stateDirectory,
       ENVOY_NATS_URL: gate.url,

@@ -1259,6 +1259,49 @@ sessions_script:
   - '.github/actions/setup-bun/**'
   - '.github/ci-tools.yaml'
   - '.github/scripts/ci-tools.sh'
+# The Bun transpiler-cache census's job: what decides whether a test starts a Bun child under a
+# HOME of its own without the cache key, which is the suites' test files and the helpers that
+# start a test's children, and the job's set-up. No package's sources and no Go file: the suites'
+# own jobs are selected by those.
+bun_cache_census:
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-bun-cache-census.yaml'
+  - *bun_install
+  - *omp_install
+  - '.github/actions/install-claude-code/**'
+  - '.claude-code-pin'
+  - 'packages/daemon/go.mod'
+  - 'scripts/bun-cache-census.ts'
+  - 'scripts/bun-cache-census.test.ts'
+  - 'packages/test-fixtures/src/**'
+  - 'packages/broker-client/**/*.test.ts'
+  - 'packages/contracts/**/*.test.ts'
+  - 'packages/claude-envoy/**/*.test.ts'
+  - 'packages/claude-envoy/tests/**'
+  - 'packages/envoy-client/**/*.test.ts'
+  - 'packages/envoy-client/src/__tests__/**'
+  - 'packages/envoy-client/test/**'
+  - 'packages/pi-envoy/**/*.test.ts'
+  - 'packages/pi-envoy/scripts/role-takeover/claude-client.ts'
+  - 'packages/pi-legion/**/*.test.ts'
+  - 'packages/pi-shared/**/*.test.ts'
+  - 'packages/pi-shared/test/**'
+  - 'packages/proof-editor/**/*.test.ts'
+  - 'packages/dispatch/web/src/**/*.test.ts'
+  - 'packages/dispatch/web/src/**/*.test.tsx'
+  - 'packages/dispatch/e2e/__tests__/**'
+  - 'packages/dispatch/e2e/dispatch-cli.ts'
+  - 'scripts/third-party-notices.test.ts'
+  - 'scripts/semantic-line-breaks.test.ts'
+  - 'scripts/priorities-seed.test.ts'
+  - 'scripts/semantic-line-breaks.guides.test.ts'
+  - 'scripts/dispatch/**/*.test.ts'
+  - 'scripts/approval-eval/**/*.test.ts'
+  - 'scripts/e2e/lib/**/*.test.ts'
+  - 'scripts/e2e/lib/dispatch-keyed-comment.ts'
+  - 'scripts/conflicts/**/*.test.ts'
+  - 'scripts/sessions/**/*.test.ts'
 broker_client:
   - *ci_router
   - *ci_filters_data

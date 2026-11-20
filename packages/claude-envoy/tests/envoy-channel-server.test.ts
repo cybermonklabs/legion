@@ -6,6 +6,7 @@ import { METADATA_HOST_VAR } from "@legion/broker-client/metadata-identity"
 import { NATS_AUTH_VAR } from "@legion/envoy-client/nats-credential"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { Server, Subprocess } from "bun"
@@ -837,7 +838,7 @@ async function runChannelServer(
 }> {
   const server = Bun.spawn(["bun", channelEntry], {
     cwd: env.HOME,
-    env: { PATH: process.env["PATH"] ?? "", ...env },
+    env: { ...bunCacheOff, PATH: process.env["PATH"] ?? "", ...env },
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -1047,6 +1048,7 @@ test("the server calls the listener with the file's envoy.token and signs in to 
     server = Bun.spawn(["bun", channelEntry], {
       cwd: home,
       env: {
+        ...bunCacheOff,
         PATH: process.env["PATH"] ?? "",
         HOME: home,
         CLAUDE_CONFIG_DIR: configDirectory,

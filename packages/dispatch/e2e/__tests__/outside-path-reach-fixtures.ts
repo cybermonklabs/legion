@@ -31,6 +31,7 @@ import { mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { Subprocess, udp } from "bun";
@@ -414,6 +415,7 @@ export function reachFixtures() {
    *  drift apart. */
   function runEnvironment(home: string, path: string | undefined): Record<string, string> {
     return {
+      ...bunCacheOff,
       HOME: home,
       PATH: path ?? process.env.PATH ?? "",
       TMPDIR: tmpdir(),

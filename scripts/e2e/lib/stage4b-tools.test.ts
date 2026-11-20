@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { runJq } from "./run-jq";
 import { scriptFunctions } from "./script-functions";
@@ -78,7 +79,7 @@ ${fn(name)}
       ...(byClaim ? ["LEGSMOKE-1", "planner"] : [fixture]),
       ...args,
     ],
-    { env: { PATH: process.env.PATH ?? "", HOME: home, SESSION: fixture } }
+    { env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: home, SESSION: fixture } }
   );
   if (ran.exitCode !== 0 && ran.exitCode !== 1)
     throw new Error(`${name} exited ${ran.exitCode}: ${ran.stderr}`);

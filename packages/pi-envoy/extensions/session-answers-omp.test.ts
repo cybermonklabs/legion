@@ -22,6 +22,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 // What people wrote to a session, on every request of the real Oh My Pi's main loop
@@ -461,7 +462,7 @@ async function runSession(
     // first keeps that host cost out of a case that times the answers read.
     const built = Bun.spawn([binary, "models", "refresh"], {
       cwd: workspace,
-      env: { HOME: home, PATH: "/usr/local/bin:/usr/bin:/bin" },
+      env: { ...bunCacheOff, HOME: home, PATH: "/usr/local/bin:/usr/bin:/bin" },
       stdout: "ignore",
       stderr: "pipe",
     });

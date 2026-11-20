@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
@@ -142,6 +143,7 @@ test.skipIf(skip)(
   () => {
     const run = Bun.spawnSync(["bash", script], {
       env: {
+        ...bunCacheOff,
         HOME: dir,
         PATH: bin,
         TMPDIR: scratch,

@@ -20,6 +20,7 @@ import { expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 import {
@@ -78,7 +79,13 @@ async function spawnBun(
     argv: [process.execPath, ...args],
     bound: "short",
     cwd: directory,
-    env: { HOME: directory, PATH: process.env.PATH ?? "", TMPDIR: tmpdir(), ...environment },
+    env: {
+      ...bunCacheOff,
+      HOME: directory,
+      PATH: process.env.PATH ?? "",
+      TMPDIR: tmpdir(),
+      ...environment,
+    },
     from: import.meta.url,
   });
   return { code, output: `${stdout}${stderr}` };

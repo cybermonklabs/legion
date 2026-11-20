@@ -16,6 +16,7 @@ import {
 } from "@legion/envoy-client/consumer-delivery";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { Terminal } from "@xterm/headless";
 import { linkOmpNatives } from "./omp-natives";
@@ -470,11 +471,12 @@ function ompFlags(options: {
 
 /** The environment `spawnRpc` and `spawnInteractive` start omp with: `home` as HOME, `bin` first
  * on PATH. */
-function ompEnv(options: { readonly home: string; readonly bin?: string }): {
+function ompEnv(options: { readonly home: string; readonly bin?: string }): typeof bunCacheOff & {
   HOME: string;
   PATH: string;
 } {
   return {
+    ...bunCacheOff,
     HOME: options.home,
     PATH: [options.bin, "/usr/local/bin:/usr/bin:/bin"].filter(Boolean).join(":"),
   };

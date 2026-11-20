@@ -64,6 +64,7 @@ import {
 } from "@legion/pi-shared/stall-watchdog";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { deliveryFor } from "@legion/pi-shared/test/omp-harness";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
@@ -223,6 +224,7 @@ const environmentKeys = [
   "LEGION_STALL_CALL_BOUND_MS",
   "LEGION_STALL_STEP_MS",
   "HOME",
+  "BUN_RUNTIME_TRANSPILER_CACHE_PATH",
   "DISPATCH_URL",
   "DISPATCH_TOKEN",
   "LEGION_BOOT_TOKEN_FILE",
@@ -587,6 +589,7 @@ function createPi(
   process.env.LEGION_STATE_DIR ??= "/tmp/legion-state";
   // Nothing under the caller's own home reaches the fixture.
   process.env.HOME = "/nonexistent-home-for-legion-tests";
+  Object.assign(process.env, bunCacheOff);
   const pi: TestPi = {
     zod: {
       object: (shape) => shape,

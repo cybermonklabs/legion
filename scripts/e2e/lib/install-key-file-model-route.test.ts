@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // The key-file route's own installer: unlike the Hawk gateway route, its key command has no mint
@@ -42,7 +43,7 @@ function install(keyContents = "sk-ant-test-key-00000000000000000000000") {
       "--key-file",
       keyFile,
     ],
-    { env: { PATH: process.env.PATH ?? "", HOME: operatorHome } }
+    { env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: operatorHome } }
   );
   return { run, home, dest, keyDir, keyFile, keyContents, result };
 }
@@ -111,7 +112,7 @@ describe("the key-file model route installer", () => {
         "--key-file",
         keyFile,
       ],
-      { env: { PATH: process.env.PATH ?? "", HOME: operatorHome } }
+      { env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: operatorHome } }
     );
     expect(result.exitCode).toBe(2);
     expect(result.stderr.toString()).toContain("--key-dir");
@@ -140,7 +141,7 @@ describe("the key-file model route installer", () => {
         "--key-file",
         keyFile,
       ],
-      { env: { PATH: process.env.PATH ?? "", HOME: operatorHome } }
+      { env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: operatorHome } }
     );
     expect(result.exitCode).toBe(2);
     expect(result.stderr.toString()).toContain("--key-dir");
@@ -162,7 +163,7 @@ describe("the key-file model route installer", () => {
         "--key-file",
         keyFile,
       ],
-      { env: { PATH: process.env.PATH ?? "", HOME: operatorHome } }
+      { env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: operatorHome } }
     );
     expect(reversed.exitCode).toBe(2);
     expect(reversed.stderr.toString()).toContain("--dest");
@@ -187,7 +188,7 @@ describe("the key-file model route installer", () => {
         "--key-file",
         keyFile,
       ],
-      { env: { PATH: process.env.PATH ?? "", HOME: operatorHome } }
+      { env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: operatorHome } }
     );
     expect(result.exitCode).toBe(2);
     expect(result.stderr.toString()).toContain("--key-dir is required");

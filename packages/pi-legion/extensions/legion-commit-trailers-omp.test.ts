@@ -18,6 +18,7 @@ import {
   toolResultsIn,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 // On the real Oh My Pi: the `task` subagent of a Legion role pane makes a jj commit, and the
@@ -340,7 +341,12 @@ async function committedDescription(pane: RolePane, repo: string): Promise<strin
       "description",
     ],
     {
-      env: { PATH: process.env.PATH ?? "", HOME: pane.home, JJ_CONFIG: emptyConfig },
+      env: {
+        ...bunCacheOff,
+        PATH: process.env.PATH ?? "",
+        HOME: pane.home,
+        JJ_CONFIG: emptyConfig,
+      },
       stdout: "pipe",
       stderr: "pipe",
     }

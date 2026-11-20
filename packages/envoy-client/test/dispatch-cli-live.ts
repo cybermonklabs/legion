@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { type DispatchStack, useDispatchStackDirectory } from "./dispatch-stack";
 
@@ -160,6 +161,7 @@ export function dispatchCliLive(options: DispatchCliLiveOptions): DispatchCliLiv
   async function cli(command: string, issue: string, args: readonly string[]): Promise<string> {
     const child = Bun.spawn([process.execPath, ENTRY, command, "--issue", issue, ...args], {
       env: {
+        ...bunCacheOff,
         PATH: SHELL_PATH,
         HOME: directories.state,
         DISPATCH_STATE_DIR: directories.state,

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
 import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
@@ -1702,6 +1703,7 @@ describe("the dispatch entry as its own process", () => {
     const child = Bun.spawn([process.execPath, entry, ...argv], {
       cwd: stateDir,
       env: {
+        ...bunCacheOff,
         PATH: process.env.PATH,
         HOME: stateDir,
         DISPATCH_STATE_DIR: stateDir,

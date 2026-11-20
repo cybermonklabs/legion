@@ -11,6 +11,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 // AskGate on the real Oh My Pi: the loader resolves the gate's string-literal imports of the host's
@@ -92,7 +93,7 @@ async function runSession(options: {
   await writeFile(
     dispatch,
     options.cli === "real"
-      ? `#!/bin/sh\nexec "${process.execPath}" "${CLI_ENTRY}" "$@"\n`
+      ? `#!/bin/sh\nexport BUN_RUNTIME_TRANSPILER_CACHE_PATH=${bunCacheOff.BUN_RUNTIME_TRANSPILER_CACHE_PATH}\nexec "${process.execPath}" "${CLI_ENTRY}" "$@"\n`
       : [
           "#!/bin/sh",
           'case " $* " in',

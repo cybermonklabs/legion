@@ -20,6 +20,7 @@ import {
   watchRecord,
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
+import { waitFor } from "./channel-session-harness"
 
 const ownerModule = resolve(import.meta.dir, "../src/codex/codex-owner.ts")
 
@@ -104,10 +105,20 @@ describe("the owner of a codex process's Envoy session", () => {
       10,
       probe,
     )
-    await Bun.sleep(30)
+    // Each publication is a file write and a rename, so the row waits for it rather than for a
+    // fixed time: a slowed disk or a traced process took longer than the 30 ms and 50 ms it waited.
+    await waitFor(
+      async () => published.length >= 1,
+      "the first publication",
+      () => `${published}`,
+    )
     expect(published).toHaveLength(1)
     rmSync(join(directory, `${published[0]}.json`))
-    await Bun.sleep(50)
+    await waitFor(
+      async () => published.length >= 2,
+      "a publication after the entry vanished",
+      () => `${published}`,
+    )
     // Published again, behind the live server that published first, and reported, so the server
     // can remove it when it stops.
     expect(published).toHaveLength(2)

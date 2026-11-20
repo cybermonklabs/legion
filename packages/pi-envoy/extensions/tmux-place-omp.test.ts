@@ -11,6 +11,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 
 // Where a session sits in tmux, as the real Oh My Pi reports it (envoy-client's `readTmuxPlace`,
 // the cached reading extensions/envoy.ts takes a registration's place from without waiting on it,
@@ -101,6 +102,7 @@ async function tmuxCommand(
 function paneEnvironment(home: string, binary: string): Record<string, string> {
   const named = process.env.LD_LIBRARY_PATH;
   return {
+    ...bunCacheOff,
     HOME: home,
     PATH: [path.dirname(binary), "/usr/local/bin", "/usr/bin", "/bin"].join(":"),
     ...(named === undefined ? {} : { LD_LIBRARY_PATH: named }),

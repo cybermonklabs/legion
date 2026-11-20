@@ -9,6 +9,7 @@ import {
 } from "@legion/envoy-client/test/envoy-stack"
 import { type StallProxy, startStallProxy } from "@legion/envoy-client/test/stall-proxy"
 import { RECOVERY_BOUND_MS, runFreezeScenario } from "@legion/envoy-client/test/stall-scenario"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import type { Subprocess } from "bun"
 import { type ModCallArguments, modSocketPath } from "../hooks/mod-protocol"
 import { startFakeMod } from "./fake-mod"
@@ -67,6 +68,7 @@ async function startChannelServer(
   const server = Bun.spawn(["bun", channelEntry], {
     cwd: home,
     env: {
+      ...bunCacheOff,
       PATH: process.env["PATH"] ?? "",
       HOME: home,
       CLAUDE_CONFIG_DIR: configDirectory,

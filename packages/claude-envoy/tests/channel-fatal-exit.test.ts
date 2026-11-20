@@ -9,6 +9,7 @@ import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { natsConnectionOptions } from "@legion/envoy-client/nats-connection"
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import type { Subprocess } from "bun"
 import { resolveModSocketPath } from "../hooks/mod-protocol"
 
@@ -253,8 +254,9 @@ async function startServer(
         // Bun keeps its transpiler cache under HOME, and this HOME starts empty: the server writes a
         // cache file into it for each large module it loads, before its own code runs, and on a
         // loaded machine its socket then came up to 7.6 s after the spawn rather than under half a
-        // second. "0" turns the cache off; the server transpiles as before and writes nothing there.
-        BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+        // second. `bunCacheOff` turns the cache off; the server transpiles as before and writes
+        // nothing there.
+        ...bunCacheOff,
         PATH: process.env["PATH"] ?? "",
         HOME: home,
         CLAUDE_CONFIG_DIR: configDirectory,

@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
@@ -120,7 +121,16 @@ role_inits() { printf '%s' "$AFTER"; }
 ${fn("role_generation_ended")}
 if role_generation_ended; then echo ended; else echo waiting; fi`,
       ],
-      { env: { PATH: process.env.PATH ?? "", HOME: home, BEFORE: before, AFTER: after, OP: op } }
+      {
+        env: {
+          ...bunCacheOff,
+          PATH: process.env.PATH ?? "",
+          HOME: home,
+          BEFORE: before,
+          AFTER: after,
+          OP: op,
+        },
+      }
     );
     expect(result.stderr.toString()).toBe("");
     const violation = join(evidence, "pane-endpoint-violation.txt");
@@ -242,7 +252,7 @@ function snippet(file: string, name: string) {
 }
 function runSnippet(definition: string, call: string, root: string) {
   const r = Bun.spawnSync(["bash", "-c", `${definition}\n${call}`], {
-    env: { PATH: process.env.PATH ?? "", HOME: home, proc_root: root },
+    env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: home, proc_root: root },
   });
   return { out: r.stdout.toString().trim(), err: r.stderr.toString().trim(), code: r.exitCode };
 }
@@ -379,7 +389,7 @@ function fakeNsenter(name: string): { bin: string; log: string } {
 }
 function runEntered(definition: string, call: string, root: string, bin: string) {
   const r = Bun.spawnSync(["bash", "-c", `${definition}\n${call}`], {
-    env: { PATH: `${bin}:${process.env.PATH}`, HOME: home, proc_root: root },
+    env: { ...bunCacheOff, PATH: `${bin}:${process.env.PATH}`, HOME: home, proc_root: root },
   });
   return { out: r.stdout.toString().trim(), err: r.stderr.toString().trim(), code: r.exitCode };
 }

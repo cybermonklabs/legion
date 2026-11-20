@@ -2265,6 +2265,15 @@ TOOL_ARM_ROWS_STEP = "Read what the release assets served of the other arm64 row
 SESSIONS_JOB = "sessions-script"
 SESSIONS_STEP = "Test the session message-wait script"
 
+# The Bun transpiler-cache census's own job, which runs every Bun suite under the census.
+CENSUS_JOB = "bun-cache-census"
+
+
+def census_at(step):
+    """A citation of a step of the census's job."""
+    return at(CENSUS_JOB, step)
+
+
 # ------------------------------------------------- the test job's script harnesses, one gate each
 # Each `*.test.sh` step of the test job tests one script of this repository, and runs behind a
 # changes output of its own naming that harness and that script. Before this table one pattern,
@@ -2775,6 +2784,62 @@ GATES = [
         ("scripts/sessions/**", f"{at(SESSIONS_JOB, SESSIONS_STEP)}: the suite, and message-wait.ts, which "
                                 "scripts/sessions/__tests__/message-wait.test.ts:219 spawns (SCRIPT :18)"),
     ) + setup_bun(SESSIONS_JOB)),
+
+    # The Bun transpiler-cache census's own job: every Bun suite CI runs, each under
+    # scripts/bun-cache-census.ts, which the suites' own jobs run bare. What the census judges is
+    # where a test starts a Bun child and with what environment, so the job reads the suites'
+    # test files, the helpers that start a test's children, the census and its set-up. A suite's
+    # sources and the Go its rows build are the suites' own jobs' reads: a change to them starts
+    # those jobs, and this one's verdict does not move with them.
+    gate("bun_cache_census", CENSUS_JOB, reads=reads(
+        ("scripts/bun-cache-census.ts", census_at("Census of the shared test fixtures' suite")
+         + " and each census step after it run their suite under it"),
+        ("scripts/bun-cache-census.test.ts", census_at("Test the Bun transpiler-cache census")),
+        (TEST_FIXTURES_SRC, "bunCacheOff (src/bun-child-environment.ts), which each test puts first in a child's "
+                            "environment, and the temporary directories a test gives a child as its HOME"),
+        ("packages/broker-client/**/*.test.ts", census_at("Census of the broker client's suite")),
+        ("packages/contracts/**/*.test.ts", census_at("Census of the contracts suite")),
+        ("packages/claude-envoy/**/*.test.ts", census_at("Census of the Claude Envoy plugin's suite") + " and "
+         + census_at("Census of the Claude Code plugin's build input list test")),
+        ("packages/claude-envoy/tests/**", census_at("Census of the Claude Envoy plugin's suite")
+         + ": the helpers its tests start children through (codex-server-process.ts, reopen-server.ts)"),
+        ("packages/envoy-client/**/*.test.ts", census_at("Census of the Envoy client's suite")),
+        ("packages/envoy-client/src/__tests__/**", census_at("Census of the Envoy client's suite")
+         + ": the helpers and stand-ins its tests start"),
+        ("packages/envoy-client/test/**", census_at("Census of the Claude Envoy plugin's suite") + ", "
+         + census_at("Census of the Envoy client's suite") + " and " + census_at("Census of pi-envoy's suite")
+         + ": their tests start the CLI and the stacks of dispatch-stack.ts, envoy-stack.ts and dispatch-cli-live.ts"),
+        ("packages/pi-envoy/**/*.test.ts", census_at("Census of pi-envoy's suite")),
+        ("packages/pi-envoy/scripts/role-takeover/claude-client.ts", census_at("Census of pi-envoy's suite")
+         + ": the role-takeover client its test starts"),
+        ("packages/pi-legion/**/*.test.ts", census_at("Census of pi-legion's suite")),
+        ("packages/pi-shared/**/*.test.ts", census_at("Census of pi-shared's suite")),
+        ("packages/pi-shared/test/**", census_at("Census of pi-envoy's suite") + " and "
+         + census_at("Census of pi-legion's suite") + ": omp-harness.ts, omp-natives.ts and skills-guard.ts start "
+         "the Oh My Pi and Bun children of their tests"),
+        ("packages/proof-editor/**/*.test.ts", census_at("Census of the proof editor's suite")),
+        ("packages/dispatch/web/src/**/*.test.ts", census_at("Census of the dispatch dashboard's suite")),
+        ("packages/dispatch/web/src/**/*.test.tsx", census_at("Census of the dispatch dashboard's suite")),
+        ("packages/dispatch/e2e/__tests__/**", census_at("Census of the dispatch dashboard's suite")
+         + ": the harness suite and the helpers it starts children through (bounded-subprocess.ts, "
+         "outside-path-reach-fixtures.ts)"),
+        ("packages/dispatch/e2e/dispatch-cli.ts", census_at("Census of the dispatch dashboard's suite")
+         + ": runDispatch starts the CLI under the row's own HOME"),
+        ("scripts/third-party-notices.test.ts", census_at("Census of the third-party notices test")),
+        ("scripts/semantic-line-breaks.test.ts", census_at("Census of the semantic line-break checker's test")),
+        ("scripts/priorities-seed.test.ts", census_at("Census of the priorities seed's test")),
+        ("scripts/semantic-line-breaks.guides.test.ts", census_at("Census of the guides' semantic line-break test")),
+        ("scripts/dispatch/**/*.test.ts", census_at("Census of the Dispatch census script's suite")),
+        ("scripts/approval-eval/**/*.test.ts", census_at("Census of the approval-eval statistics' suite")),
+        ("scripts/e2e/lib/**/*.test.ts", census_at("Census of the live proofs' libraries' suite")),
+        ("scripts/e2e/lib/dispatch-keyed-comment.ts", census_at("Census of the live proofs' libraries' suite")
+         + ": dispatch-keyed-comment.test.ts:6 runs the check, which starts the dispatch CLI under a HOME of its own"),
+        ("scripts/conflicts/**/*.test.ts", census_at("Census of the conflict measurement script's suite")),
+        ("scripts/sessions/**/*.test.ts", census_at("Census of the session message-wait script's suite")),
+        (".github/actions/install-claude-code/**", census_at("./.github/actions/install-claude-code")),
+        (".claude-code-pin", ".github/actions/install-claude-code/action.yml:16 pin=$(<.claude-code-pin), the release "
+                             "packages/claude-envoy/tests/answers-claude.test.ts runs"),
+    ) + install_jj(CENSUS_JOB) + install_omp(CENSUS_JOB) + setup_go(CENSUS_JOB, f"{DAEMON}/go.mod") + bun_job(CENSUS_JOB)),
 
     # The test job's guide-layout step, gated on a filter of its own: the test spawns the
     # checker over five guides, and no other step of the job reads one of them. The job's own
