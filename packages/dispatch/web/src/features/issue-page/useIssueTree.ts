@@ -144,7 +144,10 @@ export const issueAsksQuery = (key: string) =>
  * What every read of the tree takes: it is kept fresh by events, never by its age. The page's
  * stage mounts the tree's slot again on every press of a view, so under the app's 30 s
  * `staleTime` (`main.tsx`) a press more than 30 s after the load would read every one of the
- * tree's reads again, though nothing they hold has changed.
+ * tree's reads again, though nothing they hold has changed. Staleness is per observer, so the
+ * page's writer (`outline-writer.tsx`), which observes the asks, the comments and the messages
+ * under the tree's keys, takes it too: under the app's defaults a window focus more than 30 s
+ * after the load would read all three again for the writer alone.
  * The feed's rules (`api/event-refresh.ts`) refresh each read when an event can change it; among
  * them, `["comments", key]` on a comment event and on a document's upload or new version;
  * `["asks", key]` on an ask event, a reply on an ask, a review of a document and a block
@@ -164,7 +167,7 @@ export const issueAsksQuery = (key: string) =>
  * app holds (`refreshQueries`), these among them, and window focus fetches again only a read in
  * error (`refetchFailedOnFocus`).
  */
-const EVENT_FRESH = {
+export const EVENT_FRESH = {
   refetchOnWindowFocus: refetchFailedOnFocus,
   staleTime: Number.POSITIVE_INFINITY,
 } as const;
