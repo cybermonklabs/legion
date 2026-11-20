@@ -66,8 +66,9 @@ type commitScope struct {
 }
 
 // withCommitHooks scopes OnCommit to the transaction tx of pool: the hooks registered on the
-// returned context are appended to the scope's list. TransactWith is its only caller, so a hook
-// waits only on a commit whose outcome TransactWith reads (TestOnlyTransactOpensACommitScope).
+// returned context are appended to the scope's list. TransactWith is the one place that names it,
+// as a call or as a value, so a hook waits only on a commit whose outcome TransactWith reads
+// (TestOnlyTransactOpensACommitScope).
 func withCommitHooks(ctx context.Context, pool TxPool, tx pgx.Tx) (context.Context, *commitScope) {
 	scope := &commitScope{tx: tx, pool: pool}
 	return context.WithValue(ctx, commitHooksKey{}, scope), scope
