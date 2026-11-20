@@ -2477,6 +2477,8 @@ package api
 // (#4493), 174 (#3993), 175 (#3712 and #4432 as well), 176 (#4030, #4173, #4180, #4182, #4193,
 // #4259, #4261, #4269 and #4290), 177 (#4017), 178 (#3831 and #4115), 179 (#4392 and #4540) and
 // 180 (#4175) declared, and none 170, so this entry moved to 170, the lowest number above main's
-// 168 that no other open pull request declares. Read the base's own number and every open pull
-// request again at every forward merge rather than from this line.)
+// 168 that no other open pull request declares. The forward merge of 2026-11-20 that brought in
+// 9e0f0b8e left main at 168, and a reading of every open pull request at that merge, which ended at
+// 2026-11-20T00:44:52Z, found 170 declared by no other, so this entry keeps 170. Read the base's
+// own number and every open pull request again at every forward merge rather than from this line.)
 const DaemonAPIVersion = 170

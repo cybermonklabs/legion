@@ -61,7 +61,7 @@ It carries:
   A pod's agent has that tool because its launch loads profile plugins (dispatch://LEGION-629), which the capability report's `codegraph` row says ([The deployment's capability report](#the-deployments-capability-report));
 
 - OMP's native module, extracted at build into `/home/legion/.omp/natives/<version>/`:
-  from 18.11.0 OMP writes only the variant the CPU selects (AVX2 or not), so this is the build runner's variant, and a pod whose node selects the same one extracts nothing, while a node that selects the other has each role write that one (116 MiB) into its own home overlay, on the pod's `role-homes` volume, at its first OMP run;
+  from 18.11.0 OMP writes only the variant the CPU selects (AVX2 or not), so this is the build runner's variant, and a pod whose node selects the same one extracts nothing, while a node that selects the other has each role write that one (123 MiB) into its own home overlay, on the pod's `role-homes` volume, at its first OMP run;
 
 - pinned Bun, `jj` (Sami's fork, the version the dogfood daemon runs) and `gh` at `/usr/local/bin`, and `git` at `/usr/bin/git` from the `debian:trixie-slim` base
   — jj's git backend requires git >= 2.42 (bookworm's 2.39.5 made every `jj git clone` in the init container fail), so the build also proves the image's jj accepts its git with a network-free `jj git clone` of a scratch bare repository before the probes run, and its last step refuses a git anywhere but `/usr/bin/git`;
@@ -920,7 +920,8 @@ The dialect follows the URL scheme; Legion delivers Postgres.
 
 On the first start with `sql`, Oh My Pi's own `SqlSessionStorage` runs `CREATE TABLE IF NOT EXISTS
 omp_session_files` (columns `path TEXT PRIMARY KEY`, `content TEXT NOT NULL`, `mtime_ms BIGINT NOT NULL`, `title TEXT`, `title_source TEXT`, `title_updated_at TEXT`) and warms its index from every row.
-Legion manages no schema and no migration: the table is Oh My Pi's.
+From the pinned build on, it also makes `omp_session_leases` (one row per session a live process holds: `session_id`, `holder`, `host`, `pid`, `acquired_at`, `heartbeat_at`) and its index `omp_session_leases_holder` where they are missing, as whichever login starts it; a login that owns no table needs `SELECT`, `INSERT`, `UPDATE` and `DELETE` on that table, and its owner makes it first so that no agent login owns it (`docs/session.md` of the pinned tag gives the statements).
+Legion manages no schema and no migration: the tables are Oh My Pi's.
 One row is one session; `path` is the same string the session would have had as a file, `content` is the JSONL transcript.
 
 ### Resume
@@ -928,8 +929,15 @@ One row is one session; `path` is the same string the session would have had as 
 `omp --resume=<row path>` — the value is exactly the session path the extension reports to the daemon at `/worker/started` as `ompSessionFile`, and in Postgres it is the row's `path` key:
 `<sessions root>/<encoded cwd>/<timestamp>_<session id>.jsonl`.
 The second child keeps that `ompSessionFile` field and carries the row path in it unchanged — no rename, no wire or contract change.
-The key embeds the home-relative sessions root, so the resuming pod must carry the same two `OMP_SESSION_*` variables and the same `HOME` (and `OMP_PROFILE`) as the pod that wrote it.
-Nothing else changes: the daemon already relaunches a dead worker with `--resume=<recorded session file>`.
+The key embeds the home-relative sessions root, so the resuming pod must carry the same two `OMP_SESSION_*` variables and the same `HOME` (and `OMP_PROFILE`) as the pod that wrote it, and the same `OMP_CONFIG_ROOT` or none: from the pinned build on, that variable replaces the home-relative root.
+Nothing else about the resume's path changes: the daemon already relaunches a dead worker with `--resume=<recorded session file>`.
+
+From the pinned build on, the session store holds a lease per session, and a resume of a session another live process still holds waits up to 35 seconds for it and then moves the process onto a new session id, which the daemon never recorded.
+So every launch that resumes a recorded Oh My Pi session carries `OMP_SESSION_EXCLUSIVE=1`, in the generation's start command alone (a tmux pane carries it as one of its `-e` pairs), and a fresh launch or a Claude Code role carries nothing of it.
+Under it that resume exits non-zero after the wait and moves nothing, and a lease lost or a session another writer replaced ends the process rather than moving it.
+A process that ends on SIGTERM or SIGINT gives its lease back before it exits, so a resume after an ordinary stop waits for no lease: measured on 2026-11-19 on `18.18.6-sami.20261119-162325` in an issue pod, an exclusive resume launched right after its holder ended on SIGTERM finished a one-turn run 4.0 and 4.8 seconds after its launch in two runs, and an RPC resume answered `get_state` 7.0 seconds after its launch in one, where the holder's own first start had taken 3.9 seconds.
+A resume after the process that held the session was killed (the memory guard, an out-of-memory kill, a stop grace that ran out) waits, up to 30 seconds after the dead process's last heartbeat, before the agent starts: measured the same way, an exclusive resume launched right after such a kill finished a one-turn run 24.1 and 25.6 seconds after its launch, and an RPC resume answered `get_state` 28.7 seconds after its launch, well inside the registration deadline (`worker_boot_timeout_seconds` × `worker_boot_registration_deadline_intervals`, 360 seconds by default).
+The runtime sets the variable after the operator's: neither `runtime.kubernetes.pod.env` nor `runtime.tmux.pane_env` may name it, and neither runtime's `provider_keys` may name it either.
 
 ### Refusals
 
@@ -1167,7 +1175,7 @@ With the store settled, every generation a launcher starts gets two variables in
 `OMP_SESSION_STORAGE=sql` and `OMP_SESSION_SQL_DSN_FILE=/var/run/legion/providers/OMP_SESSION_SQL_DSN`.
 The pod baseline (`internal/podsafety`) keeps them, where it would otherwise set `OMP_SESSION_STORAGE=file`, and the worker shim, seeing the pointer in its environment, never exports the URL file into Oh My Pi's environment.
 Neither variable may be the operator's (`pod.env`) or a provider key's, and neither may `OMP_SESSION_SQL_DSN`, the name the URL file is mounted under (`CheckPod`).
-Oh My Pi creates and migrates its own two tables, `omp_session_files` and `omp_session_files_parts`, in the `public` schema when it starts; Legion manages no schema.
+Oh My Pi creates and migrates its own tables, `omp_session_files` and `omp_session_files_parts`, and from the pinned build on `omp_session_leases` with its index, in the `public` schema when it starts; Legion manages no schema.
 So the deployment's login needs to create tables there:
 since Postgres 15, `CREATE` on the database is not enough, and the create is refused with `permission denied for schema public`.
 Grant `USAGE, CREATE ON SCHEMA public` to the login (measured on Postgres 16.15:
@@ -1450,7 +1458,7 @@ The pods' cloud identity is the identity of the ServiceAccount that `runtime.kub
 Without `impersonate_service_account`, the connector signs in as that identity.
 With it, the connector signs in as the service account, and the operator also supplies that fourth value and the four things [Selecting the store](#selecting-the-store) lists.
 With `writer_audience`, the operator also supplies that fifth value and the four things that [Selecting the store](#selecting-the-store) lists for it.
-The login's rights are the ones `postgres` needs too: Oh My Pi creates and migrates `omp_session_files` and `omp_session_files_parts` in the `public` schema when it starts, so the login needs `USAGE, CREATE ON SCHEMA public` beside the database, or it must own the schema.
+The login's rights are the ones `postgres` needs too: Oh My Pi creates and migrates `omp_session_files`, `omp_session_files_parts` and, from the pinned build on, `omp_session_leases` in the `public` schema when it starts, so the login needs `USAGE, CREATE ON SCHEMA public` beside the database, or it must own the schema.
 `legion sessions import` is unchanged and keeps `--dsn-file`: it is the operator's own command, run with no launcher and no proxy, so the operator supplies a connection URL the machine it runs on can reach.
 A tree volume is a PersistentVolumeClaim, so the copy itself runs where that claim can be mounted: in a pod of the worker image, under gVisor, with the volume mounted read-only at `/legion`, as the recipe under [Copying file sessions before turning it on](#copying-file-sessions-before-turning-it-on) lower on this page says.
 
@@ -1581,7 +1589,7 @@ Its Sandbox goes, and its volume and session go with it, so step 5 clears the se
 
    For each claim with a recorded session file the import reads that file from the volume (its path below the agents' sessions directory, below `<tree-volume>/sessions`; without `--tree-volume` it reads the recorded path itself) and writes it as one row keyed by that recorded path: the whole file as `content`, `byte_len` its size, `mtime_ms` the file's, no title and no parts, which is how Oh My Pi reads a row an older release of it wrote.
    When `issue_close` already cleared a claim's resume path, the importer finds `*_<session>.jsonl` below the volume's sessions directory from the retained session id; exactly one match imports, none names the claim and session as missing, and several are refused by name.
-   It creates the two tables with Oh My Pi's own statements when the database has none.
+   It creates the two tables with Oh My Pi's statements for them, each table named bare where Oh My Pi names it `public.<table>`, when the database has none.
    It prints one line per claim of the tree — `copied`, `copied before (identical …)`, `recorded no session`, `failed` (a file or retained session the volume does not hold) or `refused` (several files for one retained session id, or a table row with other content, which it leaves as it is) — then a `missing` line for every claim of the whole list, any tree's, whose recorded session the table does not hold, then a count of each.
    It exits 1 on any `failed` or `refused`, on a `missing` of the claims it was asked to copy (another tree's is reported only), and when `--tree` selects no claim of the list, which is a mistyped key.
 
@@ -7793,6 +7801,8 @@ each issue's pod (every role of it alike) and the image probe's.
   Legion writes no overlay at all: the list a role reads is the operator's own overlays, then that role's own (`role_config_files`), then the project's memory overlays (`projects.<KEY>.memory.config_files`) where the role's tree was drawn into the memory group, composed by the runtime that starts the role, and the shim passes it through untouched.
   So nothing of Legion's holds a repository's settings off — they reach a pod's agent as they reach any agent session, under the operator's overlay — and nothing of Legion's turns a pinned binary's own defaults off either: background work (`async.enabled`, `bash.autoBackground.enabled`) is on for every role, as it is for `--mode rpc`.
   The pod sets `PI_CONFIG_DIR=.omp` and `OMP_SESSION_STORAGE=file` on the agent where the pod leaves them unset, which an operator's pod may not set, since they decide where Oh My Pi keeps the session a resume reads.
+  From the pinned build on, `OMP_CONFIG_ROOT` decides it too, and outranks `PI_CONFIG_DIR`: an operator's pod may not set it either, but the pod does not set it, so a repository's `.env` that sets it moves the config root (read from Oh My Pi's source, `env.ts` and `dirs.ts`; not run).
+  Legion's runtime sets `OMP_SESSION_EXCLUSIVE=1` on every launch that resumes a recorded Oh My Pi session ([Resume](#resume)), and an operator's pod may not set it either, since it holds that resume to the session the daemon recorded.
 
 - **Model roles.**
   Legion's shipped agents dispatch by role alias:
