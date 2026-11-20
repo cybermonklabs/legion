@@ -1321,7 +1321,7 @@ func main() {
 	// cannot open it ends (log.Fatalf below), so ciStore is set exactly when this names it.
 	copied := listenerCopiedBuckets(webhookCfg.GitHub != nil)
 	awaitBuckets := func() error {
-		return awaitCopiedBuckets(starting, logger, client.Connection(), client.JS(), copied, missing)
+		return awaitCopiedBuckets(starting, logger, client.JS(), copied, missing)
 	}
 	if err := awaitBuckets(); err != nil {
 		log.Fatalf("await the copied KV buckets: %v", err)

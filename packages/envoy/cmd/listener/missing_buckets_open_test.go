@@ -43,7 +43,7 @@ func TestABucketDeletedBetweenTheStartsWaitAndItsOpenHoldsTheStart(t *testing.T)
 	logger := logging.NewWithWriter("test-machine", logs)
 	missing := &missingBuckets{}
 	wait := func() error {
-		return awaitCopiedBuckets(context.Background(), logger, conn, js, []string{bus.SessionBucket}, missing)
+		return awaitCopiedBuckets(context.Background(), logger, js, []string{bus.SessionBucket}, missing)
 	}
 	if err := wait(); err != nil {
 		t.Fatalf("the start's wait with the bucket there: %v", err)

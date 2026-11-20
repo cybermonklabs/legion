@@ -45,16 +45,13 @@ const missingBucketRepair = "make it with `envoy-infra buckets create`, with `--
 // as the self-health monitor checks a serving listener, so the alarm reads one cadence.
 // bucketCheckTimeout bounds each read of a bucket's stream, the known-session bucket's included: a
 // shorter bound for that bucket alone would hold the start for good on a hub slower than it, since
-// a read that fails with no refusal holds the turn. A read the server refuses, as it refuses a user
-// whose grant predates that bucket, gets no answer at all; the start's wait ends it the moment the
-// listener's client records the refusal (readBucketsOn), which comes back at once, so the bound
-// costs such a start nothing.
+// a read that fails with no refusal holds the turn. The listener client's JetStream context returns
+// a refused read as bus.ErrPublishDenied, so the start's wait ends it at once and the bound costs
+// such a start nothing.
 const (
 	bucketWaitInterval       = 2 * time.Second
 	missingBucketLogInterval = 30 * time.Second
 	bucketCheckTimeout       = 10 * time.Second
-	// refusalPoll is how often a read of the start's wait asks whether the server refused it.
-	refusalPoll = 20 * time.Millisecond
 )
 
 // missingBuckets is the copied buckets this listener holds missing: the start's wait and the
@@ -217,11 +214,9 @@ func openExisting[T any](wait func() error, open func() (T, error)) (T, error) {
 	}
 }
 
-// bucketReads is one read of each bucket's stream: the buckets the server holds (present), those
 // it says it does not (missing), and those whose read failed, with the error (unread), of which the
-// read says nothing. refused names those of unread whose read the server refused, as it refuses a
-// user whose grant does not carry the bucket; only a read on a client's connection learns that
-// (readBucketsOn).
+// read says nothing. refused names those of unread whose JetStream context returned
+// bus.ErrPublishDenied: the user's grant does not carry the bucket.
 type bucketReads struct {
 	present []string
 	missing []string
@@ -240,59 +235,17 @@ func (r bucketReads) err() error {
 
 // readBuckets asks the server for every bucket's stream at once, within bucketCheckTimeout each
 // and never past ctx, so the shutdown's monitorCancel ends a tick's reads on a hub that does not
-// answer and a stalled hub costs one read's timeout, not one per bucket. The reads come back in
-// the order of buckets.
+// answer and a stalled hub costs one read's timeout, not one per bucket. The listener client's
+// JetStream context turns a refused StreamInfo request into bus.ErrPublishDenied. The reads come
+// back in the order of buckets.
 func readBuckets(ctx context.Context, js nats.JetStreamContext, buckets []string) bucketReads {
-	return readBucketsOn(ctx, nil, js, buckets)
-}
-
-// readBucketsOn is readBuckets on conn, the connection js sends through, which also learns which
-// reads the server refused: the server reports a refused request on the connection and never in
-// its answer, so the read would wait out bucketCheckTimeout as one the server is still working on.
-// Each read asks the client owning conn every refusalPoll whether it recorded the server's refusal
-// of that read (bus.RefusedRequest), ends the moment it has, and asks once more when it ends
-// unanswered; a refused read is unread and named in refused. A nil conn, or one no client owns,
-// records no refusal, and its reads are readBuckets'.
-func readBucketsOn(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, buckets []string) bucketReads {
 	errs := make([]error, len(buckets))
-	refused := make([]bool, len(buckets))
 	var wg sync.WaitGroup
 	for i, bucket := range buckets {
 		wg.Go(func() {
 			readCtx, cancel := context.WithTimeout(ctx, bucketCheckTimeout)
 			defer cancel()
-			subject, sent := "$JS.API.STREAM.INFO.KV_"+bucket, time.Now()
-			// The poller ends before the read's answer is judged (polled), so its finding and the
-			// last ask below never race over the one record a refusal leaves.
-			refusal, stop, polled := false, make(chan struct{}), make(chan struct{})
-			if conn == nil {
-				close(polled)
-			} else {
-				go func() {
-					defer close(polled)
-					tick := time.NewTicker(refusalPoll)
-					defer tick.Stop()
-					for {
-						select {
-						case <-stop:
-							return
-						case <-tick.C:
-							if bus.RefusedRequest(conn, subject, sent) != nil {
-								refusal = true
-								cancel()
-								return
-							}
-						}
-					}
-				}()
-			}
 			_, errs[i] = js.StreamInfo("KV_"+bucket, nats.Context(readCtx))
-			close(stop)
-			<-polled
-			if errs[i] != nil && !errors.Is(errs[i], nats.ErrStreamNotFound) && conn != nil && !refusal {
-				refusal = bus.RefusedRequest(conn, subject, sent) != nil
-			}
-			refused[i] = refusal
 		})
 	}
 	wg.Wait()
@@ -305,7 +258,7 @@ func readBucketsOn(ctx context.Context, conn *nats.Conn, js nats.JetStreamContex
 			reads.missing = append(reads.missing, bucket)
 		default:
 			reads.unread[bucket] = err
-			if refused[i] {
+			if errors.Is(err, bus.ErrPublishDenied) {
 				reads.refused = append(reads.refused, bucket)
 			}
 		}
@@ -363,26 +316,22 @@ func logMissingBuckets(logger *logging.Logger, names []string) {
 //
 // The known-session bucket holds the start as every other bucket does, but for one case: a read of
 // it that fails holds the turn, as a failed read of any other bucket does, and is made again on the
-// next, so a read that waits out bucketCheckTimeout on a slow hub, or one the hub did not
-// answer, never lets the start go with the bucket missing. The one case is a read the server
-// refused: a hub whose users were rendered before that bucket's grant (#2643), and not applied
-// since, lets the listener read no part of it, and its store then opens it once the grant arrives
-// (session.OpenKnownSessions).
+// next, so a read that waits out bucketCheckTimeout on a slow hub, or one the hub did not answer,
+// never lets the start go with the bucket missing. The one case is a read the listener's JetStream
+// context returns as bus.ErrPublishDenied: a hub whose users were rendered before that bucket's
+// grant (#2643), and not applied since, lets the listener read no part of it, and its store then
+// opens it once the grant arrives (session.OpenKnownSessions).
 //
-// Once the server refuses a read of the wait to the known-session bucket - the refusal conn's
-// client recorded for that read (readBucketsOn, bus.RefusedRequest), which only a user whose grant
-// does not carry the bucket earns - the read ends at once, and the wait holds nothing for that
-// bucket and reads it no more: on such a hub the server refuses every read of it, each one a
-// permissions violation and the connection's `envoy nats async error` ERROR, every three seconds
+// Once the context returns bus.ErrPublishDenied for the known-session bucket, the wait leaves the
+// bucket to its store and reads it no more: on such a hub every later read would be refused, each
+// a permissions violation and the connection's `envoy nats async error` ERROR, every three seconds
 // for as long as another bucket holds the start, and none of them can tell the wait anything. The
 // store's own attempts cover the bucket from its open on (session.KnownSessions), and the
-// self-health monitor's reads once the store can read it (monitoredBuckets). A connection no
-// client owns records no refusal, so on one a refused read holds the start for good, as any read
-// that keeps failing does; only tests pass such a connection.
-func awaitCopiedBuckets(ctx context.Context, logger *logging.Logger, conn *nats.Conn, js nats.JetStreamContext, buckets []string, missing *missingBuckets) error {
+// self-health monitor's reads once the store can read it (monitoredBuckets).
+func awaitCopiedBuckets(ctx context.Context, logger *logging.Logger, js nats.JetStreamContext, buckets []string, missing *missingBuckets) error {
 	var logged time.Time
 	for {
-		reads := readBucketsOn(ctx, conn, js, buckets)
+		reads := readBuckets(ctx, js, buckets)
 		if err := ctx.Err(); err != nil {
 			return err
 		}
