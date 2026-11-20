@@ -35,10 +35,12 @@ func natsSeeds(t *testing.T) (user, account, curve string, seeds []string) {
 	return write("user.seed", nkeys.CreateUser), write("issuer.seed", nkeys.CreateAccount), write("xkey.seed", nkeys.CreateCurveKeys), seeds
 }
 
-// The NATS auth service's settings: none set is no service; any set needs the hub's URLs and the
-// three seed files, each holding a seed of its own kind; an audience for a kind of platform token
-// needs that kind's issuer; and the shared Envoy bearer is gone, its variables refused naming the
-// account token file that replaces it.
+// The NATS auth service's settings: none set is no service, and neither is BROKER_NATS_SERVICES
+// alone holding only edge listeners' entries; any other set needs the hub's URLs and the three
+// seed files, each holding a seed of its own kind; an audience for a kind of platform token needs
+// that kind's issuer, and an edge listener's account the issuer its identity token comes from;
+// and the shared Envoy bearer is gone, its variables refused naming the account token file that
+// replaces it.
 func TestNATSCalloutSettings(t *testing.T) {
 	user, account, curve, seeds := natsSeeds(t)
 	full := func() map[string]string {

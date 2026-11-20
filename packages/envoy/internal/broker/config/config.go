@@ -614,11 +614,14 @@ type Config struct {
 	// turns Google identity tokens on at all.
 	GoogleOIDCIssuer string
 	// BROKER_GOOGLE_OIDC_AUDIENCE: the audience a machine's Google identity token must carry,
-	// both for a caller listed in BROKER_API_ACCOUNTS and at the RFC 8693 token exchange, where
-	// it is a subject token (urn:envoy:params:oauth:token-type:google-identity). Its issuer is
-	// BROKER_GOOGLE_OIDC_ISSUER, Google's own unless a dev stack says otherwise. Needs a Google
-	// caller, a google: entry in BROKER_API_ACCOUNTS or a VM service in BROKER_VM_SERVICES, since
-	// with neither no token for it could ever be accepted; API callers need no VM service. The
+	// for a caller listed in BROKER_API_ACCOUNTS, for an edge listener a google: entry of
+	// BROKER_NATS_SERVICES names, and at the RFC 8693 token exchange, where it is a subject token
+	// (urn:envoy:params:oauth:token-type:google-identity). Its issuer is BROKER_GOOGLE_OIDC_ISSUER,
+	// Google's own unless a dev stack says otherwise. Needs a Google caller, a google: entry in
+	// BROKER_API_ACCOUNTS, a VM service in BROKER_VM_SERVICES or a google: edge-listener entry in
+	// BROKER_NATS_SERVICES, since with none no token for it could ever be accepted; and each such
+	// entry needs it, refusing the start naming the entry without it. API callers and edge
+	// listeners need no VM service. The
 	// exchange accepts only accounts listed in BROKER_VM_SERVICES, and
 	// BROKER_SIGNIN_DEVICE_AUDIENCE needs a VM service for its machine actor token. Unset, the
 	// broker accepts no Google identity token, and BROKER_VM_SERVICES, BROKER_VM_PROJECTS,
@@ -748,9 +751,13 @@ type Config struct {
 	// edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>, lists in place of * or - the projects
 	// GET /v1/project-repositories answers that account about, whether or not the broker runs the
 	// auth service: BROKER_NATS_SERVICES set alone, every entry an edge listener's, starts no auth
-	// service and needs no audience, and any other kind of entry needs the URLs and seeds. The auth
-	// service refuses an edge listener's connection, since this build holds no edge listener's
-	// grant. BROKER_NATS_K8S_AUDIENCE is the audience a service's projected Kubernetes token must
+	// service and needs no NATS audience, and any other kind of entry needs the URLs and seeds. An
+	// edge listener's account needs the issuer its identity token comes from, as a
+	// BROKER_API_ACCOUNTS entry of its kind does: BROKER_K8S_OIDC_ISSUER for a Kubernetes account,
+	// BROKER_GOOGLE_OIDC_AUDIENCE for a google: one, which counts as that audience's Google
+	// caller; an entry without its issuer refuses the start, naming the entry. The auth service
+	// refuses an edge listener's connection, since this build holds no edge listener's grant.
+	// BROKER_NATS_K8S_AUDIENCE is the audience a service's projected Kubernetes token must
 	// carry, verified against BROKER_K8S_OIDC_ISSUER, which it needs; BROKER_NATS_GOOGLE_AUDIENCE
 	// the audience a service's Google identity token must carry, verified against
 	// BROKER_GOOGLE_OIDC_ISSUER; while the auth service runs, a service entry whose kind of token
@@ -1567,7 +1574,7 @@ func mappedAccountRefusal(cfg *Config) error {
 			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_API_ACCOUNTS names it as the caller %q; that caller's routes act on the caller's word, and the approval relays take the deciding person's name from it, so take the account out of BROKER_API_ACCOUNTS or out of %s", setting, account, person, caller.Name, setting)
 		}
 		if entry, names := natsEntries[account]; names {
-			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_NATS_SERVICES entry %q names it; the NATS auth service would answer a connection of the person's pod with that service's NATS grant, so take the account out of BROKER_NATS_SERVICES or out of %s", setting, account, person, entry, setting)
+			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_NATS_SERVICES entry %q names it; the person's pod would be answered as that service, by the NATS auth service with its NATS grant or, for an edge-listener entry, by GET /v1/project-repositories, so take the account out of BROKER_NATS_SERVICES or out of %s", setting, account, person, entry, setting)
 		}
 		if pair, paired := pairs[account]; paired {
 			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_SESSION_ACCOUNT_PAIRS pair %q names it; a pair lets either account take the session names the other holds, so the session names the token exchange binds for the person's account and for the other account would cross, and a person's account shares no session name with another account, so take the account out of the pair or out of %s", setting, account, person, pair, setting)

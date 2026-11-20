@@ -1067,10 +1067,11 @@ func TestVMServicesNeedTheGoogleAudience(t *testing.T) {
 	}
 }
 
-// TestGoogleAPIAccountsAndVMServicesAreIndependent pins that either kind of Google caller, a
-// google: entry in BROKER_API_ACCOUNTS or a BROKER_VM_SERVICES entry, is enough for the Google
-// audience and needs it, and that an audience with neither, a Kubernetes API caller being no
-// Google caller, is refused at boot naming the audience and both ways to give it a caller.
+// TestGoogleAPIAccountsAndVMServicesAreIndependent pins that each kind of Google caller, a
+// google: entry in BROKER_API_ACCOUNTS, a BROKER_VM_SERVICES entry or a google: edge-listener
+// entry in BROKER_NATS_SERVICES, is enough for the Google audience and needs it, and that an
+// audience with none, a Kubernetes API caller being no Google caller, is refused at boot naming
+// the audience and all three ways to give it a caller.
 func TestGoogleAPIAccountsAndVMServicesAreIndependent(t *testing.T) {
 	const noGoogleCaller = "BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS, a VM service in BROKER_VM_SERVICES or a google: edge-listener entry in BROKER_NATS_SERVICES"
 	for _, row := range []struct {
