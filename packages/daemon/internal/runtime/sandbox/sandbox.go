@@ -133,7 +133,7 @@ type Runtime struct {
 	// roundPodEnds is Options.RoundPodEnds: the daemon's reading of whether the update round over
 	// a live pod a launch would keep has ended (relaunch), nil for a runtime that keeps every such
 	// pod.
-	roundPodEnds func(ctx context.Context, token claim.Token, podUID string) (bool, error)
+	roundPodEnds runtime.RoundPodEnds
 	// podShapes is the configuration each kind of pod is built from now in each sandbox it can
 	// run in (podShape), by kind and sandbox (podShapeKey), encoded once here (podShapes). Every
 	// input of a shape — the image, the kind's reservation, the operator's volumes and mounts, the

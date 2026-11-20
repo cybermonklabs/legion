@@ -97,7 +97,7 @@ type Runtime struct {
 	// ReplaceRoundPodAtLaunch, the pod is replaced, and the launch answers a locator in a new pod
 	// (launchInto). An error is the launch's. A test binds it to the daemon's own reading, as the
 	// daemon binds the Sandbox runtime's. nil keeps every pod.
-	RoundPodEnds func(ctx context.Context, token claim.Token, podUID string) (bool, error)
+	RoundPodEnds runtime.RoundPodEnds
 
 	mu           sync.Mutex
 	pending      *sync.Cond

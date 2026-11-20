@@ -597,6 +597,22 @@ func TestPodUpdateBoundTellsNobodyOfARoundWhoseClaimsNeverAnswer(t *testing.T) {
 	wantNoRefusedNotice(t, rig)
 }
 
+// suspendedAfterTheSnapshot is a round over the implementer alone, and the snapshot a sweep took of
+// it just before the implementer was suspended by: no live claim records a process in the round's
+// pod, and the snapshot still does, so a sweep made on that snapshot reaches the round with no
+// process in its pod (roundWithNoProcessInItsPod) while its drift read of the pod answers.
+func suspendedAfterTheSnapshot(t *testing.T, by supervise.SuspendSource) (*podUpdateRig, []supervise.Claim) {
+	t.Helper()
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+	rig.drifts(podUpdateDrift)
+	rig.tick()
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.settleAll()
+	group := rig.snapshot()
+	rig.suspendBy(claim.RoleImplementer, by)
+	return rig, group
+}
+
 // A round whose claims stop recording a process in the round's pod between the sweep's snapshot
 // and its live read: the daemon suspended the one claim after the sweep read it, and the pod is
 // still there. There is no process to replace the pod through. The daemon suspended the claim
@@ -611,21 +627,8 @@ func TestPodUpdateBoundTellsNobodyOfARoundWhoseClaimsNeverAnswer(t *testing.T) {
 // told once, naming the refusal, as a refused ReplacePod is told, and later sweeps tell nothing
 // more.
 func TestPodUpdateBoundToldOnceOfARoundWithNoProcessInItsPod(t *testing.T) {
-	// opened is the round over the implementer, and the snapshot a sweep took of it just before
-	// the daemon suspended the implementer.
-	opened := func(t *testing.T) (*podUpdateRig, []supervise.Claim) {
-		rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
-		rig.drifts(podUpdateDrift)
-		rig.tick()
-		rig.awaitRound(claim.RoleImplementer, podUpdateRound)
-		rig.settleAll()
-		group := rig.snapshot()
-		rig.suspendBy(claim.RoleImplementer, supervise.SuspendedByDaemon)
-		return rig, group
-	}
-
 	t.Run("replaced by issue and told nothing", func(t *testing.T) {
-		rig, group := opened(t)
+		rig, group := suspendedAfterTheSnapshot(t, supervise.SuspendedByDaemon)
 		rig.clockAt(podUpdateBound.Add(-time.Minute))
 		rig.s.reconcilePodUpdates(rig.ctx, group)
 
@@ -657,7 +660,7 @@ func TestPodUpdateBoundToldOnceOfARoundWithNoProcessInItsPod(t *testing.T) {
 	})
 
 	t.Run("a refused replacement by issue is told once at the bound", func(t *testing.T) {
-		rig, group := opened(t)
+		rig, group := suspendedAfterTheSnapshot(t, supervise.SuspendedByDaemon)
 		refused := errors.New("the API server refused the Sandbox's suspension")
 		rig.rt.FailReplaceIssuePod(refused)
 
@@ -773,13 +776,7 @@ func TestAnUnreadablePodIsToldOncePastItsBound(t *testing.T) {
 	// and its read of the round's own pod, made once it finds no live claim recording a process
 	// there, fails.
 	withNoProcess := func(t *testing.T, by supervise.SuspendSource) (*podUpdateRig, func()) {
-		rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
-		rig.drifts(podUpdateDrift)
-		rig.tick()
-		rig.awaitRound(claim.RoleImplementer, podUpdateRound)
-		rig.settleAll()
-		group := rig.snapshot()
-		rig.suspendBy(claim.RoleImplementer, by)
+		rig, group := suspendedAfterTheSnapshot(t, by)
 		return rig, func() {
 			rig.s.runtime = &podUnreadAfterTheDriftRead{Runtime: rig.rt, err: unread}
 			rig.s.reconcilePodUpdates(rig.ctx, group)

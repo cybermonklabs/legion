@@ -356,8 +356,9 @@ func (r *podUpdateRig) machineClaim(token claim.Token) supervise.Claim {
 }
 
 // podUpdateEnds counts, by claim, the round ends each machine's feed handed it to decide
-// (supervise.PodUpdateEnded, newPodUpdateRigFeeding). It counts each end the machine took, the
-// ones that found the claim in no round included, and no end that went with a stopped daemon.
+// (supervise.PodUpdateEnded, podUpdateRigOptions.beforeDecision). It counts each end the machine
+// took, the ones that found the claim in no round included, and no end that went with a stopped
+// daemon.
 type podUpdateEnds struct {
 	mu    sync.Mutex
 	taken map[claim.Token]int
@@ -383,7 +384,7 @@ func (e *podUpdateEnds) of(token claim.Token) int {
 func newPodUpdateRigCountingEnds(t *testing.T, roles ...podUpdateRole) (*podUpdateRig, *podUpdateEnds) {
 	t.Helper()
 	ends := &podUpdateEnds{taken: map[claim.Token]int{}}
-	return newPodUpdateRigFeeding(t, ends.count, roles...), ends
+	return newPodUpdateRigWith(t, podUpdateRigOptions{beforeDecision: ends.count}, roles...), ends
 }
 
 // podUpdateEndLines is the line the sweep logs as it ends a round, for each way a round ends: its
@@ -424,11 +425,11 @@ func (r *podUpdateRig) storedRound(role claim.Role) string {
 }
 
 // holdRelaunch ends role's process and holds the relaunch that follows inside Resume, as a
-// relaunch into a pod being built holds a machine for minutes (fake.Runtime.HoldResume). The
-// observation goes on the claim's own queue, as the runtime's observations do, so every event
-// posted to the claim after it waits behind the relaunch, the round's end among them. displaced
-// says the daemon replaced the pod the process ran in (runtime.Observation.Displaced), and pod is
-// the pod the relaunch comes up in.
+// relaunch into a pod being built holds a machine for minutes (holdNextResume). The observation
+// goes on the claim's own queue, as the runtime's observations do, so every event posted to the
+// claim after it waits behind the relaunch, the round's end among them. displaced says the daemon
+// replaced the pod the process ran in (runtime.Observation.Displaced), and pod is the pod the
+// relaunch comes up in.
 //
 // It returns once the machine is inside Resume. release lets the Resume go on and registers the
 // role in pod, as its new process does. A test that stops before it releases is released at its
@@ -440,19 +441,7 @@ func (r *podUpdateRig) holdRelaunch(role claim.Role, displaced bool, pod string)
 	if ended == nil {
 		r.t.Fatalf("the %s records no process to end", role)
 	}
-	conn := fake.NewConn()
-	r.conns.Register(token, conn)
-	r.workers[role] = conn
-	holding, held := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	let := func() { once.Do(func() { close(held) }) }
-	r.t.Cleanup(let)
-	r.rt.ScriptResume(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, pod)})
-	r.rt.HoldResume(func() {
-		r.rt.HoldResume(nil)
-		close(holding)
-		<-held
-	})
+	holding, let := r.holdNextResume(role, pod)
 	r.sup.post(token, supervise.RuntimeObservation{Observation: runtime.Observation{
 		Locator: *ended, Kind: runtime.Gone, At: r.clock.Now(), Detail: "the process ended with its pod", Displaced: displaced,
 	}})

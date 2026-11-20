@@ -67,10 +67,10 @@ var fleetStart = time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
 //
 // unregistered is each role seeded launching in the issue's pod with no session of its own, as a
 // role whose process has started and whose agent has not registered yet. Such a claim is posted
-// no round (blockingClaims) and is not one the round asks (roundAsks), so the sweep's ask never
+// no round (sessionClaims) and is not one the round asks (roundAsks), so the sweep's ask never
 // reaches it, and it records the issue's pod all the same. failed is each role seeded failed — its
 // launches or prompts ran out — with the session its agent registered and no locator, as
-// supervise's fail leaves one: such a claim is posted the round (blockingClaims), and the round
+// supervise's fail leaves one: such a claim is posted the round (sessionClaims), and the round
 // neither asks it nor waits for it (roundAsks), because its machine ignores the round's post
 // (supervise's table).
 type fleetIssue struct {

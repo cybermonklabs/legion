@@ -152,25 +152,28 @@ type podUpdateRig struct {
 
 func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 	t.Helper()
-	return newPodUpdateRigFeeding(t, nil, roles...)
+	return newPodUpdateRigWith(t, podUpdateRigOptions{}, roles...)
 }
 
-// newPodUpdateRigFeeding is newPodUpdateRig with before run on each claim's feed before its
-// machine decides an event the feed took (supervisor.beforeDecision), as overrides.beforeDecision
-// runs in production. It is set before the boot restores the first machine, because the feeds
-// read it with no lock; a later restart carries it to the next daemon's feeds (restart). nil runs
-// nothing, which is newPodUpdateRig.
-func newPodUpdateRigFeeding(t *testing.T, before func(claim.Token, supervise.Event), roles ...podUpdateRole) *podUpdateRig {
-	t.Helper()
-	return newPodUpdateRigPacing(t, before, supervise.WakePace{}, roles...)
+// podUpdateRigOptions is what a rig's machines are built with beyond its claims. The zero value is
+// newPodUpdateRig's.
+//
+// beforeDecision runs on each claim's feed before its machine decides an event the feed took
+// (supervisor.beforeDecision), as overrides.beforeDecision runs in production. It is set before the
+// boot restores the first machine, because the feeds read it with no lock; a later restart carries
+// it to the next daemon's feeds (restart). nil runs nothing.
+//
+// wakePace is the wake pacing every machine is built with (supervise.Deps.WakePace), as
+// openSupervision hands the daemon's one limiter to its machines. A machine takes its deps when the
+// boot restores it, so the pacing is set before that, as beforeDecision is. The zero pace is the
+// pacing off: every launch runs where it is raised.
+type podUpdateRigOptions struct {
+	beforeDecision func(claim.Token, supervise.Event)
+	wakePace       supervise.WakePace
 }
 
-// newPodUpdateRigPacing is newPodUpdateRigFeeding with the wake pacing every machine is built with
-// (supervise.Deps.WakePace), as openSupervision hands the daemon's one limiter to its machines. A
-// machine takes its deps when the boot restores it, so the pacing is set before that, as before
-// is. The zero pace is the pacing off: every launch runs where it is raised, which is
-// newPodUpdateRigFeeding.
-func newPodUpdateRigPacing(t *testing.T, before func(claim.Token, supervise.Event), pace supervise.WakePace, roles ...podUpdateRole) *podUpdateRig {
+// newPodUpdateRigWith is newPodUpdateRig with the machines built with opts.
+func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpdateRole) *podUpdateRig {
 	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -226,7 +229,7 @@ func newPodUpdateRigPacing(t *testing.T, before func(claim.Token, supervise.Even
 	conns := fake.NewConns()
 	records := record.NewStore()
 	sup := newSupervisor(ctx, st, podUpdateProject, t.TempDir(), quietLogger())
-	sup.beforeDecision = before
+	sup.beforeDecision = opts.beforeDecision
 	// The supervision is built before the machines are, because the machines are handed one of
 	// its answers: which roles a launch installs no plugin for, which only the daemon's own
 	// configuration knows (supervise.Deps.NoPluginInstall). A test that moves a role onto another
@@ -266,7 +269,7 @@ func newPodUpdateRigPacing(t *testing.T, before func(claim.Token, supervise.Even
 		PluginRelaunchable: true,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c) },
 		RefreshGate:        supervise.NewRefreshGate(0),
-		WakePace:           pace,
+		WakePace:           opts.wakePace,
 		// A firing timer and a prompt's send take a hold mark of their own, as openSupervision
 		// sets for the daemon, so the guard sees the machines as it does in production.
 		Worker: store.ForConcurrentWorker,
@@ -1610,7 +1613,8 @@ func TestPodUpdateResumesAnOpenRoundAfterARestart(t *testing.T) {
 
 // restart is a second daemon over the same Postgres: new machines, a new runtime, and nothing of
 // the first daemon's memory. The new machines' feeds run what the first daemon's ran before each
-// decision (newPodUpdateRigFeeding), as the test's own seam rather than the daemon's memory.
+// decision (podUpdateRigOptions.beforeDecision), as the test's own seam rather than the daemon's
+// memory.
 func (r *podUpdateRig) restart() *podUpdateRig {
 	r.t.Helper()
 	r.sup.stop()
@@ -1633,7 +1637,7 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 		refreshGate:     supervise.NewRefreshGate(0),
 	}
 	// The second daemon binds its own reading of the round over a pod to its runtime before it
-	// restores a machine, as the first did (newPodUpdateRigPacing).
+	// restores a machine, as the first did (newPodUpdateRigWith).
 	rt.RoundPodEnds = s.roundPodEndsAtLaunch
 	stored, err := sup.Claims(r.ctx)
 	if err != nil {

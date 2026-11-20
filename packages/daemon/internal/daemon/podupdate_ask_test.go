@@ -197,19 +197,6 @@ func (w *wakeCountingTrees) taken() int {
 	return w.takes
 }
 
-// unusedPublisher is a listener that no publish may reach: every publish fails the test.
-type unusedPublisher struct{ t *testing.T }
-
-func (p unusedPublisher) Publish(_ context.Context, topic, _ string, _ any, _ string) error {
-	p.t.Errorf("published to %s, want no publish", topic)
-	return nil
-}
-
-func (p unusedPublisher) PublishKept(_ context.Context, topic, _ string, _ any, _ string) (bool, error) {
-	p.t.Errorf("published to %s, kept for its next holder, want no publish", topic)
-	return false, nil
-}
-
 // The ask wakes nothing and publishes nothing to a role whose pod an idle release took
 // (dispatch://INFRA-2981 R1, dispatch://INFRA-4109 R1). The machine refuses the ask of a claim the
 // daemon suspended (supervise's Claim.PassedOverByRound), a released claim included, so it ends
@@ -233,7 +220,8 @@ func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 	}
 	trees := &wakeCountingTrees{outboxTrees: rig.runner.trees}
 	rig.runner.trees = trees
-	rig.runner.notices = unusedPublisher{t: t}
+	publisher := &outboxPublisher{}
+	rig.runner.notices = publisher
 	logs := &syncBuffer{}
 	rig.runner.log = jsonLogger(logs)
 	resumes := len(rig.rt.CallsOf("Resume"))
@@ -248,6 +236,9 @@ func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 	if len(lines) != 1 || lines[0]["level"] != "INFO" || lines[0]["row"] != float64(row.ID) ||
 		lines[0]["round"] != askedRound || lines[0]["claim"] != string(rig.token) {
 		t.Errorf("lines %q = %v in\n%s\nwant one Info line naming row %d, its round and the claim %s", askSuspendedLine, lines, logs.String(), row.ID, rig.token)
+	}
+	if published := publisher.publishes(); len(published) != 0 {
+		t.Errorf("the ask published %+v, want no publish: a publish to a role with no holder raises a role wake", published)
 	}
 	if n := trees.taken(); n != 0 {
 		t.Errorf("the ask took %d pod wakes, want none: a released pod is not brought back to be asked", n)

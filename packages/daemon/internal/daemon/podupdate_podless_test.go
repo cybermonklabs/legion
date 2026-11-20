@@ -40,8 +40,10 @@ const podlessKeptLine = "supervise: the pod of this update round is kept now the
 // as the store holds it and a boot restores it: asked, and in state with the suspension by, which
 // is "" for a claim that is not suspended. answered is whether it answered the round.
 func podlessMember(role claim.Role, state supervise.ClaimState, by supervise.SuspendSource, answered bool) podUpdateRole {
-	return podUpdateRole{role: role, state: state, session: true, contract: api.DaemonAPIVersion, suspendedBy: by,
-		round: podUpdateRound, reasons: podUpdateDrift, signalled: answered}
+	member := suspendedRole(role, by)
+	member.state = state
+	member.round, member.reasons, member.signalled = podUpdateRound, podUpdateDrift, answered
+	return member
 }
 
 // issueReplacements is every replacement by issue the runtime made (fake's ReplaceIssuePod), a
@@ -92,10 +94,11 @@ func wantPodlessEnd(t *testing.T, rig *podUpdateRig, bounded bool, lost []claim.
 // wantRoundPodEnd holds a round ended by the replacement of a pod no role process ran in to what
 // such an end owes: the line of a replacement the round made, which carries by as true — the
 // field that says who made it, the sweep by issue ("byIssue") or a launch into the pod
-// ("atLaunch") — and says whether the bound made it, names each member in lost as not waited for
-// and says why no read of the workspace was made; and one message on the issue that names each
-// member in lost with its state, names no member that answered, and says that no process could
-// read the workspace. A round whose members all answered writes no message.
+// ("atLaunch") — and says whether the bound made it, names each member in lost as one that had
+// not answered (unansweredMembers) and says why no read of the workspace was made; and one message
+// on the issue that names each member in lost with its state, names no member that answered, and
+// says that no process could read the workspace. A round whose members all answered writes no
+// message.
 func wantRoundPodEnd(t *testing.T, rig *podUpdateRig, by string, bounded bool, lost []claim.Role, answered ...claim.Role) {
 	t.Helper()
 	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
@@ -109,7 +112,7 @@ func wantRoundPodEnd(t *testing.T, rig *podUpdateRig, by string, bounded bool, l
 	if line["workspaceRead"] != "not made" || line["workspaceNotReadBecause"] != noProcessRead {
 		t.Errorf("the replacement's line names the read %+v, want one not made because %q", line, noProcessRead)
 	}
-	wantField(t, line, "notWaitedFor", lost...)
+	wantField(t, line, "unansweredMembers", lost...)
 	if bound := loggedLines(t, rig.logs.String(), podUpdateBoundLine); bounded != (len(bound) == 1) || len(bound) > 1 {
 		t.Errorf("the replacement was logged at the bound %d times, want the bound's line %t: %+v", len(bound), bounded, bound)
 	}
@@ -301,19 +304,7 @@ func TestTheByIssueReplacementWaitsForAMachineInADecision(t *testing.T) {
 	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
 
 	token := rig.tokens[claim.RoleImplementer]
-	conn := fake.NewConn()
-	rig.conns.Register(token, conn)
-	rig.workers[claim.RoleImplementer] = conn
-	holding, held := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	let := func() { once.Do(func() { close(held) }) }
-	t.Cleanup(let)
-	rig.rt.ScriptResume(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, podUpdatePod)})
-	rig.rt.HoldResume(func() {
-		rig.rt.HoldResume(nil)
-		close(holding)
-		<-held
-	})
+	holding, let := rig.holdNextResume(claim.RoleImplementer, podUpdatePod)
 	rig.sup.post(token, supervise.RequestResume{Claim: token})
 	select {
 	case <-holding:
@@ -357,8 +348,9 @@ func TestTheByIssueReplacementWaitsForAMachineInADecision(t *testing.T) {
 // INFRA-4455's tester was from 18:08:41Z: suspended by an idle release, and never asked. The round
 // passes over it while it is suspended (dispatch://INFRA-4109 R1).
 func releasedUnasked(role claim.Role) podUpdateRole {
-	return podUpdateRole{role: role, state: supervise.StateSuspended, session: true, contract: api.DaemonAPIVersion,
-		suspendedBy: supervise.SuspendedByReleased, round: podUpdateRound, reasons: podUpdateDrift, unasked: true}
+	member := podlessMember(role, supervise.StateSuspended, supervise.SuspendedByReleased, false)
+	member.unasked = true
+	return member
 }
 
 // lookStart is the resume a production check look's start row makes of role, a claim the daemon
@@ -375,11 +367,38 @@ func (r *podUpdateRig) lookStart(role claim.Role) supervise.RequestRuleResume {
 // its place.
 func (r *podUpdateRig) intoRoundPod(role claim.Role) {
 	r.t.Helper()
+	r.intoPod(role, podUpdatePod)
+}
+
+// intoPod scripts role's next launch into pod and gives role a new connection for the process that
+// launch starts.
+func (r *podUpdateRig) intoPod(role claim.Role, pod string) {
+	r.t.Helper()
 	token := r.tokens[role]
 	conn := fake.NewConn()
 	r.conns.Register(token, conn)
 	r.workers[role] = conn
-	r.rt.ScriptResume(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, podUpdatePod)})
+	r.rt.ScriptResume(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, pod)})
+}
+
+// holdNextResume scripts role's next launch into pod (intoPod) and holds the next Resume the
+// runtime is asked for inside the runtime (fake's HoldResume), as a launch into a pod being built
+// holds its machine in that decision. reached is closed once that Resume is inside the hold, and
+// release lets it go on. A test that stops before it releases is released at its cleanup, ahead
+// of the supervisor's stop, which waits for the held decision.
+func (r *podUpdateRig) holdNextResume(role claim.Role, pod string) (reached <-chan struct{}, release func()) {
+	r.t.Helper()
+	r.intoPod(role, pod)
+	holding, held := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(held) }) }
+	r.t.Cleanup(release)
+	r.rt.HoldResume(func() {
+		r.rt.HoldResume(nil)
+		close(holding)
+		<-held
+	})
+	return holding, release
 }
 
 // launchesOf is every launch the runtime was asked to make of role's claim, Resume and Spawn alike,
@@ -401,16 +420,7 @@ func (r *podUpdateRig) launchesOf(role claim.Role) []fake.Call {
 func (r *podUpdateRig) launchAtOnce(first, second claim.Role) {
 	r.t.Helper()
 	r.intoRoundPod(second)
-	r.intoRoundPod(first)
-	holding, held := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	let := func() { once.Do(func() { close(held) }) }
-	r.t.Cleanup(let)
-	r.rt.HoldResume(func() {
-		r.rt.HoldResume(nil)
-		close(holding)
-		<-held
-	})
+	holding, let := r.holdNextResume(first, podUpdatePod)
 	r.sup.post(r.tokens[first], r.lookStart(first))
 	select {
 	case <-holding:
@@ -518,7 +528,7 @@ func TestALaunchUnderARoundWithNoProcessIsLaunchedOnce(t *testing.T) {
 				roles = append(roles, releasedUnasked(tc.alongside))
 				launched = append(launched, tc.alongside)
 			}
-			rig := newPodUpdateRigPacing(t, nil, tc.pace, roles...)
+			rig := newPodUpdateRigWith(t, podUpdateRigOptions{wakePace: tc.pace}, roles...)
 			rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
 			rig.clockAt(tc.resumeAt)
 

@@ -1467,10 +1467,12 @@ type supervision struct {
 	// next launch into the pod reads the claims it kept the pod for (dispatch://INFRA-4109 R7), and
 	// the sweep that reads a replaced pod gone, or another pod in its place, ends the round as the
 	// replacement the round made (endRoundALaunchReplaced). The entry goes where the sweep ends the
-	// round (endPodUpdates), or where the hook writes one of another round of the issue. Nothing of
-	// it is in the store: a restart forgets it, and the sweep then reads a pod a launch replaced
-	// as a pod gone, whose message names the same members. A mutex of its own, never held across a
-	// runtime call, because the hook runs on a launching machine's goroutine beside the sweep.
+	// round (endPodUpdates), where the hook writes one of another round of the issue, and at the
+	// first sweep that finds no claim of the issue that has not retired (forgetLaunchRounds).
+	// Nothing of it is in the store: a restart forgets it, and the sweep then reads a pod a launch
+	// replaced as a pod gone, whose message names the same members. A mutex of its own, never held
+	// across a runtime call, because the hook runs on a launching machine's goroutine beside the
+	// sweep.
 	podUpdateLaunchMu       sync.Mutex
 	podUpdateLaunchReplaced map[string]*launchRound
 	// reportStore persists each report as it arrives (store.Store), so a restart renders the

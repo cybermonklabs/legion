@@ -842,11 +842,11 @@ func volumeMissing(missing []shimwire.LauncherVolumeMissing) []record.VolumeMiss
 // It is filled once, in the boot's own goroutine, before any claim's machine exists and so before
 // any launch can ask: there is nothing to lock, and nothing ever replaces what was filled.
 type launchRounds struct {
-	read func(ctx context.Context, token claim.Token, podUID string) (bool, error)
+	read runtime.RoundPodEnds
 }
 
 // bind gives the holder the supervision's reading of the round.
-func (l *launchRounds) bind(read func(ctx context.Context, token claim.Token, podUID string) (bool, error)) {
+func (l *launchRounds) bind(read runtime.RoundPodEnds) {
 	l.read = read
 }
 
