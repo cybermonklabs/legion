@@ -1,15 +1,20 @@
 kind: Fixed
 body: |-
-  A role message no longer reaches a session that does not hold the role when the listener's
-  wire rules or the envelope's own refuse it. When the role's claim names another session, or
-  none, the session relay now copies such a message to the role's kept lane, so the holder
-  receives it, as it copies every other. The relay, a takeover pass and the kept lane's walk now
-  read a role message by JSON alone, so a takeover also copies such a message to the next
-  holder. A role message that JSON does not read as an envelope reaches no session: the relay
-  acknowledges it, logs `listener session relay ended a role message that cannot be decoded`
-  once with the session, the role, the holder, the stream sequence and the decode error, and
-  counts it in `envoy_role_kept_undecodable_total{path="relay"}`. A session that holds the role
-  still receives its role messages as before.
+  A role message no longer reaches a session that does not hold the role when a read of its
+  whole envelope refuses or misreads it. The session relay, a takeover pass and the kept lane's
+  walk now tell a role message by one read: past a leading UTF-8 byte order mark, only its `topic`
+  and `role` fields, each by its exact key, so a later `"TOPIC"` key or an event id written as a
+  number no longer makes a role message look like none. Its envelope is then read field by
+  field, so an `urgency`, `source` or `expects_reply` word a newer build adds, or an `issued_at`
+  written as `1795191371979.0`, no longer ends it: when the role's claim names another session,
+  or none, the relay copies it to the role's kept lane and the holder receives it, and a takeover
+  copies it to the next holder. An `expects_reply` word the listener does not know is left out
+  of the copy. A message that is not a JSON object, or whose topic or `role` is
+  not a string and names no role, reaches no session: the relay acknowledges it with no claim
+  read, logs `listener session relay ended a message whose role cannot be read` once with the
+  session, the stream sequence and why, and counts it in
+  `envoy_role_kept_undecodable_total{path="relay"}`. A session that holds the role still
+  receives its role messages as before.
 time: 2026-11-20T13:59:15.526158537Z
 custom:
     Issue: pr4626

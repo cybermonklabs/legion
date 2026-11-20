@@ -1511,10 +1511,13 @@ type keptCopyVerdict struct {
 // (keptCopyClaimOf), for holder (empty for a walk with no live holder), before any cursor is
 // written for it, in this order:
 //
-//  1. A copy JSON does not read as an envelope (decodeRoleEnvelope, the read the session relay
-//     and a takeover pass make) reaches no holder however often it is read, so it is ended rather
-//     than every later walk stopping on it, logged with its stream sequence and counted
-//     (envoy_role_kept_undecodable_total).
+//  1. A copy whose role no read can tell (readRoleFrame, the read the session relay and a
+//     takeover pass make: not a JSON object, or a topic or role mark that is not a string and
+//     names no role) reaches no holder however often it is read, so it is ended rather than every
+//     later walk stopping on it, logged with its stream sequence and counted
+//     (envoy_role_kept_undecodable_total). Every other copy's envelope is read field by field
+//     (roleFrame.envelope), so a field the envelope's type for it does not take, or a value the
+//     wire rules or the envelope's own refuse, ends no copy.
 //  2. A copy under a delivery mode's dead-letter claim that this walk takes over
 //     (keptCopyModeClaimed) is a delivery mode drop whose dead letter was not confirmed, and it is
 //     owed that dead letter again, whatever its age now, whoever holds the role now and whether
@@ -1549,8 +1552,8 @@ type keptCopyVerdict struct {
 // it. Nor is a dead letter's claim on a copy owed no dead letter, which no walk writes. now is
 // called once per copy that decodes, whatever the verdict.
 func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, entry session.SessionEntry, stored bus.StoredMessage, claim keptCopyClaim, now func() time.Time, seen func(key, recipient string) bool) keptCopyVerdict {
-	var item contracts.Envelope
-	if err := decodeRoleEnvelope(stored.Data, &item); err != nil {
+	frame, err := readRoleFrame(stored.Data)
+	if err != nil {
 		return keptCopyVerdict{step: keptCopyEnd, report: func() {
 			cfg.roleKeptUndecodable.Inc()
 			cfg.logger.Error("listener kept role message cannot be decoded",
@@ -1559,6 +1562,7 @@ func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, e
 				slog.String("error", err.Error()))
 		}}
 	}
+	item := frame.envelope()
 	at := now()
 	owed := !isOutboxCopy(item) && item.SourceSession != ""
 	// deadLetter is the verdict of a copy owed a dead letter for drop, with the report the copy

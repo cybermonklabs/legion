@@ -4,17 +4,24 @@ package main
 // listener's own routes, and what the stream holds on a subject, each message with its envelope.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // postRoleClaim is handler's answer to POST /v1/roles/set of role by sessionID, outright or soft,
@@ -115,56 +122,219 @@ func copiesOf(held []storedEnvelope, eventID string) int {
 	return copies
 }
 
-// roleFrameTheWireRulesRefuse is a role message of role, as the role lane stores a forward to the
-// role's holder, whose envelope JSON reads (decodeRoleEnvelope) and the listener's wire rules refuse
-// (decodeStoredEnvelope): its urgency is present and empty (contracts.ValidateWire). It returns the
-// message's event id and its bytes, and fails t unless the role mark and both reads answer so.
-func roleFrameTheWireRulesRefuse(t testing.TB, role string) (string, []byte) {
-	t.Helper()
-	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, roleForwardDedupePrefix+"wire-refused-"+id.New())
-	data := roleFrameWith(t, item, role, "urgency", `""`)
-	if err := decodeRoleEnvelope(data, &contracts.Envelope{}); err != nil {
-		t.Fatalf("JSON does not read the envelope %s: %v; want it read", data, err)
-	}
-	if err := decodeStoredEnvelope(data, &contracts.Envelope{}); err == nil {
-		t.Fatalf("the listener's wire rules take the envelope %s; want them to refuse it", data)
-	}
-	return item.EventID, data
+// markedFrame is a message's bytes as a row stores them on a subject, the shape it has, and its
+// mark: the text a row finds it by in what a session received (hearMarks) and in a role's kept
+// lane (keptMarks), its payload summary where it is a JSON object with one, else its whole text.
+type markedFrame struct {
+	shape string
+	mark  string
+	data  []byte
 }
 
-// roleFrameNoEnvelopeReads is a role message of role, as the role lane stores a forward to the
-// role's holder, whose role mark reads (decodeRoleMark) and whose envelope JSON does not read
-// (decodeRoleEnvelope): its issued_at is a string where the envelope holds a number. It returns the
-// message's event id and its bytes, and fails t unless the role mark and the read answer so.
-func roleFrameNoEnvelopeReads(t testing.TB, role string) (string, []byte) {
+// roleFramesTheStrictReadsMiss is a role message of role for each way a stored one, as the role
+// lane stores a forward to the role's holder, can be read wrongly by a read of its whole envelope:
+// four that the listener's envelope decode refuses (decodeStoredEnvelope) although JSON holds them
+// - a newer build's urgency, source and expects_reply words, and an issued_at written with a
+// fraction of zero - and three that a read of the envelope into a struct refuses or reads as no
+// role message - an event id written as a number, a UTF-8 byte order mark before the JSON, and a
+// "TOPIC" key after "topic", which a read that matches keys without case takes as the topic. The
+// plugins' transport reads each of them as that role message. Each one's topic, read by its exact
+// key past the byte order mark, is role's topic, and t fails for a shape that does not hold so.
+func roleFramesTheStrictReadsMiss(t testing.TB, role string) []markedFrame {
 	t.Helper()
-	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, roleForwardDedupePrefix+"unreadable-"+id.New())
-	data := roleFrameWith(t, item, role, "issued_at", `"yesterday"`)
-	if err := decodeRoleEnvelope(data, &contracts.Envelope{}); err == nil {
-		t.Fatalf("JSON reads the envelope %s; want it refused", data)
+	topic := contracts.RoleTopicPrefix + role
+	shapes := []struct {
+		shape string
+		edit  func(item *contracts.Envelope, fields map[string]json.RawMessage)
+		bytes func(data []byte) []byte
+	}{
+		{shape: "a newer build's urgency", edit: func(item *contracts.Envelope, _ map[string]json.RawMessage) { item.Urgency = "critical" }},
+		{shape: "a newer build's source", edit: func(item *contracts.Envelope, _ map[string]json.RawMessage) { item.Source = "linear" }},
+		{shape: "a newer build's expects_reply word", edit: func(_ *contracts.Envelope, fields map[string]json.RawMessage) {
+			fields["expects_reply"] = json.RawMessage(`"maybe"`)
+		}},
+		{shape: "an issued_at written with a fraction of zero", edit: func(item *contracts.Envelope, fields map[string]json.RawMessage) {
+			fields["issued_at"] = json.RawMessage(strconv.FormatInt(item.IssuedAt, 10) + ".0")
+		}},
+		{shape: "an event id written as a number", edit: func(_ *contracts.Envelope, fields map[string]json.RawMessage) {
+			fields["event_id"] = json.RawMessage(`4626`)
+		}},
+		{shape: "a byte order mark before the JSON", bytes: func(data []byte) []byte { return append([]byte("\xef\xbb\xbf"), data...) }},
+		{shape: `a "TOPIC" key after "topic"`, bytes: func(data []byte) []byte {
+			shadow := `,"TOPIC":"` + contracts.AgentTopicPrefix + `ses_topic_shadow"}`
+			return append(bytes.TrimSuffix(data, []byte("}")), shadow...)
+		}},
 	}
-	return item.EventID, data
+	frames := make([]markedFrame, 0, len(shapes))
+	for _, shape := range shapes {
+		item := listenerTestEnvelope(topic, roleForwardDedupePrefix+"strict-reads-miss-"+id.New())
+		item.PayloadSummary = shape.shape + " " + id.New()
+		fields := map[string]json.RawMessage{}
+		if shape.edit != nil {
+			shape.edit(&item, fields)
+		}
+		data := withFields(t, item, fields)
+		if shape.bytes != nil {
+			data = shape.bytes(data)
+		}
+		if got, isString := exactField(t, data, "topic"); !isString || got != topic {
+			t.Fatalf("the %s frame %s has the topic %q by its exact key; want %s", shape.shape, data, got, topic)
+		}
+		var strict contracts.Envelope
+		if err := decodeStoredEnvelope(data, &strict); err == nil && strict.Topic == topic {
+			t.Fatalf("the listener's envelope decode reads the %s frame %s as role %s's message; want it to refuse or misread it", shape.shape, data, role)
+		}
+		frames = append(frames, markedFrame{shape: shape.shape, mark: item.PayloadSummary, data: data})
+	}
+	return frames
 }
 
-// roleFrameWith is item's JSON with field set to value, a raw JSON value, and fails t unless its
-// role mark names role (decodeRoleMark).
-func roleFrameWith(t testing.TB, item contracts.Envelope, role, field, value string) []byte {
+// framesNoReadCanTellTheRoleOf is a message for each way a stored one can be one whose role no
+// read can tell: one that is not a JSON object, and one whose topic is a number with no role
+// mark. t fails for a shape that does not hold so.
+func framesNoReadCanTellTheRoleOf(t testing.TB) []markedFrame {
+	t.Helper()
+	notAnObject := "not a JSON object " + id.New()
+	item := listenerTestEnvelope("", roleForwardDedupePrefix+"topic-a-number-"+id.New())
+	item.PayloadSummary = "a topic that is a number " + id.New()
+	numberTopic := withFields(t, item, map[string]json.RawMessage{"topic": json.RawMessage(`5`)})
+	var fields map[string]json.RawMessage
+	if json.Unmarshal([]byte(notAnObject), &fields) == nil {
+		t.Fatalf("%q reads as a JSON object; want it not to", notAnObject)
+	}
+	if got, isString := exactField(t, numberTopic, "topic"); isString || got != "5" {
+		t.Fatalf("the frame %s has the topic %q (a string: %t); want the number 5", numberTopic, got, isString)
+	}
+	return []markedFrame{
+		{shape: "a message that is not a JSON object", mark: notAnObject, data: []byte(notAnObject)},
+		{shape: "a topic that is a number, with no role mark", mark: item.PayloadSummary, data: numberTopic},
+	}
+}
+
+// withFields is item's JSON with each of fields set to its raw value.
+func withFields(t testing.TB, item contracts.Envelope, fields map[string]json.RawMessage) []byte {
 	t.Helper()
 	encoded, err := json.Marshal(item)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(encoded, &fields); err != nil {
+	if len(fields) == 0 {
+		return encoded
+	}
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &all); err != nil {
 		t.Fatal(err)
 	}
-	fields[field] = json.RawMessage(value)
-	data, err := json.Marshal(fields)
+	for key, value := range fields {
+		all[key] = value
+	}
+	data, err := json.Marshal(all)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if marked, _, ok := decodeRoleMark(data); !ok || marked != role {
-		t.Fatalf("the role mark of %s reads role %q (a role message: %t); want role %s", data, marked, ok, role)
-	}
 	return data
+}
+
+// exactField is the value data's field key holds, read by its exact key past a leading UTF-8 byte
+// order mark: the string it is, or its raw JSON when it is not a string. t fails unless data is a
+// JSON object.
+func exactField(t testing.TB, data []byte, key string) (string, bool) {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")), &fields); err != nil {
+		t.Fatalf("read %s as a JSON object: %v", data, err)
+	}
+	var value string
+	if err := json.Unmarshal(fields[key], &value); err != nil {
+		return string(fields[key]), false
+	}
+	return value, true
+}
+
+// markOf is the mark of a message's bytes (markedFrame): its payload summary, read by its exact
+// key past a leading UTF-8 byte order mark, where it is a JSON object with one, else its whole
+// text.
+func markOf(data []byte) string {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")), &fields) == nil {
+		var summary string
+		if json.Unmarshal(fields["payload_summary"], &summary) == nil && summary != "" {
+			return summary
+		}
+	}
+	return string(data)
+}
+
+// eventIDOf is the event id of a message's bytes, read by its exact key, empty where it is not a
+// JSON object or its event id is not a string.
+func eventIDOf(data []byte) string {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")), &fields) != nil {
+		return ""
+	}
+	var eventID string
+	_ = json.Unmarshal(fields["event_id"], &eventID)
+	return eventID
+}
+
+// hearMarks is sessionID's process on a connection of its own: it takes each relay frame as bytes,
+// records its event id and its mark (markOf) however little of it a read of the envelope would
+// take, and answers it received and done, as a session that wrote it does; it answers the
+// connection probe (bus.ConnectionProbeHeader) done, as the plugins do. It answers nothing more,
+// and its connection drains, once t ends.
+func hearMarks(t testing.TB, url, sessionID string) *heardFrames {
+	t.Helper()
+	conn := testnats.Connect(t, url)
+	heard := &heardFrames{}
+	var silent atomic.Bool
+	if _, err := conn.Subscribe(bus.DeliverSubject(sessionID), func(msg *natsgo.Msg) {
+		if silent.Load() {
+			return
+		}
+		replies := []string{relayReplyReceived, relayReplyDone}
+		if msg.Header.Get(bus.ConnectionProbeHeader) == "1" {
+			replies = []string{relayReplyDone}
+		} else {
+			heard.mu.Lock()
+			heard.events = append(heard.events, eventIDOf(msg.Data))
+			heard.marks = append(heard.marks, markOf(msg.Data))
+			heard.mu.Unlock()
+		}
+		// A reply that does not reach the relay leaves the frame to the relay's receipt wait,
+		// which a row's own waits see; nothing here reports to t, which may have ended.
+		for _, reply := range replies {
+			_ = conn.Publish(msg.Reply, []byte(reply))
+		}
+	}); err != nil {
+		t.Fatalf("subscribe %s's process to its relay subject: %v", sessionID, err)
+	}
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush %s's subscription: %v", sessionID, err)
+	}
+	t.Cleanup(func() {
+		silent.Store(true)
+		if err := conn.Drain(); err == nil {
+			testwait.Holds(5*time.Second, testwait.Poll, conn.IsClosed)
+		}
+	})
+	return heard
+}
+
+// keptMarks is how many messages role's kept lane holds whose mark (markOf) is mark, and how many
+// it holds in all, read as bytes.
+func keptMarks(t testing.TB, client *bus.Client, role, mark string) (int, int) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	messages, err := readStored(ctx, client, bus.KeptRoleSubject(role))
+	if err != nil {
+		t.Fatalf("read role %s's kept lane: %v", role, err)
+	}
+	marked := 0
+	for _, message := range messages {
+		if markOf(message.Data) == mark {
+			marked++
+		}
+	}
+	return marked, len(messages)
 }

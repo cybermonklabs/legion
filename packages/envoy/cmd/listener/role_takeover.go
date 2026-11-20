@@ -21,7 +21,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -542,34 +541,11 @@ func writeTakeoverRecord(ctx context.Context, cfg listenerDeliveryHandlerConfig,
 	return cfg.client.WriteTakeoverRecord(writeCtx, subject, record)
 }
 
-// roleOfMessage is what the session relay and a takeover pass read of a frame to tell a role
-// message: its topic and its role mark, and the event id the relay's lines name.
-type roleOfMessage struct {
-	EventID string `json:"event_id"`
-	Topic   string `json:"topic"`
-	Role    string `json:"role"`
-}
-
-// role is the role the frame is a role message of, and whether it is one: a frame whose topic is
-// a role's topic (roleOfLaneTopic), which the listener or Dispatch's outbox forwarded to its holder
-// as the role's holder, or whose role mark names a role, which Dispatch's API sent for a route to
-// that role, read in either form (contracts.CanonicalRole), as a claim is keyed by the bare name.
-func (m roleOfMessage) role() (string, bool) {
-	if role, ok := roleOfLaneTopic(m.Topic); ok {
-		return role, true
-	}
-	if m.Role != "" {
-		_, role, _ := contracts.CanonicalRole(m.Role)
-		return role, role != ""
-	}
-	return "", false
-}
-
 // roleOfLaneTopic is the role a role lane's topic names, in its bare form, and whether topic is a
 // role's topic: the one rule the role lane's delivery (resolveRoleForward), the session relay and a
-// takeover pass read a role topic by, since the relay and the pass must read a frame's role as the
-// lane that forwarded it did. The topic names the role in either form (contracts.CanonicalRole);
-// a claim is keyed by the bare name.
+// takeover pass (readRoleFrame) read a role topic by, since the relay and the pass must read a
+// frame's role as the lane that forwarded it did. The topic names the role in either form
+// (contracts.CanonicalRole); a claim is keyed by the bare name.
 func roleOfLaneTopic(topic string) (string, bool) {
 	token, ok := strings.CutPrefix(topic, contracts.RoleTopicPrefix)
 	if !ok || token == "" {
@@ -579,33 +555,16 @@ func roleOfLaneTopic(topic string) (string, bool) {
 	return role, role != ""
 }
 
-// decodeRoleMark reads data's role mark (roleOfMessage) alone: the role, the mark, and whether
-// data is a role message. It is what the session relay reads of every frame before the role's
-// claim, so a frame its own holder takes pays for this one decode and no more.
-func decodeRoleMark(data []byte) (string, roleOfMessage, bool) {
-	var mark roleOfMessage
-	if err := json.Unmarshal(data, &mark); err != nil {
-		return "", mark, false
-	}
-	role, ok := mark.role()
-	return role, mark, ok
-}
-
-// takenRoleMessage decodes data and reports the envelope when it is a role message of role whose
-// envelope JSON reads (decodeRoleEnvelope), as the session relay and the kept lane's walk read it:
-// a message the wire rules or the envelope's own refuse is still copied for the role's next
-// holder. A message JSON does not read as an envelope is no role message to copy, as the walk ends
-// a copy JSON does not read.
+// takenRoleMessage reports the envelope of data when data is a role message of role (readRoleFrame),
+// read field by field (roleFrame.envelope): a message the listener's wire rules or the envelope's
+// own refuse is still copied for the role's next holder, as the session relay and the kept lane's
+// walk take it. A message whose role no read can tell is no role message to copy.
 func takenRoleMessage(data []byte, role string) (contracts.Envelope, bool) {
-	of, _, ok := decodeRoleMark(data)
-	if !ok || of != role {
+	frame, err := readRoleFrame(data)
+	if err != nil || frame.role != role {
 		return contracts.Envelope{}, false
 	}
-	var item contracts.Envelope
-	if err := decodeRoleEnvelope(data, &item); err != nil {
-		return contracts.Envelope{}, false
-	}
-	return item, true
+	return frame.envelope(), true
 }
 
 // keepTakenRoleFrame copies item, the frame stored at seq on a session's own subject, to role's
@@ -630,35 +589,54 @@ func keepTakenRoleFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 
 // takeOverFrame judges a frame of session sessionID's consumer before the relay sends it, and
 // reports whether it took the frame, which the relay then does not send. It reads the frame's role
-// mark alone first (decodeRoleMark): a frame that is no role message is not taken, at the cost of
-// that decode. For a role message the relay reads the role's claim from the role bucket
-// (readRoleClaimHolder, within the role routes' bound on a claim read): a claim naming sessionID
-// leaves the frame to the relay, which sends it as it sends every frame, so a holder that
-// continues while it still holds its role receives its role messages, and its envelope is never
-// decoded here. A claim naming another session, or none, has the envelope read by JSON alone
-// (decodeRoleEnvelope, the read a takeover pass and the kept lane's walk make) and the frame
-// copied to the role's kept lane (keepTakenRoleFrame) and only then acknowledged, with one line
-// naming the session, the role, the holder and the event, and a handover of the lane started
-// (runKeptRoleDrain), so the role's holder receives it and not this session. That holds for an
-// envelope the listener's wire rules or the envelope's own refuse: the walk forwards its copy, and
-// the holder's reader judges it. A frame whose envelope JSON does not read under such a claim
-// reaches no session: no path can copy or forward it, and it is not this session's to receive. It
-// is acknowledged, logged once with the session, the role, the holder, its stream sequence and the
-// decode error, and counted (envoy_role_kept_undecodable_total{path="relay"}), as the durable path
-// ends a message it cannot decode and the walk ends a copy JSON does not read. A claim read or a
-// copy that failed has the frame given back to the server with the delay its deliveries earn
-// (relayNakDelayFor), neither sent nor acknowledged, so it is copied or sent once they answer.
+// first (readRoleFrame), from its topic and its role mark alone, each by its exact key: a frame
+// that is no role message is not taken, at the cost of that read. For a role message the relay
+// reads the role's claim from the role bucket (readRoleClaimHolder, within the role routes' bound
+// on a claim read): a claim naming sessionID leaves the frame to the relay, which sends it as it
+// sends every frame, so a holder that continues while it still holds its role receives its role
+// messages, and nothing more of it is read here. A claim naming another session, or none, has the
+// envelope read field by field (roleFrame.envelope, as a takeover pass and the kept lane's walk
+// read it) and the frame copied to the role's kept lane (keepTakenRoleFrame) and only then
+// acknowledged, with one line naming the session, the role, the holder and the event, and a
+// handover of the lane started (runKeptRoleDrain), so the role's holder receives it and not this
+// session. That holds for an envelope the listener's wire rules or the envelope's own refuse: the
+// walk forwards its copy, with each value the envelope can hold (roleFrame.envelope says which it
+// leaves out), and the holder's reader judges it. A frame whose role no read can tell -
+// not a JSON object, or a topic or role mark that is not a string and names no role - reaches no
+// session, since it may be a role message no claim can be read for. It is acknowledged with no
+// claim read, logged once with the session, its stream sequence and why, and counted
+// (envoy_role_kept_undecodable_total{path="relay"}), as the durable path ends a message it cannot
+// decode and the walk ends such a copy. A claim read or a copy that failed has the frame given
+// back to the server with the delay its deliveries earn (relayNakDelayFor), neither sent nor
+// acknowledged, so it is copied or sent once they answer.
 func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg bus.SessionMessage) bool {
-	role, mark, ok := decodeRoleMark(msg.Data)
-	if !ok {
+	frame, err := readRoleFrame(msg.Data)
+	if err != nil {
+		if ackErr := msg.Ack(); ackErr != nil {
+			m.logger.Warn("listener session relay could not acknowledge a message whose role cannot be read",
+				slog.String("session_id", sessionID),
+				slog.Uint64("stream_seq", msg.StreamSeq),
+				slog.String("error", ackErr.Error()))
+		}
+		m.cfg.roleKeptUndecodable.Inc([2]string{"path", "relay"})
+		m.logger.Error("listener session relay ended a message whose role cannot be read",
+			slog.String("session_id", sessionID),
+			slog.Uint64("stream_seq", msg.StreamSeq),
+			slog.String("error", err.Error()))
+		return true
+	}
+	if frame.role == "" {
 		return false
 	}
+	role := frame.role
+	// The id the relay's lines name; one that is not a string reads as none.
+	eventID, _ := frame.text("event_id")
 	giveBack := func(why string, err error) bool {
 		nakErr := msg.NakWithDelay(relayNakDelayFor(msg.Delivered))
 		m.logger.Warn("listener session relay gave a role message back to the server: "+why,
 			slog.String("session_id", sessionID),
 			slog.String("role", role),
-			slog.String("event_id", mark.EventID),
+			slog.String("event_id", eventID),
 			slog.Uint64("stream_seq", msg.StreamSeq),
 			slog.String("error", errors.Join(err, nakErr).Error()))
 		return true
@@ -670,25 +648,7 @@ func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg
 	if holder == sessionID {
 		return false
 	}
-	var item contracts.Envelope
-	if err := decodeRoleEnvelope(msg.Data, &item); err != nil {
-		if ackErr := msg.Ack(); ackErr != nil {
-			m.logger.Warn("listener session relay could not acknowledge a role message that cannot be decoded",
-				slog.String("session_id", sessionID),
-				slog.String("role", role),
-				slog.String("event_id", mark.EventID),
-				slog.String("error", ackErr.Error()))
-		}
-		m.cfg.roleKeptUndecodable.Inc([2]string{"path", "relay"})
-		m.logger.Error("listener session relay ended a role message that cannot be decoded: another session holds the role, or none does",
-			slog.String("session_id", sessionID),
-			slog.String("role", role),
-			slog.String("holder", holder),
-			slog.String("event_id", mark.EventID),
-			slog.Uint64("stream_seq", msg.StreamSeq),
-			slog.String("error", err.Error()))
-		return true
-	}
+	item := frame.envelope()
 	if err := relayCopyFrame(ctx, m.cfg, role, item, msg.StreamSeq); err != nil {
 		return giveBack("its copy to the role's kept lane did not store", err)
 	}
@@ -696,14 +656,14 @@ func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg
 		m.logger.Warn("listener session relay could not acknowledge a role message it copied to the role's kept lane",
 			slog.String("session_id", sessionID),
 			slog.String("role", role),
-			slog.String("event_id", mark.EventID),
+			slog.String("event_id", eventID),
 			slog.String("error", err.Error()))
 	}
 	m.logger.Info("listener session relay copied a role message to the role's kept lane: another session holds the role, or none does",
 		slog.String("session_id", sessionID),
 		slog.String("role", role),
 		slog.String("holder", holder),
-		slog.String("event_id", mark.EventID),
+		slog.String("event_id", eventID),
 		slog.Uint64("stream_seq", msg.StreamSeq))
 	go runKeptRoleDrain(m.cfg, role)
 	return true

@@ -162,8 +162,8 @@ func (rig *delivererRig) storeDispatchMessage(t *testing.T, sessionID, role stri
 }
 
 // storeRaw stores data on sessionID's own subject as it is, and returns its stream sequence: a row
-// stores a role message no envelope of the listener's would marshal to this way
-// (roleFrameTheWireRulesRefuse, roleFrameNoEnvelopeReads).
+// stores this way a message no envelope of the listener's would marshal to
+// (roleFramesTheStrictReadsMiss, framesNoReadCanTellTheRoleOf).
 func (rig *delivererRig) storeRaw(t *testing.T, sessionID string, data []byte) uint64 {
 	t.Helper()
 	ack, err := rig.harness.client.JS().Publish(contracts.LegacyAgentSubject(sessionID), data)
@@ -243,10 +243,12 @@ func (rig *delivererRig) relayLines(t *testing.T, sessionID, eventID string) []m
 }
 
 // heardFrames is every event a session stand-in received, in the order it received them, drained
-// from the stand-in as they arrive so a row reads what the session received at any point.
+// from the stand-in as they arrive so a row reads what the session received at any point, and the
+// mark of each (markOf), which finds a frame whose event id is no string.
 type heardFrames struct {
 	mu     sync.Mutex
 	events []string
+	marks  []string
 }
 
 func hear(t *testing.T, standIn *sessionStandIn) *heardFrames {
@@ -260,6 +262,7 @@ func hear(t *testing.T, standIn *sessionStandIn) *heardFrames {
 			case frame := <-standIn.frames:
 				heard.mu.Lock()
 				heard.events = append(heard.events, frame.item.EventID)
+				heard.marks = append(heard.marks, frame.item.PayloadSummary)
 				heard.mu.Unlock()
 			case <-done:
 				return
@@ -269,42 +272,31 @@ func hear(t *testing.T, standIn *sessionStandIn) *heardFrames {
 	return heard
 }
 
-// hearEveryFrame is a session's process that reads each relay frame's event id alone, as a reader
-// that applies no rule of the envelope's would, and answers it received and done, as a session
-// that wrote it does; it answers the connection probe (bus.ConnectionProbeHeader) done, as the
-// plugins do. It records a frame no envelope decodes too, which a session stand-in
-// (startSessionStandIn) refuses, so a row reads every frame the session received.
-func hearEveryFrame(t *testing.T, url, sessionID string) *heardFrames {
-	t.Helper()
-	conn := testnats.Connect(t, url)
-	heard := &heardFrames{}
-	if _, err := conn.Subscribe(bus.DeliverSubject(sessionID), func(msg *natsgo.Msg) {
-		replies := []string{relayReplyReceived, relayReplyDone}
-		if msg.Header.Get(bus.ConnectionProbeHeader) == "1" {
-			replies = []string{relayReplyDone}
-		} else {
-			var frame struct {
-				EventID string `json:"event_id"`
-			}
-			if err := json.Unmarshal(msg.Data, &frame); err != nil {
-				t.Errorf("read the event id of a frame for %s: %v", sessionID, err)
-			}
-			heard.mu.Lock()
-			heard.events = append(heard.events, frame.EventID)
-			heard.mu.Unlock()
-		}
-		for _, reply := range replies {
-			if err := conn.Publish(msg.Reply, []byte(reply)); err != nil {
-				t.Errorf("reply %s to a frame for %s: %v", reply, sessionID, err)
+// countMark is how many frames whose mark is mark the session received.
+func (h *heardFrames) countMark(mark string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(slices.DeleteFunc(slices.Clone(h.marks), func(heard string) bool { return heard != mark }))
+}
+
+// allMarks is the mark of every frame the session received.
+func (h *heardFrames) allMarks() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.marks)
+}
+
+// awaitMarks waits up to within for the session to have received a frame of each of frames, by
+// its mark, and reports whether it did.
+func (h *heardFrames) awaitMarks(within time.Duration, frames ...markedFrame) bool {
+	return testwait.Holds(within, 20*time.Millisecond, func() bool {
+		for _, frame := range frames {
+			if h.countMark(frame.mark) == 0 {
+				return false
 			}
 		}
-	}); err != nil {
-		t.Fatalf("subscribe %s's process to its relay subject: %v", sessionID, err)
-	}
-	if err := conn.Flush(); err != nil {
-		t.Fatalf("flush %s's subscription: %v", sessionID, err)
-	}
-	return heard
+		return true
+	})
 }
 
 // count is how many frames of eventID the session received.
@@ -384,32 +376,72 @@ func aSessionMessageIsDeliveredWithNoClaimRead(t *testing.T, rig *delivererRig, 
 	})
 }
 
-// relayUndecodableLine is the session relay's line for a role message it ended because JSON does
-// not read its envelope while another session holds the role, or none does, and
-// relayUndecodableSeries is that count's series in the harness's registry
+// relayCopyLine is the session relay's line for a role message it copied to the role's kept lane
+// rather than sent; relayUnreadableLine is its line for a message it ended because no read can
+// tell its role, and relayUndecodableSeries is that count's series in the harness's registry
 // (envoy_role_kept_undecodable_total{path="relay"} in main.go).
 const (
-	relayUndecodableLine   = "listener session relay ended a role message that cannot be decoded: another session holds the role, or none does"
+	relayCopyLine          = "listener session relay copied a role message to the role's kept lane: another session holds the role, or none does"
+	relayUnreadableLine    = "listener session relay ended a message whose role cannot be read"
 	relayUndecodableSeries = `test_role_kept_undecodable{path="relay"}`
 )
+
+// storeEach stores each of frames on sessionID's own subject, in order, as its bytes, and
+// returns each one's stream sequence.
+func (rig *delivererRig) storeEach(t *testing.T, sessionID string, frames []markedFrame) []uint64 {
+	t.Helper()
+	seqs := make([]uint64, len(frames))
+	for i, frame := range frames {
+		seqs[i] = rig.storeRaw(t, sessionID, frame.data)
+	}
+	return seqs
+}
+
+// requireOneCopyLine fails the test unless the listener logged exactly one relay copy line for
+// the message stored at seq on session's own subject, naming role and holder.
+func requireOneCopyLine(t *testing.T, rig *delivererRig, session, role, holder string, seq uint64) {
+	t.Helper()
+	lines := linesIn(rig.harness.logs.String(), relayCopyLine, map[string]any{"session_id": session, "stream_seq": float64(seq)})
+	if len(lines) != 1 {
+		t.Errorf("the listener logged %d copy lines for session %s's message at %d, want exactly one: %v", len(lines), session, seq, lines)
+		return
+	}
+	if lines[0]["role"] != role || lines[0]["holder"] != holder {
+		t.Errorf("the copy line for session %s's message at %d names role %v and holder %v, want %s and %q: %v", session, seq, lines[0]["role"], lines[0]["holder"], role, holder, lines[0])
+	}
+}
+
+// requireNoRelayEnd fails the test when the relay ended any message: no line, and no series.
+func requireNoRelayEnd(t *testing.T, rig *delivererRig) {
+	t.Helper()
+	if lines := linesIn(rig.harness.logs.String(), relayUnreadableLine, nil); len(lines) != 0 {
+		t.Errorf("the listener logged %q, want no such line: %v", relayUnreadableLine, lines)
+	}
+	if body := metricsBody(t, rig.harness); counterValue(t, body, relayUndecodableSeries) != -1 {
+		t.Errorf("%s has a series, want none:\n%s", relayUndecodableSeries, body)
+	}
+}
 
 // The listener delivers a role message to a session only while the role's claim names that
 // session. A role message that reaches a session's relay while another session holds the role, or
 // none does, is copied to the role's kept lane and acknowledged, and the session receives none
 // of it; a holder that continues while it holds its role receives its role messages; and a claim
 // read or a copy that does not answer leaves the message neither delivered nor acknowledged,
-// until it answers. A role message whose envelope the listener's wire rules refuse is copied all
-// the same, and reaches the holder; one whose envelope JSON does not read reaches no session: the
-// relay acknowledges it, logs it once and counts it. A message to the session that is no role
-// message is delivered as before, and costs no claim read.
+// until it answers. The relay tells a role message by its topic and its role mark alone, each by
+// its exact key, so a role message that a read of its whole envelope refuses or misreads is still
+// one, and it reaches the holder; a message whose role no read can tell reaches no session: the
+// relay acknowledges it with no claim read, logs it once and counts it. A message to the session
+// that is no role message is delivered as before, and costs no claim read.
 //
 // Each row is a listener of its own over an account of its own. A session is a stand-in of its
 // process (startSessionStandIn) registered in consumer mode through the listener's own route, and
 // a crash is its connection closing. The role messages of a row are two publishes to the role
 // through the publish route, which the route stores on the holder's own subject, and one message
 // as Dispatch's API sends a holder for a route to the role, whose role mark names the role. Rows 5a
-// to 5c store one role message on the session's own subject as bytes (storeRaw): one the wire
-// rules refuse (roleFrameTheWireRulesRefuse), or one JSON does not read (roleFrameNoEnvelopeReads).
+// to 5d store messages on a session's own subject as bytes (storeEach): role messages a strict read
+// misses (roleFramesTheStrictReadsMiss), and messages whose role no read can tell
+// (framesNoReadCanTellTheRoleOf). Their sessions are processes that read each frame as bytes
+// (hearMarks), so a frame that reached one is counted however little of it an envelope takes.
 func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 	t.Run("1 after a takeover the previous holder registers again and receives none of the role's messages, each reaches the new holder, one relay line per message", func(t *testing.T) {
 		rig := newDelivererRig(t)
@@ -627,132 +659,167 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 		requireNoneHeard(t, heardPrevious, "the previous holder "+previous, late.EventID)
 	})
 
-	t.Run("5a a role message JSON reads and the wire rules refuse, while another session holds the role, reaches the holder from the role's kept lane and not the session", func(t *testing.T) {
+	t.Run("5a role messages a strict read refuses or misreads, while another session holds the role, each reach the holder once from the role's kept lane and not the session", func(t *testing.T) {
 		rig := newDelivererRig(t)
 		const (
 			sessionID = "ses_deliverer_fivea_session"
 			holder    = "ses_deliverer_fivea_holder"
 			role      = "deliverer-fivea"
 		)
-		standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
-		heard := hear(t, standIn)
+		heard := hearMarks(t, rig.url, sessionID)
 		rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-		holderStandIn := startSessionStandIn(t, rig.url, holder, answerDone)
-		heardHolder := hear(t, holderStandIn)
+		heardHolder := hearMarks(t, rig.url, holder)
 		rig.subscribe(t, consumerRegistration(holder, "epoch-1"))
 		rig.claim(t, holder, role, "")
 
-		eventID, data := roleFrameTheWireRulesRefuse(t, role)
-		seq := rig.storeRaw(t, sessionID, data)
-		if !heardHolder.await(30*time.Second, eventID) {
-			t.Errorf("the holder %s did not receive event %s from role %s's kept lane within 30s: it received %v", holder, eventID, role, heardHolder.all())
+		frames := roleFramesTheStrictReadsMiss(t, role)
+		seqs := rig.storeEach(t, sessionID, frames)
+		if !rig.awaitAckedThrough(sessionID, seqs[len(seqs)-1], 30*time.Second) {
+			t.Errorf("the consumer of %s did not acknowledge the role messages through sequence %d within 30s of their store", sessionID, seqs[len(seqs)-1])
 		}
-		if !rig.awaitAckedThrough(sessionID, seq, 15*time.Second) {
-			t.Errorf("the consumer of %s did not acknowledge the role message at sequence %d within 15s of its store", sessionID, seq)
+		// Each copy the walk forwards is stored on the holder's own subject, and the holder's
+		// relay reads the role's claim before it sends that frame. The holder has received
+		// every copy before row 4 counts claim reads, so none of those reads falls in its count.
+		if !heardHolder.awaitMarks(30*time.Second, frames...) {
+			t.Errorf("the holder %s did not receive every role message from role %s's kept lane within 30s: it received %v", holder, role, heardHolder.allMarks())
 		}
-		// The message to the session came after the role message in stream order, so the relay
-		// had judged the role message when the session received it.
+		// The message to the session came after the role messages in stream order, so the relay
+		// had judged each of them when the session received it.
 		aSessionMessageIsDeliveredWithNoClaimRead(t, rig, sessionID, heard)
-		requireNoneHeard(t, heard, "the session "+sessionID+", which does not hold role "+role, eventID)
-		// The holder answers each frame done at once, so its consumer sends a frame again only
-		// after its ack wait (bus.SessionConsumerAckWait, 60s) passes with no acknowledgement:
-		// a second frame here is a second copy forwarded, which the copy's message id rules out.
-		if n := heardHolder.count(eventID); n != 1 {
-			t.Errorf("the holder %s received event %s %d times, want once: it received %v", holder, eventID, n, heardHolder.all())
+		for i, frame := range frames {
+			t.Run("case: "+frame.shape, func(t *testing.T) {
+				if n := heard.countMark(frame.mark); n != 0 {
+					t.Errorf("the session %s, which does not hold role %s, received %q %d times, want none: it received %v", sessionID, role, frame.mark, n, heard.allMarks())
+				}
+				// The holder answers each frame done at once, so its consumer sends a frame again
+				// only after its ack wait (bus.SessionConsumerAckWait, 60s) passes with no
+				// acknowledgement: a second frame here is a second copy forwarded, which the
+				// copy's message id rules out.
+				if n := heardHolder.countMark(frame.mark); n != 1 {
+					t.Errorf("the holder %s received %q %d times, want once: it received %v", holder, frame.mark, n, heardHolder.allMarks())
+				}
+				if marked, _ := keptMarks(t, rig.harness.client, role, frame.mark); marked != 1 {
+					t.Errorf("role %s's kept lane holds %d copies of %q, want exactly one", role, marked, frame.mark)
+				}
+				requireOneCopyLine(t, rig, sessionID, role, holder, seqs[i])
+			})
 		}
-		if copies := rig.keptCopies(t, role, eventID); copies != 1 {
-			t.Errorf("role %s's kept lane holds %d copies of event %s, want exactly one", role, copies, eventID)
-		}
-		requireOneRelayLineEach(t, rig, sessionID, role, holder, eventID)
-		if lines := linesIn(rig.harness.logs.String(), relayUndecodableLine, nil); len(lines) != 0 {
-			t.Errorf("the listener logged %q for a role message JSON reads, want no such line: %v", relayUndecodableLine, lines)
-		}
-		if body := metricsBody(t, rig.harness); counterValue(t, body, relayUndecodableSeries) != -1 {
-			t.Errorf("%s has a series for a role message JSON reads, want none:\n%s", relayUndecodableSeries, body)
-		}
+		requireNoRelayEnd(t, rig)
 	})
 
-	t.Run("5b a role message the wire rules refuse, while the session holds the role, is delivered to it as before", func(t *testing.T) {
+	t.Run("5b role messages a strict read refuses or misreads, while the session holds the role, are delivered to it as before", func(t *testing.T) {
 		rig := newDelivererRig(t)
 		const (
 			holder = "ses_deliverer_fiveb_holder"
 			role   = "deliverer-fiveb"
 		)
-		standIn := startSessionStandIn(t, rig.url, holder, answerDone)
-		heard := hear(t, standIn)
+		heard := hearMarks(t, rig.url, holder)
 		rig.subscribe(t, consumerRegistration(holder, "epoch-1"))
 		rig.claim(t, holder, role, "")
 
-		eventID, data := roleFrameTheWireRulesRefuse(t, role)
-		seq := rig.storeRaw(t, holder, data)
-		if !heard.await(15*time.Second, eventID) {
-			t.Errorf("the holder %s did not receive its role message %s within 15s: it received %v", holder, eventID, heard.all())
+		frames := roleFramesTheStrictReadsMiss(t, role)
+		seqs := rig.storeEach(t, holder, frames)
+		if !heard.awaitMarks(15*time.Second, frames...) {
+			t.Errorf("the holder %s did not receive each of its role messages within 15s: it received %v", holder, heard.allMarks())
 		}
-		if !rig.awaitAckedThrough(holder, seq, 15*time.Second) {
-			t.Errorf("the consumer of %s did not acknowledge the role message at sequence %d within 15s of its delivery", holder, seq)
+		if !rig.awaitAckedThrough(holder, seqs[len(seqs)-1], 15*time.Second) {
+			t.Errorf("the consumer of %s did not acknowledge the role messages through sequence %d within 15s of their delivery", holder, seqs[len(seqs)-1])
 		}
-		if lines := linesIn(rig.harness.logs.String(), relayUndecodableLine, nil); len(lines) != 0 {
-			t.Errorf("the listener logged %q for a role message its session holds, want no such line: %v", relayUndecodableLine, lines)
+		if _, held := keptMarks(t, rig.harness.client, role, ""); held != 0 {
+			t.Errorf("role %s's kept lane holds %d messages, want none: the claim names the session", role, held)
 		}
-		if body := metricsBody(t, rig.harness); counterValue(t, body, relayUndecodableSeries) != -1 {
-			t.Errorf("%s has a series for a role message its session holds, want none:\n%s", relayUndecodableSeries, body)
-		}
+		requireNoRelayEnd(t, rig)
 	})
 
-	t.Run("5c a role message JSON does not read, while another session holds the role, reaches no session: the relay acknowledges it, logs it once and counts it", func(t *testing.T) {
+	t.Run("5c messages whose role no read can tell reach no session: the relay acknowledges each with no claim read, logs it once and counts it", func(t *testing.T) {
 		rig := newDelivererRig(t)
 		const (
 			sessionID = "ses_deliverer_fivec_session"
 			holder    = "ses_deliverer_fivec_holder"
 			role      = "deliverer-fivec"
 		)
-		// Each process reads a frame's event id alone, so a frame no envelope decodes that
-		// reached it is counted too (hearEveryFrame).
-		heard := hearEveryFrame(t, rig.url, sessionID)
+		heard := hearMarks(t, rig.url, sessionID)
 		rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-		heardHolder := hearEveryFrame(t, rig.url, holder)
+		heardHolder := hearMarks(t, rig.url, holder)
 		rig.subscribe(t, consumerRegistration(holder, "epoch-1"))
 		rig.claim(t, holder, role, "")
 
-		eventID, data := roleFrameNoEnvelopeReads(t, role)
-		seq := rig.storeRaw(t, sessionID, data)
-		if !rig.awaitAckedThrough(sessionID, seq, 15*time.Second) {
-			t.Errorf("the consumer of %s did not acknowledge the role message at sequence %d within 15s of its store", sessionID, seq)
+		frames := framesNoReadCanTellTheRoleOf(t)
+		before := rig.claimReads.Load()
+		seqs := rig.storeEach(t, sessionID, frames)
+		if !rig.awaitAckedThrough(sessionID, seqs[len(seqs)-1], 15*time.Second) {
+			t.Errorf("the consumer of %s did not acknowledge the messages through sequence %d within 15s of their store", sessionID, seqs[len(seqs)-1])
 		}
-		// The message to the session came after the role message in stream order, so the relay
-		// had judged the role message when the session received it.
+		if reads := rig.claimReads.Load() - before; reads != 0 {
+			t.Errorf("the session relay read a role claim %d times for messages whose role no read can tell, want none", reads)
+		}
+		// The message to the session came after the others in stream order, so the relay had
+		// judged each of them when the session received it.
 		aSessionMessageIsDeliveredWithNoClaimRead(t, rig, sessionID, heard)
-		requireNoneHeard(t, heard, "the session "+sessionID+", which does not hold role "+role, eventID)
-		requireNoneHeard(t, heardHolder, "the holder "+holder, eventID)
-		if copies := rig.keptCopies(t, role, eventID); copies != 0 {
-			t.Errorf("role %s's kept lane holds %d copies of event %s, whose envelope JSON does not read, want none", role, copies, eventID)
+		if _, held := keptMarks(t, rig.harness.client, role, ""); held != 0 {
+			t.Errorf("role %s's kept lane holds %d messages, want none", role, held)
 		}
 
-		// The count and the line are exact. The relay ends the message after one claim read,
-		// bounded at 2s (roleHolderReadTimeout), and acknowledges it at once; the row reads both
-		// only after the server holds that acknowledgement, which the wait above bounds at 15s.
-		// A second delivery needs the session consumer's ack wait (bus.SessionConsumerAckWait,
-		// 60s) to pass with no acknowledgement, and this path sends no nak, so no repeat reaches
-		// either.
-		body := ""
-		if !testwait.Holds(5*time.Second, 20*time.Millisecond, func() bool {
-			body = metricsBody(t, rig.harness)
-			return counterValue(t, body, relayUndecodableSeries) == 1
-		}) {
-			t.Errorf("%s = %d, want 1:\n%s", relayUndecodableSeries, counterValue(t, body, relayUndecodableSeries), body)
+		// The count and the lines are exact. The relay ends each message with no claim read and
+		// acknowledges it at once; the row reads both only after the server holds those
+		// acknowledgements, which the wait above bounds at 15s. A second delivery needs the
+		// session consumer's ack wait (bus.SessionConsumerAckWait, 60s) to pass with no
+		// acknowledgement, and this path sends no nak, so no repeat reaches either.
+		body := metricsBody(t, rig.harness)
+		if got := counterValue(t, body, relayUndecodableSeries); got != int64(len(frames)) {
+			t.Errorf("%s = %d, want %d:\n%s", relayUndecodableSeries, got, len(frames), body)
 		}
-		lines := linesIn(rig.harness.logs.String(), relayUndecodableLine, map[string]any{"session_id": sessionID})
-		if len(lines) != 1 {
-			t.Fatalf("the listener logged %d lines %q for session %s, want exactly one: %v", len(lines), relayUndecodableLine, sessionID, lines)
+		for i, frame := range frames {
+			t.Run("case: "+frame.shape, func(t *testing.T) {
+				if n := heard.countMark(frame.mark); n != 0 {
+					t.Errorf("the session %s received %q %d times, want none: it received %v", sessionID, frame.mark, n, heard.allMarks())
+				}
+				if n := heardHolder.countMark(frame.mark); n != 0 {
+					t.Errorf("the holder %s received %q %d times, want none: it received %v", holder, frame.mark, n, heardHolder.allMarks())
+				}
+				lines := linesIn(rig.harness.logs.String(), relayUnreadableLine, map[string]any{"session_id": sessionID, "stream_seq": float64(seqs[i])})
+				if len(lines) != 1 {
+					t.Fatalf("the listener logged %d lines %q for session %s's message at %d, want exactly one: %v", len(lines), relayUnreadableLine, sessionID, seqs[i], lines)
+				}
+				if reason, _ := lines[0]["error"].(string); !strings.Contains(reason, "role cannot be read") {
+					t.Errorf("the line's error is %q, want it to say the message's role cannot be read: %v", reason, lines[0])
+				}
+			})
 		}
-		line := lines[0]
-		if line["role"] != role || line["holder"] != holder || line["event_id"] != eventID || line["stream_seq"] != float64(seq) {
-			t.Errorf("the line names role %v, holder %v, event %v and stream sequence %v, want %s, %s, %s and %d: %v",
-				line["role"], line["holder"], line["event_id"], line["stream_seq"], role, holder, eventID, seq, line)
+	})
+
+	t.Run("5d role messages of a role no session holds reach no session: the relay copies each to the role's kept lane", func(t *testing.T) {
+		rig := newDelivererRig(t)
+		const (
+			sessionID = "ses_deliverer_fived_session"
+			role      = "deliverer-fived"
+		)
+		heard := hearMarks(t, rig.url, sessionID)
+		rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+
+		valid := listenerTestEnvelope(contracts.RoleTopicPrefix+role, roleForwardDedupePrefix+"no-holder-"+id.New())
+		valid.PayloadSummary = "a role message the listener's rules take " + id.New()
+		frames := []markedFrame{
+			{shape: "a role message the listener's rules take", mark: valid.PayloadSummary, data: marshalListenerEnvelope(t, valid)},
+			roleFramesTheStrictReadsMiss(t, role)[0],
 		}
-		if reason, _ := line["error"].(string); !strings.Contains(reason, "issued_at") {
-			t.Errorf("the line's error is %q, want the decode error naming issued_at: %v", reason, line)
+		seqs := rig.storeEach(t, sessionID, frames)
+		if !rig.awaitAckedThrough(sessionID, seqs[len(seqs)-1], 15*time.Second) {
+			t.Errorf("the consumer of %s did not acknowledge the role messages through sequence %d within 15s of their store", sessionID, seqs[len(seqs)-1])
 		}
+		aSessionMessageIsDeliveredWithNoClaimRead(t, rig, sessionID, heard)
+		for i, frame := range frames {
+			t.Run("case: "+frame.shape, func(t *testing.T) {
+				if n := heard.countMark(frame.mark); n != 0 {
+					t.Errorf("the session %s, while no session holds role %s, received %q %d times, want none: it received %v", sessionID, role, frame.mark, n, heard.allMarks())
+				}
+				if marked, _ := keptMarks(t, rig.harness.client, role, frame.mark); marked != 1 {
+					t.Errorf("role %s's kept lane holds %d copies of %q, want exactly one", role, marked, frame.mark)
+				}
+				requireOneCopyLine(t, rig, sessionID, role, "", seqs[i])
+			})
+		}
+		requireNoRelayEnd(t, rig)
 	})
 }
 

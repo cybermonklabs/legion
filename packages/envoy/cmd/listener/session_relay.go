@@ -176,9 +176,9 @@ const (
 //
 // The relay judges no frame by the listener's caches, with one exception: a frame that is a role
 // message is read against the role's claim, and one whose role another session holds, or none
-// does, is copied to the role's kept lane, or ended when JSON does not read its envelope, and
-// acknowledged rather than delivered (takeOverFrame). Every other frame it pulls is published
-// whatever the caches hold.
+// does, is copied to the role's kept lane and acknowledged rather than delivered (takeOverFrame).
+// A frame whose role no read can tell (readRoleFrame) is acknowledged and delivered to nobody.
+// Every other frame it pulls is published whatever the caches hold.
 //
 // One loop goroutine owns the set of relays (relays) and applies the events it is sent in order;
 // each relay runs on a goroutine of its own.
@@ -1229,16 +1229,4 @@ func decodeStoredEnvelope(data []byte, item *contracts.Envelope) error {
 		return err
 	}
 	return item.Validate()
-}
-
-// decodeRoleEnvelope decodes a stored role message into item by JSON alone. It is the one read of
-// a role message's envelope that the session relay (sessionRelays.takeOverFrame), a takeover pass
-// (takenRoleMessage) and the kept lane's walk (judgeKeptRoleCopy) share, so the three end the same
-// messages and copy or forward the same others. It applies neither the wire rules nor the
-// envelope's own (decodeStoredEnvelope): a message one of those refuses - an empty urgency, or an
-// urgency or a source that a newer build adds - is still the role holder's, and reaches that holder
-// with its own reader to judge it, as Dispatch's outbox also reads a kept copy by JSON alone. A
-// message this does not decode is one no path can copy or forward, and each path ends it.
-func decodeRoleEnvelope(data []byte, item *contracts.Envelope) error {
-	return json.Unmarshal(data, item)
 }

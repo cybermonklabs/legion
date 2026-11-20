@@ -503,8 +503,10 @@ func (rig *copiesRig) holdRoleLaneForward(t *testing.T, eventID string) copiesHe
 // not copied and the dead letter that is not sent - pass there and with the change. Row 5 as the
 // verification writes it holds only controls; its case is the role message stored inside the
 // hour before the same takeover, which reaches B, so the row shows the pass ran. Row 8 stores on
-// the holder's subject a role message the listener's wire rules refuse and one JSON does not read
-// as an envelope: the pass copies the first, which reaches B, and not the second.
+// the holder's subject role messages that a read of the whole envelope refuses or misreads
+// (roleFramesTheStrictReadsMiss) and messages whose role no read can tell
+// (framesNoReadCanTellTheRoleOf): the pass copies each of the first, which reaches B once, and
+// none of the second.
 func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing.T) {
 	t.Run("1 an outright claim by a different session after the holder crashed inside its live window", func(t *testing.T) {
 		copiesUnreadRoleMessagesRow(t, false)
@@ -789,35 +791,57 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 		})
 	})
 
-	t.Run("8 a role message JSON reads and the wire rules refuse, and one JSON does not read, both unread by the holder", func(t *testing.T) {
+	t.Run("8 role messages a strict read refuses or misreads, and messages whose role no read can tell, all unread by the holder", func(t *testing.T) {
 		rig := newCopiesRig(t)
 		setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{relayCopy: copiesRelayCopyHeld(copiesRole)})
 		holder := rig.startHolder(t, copiesHolder)
 		rig.claim(t, copiesHolder, copiesRole, false)
 		rig.crash(t, copiesHolder, holder)
 		// Stored once the holder's process stopped, as messages it never read: no process takes
-		// them, and its consumer holds both unacknowledged when the takeover's pass reads it.
-		refused, refusedData := roleFrameTheWireRulesRefuse(t, copiesRole)
-		unreadable, unreadableData := roleFrameNoEnvelopeReads(t, copiesRole)
-		for _, data := range [][]byte{refusedData, unreadableData} {
-			if _, err := rig.harness.client.JS().Publish(contracts.LegacyAgentSubject(copiesHolder), data); err != nil {
-				t.Fatalf("store a role message on %s's own subject: %v", copiesHolder, err)
+		// them, and its consumer holds each unacknowledged when the takeover's pass reads it.
+		readable := roleFramesTheStrictReadsMiss(t, copiesRole)
+		unreadable := framesNoReadCanTellTheRoleOf(t)
+		for _, frames := range [][]markedFrame{readable, unreadable} {
+			for _, frame := range frames {
+				if _, err := rig.harness.client.JS().Publish(contracts.LegacyAgentSubject(copiesHolder), frame.data); err != nil {
+					t.Fatalf("store %s on %s's own subject: %v", frame.shape, copiesHolder, err)
+				}
 			}
 		}
 
-		taker := rig.startTaker(t, copiesTaker)
+		// The new holder's process reads each frame as bytes (hearMarks), so a frame that
+		// reached it is counted however little of it an envelope takes.
+		taker := hearMarks(t, rig.url, copiesTaker)
+		rig.register(t, copiesTaker, nil)
 		rig.claim(t, copiesTaker, copiesRole, false)
-		received := rig.watch(t, taker, copiesRole, refused)
+		if !taker.awaitMarks(copiesWatchBound, readable...) {
+			t.Errorf("%s did not receive every role message within %s of its claim: it received %v", copiesTaker, copiesWatchBound, taker.allMarks())
+		}
+		rig.awaitHandoverIdle(t, copiesRole)
+		// The watch outlasts the handover by copiesSettle, so a frame it sent after the ones the
+		// row waits for is counted too.
+		time.Sleep(copiesSettle)
 
-		t.Run("case: the role message the wire rules refuse reaches the new holder", func(t *testing.T) {
-			copiesRequireEach(t, received, copiesTaker, refused)
-		})
-		t.Run("control: the role message JSON does not read is not copied, and the new holder does not receive it", func(t *testing.T) {
-			copiesRequireNone(t, received, copiesTaker, unreadable)
-			if copies := rig.keptCopiesOf(t, copiesRole, unreadable); copies != 0 {
-				t.Errorf("role %s's kept lane holds %d copies of %s, whose envelope JSON does not read; want none", copiesRole, copies, unreadable)
-			}
-		})
+		for _, frame := range readable {
+			t.Run("case: "+frame.shape+" reaches the new holder once", func(t *testing.T) {
+				if n := taker.countMark(frame.mark); n != 1 {
+					t.Errorf("%s received %q %d times; want once: it received %v", copiesTaker, frame.mark, n, taker.allMarks())
+				}
+				if marked, _ := keptMarks(t, rig.harness.client, copiesRole, frame.mark); marked != 1 {
+					t.Errorf("role %s's kept lane holds %d copies of %q; want exactly one", copiesRole, marked, frame.mark)
+				}
+			})
+		}
+		for _, frame := range unreadable {
+			t.Run("control: "+frame.shape+" is not copied, and the new holder does not receive it", func(t *testing.T) {
+				if n := taker.countMark(frame.mark); n != 0 {
+					t.Errorf("%s received %q %d times; want none", copiesTaker, frame.mark, n)
+				}
+				if marked, _ := keptMarks(t, rig.harness.client, copiesRole, frame.mark); marked != 0 {
+					t.Errorf("role %s's kept lane holds %d copies of %q; want none", copiesRole, marked, frame.mark)
+				}
+			})
+		}
 	})
 }
 
