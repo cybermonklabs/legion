@@ -4,12 +4,16 @@
 // exits too, rather than living on with its socket bound for a session nobody runs.
 import { afterEach, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { natsConnectionOptions } from "@legion/envoy-client/nats-connection"
 import type { Subprocess } from "bun"
 import { resolveModSocketPath } from "../hooks/mod-protocol"
 
+const require = createRequire(import.meta.url)
+const NATS_PROTOCOL = require.resolve("nats/lib/nats-base-client/protocol.js")
 /** Each session's home, which is also its `XDG_RUNTIME_DIR`; `mkdtemp` adds six characters. */
 const HOME_PREFIX = "claude-envoy-fatal-"
 
@@ -155,7 +159,76 @@ function muteHub(): { url: string; connections(): number; firstConnection(): num
   }
 }
 
+/** The timer nats.js's protocol arms for a dial this test's server starts. `natsConnectionOptions`
+ * leaves `timeout` unset, so the installed protocol's `this.options.timeout || <number>` takes
+ * it. Read that number from that very source, never from every timer that happens to have a large
+ * delay. */
+async function natsDialTimeoutMs(): Promise<number> {
+  const options = natsConnectionOptions({
+    servers: [],
+    name: "channel-fatal-exit-timer-record",
+    credential: { kind: "none" },
+  })
+  if (options.timeout !== undefined) return options.timeout
+  const source = await readFile(NATS_PROTOCOL, "utf8")
+  const defaultTimeout = /this\.options\.timeout \|\| (\d+)/.exec(source)?.[1]
+  if (defaultTimeout === undefined)
+    throw new Error(`could not read nats's dial timeout in ${NATS_PROTOCOL}`)
+  return Number(defaultTimeout)
+}
+
+/** A preloaded child module records the nats dial timer this test's server arms: only a timer with
+ * the exact timeout the server's connection options select, called by nats's protocol source. On
+ * exit it writes `armed and not fired`, `fired`, or `none armed`. */
+async function dialTimerPreload(
+  home: string,
+): Promise<{ readonly preload: string; readonly record: string }> {
+  const directory = join(home, "dial-timer")
+  const preload = join(directory, "preload.js")
+  const record = join(directory, "record")
+  await mkdir(directory)
+  await writeFile(
+    preload,
+    [
+      'import { writeFileSync } from "node:fs"',
+      `const timeout = ${await natsDialTimeoutMs()}`,
+      `const protocol = ${JSON.stringify(NATS_PROTOCOL)}`,
+      `const record = ${JSON.stringify(record)}`,
+      "const set = globalThis.setTimeout",
+      "const clear = globalThis.clearTimeout",
+      "let timer",
+      "let fired = false",
+      "globalThis.setTimeout = (callback, delay, ...args) => {",
+      '  const dial = Number(delay) === timeout && (new Error().stack ?? "").includes(protocol)',
+      "  let handle",
+      "  handle = set((...callbackArgs) => {",
+      "    if (dial && handle === timer) fired = true",
+      "    return callback(...callbackArgs)",
+      "  }, delay, ...args)",
+      "  if (dial) timer = handle",
+      "  return handle",
+      "}",
+      "globalThis.clearTimeout = (handle) => {",
+      "  if (handle === timer && !fired) timer = undefined",
+      "  return clear(handle)",
+      "}",
+      'process.on("exit", () => {',
+      '  writeFileSync(record, timer === undefined ? "none armed\\n" : fired ? "fired\\n" : "armed and not fired\\n")',
+      "})",
+      "",
+    ].join("\n"),
+  )
+  return { preload, record }
+}
+
+/** What the preloaded child recorded; no record means it was not preloaded and cannot pass the
+ * row's timer observation by accident. */
+async function dialTimerStatus(started: Started): Promise<string> {
+  return (await readFile(started.dialTimerRecord, "utf8").catch(() => "none armed")).trim()
+}
+
 interface Started {
+  readonly dialTimerRecord: string
   readonly server: Subprocess<"pipe", "ignore", "pipe">
   readonly socketPath: string
   stderr(): string
@@ -164,7 +237,10 @@ interface Started {
 /** Starts the channel server from this checkout as Claude Code would, with `natsUrls` its Envoy's
  *  NATS servers (none: inbound off), its stdin held open as a live parent holds it, and sends the
  *  MCP initialize handshake. */
-async function startServer(natsUrls: readonly string[]): Promise<Started> {
+async function startServer(
+  natsUrls: readonly string[],
+  options: { readonly preloadDialTimer?: boolean } = {},
+): Promise<Started> {
   const home = await mkdtemp(join(homeRoot(), HOME_PREFIX))
   cleanups.push(() => rm(home, { recursive: true, force: true }))
   const configDirectory = join(home, "claude-config")
@@ -181,28 +257,36 @@ async function startServer(natsUrls: readonly string[]): Promise<Started> {
     }),
   )
   const sessionID = `ses_fatal_${crypto.randomUUID().replaceAll("-", "")}`
+  const dialTimer = await dialTimerPreload(home)
   // This process's own Bun, by its path: a `bun` looked up on PATH can be a version manager's
   // shim, which under this session's HOME finds no configuration and exits before the server runs.
-  const server = Bun.spawn([process.execPath, channelEntry], {
-    cwd: home,
-    env: {
-      // Bun keeps its transpiler cache under HOME, and this HOME starts empty: the server writes a
-      // cache file into it for each large module it loads, before its own code runs, and on a
-      // loaded machine its socket then came up to 7.6 s after the spawn rather than under half a
-      // second. "0" turns the cache off; the server transpiles as before and writes nothing there.
-      BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
-      PATH: process.env["PATH"] ?? "",
-      HOME: home,
-      CLAUDE_CONFIG_DIR: configDirectory,
-      CLAUDE_CODE_SESSION_ID: sessionID,
-      CLAUDE_PLUGIN_DATA: home,
-      XDG_RUNTIME_DIR: home,
-      ENVOY_HEARTBEAT_MS: "240000",
+  const server = Bun.spawn(
+    [
+      process.execPath,
+      ...(options.preloadDialTimer === false ? [] : ["--preload", dialTimer.preload]),
+      channelEntry,
+    ],
+    {
+      cwd: home,
+      env: {
+        // Bun keeps its transpiler cache under HOME, and this HOME starts empty: the server writes a
+        // cache file into it for each large module it loads, before its own code runs, and on a
+        // loaded machine its socket then came up to 7.6 s after the spawn rather than under half a
+        // second. "0" turns the cache off; the server transpiles as before and writes nothing there.
+        BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+        PATH: process.env["PATH"] ?? "",
+        HOME: home,
+        CLAUDE_CONFIG_DIR: configDirectory,
+        CLAUDE_CODE_SESSION_ID: sessionID,
+        CLAUDE_PLUGIN_DATA: home,
+        XDG_RUNTIME_DIR: home,
+        ENVOY_HEARTBEAT_MS: "240000",
+      },
+      stdin: "pipe",
+      stdout: "ignore",
+      stderr: "pipe",
     },
-    stdin: "pipe",
-    stdout: "ignore",
-    stderr: "pipe",
-  })
+  )
   cleanups.push(async () => {
     server.kill("SIGKILL")
     await server.exited
@@ -229,7 +313,7 @@ async function startServer(natsUrls: readonly string[]): Promise<Started> {
   if (socket.path === undefined)
     throw new Error(`the session names no mod socket: ${socket.refusal}`)
   const socketPath = socket.path
-  return { server, socketPath, stderr: () => stderr }
+  return { server, socketPath, dialTimerRecord: dialTimer.record, stderr: () => stderr }
 }
 
 /** The server's exit code once it exits, or undefined when it is still running after `ms`. */
@@ -238,23 +322,22 @@ async function exitWithin(server: Subprocess, ms: number): Promise<number | unde
   return Promise.race([server.exited, late])
 }
 
-/**
- * Which event ended `started`'s server by `deadline`, a time on `performance.now()`'s clock: `exit
- * <code>` when the process ended itself, with `after the start failed` when it wrote the failure
- * line the entry writes for a start that failed; `killed by <signal>` when a signal ended it, which
- * a signal it has a handler for does not; and `still running at the deadline` when neither
- * happened by then.
- */
-async function endedBy(started: Started, deadline: number): Promise<string> {
-  const late = Bun.sleep(Math.max(0, deadline - performance.now())).then(() => "late" as const)
-  if ((await Promise.race([started.server.exited, late])) === "late") {
-    return "still running at the deadline"
-  }
+/** How an ended server left: its own exit, possibly after the entry's start-failure line, or a
+ * signal death. */
+function exitEvent(started: Started): string {
   const { exitCode, signalCode } = started.server
   if (signalCode !== null) return `killed by ${signalCode}`
   return started.stderr().includes("channel server failed")
     ? `exit ${exitCode} after the start failed`
     : `exit ${exitCode}`
+}
+
+async function endedBy(started: Started, deadline: number): Promise<string> {
+  const late = Bun.sleep(Math.max(0, deadline - performance.now())).then(() => "late" as const)
+  if ((await Promise.race([started.server.exited, late])) === "late") {
+    return "still running at the deadline"
+  }
+  return exitEvent(started)
 }
 
 /**
@@ -334,6 +417,15 @@ test("a stop asked for while the dial waits on a mute hub exits 0, its socket re
   // after its failure line. And a stop that leaves the dial's wait alone ends only when nats.js's
   // dial timeout does, about 20 s after the hub saw the connection, which the deadline
   // (`DIAL_STOP_MARGIN_MS`) stays short of.
-  expect(await endedBy(started, connected + DIAL_STOP_MARGIN_MS), started.stderr()).toBe("exit 0")
+  // The 15 s horizon is a guard against a wait that cannot be the dial's own 20 s timeout. If it
+  // passes, let the known dial path settle so the timer's event, rather than the clock, decides the
+  // verdict. The row's own 30 s timeout remains the guard for a process that never ends.
+  let event = await endedBy(started, connected + DIAL_STOP_MARGIN_MS)
+  if (event === "still running at the deadline") {
+    await started.server.exited
+    event = exitEvent(started)
+  }
+  expect(event, started.stderr()).toBe("exit 0")
+  expect(await dialTimerStatus(started), started.stderr()).toBe("armed and not fired")
   expect(existsSync(started.socketPath)).toBe(false)
 }, 30_000)
