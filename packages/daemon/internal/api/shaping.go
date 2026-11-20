@@ -109,8 +109,7 @@ func (s *server) contractsFor(r *http.Request, claims []supervise.Claim) placeme
 	// no claims would pay for — each plain refusal, each grant, the catch-all's 404 and `GET
 	// /healthz` (writeAnswer). The two routes that answer from the state's own snapshot hand their
 	// claims in and are placed by their pod as before, and so are the release records and every
-	// refusal that names a pause, whose writers read the claims for it (writeAnswerFrom,
-	// placingClaims).
+	// PauseFailure, whose writers read the claims for them (writeAnswerFrom, placingClaims).
 	if len(claims) == 0 {
 		return ownBody
 	}
@@ -1707,8 +1706,8 @@ var answerWritten func(pattern string, id AnswerID)
 // It hands contractsFor no claims, which costs a caller nothing: a caller that states its own
 // contract is placed by its header alone, and the answers whose shape has moved since
 // ServingFloor are written by writeAnswerFrom. The state and the record hand in the claims of
-// the very snapshot each answers; the release records and a refusal that names a pause, whose
-// shape moved at pauseContract, hand in the claims placingClaims reads for them. Every other
+// the very snapshot each answers; the release records and every PauseFailure, whose shape moved
+// at pauseContract, hand in the claims placingClaims reads for them. Every other
 // answer is the identity at every contract this daemon serves, and so is a plain refusal (a
 // claim.Refusal or a Failure), so a read of the claims for one of them would decide nothing:
 // such an answer is written without one, and contractsFor reads no pod for it either. A

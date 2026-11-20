@@ -1312,7 +1312,7 @@ func TestContractShapesFixture(t *testing.T) {
 // there). Both are held to the same records, because a body is owed to the reader and not to the
 // way it said who it is, and the second is the population this change is about. Each caller is
 // placed as production places it (servedShapes). On the state, the record, the release records
-// and a refusal that names a pause its pod places it. On every other answer the pod decides no
+// and every PauseFailure its pod places it. On every other answer the pod decides no
 // shape (a fresh session's pod decides only what a stop means, readsTheStopAsAFailure), so the
 // pod kind is served this daemon's own body, and a serving-down there that only the header kind
 // gets is red here.

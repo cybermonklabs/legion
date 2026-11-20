@@ -16,10 +16,10 @@ import (
 // written back as at the floor (restoreContract) and keeps every strip the daemon applies below
 // the floor today (stripContract keeps its own number), so no key a strip takes from it today
 // comes back, and it is served less than a caller at the floor; the daemon logs a line for it. A
-// caller that states no contract is placed by the claims of its pod on the state and record
-// routes, on the release records and on a refusal that names a pause (placingClaims). On every
-// other answer, and on every answer when it asks from no pod, it is served this daemon's own
-// shape (contractsFor, writeAnswer).
+// caller that states no contract is placed by the claims of its pod on the state and the record,
+// on the release records and on every PauseFailure, the refusal of a pause, of a resume and of a
+// turn while the project is paused (placingClaims). On every other answer, and on every answer
+// when it asks from no pod, it is served this daemon's own shape (contractsFor, writeAnswer).
 //
 // 46 is the reading this change records: no claim holding a process recorded a contract below 46.
 // The 50 claims at contracts 36 to 43 are all suspended, so they call nothing.

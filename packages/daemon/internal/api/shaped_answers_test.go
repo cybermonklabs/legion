@@ -1016,7 +1016,7 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				}
 				refused := PauseFailure{Failure: Failure{Code: projectPaused, Error: "the project is paused"}, Setting: "runtime: tmux"}
 				if shaped, _ := shapeAnswer(AnswerRefusal, refused, ServingFloor, ServingFloor); shaped != any(refused.Failure) {
-					t.Errorf("a refusal naming a pause was shaped to %+v at the floor, want its Failure alone", shaped)
+					t.Errorf("a PauseFailure was shaped to %+v at the floor, want its Failure alone", shaped)
 				}
 			default:
 				body := map[string]string{"shape": "unmoved"}
