@@ -10,6 +10,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -246,6 +247,9 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	// too, so a close this process has not heard of yet is read here, and no close commits until
 	// this settlement's transaction ends.
 	settle.owner, settle.issueClosed = owner, !open
+	if err := lockSettlementFence(ctx, tx, room); err != nil {
+		return settle.stoppedShort(err)
+	}
 	// The owner is read under its lock in this transaction, so the repairs settlement injects
 	// below do not read it again: that read would be a second pooled connection taken while
 	// this transaction holds one, which is what deadlocks the pool.
@@ -271,6 +275,27 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	}
 	_, outcome := settle.commitVersion(ctx)
 	return outcome
+}
+
+// lockSettlementFence queues the take of the document's document_block_versions row `for no key
+// update`, the revision fence's row (R23 of this change), as the settlement's first write: right
+// after its owner lock, and ahead of every statement the settlement queues, so the write phase
+// takes the row before anything else it writes. Whether a settlement writes a version is decided
+// only in commitVersion, after reconcileAskBlocks has opened the asks of new ask blocks and
+// followed each one for a session author, which writes that session's node (asks.Follow); the
+// version's own fence - the version row's trigger (document_block_versions_owe, migration 0122)
+// and refs.BlockIndexing's own - comes after that node. The lock order written on
+// api/inbox_read.go's markInboxReadThreads has a writer under the fence take its row before any
+// node, tuple or projection row it writes, so every settlement takes it here, since any of them
+// may write a version. Those later takes of the same row in this transaction wait on nothing.
+// Every document holds the row from its first version on; a document with none has no row, and
+// the insert of its first version makes it. The take is queued rather than run, as every write of
+// the settlement is: a row lock assigns the transaction its id, which the read phase holds none
+// of.
+func lockSettlementFence(ctx context.Context, tx pgx.Tx, artifactID string) error {
+	return writeExec(ctx, tx, fmt.Sprintf("take the revision fence of document %s", artifactID), `
+		select 1 from document_block_versions where artifact_id = $1 for no key update
+	`, artifactID)
 }
 
 // take is what the settlement takes of its room before it opens a transaction: the room warmed
@@ -643,18 +668,30 @@ func (st *settlement) commitRepairs(ctx context.Context) (settleStep, settleOutc
 // events, after those the version write appended, which the settlement publishes once it commits.
 // An ask event that names thread_logins has its insert read them (settlementEventLogins), after
 // the ask writes queued before it.
-func (st *settlement) appendEvents(ctx context.Context, events []model.Event) error {
+//
+// caused holds, by an event's place in events, a write of the node and tuple store that event is
+// the cause of (graphstore.Uncaused): the version's block index, or the follow of an ask the
+// settlement opened. Its append is queued right after the event's and its stamp, naming the
+// event's id as the id sequence left it (graphstore.LatestEvent), so nothing between the two
+// appends another event. A held write is read when the step runs, in the write phase, so one an
+// earlier step fills then (createAskBlock) is read as that step left it.
+func (st *settlement) appendEvents(ctx context.Context, events []model.Event, caused map[int]*graphstore.Uncaused) error {
 	if len(events) == 0 {
 		return nil
 	}
 	sink := eventSink(ctx)
 	return write(ctx, st.tx, func(b *store.WriteBatch) error {
-		for _, planned := range events {
+		for index, planned := range events {
 			if err := st.service.events.QueueAppendWithLogins(b, planned, settlementEventLogins(planned), sink); err != nil {
 				return err
 			}
 			if sourceKind, sourceID, ok := referenceSource(planned, st.room); ok {
 				refs.QueueStamp(b, sourceKind, sourceID)
+			}
+			if stated := caused[index]; stated != nil {
+				if err := graphstore.QueueCaused(b, *stated, graphstore.LatestEvent); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -834,11 +871,20 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		if st.owner.IssueKey == nil {
 			versionEvent.ArtifactID = &room
 		}
-		if err := st.appendEvents(ctx, []model.Event{versionEvent}); err != nil {
+		// What this settlement's block index stated waits for that event: its id is the cause
+		// every node and tuple of the pass carries, and it exists only once the event's insert has
+		// run, so it is stated right after it (appendEvents).
+		if err := st.appendEvents(ctx, []model.Event{versionEvent}, map[int]*graphstore.Uncaused{0: &result.blocks}); err != nil {
 			return settleDone, st.abandon(err)
 		}
 	}
-	if err := st.appendEvents(ctx, st.reconciliation.events); err != nil {
+	// The follows of the asks this settlement opened wait for those asks' ask.opened events, each
+	// stated right after its own (followsByEvent).
+	follows, err := st.reconciliation.followsByEvent(st.reconciliation.events)
+	if err != nil {
+		return settleDone, st.abandon(err)
+	}
+	if err := st.appendEvents(ctx, st.reconciliation.events, follows); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	// The write phase: every statement this settlement decided on, in the order it made them.

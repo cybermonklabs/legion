@@ -52,8 +52,12 @@ func (g *gatedProjectMark) ProjectMark(ctx context.Context, artifactID, markID s
 // whether the close was seen.
 func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 	// The seeded spec's settlement takes the owner lock this test holds; keep it out of the queue.
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "Closed while waiting", "A spec")
+	// The issue's create starts the related-item check's term-statistics refresh, which commits
+	// search_term_stats and search_term_totals at its own time; the fingerprint is taken once it
+	// has, so it compares only what the ask wrote.
+	awaitBackgroundWrites(t, served)
 	before := databaseFingerprint(t, database)
 
 	closer, err := database.Pool.Begin(context.Background())
@@ -425,7 +429,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 	t.Run("a refused guard", func(t *testing.T) {
 		var service *docs.Service
 		var gate *firstReplaceGate
-		handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
 			service = docs.New(docs.Deps{Store: database, Settle: time.Hour})
 			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 			gate = &firstReplaceGate{
@@ -438,6 +442,9 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		release := func() { released.Do(func() { close(gate.releaseFirst) }) }
 		defer release()
 		_, artifactID, commentID := suggest(t, handler)
+		// The issue's create starts the term-statistics refresh; it has committed before the
+		// accept starts, so the fingerprint below holds none of its writes.
+		awaitBackgroundWrites(t, served)
 
 		responses := make(chan *httptest.ResponseRecorder, 1)
 		go func() {
@@ -475,7 +482,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 	// written in the transaction.
 	t.Run("a unique violation", func(t *testing.T) {
 		var service *docs.Service
-		handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
 			service = docs.New(docs.Deps{Store: database, Settle: time.Hour})
 			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 			return service
@@ -489,6 +496,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		`, issueKey); err != nil {
 			t.Fatalf("take the issue's next sequence number: %v", err)
 		}
+		awaitBackgroundWrites(t, served)
 		before := databaseFingerprint(t, database)
 
 		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
@@ -517,7 +525,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 	// other statement of the batch ran on the server, and the whole transaction goes.
 	t.Run("a comment whose event collides", func(t *testing.T) {
 		var service *docs.Service
-		handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
 			service = docs.New(docs.Deps{Store: database, Settle: time.Hour})
 			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 			return service
@@ -525,6 +533,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		handler = withDeadline(handler)
 		issue := createInteractionIssue(t, handler, "TEST", "Failed comment write phase", "foo")
 		takeNextSeq(t, database, issue.Key)
+		awaitBackgroundWrites(t, served)
 		before := databaseFingerprint(t, database)
 
 		response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
@@ -541,7 +550,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 	// A message writes without a document ledger, its insert, references, event and stamp one batch
 	// of their own (store.RunWrite): the event's collision takes the message's row with it.
 	t.Run("a message whose event collides", func(t *testing.T) {
-		handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
 			service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
 			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 			return service
@@ -549,6 +558,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		handler = withDeadline(handler)
 		issue := createInteractionIssue(t, handler, "TEST", "Failed message write phase", "foo")
 		takeNextSeq(t, database, issue.Key)
+		awaitBackgroundWrites(t, served)
 		before := databaseFingerprint(t, database)
 
 		response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{

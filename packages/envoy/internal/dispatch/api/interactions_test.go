@@ -25,13 +25,21 @@ import (
 
 func newInteractionHandler(t *testing.T, makeDocs func(*store.Store) docs.API) (http.Handler, *store.Store) {
 	t.Helper()
-	handler, database, _ := newInteractionDeps(t, makeDocs)
+	handler, database, _, _ := newInteractionServer(t, makeDocs)
 	return handler, database
 }
 
 // newInteractionDeps is newInteractionHandler, answering also the Deps it registered, for a test
 // that must run one request on a connection of its own (oneConnectionHandler).
 func newInteractionDeps(t *testing.T, makeDocs func(*store.Store) docs.API) (http.Handler, *store.Store, Deps) {
+	t.Helper()
+	handler, database, deps, _ := newInteractionServer(t, makeDocs)
+	return handler, database, deps
+}
+
+// newInteractionServer is newInteractionDeps, answering also the server it registered, for a test
+// that waits for the work that server starts in the background (awaitBackgroundWrites).
+func newInteractionServer(t *testing.T, makeDocs func(*store.Store) docs.API) (http.Handler, *store.Store, Deps, *server) {
 	t.Helper()
 	database := storetest.Open(t)
 	var docsAPI docs.API
@@ -50,8 +58,9 @@ func newInteractionDeps(t *testing.T, makeDocs func(*store.Store) docs.API) (htt
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
-	return mux, database, deps
+	served := register(mux, t.Context(), deps)
+	t.Cleanup(served.waitBackground)
+	return mux, database, deps, served
 }
 
 // replacementPrecondition is the token a replacement names: the one the document stands at now,

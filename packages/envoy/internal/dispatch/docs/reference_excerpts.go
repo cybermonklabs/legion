@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -60,15 +61,19 @@ const deferBlockIndexBlocks = 2000
 // (Ledger.Now): every writer of a version in a joined transaction dates it so, by the column's
 // default or explicitly (NextVersion), and its row may not be written yet - its insert can be
 // queued for the write phase like the index's own writes.
-func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, error) {
+//
+// Its second result is what the block index states in the node and tuple store, which the
+// caller appends under the event it goes on to queue for this version, right after that event
+// (graphstore.QueueCaused), in this same write phase.
+func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	tx, joined := txFromContext(ctx)
 	if !joined {
-		return model.ReferenceChanges{}, errUnjoined
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, errUnjoined
 	}
 	ledger := ledgerFrom(ctx)
 	versionAt, err := ledger.Now(ctx)
 	if err != nil {
-		return model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
 	rendered := ledger.writtenRendering(artifactID)
 	if rendered.tree != nil && rendered.markdown != markdown {
@@ -78,9 +83,10 @@ func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string
 	}
 	// Above deferBlockIndexBlocks the write indexes this version's references alone: migration
 	// 0122's trigger marked the document owed a block index (document_block_versions.version
-	// null) when the version's row was inserted, and nothing here settles that mark, so the
-	// block-index reconciliation (RunBlockIndexReconciliation) indexes the blocks and the
-	// mentions they hold out of the request.
+	// null) when the version's row was inserted, indexDocument adds this build's own mark
+	// (oweDocumentIndex), and nothing here settles either, so the block-index reconciliation
+	// (RunBlockIndexReconciliation) indexes the blocks and the mentions they hold out of the
+	// request.
 	if blocks := len(rendered.offsets); rendered.tree != nil && blocks > deferBlockIndexBlocks {
 		slog.Info("dispatch: a document version left its blocks to the block-index reconciliation: it holds more blocks than a write indexes in its own request",
 			"artifact", artifactID, "version", version, "blocks", blocks, "bound", deferBlockIndexBlocks)
@@ -97,9 +103,20 @@ func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string
 // or one whose blocks the write deferred (deferBlockIndexBlocks) - is indexUnrenderedVersion,
 // which indexes no blocks: migration 0122's trigger left the document owed when the version's row
 // was inserted, for the block-index reconciliation, which reads the document itself.
-func (s *Service) indexDocument(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, rendered renderedTree) (model.ReferenceChanges, error) {
+//
+// That trigger's mark is the null version, which the release before this one reads and drains
+// too, so during a roll a pod of that release can index this version first and write its rows
+// naming no node. Such a version therefore takes this build's own mark as well, in this same
+// transaction (oweDocumentIndex), which that release neither reads nor clears: this build's
+// reconciliation then indexes the version after it, names every row's node and states what each
+// projects (refs.PlanBlocks).
+func (s *Service) indexDocument(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, rendered renderedTree) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	if rendered.tree == nil {
-		return s.indexUnrenderedVersion(ctx, tx, artifactID, version, versionAt, markdown)
+		if err := queueDocumentIndexOwed(ctx, tx, artifactID); err != nil {
+			return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+		}
+		changes, err := s.indexUnrenderedVersion(ctx, tx, artifactID, version, versionAt, markdown)
+		return changes, graphstore.Uncaused{}, err
 	}
 	return s.indexRenderedVersion(ctx, tx, artifactID, version, versionAt, markdown, offsetBlocks(rendered.offsets), rendered.tree)
 }
@@ -124,19 +141,25 @@ func offsetBlocks(offsets []pmdoc.BlockOffset) []model.ArtifactBlock {
 // (replaceVersionRefs), since a node is counted once for each block citing it. The reading, the
 // index's plans and the counted targets are worked out where it is called; its writes go
 // through write, in the order the index makes them.
-func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node) (model.ReferenceChanges, error) {
+//
+// Its second result is what the pass states in the node and tuple store, which the caller
+// appends under that same event (graphstore.QueueCaused): the pass writes the block nodes
+// itself, because the foreign key on the projection rows needs them, and holds its tuples back
+// because on the request path the event does not exist yet.
+func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	located := refs.NewReader(ctx, tx, "artifact", artifactID, s.serverURL).Mentions(markdown)
 	// The blocks are indexed before the document's own references are reconciled: a first
 	// indexing dates a block's mention from the document's refs row for its target, which a
 	// surviving target already holds and a new one gets with this same time.
-	moved, indexBlocks, err := planBlockIndex(ctx, tx, artifactID, version, versionAt, markdown, blocks, located, blockPointers(artifactID, markdown, blocks, tree))
+	moved, indexBlocks, stated, err := planBlockIndex(ctx, tx, artifactID, version, versionAt, markdown, blocks, located, blockPointers(artifactID, markdown, blocks, tree))
 	if err != nil {
-		return model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
 	if err := write(ctx, tx, indexBlocks); err != nil {
-		return model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	return replaceVersionRefs(ctx, tx, artifactID, version, versionAt, located, moved, refs.MentionExcerpts(markdown, blocks, located))
+	changes, err := replaceVersionRefs(ctx, tx, artifactID, version, versionAt, located, moved, refs.MentionExcerpts(markdown, blocks, located))
+	return changes, stated, err
 }
 
 // blockPointers is each `block[]` value of the version (pmdoc.BlockPointers) as the block index
@@ -208,9 +231,11 @@ func replaceVersionRefs(ctx context.Context, tx pgx.Tx, artifactID string, versi
 
 // planBlockIndex plans version's block index of artifactID, its block pointers included
 // (refs.PlanBlocks), and returns the targets it moves, the cited blocks it changes included
-// (refs.BlockIndexing.Cited), and the step that writes it. It plans against what the index holds:
-// as the transaction's own queued indexing of the document leaves it, when there is one, else as
-// read in tx; and it records what this one leaves for a later indexing of the same document.
+// (refs.BlockIndexing.Cited), the step that writes it, and what it states in the node and tuple
+// store, held for the event the caller appends for the version (refs.BlockIndexing.Stated). It
+// plans against what the index holds: as the transaction's own queued indexing of the document
+// leaves it, when there is one, else as read in tx; and it records what this one leaves for a
+// later indexing of the same document.
 func planBlockIndex(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -221,7 +246,7 @@ func planBlockIndex(
 	blocks []model.ArtifactBlock,
 	located []text.Located,
 	pointers []refs.Pointer,
-) ([]refs.Target, WriteStep, error) {
+) ([]refs.Target, WriteStep, graphstore.Uncaused, error) {
 	ledger := queueFor(ctx, tx)
 	index, held := refs.BlockIndex{}, false
 	if ledger != nil {
@@ -230,16 +255,24 @@ func planBlockIndex(
 	if !held {
 		var err error
 		if index, err = refs.ReadBlockIndex(ctx, tx, artifactID); err != nil {
-			return nil, nil, err
+			return nil, nil, graphstore.Uncaused{}, err
 		}
 	}
-	indexing, err := refs.PlanBlocks(index, artifactID, version, versionAt, markdown, blocks, located, pointers)
+	record, err := indexedVersionOf(ctx, tx, artifactID, version)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, graphstore.Uncaused{}, err
+	}
+	now, err := transactionNow(ctx, tx)
+	if err != nil {
+		return nil, nil, graphstore.Uncaused{}, err
+	}
+	indexing, err := refs.PlanBlocks(ctx, tx, index, artifactID, record, version, versionAt, now, markdown, blocks, located, pointers)
+	if err != nil {
+		return nil, nil, graphstore.Uncaused{}, err
 	}
 	cited, err := indexing.Cited(ctx, tx)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, graphstore.Uncaused{}, err
 	}
 	if ledger != nil {
 		if ledger.blockIndexes == nil {
@@ -247,10 +280,33 @@ func planBlockIndex(
 		}
 		ledger.blockIndexes[artifactID] = indexing.Held()
 	}
-	return slices.Concat(indexing.Moved(), cited), func(b *store.WriteBatch) error {
-		indexing.Queue(b)
-		return nil
-	}, nil
+	return slices.Concat(indexing.Moved(), cited), indexing.Queue, indexing.Stated(), nil
+}
+
+// indexedVersionOf is what version's own row says of its block index (refs.IndexedVersion): the
+// document's ref_key, from its address as this transaction leaves it (addressOfDocument), and the
+// version's first author, from the version this transaction queued and has not written where that
+// is the version, which no read of the table answers yet, and else from the stored row.
+func indexedVersionOf(ctx context.Context, tx pgx.Tx, artifactID string, version int) (refs.IndexedVersion, error) {
+	address, err := addressOfDocument(ctx, tx, artifactID)
+	if err != nil {
+		return refs.IndexedVersion{}, err
+	}
+	if ledger := queueFor(ctx, tx); ledger != nil {
+		if pending, queued := ledger.latest[artifactID]; queued && pending.version.Number == version {
+			record := refs.IndexedVersion{RefKey: address.RefKey}
+			if len(pending.version.Authors) > 0 {
+				record.Writer = pending.version.Authors[0]
+			}
+			return record, nil
+		}
+	}
+	record, err := refs.ReadIndexedVersion(ctx, tx, artifactID, version)
+	if err != nil {
+		return refs.IndexedVersion{}, err
+	}
+	record.RefKey = address.RefKey
+	return record, nil
 }
 
 // planReplacement plans the reconciliation of fromKind/fromID's references with found, a new edge
