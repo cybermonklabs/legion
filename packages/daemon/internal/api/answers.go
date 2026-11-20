@@ -535,8 +535,7 @@ var wakeRoles = valuesFrom(wakesWaitingContract,
 
 // pauseStopRoles is the same list of roles at the contract `paused` arrived at, which the role of
 // each claim the open pause waits on takes (api.PauseStopView.Role): no `paused` is served below
-// that contract at all (shaping.go's withoutPause), so every value arrived with its field and no
-// value strip is owed (fieldArrivals.heldBack).
+// that contract at all (shaping.go's withoutPause).
 var pauseStopRoles = valuesFrom(pauseContract,
 	claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
 	claim.RoleReviewer, claim.RoleMerger)

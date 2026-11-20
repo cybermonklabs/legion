@@ -934,9 +934,9 @@ const repositoryAppsContract = 152
 // their answers' rows of shapeAnswer: one built before sjawhar/legion#2788 reads the state with
 // a strict schema and would refuse the whole body for a key it does not name, and one built
 // after strips the key instead, so each band keeps the body its own contract's record describes.
-// The pause's codes are values of the refusal's `code`, which no reader enumerates, and the one
-// enumerated field it added, `paused.waitsOn.*.role`, arrived with its key (answers.go's
-// pauseStopRoles), so no value strip is owed.
+// The pause's codes are values of the refusal's `code`, which no reader enumerates. The one
+// enumerated field it added is `paused.waitsOn.*.role` (answers.go's pauseStopRoles), whose values
+// fieldArrivals.heldBack decides as every other field's.
 //
 // It is a literal of its own and never shapedAnswersContract: a renumber of this change moves
 // that constant, and the contract the keys arrived at stays where it is.
