@@ -189,7 +189,7 @@ const legionStepView = z.object({
 });
 
 /** The two fields a wake the daemon's pacing holds carries: what kind of wake it is, and
- * `dueAt`, the moment the pacing gave it, which is when it runs (contract 182). The claim view's
+ * `dueAt`, the moment the pacing gave it, which is when it runs (contract 184). The claim view's
  * `wake` and `legionWakeWaiting` below carry the same wake, so both spread this one object and
  * cannot drift apart in type. Both fields are optional here, since no plugin code reads the claim
  * view's `wake`; `legionWakeWaiting` requires `dueAt` over the spread, because the controller's
@@ -291,14 +291,14 @@ const legionClaimView = z.object({
   /** Why the daemon must replace this pod, as it found the drift, and absent while no round is
    * open: the worker answering a round is told to act on it. */
   updateReasons: nonEmptyString.optional(),
-  /** Where the claim's update round stands, read from the claim's own columns (contract 182):
+  /** Where the claim's update round stands, read from the claim's own columns (contract 184):
    * `none` when no round is open, `open` when a round is open and its ask has reached no session
    * of the worker's role yet (the reading is the mark alone: whether and when the daemon asks the
    * claim again is the daemon's to decide, and a claim it does not ask keeps reading `open`),
    * `asked` once the round's ask reached a session of the worker's role, and `answered` once the
    * worker answered. A reader takes this rather than spelling the same reading out of
    * `updateRound` and `updateHead`, which cannot tell a worker that answered with no head from
-   * one nobody asked. A caller in a pod whose plugin declares a contract below 182 is served the
+   * one nobody asked. A caller in a pod whose plugin declares a contract below 184 is served the
    * state with no such key at all (the daemon's `withoutClaimRoundReport`), so every reader
    * takes it as optional. */
   updateState: z.enum(["none", "open", "asked", "answered"]).optional(),
@@ -331,8 +331,8 @@ const legionClaimView = z.object({
    * `withoutStallRecord`), so every reader takes it as optional. */
   step: legionStepView.optional(),
   /** The wake the daemon's pacing holds for this claim, absent where it holds none: the same
-   * wake `wakesWaiting` names beside this claim (contract 182). The kinds are the daemon's three
-   * paced lanes, as `legionWakeWaiting` below names them. A caller below 182 is served no such
+   * wake `wakesWaiting` names beside this claim (contract 184). The kinds are the daemon's three
+   * paced lanes, as `legionWakeWaiting` below names them. A caller below 184 is served no such
    * key (`withoutClaimRoundReport`). */
   wake: z.object(legionPacedWake).optional(),
   /** Why the claim failed, and absent for a claim the daemon holds no cause and sentence for: one
@@ -918,10 +918,10 @@ const daemonInfo = z.object({
 
 /** `api.ContractView` — the mark of the narrowing, beside the daemon's own block: `daemon` is the
  * contract the daemon declares and served this body at (its `DaemonAPIVersion`), and `caller` the
- * contract the daemon shaped this body to (contract 75). From contract 182 on the daemon writes
+ * contract the daemon shaped this body to (contract 75). From contract 184 on the daemon writes
  * `caller` for every reader. A reader served the body whole — the operator's
  * `legion state --json`, a tmux pane, a pod whose claims record no contract, a reader at the
- * daemon's own contract — is told the daemon's own number. Before contract 182 a daemon from 75 on
+ * daemon's own contract — is told the daemon's own number. Before contract 184 a daemon from 75 on
  * left `caller` off for such a reader, which is why the key stays optional.
  *
  * The daemon serves a caller below 75 the state with this key gone, as it strips the nine fields
@@ -1280,8 +1280,8 @@ const legionPaused = z.object({
  * `wakesWaiting` is every wake the daemon's pacing is holding until its turn, in claim order, never
  * null, empty at every moment outside a restart or a refresh wave (contract 53). It is optional
  * here only because a daemon at this contract leaves it off one body: a reader before 53 refuses
- * the key outright, empty as surely as naming a wake, so the route strips it for a caller in a pod
- * whose claims record a contract below 53, and for that caller alone (`api.stateFor`,
+ * the key outright, empty as surely as naming a wake, so the route strips it for a caller below
+ * 53: the contract its plugin states, else the highest its pod's claims record (`api.stateFor`,
  * `withoutWakesWaiting`). A reader that finds it absent has been served that stripped body and
  * learns nothing about which wakes wait; it is never a daemon older than this plugin, whom the
  * boot gate and `legion probe-image` refuse. `claimsToRefresh` is how many claims the stale-plugin
@@ -1289,24 +1289,24 @@ const legionPaused = z.object({
  * nothing left (contract 73). It is what `wakesWaiting` cannot say: that lane holds at most one
  * minute of the pacing at a time, so its waiting wakes are what it has admitted and this is what it
  * has left. It is optional for the same reason `wakesWaiting` is and no other: the route strips it
- * for a caller in a pod below 73, and for that caller alone, since a reader before 73 refuses the
- * key when it is 0 as surely as when it names a number (`api.stateFor`, `withoutClaimsToRefresh`).
- * A caller in a pod whose claims record no contract at all is served the count, as is a caller the
- * daemon can place in no pod. The two strips compose on one body: a caller below 53 is below 73 too
+ * for a caller below 73, read the same way, since a reader before 73 refuses the key when it is 0
+ * as surely as when it names a number (`api.stateFor`, `withoutClaimsToRefresh`). A caller that
+ * states no contract and whose pod's claims record none, or that the daemon can place in no pod,
+ * is served the count. The two strips compose on one body: a caller below 53 is below 73 too
  * and is served neither key. `contract` is the mark of the narrowing, the two contract numbers
  * the daemon's own log line names (contract 75), optional for the same reason the other two are:
- * the route strips it for a caller in a pod below 75, and for that caller alone, since a reader
- * before 75 refuses the key (`api.stateFor`, `withoutRecordFields`). A caller in a pod whose
- * claims record no contract and a caller the daemon can place in no pod are served the mark, and
- * the shapes `internal/projection` answers before the route marks them carry none either.
+ * the route strips it for a caller below 75, read the same way, since a reader before 75 refuses
+ * the key (`api.stateFor`, `withoutContractMark`). A caller that states no contract and whose
+ * pod's claims record none, or that the daemon can place in no pod, is served the mark, and the
+ * shapes `internal/projection` answers before the route marks them carry none either.
  * `paused` is the project's open pause, with the claims whose stop it still waits on and the rows
  * it holds, and `lastPause` is its newest ended pause, with when and by whom it was ended
  * (contract 178). The daemon writes each only where there is one: `paused` while the project is
  * paused and `lastPause` while it runs after a pause has ended, so a state carries one of them at
  * most, and neither before the project's first pause. Both are optional for that reason, and for
- * the one `wakesWaiting` is optional for: the route strips both for a caller in a pod below 178,
- * and for that caller alone (`api.stateFor`, `withoutPause`), so a reader in such a pod learns
- * nothing of the pause from a state that carries neither. */
+ * the one `wakesWaiting` is optional for: the route strips both for a caller below 178, read the
+ * same way (`api.stateFor`, `withoutPause`), so a reader below 178 learns nothing of the pause
+ * from a state that carries neither. */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo.optional(),
   contract: legionContract.optional(),
@@ -1326,7 +1326,7 @@ export const LegionStateResponse = z.object({
   settings: legionSettings.optional(),
   consumers: z.array(legionConsumerLag).optional(),
   // `lowestPluginContract` is the lowest contract among the claims of the project that hold a
-  // process and record one, absent where no claim does (contract 182). No plugin code reads the
+  // process and record one, absent where no claim does (contract 184). No plugin code reads the
   // value — it is a number for an operator and for the serving-down's own reckoning — so it is
   // optional here, and a reader that finds it absent learns that nothing of the project runs a
   // plugin it knows the contract of.
@@ -1336,14 +1336,14 @@ export const LegionStateResponse = z.object({
 export type LegionState = z.output<typeof LegionStateResponse>;
 export type LegionIssue = LegionState["issues"][string];
 
-/** `api.Issue` again, as the body of `GET /legion/v1/issues/{key}/record` (contract 182): one
+/** `api.Issue` again, as the body of `GET /legion/v1/issues/{key}/record` (contract 184): one
  * issue's record, equal field for field to the value the whole-project body holds under
  * `issues.<key>`. It is the very schema `LegionStateResponse` reads that value with, so the two
  * readers cannot drift apart. The daemon answers 404 with the code `RECORD_NOT_FOUND` for an
  * issue it records nothing of, which is the client's absent-record branch and no body at all. */
 export const LegionIssueRecordResponse = legionIssue;
 
-/** `api.Health`, the body of `GET /healthz` (contract 182): that the daemon is serving, and the
+/** `api.Health`, the body of `GET /healthz` (contract 184): that the daemon is serving, and the
  * project it serves. `project` is required because the controller's boot check reads it
  * (`packages/pi-legion/src/controller-session.ts`), which is the one word that read the whole
  * state before. `status` is a word for an operator: no plugin code takes its value. */

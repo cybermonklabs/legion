@@ -998,16 +998,18 @@ func (k callerKind) askedBody(t *testing.T, handler http.Handler, target string,
 //
 // Every other answer goes through shapeAnswer at the pair contractsFor gives a request built like
 // the caller's own, from its address and with its header, and with the claims its route hands
-// it. The release records and the refusal are placed with the pod's claims (callerKind.claims),
-// because their writers hand those in (placingClaims): the release-records route, and the writer
-// of every PauseFailure. A plain refusal, a claim.Refusal or a Failure, is written with no
-// claims (writeAnswer), and its row is the identity on it, so the claims decide nothing for it.
+// it. The release records and every PauseFailure are placed with the pod's claims
+// (callerKind.claims), because their writers hand those in (placingClaims): the release-records
+// route, and writePauseFailure. A plain refusal, a claim.Refusal or a Failure, is written with no
+// claims (writeAnswer), and is placed with none here, so a band for one of its keys is red for
+// the pod kind until its writer hands them in too.
 // Every answer else is placed with no claims, because no claims is what each of those routes
 // hands it (writeAnswer), so the pod kind is placed as production places it: by no pod, at this
 // daemon's own contract. A serving-down on one of those answers then reaches the caller that
 // states its contract and not the caller of a pod, and this test is red for the second until
 // two things change together: the route hands in its claims (writeAnswerFrom), and carriedShapes
-// places that answer with the pod's claims, as it places the release records and the refusal.
+// places that answer's bodies with the pod's claims, as it places the release records and a
+// PauseFailure.
 //
 // These answers are not driven through their routes, as the state and the record are. Each
 // route wants a store, a registration, a boot token or a grant, and a fixture body such as the
@@ -1052,14 +1054,23 @@ func carriedShapes(t *testing.T, caller callerKind) map[shapeKey]answerShape {
 		if handlers == nil {
 			handlers = stateHandlers(t, states, caller.claims(contract))
 		}
-		// The pair every other answer is shaped at: contractsFor with no claims, as writeAnswer
+		// The pair a body with no claims is shaped at: contractsFor with no claims, as writeAnswer
 		// hands it none.
 		restore, strip := caller.contracts(t, contract, nil)
-		// The pair the release records and the refusal are shaped at: contractsFor with the
-		// pod's claims, as their writers hand them in (placingClaims). A plain refusal is written
-		// with no claims, and its row is the identity on it, so the claims decide nothing for it;
-		// a PauseFailure's writer hands them in, and its row takes its keys off below 178.
+		// The pair a body whose writer hands in the pod's claims is shaped at (placingClaims):
+		// the release records', and a PauseFailure's (writePauseFailure).
 		placedRestore, placedStrip := caller.contracts(t, contract, caller.claims(contract))
+		// placed is the pair one body of an answer is shaped at, the one its writer in production
+		// places its caller with. A plain refusal, a claim.Refusal or a Failure, is written with
+		// no claims, so a serving-down added to one is red here for the pod kind until its writer
+		// hands them in too.
+		placed := func(id AnswerID, body any) (int, int) {
+			_, pause := body.(PauseFailure)
+			if id == AnswerReleaseRecords || (id == AnswerRefusal && pause) {
+				return placedRestore, placedStrip
+			}
+			return restore, strip
+		}
 		for _, answer := range Answers {
 			if answer.Since > contract {
 				continue
@@ -1076,12 +1087,8 @@ func carriedShapes(t *testing.T, caller callerKind) map[shapeKey]answerShape {
 				served[key] = answerShape{noBody: true}
 				continue
 			}
-			answerRestore, answerStrip := restore, strip
-			if answer.ID == AnswerReleaseRecords || answer.ID == AnswerRefusal {
-				answerRestore, answerStrip = placedRestore, placedStrip
-			}
 			paths, carried := collectedShape(t,
-				servedBodies(t, caller, handlers, states, answer.ID, fixture, contract, answerRestore, answerStrip),
+				servedBodies(t, caller, handlers, states, answer.ID, fixture, contract, placed),
 				shapes[answer.ID], enumeratedPathsOf(EnumeratedFields, answer.ID))
 			values := make(map[string][]string, len(carried))
 			for path, carriedHere := range carried {
@@ -1141,12 +1148,13 @@ func stateHandlers(t *testing.T, states []State, claims []supervise.Claim) []htt
 }
 
 // servedBodies is every body the answer writes at one contract, as the bytes a caller reads.
-// handlers answer the state bodies of states, one handler each. restore and strip are the pair
-// every other answer is shaped at, which contractsFor gives the caller's request with the claims
-// its route hands it: the pod's for the release records and the refusal, none for every other
-// answer (servedShapes says why, and why those answers do not go through their routes).
+// handlers answer the state bodies of states, one handler each. placed is the pair each other
+// body is shaped at, which contractsFor gives the caller's request with the claims that body's
+// writer hands it: the pod's for the release records and a PauseFailure, none for every other
+// body, a plain refusal among them (servedShapes says why, and why those answers do not go
+// through their routes).
 func servedBodies(t *testing.T, caller callerKind, handlers []http.Handler, states []State, id AnswerID,
-	fixture answerFixture, contract, restore, strip int,
+	fixture answerFixture, contract int, placed func(AnswerID, any) (int, int),
 ) [][]byte {
 	t.Helper()
 	switch id {
@@ -1167,6 +1175,7 @@ func servedBodies(t *testing.T, caller callerKind, handlers []http.Handler, stat
 	default:
 		bodies := make([][]byte, 0, len(fixture.bodies))
 		for _, body := range fixture.bodies {
+			restore, strip := placed(id, body)
 			shaped, _ := shapeAnswer(id, body, restore, strip)
 			encoded, err := json.Marshal(shaped)
 			if err != nil {
@@ -1303,10 +1312,10 @@ func TestContractShapesFixture(t *testing.T) {
 // there). Both are held to the same records, because a body is owed to the reader and not to the
 // way it said who it is, and the second is the population this change is about. Each caller is
 // placed as production places it (servedShapes). On the state, the record, the release records
-// and the refusal its pod places it. On every other answer the pod decides no shape (a fresh
-// session's pod decides only what a stop means, readsTheStopAsAFailure), so the pod kind is
-// served this daemon's own body, and a serving-down there that only the header kind gets is red
-// here.
+// and a refusal that names a pause its pod places it. On every other answer the pod decides no
+// shape (a fresh session's pod decides only what a stop means, readsTheStopAsAFailure), so the
+// pod kind is served this daemon's own body, and a serving-down there that only the header kind
+// gets is red here.
 func TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes(t *testing.T) {
 	if *updateGolden {
 		t.Skip("the fixture is being rewritten; run the suite again without -update")
@@ -1388,11 +1397,14 @@ func shapeProblems(key shapeKey, served answerShape, record contractShape) []str
 	for _, path := range served.paths {
 		carried[path] = true
 	}
-	// A band or a stand-in is written in the row of shapeAnswer of an answer whose route hands in
-	// its claims (writeAnswerFrom): the state's and the record's take theirs from
+	// A band or a stand-in is written in the row of shapeAnswer of an answer whose writers hand
+	// in their claims (writeAnswerFrom): the state's and the record's take theirs from
 	// stateNarrowings, and the release records' and the refusal's write theirs in the row itself.
-	// Every other row is the identity and every other route hands in none, so the advice for
-	// those answers is what both need.
+	// A refusal is written by many writers, and only a PauseFailure's hands in its claims, so a
+	// band for a key of any other refusal body reaches the caller of a pod only once that body's
+	// writer hands them in too (carriedShapes places each body as its writer does). Every other
+	// row is the identity and every other route hands in none, so the advice for those answers is
+	// what both need.
 	shaped := key.answer == AnswerState || key.answer == AnswerIssueRecord
 	ownRow := key.answer == AnswerReleaseRecords || key.answer == AnswerRefusal
 	for _, path := range served.paths {
@@ -1400,7 +1412,7 @@ func shapeProblems(key shapeKey, served answerShape, record contractShape) []str
 			advice := "Write a band that leaves the key out below the contract that adds it (shaping.go's stateNarrowings)."
 			switch {
 			case ownRow:
-				advice = fmt.Sprintf("Write a band in the %s answer's row of shapeAnswer that leaves the key out below the contract that adds it (shaping.go's withoutResumePauses is one).", key.answer)
+				advice = fmt.Sprintf("Write a band in the %s answer's row of shapeAnswer that leaves the key out below the contract that adds it, and have every writer of the body that carries the key hand in the claims that place its caller through writeAnswerFrom (the release records' band and its route's placingClaims, and a PauseFailure's band and pause.go's writePauseFailure, are the two today).", key.answer)
 			case !shaped:
 				advice = "Write a band that leaves the key out below the contract that adds it. " + unshapedServingDown("band", key.answer)
 			}
@@ -1442,7 +1454,7 @@ func shapeProblems(key shapeKey, served answerShape, record contractShape) []str
 // since servedShapes shapes such an answer with no claims (servedShapes says why).
 func unshapedServingDown(kind string, id AnswerID) string {
 	return fmt.Sprintf(
-		"A %s reaches the %s answer only once its route writes through writeAnswerFrom with the claims that place its caller, and carriedShapes places that answer with the pod's claims, as it places the release records and the refusal. shapeAnswer then needs a row of its own for the %s answer to write the %s in, where today that answer shares the identity row (shaping.go).",
+		"A %s reaches the %s answer only once its route writes through writeAnswerFrom with the claims that place its caller, and carriedShapes places that answer's bodies with the pod's claims, as it places the release records and a PauseFailure. shapeAnswer then needs a row of its own for the %s answer to write the %s in, where today that answer shares the identity row (shaping.go).",
 		kind, id, id, kind)
 }
 
@@ -1502,7 +1514,7 @@ func TestTheRecordSetIsOneRecordPerAnswerPerContract(t *testing.T) {
 	// The table itself: every row names an answer of Answers, so a row no answer carries is red
 	// rather than a domain nothing records, and every arrival is a contract this daemon serves a
 	// shape for. A value older than the field's own answer is no error — the record answer
-	// arrived at 182 and carries all nine values of `answeredBy` from its first record — since a
+	// arrived at 184 and carries all nine values of `answeredBy` from its first record — since a
 	// domain is every value whose arrival is at or below the contract (domainsOf).
 	for _, field := range EnumeratedFields {
 		if !slices.ContainsFunc(Answers, func(answer Answer) bool { return answer.ID == field.Answer }) {

@@ -435,9 +435,7 @@ func TestAPluginAtTheRatingContractMustRate(t *testing.T) {
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	grants := []string{implementer.grant(t), implementer.grant(t)}
-	if PlanRatingContract != DaemonAPIVersion {
-		h.makeStale(t, implementer.token, implementer.session, implementer.secret, PlanRatingContract)
-	}
+	h.makeStale(t, implementer.token, implementer.session, implementer.secret, PlanRatingContract)
 	if c := h.stored(implementer.token); c.State != supervise.StateWorking || c.UpdateRound != "" || c.PluginContract != PlanRatingContract {
 		t.Fatalf("the claim is %s in round %q at contract %d, want working in no round at %d: this case proves nothing",
 			c.State, c.UpdateRound, c.PluginContract, PlanRatingContract)
