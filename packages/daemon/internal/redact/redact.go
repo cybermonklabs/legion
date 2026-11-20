@@ -13,23 +13,23 @@
 // and a link of an agent's that loses its query in that log keeps it everywhere else.
 //
 // A far side's text that is cut to a bound is cut here, by Runes, Bytes or Tail, which give the
-// whole text through URLCredentials before they cut it, or by Read, for a text a bounded read
-// (ReadBounded, or the image probe's own tail read) cut already. A far side is anything outside
-// the process that writes the text: an HTTP answer, a child process's output, a frame from the
-// daemon or the agent, a kubelet's message, an error that wraps any of those. The order is the
-// point: a cut made before the rule can stop inside a URL's userinfo or its query and leave a part
-// of either where the rule no longer finds it. Every such cut in the legion binary, the daemon's
-// and the pod's commands alike, is one of theirs but those named here, each of which says where it
-// cuts and what of a URL's credential it can keep: the role log's cut of a line longer than its
-// bound (the launcher's logLineCut); the sandbox's drop of the head a cut log read starts inside,
-// up to its first newline or else its first byte that ends a URL (dropCutHead, which readLog and
-// lastBytes share), and readLog's drop of the line its read bound stopped inside;
-// storetext.LogWhole's parts of a text the rule has read whole; and a detail whose own rules have
-// masked every userinfo before its cut (capabilities' cleanDetail). A text the URL rule has already
-// read whole, through URLCredentials or one of these helpers, may be cut by any means after it, as
-// the workflow's quote of a failed claim's sentence and its death account is (quoteBounded): the
-// supervisor keeps both through storetext's FarSideError and FarSideText. So what is cut and how
-// is read from their callers and those rather than from every way Go shortens a string.
+// whole text through URLCredentials before they cut it, or by Read, for a text a bounded read cut
+// already. A far side is anything outside the process that writes the text: an HTTP answer, a
+// child process's output, a frame from the daemon or the agent, a kubelet's message, an error that
+// wraps any of those. The order is the point: a cut made before the rule can stop inside a URL's
+// userinfo or its query and leave a part of either where the rule no longer finds it. Every such
+// cut in the legion binary, the daemon's and the pod's commands alike, is one of theirs but those
+// named here, each of which says where it cuts and what of a URL's credential it can keep: the
+// role log's cut of a line longer than its bound (the launcher's logLineCut); the sandbox's drop
+// of the head a cut log read starts inside, up to its first newline or else its first byte that
+// ends a URL (dropCutHead, which readLog and lastBytes share), and readLog's drop of the line its
+// read bound stopped inside; storetext.LogWhole's parts of a text the rule has read whole; and a
+// detail whose own rules have masked every userinfo before its cut (capabilities' cleanDetail). A
+// text the URL rule has already read whole, through URLCredentials or one of these helpers, may be
+// cut by any means after it, as the workflow's quote of a failed claim's sentence and its death
+// account is (quoteBounded): the supervisor keeps both through storetext's FarSideError and
+// FarSideText. So what is cut and how is read from their callers and those rather than from every
+// way Go shortens a string.
 package redact
 
 import (

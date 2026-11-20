@@ -286,7 +286,8 @@ func (r *containedRemover) removeAll(dir *sweepDir, name string) error {
 	case "failed":
 		if cut {
 			// Its closing quote was not kept, so it cannot be unquoted: it is the refusal as
-			// the deleter wrote it, as far as it was kept, and the mark that says it was cut.
+			// redact.Read kept it of what the deleter wrote (readReply), and the mark that says
+			// it was cut.
 			return errors.New(refusal + volumeDeleteReplyCut)
 		}
 		said, err := strconv.Unquote(refusal)
@@ -542,12 +543,14 @@ func (b *saidBuffer) Write(p []byte) (int, error) {
 }
 
 // trailing is what the child has said so far, as one parenthesised line for an error to carry,
-// and "" when it has said nothing: through the URL rule, with the run a cut stopped inside
-// dropped when it holds "://" (redact.Read, cut where the bound cut what the child said).
+// and "" when it has said nothing: through the URL rule, with the run its end stopped inside
+// dropped when it holds "://" (redact.Read). Every text is given to Read as cut, not only one the
+// bound cut: ended can read it while exec's copy is still writing what the child says, so what it
+// holds can end anywhere.
 func (b *saidBuffer) trailing() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	said := strings.TrimSpace(redact.Read(b.buf.String(), b.cut))
+	said := strings.TrimSpace(redact.Read(b.buf.String(), true))
 	if b.cut {
 		said += volumeDeleteSaidCut
 	}
