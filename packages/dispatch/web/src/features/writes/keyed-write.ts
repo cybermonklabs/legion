@@ -162,15 +162,29 @@ export function retriesUnderItsKey(refusal: Error | undefined): boolean {
   return refusal instanceof SendStoppedError && !(refusal instanceof SendExpiredError);
 }
 
+/** The refusals `writeUnderKey` ended a write with after an attempt of that write had gone
+ *  unanswered (`refusedByDispatch`). */
+const refusedAfterUnanswered = new WeakSet<ApiError>();
+
 /**
  * Whether `refusal`, which ended a write, is Dispatch's verdict that it made nothing: a 4xx it
- * answered, since `writeUnderKey` makes the write again after every other answer. Dispatch commits
- * nothing of such a write, so it publishes no live event for it (`EndReadHold`). A write that ended
- * any other way - stopped, interrupted by a reload, its key run out, or an error of the page's
- * own - may have landed, and its event may still come.
+ * answered with no unanswered attempt before it, since `writeUnderKey` makes the write again after
+ * every other answer. Dispatch commits nothing of such a write, so it publishes no live event for
+ * it (`EndReadHold`). A refusal after an attempt the page had no answer to is no such verdict:
+ * that attempt may have landed, and the retry Dispatch refused says nothing of it - a snooze is a
+ * `PUT`, which sends no key, so its retry runs Dispatch's handler again, which refuses a moment
+ * that has passed meanwhile - and its event may still come. So may the event of a write that ended
+ * any other way - stopped, interrupted by a reload, its key run out, or an error of the page's own.
  */
 export function refusedByDispatch(refusal: unknown): boolean {
-  return refusal instanceof ApiError;
+  return refusal instanceof ApiError && !refusedAfterUnanswered.has(refusal);
+}
+
+/** `error`, which ends a write, marked as a refusal after an unanswered attempt where `unanswered`
+ *  says one went out (`refusedByDispatch`). */
+function endingAfter(error: unknown, unanswered: boolean): unknown {
+  if (unanswered && error instanceof ApiError) refusedAfterUnanswered.add(error);
+  return error;
 }
 
 /**
@@ -369,7 +383,7 @@ export async function writeUnderKey<T>(
   // then on the key may name something there, and its age decides the write.
   let underKey: WriteMethod | null = carried;
   // Whether an attempt went out that the page has no answer to: a resent `DELETE` then finds the
-  // thing already gone.
+  // thing already gone, and a refusal after it says nothing of that attempt (`refusedByDispatch`).
   let unanswered = false;
   const told = (request: WriteRequest) => {
     if (first === undefined) first = request;
@@ -417,10 +431,10 @@ export async function writeUnderKey<T>(
           backoff = FIRST_BACKOFF_MS;
         }
         const wait = retryAfter(error, backoff);
-        if (wait === undefined) throw error;
+        if (wait === undefined) throw endingAfter(error, unanswered);
         if (isUnauthorized(error)) {
           const stillSignedIn = (await unauthorized?.()) === true;
-          if (stillSignedIn && unauthorizedWhileSignedIn) throw error;
+          if (stillSignedIn && unauthorizedWhileSignedIn) throw endingAfter(error, unanswered);
           unauthorizedWhileSignedIn = stillSignedIn;
         } else {
           unauthorizedWhileSignedIn = false;

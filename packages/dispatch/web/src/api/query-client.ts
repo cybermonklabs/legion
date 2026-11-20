@@ -265,8 +265,10 @@ export interface ReadHold {
 /**
  * What ends a hold's holding of reads (`holdBackReads`): its write calls it once its answer or
  * refusal is in, with how many of the writes the hold stands for (`ReadHold.events`) Dispatch
- * refused (`refusedByDispatch`), none where it leaves that out. Dispatch commits nothing of a
- * write it refuses, so it publishes no event for it, and the hold waits for none.
+ * refused with no unanswered attempt before the refusal (`refusedByDispatch`), none where it
+ * leaves that out. Dispatch commits nothing of such a write, so it publishes no event for it, and
+ * the hold waits for none. A write refused after an attempt the page had no answer to may have
+ * landed, and its hold waits for its event as an answered write's does.
  */
 export type EndReadHold = (refused?: number) => void;
 
@@ -380,10 +382,11 @@ function holdEnded(
  * Dispatch's whole Postgres instance (`events/horizon.go`), however little of it is Dispatch's.
  * Nothing bounds that lag, so a hold waits for its event until `SEND_DEADLINE_MS` after its answer:
  * it holds no read meanwhile, so where its event never comes it only takes a later write's, whose
- * hold then ends at its own answer, later and never sooner. A write Dispatch refused publishes no
- * event, and its hold waits for none (`EndReadHold`). A write never answered - the page tries a
- * snooze for as long as the reader leaves it - waits until `IDEMPOTENCY_KEY_TTL_MS` after the hold
- * began, a day, the longest Dispatch keeps a write's key, so no hold outlives that.
+ * hold then ends at its own answer, later and never sooner. A write Dispatch refused with no
+ * unanswered attempt before the refusal publishes no event, and its hold waits for none
+ * (`EndReadHold`). A write never answered - the page tries a snooze for as long as the reader
+ * leaves it - waits until `IDEMPOTENCY_KEY_TTL_MS` after the hold began, a day, the longest
+ * Dispatch keeps a write's key, so no hold outlives that.
  *
  * The write's answer, put in over the reads still out, cancels a held read too, though it has
  * asked nothing yet, and what it was asked for - news of another change, a view mounting - would
@@ -463,8 +466,9 @@ export function holdBackReads(client: QueryClient, hold: ReadHold): EndReadHold 
  * from before that write's press until the write's answer comes. Every other misreading ends a
  * hold later, never sooner: a write Dispatch took that publishes no such event (it moved nothing)
  * may take a later write's, and so may a write still out past its deadline - a snooze Dispatch has
- * not answered takes the next snooze event - and the hold whose event it was then ends at its own
- * answer, later and never sooner.
+ * not answered takes the next snooze event - and a write Dispatch refused after an attempt the
+ * page had no answer to, which waits for its event though that attempt may not have landed; the
+ * hold whose event it was then ends at its own answer, later and never sooner.
  */
 export function hearLiveEvent(
   client: QueryClient,
