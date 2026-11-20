@@ -1365,8 +1365,12 @@ func (r *versionNewsLive) a7() {
 	held, released := r.token(closed.root().key, claim.RoleMerger), r.token(open.root().key, claim.RoleMerger)
 	before := r.rt.Calls()
 	mark := time.Now()
+	// The completion that ends a retro rates the plan the issue ran (api.PlanRatingContract, main's
+	// #4488), so each one carries a rating and its reason as a production retro's does.
+	rating, reason := 4, "The plan fit the work: its steps were the steps the issue ran."
 	for _, implementer := range implementers {
-		if status, failure := implementer.complete(api.HandoffCompleteRequest{Summary: "the retro is written", Commit: versionNewsHead(implementer.issue)}); status != http.StatusOK {
+		if status, failure := implementer.complete(api.HandoffCompleteRequest{Summary: "the retro is written", Commit: versionNewsHead(implementer.issue),
+			PlanRating: &rating, PlanReason: &reason}); status != http.StatusOK {
 			r.fail("%s's completion of retro = %d %s: %s, want 200", implementer.name(), status, failure.Code, failure.Error)
 		}
 	}
