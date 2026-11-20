@@ -1,7 +1,0 @@
-kind: Changed
-body: |-
-  Declares daemon API contract 197, which adds the capability row `repository-cache-room` with the
-  source `caches` to the state the `legion` MCP tool reads.
-time: 2026-11-20T10:48:15Z
-custom:
-    Issue: pr4553

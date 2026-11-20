@@ -356,6 +356,12 @@ func TestTheJJWrapperReadsTheConfigurationThePushWouldUse(t *testing.T) {
 	if err := os.WriteFile(configFile, []byte("git.executable-path = \"/usr/bin/git\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// f.repo names the fixture's remote as origin: the remote a real push has, which the pushes
+	// below must be able to resolve. jj 0.45 ended a `jj git push` with no remote at "Nothing
+	// changed." because its default revset named no bookmark; jj 0.46, whose git.push became a
+	// pattern over the remotes, resolves the remotes first and fails "No git remotes to push to",
+	// so without one the row's verdict was the host's jj version. With one, both versions stop at
+	// "Nothing changed." and run no git.
 	repo := f.repo("repo")
 
 	for _, tc := range []struct {

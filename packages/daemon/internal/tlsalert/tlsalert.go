@@ -23,7 +23,7 @@ import (
 // Three of its callers keep an alert out of the failures they wait out: internal/store's
 // OpenRetryable (the start's attempts to open its store), internal/natsauth's Unreachable (a NATS
 // that is not up yet) and internal/dispatch's TransportRefusal (a failure of Dispatch's transport
-// no wait fixes). internal/agentsecrets' daemonSideFault still waits an alert out, but on the
+// no wait fixes). internal/cipher's daemonSideFault still waits an alert out, but on the
 // token login's long schedule, a fault on the daemon's own side, in place of the short one of a
 // broker out of reach.
 func In(err error) bool {

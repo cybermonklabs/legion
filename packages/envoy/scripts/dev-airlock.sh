@@ -10,12 +10,12 @@
 #     token issuer with a pod's, a registrar's and two listed callers' tokens, the broker's own
 #     sign-in client, and the Postgres server - so this script builds and starts none of it a
 #     second time. What that costs is two processes of dev-broker.sh's that this script never
-#     points at: its broker, on a database of its own, and the cmd/dev-airlock-stands it starts
+#     points at: its broker, on a database of its own, and the cmd/dev-proxy-stands it starts
 #     for its own github-app secrets. What it buys is that the identities, the token files and
 #     the issuer are the ones dev-broker.sh documents, and that a change there reaches both
 #     scripts. The airlock's own brokers get a database of their own (below), so they never
 #     share a policy or a secret store with that broker.
-#   - cmd/dev-airlock-stands: the two HTTPS services S and T, which record every request they
+#   - cmd/dev-proxy-stands: the two HTTPS services S and T, which record every request they
 #     get; the stand-in GitHub and Google endpoints a github-app and a google-login secret mint
 #     at; the stand-in Microsoft token endpoint the azure kind exchanges at, which also plays
 #     the resource host an access token is spent at; a stand-in AWS service that verifies
@@ -39,7 +39,7 @@
 #   - TWO broker processes, each with the whole BROKER_AIRLOCK_* block, both on one database and
 #     each on three ports of its own, its API, proxy and metrics ports (--one-broker starts one).
 #   - One TCP front over both brokers' API ports and one over both proxy ports
-#     (cmd/dev-airlock-stands front), so a client reaches either process. Each new connection
+#     (cmd/dev-proxy-stands front), so a client reaches either process. Each new connection
 #     goes to the next broker in turn; round-robin per connection is all the checks ask for,
 #     since the two brokers share one database and either answers any call. The front is Go
 #     because a Legion issue pod has neither socat nor nginx, and nginx passes no CONNECT.

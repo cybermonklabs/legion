@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  Declares daemon API contract 201, the number the daemon of the same release declares. That
+  contract adds the capability row `repository-cache-room` to `GET /legion/v1/state`, and no tool
+  of this plugin reads the capability report.
+time: 2026-11-20T10:48:15Z
+custom:
+    Issue: pr4553

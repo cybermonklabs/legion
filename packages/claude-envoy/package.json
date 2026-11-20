@@ -19,7 +19,7 @@
     "AGENTS.md"
   ],
   "legion": {
-    "daemonApiVersion": 197
+    "daemonApiVersion": 201
   },
   "repository": {
     "type": "git",
@@ -36,7 +36,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.14",
-    "@legion/broker-client": "workspace:*",
+    "@legion/cipher-client": "workspace:*",
     "@legion/contracts": "workspace:*",
     "@legion/envoy-client": "workspace:*",
     "@legion/pi-shared": "workspace:*",
