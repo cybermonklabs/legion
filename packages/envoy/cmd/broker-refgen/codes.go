@@ -60,10 +60,13 @@ func checkHelperRefusals(root string, codes []docConst) error {
 	return refusedAt(problems)
 }
 
-// checkExitCodes refuses an agent-secrets exit code the error page cannot list: every function in
-// the CLI's package that returns one int, which is what run and each command it dispatches to
-// return as the process's exit code, may return only 0, 1, one of the documented exit constants in
-// codes, or what another such function returns; so may os.Exit be called only with one of those.
+// checkExitCodes refuses an agent-secrets exit code the error page cannot list. It follows only
+// the free int-returning functions that can reach the process's exit: run (the argument main hands
+// os.Exit), a free int function an exit path returns, a free int function os.Exit calls, and a
+// registered secret-form handler. That excludes ordinary helpers whose int has another meaning,
+// such as a prompt poll's timeout. Every return of a followed function may be only 0, 1, one of
+// the documented exit constants in codes, or what another followed function returns; so may
+// os.Exit be called only with one of those.
 func checkExitCodes(root string, codes []docConst) error {
 	src, err := parseDir(root, cliDir)
 	if err != nil {
@@ -80,19 +83,74 @@ func checkExitCodes(root string, codes []docConst) error {
 		id, ok := t.Results.List[0].Type.(*ast.Ident)
 		return ok && id.Name == "int"
 	}
-	exitFuncs := map[string]bool{}
+	intFuncs := map[string]bool{}
 	for _, f := range src.files {
 		for _, d := range f.Decls {
 			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && returnsInt(fn.Type) {
-				exitFuncs[fn.Name.Name] = true
+				intFuncs[fn.Name.Name] = true
+			}
+		}
+	}
+	callbacks, handlers, err := secretFormExitCalls(src, intFuncs)
+	if err != nil {
+		return err
+	}
+	exitFuncs := map[string]bool{}
+	addExitFunc := func(e ast.Expr) bool {
+		call, ok := e.(*ast.CallExpr)
+		if !ok {
+			return false
+		}
+		fun, ok := call.Fun.(*ast.Ident)
+		if !ok || !intFuncs[fun.Name] || exitFuncs[fun.Name] {
+			return false
+		}
+		exitFuncs[fun.Name] = true
+		return true
+	}
+	exitFuncs["run"] = intFuncs["run"]
+	for handler := range handlers {
+		exitFuncs[handler] = true
+	}
+	// The argument of every os.Exit call, by file: each is a root of the closure below, and each
+	// is checked as an exit code once the closure is known.
+	exitArgs := make([][]ast.Expr, len(src.files))
+	for i, f := range src.files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok || len(call.Args) != 1 {
+				return true
+			}
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Exit" {
+				if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "os" {
+					exitArgs[i] = append(exitArgs[i], call.Args[0])
+					addExitFunc(call.Args[0])
+				}
+			}
+			return true
+		})
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, f := range src.files {
+			for _, d := range f.Decls {
+				fn, ok := d.(*ast.FuncDecl)
+				if !ok || fn.Recv != nil || !returnsInt(fn.Type) || !exitFuncs[fn.Name.Name] {
+					continue
+				}
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					if _, ok := n.(*ast.FuncLit); ok {
+						return false
+					}
+					if ret, ok := n.(*ast.ReturnStmt); ok && len(ret.Results) == 1 {
+						changed = addExitFunc(ret.Results[0]) || changed
+					}
+					return true
+				})
 			}
 		}
 	}
 	var problems []string
-	callbacks, err := secretFormExitCalls(src, exitFuncs)
-	if err != nil {
-		return err
-	}
 	allowed := func(e ast.Expr) {
 		switch v := e.(type) {
 		case *ast.BasicLit:
@@ -113,8 +171,8 @@ func checkExitCodes(root string, codes []docConst) error {
 		}
 		problems = append(problems, fmt.Sprintf("%s: exit code %s is not 0, 1 or one of the documented exit constants", src.at(e), src.text(e)))
 	}
-	// checkBody checks the returns of one int-returning function body, leaving each function
-	// literal inside it to its own check.
+	// checkBody checks the returns of one followed exit function body, leaving every function
+	// literal inside it to its own path.
 	var checkBody func(body *ast.BlockStmt)
 	checkBody = func(body *ast.BlockStmt) {
 		ast.Inspect(body, func(n ast.Node) bool {
@@ -134,37 +192,27 @@ func checkExitCodes(root string, codes []docConst) error {
 			return true
 		})
 	}
-	for _, f := range src.files {
+	for i, f := range src.files {
 		for _, d := range f.Decls {
 			fn, ok := d.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
+			if !ok || fn.Body == nil || fn.Recv != nil || !returnsInt(fn.Type) || !exitFuncs[fn.Name.Name] {
 				continue
 			}
-			if fn.Recv == nil && returnsInt(fn.Type) {
-				checkBody(fn.Body)
-			}
+			checkBody(fn.Body)
 		}
-		ast.Inspect(f, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok || len(call.Args) != 1 {
-				return true
-			}
-			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Exit" {
-				if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "os" {
-					allowed(call.Args[0])
-				}
-			}
-			return true
-		})
+		for _, arg := range exitArgs[i] {
+			allowed(arg)
+		}
 	}
 	return refusedAt(problems)
 }
 
-// secretFormExitCalls follows the CLI's secret-form table rather than accepting
-// arbitrary callback results as exit codes. Every registered handler must be one
-// of the local functions whose returns checkExitCodes checks.
-func secretFormExitCalls(src *source, exitFuncs map[string]bool) (map[*ast.CallExpr]bool, error) {
+// secretFormExitCalls follows the CLI's secret-form table rather than accepting arbitrary
+// callback results as exit codes. Every registered handler must be one of the package's local
+// int-returning functions, and is one root of checkExitCodes's exit-path closure.
+func secretFormExitCalls(src *source, intFuncs map[string]bool) (map[*ast.CallExpr]bool, map[string]bool, error) {
 	calls := map[*ast.CallExpr]bool{}
+	handlers := map[string]bool{}
 	var table *ast.CompositeLit
 	var problems []string
 	for _, file := range src.files {
@@ -193,15 +241,15 @@ func secretFormExitCalls(src *source, exitFuncs map[string]bool) (map[*ast.CallE
 		})
 	}
 	if table == nil {
-		return calls, refusedAt(problems)
+		return calls, handlers, refusedAt(problems)
 	}
 	array, ok := table.Type.(*ast.ArrayType)
 	if !ok {
-		return nil, fmt.Errorf("%s: secretForms must be a slice of secretForm", src.at(table))
+		return nil, nil, fmt.Errorf("%s: secretForms must be a slice of secretForm", src.at(table))
 	}
 	element, ok := array.Elt.(*ast.Ident)
 	if !ok || element.Name != "secretForm" || array.Len != nil {
-		return nil, fmt.Errorf("%s: secretForms must be a slice of secretForm", src.at(table))
+		return nil, nil, fmt.Errorf("%s: secretForms must be a slice of secretForm", src.at(table))
 	}
 	for _, item := range table.Elts {
 		row, ok := item.(*ast.CompositeLit)
@@ -210,9 +258,11 @@ func secretFormExitCalls(src *source, exitFuncs map[string]bool) (map[*ast.CallE
 			continue
 		}
 		handler, ok := row.Elts[1].(*ast.Ident)
-		if !ok || !exitFuncs[handler.Name] {
+		if !ok || !intFuncs[handler.Name] {
 			problems = append(problems, src.at(row)+": a secret form's handler must be a checked local exit-code function")
+			continue
 		}
+		handlers[handler.Name] = true
 	}
 	for _, file := range src.files {
 		ast.Inspect(file, func(n ast.Node) bool {
@@ -248,7 +298,7 @@ func secretFormExitCalls(src *source, exitFuncs map[string]bool) (map[*ast.CallE
 			return true
 		})
 	}
-	return calls, refusedAt(problems)
+	return calls, handlers, refusedAt(problems)
 }
 
 // refusedAt is one error listing every problem, or nil when there is none.

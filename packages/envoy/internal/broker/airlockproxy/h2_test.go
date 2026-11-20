@@ -41,6 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/testgrpc"
 )
 
 // negotiated is the protocol an answer's TLS agreed, "" for an answer that came over none.
@@ -271,16 +272,10 @@ func grpcThrough(t *testing.T, r *rig) (*grpcStand, grpc_health_v1.HealthClient)
 	if err != nil {
 		t.Fatalf("the gRPC stand-in's certificate: %v", err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("bind the gRPC stand-in: %v", err)
-	}
 	server := grpc.NewServer(grpc.Creds(credentials.NewServerTLSFromCert(certificate)))
 	stand := &grpcStand{ended: make(chan error, 1)}
 	grpc_health_v1.RegisterHealthServer(server, stand)
-	go func() { _ = server.Serve(listener) }()
-	t.Cleanup(server.Stop)
-	r.dialTo[net.JoinHostPort(boundHost, "443")] = listener.Addr().String()
+	r.dialTo[net.JoinHostPort(boundHost, "443")] = testgrpc.Serve(t, server)
 
 	client, err := grpc.NewClient("passthrough:///"+net.JoinHostPort(boundHost, "443"),
 		grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{RootCAs: r.trust})),

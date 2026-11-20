@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlockproxy"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/testgrpc"
 )
 
 // The one grant of this file: a Google login whose access token the proxy holds and whose
@@ -106,14 +107,9 @@ func TestGCPSecretListReachesSecretManagerThroughTheAirlockOverGRPC(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	serviceListener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
 	service := grpc.NewServer(grpc.Creds(credentials.NewServerTLSFromCert(serviceCertificate)), grpc.UnaryInterceptor(fake.recordAuthorization))
 	secretmanagerpb.RegisterSecretManagerServiceServer(service, fake)
-	go func() { _ = service.Serve(serviceListener) }()
-	t.Cleanup(service.Stop)
+	serviceAddr := testgrpc.Serve(t, service)
 
 	// The broker's own airlock proxy, with an authority of its own whose certificate is the
 	// only root the command trusts, dialing Secret Manager's stand-in for its name.
@@ -139,7 +135,7 @@ func TestGCPSecretListReachesSecretManagerThroughTheAirlockOverGRPC(t *testing.T
 			return []netip.Addr{netip.MustParseAddr("93.184.216.34")}, nil
 		},
 		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, network, serviceListener.Addr().String())
+			return (&net.Dialer{}).DialContext(ctx, network, serviceAddr)
 		},
 		UpstreamRoots: serviceAuthority.Pool(),
 	})

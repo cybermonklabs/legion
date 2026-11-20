@@ -25,6 +25,8 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/sjawhar/envoy/internal/testgrpc"
 )
 
 const (
@@ -234,15 +236,10 @@ func startFake(t *testing.T, f *fakeSecretManager) *secretmanager.Client {
 	}
 	pool := x509.NewCertPool()
 	pool.AddCert(cert)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
 	srv := grpc.NewServer(grpc.Creds(credentials.NewTLS(&tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}})))
 	secretmanagerpb.RegisterSecretManagerServiceServer(srv, f)
-	go func() { _ = srv.Serve(ln) }()
-	t.Cleanup(srv.Stop)
-	conn, err := grpc.NewClient(ln.Addr().String(), grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{RootCAs: pool, ServerName: "127.0.0.1"})))
+	addr := testgrpc.Serve(t, srv)
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{RootCAs: pool, ServerName: "127.0.0.1"})))
 	if err != nil {
 		t.Fatal(err)
 	}

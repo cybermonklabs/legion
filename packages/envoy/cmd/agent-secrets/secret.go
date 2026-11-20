@@ -1201,8 +1201,9 @@ func cmdSecretList(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}
-	// sort.Slice's less answers a bool: an int-returning comparator would be read by broker-refgen
-	// as an exit code, which every int-returning function in this package is.
+	// sort.Slice's less answers a bool: broker-refgen checks every int-returning function literal
+	// inside a command on the path to os.Exit, this one included, as an exit code, so an
+	// int-returning comparator here would be refused as one.
 	sort.Slice(views, func(i, j int) bool { return views[i].Name < views[j].Name })
 	for i := range views {
 		views[i].Store = s.storeName()

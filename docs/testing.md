@@ -35,6 +35,10 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://INFRA-3904).
   It holds no listening socket and hands nothing to a child: a process the test starts takes a socket the test holds (`cmdtest.HoldPort` and `Pass`, `DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`, `LEGION_LISTEN_FD`) or binds port 0 and names its port, never a port the test picked and let go of.
 
+- A gRPC stand-in in `packages/envoy`, the `infra` module's included, is served by the module's `internal/testgrpc`: `Serve(t, server)` listens on a loopback port the kernel chooses, answers its address, and when the test ends closes the listener and every connection it accepted before it calls `Stop`.
+  grpc's `Stop` waits for each accepted connection still in its handshake until the server's connection timeout, 120 s by default, and a client another program left reconnecting to a loopback port, as a NATS client that sends nothing until the server speaks does, would otherwise hold the test's end that long.
+  It registers no service and sets no option: the server, its credentials and its interceptors stay the caller's, and so does a server that must listen elsewhere than on loopback.
+
 - A test that a command line keeps the rules of a cobra command line takes `packages/envoy/clitest`, one body for both modules: `packages/daemon` can import it through its `replace` of `packages/envoy`, and it imports the standard library alone.
   `Conformance` runs the built binary, of any framework, and checks help on every command; a typo, an unknown flag at the root and on each command, an unknown shell for `completion` and an unknown topic for `help` that each exit 2, print the word they refuse, are no Go runtime crash and make no contact with its `Recorder`; a flag read after a positional; the completion script of each shell; and `__complete`.
   The package documentation is the whole list and the rule each check holds.

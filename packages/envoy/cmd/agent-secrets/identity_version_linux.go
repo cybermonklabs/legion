@@ -64,8 +64,8 @@ func versionSuffix(sock string, pin func(*net.UnixConn) (*helper.Peer, error)) s
 // through SO_PEERCRED where it does not (an older kernel, and gVisor, which every Legion pod
 // runs), since every Linux answers SO_PEERCRED. The pid is only shown to a reader of the
 // older-helper line, and nothing is decided on it, so SO_PEERCRED's pid, which the kernel can
-// reuse once that process ends, does as well as a pinned one. It answers two values, not one int,
-// because broker-refgen reads every function of this package that returns one int as an exit code.
+// reuse once that process ends, does as well as a pinned one. It answers two values, not one
+// exit-path int, so broker-refgen's exit-code check does not read its pid as a process status.
 func peerPID(conn *net.UnixConn, pin func(*net.UnixConn) (*helper.Peer, error)) (int, bool) {
 	if peer, err := pin(conn); err == nil {
 		pid := peer.PID()

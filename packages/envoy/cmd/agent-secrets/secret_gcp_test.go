@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/testgrpc"
 )
 
 const (
@@ -355,22 +355,18 @@ func (f *fakeSecretManager) TestIamPermissions(_ context.Context, req *iampb.Tes
 	return &iampb.TestIamPermissionsResponse{Permissions: held}, nil
 }
 
-// startFakeSecretManager serves f over a real gRPC server on loopback for the rest of t, and
-// points gcpClientDial at it. The fake takes no authentication, but each call carries the bearer
+// startFakeSecretManager serves f over a real gRPC server on loopback for the rest of t
+// (testgrpc.Serve, whose stop waits on no peer another program left on the port), and points
+// gcpClientDial at it. The fake takes no authentication, but each call carries the bearer
 // token of the credentials it was dialed with (bearerOf), which the fake records
 // (recordAuthorization), so a test sees which sign-in a call ran under.
 func startFakeSecretManager(t *testing.T, f *fakeSecretManager) {
 	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
 	server := grpc.NewServer(grpc.UnaryInterceptor(f.recordAuthorization))
 	secretmanagerpb.RegisterSecretManagerServiceServer(server, f)
-	go server.Serve(lis)
-	t.Cleanup(server.Stop)
+	addr := testgrpc.Serve(t, server)
 
-	useGCPDialTo(t, lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	useGCPDialTo(t, addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 }
 
 // replaceGCPDial leaves the rest of t with gcpClientDial as dial, and puts the real one back after:

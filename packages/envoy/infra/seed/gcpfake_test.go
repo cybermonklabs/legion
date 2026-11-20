@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"path"
 	"slices"
 	"strings"
@@ -23,6 +22,8 @@ import (
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/sjawhar/envoy/internal/testgrpc"
 )
 
 const (
@@ -372,14 +373,11 @@ func (f *fakeGCP) setMode(mode string) {
 // no credentials file, no gcloud configuration and the library's logging unset.
 func serveGCP(t *testing.T, f *fakeGCP) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
 	server := grpc.NewServer(grpc.Creds(credentials.NewServerTLSFromCert(&gcpCert)), grpc.UnaryInterceptor(f.intercept))
 	secretmanagerpb.RegisterSecretManagerServiceServer(server, f)
-	go func() { _ = server.Serve(listener) }()
-	t.Cleanup(server.Stop)
+	addr := testgrpc.Serve(t, server)
 	for key, value := range map[string]string{
-		"SECRET_MANAGER_ENDPOINT":           "https://" + listener.Addr().String(),
+		"SECRET_MANAGER_ENDPOINT":           "https://" + addr,
 		"GOOGLE_OAUTH_ACCESS_TOKEN":         gcpToken,
 		"GOOGLE_APPLICATION_CREDENTIALS":    "",
 		"CLOUDSDK_CONFIG":                   t.TempDir(),
@@ -391,7 +389,7 @@ func serveGCP(t *testing.T, f *fakeGCP) string {
 	} {
 		t.Setenv(key, value)
 	}
-	return listener.Addr().String()
+	return addr
 }
 
 // runGCP runs the command with the Secret Manager store, against f, for gcpSecret.

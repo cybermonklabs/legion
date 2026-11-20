@@ -512,24 +512,41 @@ func TestPromptJobLongPasteDrainsWhileInputKeepsArriving(t *testing.T) {
 // deadline passed), and the paste's rest goes only once the prompt has either read on past it or
 // given the terminal back to the shell, so a prompt that gives the paste up shows that rest
 // running there. The notice says the paste must end first: inside it Ctrl-C is pasted text, which
-// deletes nothing.
+// deletes nothing. In the third case a signal interrupts the reader's zero read at the deadline
+// (AGENT_SECRETS_JOB_INTERRUPT_DEADLINE_READ): the retry must still end at the deadline, where a
+// retry that waited the bound its read began with took the paste's rest as if it had come in time
+// and refused the entry as more than one line, the notice never given.
 func TestPromptJobValueDeadlineInsideAPasteDrainsItThroughItsEnd(t *testing.T) {
-	for _, after := range []bool{false, true} {
-		t.Run(fmt.Sprintf("the paste begun after the deadline=%t", after), func(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		after, interrupted bool
+	}{
+		{"the paste begun after the deadline=false", false, false},
+		{"the paste begun after the deadline=true", true, false},
+		{"the zero read at the deadline interrupted", false, true},
+	} {
+		after := tc.after
+		t.Run(tc.name, func(t *testing.T) {
 			stallRetries(t, func(s *promptShell) bool {
 				s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 AGENT_SECRETS_JOB_ANNOUNCE_DEADLINE=1 "
+				if tc.interrupted {
+					s.env += "AGENT_SECRETS_JOB_INTERRUPT_DEADLINE_READ=1 "
+				}
 				// The paste's read after the deadline is held until its rest comes, so the rest
 				// arrives inside the paste's bound however slowly this test runs.
 				release := s.holdReads()
 				s.start(false, false)
-				// A stall before the prompt's first read can carry the deadline past the start,
-				// where start does not keep what the terminal showed.
-				if after && s.waitFirst("DEADLINE_REACHED", setupOutranDeadline) == setupOutranDeadline {
-					return false
+				// The helper's clock stands still until the prompt's first wait, so the deadline
+				// passes after the label, which start keeps what follows.
+				if after {
+					s.wait("DEADLINE_REACHED")
 				}
 				s.send("\x1b[200~pastehead")
 				if s.waitFirst("DEADLINE_PASSED", setupOutranDeadline) == setupOutranDeadline {
 					return false
+				}
+				if tc.interrupted {
+					s.wait("DEADLINE_READ_INTERRUPTED")
 				}
 				if s.waitFirst("READING_ON", "RETURNED") == "RETURNED" {
 					s.wait("PROMPT$ ")
@@ -560,56 +577,51 @@ func TestPromptJobValueDeadlineInsideAPasteDrainsItThroughItsEnd(t *testing.T) {
 // live, the notice says Ctrl-C deletes the secret now, and a Ctrl-C ends the process by SIGINT,
 // running the cleanup that deletes it (DEATH_HOOK_RAN). With SIGINT inherited as ignored the key
 // does nothing, so the notice names Enter and ending the process instead, never Ctrl-C, and a
-// Ctrl-C leaves the entry open until Enter. (The paste case is
-// TestPromptJobValueDeadlineInsideAPasteDrainsItThroughItsEnd.)
+// Ctrl-C leaves the entry open until Enter. The helper's clock stands still until the prompt's
+// first wait, which lasts until the entry's first input comes: a stall before that wait uses none
+// of the deadline, and input that comes after the deadline is refused as late, with the same
+// notice. (The paste case is TestPromptJobValueDeadlineInsideAPasteDrainsItThroughItsEnd.)
 func TestPromptJobValueDeadlineMidEntryNoticeNamesWhatEndsTheEntry(t *testing.T) {
 	const notice, live, end = "The value deadline passed with an entry under way", "Ctrl-C deletes it now", "Then run agent-secrets secret set DEMO_KEY again"
 	t.Run("the interrupt key live", func(t *testing.T) {
-		stallRetries(t, func(s *promptShell) bool {
-			s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 AGENT_SECRETS_JOB_DEATH_HOOK=1 "
-			s.start(false, false)
-			s.send("head")
-			if s.waitFirst(notice, setupOutranDeadline) == setupOutranDeadline {
-				return false
-			}
-			s.wait(end)
-			if !strings.Contains(s.out.String(), "until you press Enter to end this entry, and the create deletes it then; "+live) {
-				t.Fatalf("the notice %q; want it to say Enter ends the entry and Ctrl-C deletes the secret now", s.out.String())
-			}
-			s.send("\x03")
-			s.wait("DEATH_HOOK_RAN")
-			s.wait("PROMPT$ ")
-			s.send("echo STATUS_$?\r")
-			s.wait("STATUS_130")
-			return true
-		})
+		s := newPromptShell(t)
+		s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 AGENT_SECRETS_JOB_DEATH_HOOK=1 "
+		s.start(false, false)
+		s.send("head")
+		s.wait(notice)
+		s.wait(end)
+		if !strings.Contains(s.out.String(), "until you press Enter to end this entry, and the create deletes it then; "+live) {
+			t.Fatalf("the notice %q; want it to say Enter ends the entry and Ctrl-C deletes the secret now", s.out.String())
+		}
+		s.send("\x03")
+		s.wait("DEATH_HOOK_RAN")
+		s.wait("PROMPT$ ")
+		s.send("echo STATUS_$?\r")
+		s.wait("STATUS_130")
 	})
 	t.Run("SIGINT inherited ignored", func(t *testing.T) {
-		stallRetries(t, func(s *promptShell) bool {
-			s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 "
-			s.wrapperIgnores = "INT"
-			s.start(true, false)
-			s.send("head")
-			if s.waitFirst(notice, setupOutranDeadline) == setupOutranDeadline {
-				return false
-			}
-			s.wait(end)
-			if said := s.out.String(); strings.Contains(said, live) || !strings.Contains(said, "until you press Enter to end this entry, or end this process (close this terminal, or send it SIGTERM)") {
-				t.Fatalf("the notice %q; want it to name Enter and ending the process, and never Ctrl-C, which does nothing with SIGINT ignored", said)
-			}
-			s.send("\x03")
-			s.send("tail\r")
-			s.wait("RETURNED nothing was stored: no value came in time, within 2s")
-			s.wait("WRAPPER_DONE")
-			s.noShellValue("head", "tail")
-			return true
-		})
+		s := newPromptShell(t)
+		s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 "
+		s.wrapperIgnores = "INT"
+		s.start(true, false)
+		s.send("head")
+		s.wait(notice)
+		s.wait(end)
+		if said := s.out.String(); strings.Contains(said, live) || !strings.Contains(said, "until you press Enter to end this entry, or end this process (close this terminal, or send it SIGTERM)") {
+			t.Fatalf("the notice %q; want it to name Enter and ending the process, and never Ctrl-C, which does nothing with SIGINT ignored", said)
+		}
+		s.send("\x03")
+		s.send("tail\r")
+		s.wait("RETURNED nothing was stored: no value came in time, within 2s")
+		s.wait("WRAPPER_DONE")
+		s.noShellValue("head", "tail")
 	})
 }
 
 // A prompt started with & that is never brought to the foreground gives up at its value deadline,
 // rather than waiting for fg past the time the broker holds a create's secret for: it ends with the
-// timeout, having shown no label and never taken the terminal.
+// timeout, having shown no label and never taken the terminal. The helper's clock stands still
+// until the prompt's first wait for the watcher's event, so the deadline passes while it waits.
 func TestPromptJobValueDeadlineEndsAPromptWaitingForTheForeground(t *testing.T) {
 	s := newPromptShell(t)
 	s.env = "AGENT_SECRETS_JOB_DEADLINE=1s "
@@ -619,6 +631,30 @@ func TestPromptJobValueDeadlineEndsAPromptWaitingForTheForeground(t *testing.T) 
 	if strings.Contains(s.out.String(), "Value for") {
 		t.Fatalf("a prompt that never held the terminal showed its label: %q", s.out.String())
 	}
+}
+
+// A prompt waiting in the background for the foreground gives up at its value deadline however
+// often signals interrupt its waits for the watcher's event (AGENT_SECRETS_JOB_INTERRUPT_WATCH):
+// the wait for the foreground hands each of them the deadline (waitForeground), so one interrupted
+// once the deadline has passed ends, where a wait handed no deadline was tried again for as long as
+// the signals kept coming, and the prompt never answered. The deadline's clock stands still until
+// the prompt's first wait, so however long the machine holds the helper before that wait, the
+// deadline passes only while the prompt waits; the helper's own run fails where the prompt
+// answered the deadline before it passed on that clock, as one that gives up before its first
+// wait or at an interrupted one does, and the test reads that run's end (helperFailure). The
+// count of the waits the helper interrupted, which shows the signals reached them, is logged.
+func TestPromptJobValueDeadlineEndsAForegroundWaitSignalsKeepInterrupting(t *testing.T) {
+	s := newPromptShell(t)
+	s.env = "AGENT_SECRETS_JOB_DEADLINE=1s AGENT_SECRETS_JOB_INTERRUPT_WATCH=1 "
+	s.start(false, true)
+	s.wait("RETURNED nothing was stored: no value came in time, within 1s")
+	s.wait("LABEL_HELD=false")
+	if failure := s.helperFailure(); failure != "" {
+		t.Fatalf("the helper's own run failed: %q", failure)
+	}
+	_, rest, _ := strings.Cut(s.out.String(), "WATCH_INTERRUPTED=")
+	interrupted, _ := strconv.Atoi(rest[:len(rest)-len(strings.TrimLeft(rest, "0123456789"))])
+	t.Logf("the helper interrupted %d waits for the watcher's event", interrupted)
 }
 
 // A signal key that follows a paste's closing mark in the same read is a keypress: it acts as it
