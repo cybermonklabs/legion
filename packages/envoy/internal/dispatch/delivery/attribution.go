@@ -258,8 +258,8 @@ const attributionCandidateBound = 25
 // so the text reads as the list at the top of this file reads. The two link sources compare
 // URLs lowercased on both sides: GitHub's owner and repository names are case-insensitive, its
 // answers spell them as their owners do (`Acme/Widgets`), and Dispatch stores an issue's GitHub
-// link lowercased (canonicalRepo) or as a person typed it (issue_external_links_url_lower serves
-// the comparison).
+// link lowercased (refs.ExternalRepo) or as a person typed it (issue_external_links_url_lower
+// serves the comparison).
 //
 // Each link source compares a link with every spelling of the URL it looks for: the URL itself,
 // and the URL under the other name of each rename pair that names it (refs.URLSpellingsSQL). So
@@ -396,15 +396,21 @@ func attributionBatchQuery(renames refs.Renames) string {
 }
 
 // Attributor attributes pull requests to issues by the rename pairs this process read at boot
-// (refs.Renames), and keys every pull_request_heads row it writes by the canonical name of the
-// row's repository (canonical). NewAttributor builds its two statements once from those pairs.
-// cmd/dispatch's main builds one Attributor and gives it to the delivery reconcile (NewReconcile)
-// and the intakes (StartIntakes); the API builds its own of the same pairs (api.NewDeps). No
-// package variable holds the pairs, so a test builds an Attributor from pairs of its own.
+// (refs.Renames), keys every pull_request_heads row it writes by the canonical name of the row's
+// repository (canonical), and reads the heads an issue's results are compared with, its linked
+// pull requests' included (linked_pull_requests.go), by the same pairs. NewAttributor builds its
+// statements once from those pairs. cmd/dispatch's main builds one Attributor and gives it to
+// the delivery reconcile (NewReconcile) and the intakes (StartIntakes); the API builds its own of
+// the same pairs (api.NewDeps). No package variable holds the pairs, so a test builds an
+// Attributor from pairs of its own.
 type Attributor struct {
 	renames         refs.Renames
 	candidatesQuery string
 	batchQuery      string
+	linkedQuery     string
+	headQuery       string
+	headsQuery      string
+	mergedInQuery   string
 }
 
 // NewAttributor is the Attributor of renames.
@@ -413,6 +419,10 @@ func NewAttributor(renames refs.Renames) *Attributor {
 		renames:         renames,
 		candidatesQuery: attributionCandidatesQuery(renames),
 		batchQuery:      attributionBatchQuery(renames),
+		linkedQuery:     linkedPullRequestsQuery(renames),
+		headQuery:       headAttributedQuery(renames),
+		headsQuery:      headsAttributedQuery(renames),
+		mergedInQuery:   baseBranchMergedInQuery(renames),
 	}
 }
 

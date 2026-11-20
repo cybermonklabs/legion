@@ -276,3 +276,49 @@ func TestNoBucketYetNoPass(t *testing.T) {
 		t.Fatalf("Open was called %d times over three passes, want once a pass: a pass that kept the writer it bound would write through a connection the client may have replaced", binds)
 	}
 }
+
+// A stored name no repository GitHub could hold is skipped before the pass asks GitHub anything
+// about it, counted and named at WARN under the name the pass reads (splitRepo,
+// refs.SplitGitHubRepo): project defaults stored as `acme/..`, `acme/.git` and `acme/`, as a
+// write before the routes held a name to GitHub's names or direct SQL could leave them, an
+// issue's own `Zeta/..`, and the rename pair's new name `acme/...git`, which the default
+// `oldco/tools` is read under. Each WARN names its own name and no other field.
+//
+// The negative control is splitRepo reading a name as two non-empty halves, as it did, which
+// takes `acme/..`, `acme/.git`, `Zeta/..` and `acme/...git` and asks GitHub about
+// `/repos/acme/../installation`.
+func TestARefusedStoredNameIsSkippedAndNamed(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.seedProjectDefault("acme/..")
+	h.seedProjectDefault("acme/.git")
+	h.seedProjectDefault("acme/")
+	h.issueInRepository("Zeta/..")
+	h.seedRenamePair("oldco/tools", "acme/...git")
+	h.seedProjectDefault("oldco/tools")
+
+	h.pass()
+
+	refused := []string{"acme/..", "acme/.git", "acme/", "Zeta/..", "acme/...git"}
+	skipped := map[string]map[string]any{}
+	for _, line := range h.lines("ci reconcile skipped a repository whose name is not an owner/name GitHub allows") {
+		skipped[fmt.Sprint(line["repository"])] = line
+	}
+	if len(skipped) != len(refused) {
+		t.Fatalf("the pass named %d refused names, want %q:\n%s", len(skipped), refused, h.logs.String())
+	}
+	for _, row := range refused {
+		line, named := skipped[row]
+		if !named {
+			t.Errorf("no WARN names %s:\n%s", row, h.logs.String())
+			continue
+		}
+		for _, field := range []string{"removed_by", "mended_by"} {
+			if got, carried := line[field]; carried {
+				t.Errorf("the WARN for %s carries %s %v, want the name alone: %v", row, field, got, line)
+			}
+		}
+	}
+	if got := number(t, h.passLine(), "defaults_skipped"); got != len(refused) {
+		t.Errorf("the pass line reports %d repositories skipped, want %d", got, len(refused))
+	}
+}

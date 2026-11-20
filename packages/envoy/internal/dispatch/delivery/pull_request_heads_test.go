@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"strconv"
 	"sync/atomic"
@@ -281,11 +282,11 @@ func TestReadThroughCommitPullsStoresEveryPullRequestNamedForACommit(t *testing.
 		t.Fatalf("#8 = %+v, want a merged row attributed to nobody", merged)
 	}
 	// Only a head of a pull request attributed to the issue answers for it.
-	attributed, err := HeadAttributedTo(ctx, pool, "HEAD-2", "5555555555555555555555555555555555555555")
+	attributed, err := unrenamed().HeadAttributedTo(ctx, pool, "HEAD-2", "5555555555555555555555555555555555555555")
 	if err != nil || !attributed {
 		t.Fatalf("HeadAttributedTo(HEAD-2) = %v, %v; want true", attributed, err)
 	}
-	other, err := HeadAttributedTo(ctx, pool, "HEAD-1", "5555555555555555555555555555555555555555")
+	other, err := unrenamed().HeadAttributedTo(ctx, pool, "HEAD-1", "5555555555555555555555555555555555555555")
 	if err != nil || other {
 		t.Fatalf("HeadAttributedTo(HEAD-1) = %v, %v; want false", other, err)
 	}
@@ -319,6 +320,65 @@ func TestHeadStoredAtFindsARowWrittenUnderGitHubsOwnSpelling(t *testing.T) {
 	if err != nil || elsewhere {
 		t.Fatalf("HeadStoredAt(acme/gadgets) = %v, %v; want false: another repository's commit is not this one's",
 			elsewhere, err)
+	}
+}
+
+// A link names a pull request only where its owner and its name are GitHub's own characters, by
+// the patterns refs reads every name with (refs.GitHubOwnerPattern, refs.GitHubNamePattern) — an
+// owner of a letter or digit and then letters, digits, `-` and `_`, as a managed user's login
+// (`mona-cat_octo`) is, and a name of those and `.` — and the name is not `.` or `..`. The reads
+// build `/repos/{owner}/{repo}/...` from the two parts and url.PathEscape keeps a dot, so
+// `https://github.com/../x/pull/1` would send the installation read to `/repos/../x/installation`.
+// Such a URL stays a link of the issue and names no pull request, and neither does one whose
+// owner or name holds a character GitHub's never do, nor one whose owner starts with `-`; a name
+// with a dot inside it, as `tools.js` and `.github` are, is GitHub's own and names one.
+//
+// The negative control is the owner pattern as it was written here, letters, digits and `-`,
+// which drops the two links whose owner holds an `_` and names `-linkcheck/tools#13`.
+func TestALinkNamesAPullRequestOnlyOfARepositoryGitHubCanName(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	issue := seedHeadIssue(t, ctx, pool, 80)
+	// deliveryTestPool clears only the delivery tables, so the links an earlier run wrote go
+	// first.
+	if _, err := pool.Exec(ctx, `delete from issue_external_links where issue_key = $1`, issue); err != nil {
+		t.Fatalf("drop the links of %s: %v", issue, err)
+	}
+	for _, url := range []string{
+		"https://github.com/../linkcheck/pull/1",
+		"https://github.com/./linkcheck/pull/2",
+		"https://github.com/linkcheck/../pull/3",
+		"https://github.com/linkcheck/./pull/4",
+		"https://github.com/link.check/tools/pull/5",
+		"https://github.com/link_check/tools/pull/6",
+		"https://github.com/link%2Fcheck/tools/pull/7",
+		"https://github.com/linkcheck/to%2E%2E/pull/8",
+		"https://github.com/linkcheck/tools.js/pull/9",
+		"https://github.com/linkcheck/.github/pull/10",
+		"https://github.com/linkcheck/tools/pull/11",
+		"https://github.com/mona-cat_octo/tools/pull/12",
+		"https://github.com/-linkcheck/tools/pull/13",
+	} {
+		if _, err := pool.Exec(ctx, `
+			insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'url')
+		`, issue, url); err != nil {
+			t.Fatalf("link %s to %s: %v", issue, url, err)
+		}
+	}
+
+	pulls, err := unrenamed().LinkedPullRequests(ctx, pool, issue)
+	if err != nil {
+		t.Fatalf("read the pull requests %s links: %v", issue, err)
+	}
+	named := map[string]bool{}
+	for _, pull := range pulls {
+		named[fmt.Sprintf("%s#%d", pull.Repo, pull.Number)] = true
+	}
+	want := map[string]bool{
+		"link_check/tools#6": true, "linkcheck/tools.js#9": true, "linkcheck/.github#10": true,
+		"linkcheck/tools#11": true, "mona-cat_octo/tools#12": true,
+	}
+	if !maps.Equal(named, want) {
+		t.Fatalf("the links of %s name the pull requests %v, want %v alone", issue, named, want)
 	}
 }
 
@@ -415,7 +475,7 @@ func TestAPullRequestNamingAnIssueOfAnotherRepositoryAttributesNobody(t *testing
 	if head.IssueKey != nil || head.AttributionSource != "none" {
 		t.Fatalf("#11 = %+v, want a row attributed to nobody: HEAD-3 resolves to acme/widgets", head)
 	}
-	attributed, err := HeadAttributedTo(ctx, pool, "HEAD-3", "7777777777777777777777777777777777777777")
+	attributed, err := unrenamed().HeadAttributedTo(ctx, pool, "HEAD-3", "7777777777777777777777777777777777777777")
 	if err != nil || attributed {
 		t.Fatalf("HeadAttributedTo(HEAD-3) = %v, %v; want false", attributed, err)
 	}
@@ -485,11 +545,11 @@ func TestAPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn(t *testing.T)
 	}
 
 	// What the results route asks of this package.
-	attributed, err := HeadAttributedTo(ctx, pool, own, sha)
+	attributed, err := unrenamed().HeadAttributedTo(ctx, pool, own, sha)
 	if err != nil || !attributed {
 		t.Fatalf("HeadAttributedTo(%s) = %v, %v; want true", own, attributed, err)
 	}
-	elsewhere, err := HeadAttributedTo(ctx, pool, foreign, sha)
+	elsewhere, err := unrenamed().HeadAttributedTo(ctx, pool, foreign, sha)
 	if err != nil || elsewhere {
 		t.Fatalf("HeadAttributedTo(%s) = %v, %v; want false: it is another repository's issue",
 			foreign, elsewhere, err)
@@ -614,7 +674,7 @@ func TestAForkPullRequestNamedForACommitIsNoBasisForAResult(t *testing.T) {
 	if head.IssueKey != nil || head.AttributionSource != "none" {
 		t.Fatalf("#21 = %+v, want a row attributed to nobody: its head is a fork's", head)
 	}
-	attributed, err := HeadAttributedTo(ctx, pool, "HEAD-4", "9999999999999999999999999999999999999999")
+	attributed, err := unrenamed().HeadAttributedTo(ctx, pool, "HEAD-4", "9999999999999999999999999999999999999999")
 	if err != nil || attributed {
 		t.Fatalf("HeadAttributedTo(HEAD-4) = %v, %v; want false", attributed, err)
 	}
@@ -665,7 +725,7 @@ func TestAForkPullRequestEnvelopeIsNoBasisForAResult(t *testing.T) {
 	if unsaid.CheckedAt != nil {
 		t.Fatalf("#23's checked_at = %v, want it unstamped so the reconcile reads the head repository itself", unsaid.CheckedAt)
 	}
-	attributed, err := HeadAttributedTo(ctx, pool, "HEAD-5", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	attributed, err := unrenamed().HeadAttributedTo(ctx, pool, "HEAD-5", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	if err != nil || attributed {
 		t.Fatalf("HeadAttributedTo(HEAD-5) = %v, %v; want false", attributed, err)
 	}
@@ -738,7 +798,7 @@ func TestAReadThroughKeepsAnAttributionOnlyTheCommitMessagesName(t *testing.T) {
 	if head.IssueKey == nil || *head.IssueKey != "HEAD-6" || head.AttributionSource != string(sourceCommitMessage) {
 		t.Fatalf("#31 = %+v, want HEAD-6 kept from its commit messages", head)
 	}
-	attributed, err := HeadAttributedTo(ctx, pool, "HEAD-6", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	attributed, err := unrenamed().HeadAttributedTo(ctx, pool, "HEAD-6", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 	if err != nil || !attributed {
 		t.Fatalf("HeadAttributedTo(HEAD-6) = %v, %v; want true: the merged head still answers for the issue", attributed, err)
 	}
@@ -752,7 +812,8 @@ func TestAReadThroughKeepsAnAttributionOnlyTheCommitMessagesName(t *testing.T) {
 }
 
 // A row whose repository the App cannot read is stamped, not warned about forever: the reconcile
-// orders the never-read first, so an unstamped row holds the front of every batch.
+// orders the never-read first, so an unstamped row holds the front of every batch. So is a row
+// stored under a name GitHub does not allow, `acme/..`, which no read can reach.
 func TestAnUnreadableRepositoryStampsThePullRequestHead(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -767,7 +828,7 @@ func TestAnUnreadableRepositoryStampsThePullRequestHead(t *testing.T) {
 		w.WriteHeader(http.StatusForbidden)
 		fmt.Fprint(w, `{"message":"Resource not accessible by integration"}`)
 	})
-	for _, repo := range []string{"acme/hidden", "acme/walled"} {
+	for _, repo := range []string{"acme/hidden", "acme/walled", "acme/.."} {
 		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 			Repo: repo, Number: 51, HeadSHA: "cccccccccccccccccccccccccccccccccccccccc",
 			HeadRef: "topic", BaseRef: "main", State: "open",
@@ -781,7 +842,7 @@ func TestAnUnreadableRepositoryStampsThePullRequestHead(t *testing.T) {
 	if err := reconcile.reconcilePullRequestHeads(ctx, now); err != nil {
 		t.Fatalf("reconcile the pull request heads: %v", err)
 	}
-	for _, repo := range []string{"acme/hidden", "acme/walled"} {
+	for _, repo := range []string{"acme/hidden", "acme/walled", "acme/.."} {
 		if head := readHead(t, ctx, pool, repo, 51); head.CheckedAt == nil {
 			t.Fatalf("%s#51 = %+v, want it stamped read so it leaves the front of the batch", repo, head)
 		}
@@ -888,7 +949,7 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 	if stored.CheckedAt != nil {
 		t.Fatalf("#61's checked_at = %v, want it unstamped: no read of GitHub has reached it", stored.CheckedAt)
 	}
-	if attributed, err := HeadAttributedTo(ctx, pool, issue, mergedHead); err != nil || attributed {
+	if attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, mergedHead); err != nil || attributed {
 		t.Fatalf("HeadAttributedTo(%s) before the pass = %v, %v; want false", issue, attributed, err)
 	}
 
@@ -953,7 +1014,7 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 	if settled.CheckedAt == nil {
 		t.Fatalf("#61 after the pass = %+v, want it stamped read", settled)
 	}
-	attributed, err := HeadAttributedTo(ctx, pool, issue, mergedHead)
+	attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, mergedHead)
 	if err != nil || !attributed {
 		t.Fatalf("HeadAttributedTo(%s) after the pass = %v, %v; want true: a result stands at it",
 			issue, attributed, err)
@@ -1063,7 +1124,7 @@ func TestAMergeEnvelopeNamingNoHeadRepositoryKeepsTheStoredAttribution(t *testin
 	if settled.IssueKey == nil || *settled.IssueKey != issue || settled.AttributionSource != "branch" {
 		t.Fatalf("#71 after the merge = %+v, want %s still: an incomplete write deletes no attribution", settled, issue)
 	}
-	attributed, err := HeadAttributedTo(ctx, pool, issue, mergedHead)
+	attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, mergedHead)
 	if err != nil || !attributed {
 		t.Fatalf("HeadAttributedTo(%s) at the merged head = %v, %v; want true: a result stands at it",
 			issue, attributed, err)
@@ -1175,7 +1236,7 @@ func TestReconcileRekeysAHeadStoredUnderARepositorysOldName(t *testing.T) {
 	if row.HeadSHA != head || row.IssueKey == nil || *row.IssueKey != issue {
 		t.Fatalf("#520 after the pass = %+v, want %s at %s", row, issue, head)
 	}
-	attributed, err := HeadAttributedTo(ctx, pool, issue, head)
+	attributed, err := NewAttributor(renamesOf(t, ctx, pool)).HeadAttributedTo(ctx, pool, issue, head)
 	if err != nil || !attributed {
 		t.Fatalf("HeadAttributedTo(%s, %s) = %v, %v; want true", issue, head, attributed, err)
 	}
@@ -1204,7 +1265,7 @@ func TestAPullRequestIsAttributedToAnIssueRecordedUnderTheOldName(t *testing.T) 
 		t.Fatalf("%s#521 = %+v, want %s from its title: the issue's own repo is %s, which is %s under another name",
 			gadgetsRepo, row, issue, gadgetsOldRepo, gadgetsRepo)
 	}
-	attributed, err := HeadAttributedTo(ctx, pool, issue, head)
+	attributed, err := attributor.HeadAttributedTo(ctx, pool, issue, head)
 	if err != nil || !attributed {
 		t.Fatalf("HeadAttributedTo(%s, %s) = %v, %v; want true", issue, head, attributed, err)
 	}
@@ -1458,7 +1519,7 @@ func TestAMergeRecordsItsMergeCommitOnItsBaseBranch(t *testing.T) {
 // name the results read asks under. GitHub spells an owner and a repository as their owners do
 // (`Acme/Widgets`) and refs.Renames.Canonical hands a caller's own spelling back where no rename
 // is recorded, while the results read asks under the lowercased name an issue's repository is
-// stored under (api's canonicalRepo); branch_commits is keyed by one lowercased name so that the
+// stored under (refs.ExternalRepo); branch_commits is keyed by one lowercased name so that the
 // two meet (readBranchCommit). Without it, every result of a squash-merged issue of a repository
 // whose owner writes their name with capitals would stand at no basis for good once its base
 // branch was deleted, which is the case the seed exists for.

@@ -234,6 +234,17 @@ type DepsInput struct {
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
+	// EnvoyAccountTokenFile is the file holding Dispatch's own projected service-account token for
+	// the listener's audience (cmd/dispatch: ENVOY_ACCOUNT_TOKEN_FILE), which every listener call
+	// reads and presents in EnvoyToken's place (envoy.WithAccountTokenFile); empty presents
+	// EnvoyToken. It is the one credential the listener takes a send's role mark from.
+	EnvoyAccountTokenFile string
+	// EnvoyGoogleAudience is the audience of the identity token the metadata server mints for
+	// Dispatch's Google Cloud machine (cmd/dispatch: ENVOY_ACCOUNT_GOOGLE_AUDIENCE), which every
+	// listener call presents in EnvoyToken's place (envoy.WithGoogleIdentity); empty presents none.
+	// With neither it nor EnvoyAccountTokenFile, Dispatch presents no identity and refuses every
+	// send for a role (envoy.ErrNoListenerIdentity).
+	EnvoyGoogleAudience string
 	// EnvoyTimeout replaces the listener client's window. Zero keeps the client's own default;
 	// a test exercising a receipt timeout sets a short one rather than waiting that out.
 	EnvoyTimeout time.Duration
@@ -323,6 +334,12 @@ func NewDeps(input DepsInput) (Deps, error) {
 	var envoyClient *envoy.Client
 	if envoyURL := strings.TrimSpace(input.EnvoyURL); envoyURL != "" {
 		options := []envoy.Option{envoy.WithToken(input.EnvoyToken)}
+		if input.EnvoyAccountTokenFile != "" {
+			options = append(options, envoy.WithAccountTokenFile(input.EnvoyAccountTokenFile))
+		}
+		if input.EnvoyGoogleAudience != "" {
+			options = append(options, envoy.WithGoogleIdentity(input.EnvoyGoogleAudience))
+		}
 		if input.EnvoyTimeout > 0 {
 			options = append(options, envoy.WithTimeout(input.EnvoyTimeout))
 		}
@@ -1015,9 +1032,10 @@ type apiError struct {
 	code    string
 	message string
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
-	// that carries none. Only a refusal that knows when the caller may come back sets it
-	// (brokerTokenActor's 429, and the results write's 409 CHECK_CONTENDED);
-	// writeHandlerError writes the header.
+	// that carries none. Only a refusal that knows when the caller may come back sets it:
+	// brokerTokenActor's 429, the results write's 409 CHECK_CONTENDED, and linkedReadRefusal's
+	// 502 for a linked repository's read GitHub rate-limited with a wait. writeHandlerError
+	// writes the header.
 	retryAfter int
 	// scope is the OAuth scope a missing-scope refusal names, and is empty for every other
 	// refusal. Only missingScopeError sets it; writeHandlerError writes the challenge header

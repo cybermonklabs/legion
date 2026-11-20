@@ -711,12 +711,12 @@ func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) 
 		t.Fatalf("the head after a pass with no delivery settings = %q, want %q: the head pass reads no setting",
 			head.HeadSHA, headNow)
 	}
-	atOld, err := HeadAttributedTo(ctx, pool, key, headWas)
+	atOld, err := unrenamed().HeadAttributedTo(ctx, pool, key, headWas)
 	if err != nil || atOld {
 		t.Fatalf("HeadAttributedTo(%s, the head it left) = %v, %v; want false: that commit is no basis",
 			key, atOld, err)
 	}
-	atNew, err := HeadAttributedTo(ctx, pool, key, headNow)
+	atNew, err := unrenamed().HeadAttributedTo(ctx, pool, key, headNow)
 	if err != nil || !atNew {
 		t.Fatalf("HeadAttributedTo(%s, the head it moved to) = %v, %v; want true", key, atNew, err)
 	}
@@ -791,7 +791,7 @@ func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *test
 		t.Fatalf("the merged head after a pass = %v, want %s: %s resolves to acme/widgets, %s to this repository",
 			head.IssueKey, own, foreign, own)
 	}
-	attributed, err := HeadAttributedTo(ctx, pool, own, sha)
+	attributed, err := unrenamed().HeadAttributedTo(ctx, pool, own, sha)
 	if err != nil || !attributed {
 		t.Fatalf("HeadAttributedTo(%s, its merged head) = %v, %v; want true: a result stands at it",
 			own, attributed, err)

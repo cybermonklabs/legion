@@ -68,7 +68,7 @@ function payloadStrings(event: DispatchEvent, key: string): readonly string[] | 
 }
 
 /** Whether `login` is the signed-in viewer's, compared as the server compares logins. */
-function isViewer(login: string | undefined, viewer: string | undefined): boolean {
+export function isViewer(login: string | undefined, viewer: string | undefined): boolean {
   return (
     login !== undefined &&
     viewer !== undefined &&

@@ -31,6 +31,7 @@ import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
   canonicalTopic,
+  type Envelope,
   legacyDispatchIssueSubject,
   type SessionAnswer,
   uncapturedTopicRefusal,
@@ -95,6 +96,7 @@ import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
 import { ErrorCode, NatsError, nkeys, connect as realConnect } from "nats";
 import { z } from "zod";
+import envelopeWithoutRole from "../../contracts/fixtures/envelope-without-role.json" with { type: "json" };
 import { version as packageVersion } from "../package.json" with { type: "json" };
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
 import { REPLAY_DELIVERED_ENTRY, REPLAY_STATE_ENTRY } from "../src/missed-messages";
@@ -23553,6 +23555,187 @@ describe("the send and publish answers", () => {
       } finally {
         await session.stop();
       }
+    });
+  }
+});
+
+// Every reader of an envelope a listener delivers in this extension, given one that carries
+// `role`: the field the listener stores on a message Dispatch's API sent to a role's holder for a
+// route to that role, and echoes in the answer to that send. Each row reads one envelope with the
+// field and without it, and checks that the reader reads every other field as before. No reader
+// here names the field: each parses with the shared renderer, the shared identity schema or the
+// shared transport (`@legion/envoy-client`), whose own rows are in its `transport.test.ts`.
+describe("an envelope that carries the role field", () => {
+  const SESSION = "ses_role_field";
+  const AGENT = `notifications.agent.${SESSION}`;
+  const ROLE = "legion-legion-legion-1-architect";
+  const ROLE_TOPIC = `notifications.role.${ROLE}`;
+  /** Every field `EnvelopeSchema` names except `role`, each one set, on `SESSION`'s own subject. */
+  const withoutRole = {
+    ...(envelopeWithoutRole as Omit<Envelope, "role">),
+    topic: AGENT,
+    dedupe_key: `agent.${SESSION}.0123456789abcdef0123456789abcdef`,
+  } satisfies Omit<Envelope, "role">;
+  const withRole = { ...withoutRole, role: ROLE };
+
+  /**
+   * Boots session `SESSION` on a listener that answers every registration with a consumer, every
+   * publish with `answer` and `status`, and every other request with `answer`.
+   */
+  async function boot(query: string, answer: unknown = {}, status = 200) {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
+      new URL(input.toString()).pathname === "/v1/messages/publish"
+        ? new Response(JSON.stringify(answer), {
+            headers: { "Content-Type": "application/json" },
+            status,
+          })
+        : responseWithRegistration(input, init, answer)) as typeof fetch;
+    // Each caller's own query loads an instance of its own, so the specifier cannot be static.
+    const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    const context = sessionContext(SESSION);
+    await fixture.handlers.get("session_start")?.({}, context);
+    const agent = natsState.controls.get(AGENT);
+    if (agent === undefined) throw new Error("the session's own subject reaches no relay");
+    const cards = () =>
+      fixture.deliveries.filter((delivery) => delivery.customType === "envoy-message");
+    const tool = (name: string) => {
+      const found = fixture.tools.find((candidate) => candidate.name === name);
+      if (found === undefined) throw new Error(`${name} was not registered`);
+      return found;
+    };
+    return {
+      agent,
+      cards,
+      tool,
+      stop: () => fixture.handlers.get("session_shutdown")?.({}, context),
+    };
+  }
+
+  test("the relay's frame reader (envoy.ts deliver: renderInbound, ClaimIdentitySchema, closeRemovedSubscriptions, noteInbox): a frame with the role field is shown the card and the inbox entry a frame without it is shown", async () => {
+    const shown = async (query: string, envelope: object) => {
+      const session = await boot(query);
+      try {
+        session.agent.push(JSON.stringify(envelope));
+        await until(() => session.cards().length === 1, "the frame's card");
+        const inbox = await session.tool("envoy_inbox").execute("", {});
+        // Each card's marker is minted fresh (`envoyCard`, src/card-wake.ts), so the row compares
+        // everything else the card holds.
+        const cards = session.cards().map(({ details, ...card }) => ({
+          ...card,
+          details: { ...(details as object), envoyCard: "minted" },
+        }));
+        return { cards, inbox: inbox.content[0]?.text };
+      } finally {
+        await session.stop();
+      }
+    };
+    const before = await shown("role-field-card-without", withoutRole);
+
+    expect(await shown("role-field-card-with", withRole)).toEqual(before);
+    expect(before.cards[0]?.content).toContain(`id: ${withoutRole.event_id}`);
+    expect(before.cards[0]?.content).toContain("message: Review the plan before noon.");
+    expect(JSON.parse(before.inbox ?? "[]")).toEqual([
+      {
+        event_id: withoutRole.event_id,
+        at: "2026-11-18T09:00:00Z",
+        from: "ses_sender (Planner)",
+        summary: "Review the plan",
+      },
+    ]);
+  });
+
+  test("the relay's repeat check (consumer-delivery.ts parseIdentity, envoy.ts ClaimIdentitySchema): a copy of a shown frame that carries the role field is the same delivery, shown once", async () => {
+    const session = await boot("role-field-copy");
+    try {
+      session.agent.push(JSON.stringify(withoutRole));
+      await until(() => session.cards().length === 1, "the first copy's card");
+      session.agent.push(JSON.stringify(withRole), "_INBOX.role-field-copy");
+      // A later message, so that its card says the copy before it has been read.
+      session.agent.push(
+        JSON.stringify({
+          ...withoutRole,
+          event_id: "evt-after-the-copy",
+          dedupe_key: "agent.ses_role_field.fedcba9876543210fedcba9876543210",
+        })
+      );
+      await until(() => session.cards().length === 2, "the later message's card");
+
+      expect(session.cards().map((card) => card.content.match(/\n {2}id: (\S+)/)?.[1])).toEqual([
+        withoutRole.event_id,
+        "evt-after-the-copy",
+      ]);
+      expect(
+        natsState.published
+          .filter((published) => published.subject === "_INBOX.role-field-copy")
+          .map((published) => new TextDecoder().decode(published.data))
+      ).toContain("done");
+    } finally {
+      await session.stop();
+    }
+  });
+
+  test("envoy_send (envoy.ts: the transport's send answer, sendConfirmationText): an answer with the role field gives the tool result it gives without it", async () => {
+    const answer = { recipient: "ses_receiver", recipient_state: "live", state: "connected" };
+    const sent = async (query: string, envelope: object) => {
+      const session = await boot(query, { ...envelope, ...answer });
+      try {
+        return await session
+          .tool("envoy_send")
+          .execute("", { session_id: "ses_receiver", message: "Review the plan" });
+      } finally {
+        await session.stop();
+      }
+    };
+    const before = await sent("role-field-send-without", withoutRole);
+
+    expect(await sent("role-field-send-with", withRole)).toStrictEqual(before);
+    expect(before.content[0]?.text).toBe(`sent ${withoutRole.event_id} to ses_receiver (live)`);
+    expect(before.details).toMatchObject({
+      event_id: withoutRole.event_id,
+      recipient: "ses_receiver",
+      recipient_state: "live",
+      confirmed: true,
+      state: "connected",
+    });
+  });
+
+  for (const [label, status, answer] of [
+    ["stored for the role's live holder", 200, { holder: "ses_holder", holder_state: "live" }],
+    [
+      "kept for the role's next holder",
+      202,
+      {
+        holder: "ses_holder",
+        holder_state: "unresponsive",
+        last_seen: Date.parse("2026-11-18T08:50:00Z"),
+        kept: true,
+        kept_reason: "holder_lapsed",
+        kept_until: Date.parse("2026-11-18T10:00:00Z"),
+      },
+    ],
+  ] as const) {
+    test(`envoy_publish (envoy.ts: the transport's publish answer, publishConfirmationText, publishResultDetails): an answer ${label} with the role field gives the tool result it gives without it`, async () => {
+      const published = async (query: string, envelope: object) => {
+        const session = await boot(query, { ...envelope, topic: ROLE_TOPIC, ...answer }, status);
+        try {
+          return await session
+            .tool("envoy_publish")
+            .execute("", { topic: ROLE_TOPIC, message: "Review the plan" });
+        } finally {
+          await session.stop();
+        }
+      };
+      const before = await published(`role-field-publish-${status}-without`, withoutRole);
+
+      expect(await published(`role-field-publish-${status}-with`, withRole)).toStrictEqual(before);
+      expect(before.details).toMatchObject({
+        event_id: withoutRole.event_id,
+        topic: ROLE_TOPIC,
+        holder: "ses_holder",
+        holder_state: answer.holder_state,
+      });
     });
   }
 });

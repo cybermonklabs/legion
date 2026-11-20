@@ -415,6 +415,7 @@ func excludedNamed(r repoRename) string {
 var repoRenameLines = []repoRenameLine{
 	nameLine("issues", "repo"),
 	nameLine("projects", "default_repo"),
+	nameLine("check_results", "commit_repo"),
 	{
 		// A URL links one issue (issue_external_links_url), and readers compare a link in lower
 		// case (issue_external_links_url_lower). So an old URL collides with every link whose

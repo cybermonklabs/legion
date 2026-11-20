@@ -17,6 +17,7 @@ import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { legionDaemonQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type { LegionSetting } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useIsHuman } from "../../hooks/useIsHuman";
@@ -112,7 +113,13 @@ export function LegionDaemonsSection(): ReactNode {
   const [failedAction, setFailedAction] = useState<FailedAction>();
   const legion = useLegionDaemons();
   const daemonKey = (named: string) => legionDaemonQuery(named).queryKey;
-  // Both writes show their refusal under the form, with the row they changed put back.
+  // Both writes show their refusal under the form, with the row they changed put back. Neither
+  // holds back the project's reads while it is out (`holds`): another browser names a project's
+  // daemon as this one does, and no live event names it, so a hold would keep that change back
+  // until this write's answer, however late. A read already out at the press is given up in the
+  // step the press shows its row, so no second press reads the row from before it; one Dispatch
+  // answers before it takes the write can still show the old row until the write settles and the
+  // project is read again.
   const saveDaemon = useKeyedWrite<LegionSetting, DaemonInput, PreviousDaemon>({
     method: "PUT",
     write: ({ project: named, state_url: url }, bounds) => api.putLegionDaemon(named, url, bounds),
@@ -133,9 +140,9 @@ export function LegionDaemonsSection(): ReactNode {
             : apiErrorMessage(error, `Couldn't save ${variables.project}'s Legion daemon.`),
       });
     },
-    onMutate: async (variables) => {
+    onMutate: (variables) => {
       const key = daemonKey(variables.project);
-      await queryClient.cancelQueries({ queryKey: key });
+      void queryClient.cancelQueries({ exact: true, queryKey: key });
       const previous = queryClient.getQueryData(key);
       const optimistic: LegionSetting = {
         // As the server keeps it: whoever first named this project's daemon, else this person.
@@ -147,10 +154,11 @@ export function LegionDaemonsSection(): ReactNode {
       queryClient.setQueryData(key, optimistic);
       return { previous };
     },
-    // A landing with no answer keeps the optimistic row; `onSettled` reads the project again.
+    // A landing with no answer keeps the optimistic row; `onSettled` reads the project again. An
+    // answer goes over any read of the project still out, asked before it (`replaceQueryData`).
     onSuccess: (setting) => {
       if (setting !== null) {
-        queryClient.setQueryData(daemonKey(setting.project), setting);
+        replaceQueryData(queryClient, daemonKey(setting.project), setting);
       }
       setFailedAction(undefined);
       setProject("");
@@ -181,9 +189,9 @@ export function LegionDaemonsSection(): ReactNode {
             : apiErrorMessage(error, `Couldn't remove ${named}'s Legion daemon.`),
       });
     },
-    onMutate: async (named) => {
+    onMutate: (named) => {
       const key = daemonKey(named);
-      await queryClient.cancelQueries({ queryKey: key });
+      void queryClient.cancelQueries({ exact: true, queryKey: key });
       const previous = queryClient.getQueryData(key);
       queryClient.setQueryData(key, null);
       return { previous };

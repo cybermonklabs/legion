@@ -6,6 +6,13 @@ listener serves `127.0.0.1:9020` for local session registration and webhook ingr
 serves `127.0.0.1:8766` by default for the SPA, Google sign-in through a Cognito sign-in pool or
 with Google directly, and the native Dispatch API.
 
+**Role routes need Dispatch's identity.** Dispatch sends a message or mention for a `role:` route
+only on an identity of its own that the listener verifies: off Google Cloud, set
+`ENVOY_ACCOUNT_TOKEN_FILE` to its service-account token for the listener's audience; on Google
+Cloud, set `ENVOY_ACCOUNT_GOOGLE_AUDIENCE` to the listener's `ENVOY_OIDC_GOOGLE_AUDIENCE`. Without
+either, every such send is refused, and its attempt records why. See
+[Dispatch's identity at the Envoy listener](#dispatchs-identity-at-the-envoy-listener).
+
 ## Host configuration lives in `compose/.env`
 
 Docker Compose reads `compose/.env` next to the compose files on every
@@ -85,6 +92,34 @@ image among its last 30 commits, creates a `pg_dump`, then pulls and starts
 only the `dispatch` service. It retains the ten newest pre-deploy dumps. Its
 defaults target the devbox; set `REPO`, `COMPOSE_PROJECT`, or `BACKUPS` to run
 against another checkout, Compose project, or dump directory.
+
+It needs, on the host it runs on, a running Docker daemon, Docker with the Compose plugin (`docker
+compose version` must succeed), and `python3`, as does `scripts/up-dispatch.sh`. The tests need the
+same daemon and an anonymous pull from `ghcr.io/cybermonklabs/legion/ci`, where they take Compose
+2.12.2 from the repository's digest-pinned copy. Both scripts read `compose/.env` only through
+Compose's own resolution, and only through `docker compose config --format json`, so a setting
+counts as Compose gives it to the container, quotes, `${...}` and an `export` prefix included; they
+run on Compose 2.12.2, the oldest release their tests run (`autodeploy_test.sh` and
+`up-dispatch_test.sh` take that release's binary by digest out of this repository's copy of the
+`docker:20.10.20-cli` image, a row of `.github/ci-images.yaml`), and later ones, where
+`config --environment`, which they do not use, needs 2.28. A configuration Compose refuses is
+refused with no text of Compose's, which can quote a setting's value: the log names a required
+variable missing a value, or else gives Compose's exit status and the `docker compose config`
+command that shows its message. A failed read of the deployed tag is refused by name, never taken
+for an env file that names no tag. Every line the deployer logs, those refusals included, is on
+its standard output. Its Compose reads give up after 60 s, by name; `scripts/up-dispatch.sh` is run
+by a person at a terminal, nothing unattended calls it, and its Compose calls have no time limit.
+
+`compose/.env` owns `ENVOY_IMAGE_TAG` for the deployer: it writes the tag it deployed there and reads
+the deployed tag back from it, so an `ENVOY_IMAGE_TAG` in the deployer's own environment (the
+`export` of the "Image" steps above, say) is ignored by design. It writes `compose/.env` (the tag, and
+its schema record `ENVOY_IMAGE_SCHEMA`) through a staging file beside it, `compose/.env.stage.XXXXXX`
+(mode 0600), renamed over it; the deployer removes that file when it exits, and a deployer killed
+by SIGKILL, which it cannot see, leaves it, under a name git ignores. The deployer sweeps such files
+only when it starts, and only those more than a minute old, so a start sooner than that leaves one
+for a later start. A `compose/.env` that is a symlink is replaced, at the deployer's first write, by
+a regular file with the mode of the link's target; edits after that go to `compose/.env` itself,
+since the link's old target no longer reaches Compose.
 
 Two releases of Dispatch never serve the database together in this compose deployment:
 `docker compose up -d --no-deps dispatch` stops and removes the old container before it starts the
@@ -200,6 +235,7 @@ to its clients as `PGPASSWORD` alone. `compose/dispatch.env.example`'s URL is in
 | `ENVOY_OIDC_ACCOUNTS` | no | `system:serviceaccount:<namespace>:<name>` subjects separated by commas or spaces: the only accounts whose projected tokens the OIDC pair admits. Unset or empty admits every account the issuer signs for, which is any pod of the cluster. A value that names no account (only blanks or commas) refuses startup naming the setting, and so does a comma that leaves an entry empty (a leading or trailing comma, or two in a row), naming which entry. Set without `ENVOY_OIDC_ISSUER` it refuses startup naming the pair it needs, and with an entry of another shape it refuses startup naming the entry; an unlisted account is answered 401 and logged `listener: service-account token rejected` with `reason` `not_listed` and the subject. |
 | `ENVOY_OIDC_GOOGLE_AUDIENCE` | conditional | Audience a caller's Google identity token must carry, for a caller on Google Cloud that holds no Kubernetes token (a Cloud Run service). The issuer is Google's, read at boot; an issuer that does not answer discovery refuses to boot. Set with `ENVOY_OIDC_GOOGLE_ACCOUNTS` or not at all; half the pair refuses to boot naming the missing one. |
 | `ENVOY_OIDC_GOOGLE_ACCOUNTS` | conditional | Service account addresses the Google pair admits, separated by commas or spaces and compared in lower case; the token must name one in its `email` claim with `email_verified` true, so the caller fetches it with `format=full`. An entry that is not an address refuses startup naming it, and so does a comma that leaves an entry empty. A refused token is logged `listener: Google identity token rejected` with its `reason` and, for a token that verifies, the account it names. |
+| `ENVOY_DISPATCH_PRINCIPAL` | no | Dispatch's own verified principal: a `system:serviceaccount:<namespace>:<name>` subject the OIDC pair admits, or a Google service account address the Google pair admits. A `/v1/messages/send` request may carry `role`, the role a Dispatch message for a `role:` route is sent for, only when its identity token proves this principal; every other caller carrying it (a session's broker token, the shared token, another service's token, no credential) is refused `403` naming `role`, and with this unset every such send is. A marked send whose role's claim names another session than its target, or none, is kept on the role's kept lane, raises the role's wake report, and is answered `202` with `kept` and `kept_until`. A value of neither shape, or one no configured pair could prove (a subject with no OIDC pair or one `ENVOY_OIDC_ACCOUNTS` leaves out, an address with no Google pair or one it does not list), refuses startup naming the setting. The boot log names it on its `listener role marks:` line. |
 | `ENVOY_ALLOWED_HOSTS` | conditional | Comma-separated host names or addresses (no port) an unauthenticated listener serves `/v1` to beside loopback; required for each name clients reach it by when neither `ENVOY_API_TOKEN` nor an OIDC or Google pair is set and they do not dial loopback. Any other `Host` gets a JSON 421. Unused when a bearer is required. Each request such a listener admits with no broker token is counted as `credential="none"` in `envoy_listener_requests_total` and logs `listener: request admitted with no credential` at most once a minute. |
 | `ENVOY_API_ALLOW_UNAUTHENTICATED` | conditional | Set to `1` to start a listener whose address is not loopback with no `ENVOY_API_TOKEN`, OIDC pair or Google pair. Without it such a listener refuses to start. Set it only where something else fences the listener's port, because the flag itself admits every caller that reaches the port. The clustered hub's tailnet-only session listener (`envoy-infra:gcp:ClusteredNatsHub`'s `tailnet.listener` with no `clientNamespaces`) is the deployment that runs this way: it binds `0.0.0.0` in a pod of its own, and its NetworkPolicy admits TCP 9020 from the tailnet entry's pods alone. There that NetworkPolicy is what decides who may call `/v1`: the `Host` check admits a loopback name or address beside the names `ENVOY_ALLOWED_HOSTS` holds, so it stops a page that rebinds its own name and not a caller the policy already admits. This flag decides nothing. A hub listener that pods of the cluster reach sets the OIDC pair with `ENVOY_OIDC_ACCOUNTS` instead. |
 | `ENVOY_WEBHOOKS` | no | Comma-separated enabled webhook providers. Without `github` the listener opens no CI store and publishes no CI settlements. |
@@ -272,7 +308,9 @@ The Dispatch service reads its public browser origin and NATS URLs from
 | `DISPATCH_IDENTITY_HEADER_TRUSTED` | test/local header identity | Set to `1` for every header-identity test or local harness. A missing flag refuses boot. |
 | `DISPATCH_NATS_DISABLED` | no | Set to `1` to run database and live-socket paths without NATS. |
 | `ENVOY_URL` | no | Envoy listener base URL for live agent titles; defaults to `http://127.0.0.1:9020` (set it when `ENVOY_LISTENER_PORT` changes). |
-| `ENVOY_TOKEN` | conditional | Matching Listener API bearer token when `ENVOY_API_TOKEN` protects the listener. |
+| `ENVOY_TOKEN` | conditional | Matching Listener API bearer token when `ENVOY_API_TOKEN` protects the listener. Beside Dispatch's identity (`ENVOY_ACCOUNT_TOKEN_FILE` or `ENVOY_ACCOUNT_GOOGLE_AUDIENCE`) it is sent only on a call with no role mark that the listener refused `401` on that identity twice. A send for a `role:` route is never made on it. |
+| `ENVOY_ACCOUNT_TOKEN_FILE` | conditional | File holding Dispatch's own service-account token for the listener's audience, presented on every listener call in `ENVOY_TOKEN`'s place and read at each call, and once more after a `401` (a token whose own expiry is under ten seconds away is not presented). With it set, a message or mention for a `role:` route carries its role, which the listener takes from the principal `ENVOY_DISPATCH_PRINCIPAL` names alone, so the session that takes the role from the one Dispatch sent to receives the message and may answer it. Set it or `ENVOY_ACCOUNT_GOOGLE_AUDIENCE` for role routes to work. |
+| `ENVOY_ACCOUNT_GOOGLE_AUDIENCE` | conditional | On Google Cloud: the audience of the identity token Dispatch's machine's service account presents in `ENVOY_TOKEN`'s place, the listener's `ENVOY_OIDC_GOOGLE_AUDIENCE` (with that account's address in the listener's `ENVOY_OIDC_GOOGLE_ACCOUNTS` and its `ENVOY_DISPATCH_PRINCIPAL`). The metadata server mints the token. A machine no metadata server answers for has no identity, and role routes are refused. Not with `ENVOY_ACCOUNT_TOKEN_FILE`: both refuse startup. |
 | `DISPATCH_OIDC_ISSUER` | conditional | OIDC issuer whose projected service-account tokens authenticate as agents beside `DISPATCH_AGENT_TOKEN`. Set with `DISPATCH_OIDC_AUDIENCE` or not at all; half the pair refuses to boot naming the missing one. An issuer that does not answer discovery refuses no boot: Dispatch starts and serves, discovers the issuer in the background, and until then answers a JWT-shaped bearer `503 OIDC_ISSUER_UNAVAILABLE` (`/healthz` reports `service_tokens` false) while every other credential is served. |
 | `DISPATCH_OIDC_AUDIENCE` | conditional | Audience those tokens must carry (`dispatch`). Set with `DISPATCH_OIDC_ISSUER` or not at all. |
 | `DISPATCH_URL` | no | Host-adapter override for the Dispatch base URL; use with `DISPATCH_TOKEN`. |
@@ -281,6 +319,68 @@ The Dispatch service reads its public browser origin and NATS URLs from
 | `DISPATCH_INSECURE_COOKIE` | HTTP | Set to `1` whenever browsers reach Dispatch over `http://` (the tailnet deployment); leave unset behind an HTTPS terminator. |
 
 The Dispatch signing material is a named volume; the database is external.
+
+## Dispatch's identity at the Envoy listener
+
+The listener takes the role a send is for (its role mark) from Dispatch's own verified identity
+alone, and refuses it from the shared `ENVOY_TOKEN`. A send marked with its role reaches the
+session that takes the role from the one Dispatch sent to; an unmarked one would not. So
+Dispatch sends a message or mention for a `role:` route only on its identity, and with none it
+refuses the send: the attempt fails at once, and its recorded error names these settings.
+
+- **On Google Cloud:** set Dispatch's `ENVOY_ACCOUNT_GOOGLE_AUDIENCE` to the listener's
+  `ENVOY_OIDC_GOOGLE_AUDIENCE`, put the address of Dispatch's VM service account in the listener's
+  `ENVOY_OIDC_GOOGLE_ACCOUNTS`, and set the listener's `ENVOY_DISPATCH_PRINCIPAL` to that address.
+- **Elsewhere:** give Dispatch a service-account token from an issuer the listener verifies
+  (`ENVOY_OIDC_ISSUER` and `ENVOY_OIDC_AUDIENCE`), in the file `ENVOY_ACCOUNT_TOKEN_FILE` names,
+  rewritten in place before it expires (the compose file binds that one file, which keeps the file
+  it found at start, so a writer that replaces it by rename needs the container restarted), and set
+  the listener's `ENVOY_DISPATCH_PRINCIPAL` to its subject (`system:serviceaccount:<namespace>:<name>`
+  for a Kubernetes token).
+
+Messages and mentions to a `session:` route need neither.
+
+**Setting a verifier closes the listener to every caller with no bearer.** A listener with the
+OIDC pair or the Google pair set answers `401` to a request that presents no token, so the host's
+own agent sessions, which reach an open loopback listener with none, stop working unless they
+present the listener's shared token. Set `ENVOY_API_TOKEN` with the verifier, and give each host
+session that token: `ENVOY_TOKEN` in its environment, or `envoy.token` in its `envoy.json`.
+
+With the compose files, the Dispatch container's start is refused (exit 78), naming both of
+Dispatch's two settings, until one is set in `compose/.env`; under `restart: unless-stopped` the
+container then restart-loops rather than stays down, while `docker compose up -d` itself exits 0.
+So `scripts/up-dispatch.sh` refuses to run, and the auto-deployer refuses a deploy before its
+backup and leaves the image that serves in place, when Compose resolves neither setting (both read
+the settings from `docker compose config`, so `NAME=""` and `NAME="${UNSET:-}"` count as unset, as
+the container would get them); started by hand,
+the refusal shows only in `docker compose ps` and `logs`. `listener.compose.yml` (or
+`single-node.compose.yml`) passes the listener's verifier, principal and shared token from the
+same file. On a Google Cloud VM, whose service account is Dispatch's identity:
+
+```bash
+cd packages/envoy/deploy
+account=$(curl -s -H 'Metadata-Flavor: Google' \
+  http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email)
+token=$(openssl rand -hex 32)
+cat >>compose/.env <<EOF
+ENVOY_ACCOUNT_GOOGLE_AUDIENCE=envoy-listener
+ENVOY_OIDC_GOOGLE_AUDIENCE=envoy-listener
+ENVOY_OIDC_GOOGLE_ACCOUNTS=$account
+ENVOY_DISPATCH_PRINCIPAL=$account
+ENVOY_API_TOKEN=$token
+ENVOY_TOKEN=$token
+EOF
+scripts/up-listener.sh
+scripts/up-dispatch.sh
+```
+
+Then give the host's sessions the same token (`ENVOY_TOKEN=$token`, or `"token"` under `envoy` in
+their `envoy.json`) before they next connect.
+
+Elsewhere, set `ENVOY_ACCOUNT_TOKEN_FILE` to the host path of Dispatch's token file (the compose
+file mounts it into the container, and refuses `up` when the path does not exist), and the
+listener's `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE`, `ENVOY_DISPATCH_PRINCIPAL` and
+`ENVOY_API_TOKEN` instead.
 
 ## Backups and restore
 

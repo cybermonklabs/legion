@@ -211,19 +211,20 @@ func TestStrandedAttemptRetriedDuringAListenerOutageKeepsThePinAndAcceptsTheRepl
 	}
 }
 
-// TestStrandedRoleAttemptRetriedDuringAnOutageKeepsThePinAndRefusesTheNewHolder is Deep1296b's
-// case B: a role mention's attempt is already pinned to the session that held the role when it
-// was resolved, and it is retried after the role has since moved to a different holder while
-// that pinned session is briefly unreachable, so the retry's recheck of the pin fails without
-// ever consulting the role. recordCommentDeliveryResolution must keep the original recipient -
-// the same rule the message path already gets from recordPendingMessageDelivery's coalesce
+// TestStrandedRoleAttemptRetriedDuringAnOutageKeepsThePinAndTheFirstReply is Deep1296b's case B: a
+// role mention's attempt is already pinned to the session that held the role when it was
+// resolved, and it is retried after the role has since moved to a different holder while that
+// pinned session is briefly unreachable, so the retry's recheck of the pin fails without ever
+// consulting the role. recordCommentDeliveryResolution must keep the original recipient - the same
+// rule the message path already gets from recordPendingMessageDelivery's coalesce
 // (comment_delivery.go, and messageDeliveryRoute in message_delivery.go: a resumed attempt keeps
 // its recipient, and only whether that recipient can still receive the mode is re-derived) -
-// rather than treat a failed recheck as grounds to re-resolve the role
-// and hand the attempt to whoever holds it now: the original recipient is who the listener's key
-// names and who is still allowed to answer it, and the role's new holder was never sent this
-// attempt at all.
-func TestStrandedRoleAttemptRetriedDuringAnOutageKeepsThePinAndRefusesTheNewHolder(t *testing.T) {
+// rather than treat a failed recheck as grounds to re-resolve the role and hand the attempt to
+// whoever holds it now: the original recipient is who the listener's key names. The role's new
+// holder, live, may answer an attempt sent for the role (lookUpRoleHolderReply), and since the
+// original recipient answered first, its reply is the attempt's reply and the new holder's is
+// answered with it.
+func TestStrandedRoleAttemptRetriedDuringAnOutageKeepsThePinAndTheFirstReply(t *testing.T) {
 	registry := &roleMentionRegistry{holder: "s1", s1Live: true}
 	listener := roleMentionListener(t, registry)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
@@ -278,8 +279,9 @@ func TestStrandedRoleAttemptRetriedDuringAnOutageKeepsThePinAndRefusesTheNewHold
 		t.Fatalf("attempt 1 receipts = %q, want the creation receipt and the one %q the outage settle owes", receipts, row)
 	}
 
-	// s1 still holds the attempt, even though the role has since moved to s2: the role's new
-	// holder was never sent this frame and cannot answer it.
+	// s1 still holds the attempt, even though the role has since moved to s2, and its reply is
+	// the attempt's. The role's new holder, s2, live, may answer an attempt sent for the role, and
+	// is answered with that first reply, as a second reply to any attempt is.
 	original := bearerRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/reply", map[string]any{
 		"actor": map[string]any{"kind": "session", "id": "s1"}, "attempt": 1,
 		"target": "role:reviewer", "body": "It reached me before the outage.",
@@ -287,12 +289,13 @@ func TestStrandedRoleAttemptRetriedDuringAnOutageKeepsThePinAndRefusesTheNewHold
 	if original.Code != http.StatusCreated {
 		t.Fatalf("the original holder's reply after the outage: status=%d body=%s", original.Code, original.Body.String())
 	}
-	stolen := bearerRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/reply", map[string]any{
+	first := decodeBody[mentionedCommentRead](t, original)
+	second := bearerRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/reply", map[string]any{
 		"actor": map[string]any{"kind": "session", "id": "s2"}, "attempt": 1,
 		"target": "role:reviewer", "body": "I hold the role now.",
 	})
-	if stolen.Code != http.StatusForbidden {
-		t.Fatalf("the new holder's reply to an attempt it never received: status=%d body=%s", stolen.Code, stolen.Body.String())
+	if second.Code != http.StatusOK || decodeBody[mentionedCommentRead](t, second).ID != first.ID {
+		t.Fatalf("the new holder's reply after the first: status=%d body=%s, want 200 with the first reply %s", second.Code, second.Body.String(), first.ID)
 	}
 }
 

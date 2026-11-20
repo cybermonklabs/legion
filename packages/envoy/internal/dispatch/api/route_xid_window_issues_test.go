@@ -73,7 +73,7 @@ var issueRouteXidWindows = []routeXidWindowCase{
 	},
 	// A patch naming a repository writes it in the issue row's own update and reads or locks no
 	// other row for it: an issue's own repository is any owner/name GitHub could hold
-	// (githubCouldHoldRepo), so this one names a repository no project names as its default. It
+	// (parseIssueRepo), so this one names a repository no project names as its default. It
 	// closes the issue too, so its read phase holds the close's document work - the block ask
 	// withdrawn and its block written resolved into the spec (prepareWithdrawal) - and a session's
 	// write advice, none of it inside the window.

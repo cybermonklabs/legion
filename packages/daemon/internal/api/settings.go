@@ -210,11 +210,13 @@ type SandboxSettings struct {
 
 // MicroVMSettings is `runtime.kubernetes.sandbox.microvm`: the ComputeClass of the microVM pods'
 // nodes, absent in a block no issue pod uses that names none; their workspace volume's class,
-// `runtime.kubernetes.storage_class` when the block names none; and the metadata endpoint's two
-// members, absent while the block names none.
+// `runtime.kubernetes.storage_class` when the block names none; whether a microVM issue pod keeps
+// that volume, false when the block names none; and the metadata endpoint's two members, absent
+// while the block names none.
 type MicroVMSettings struct {
 	ComputeClass string            `json:"compute_class,omitempty"`
 	StorageClass string            `json:"storage_class"`
+	KeepVolume   bool              `json:"keep_volume"`
 	Metadata     *MetadataSettings `json:"metadata,omitempty"`
 }
 
@@ -692,7 +694,7 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 		settings.Plugins = &PluginsSettings{PiLegion: pluginSourceOf(plugins.PiLegion), PiEnvoy: pluginSourceOf(plugins.PiEnvoy)}
 	}
 	if microVM := block.Sandbox.MicroVM; microVM != nil {
-		settings.Sandbox.MicroVM = &MicroVMSettings{ComputeClass: microVM.ComputeClass, StorageClass: microVM.StorageClass}
+		settings.Sandbox.MicroVM = &MicroVMSettings{ComputeClass: microVM.ComputeClass, StorageClass: microVM.StorageClass, KeepVolume: microVM.KeepVolume}
 		if metadata := microVM.Metadata; metadata != nil {
 			settings.Sandbox.MicroVM.Metadata = &MetadataSettings{WorkloadPool: metadata.WorkloadPool, IdentityProvider: metadata.IdentityProvider}
 		}

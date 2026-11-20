@@ -154,6 +154,10 @@ func init() {
 		}},
 		// Where a deleted session consumer stopped, which names a session and no project.
 		{family: "notifications.envoy.resume.>", read: noProject},
+		// A role a session took from another: the role's own project, as its kept lane reads it.
+		{family: "notifications.envoy.takeover.>", read: func(rest []string) (string, string) {
+			return RoleProject(rest[0]), ""
+		}},
 	}
 }
 

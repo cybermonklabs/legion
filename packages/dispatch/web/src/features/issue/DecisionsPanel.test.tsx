@@ -1,12 +1,12 @@
 import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { quietConsoleError } from "../../__tests__/act-warnings";
 import { displayTree } from "../../__tests__/display-trees";
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, settle } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -219,6 +219,72 @@ test("Keep records the decision and moves it from Waiting for your review to You
       ).not.toBeInTheDocument()
     );
     expect(within(list("Your decisions")).getByText("Store notices in a table")).toBeDefined();
+  } finally {
+    read.mockRestore();
+    keep.mockRestore();
+  }
+});
+
+// A read of the decisions asked before a Keep answers the view from before it. Landing after the
+// Keep's answer, it would put the kept decision back under Waiting for your review, Keep and all.
+test("a read of the decisions asked before a Keep does not put the kept decision back as waiting", async () => {
+  const user = userEvent.setup();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const before = Promise.withResolvers<IssueDecisions>();
+  const read = spyOn(api, "getIssueDecisions")
+    .mockResolvedValueOnce(issueView())
+    .mockReturnValueOnce(before.promise);
+  const answer = Promise.withResolvers<DecisionKeep>();
+  const keep = spyOn(api, "keepDecision").mockReturnValue(answer.promise);
+  try {
+    renderPanel(queryClient);
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    // A refresh of the decisions, asked before the Keep and still out.
+    await act(async () => {
+      void queryClient.invalidateQueries({ exact: true, queryKey: ["decisions", "CORE-1"] });
+      await settle();
+    });
+    expect(read).toHaveBeenCalledTimes(2);
+
+    await user.click(within(waiting).getByRole("button", { name: "Keep" }));
+    await waitFor(() => expect(keep).toHaveBeenCalledTimes(1));
+    const kept: DecisionKeep = {
+      artifact_id: documentId,
+      block_id: "store",
+      changed_version: 3,
+      kept_at: "2026-11-02T00:00:00Z",
+      kept_by: "alice",
+    };
+    // The answer gives up the read still out and asks for the decisions again, after the Keep:
+    // Dispatch holds the decision kept then.
+    const view = issueView();
+    read.mockResolvedValueOnce({
+      ...view,
+      decisions: (view.decisions ?? []).map((row) =>
+        row.block_id === kept.block_id ? { ...row, kept, waiting_review: false } : row
+      ),
+    });
+    await act(async () => {
+      answer.resolve(kept);
+      await settle();
+    });
+    await waitFor(() =>
+      expect(within(list("Your decisions")).getByText("Store notices in a table")).toBeDefined()
+    );
+
+    // The read answers the view the server held before the Keep.
+    await act(async () => {
+      before.resolve(issueView());
+      await settle();
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryState(["decisions", "CORE-1"])?.fetchStatus).toBe("idle")
+    );
+    expect(
+      within(list("Waiting for your review")).queryByText("Store notices in a table")
+    ).not.toBeInTheDocument();
+    expect(within(list("Your decisions")).getByText("Store notices in a table")).toBeDefined();
+    expect(read).toHaveBeenCalledTimes(3);
   } finally {
     read.mockRestore();
     keep.mockRestore();

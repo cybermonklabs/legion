@@ -14,7 +14,12 @@ import (
 // with a hyphen, a repository named `.` or `..`, a repository name longer than GitHub's 100
 // characters, a character GitHub allows in neither half — is refused at the write, as any other
 // value that is not `owner/name` is (R3), and a name GitHub holds is taken whatever its case or
-// `.git` suffix.
+// `.git` suffix, and with space around it, which the route trims before it reads the value. The
+// name is judged as it is stored: `acme/.git.git` and `acme/...git.git` are `acme/.git` and
+// `acme/...git` stored, which every later read refuses once it trims that `.git`.
+//
+// The negative control for the trim is a route that reads the value untrimmed, which refuses
+// ` Acme/Widgets.git\n`.
 func TestAnIssuesRepositoryIsRefusedUnlessGitHubCouldHoldIt(t *testing.T) {
 	for _, value := range []string{
 		"x/..",
@@ -23,6 +28,8 @@ func TestAnIssuesRepositoryIsRefusedUnlessGitHubCouldHoldIt(t *testing.T) {
 		"own%er/x",
 		"owner/na me",
 		"owner/" + strings.Repeat("a", 101),
+		"acme/.git.git",
+		"acme/...git.git",
 	} {
 		raw, _ := json.Marshal(value)
 		if repo, _, err := parseIssueRepo(raw, "INVALID_ISSUE"); err == nil {
@@ -32,6 +39,7 @@ func TestAnIssuesRepositoryIsRefusedUnlessGitHubCouldHoldIt(t *testing.T) {
 	for value, want := range map[string]string{
 		"acme/widgets":                  "acme/widgets",
 		"Acme/Widgets.git":              "acme/widgets",
+		" Acme/Widgets.git\n":           "acme/widgets",
 		"sjawhar/.knives-ledger":        "sjawhar/.knives-ledger",
 		"a-b/c_d.e":                     "a-b/c_d.e",
 		"o/" + strings.Repeat("a", 100): "o/" + strings.Repeat("a", 100),

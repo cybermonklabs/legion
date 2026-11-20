@@ -10,6 +10,7 @@ import {
   usersQuery,
   whoAmIQuery,
 } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type {
   CreateProjectInput,
   Project,
@@ -446,14 +447,17 @@ function useProjectSettingWrite<TAnswer extends object, TValue, TRows>({
       }
       return save(pick.value, bounds);
     },
-    // A read already out was asked before this save and could land over its answer.
+    // A read already out was asked before this save and could land over its answer. One asked
+    // after the press can be out still when the answer lands - the save may wait its turn behind
+    // another in the scope - so the answer is put over the reads out then as well
+    // (`replaceQueryData`).
     onMutate: () => queryClient.cancelQueries({ queryKey: read }),
     onSuccess: (saved) => {
       // Saved with no answer to give: the store reads every query again.
       if (saved === null || "superseded" in saved) {
         return;
       }
-      queryClient.setQueryData<TRows>(read, (rows) => store(rows, saved));
+      replaceQueryData<TRows>(queryClient, read, (rows) => store(rows, saved));
     },
     onSettled: (saved) => {
       // With gcTime Infinity nothing else clears this project's saves. A save settles in pick

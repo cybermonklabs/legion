@@ -148,11 +148,20 @@ func TestDispatchExistingClusterChildrenTakeTheLookedUpCluster(t *testing.T) {
 
 	defaults, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)
-	member := func(m *pulumitest.Mocks) any {
-		return normalizedProperty(m.Named(t, accessorType, "example-dispatch-nats-seed-accessor").Inputs["member"])
+	member := func(m *pulumitest.Mocks, accessor string) any {
+		return normalizedProperty(m.Named(t, accessorType, accessor).Inputs["member"])
 	}
-	require.Equal(t, existingClusterPrincipal, member(m))
-	require.Equal(t, member(defaults), member(m), "the seed's grant names the principal the component's own cluster gives")
+	require.Equal(t, existingClusterPrincipal, member(m, "example-dispatch-nats-seed-accessor"))
+	require.Equal(t, member(defaults, "example-dispatch-nats-seed-accessor"), member(m, "example-dispatch-nats-seed-accessor"),
+		"the seed's grant names the principal the component's own cluster gives")
+	// The listener's own account, <hostname>-listener, is granted the seed from the same pool, and
+	// the grant waits on no Cluster: none is registered here.
+	require.Equal(t, existingClusterPrincipal+"-listener", member(m, "example-dispatch-listener-nats-seed-accessor"))
+	require.Equal(t, member(defaults, "example-dispatch-listener-nats-seed-accessor"), member(m, "example-dispatch-listener-nats-seed-accessor"),
+		"the listener's seed grant names the principal the component's own cluster gives it")
+	for _, dependency := range m.Named(t, accessorType, "example-dispatch-listener-nats-seed-accessor").RPC.GetDependencies() {
+		require.NotContains(t, dependency, clusterURNPart, "the listener's seed grant waits on a Cluster")
+	}
 }
 
 // A stack that moves onto an existing cluster keeps its region, where its regional network and its
