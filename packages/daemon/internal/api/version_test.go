@@ -39,20 +39,28 @@ func TestFailureCausesGolden(t *testing.T) {
 	golden(t, "failure-causes.json", map[string][]supervise.FailureCause{"causes": supervise.FailureCauses})
 }
 
-// The role rows of EnumeratedFields record each role at the contract it arrived at, from
-// answers.go's floorRoles, the roles a claim could hold at ServingFloor, named one by one. A role
-// added to claim.Roles alone would be on no row: nothing would record when it arrived, no value
-// strip would hold it back, and a reader of an older contract, whose role enum is strict, would
-// be served it and refuse the whole state. So every role claim.Roles holds must be one floorRoles
-// names, and a new one fails here by its name until it has a contract of its own. A role
-// claim.Roles drops stays in floorRoles, which is the history of what was served.
+// The role rows of EnumeratedFields record each role at the contract it arrived at: claimRoles,
+// wakeRoles and pauseStopRoles (answers.go), each read from floorRoles, the six roles named one
+// by one at ServingFloor. A role added to claim.Roles and to none of those lists would be on no
+// row: nothing would record when it arrived, no value strip would hold it back, and a reader of
+// an older contract, whose role enum is strict, would be served it and refuse the whole state. So
+// every role claim.Roles holds must have a value in each of the three lists, at whatever contract
+// it arrived at. A role claim.Roles drops stays in the lists, which are the history of what was
+// served.
 func TestEveryRoleAClaimCanHoldHasARecordedArrival(t *testing.T) {
+	lists := []struct {
+		name   string
+		values []EnumeratedValue
+	}{{"claimRoles", claimRoles}, {"wakeRoles", wakeRoles}, {"pauseStopRoles", pauseStopRoles}}
 	for _, role := range claim.Roles {
-		if !slices.Contains(floorRoles, role) {
-			t.Errorf("claim.Roles holds the role %q, which answers.go's floorRoles does not name: it has no recorded "+
-				"arrival, so a reader of an older contract would be served it and refuse the whole state. Give the "+
-				"role its own contract, record it at that contract in the role rows of EnumeratedFields, and hold "+
-				"it back below that contract with a value strip (shaping.go's valueStrips)", role)
+		for _, list := range lists {
+			holds := func(v EnumeratedValue) bool { return v.Value == string(role) }
+			if !slices.ContainsFunc(list.values, holds) {
+				t.Errorf("claim.Roles holds the role %q, which answers.go's %s records at no contract: a reader of an "+
+					"older contract would be served it and refuse the whole state. Record it in %s at the contract it "+
+					"arrives at (valuesFrom(<that contract>, role)), not in floorRoles, which is the floor's, and hold "+
+					"it back below that contract with a value strip (shaping.go's valueStrips)", role, list.name, list.name)
+			}
 		}
 	}
 }
