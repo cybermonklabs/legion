@@ -95,7 +95,7 @@ func seedRosterCostIssues(t *testing.T, seed hiddenHolderSeed) rosterCostIssues 
 //
 // Control within the row: role:idle costs more than no route, so the count sees the roster read.
 // Controls by hand, one line each: each read's visibility statement skipping a set that names
-// nothing (seenReferences for seenReferencesAtFixedCost), and the role holders' statement likewise.
+// nothing (seenReferences' read made only when named holds something), and the role holders' likewise.
 // The order itself - visibility before the roster - is what the base lacks, so the row is red there.
 func TestM5M6AHiddenClaimOrRoleRouteCostsWhatNoneCosts(t *testing.T) {
 	counter := &requestStatements{}
@@ -131,7 +131,7 @@ func TestM5M6AHiddenClaimOrRoleRouteCostsWhatNoneCosts(t *testing.T) {
 // commits.
 //
 // Control: the issue read's visibility read made for a reader that sees every object. Two guards
-// stand in its way (leaveOutHiddenIssueReferences' first test and seenReferencesAtFixedCost's), so
+// stand in its way (leaveOutHiddenIssueReferences' first test and seenReferences'), so
 // the control drops both; alice's issue reads then make the rule of references' statement and the
 // row fails naming each. Dropping one alone leaves the row green, the other guard holding.
 func TestM5M6WithNoPrivateProjectTheReachReadsCostAsBefore(t *testing.T) {

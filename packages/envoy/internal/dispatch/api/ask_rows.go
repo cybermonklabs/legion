@@ -318,11 +318,15 @@ func askPersons(asks []*model.Ask) references {
 }
 
 // queueAskPersons queues in b the read of which persons of asks who sees (seenReferencesSQL), and
-// answers the set the batch fills: nil for a reader that sees every object, or asks that name no
-// person, which queues nothing.
+// answers the set the batch fills: nil for a reader that sees every object, or no asks, which
+// queues nothing. Any other reader's read is queued whatever the asks name, as seenReferences makes
+// its one statement, so an ask handed to a hidden person costs what one handed to nobody costs.
 func queueAskPersons(b *pgx.Batch, who model.Actor, asks []*model.Ask) references {
+	if seesEveryObject(who) {
+		return nil
+	}
 	named := askPersons(asks)
-	if seesEveryObject(who) || named.empty() {
+	if len(asks) == 0 {
 		return nil
 	}
 	seen := references{}

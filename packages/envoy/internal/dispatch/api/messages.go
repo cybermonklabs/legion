@@ -1011,17 +1011,17 @@ func (s *server) hydrateMessageThreads(ctx context.Context, who model.Actor, roo
 }
 
 // leaveOutHiddenMessageSessions writes messages as who reads them (the rule of references,
-// references_seen.go): a `session:<id>` target of a session who does not see is null, and a
-// delivery attempt to such a session is left out.
+// references_seen.go): a target who does not see - a `session:<id>` of a hidden session, or a
+// `role:legion-<project>-…` of a private project who does not see - is null, and a delivery
+// attempt to a hidden session is left out. Its one read is made whatever the messages name
+// (seenReferences); no message reads nothing.
 func leaveOutHiddenMessageSessions(ctx context.Context, q queryer, who model.Actor, messages []*model.Message) error {
-	if seesEveryObject(who) {
+	if seesEveryObject(who) || len(messages) == 0 {
 		return nil
 	}
 	named := references{}
 	for _, message := range messages {
-		if message.Target != nil {
-			named.name(sessionReference, routeSession(*message.Target))
-		}
+		named.nameRoute(message.Target)
 		for _, delivery := range message.Deliveries {
 			named.name(sessionReference, delivery.SessionID)
 		}
@@ -1031,9 +1031,7 @@ func leaveOutHiddenMessageSessions(ctx context.Context, q queryer, who model.Act
 		return err
 	}
 	for _, message := range messages {
-		if message.Target != nil && routeSession(*message.Target) != "" && !seen.holds(sessionReference, routeSession(*message.Target)) {
-			message.Target = nil
-		}
+		seen.leaveOutRoute(&message.Target)
 		message.Deliveries = slices.DeleteFunc(message.Deliveries, func(delivery model.MessageDelivery) bool {
 			return delivery.SessionID != "" && !seen.holds(sessionReference, delivery.SessionID)
 		})
