@@ -21,7 +21,7 @@ The implementer writes the body from this template when the pull request opens; 
 
 ## Verification
 
-**Threads:** <n> resolved, 0 unresolved. Each answered and resolved individually by the implementer, the pull request's author, never in bulk (the reviewer names the bot threads it accepted; it resolves none itself):
+**Threads:** <n> resolved, 0 unresolved. Each answered, and resolved individually by the reviewer, never in bulk (the implementer resolves none):
 - Thread <node id>: fixed in <commit-sha> — <one line>; resolved at <head-sha>.
 - Thread <node id>: not a defect — <reason>; resolved at <head-sha>.
 - Thread <node id>: accepted by the reviewer — <its reason, one line>; resolved at <head-sha>.
@@ -56,7 +56,7 @@ The implementer keeps `Outcome`, `Why`, `Change`, `Proven by` and `Size` true af
 - The surface is production-like (the real-process harness, a sandbox repository, a real browser, a development stack, staging) and has the resource the change touches; `--run` or `--observed` links to the run. A unit or integration test is a regression lock, never a result, except as the job a `ci_check` names.
 - Record a result only after its commit is pushed (`400 RESULT_COMMIT_UNKNOWN`).
 - **A check that cannot fail is not a result.** The negative control shows it failing on a deliberately wrong input. A documented procedure counts only when it ran: reading it is not a run.
-- A `before_merge` result stands while its commit is the head of an open pull request Dispatch attributes to the check's issue (`packages/envoy/internal/dispatch/delivery/attribution.go`), or the final head of a merged one, and while no part of the check's block has changed. So after a push, record each check with no `ci_check` again.
+- A `before_merge` result stands while its commit is the head of an open pull request Dispatch attributes to the check's issue (`packages/envoy/internal/dispatch/delivery/attribution.go`), or the final head of a merged one, and while no part of the check's block has changed. So after a push, record each check with no `ci_check` again: run it, or, where every push since its pass changes no code that runs, record that pass at the new head with `--observed 'carried from <sha>: <why>'`.
 
 ## The rules every phase's evidence follows
 

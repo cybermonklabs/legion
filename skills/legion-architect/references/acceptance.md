@@ -15,7 +15,8 @@ instructions, or open a `dispatch ask` naming the missing instruction.
 Read, against the goal, every check and every requirement:
 
 1. the tester's handoff: `dispatch handoff-read --issue <issue> --phase test`;
-2. `dispatch results --issue <issue>`: whether a pass stands for each check at the approved head;
+2. `dispatch results --issue <issue>`: whether a pass stands for each check at the approved head, or
+   below it where every push since changes no code that runs;
 3. the reviewer's approval of the head its Legion footer names, never its `commit_id`
    (`skill://legion-worker/references/merge-gate.md`);
 4. each claim of the reviewer's prose, against the code at that head;
@@ -40,12 +41,10 @@ Read, against the goal, every check and every requirement:
 ## The last round
 
 Sign off a parent only on an approved head that carries the merges of every child its checks
-need. Each check needs a pass at that head, or one at the head just below a reviewer's text commit
-that the acceptance carries (read the reviewer's approval of that head, its commit, and the
-implementer's accepting comment, or its push and the reviewer's approval of that head); one in
-another repository, a pass standing since the close of each child it needs, at a commit on the
-branch that issue's pull request merged into or on its default branch; a `default_branch` check,
-on the default branch. A criterion proven on a
+need. Each check needs a pass at that head, or one recorded below it where every push since
+changes no code that runs; one in another repository, a pass standing since the close of each
+child it needs, at a commit on the branch that issue's pull request merged into or on its default
+branch; a `default_branch` check, on the default branch. A criterion proven on a
 deployed system is proven after that child's deploy, as the repository's deploy skill says. A
 child's result proves no check of the parent: a child carrying part of a parent's requirement
 proves it with a check of its own whose `serves` names it. Nothing builds on the parent's merge,
@@ -98,7 +97,7 @@ changes.
 
 ## A review thread GitHub will not resolve
 
-Only the pull request author's App resolves a thread, so the implementer resolves them all. When
+The reviewer resolves each thread (`skill://legion-worker/references/review-threads.md`). When
 GitHub refuses its `resolveReviewThread`, open a `dispatch ask` with the thread's URL and GitHub's
 message, for a person to resolve it, with the options resolved and could not. The merger does not
 complete while it is open.
