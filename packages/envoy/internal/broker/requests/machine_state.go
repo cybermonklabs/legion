@@ -299,6 +299,16 @@ type Machine struct {
 	// the service a pod whose projected token proved it runs as that account proves, when its
 	// launcher's service is that one (requester).
 	ServicesByAccount map[string]string
+	// PodOperators is BROKER_POD_OPERATORS: each Kubernetes ServiceAccount subject that the
+	// deployment maps to a person, answering that person's login. A pod enrollment's operator
+	// is the person its pod acts for only while this map still names that person for the
+	// account the enrollment recorded (unmappedPersonPod). While it does, the pod asks as that
+	// person (requester), and its requests are that person's to read and cancel (owner). The map
+	// is read on every request, decision, release, read of a request and cancel, as
+	// ServicesByAccount is. So when an entry is removed, or names another person, an enrolled pod
+	// of that account acts as its account's own at its next call. From then on, its requests are
+	// its own enrollment's alone.
+	PodOperators map[string]string
 	// VMServicesByAccount is BROKER_VM_SERVICES, keyed by a Google service account's email: the
 	// service a machine whose Google identity token the exchange took proves, when its launcher
 	// credential's service is that one (requester). It is read on every call, so an account
@@ -420,10 +430,13 @@ func NewChainVerifier(st *store.Store, audience string, skew time.Duration, rule
 
 type enrollmentRow struct {
 	ID, Kind, Thumbprint string
-	// Operator is the person the session acts for, nil for a pod and for a machine's own
-	// session; Service is the service of the launcher credential that enrolled it, nil for a
-	// person's machine; Subject is a pod's verified service account or the credential subject a
-	// machine's session recorded, nil for every other session; Host is that credential's host.
+	// Operator is the person the enrollment was made for: the operator of the launcher credential
+	// that enrolled it. It is nil for a machine's own session, and for a pod whose login carried
+	// no person. A pod acts for this person only while BROKER_POD_OPERATORS still maps its
+	// account to that person (requester). Service is the service of the launcher credential that
+	// enrolled it, nil for a person's machine. Subject is a pod's verified service account or the
+	// credential subject a machine's session recorded, nil for every other session. Host is that
+	// credential's host.
 	Operator, Service, Subject, Host *string
 	RuntimeID, Slot                  string
 	// SessionID is the Envoy session this enrollment recorded, empty for one that names none.
@@ -438,16 +451,23 @@ type enrollmentRow struct {
 }
 
 // requester is enrollment e as the policy sees it, read through q: the person it acts for (none
-// for a pod, and none for a machine's own session), its service, and the names that person
-// withheld from it (RevokeByApprover's withhold). Its service is its launcher credential's only
+// for a machine's own session), its service, and the names that person withheld from it
+// (RevokeByApprover's withhold). Its service is its launcher credential's only
 // when the account the enrollment recorded still proves it: `BROKER_SERVICES` for a pod's
 // verified service account, `BROKER_VM_SERVICES` for the Google account a machine's credential
 // subject names (exchange.ReadSubject). A machine login's service name is the machine's own
 // claim, which anyone signed in to Dispatch may approve, so the account is what proves the
 // service. Any other session has none.
-// It is read on every request, decision and release, so an account dropped from the
-// configuration stops an enrolled pod's or machine's service secrets at its next call, not at
-// its lease's end. A caller that decides
+// A pod acts for its enrollment's operator only while `BROKER_POD_OPERATORS` (PodOperators)
+// still maps the account the enrollment recorded to that same person (unmappedPersonPod).
+// Otherwise the pod acts for no person: it is its account's own, and its service is read as
+// above. A pod whose login carried no person acts for no person.
+// Every other session acts for its enrollment's operator. The enrollment row keeps the person it
+// was made for, and GrantsForApprover, mayRevoke, the approval record and the grant log read
+// that row, not this answer.
+// It is read on every request, decision and release, so a change to one of these settings
+// changes what an enrolled pod or machine gets at its next call, not at its lease's end. A
+// caller that decides
 // for the session reads it after locking the session's row, which RevokeByApprover holds while it
 // withholds, so a withhold either committed before the read or waits for the caller.
 // Create's check of a narrowing is the one caller that reads it on the pool under no lock
@@ -481,7 +501,11 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 			}
 		}
 	}
-	return policy.Requester{Operator: deref(e.Operator), Service: service, Withheld: withheld}, nil
+	operator := deref(e.Operator)
+	if m.unmappedPersonPod(e) {
+		operator = ""
+	}
+	return policy.Requester{Operator: operator, Service: service, Withheld: withheld}, nil
 }
 
 // Create verifies the request object (record.VerifyRequestObject, jti replay through the Replay
@@ -1275,10 +1299,13 @@ func lockPendingNames(ctx context.Context, tx pgx.Tx, enrollmentID string, sorte
 // transition, its audit row, and — when the request has a credential-request record — the
 // record's cancelled event, all in one transaction (store.EndPendingRequests).
 // The owner check compares the caller's owner with the owner of the enrollment the request hangs
-// off now (ownerOf, as OwnerAndState reads it), which an adoption rewrites: any enrollment of the same
-// person, Legion claim or machine cancels it, and an enrollment that records no owner cancels its
-// own requests alone, so the moved session cancels the request that moved with it and a box it
-// moved off that records no owner is ErrNotOwner.
+// off now (Machine.owner, as OwnerAndState reads it), which an adoption rewrites: any enrollment
+// of the same person, Legion claim or machine cancels it, and an enrollment that records no owner
+// cancels its own requests alone, so the moved session cancels the request that moved with it and
+// a box it moved off that records no owner is ErrNotOwner. A person's pod cancels its person's
+// requests only while BROKER_POD_OPERATORS maps its account to that person (unmappedPersonPod).
+// After the setting drops the account, or maps it to another person, the pod cancels its own
+// requests alone, and its person cancels none of the pod's requests.
 //
 // The audit row EndPendingRequests writes names the enrollment the request hangs off, and the
 // grant-log line names it too, since the line carries the ids its row names; the actor on both is
@@ -1290,13 +1317,14 @@ func (m *Machine) Cancel(ctx context.Context, id, enrollmentID string) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var owner, state, requestEnrollment string
-	if err := tx.QueryRow(ctx, `select `+ownerOf("e")+`, r.state, r.enrollment_id::text from requests r join enrollments e on e.id = r.enrollment_id
-		where r.id=$1 for update of r`, id).Scan(&owner, &state, &requestEnrollment); err != nil {
+	var state, requestEnrollment string
+	owner, err := m.scanOwner(tx.QueryRow(ctx, `select `+ownerColumns("e")+`, r.state, r.enrollment_id::text from requests r join enrollments e on e.id = r.enrollment_id
+		where r.id=$1 for update of r`, id), &state, &requestEnrollment)
+	if err != nil {
 		return err
 	}
-	var caller string
-	if err := tx.QueryRow(ctx, `select `+ownerOf("e")+` from enrollments e where e.id=$1`, enrollmentID).Scan(&caller); err != nil {
+	caller, err := m.scanOwner(tx.QueryRow(ctx, `select `+ownerColumns("e")+` from enrollments e where e.id=$1`, enrollmentID))
+	if err != nil {
 		return err
 	}
 	if owner != caller {
@@ -2575,7 +2603,9 @@ func lockLiveEnrollment(ctx context.Context, tx pgx.Tx, id string) error {
 
 // anyServiceOwned reports whether set serves any of granted as a service's secret, whose grant is
 // re-checked on every use: who is a service's own session rests on BROKER_SERVICES' accounts,
-// which the policy's version does not cover (policy.Set.ServiceOwned).
+// which the policy's version does not cover (policy.Set.ServiceOwned). The version does not cover
+// BROKER_POD_OPERATORS either, which decides whom a person's pod acts for. personPodGrant opens
+// the same re-check for each grant such a pod holds.
 func anyServiceOwned(set *policy.Set, granted []requestedSecret) bool {
 	return slices.ContainsFunc(granted, func(g requestedSecret) bool { return set.ServiceOwned(g.name) })
 }
@@ -2584,10 +2614,39 @@ func anyServiceOwned(set *policy.Set, granted []requestedSecret) bool {
 // may ask for it, whose grant is re-checked on every use: an entry naming a service names the
 // pods whose account BROKER_SERVICES maps to it (Machine.requester), which the policy's version
 // does not cover, so a pod can fall off a list the tag never changed. A list naming people alone
-// is re-checked as well: it costs one policy evaluation per name and answers what the version
-// already decided, and one predicate keeps the gate's two callers from telling the sorts apart.
+// is re-checked as well. For most sessions this answers what the version already decided, at the
+// cost of one policy evaluation per name. For a person's pod it can answer otherwise, because
+// BROKER_POD_OPERATORS decides whom such a pod acts for (personPodGrant). One predicate keeps the
+// gate's two callers from telling the sorts apart.
 func anyListed(set *policy.Set, granted []requestedSecret) bool {
 	return slices.ContainsFunc(granted, func(g requestedSecret) bool { return set.Secrets[g.name].Requesters != "" })
+}
+
+// personPodGrant reports whether enr is a person's pod: a pod enrollment that carries an
+// operator, which only a person's pod login makes. Each grant such a pod holds is re-checked on
+// every use, whatever the policy's version. The person the pod acts for rests on
+// BROKER_POD_OPERATORS (Machine.requester), which the policy's version does not cover. So when
+// the setting drops the pod's account, or maps it to another person, the next release or reuse
+// stops each grant the pod got only because it acted for that person.
+func personPodGrant(enr enrollmentRow) bool {
+	return enr.Kind == "pod" && enr.Operator != nil
+}
+
+// unmappedPersonPod reports whether enr is a person's pod (personPodGrant) that
+// BROKER_POD_OPERATORS (PodOperators) no longer maps to its operator. The setting must map the
+// account the enrollment recorded to that same person, both compared through
+// record.CanonicalLogin. Otherwise the pod acts for no person. It is false for every other
+// enrollment. requester and owner both read this one test, so the person a pod asks as and the
+// person whose requests it reads and cancels cannot differ.
+func (m *Machine) unmappedPersonPod(enr enrollmentRow) bool {
+	if !personPodGrant(enr) {
+		return false
+	}
+	var mapped string
+	if enr.Subject != nil {
+		mapped = record.CanonicalLogin(m.PodOperators[*enr.Subject])
+	}
+	return mapped == "" || mapped != record.CanonicalLogin(*enr.Operator)
 }
 
 // auditDetail is an audit row's non-secret detail object; audit writes it as JSON.

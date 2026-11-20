@@ -15,7 +15,7 @@ section can use the words without stopping to explain them.
   in, and starts and stops the agents that do the work. It keeps its own record in Postgres, so a
   restart picks up where it left off. It never writes code; the merge is the merger agent's request
   under the repository's rules.
-- **Agents** are [Oh My Pi](https://github.com/sjawhar/oh-my-pi) sessions. Under the Kubernetes
+- **Agents** are [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) sessions. Under the Kubernetes
   runtime every agent the daemon starts runs in a pod of its own, from one published worker image,
   and talks to the daemon over a connection the pod dials back. Under the tmux runtime a phase
   worker's role may run on Claude Code instead (`worker_backends` in `legion.yaml`); it does the same
@@ -63,7 +63,15 @@ Each token reaches every repository its own installation holds.
 `legion gh`, the `gh` wrapper every pane and pod runs, reads the directory of the owner of the
 repository a command names, and `git` reaches the same bundle through a credential helper that
 picks a directory the same way, so a command naming an owner the App is not installed on is
-refused there, not merely discouraged.
+refused there, not merely discouraged. The one exception is a `gh` read the wrapper knows (a
+command such as `pr list` typed by its full name with each value its own word, a `gh api` GET,
+or a `gh api graphql -f query=…` in the one form
+[the deployment guide](https://github.com/cybermonklabs/legion/blob/main/docs/deployment.md#what-a-panes-gh-git-and-jj-are)
+lists, whose query holds neither the word `mutation` nor `subscription`, in any case) that names
+only such owners, names no repository a configured
+rename moves, and reads no `github.com` remote of the working directory: it runs with
+`GH_CONFIG_DIR`'s token, which GitHub lets read public data and that installation's own
+repositories alone.
 
 ## The controller
 
@@ -163,9 +171,9 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
 | `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
 
-A failed test, a review that requests changes, or a head that starts conflicting with its base
-sends the issue back to `implementing` from testing, review, acceptance, retro or merging,
-and the change goes through the tester again before the reviewer sees it. Red CI sends nothing
+A failed test or a review that requests changes sends the issue back to `implementing` from
+testing or review, and the change goes through the tester again before the reviewer sees it. A
+head that starts conflicting with its base moves no phase (below). Red CI sends nothing
 back from anywhere: the review round and CI are two rules, each read on its own, and the
 reviewer's approval of the head ends the round whatever CI says at that commit, since the
 reviewer reads the code commit's checks on GitHub before it approves
@@ -393,20 +401,38 @@ Legion uses GitHub's own review mechanisms rather than labels:
   GitHub for each open head where its GitHub App holds Commit statuses, since GitHub's status event
   names no pull request. A red is for those roles to decide on — re-run a check that failed on
   itself, fix code that is at fault, or wait — and for GitHub to hold the merge over, under the base
-  branch's own required checks, which Legion neither reads nor re-implements. The reviewer reads the
+  branch's own required checks, which Legion reads only to decide whether a conflicting head needs
+  its merge forward now (below), and never re-implements. The reviewer reads the
   head's checks on GitHub itself before it approves, and the architect before it accepts; those
   reads are the ones that decide anything. Two settlements of the same head that name the same
   checks tell nobody twice, and a lingering tree is told nothing at all.
-- **A head that conflicts with its base** does move the issue. GitHub computes no merge ref for
-  such a head and runs no check on it, so no CI result would ever arrive: the daemon takes the
-  issue back to `implementing` from `testing`, `reviewing`, `accepting`, `retro` or `merging`,
-  starts the implementer with the base to merge forward, and tells the architect.
-  No role's turn is interrupted: the tester, a reviewer whose round is not yet completed, or the
-  merger keeps its turn, its background jobs, its process and its session, and the implementer's
-  start acts at once. Each of them is told on its own Envoy role topic that its phase has ended,
-  which phase the issue is in now and why, and that the workspace belongs to the new phase, so it
-  stops writing there and leaves whatever it has uncommitted. Only the implementer's phase entry
-  is raised, so a completion the tester, the reviewer or the merger sends for the phase it lost
+- **A head that conflicts with its base** moves no phase. GitHub computes no merge ref for such a
+  head and runs no check on it. The daemon reads the pull request's mergeability twice, at least a
+  minute apart, since a read made while GitHub is still computing can be stale, and acts only on a
+  conflict both reads report, and only when the next step needs a mergeable head: the issue stands
+  in `accepting`, `retro` or `merging`; a check the base requires has no green result on the head;
+  the base requires a pull request to be current with it; or the daemon could not read the base's
+  rules, which it reads (rulesets and branch protection) only on a conflicting read. Otherwise it
+  records the conflict, and the tester and the reviewer go on at that head; an approval of the
+  head ends the review round, and the daemon acts once the issue enters `accepting`.
+  When it acts, the issue keeps its phase and takes no admission slot for the merge. The
+  implementer is asked on its role topic to merge the base forward in the issue workspace and
+  push, with no handoff and no completion for it. The tester, the reviewer or the merger holding
+  the phase is told to stop writing the workspace and not to complete its phase at the old head,
+  and keeps its turn, its background jobs, its process and its session. The architect is told once
+  with a `checks-red` notice naming the phase the issue stays in. In `implementing` only the
+  implementer is told.
+  When the merge lands, the phase's worker is told both heads and goes on at the new one, and a
+  completion of the phase the issue stands in that names the replaced head, or that names no head,
+  is refused (`HANDOFF_HEAD_MERGED_FORWARD`) and is made again at the new head; a completion of a
+  phase the issue has already left is recorded as before. Past review the daemon asks the reviewer
+  to read the merge and approve the new head by its SHA, or request changes, and a merger that
+  enters `merging` while that approval is owed merges the new head only once the approval is on
+  the pull request.
+- **A completion behind its phase entry.** A move the role's completion did not make — a
+  reviewer's own request for changes, which ends the round before the reviewer completes — keeps that role's
+  turn, its background jobs, its process and its session. Only the entry of the phase the issue
+  moves to is raised, so a completion the role sends for the phase it lost
   still names the entry that phase gave it and is refused `HANDOFF_NOT_CURRENT_PHASE`;
   `HANDOFF_STALE_ENTRY` comes once the issue has handed that role the phase again, and only
   while the issue stands in that phase. A completion of another entry than the role's phases row
@@ -417,20 +443,10 @@ Legion uses GitHub's own review mechanisms rather than labels:
   of a phase that ends with the role's own handoff record. The phase was entered again at that
   head, so the work the new entry's task asks for is the work that completion reports; taking it
   moves the issue on, so the same completion sent again, or one naming a newer record, is
-  answered `HANDOFF_NOT_CURRENT_PHASE`. A completion at another commit is refused, as the
-  tester's verdict on the head before the merge forward is; so is one that names no commit, and
-  so is any while the record holds no pull request for the issue. A completion is refused
-  whatever head it names when the entry the phase stands on was raised by a move back, which asks
-  for that phase's work to be done again. From retro the implementer keeps its turn, is told the
-  same way, and is handed the implementing task after it; a retro
-  completion that reaches the daemon after the move reports the entry retro handed it while its
-  phases row is on the implementing one. The issue is in `implementing` by then, so that
-  completion goes as the implementer's completion of implementing, naming the newest
-  `implement` record and the head that record names, which can be the head the record holds;
-  what refuses it `HANDOFF_STALE_ENTRY` is the move, since retro back to `implementing` is a
-  move back and raised the entry the phase stands on. The implementer merges the base forward in
-  the implementing task's own turn and completes that work with a handoff of its own, never
-  retro's commit.
+  answered `HANDOFF_NOT_CURRENT_PHASE`. A completion at another commit is refused; so is one that
+  names no commit, and so is any while the record holds no pull request for the issue. A
+  completion is refused whatever head it names when the entry the phase stands on was raised by a
+  move back, which asks for that phase's work to be done again.
 - **An implementer that completes with no pull request** is refused (`HANDOFF_NO_PULL_REQUEST`)
   until one is open on its branch, and the daemon's read of that issue tells its architect
   `pull-request-missing`, once per handoff commit, so an issue never waits in `implementing`
@@ -446,12 +462,11 @@ Legion uses GitHub's own review mechanisms rather than labels:
   rounds, split work
   off (into a sibling child, or, on a root, an ask whether the rest needs an issue of its own), or
   let converging rounds run, and posts that decision on the issue. Every move back to an earlier
-  phase counts a round: a tester's fail, a review's request for changes, a worker's move back, and
-  the daemon's own move when the head starts conflicting with its base. A move made while the
-  record holds the head conflicting with its base is a conflict round, which `review_round_cap`
-  does not count: the implementer answers such a round with a forward merge, which no reviewer
-  asked for, and the cap's message names both numbers, the rounds counted and the conflict rounds
-  left out.
+  phase counts a round: a tester's fail, a review's request for changes and a worker's move back.
+  A move made while the record holds the head conflicting with its base is a conflict round, which
+  `review_round_cap` does not count: the implementer answers such a round with a forward merge,
+  which no reviewer asked for, and the cap's message names both numbers, the rounds counted and
+  the conflict rounds left out.
 - Each move back is counted by its kind as well, as the pair `<from>-<to>` —
   `testing-implementing`, `reviewing-implementing`, `merging-implementing` and the other eighteen —
   beside the round count, and a conflict round raises no pair.
@@ -497,15 +512,17 @@ When a merge fails, the decision is the merger's, on GitHub's own answer: wait f
 waits for, merge again at the head it re-reads, send the issue back with `request_backward_move`
 when the head itself must change, or tell the architect what no worker can do — a repository
 setting or an App permission only a person can change. A head that starts conflicting with its
-base sends the issue back to `implementing` from `merging` as it does from any later phase.
+base keeps the issue in `merging`: the merger merges nothing, the daemon asks the implementer to
+merge the base forward and the reviewer to approve the new head, and the merger merges that head
+once the approval is on the pull request.
 
 A merge queue that takes the pull request out for a conflict says which conflict it was in the
 pull request's merge state, which GitHub computes once the entry is no longer queued. A head
 GitHub still merges conflicted with an entry queued ahead of it rather than with the base, so the
 merger enqueues that head once more and no further, says so on the issue, and the issue stays in
-`merging`. A head GitHub reports dirty conflicts with the base itself and goes back to
-`implementing`; a merge state GitHub answers unknown is asked again on the merger's own backoff
-for up to five minutes and then read the same way.
+`merging`. A head GitHub reports dirty conflicts with the base itself, which the daemon answers
+with its merge forward while the issue stays in `merging`; a merge state GitHub answers unknown is
+asked again on the merger's own backoff for up to five minutes and then read the same way.
 
 What closes the issue is the daemon's own reading of the merged pull request, by GitHub's webhook
 or by its own read: it writes `done`, whether the merger's completion arrived before that or after
@@ -557,7 +574,9 @@ check's own bound starts no look of its own, because the look at that bound alre
 Nothing else wakes a check: no deploy run, no Dispatch `issue.deployed`, no Dispatch build and no
 daemon boot, and the daemon reads no deployment's production workflows at all.
 A look is bounded at two hours, and a look nobody reported — its two hours, an operator's hold,
-or a claim that failed to start — starts the next look two hours later.
+or a claim that failed to start — starts the next look two hours later. A look that began before
+a pause of the project ended counts its two hours from the resume, or from its agent's last ready
+after the resume where that is later, and counts nothing while that agent is still starting.
 The whole check is bounded at `production_check_hours` (336, fourteen
 days, by default): the look at that bound is the last, and a `pending` there closes the check
 as not run, which the agent writes on the pull request. `legion state` prints how many checks

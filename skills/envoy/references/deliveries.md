@@ -1,146 +1,28 @@
 # Envoy deliveries
 
-Read this when a delivery field is unclear, or when a publish did not reach a session you expected.
+Read this when a delivery field is unclear, or when a message did not reach a session you expected.
 
-## A rendered delivery
+## Fields of a rendered delivery
 
-Envoy renders an annotated delivery before its source summary and complete payload:
+- `id`: pass it as `in_reply_to` when you reply.
+- `from`: the sender's self-asserted id, with its session title in parentheses when it sent one. It is not an authenticated identity.
+- `at`: when the server that accepted the delivery took it, by that server's clock: the Envoy listener for a session's message or a webhook, Dispatch's server for a Dispatch event. A delivery read late carries an old `at`.
+- `delivered`: when this session took the delivery in, by this machine's clock. The Oh My Pi host adds it, and the two lines below, in each model request.
+- `waited`: present when `delivered` is 15 minutes or more after `at`, less any difference `clocks` states: how long the delivery waited. An old `at` on a late delivery says it waited, not that a clock is wrong.
+- `clocks`: present when this machine's clock runs 15 minutes or more ahead of or behind the Envoy listener's: which way, and by how much.
+- `urgency`: `low`, `med`, `high` or `blocking`, for you to read; it changes nothing about delivery.
+- `expects_reply`: `false` (do not reply or acknowledge), `optional` (welcome, nothing waits on it) or `required` (the sender waits on your answer).
+- `re`: the delivery this one answers. On a Dispatch frame it names the ask or the message, and `dispatch.question` holds the start of an ask's text; `dispatch read` gives the whole.
+- `supersedes`: an earlier delivery this one replaces; act on this one instead.
+- `reply_with`: the call that answers the sender; on a Dispatch frame a `command:` line with `...` where your text goes. `reply_role`: the role-publish reply, when the sender holds a role. Both are absent under `expects_reply: false`.
+- `note`: the payload names another session; never send to that id.
+- `unrecognised`: the payload failed validation or came from an unknown source; it names what failed.
 
-```text
-envoy:
-  to: you (ses_example_recipient)
-  from: 01a0bbbb-cccc-7ddd-eeee-0123456789ab (Reviewer)
-  at: "2026-09-07T04:41:12Z"
-  delivered: "2026-09-07T04:41:13Z"
-  id: agent-message-2
-  by: "2026-09-07T05:00:00Z"
-  urgency: high
-  expects_reply: required
-  re: agent-message-1
-  supersedes: agent-message-0
-  reply_with:
-    tool: envoy_send
-    args:
-      session_id: 01a0bbbb-cccc-7ddd-eeee-0123456789ab
-      in_reply_to: agent-message-2
-      message: ...
-  reply_role:
-    tool: envoy_publish
-    args:
-      topic: notifications.role.legion-reviewer
-      message: ...
-  summary: Deployment needs confirmation.
-  message: "Confirm the listener health check passed.\n\nThen publish the release."
-  note: body names session 01a0cccc-dddd-7eee-ffff-0123456789ab; the sender is 01a0bbbb-cccc-7ddd-eeee-0123456789ab
-```
+## Who receives a message
 
-- `to`: the local inbox that receives this delivery.
-
-- `from`: the sending session's self-asserted id, with its session title in parentheses when the envelope carries one.
-  Attribution and a direct-reply target, not an authenticated identity.
-
-- `at`: when the server that accepted the delivery took it, by that server's clock:
-  the Envoy listener the sender sent through for a session's message or a webhook event, Dispatch's server for a Dispatch event.
-  The sending session sets no time of its own; its machine's clock counts only where that listener runs on the same machine.
-  It is not the present time: a delivery read late carries an old `at`.
-
-- `delivered`: when this session got the delivery, by this machine's clock.
-  An Oh My Pi session shows it in every model request, beside `at`, or beside `published_at` on a notice that names a message the session could not be shown.
-  A session the host moves to shows when it got the delivery there, which can be later than another session got it.
-  A session that got the delivery before its process restarted can show an estimate of that time, taken from its transcript, never later than the delivery.
-
-- `waited`: present when `delivered` is 15 minutes or more after the send time, less any clock difference `clocks` states: how long the delivery waited, in words.
-  An old send time on a late delivery says the delivery waited, not that a clock is wrong.
-
-- `clocks`: present when this machine's clock runs 15 minutes or more ahead of or behind the Envoy listener's, read from the listener's replies, or when `delivered` is 15 minutes or more before the send time less that difference:
-  which way the clocks differ, and by how much.
-  Only this machine's clock and the listener's are measured, so a send time still after the delivery once the measured difference is taken off says the sending server's own clock runs ahead of the listener's.
-  A difference under 15 minutes is not shown and stays in `waited`.
-
-- `id`: the delivery id; pass it as `in_reply_to` when you reply.
-
-- `by`: the expiry deadline, when the sender set one.
-
-- `urgency`: how soon the sender asks you to act: `low`, `med`, `high` or `blocking`.
-  It is for you to read only: it does not change when a delivery reaches you, or its place among others.
-
-- `expects_reply`: what the sender wants back.
-  `false` means nothing: do not reply, and do not acknowledge.
-  `optional` means a reply is welcome and nothing waits on it.
-  `required` means the sender waits on your answer.
-
-- `re`: the delivery this one replies to.
-  A Dispatch frame names it as a `dispatch://` ref:
-  the ask (`dispatch://KEY/ask/<id>`, or `dispatch://PROJECT/artifact/<slug>/ask/<id>` for a document ask) or the message (`dispatch://KEY/message/<id>`), never the quoted text.
-  On an ask, `dispatch.question` holds the start of the question's text; `dispatch read` gives the whole.
-
-- `supersedes`: an earlier delivery this one replaces; act on this one in its place.
-
-- `reply_with`: the direct-reply call to the sender.
-  On a Dispatch frame it is `command:`, the `dispatch` command line that answers it, with `...` where your text goes.
-  It is absent when `expects_reply` is `false`: a delivery that wants nothing back offers no way to send something.
-  Where you answer one anyway, the card still names what you need — a Dispatch frame names its comment, message or ask, and an agent's delivery names its `id` and its sender.
-
-- `reply_role`: the role-publish reply call, when the sender holds a role.
-  It is absent under `false` for the same reason.
-
-- `summary`: the one-line source summary.
-
-- `message`: the complete payload; it can hold several paragraphs.
-
-- `note`: the payload names another session; never use that quoted id as the recipient.
-
-- `unrecognised`: present when the payload failed validation or came from an unknown source.
-  It names what failed, not every unknown key.
-
-## Who receives a publish
-
-It depends on where a session takes its deliveries, not on whether the topic is built in or your own.
-
-- An Oh My Pi or Claude Code session takes its messages from a durable consumer the listener keeps for it on Envoy's stream and relays to it in order, acknowledging each one only once the session wrote it.
-  So every message the stream keeps — your inbox, and each topic you follow with `envoy_subscribe` — reaches you once, whoever sent it:
-  your own publish included, and a subagent's publish to a topic its parent follows.
-  One published while you were restarting, disconnected or not running reaches you when you are back, up to 72 hours later.
-  A session does not take its messages from a NATS subscription of its own; `packages/envoy/AGENTS.md`, "Session consumers", is the rule.
-
-- A team topic (`notifications.team.<name>`) is kept too, so it reaches every session that follows it with `envoy_subscribe`, once, including one that was not running when it was published, for up to 72 hours.
-  A session that subscribes later gets nothing published before it followed.
-
-- A role is not a subject its holder subscribes to:
-  the listener finds the live holder and forwards the message to it, and drops the message when that holder is the message's source session.
-  The stream keeps the forward on the holder's inbox, so the holder's session gets it once, also after a restart or while it was not running.
-  No session answers a receipt for one: a publish returns once the stream stored the forward.
-  A role message no live holder can take is kept for one hour, until the `kept_until` the publish answers with, and the next session to hold the role live in that hour is handed it once.
-  If no session takes it, Envoy drops it, and when the publish named a sender session, Envoy sends that session a message that names it, unless it dropped it more than an hour late.
-
-- Every other `notifications.` topic, one no source uses and the stream does not keep, is refused by name
-  — at `envoy_publish` and at `envoy_subscribe` alike — because no session would ever receive it.
-  Use a team topic instead.
-  Your session is never left unregistered by one:
-  a registration that carries such a topic from an older subscription of yours keeps its other topics and names that one in a warning.
-
-## What a publish and a send answer
-
-- A publish to any topic but a role answers how many sessions get the message, counted when it was published: `published <id> to N other sessions (M running now)`.
-  `N` is every session other than you whose topics match the topic, a stopped session Envoy knows from the last 30 days included, and `M` is how many of those are live now.
-  A stopped session among them reads the message from its own consumer if it runs again within 72 hours.
-
-- `published <id>; no other session subscribes to <topic>, so no other session gets it` is that count at zero: nobody follows the topic, so the message reached nobody.
-  Reach whoever you meant another way, because a session that subscribes later does not get it.
-
-- A role topic's answer names its live `holder` instead of a count.
-  A listener that cannot read its records of known sessions counts nothing and answers `published <id>.` alone.
-
-- A send answers what its target was when Envoy stored the message: `sent <id> to <recipient> (live)` for a live session, the same line with `unresponsive` and the time it went silent for an unresponsive one, and `queued <id> for <recipient>: the session is stopped (last seen <time>); if it runs again within 72 hours, it gets the message` for one that is not running.
-  The listener tells a running session from a stopped one with one request on the session's relay subject, the subject the session's own plugin receives its messages on:
-  anything that answers it or stays silent for a second reads as running, a predecessor process of the same session id included, and nothing there at all reads as stopped.
-  None of the three lines says that the session read the message.
-
-- A queued message waits for a session Envoy knows and that is not running.
-  Never send a queued message again: a second send stores a second copy for that session to read.
-
-- A send fails with `no live session <id>` only when Envoy knows no session under that id, running now or in the last 30 days, or when the session is stopped and the listener cannot read its records of known sessions.
-
-## Listener API errors
-
-When you call the listener's `/v1` API directly, every error response is JSON, and when a field is at fault, `expected` names it: fix that field and retry.
+- A session reads every message the stream keeps for it, its inbox and each topic it follows with `envoy_subscribe`, once, from its own durable consumer, whoever sent it.
+  Your own publish to a topic you follow reaches you, and a subagent's publish reaches its parent when the parent follows that topic.
+  A message published while a session was away reaches it when it is back, within 72 hours.
+- A role message goes to the role's live holder alone, kept on the holder's inbox. The listener drops it when that holder is the message's source session.
+- No send or publish answer says that a session read the message.
+- A listener `/v1` API error is JSON; when a field is at fault, `expected` names it.

@@ -685,7 +685,7 @@ func scanPhase(row scanner) (PhaseRow, error) {
 const pullRequestColumns = `issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
 	failing, cancelled, check_runs,
 	generation, snapshot, statuses, pushes, head_moves, head_run, review_seen, review_seen_at, state,
-	checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha`
+	checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha, conflict_read, merge_forward`
 
 func (s *Postgres) PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error) {
 	pr, err := scanPullRequest(tx.QueryRow(ctx, "select "+pullRequestColumns+" from pull_requests where issue = $1", issue))
@@ -871,6 +871,18 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 			return fmt.Errorf("put pull request for %s: encode the head run: %w", pr.Issue, err)
 		}
 	}
+	// No first conflicting read and no ask to merge forward are null, as no head run is.
+	var conflictRead, mergeForward []byte
+	if pr.ConflictRead != nil {
+		if conflictRead, err = json.Marshal(pr.ConflictRead); err != nil {
+			return fmt.Errorf("put pull request for %s: encode the first conflicting read: %w", pr.Issue, err)
+		}
+	}
+	if pr.MergeForward != nil {
+		if mergeForward, err = json.Marshal(pr.MergeForward); err != nil {
+			return fmt.Errorf("put pull request for %s: encode the ask to merge forward: %w", pr.Issue, err)
+		}
+	}
 	// fix_attempts, blocked_attempts and head_counted are stopped columns: nothing counts a fix
 	// attempt since dispatch://INFRA-956 R4, and nothing reads them at all since a CI result
 	// stopped moving an issue (dispatch://INFRA-714/spec R1), so they are kept rather than
@@ -881,8 +893,9 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 	_, err = tx.Exec(ctx, `insert into pull_requests (issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
 		failing, cancelled, check_runs, generation, snapshot, statuses, pushes, head_moves,
 		head_run, review_seen, review_seen_at, state, checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha,
-		fix_attempts, blocked_attempts, head_counted)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, 0, 0, '')
+		conflict_read, merge_forward, fix_attempts, blocked_attempts, head_counted)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
+		$27, $28, 0, 0, '')
 		on conflict (issue) do update set repo = excluded.repo, number = excluded.number, branch = excluded.branch,
 		base = excluded.base, base_moved = excluded.base_moved,
 		head_sha = excluded.head_sha, head_updated_at = excluded.head_updated_at,
@@ -892,12 +905,13 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 		review_seen = excluded.review_seen,
 		review_seen_at = excluded.review_seen_at, state = excluded.state, checked_head = excluded.checked_head,
 		mergeability = excluded.mergeability, merge_state = excluded.merge_state, state_read_at = excluded.state_read_at,
-		conflicting_head = excluded.conflicting_head, merge_sha = excluded.merge_sha`,
+		conflicting_head = excluded.conflicting_head, merge_sha = excluded.merge_sha,
+		conflict_read = excluded.conflict_read, merge_forward = excluded.merge_forward`,
 		pr.Issue, pr.Repo, pr.Number, pr.Branch, pr.Base, pr.BaseMoved, pr.HeadSHA, pr.HeadUpdatedAt,
 		failing, cancelled, checkRuns,
 		pr.Generation, pr.Snapshot, statuses, pushes, moves, run,
 		pr.ReviewSeen.ID, pr.ReviewSeen.SubmittedAt, pr.State, pr.CheckedHead,
-		pr.Mergeability, pr.MergeState, pr.StateReadAt, pr.ConflictingHead, pr.MergeSHA,
+		pr.Mergeability, pr.MergeState, pr.StateReadAt, pr.ConflictingHead, pr.MergeSHA, conflictRead, mergeForward,
 	)
 	if err != nil {
 		return fmt.Errorf("put pull request for %s: %w", pr.Issue, err)
@@ -1446,10 +1460,15 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		// mergeability beside it, it is GitHub's answer about that head and that base, which a new
 		// generation of the issue's work does not make false. A head that still does not merge
 		// still does not merge, and the count it excuses starts again with the rounds below, so
-		// nothing of the old generation's counting survives it.
+		// nothing of the old generation's counting survives it. conflict_read, a first conflicting
+		// read still waiting for its second (PullRequest.ConflictRead), stays for the same reason:
+		// it is GitHub's answer, and the second read that confirms or releases it is still owed.
+		// merge_forward goes (PullRequest.MergeForward): it is the old run's ask that its
+		// implementer merge the base forward, and the new generation decides afresh, on its own
+		// confirmed conflict, whether to ask again.
 		"update pull_requests set " +
 			"head_run = null, planned_red = false, checked_head = '', failing = '[]'::jsonb, cancelled = '[]'::jsonb, " +
-			"check_runs = '[]'::jsonb, statuses = '[]'::jsonb where " + where,
+			"check_runs = '[]'::jsonb, statuses = '[]'::jsonb, merge_forward = null where " + where,
 		// The entry's task goes with the run, and the entry itself stays where it stands: the
 		// number is never reset, so a worker still holding the old entry's task is behind the row
 		// rather than level with it, and the re-admitted tree's promotion raises the entry again
@@ -1506,11 +1525,12 @@ func (s *Postgres) clearGates(ctx context.Context, tx pgx.Tx, where, key, descri
 
 func scanPullRequest(row scanner) (*PullRequest, error) {
 	var pr PullRequest
-	var failing, cancelled, checkRuns, statuses, pushes, moves, run []byte
+	var failing, cancelled, checkRuns, statuses, pushes, moves, run, conflictRead, mergeForward []byte
 	if err := row.Scan(&pr.Issue, &pr.Repo, &pr.Number, &pr.Branch, &pr.Base, &pr.BaseMoved, &pr.HeadSHA, &pr.HeadUpdatedAt,
 		&failing, &cancelled, &checkRuns, &pr.Generation, &pr.Snapshot, &statuses,
 		&pushes, &moves, &run, &pr.ReviewSeen.ID, &pr.ReviewSeen.SubmittedAt, &pr.State,
-		&pr.CheckedHead, &pr.Mergeability, &pr.MergeState, &pr.StateReadAt, &pr.ConflictingHead, &pr.MergeSHA); err != nil {
+		&pr.CheckedHead, &pr.Mergeability, &pr.MergeState, &pr.StateReadAt, &pr.ConflictingHead, &pr.MergeSHA,
+		&conflictRead, &mergeForward); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(failing, &pr.Failing); err != nil {
@@ -1534,6 +1554,16 @@ func scanPullRequest(row scanner) (*PullRequest, error) {
 	if run != nil {
 		if err := json.Unmarshal(run, &pr.Run); err != nil {
 			return nil, fmt.Errorf("decode the head run: %w", err)
+		}
+	}
+	if conflictRead != nil {
+		if err := json.Unmarshal(conflictRead, &pr.ConflictRead); err != nil {
+			return nil, fmt.Errorf("decode the first conflicting read: %w", err)
+		}
+	}
+	if mergeForward != nil {
+		if err := json.Unmarshal(mergeForward, &pr.MergeForward); err != nil {
+			return nil, fmt.Errorf("decode the ask to merge forward: %w", err)
 		}
 	}
 	return &pr, nil
@@ -2499,7 +2529,10 @@ func (s *Postgres) RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchPro
 	return issues, nil
 }
 
-const outboxColumns = `id, kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until`
+// outboxColumns is an outbox row as scanOutbox reads it. held_by_pause is read as 0 for the null
+// of a row no pause held (OutboxRow.HeldByPause).
+const outboxColumns = `id, kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until,
+	coalesce(held_by_pause, 0) as held_by_pause`
 
 func (s *Postgres) Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error {
 	if !json.Valid(row.Payload) {
@@ -2719,11 +2752,12 @@ func (s *Postgres) OwedStarts(ctx context.Context, tx pgx.Tx, project string) ([
 }
 
 // The outbox's runnable predicates are one SQL text, so the lanes' list of due rows (DueRows), their
-// claim (ClaimRow) and the state report's held rows (HeldRows) can never disagree about which row
-// may run. Each refers to the statement's first five parameters, which outboxDueArgs supplies — $1
-// is now, $2 to $4 the kinds the ordering rules name, $5 the lifecycle lane's kinds — so a statement
-// embedding one numbers its own parameters from $6. The outer table is `outbox`, unaliased, which
-// the rules' subqueries name.
+// claim (ClaimRow), the state report's held rows (HeldRows, PauseHeldRows) and the resume's mark of
+// the rows its pause held (MarkPauseHeldRows) can never disagree about which row may run. Each
+// refers to the statement's first five parameters, which outboxDueArgs supplies — $1 is now, $2
+// to $4 the kinds the ordering rules name, $5 the lifecycle lane's kinds — so a statement
+// embedding one numbers its own parameters from $6; the pause rule (outboxPauseFree) refers to
+// none. The outer table is `outbox`, unaliased, which the rules' subqueries name.
 
 // outboxUnleasedDue is a row due at $1 that no live lease holds.
 const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null or outbox.lease_until <= $1)`
@@ -2766,9 +2800,44 @@ const outboxInOrder = `not (outbox.kind = $2 and exists (select 1 from outbox ol
 const outboxLaneFree = `not (outbox.kind = any($5::text[]) and exists (select 1 from outbox running
 			where running.issue = outbox.issue and running.id <> outbox.id and running.kind = any($5::text[]) and running.lease_until > $1))`
 
-// outboxClaimable is a row a lane may run now: due, under no live lease, in order, and with no other
-// lifecycle row of its issue running.
-const outboxClaimable = outboxUnleasedDue + ` and ` + outboxInOrder + ` and ` + outboxLaneFree
+// outboxPauseFree is the rule that a row a project's pause holds (pauseHolds) waits while an open
+// pause names its project (decision 9 of dispatch://INFRA-3759). A row's project is the Dispatch
+// key its issue column starts with, as DueRows scopes it, and project_pauses keys a pause by that
+// same key, so a row of another project on the same database is never held. The rule is built
+// once from pauseHolds with each kind and op written in as an SQL literal, so the one list is what
+// holds the rows and no statement's parameters move. It reads:
+//
+//	not ((outbox.kind in ('notice', 'hook_prompt', …) or (outbox.kind = 'supervise' and outbox.payload->>'op' = 'start'))
+//		and exists (select 1 from project_pauses pause
+//			where pause.project = split_part(outbox.issue, '-', 1) and pause.ended_at is null))
+//
+// A held row takes no lease, so it keeps its place, spends no attempt and holds none of its
+// issue's other rows back, as a start waiting for its slot does (outboxInOrder). A row a lane
+// leased before the pause committed runs to its end; the pause's catch-up stops what it launches.
+var outboxPauseFree = pauseFreeClause(pauseHolds)
+
+// pauseFreeClause writes outboxPauseFree from the list of the rows a pause holds.
+func pauseFreeClause(holds []pauseHold) string {
+	var kinds, shapes []string
+	for _, hold := range holds {
+		if hold.op == "" {
+			kinds = append(kinds, sqlText(string(hold.kind)))
+			continue
+		}
+		shapes = append(shapes, `(outbox.kind = `+sqlText(string(hold.kind))+` and outbox.payload->>'op' = `+sqlText(string(hold.op))+`)`)
+	}
+	held := append([]string{`outbox.kind in (` + strings.Join(kinds, ", ") + `)`}, shapes...)
+	return `not ((` + strings.Join(held, " or ") + `)
+			and exists (select 1 from project_pauses pause
+				where pause.project = split_part(outbox.issue, '-', 1) and pause.ended_at is null))`
+}
+
+// sqlText is s as an SQL string literal.
+func sqlText(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+
+// outboxClaimable is a row a lane may run now: due, under no live lease, in order, with no other
+// lifecycle row of its issue running, and not held by its project's pause.
+var outboxClaimable = outboxUnleasedDue + ` and ` + outboxInOrder + ` and ` + outboxLaneFree + ` and ` + outboxPauseFree
 
 // lifecycleKindNames is the lifecycle lane's kinds as the outbox stores them, the $5 every
 // statement embedding the predicates takes: the lane rule is the lifecycle lane's alone.
@@ -2799,11 +2868,7 @@ func kindNames(kinds []OutboxKind) []string {
 // claims only an id a list gave it, because a lease taken on another project's row is what would
 // take it from its own daemon.
 func (s *Postgres) DueRows(ctx context.Context, tx pgx.Tx, project, issue string, kinds []OutboxKind, now time.Time) ([]OutboxRow, error) {
-	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox
-		where split_part(outbox.issue, '-', 1) = $6 and ($7::text = '' or outbox.issue = $7::text)
-		and (cardinality($8::text[]) = 0 or outbox.kind = any($8::text[]))
-		and `+outboxClaimable+`
-		order by next_at, id`, outboxDueArgs(now, project, issue, kindNames(kinds))...)
+	rows, err := tx.Query(ctx, dueRowsSQL, outboxDueArgs(now, project, issue, kindNames(kinds))...)
 	if err != nil {
 		return nil, fmt.Errorf("list due outbox rows: %w", err)
 	}
@@ -2821,6 +2886,16 @@ func (s *Postgres) DueRows(ctx context.Context, tx pgx.Tx, project, issue string
 	}
 	return due, nil
 }
+
+// dueRowsSQL is DueRows' statement, built once from the outbox's rules (outboxClaimable). Its
+// project scope, `split_part(outbox.issue, '-', 1) = $6`, is the rule every write of a row by key
+// takes from the other side (claim.KeyOfProject): a daemon writes no row keyed by another
+// project's issue, because only that project's daemon runs it here.
+var dueRowsSQL = `select ` + outboxColumns + ` from outbox
+		where split_part(outbox.issue, '-', 1) = $6 and ($7::text = '' or outbox.issue = $7::text)
+		and (cardinality($8::text[]) = 0 or outbox.kind = any($8::text[]))
+		and ` + outboxClaimable + `
+		order by next_at, id`
 
 // ClaimRow leases row id for leaseFor from now, if a lane may still run it at now: it is in the
 // outbox, due, under no live lease, in order, and no other lifecycle row of its issue is running
@@ -2867,9 +2942,7 @@ func (s *Postgres) ClaimRow(ctx context.Context, tx pgx.Tx, id int64, now time.T
 		where id = $1 and kind = $2 and payload->>'kind' = 'catch-up'`, id, string(OutboxKindNotice)); err != nil {
 		return OutboxRow{}, false, fmt.Errorf("claim outbox row %d: %w", id, err)
 	}
-	row, err := scanOutbox(tx.QueryRow(ctx, `update outbox set lease_token = $7, lease_until = $8
-		where outbox.id = $6 and `+outboxClaimable+`
-		returning `+outboxColumns, outboxDueArgs(now, id, token, now.Add(leaseFor))...))
+	row, err := scanOutbox(tx.QueryRow(ctx, claimRowSQL, outboxDueArgs(now, id, token, now.Add(leaseFor))...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return OutboxRow{}, false, nil
 	}
@@ -2878,6 +2951,11 @@ func (s *Postgres) ClaimRow(ctx context.Context, tx pgx.Tx, id int64, now time.T
 	}
 	return row, true, nil
 }
+
+// claimRowSQL is ClaimRow's update, built once from the outbox's rules (outboxClaimable).
+var claimRowSQL = `update outbox set lease_token = $7, lease_until = $8
+		where outbox.id = $6 and ` + outboxClaimable + `
+		returning ` + outboxColumns
 
 // RenewOutboxLease moves the lease on row id to until while leaseToken still holds it, so a lane
 // running a long row keeps it from the lapse that would let another claim it mid-run. False is a
@@ -2969,13 +3047,7 @@ func (s *Postgres) UnfinishedLanes(ctx context.Context, tx pgx.Tx, project strin
 // and refuses a statement with one it never uses, and the ordering rules' kinds are among the
 // parameters every fragment shares.
 func (s *Postgres) HeldRows(ctx context.Context, tx pgx.Tx, project, issue string, now time.Time) ([]HeldRow, error) {
-	rows, err := tx.Query(ctx, `select `+outboxColumns+`, (select min(running.id) from outbox running
-			where running.issue = outbox.issue and running.id <> outbox.id and running.kind = any($5::text[]) and running.lease_until > $1) as waits_on
-		from outbox where split_part(outbox.issue, '-', 1) = $6 and ($7::text = '' or outbox.issue = $7::text)
-		and outbox.kind = any($5::text[])
-		and `+outboxUnleasedDue+` and not (`+outboxClaimable+`) and not `+outboxLaneFree+`
-		order by next_at, id`,
-		outboxDueArgs(now, project, issue)...)
+	rows, err := tx.Query(ctx, heldRowsSQL, outboxDueArgs(now, project, issue)...)
 	if err != nil {
 		return nil, fmt.Errorf("list the held outbox rows of %s: %w", project, err)
 	}
@@ -2993,6 +3065,110 @@ func (s *Postgres) HeldRows(ctx context.Context, tx pgx.Tx, project, issue strin
 		return nil, fmt.Errorf("list the held outbox rows of %s: %w", project, err)
 	}
 	return held, nil
+}
+
+// heldRowsSQL is HeldRows' statement, built once from the outbox's rules (outboxClaimable,
+// outboxLaneFree).
+var heldRowsSQL = `select ` + outboxColumns + `, (select min(running.id) from outbox running
+			where running.issue = outbox.issue and running.id <> outbox.id and running.kind = any($5::text[]) and running.lease_until > $1) as waits_on
+		from outbox where split_part(outbox.issue, '-', 1) = $6 and ($7::text = '' or outbox.issue = $7::text)
+		and outbox.kind = any($5::text[])
+		and ` + outboxUnleasedDue + ` and not (` + outboxClaimable + `) and not ` + outboxLaneFree + `
+		order by next_at, id`
+
+// PauseHeldRows is every row of project's issues that the project's open pause holds at now
+// (outboxPauseFree negated) and that is due and under no live lease, by next_at then id: what the
+// state lists under the pause (decision 25 of dispatch://INFRA-3759). It is the lanes' own rule
+// read back, so what it lists is exactly what the lanes hold for the pause, and it lists nothing
+// while no pause is open. A row not yet due waits on its own time and is listed once it comes
+// due; a row a lane leased before the pause runs to its end and is not listed. project is the
+// Dispatch key.
+func (s *Postgres) PauseHeldRows(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]PauseHeldRow, error) {
+	return pauseHeldRows(ctx, tx, pauseHeldRowsSQL, project, now)
+}
+
+// MarkPauseHeldRows is PauseHeldRows for the resume of pause, the project's open pause, run in
+// the resume's own transaction before it ends that pause (store's ResumeRequest.MarkHeld): the
+// one statement that lists the rows the pause holds writes pause on each of them
+// (OutboxRow.HeldByPause), so the rows it marks are the rows the resume logs as released, and
+// each carries the pause when it runs after the resume, whatever its kind or due time. No lane
+// runs a held row before that statement or between it and the resume's commit: the pause stands
+// until that commit, and its rule holds every such row. A restart while the project is paused
+// changes nothing of it, since the marks are written by the resume alone.
+func (s *Postgres) MarkPauseHeldRows(ctx context.Context, tx pgx.Tx, project string, pause int64, now time.Time) ([]PauseHeldRow, error) {
+	return pauseHeldRows(ctx, tx, markPauseHeldRowsSQL, project, now, pause)
+}
+
+// pauseHeldRows runs statement, PauseHeldRows' or MarkPauseHeldRows', with now as $1, project as
+// $2 and more after them, and reads the rows it answers, each with the claim it is for and how
+// long it has waited at now.
+func pauseHeldRows(ctx context.Context, tx pgx.Tx, statement, project string, now time.Time, more ...any) ([]PauseHeldRow, error) {
+	token, err := claim.ProjectToken(project)
+	if err != nil {
+		return nil, fmt.Errorf("list the rows %s's pause holds: %w", project, err)
+	}
+	rows, err := tx.Query(ctx, statement, append([]any{now, project}, more...)...)
+	if err != nil {
+		return nil, fmt.Errorf("list the rows %s's pause holds: %w", project, err)
+	}
+	defer rows.Close()
+	held := []PauseHeldRow{}
+	for rows.Next() {
+		var row PauseHeldRow
+		var role string
+		if row.OutboxRow, err = scanOutbox(rows, &role); err != nil {
+			return nil, fmt.Errorf("list the rows %s's pause holds: %w", project, err)
+		}
+		row.Claim = pauseHeldClaim(token, row.OutboxRow, role)
+		row.WaitedSeconds = max(0, int64(now.Sub(row.NextAt).Seconds()))
+		held = append(held, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list the rows %s's pause holds: %w", project, err)
+	}
+	return held, nil
+}
+
+// pauseHeld is the rows of the project $2 that its open pause holds at $1 and that are due and
+// under no live lease: the outbox's own rules (outboxUnleasedDue, outboxPauseFree), the pause's
+// negated, which PauseHeldRows lists and MarkPauseHeldRows marks.
+var pauseHeld = `split_part(outbox.issue, '-', 1) = $2 and ` + outboxUnleasedDue + ` and not ` + outboxPauseFree
+
+// pauseHeldRowsSQL is PauseHeldRows' statement, and markPauseHeldRowsSQL MarkPauseHeldRows', which
+// writes the pause $3 on each row it answers; both are built once from the rows a pause holds
+// (pauseHeld).
+var (
+	pauseHeldRowsSQL = `select ` + outboxColumns + `, coalesce(outbox.payload->>'role', '') from outbox
+		where ` + pauseHeld + `
+		order by next_at, id`
+	markPauseHeldRowsSQL = `with held as (update outbox set held_by_pause = $3 where ` + pauseHeld + `
+			returning ` + outboxColumns + `, coalesce(outbox.payload->>'role', '') as role)
+		select * from held order by next_at, id`
+)
+
+// pauseHeldClaim is the claim a held row is for, where the row names one, and "" where it names
+// none (PauseHeldRow). project is the project token and role the payload's `role`. A start, a
+// hook's words, an update ask and a merge forward's message name the role of the row's own issue,
+// as the executors read it (the daemon's roleToken); the merge-queue message goes to the issue's merger;
+// a role message names the claim's token itself (record.RoleMessage.Role).
+func pauseHeldClaim(project string, row OutboxRow, role string) claim.Token {
+	switch row.Kind {
+	case OutboxKindSupervise, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeForward:
+	case OutboxKindMergeQueueRemoval:
+		role = string(claim.RoleMerger)
+	case OutboxKindRoleMessage:
+		if _, ok := claim.Token(role).Role(); ok {
+			return claim.Token(role)
+		}
+		return ""
+	default:
+		return ""
+	}
+	token, err := claim.NewToken(project, row.Issue, claim.Role(role))
+	if err != nil {
+		return ""
+	}
+	return token
 }
 
 func (s *Postgres) WaitingNotices(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]OutboxRow, error) {
@@ -3219,13 +3395,11 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
 	}
 	for rows.Next() {
-		var row OutboxRow
-		var kind, role, generation string
-		var payload []byte
+		var role, generation string
 		var age time.Duration
 		var running bool
-		if err := rows.Scan(&row.ID, &kind, &row.Issue, &payload, &row.Attempts, &row.NextAt, &row.LastError,
-			&row.CreatedAt, &row.LeaseToken, &row.LeaseUntil, &role, &generation, &age, &running); err != nil {
+		row, err := scanOutbox(rows, &role, &generation, &age, &running)
+		if err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
 		}
@@ -3233,8 +3407,6 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		if !wanted {
 			continue
 		}
-		row.Kind = OutboxKind(kind)
-		row.Payload = append(json.RawMessage(nil), payload...)
 		decoded, err := DecodeOutboxPayload(row)
 		if err != nil {
 			rows.Close()
@@ -3268,12 +3440,13 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 
 // RoleClaims reads the claims of tokens and nothing else, keyed by token: RoleRuns' second
 // statement alone, for a caller that judges a role run by its claim and never reads the queued
-// starts beside it (admit's finishFencedStarts, through stopOutlivedStart). A token the store
+// starts beside it (admit's finishFencedStarts, through stopOutlivedStart, and the outbox's
+// check_look row after a project's pause, internal/daemon's lookBoundAfterPause). A token the store
 // holds no claim for is absent from the answer, which is the nil claim RoleRuns reports for it.
-// It saves that caller RoleRuns' first statement, which selects and strictly decodes every
+// It saves admit's caller RoleRuns' first statement, which selects and strictly decodes every
 // supervise row of every issue that owes a start, once per admission pass.
 //
-// Nothing of the ordering RoleRuns sets out is given up, and the one caller leans on it: these
+// Nothing of the ordering RoleRuns sets out is given up, and admit's caller leans on it: these
 // claims must be read after the owed rows they are judged against, so that a stop made between
 // the two reads is in the claim read here and the rule acts on this pass rather than the next.
 // The mark it weighs each owed row against is RoleClaim.RetiredAtWriteMark, taken in store's
@@ -3308,10 +3481,11 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 // took it back from a turn (interrupted), with the moment the claim's agent last said it was ready
 // (last_ready) and the claim's own handshake of the last entry it was queued a task of
 // (handshake_*), whose queued moment is when that entry's task was first queued, however many
-// times it was queued again. Those are what say an architect took nothing — the task of the entry
-// its row names, standing unconfirmed, counted from that entry's first queueing, and for a task a
-// let-go took back from the relaunched agent's ready where that is later — which the admission
-// pass reads of every root it weighs (admit's architectStalls).
+// times it was queued again, and whose confirmed moment is when a turn first confirmed one. Those
+// are what say an architect took nothing — the task of the entry its row names, standing
+// unconfirmed, counted while the claim's agent is up from the later of that entry's first
+// queueing and the agent's ready — and when the bound of a root slow before its gate starts,
+// which the admission pass reads of every root it weighs (admit's architectStalls).
 func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(claim.Token, *RoleClaim)) error {
 	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark, c.given_entry,
 		c.last_ready, c.handshake_entry, c.handshake_generation, c.handshake_queued_at, c.handshake_confirmed_at,
@@ -3424,7 +3598,7 @@ func scanOutbox(row scanner, extra ...any) (OutboxRow, error) {
 	var kind string
 	var payload []byte
 	if err := row.Scan(append([]any{&out.ID, &kind, &out.Issue, &payload, &out.Attempts, &out.NextAt, &out.LastError,
-		&out.CreatedAt, &out.LeaseToken, &out.LeaseUntil}, extra...)...); err != nil {
+		&out.CreatedAt, &out.LeaseToken, &out.LeaseUntil, &out.HeldByPause}, extra...)...); err != nil {
 		return OutboxRow{}, err
 	}
 	out.Kind = OutboxKind(kind)

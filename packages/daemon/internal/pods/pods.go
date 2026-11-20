@@ -12,13 +12,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// Wake kinds, the vocabulary of a recorded resume's kind: the five ways a released pod comes
+// Wake kinds, the vocabulary of a recorded resume's kind: the six ways a released pod comes
 // back. WakeDelivery is a delivery the daemon already had for a role of the
-// pod — a phase start, a task, a backward move, a notice, a phase-ended message, a production
+// pod — a phase start, a task, a backward move, a notice, a merge forward's message, a production
 // check's look, a slot resume; WakeChecks is a CI settlement on the head of the issue's pull
 // request; WakeRoleMessage and WakeAgentMessage are what only the Envoy listener sees, a message
 // published to a role topic of the pod and one sent to the agent subject of a released session;
-// WakeBackstop is the stored backstop a release armed.
+// WakeBackstop is the stored backstop a release armed; WakePause is the launch a project's pause
+// owed a role it stopped, held until the resume (store's PodRecords.TakePodWake).
 //
 // They are records rather than the rule's own, because the rule that names a wake (workflow) and
 // the store that files it under this word are different packages, and one vocabulary is what
@@ -29,6 +30,7 @@ const (
 	WakeRoleMessage  = "role_message"
 	WakeAgentMessage = "agent_message"
 	WakeBackstop     = "backstop"
+	WakePause        = "pause"
 )
 
 // IdleClaim is one claim of an issue's pod as the idle rule reads it. Every field comes from the
@@ -135,8 +137,10 @@ type IdleRoot struct {
 
 // IdleView is one issue's pod as the idle rule reads it, in one read per issue: every claim of
 // the pod, whether any queued outbox row is addressed to one of its roles, the issue's own place
-// in the workflow and its tree root's. Found is false for an issue the record does not hold,
-// which is no pod of the workflow's to release.
+// in the workflow and its tree root's. Found is false for an issue the record does not hold under
+// the daemon's own project, which is no pod of the workflow's to release: a record another
+// project's daemon keeps of the issue on a shared database is not this daemon's
+// (store.readIdleView).
 //
 // It is a record type rather than a store type because the rule that reads it is the workflow's
 // (workflow.IdleRelease) and the store is what fills it, so neither of the two imports the other
@@ -162,6 +166,15 @@ type IdleView struct {
 	// again would store a bundle over it, taken from a workspace that never had that work, so
 	// the rule keeps it until the restore is confirmed.
 	BundleUnrestored bool
+	// Paused is whether the daemon's project is paused (a project_pauses row of that project
+	// stands open), read by the project's token whatever project the issue's key names (store's
+	// readOpenPauseByToken says why). A paused project's pods stay: the pause starts no release
+	// (decision 12 of dispatch://INFRA-3759).
+	Paused bool
+	// PauseHeld is whether a pause's hold stands on the pod (project_pause_pod_holds): a pod whose
+	// roles a pause stopped, which stays until a role of it is ready again or something deletes it
+	// (decision 13).
+	PauseHeld bool
 	// Holding is whether a hold streak of this pod is running (store's pod_holds). The rule
 	// never reads it: it is here because the daemon's pass needs it to know whether it has a
 	// streak to end, and the view is the one read of the pod that pass already makes.

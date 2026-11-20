@@ -66,9 +66,9 @@ func TestTailPrintsEnvelopesOnTheSubject(t *testing.T) {
 
 // The listener's connection probe (cmd/listener/connection_probe.go) is a header-only core
 // request on notifications.envoy.deliver.<session>, so an operator's natstail on notifications.>
-// meets one at every send to a session with consumer delivery. The probe's own comment and
-// packages/envoy/AGENTS.md name exactly that tail as a subscriber that stays silent: it must pass
-// the probe over and go on tailing, rather than end on a message that carries no envelope.
+// meets one at every send to a session with consumer delivery. The probe's own comment names
+// exactly that tail as a subscriber that stays silent: it must pass the probe over and go on
+// tailing, rather than end on a message that carries no envelope.
 func TestTailPassesOverTheListenersConnectionProbe(t *testing.T) {
 	server, url := testnats.Start(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

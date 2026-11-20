@@ -264,13 +264,13 @@ Every row is a grant from the broker AGENT_SECRETS_URL names (AWS Secrets Manage
 Each list says on standard error which broker and store its rows are from, so the table on
 standard output stays one row per login or grant for a script.
 
-`machine list` shows your own machines' logins alone; Dispatch's machine-login page also lists
-every service's. `agent-secrets grant revoke <grant id>` ends a grant there, and
-`agent-secrets machine revoke <credential id>` one of your logins. `grant revoke` run in a
-session's shell is the session's own revoke, as `agent-secrets revoke` is: it ends only a grant
-given to the broker identity (enrollment) the session signs as. Run there, `machine list`,
-`machine revoke` and `grant list` are refused `IN_SESSION`, so the session's own commands cannot
-act as you:
+`machine list` shows your own machines' logins and your pods' logins alone; Dispatch's
+machine-login page also lists every service's. `agent-secrets grant revoke <grant id>` ends a
+grant there, and `agent-secrets machine revoke <credential id>` one of your logins.
+`grant revoke` run in a session's shell is the session's own revoke, as `agent-secrets revoke`
+is: it ends only a grant given to the broker identity (enrollment) the session signs as. Run
+there, `machine list`, `machine revoke` and `grant list` are refused `IN_SESSION`, so the
+session's own commands cannot act as you:
 
 ```console
 $ agent-secrets machine list
@@ -355,12 +355,16 @@ name its deployment registered for it and no other. The registration is a route 
 `BROKER_SERVICE_LOGINS` lets it log in as, here `legion-daemon`
 (`$DEV_BROKER_DIR/registrar-token`); its body carries that pod's own token for the broker's
 audience (`$DEV_BROKER_DIR/pod-token`, the token a daemon enrolls the pod with) and the name the
-pod may write under. The script makes that call before it prints `ready.`, which is the
-`registered the exchange pod to write under example-worker-session` line above. Making it again
-extends the registration, which lasts 24 hours from each write, and the same call with another
-name is how you add one. The body carries a token too, so it goes on standard input
-(`--data @-`), and the header from a file curl reads (`-H @<(printf …)`, a bash process
-substitution), which keeps both tokens out of every command line:
+pod may write under. The login alone registers nothing: the script sets
+`BROKER_POD_REGISTRARS=system:serviceaccount:example-ns:example-daemon=system:serviceaccount:example-ns:example-worker`,
+which pairs the registrar's account with the pod's, and the route refuses a registrar that no
+entry pairs with the pod's account `403 POD_REGISTRAR_NOT_LISTED`, naming both accounts
+([Operate](/legion/broker/operate/#what-to-run)). The script makes the registration call before it
+prints `ready.`, which is the `registered the exchange pod to write under example-worker-session`
+line above. Making it again extends the registration, which lasts 24 hours from each write, and
+the same call with another name is how you add one. The body carries a token too, so it goes on
+standard input (`--data @-`), and the header from a file curl reads (`-H @<(printf …)`, a bash
+process substitution), which keeps both tokens out of every command line:
 
 ```console
 $ printf '{"pod_token": "%s", "session": "example-worker-session"}' "$(cat "$DEV_BROKER_DIR/pod-token")" | curl -s -X POST -H @<(printf 'Authorization: Bearer %s' "$(cat "$DEV_BROKER_DIR/registrar-token")") -H 'Content-Type: application/json' --data @- "$AGENT_SECRETS_URL/v1/oauth/exchange/pod-sessions"

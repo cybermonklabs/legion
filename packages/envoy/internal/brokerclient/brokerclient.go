@@ -310,8 +310,8 @@ func New(cfg Config) (*Client, error) {
 	case cfg.Subject == nil:
 		return nil, errors.New("brokerclient: no subject token source: nothing names the identity to trade")
 	}
-	if err := oauthwire.ValidProjects(cfg.Projects); err != nil {
-		return nil, fmt.Errorf("brokerclient: the projects to trade for: %w", err)
+	if oauthwire.ValidProjects(cfg.Projects) != nil {
+		return nil, fmt.Errorf("brokerclient: the projects to trade for are not at most %d project keys, sorted and each named once", oauthwire.MaxProjects)
 	}
 	client := &Client{
 		wake:                 make(chan struct{}, 1),

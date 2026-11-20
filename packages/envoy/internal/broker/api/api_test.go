@@ -91,6 +91,10 @@ type testServer struct {
 // podAudience is the audience the test server's pod verifier checks and podToken mints for.
 const podAudience = "legion-broker-pod"
 
+// registrationAudience is the test server's BROKER_POD_REGISTRATION_AUDIENCE: the second audience
+// POST /v1/oauth/exchange/pod-sessions accepts a pod token at, of the same issuer as podAudience.
+const registrationAudience = "legion-broker-pod-registration"
+
 // daemonAccount and otherDaemonAccount are the ServiceAccounts the test server's
 // BROKER_SERVICE_LOGINS lets log in as legion-daemon with their tokens, as two Legion daemons' own
 // accounts do.
@@ -103,8 +107,9 @@ const (
 // approves for every requester; WORKER_TOKEN, shared and agent-tier, which every session and pod
 // gets at once; and SHARED_KEY, shared and human-tier, which anyone signed in approves. It wires a
 // real pod verifier against a local OIDC issuer, as cmd/broker/main.go does when
-// BROKER_K8S_OIDC_ISSUER is set, and mounts api.Register on an httptest.Server so every proof's
-// htu and every request object's aud have one real, consistent PublicURL to check against.
+// BROKER_K8S_OIDC_ISSUER is set, and a second at registrationAudience, as it does when
+// BROKER_POD_REGISTRATION_AUDIENCE is set, and mounts api.Register on an httptest.Server so every
+// proof's htu and every request object's aud have one real, consistent PublicURL to check against.
 func newTestServer(t *testing.T) *testServer {
 	t.Helper()
 	return newTestServerWith(t, func(*api.Deps) {})
@@ -133,10 +138,12 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 
 	issuer := oidctest.New(t)
 	podKey := issuer.PublishKey(t, "signing-key")
-	podVerifier, err := oidc.New(context.Background(), issuer.URL(), podAudience)
+	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
 	if err != nil {
-		t.Fatalf("oidc.New: %v", err)
+		t.Fatalf("oidc.NewKeys: %v", err)
 	}
+	podVerifier := oidc.NewWithKeys(issuer.URL(), podAudience, keys)
+	registrationVerifier := oidc.NewWithKeys(issuer.URL(), registrationAudience, keys)
 	serviceLogins := map[string]string{daemonAccount: "legion-daemon", otherDaemonAccount: "legion-daemon"}
 	// BROKER_SERVICES: both accounts the pods these tests enrol run as, bound to the service both
 	// daemon accounts log in as, which is what lets their logins enrol those pods. An account
@@ -153,6 +160,18 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	// broker, whose one store serves both routes, refuses.
 	sessions := oauthstore.New(st.Pool)
 	enr.Sessions = sessions
+
+	// BROKER_POD_REGISTRARS: both daemon accounts listed for every pod account this package's
+	// tests register — the worker's and the other pods', the rig exchange's two accounts, an
+	// account no exchange entry lists, and the first daemon's own account, whose sibling pod a
+	// rollout registers — so every test of the route reaches the refusal it asserts. A test of the
+	// list itself narrows it with adjust.
+	podRegistrars := api.PodRegistrars{}
+	for _, registrar := range []string{daemonAccount, otherDaemonAccount} {
+		for _, pod := range []string{workerAccount, otherAccount, brokertest.ExchangeAccount, brokertest.ExchangeRolesAccount, unlistedAccount, daemonAccount} {
+			podRegistrars[api.PodRegistrar{Registrar: registrar, Pod: pod}] = struct{}{}
+		}
+	}
 
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: policytest.Store(local),
@@ -172,6 +191,7 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 		APIAccounts:   map[string]api.Account{dispatchAccount: brokertest.Caller(t, dispatchCaller)},
 		AccountTokens: enroll.K8sPodVerifier{Verifier: podVerifier},
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
+		PodRegistrars: podRegistrars, PodRegistrationTokens: enroll.K8sPodVerifier{Verifier: registrationVerifier},
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,

@@ -21,8 +21,7 @@ package api
 // and `packages/contracts/fixtures/daemon-api/state.json`. In `packages/daemon`,
 // `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes
 // the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
-// and the plugin's field together. The same commit also writes this bump into the contract
-// history of `packages/pi-legion/AGENTS.md` as the last bump.
+// and the plugin's field together.
 // `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
 // disagrees with this constant.
 //
@@ -2421,7 +2420,40 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 181: INFRA-4036 (cybermonklabs/legion) -- the deployment's capability report on `GET
+// 178: INFRA-3759 (cybermonklabs/legion) -- the project pause. Four routes: the controller's `POST
+// /legion/v1/project/pause` (`{grantId, reason}`) and `POST /legion/v1/project/resume`
+// (`{grantId}`), which take a controller grant and refuse any other with 403 `CONTROLLER_REQUIRED`,
+// and the operator's `POST /legion/v1/operator/project/pause` (`{reason}`) and `POST
+// /legion/v1/operator/project/resume` (no body), which take the operator's bearer as every operator
+// route does (`legion project pause|resume`). None names a project: the daemon pauses its own. A
+// pause answers `{pause}` (api.ProjectPauseResponse) and a resume `{pause, released}`, the ended
+// pause and how many held rows it let out (api.ProjectResumeResponse); a pause is `{id, since, by,
+// reason}` and, once ended, `endedAt` and `endedBy` beside them (api.PauseView), and `by` is
+// `{kind: controller, session}` or `{kind: operator}`. The refusals are one shape, the Failure body
+// with what it names beside the code (api.PauseFailure): 400 `PAUSE_REASON_REQUIRED` for a blank
+// reason; 409 `PAUSE_UNAVAILABLE` with the `setting` that turns the pause off (`runtime: tmux`,
+// `runtime.kubernetes.idle_release.idle_minutes: 0`, `worker_wakes_per_minute: 0`), and with no
+// setting from a daemon that runs no workflow; 409 `PROJECT_ALREADY_PAUSED` with the `pause` that
+// stands; 409 `PROJECT_NOT_PAUSED` with the `lastPause`, where one has ended. While the project is
+// paused, the controller's `compact` and `fresh_session` and the operator's `claims resume`,
+// `retry`, `compact`, `spawn` and `deliver` answer 409 `PROJECT_PAUSED`, with the `pause` that
+// stands, for every claim but the controller's, and change nothing. `GET /legion/v1/state` gains
+// `paused` (`{id, since, by, reason, waitsOn, held}`: the claims whose stop the pause still waits
+// on, each `{claim, issue, role, askedAt}`, and each row it holds, `{id, kind, issue, claim,
+// waitedSeconds}`, `claim` absent for a row that names none) while the project is paused, and
+// `lastPause` (a pause with `endedAt` and `endedBy`) while it runs after a pause has ended; a
+// caller from a pod whose claims record a contract below 178 is served the state with neither key
+// (api's stateNarrowings, withoutPause), as a caller below 141 is served it without
+// `assignments`, and the bands compose. The release records' resumes gain `pause`, the pause that
+// held the wake, absent on a wake no pause held (api.ResumeRecord). A controller grant now records
+// who minted it, the controller session or the operator's bearer (credential.Grant's Session and
+// Operator), which the pause records as who acted; that has no wire shape of its own.
+// (This entry takes 178, above main's 168: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-19
+// between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
+// and none declaring 178.)
+//
+// 184: INFRA-4036 (cybermonklabs/legion) -- the deployment's capability report on `GET
 // /legion/v1/state` gains a row, `repository-cache-room`, and with it a third word of a capability
 // row's `source`, `caches` (capabilities.SourceCaches): what the repository caches' last health
 // reads said of their room, which is where that row is measured from. The row is present while no
@@ -2430,29 +2462,27 @@ package api
 // comes from, and decided where `capabilities.decided.repository-cache-room` records a reason
 // (capabilities.Deployment.cacheRoom). A capability `name` is a plain non-empty string to every
 // schema already published, so the row parses there, as `claude-code` did; its `source` does
-// not. A plugin from 25 through 180 reads `source` with a `z.enum` of the two words before it,
+// not. A plugin from 25 through 183 reads `source` with a `z.enum` of the two words before it,
 // `configuration` and `boot`, which refuses a word it does not name and with it the whole state
 // body: the controller's `read_state`, every role's `read_record` and claude-envoy's own reads of
-// the state. So a caller from a pod whose claims record a contract below 181 is served every
+// the state. So a caller from a pod whose claims record a contract below 184 is served every
 // capability row whose `source` is `caches` without its `source` (api's stateFor,
 // withoutCachesSource), which that schema takes as optional; the row itself stays, its name,
 // status, detail, decision and config line as they are, because a controller on an older plugin
-// still has the right to see the gap. Its row of stateNarrowings stands after 146's. The room
+// still has the right to see the gap. Its row of stateNarrowings stands after 178's. The room
 // fields the repository cache's own `/healthz` gains beside this (repocache.Health) are read by
 // the daemon alone and by no plugin, so they are no part of this number, and nothing else of this
 // change is on a surface this contract names.
 // The bump relaunches every registered claim onto the new plugin, as every bump does (the
 // stale-plugin lane, internal/daemon's refreshStalePlugins), and that relaunch reaches each claim
-// at its own time, so for the length of the wave some pods still run a plugin below 181: those
+// at its own time, so for the length of the wave some pods still run a plugin below 184: those
 // are the callers the narrowing serves.
-// (This entry takes 181, the lowest number above main's 168 that no open pull request declared
-// when this change first took a number: a reading of `const DaemonAPIVersion` at
-// refs/pull/<n>/head for each open pull request that changes this file, the one
-// .github/scripts/check-daemon-api-contract.sh makes when it refuses, made between
-// 2026-11-20T00:13:05Z and 00:15:16Z, found 169 declared by #4273, 170 by #4495, 171 by #2230 and
-// #4065, 172 by #3659, 173 by #4493, 174 by #3993, 175 by #3712 and #4432, 176 by #4030, #4173,
-// #4180, #4182, #4193, #4251, #4259, #4261, #4269 and #4290, 177 by #4017, 178 by #3831 and
-// #4115, 179 by #4392 and #4540, and 180 by #4049 and #4175, and no open head declaring 181.
-// Read the base's own number and every open pull request again at the next merge rather than
-// from this line.)
-const DaemonAPIVersion = 181
+// (This entry takes 184, the lowest number above main's 178 that no open pull request declared
+// when the merge of 2026-11-20 brought main in at bafd3618eb: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each open pull request that changes this file, the
+// one .github/scripts/check-daemon-api-contract.sh makes when it refuses, made between
+// 2026-11-20T02:38:31Z and 02:40:33Z, found 179 declared by #4540, 180 by #4049 and #4175, 181 by
+// #3831, #4273 and this change's own head before this merge, 182 by #4017, #4173, #4193, #4392
+// and #4495, and 183 by #3712, and no open head declaring 184. Read the base's own number and
+// every open pull request again at the next merge rather than from this line.)
+const DaemonAPIVersion = 184

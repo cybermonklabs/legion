@@ -67,11 +67,14 @@ var ciCheckBreaks = []struct {
 	},
 }
 
-// uploadVerification uploads content as the issue's verification.md.
+// uploadVerification uploads content as the issue's verification.md, naming the token of the
+// version it replaces where the issue already holds one, as every replacement does.
 func uploadVerification(t *testing.T, handler http.Handler, issueKey, content string) *httptest.ResponseRecorder {
 	t.Helper()
-	return dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issueKey+"/artifacts", map[string]any{
+	artifacts := "/api/v1/issues/" + issueKey + "/artifacts"
+	return dispatchRequest(t, handler, http.MethodPost, artifacts, map[string]any{
 		"name": "verification.md", "content": content,
+		"precondition": uploadBaseNamed(t, handler, artifacts, "verification.md"),
 	}, "alice")
 }
 

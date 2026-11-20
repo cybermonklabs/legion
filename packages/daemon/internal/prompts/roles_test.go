@@ -536,8 +536,8 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 // beside core/common.md to keep one wording of that rule in the prompt tree, which a later core
 // would copy from.
 func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
-	// The phrase every text of dispatch://INFRA-3204's rule carries once, the skills included
-	// (packages/pi-legion/src/skills-guard.test.ts).
+	// The phrase every part below carries for that rule. Outside these parts,
+	// packages/pi-legion/src/skills-guard.test.ts counts it once, in go/worker-common.md.
 	const ciCheckRule = "check carrying `ci_check` is CI's"
 	for _, pin := range []struct{ file, rule string }{
 		// R1: the simplify pass covers every file of the diff and reports what it sees.
@@ -548,7 +548,7 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"core/tester.md", "Every check you record must be able to fail"},
 		// R3: after a fix or a forward merge, search the new head for each earlier finding's class.
 		{"core/implementer.md", "search the head you are about to push for the class of every finding of every earlier review round"},
-		{"core/tester.md", "An equal fingerprint still gets the class search"},
+		{"core/tester.md", "A forward merge still gets the class search"},
 		{"implementer.md", "`classSearch`, one entry per finding of every earlier review round"},
 		{"tester.md", "`classSearch`, one entry per finding of every earlier review round"},
 		// R4: the planner completes no phase with an open decision.

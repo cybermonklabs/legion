@@ -450,10 +450,10 @@ func TestACallerBelowTheCachesSourceContractGetsNoCachesSource(t *testing.T) {
 // to a plugin of every number between the two, each built with the enum of two words, and a bound
 // passes that as surely as the right value. Every other test of this narrowing spells the number
 // relatively because this one pins it, so an edit of the literal is a contract change, not a test
-// fix. The constant is never above the daemon's own contract, and it stands above
-// entryTimesContract, the row before it in stateNarrowings.
+// fix. The constant is never above the daemon's own contract, and it stands above pauseContract,
+// the row before it in stateNarrowings.
 func TestTheCachesSourceContractIsItsReleasedNumber(t *testing.T) {
-	const addedCachesSource = 181
+	const addedCachesSource = 184
 	if cachesSourceContract != addedCachesSource {
 		t.Fatalf("cachesSourceContract = %d, want %d, the contract whose entry in version.go added the source `caches`",
 			cachesSourceContract, addedCachesSource)
@@ -462,7 +462,7 @@ func TestTheCachesSourceContractIsItsReleasedNumber(t *testing.T) {
 		t.Fatalf("cachesSourceContract = %d, above DaemonAPIVersion %d: no caller could be served the word",
 			cachesSourceContract, DaemonAPIVersion)
 	}
-	if cachesSourceContract <= entryTimesContract {
-		t.Fatalf("cachesSourceContract = %d, not above entryTimesContract %d, the row before it", cachesSourceContract, entryTimesContract)
+	if cachesSourceContract <= pauseContract {
+		t.Fatalf("cachesSourceContract = %d, not above pauseContract %d, the row before it", cachesSourceContract, pauseContract)
 	}
 }
