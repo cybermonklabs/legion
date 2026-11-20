@@ -82,7 +82,7 @@ func zeroAddressesUnreached() unreachedTarget {
 // TestASecretManagerCallThatDidNotReachItSaysSo: a list whose ListSecrets never reached Secret
 // Manager - a TLS handshake no root here trusts, a refused connection, a name with no such host, a
 // name the resolver gave no address - prints that the call did not reach Secret Manager and the
-// class of the failure, never gRPC's text, its address and the system's reason among it, and never
+// class of the failure in redact.Class's words for the same failure of any request, never gRPC's text, its address and the system's reason among it, and never
 // "answered". A server that answers Unavailable in gRPC's own words for a failed connection
 // reached nothing it can claim: it prints as Secret Manager's answer, its message not printed.
 // Control: Secret Manager's own Unavailable, with a made-up secret in its message, prints as its
@@ -98,13 +98,13 @@ func TestASecretManagerCallThatDidNotReachItSaysSo(t *testing.T) {
 		says    string
 	}{
 		{"a TLS handshake no root here trusts", tlsUnreached, "",
-			"Secret Manager ListSecrets failed: it did not reach Secret Manager (the TLS handshake failed: " + unknownAuthority + ")"},
+			"Secret Manager ListSecrets failed: it did not reach Secret Manager (TLS failed: " + unknownAuthority + ")"},
 		{"a refused connection", refusedUnreached, "",
-			"Secret Manager ListSecrets failed: it did not reach Secret Manager (could not connect)"},
+			"Secret Manager ListSecrets failed: it did not reach Secret Manager (connection refused)"},
 		{"a name with no such host", func(*testing.T) unreachedTarget { return unresolvedUnreached() }, "",
-			"Secret Manager ListSecrets failed: it did not reach Secret Manager (the name did not resolve)"},
+			"Secret Manager ListSecrets failed: it did not reach Secret Manager (name resolution failed)"},
 		{"a name the resolver gave no address", func(*testing.T) unreachedTarget { return zeroAddressesUnreached() }, "",
-			"Secret Manager ListSecrets failed: it did not reach Secret Manager (the name did not resolve)"},
+			"Secret Manager ListSecrets failed: it did not reach Secret Manager (name resolution failed)"},
 		{"a server answering Unavailable in gRPC's own words for a failed connection", nil,
 			`connection error: desc = "transport: Error while dialing: dial tcp 10.0.0.1:443: connect: connection refused"; echo: ` + planted,
 			"Secret Manager ListSecrets answered Unavailable (its message is not printed)"},

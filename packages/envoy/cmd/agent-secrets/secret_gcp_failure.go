@@ -83,30 +83,33 @@ const x509UnknownAuthority = "x509: certificate signed by unknown authority"
 // with no details and no cause - so the class is read from the text, which only gRPC itself wrote
 // where nothing was reached: "connection error: desc = ..." for a failed connection and "name
 // resolver error: ..." for a name its resolver could not turn into an address. That text names the
-// address it dialed and the system's reason, so it prints as fixed words: a TLS handshake that
-// failed (with x509UnknownAuthority where the text says it), a name that did not resolve, a
-// connection that could not be made, or any other connection that failed. A connection that broke
-// after the call went out on it has a peer, and reads as Secret Manager's own Unavailable.
+// address it dialed and the system's reason, so it prints as the class redact.Class gives the same
+// failure of any other request, in its words: "TLS failed" (with x509UnknownAuthority where the
+// text says it), "name resolution failed", "connection refused", "timed out", or "the request
+// failed" for any other connection that failed. A connection that broke after the call went out
+// on it has a peer, and reads as Secret Manager's own Unavailable.
 func storeUnreached(answer *status.Status, reached bool) (string, bool) {
 	text := answer.Message()
 	switch {
 	case reached || answer.Code() != codes.Unavailable:
 		return "", false
 	case strings.HasPrefix(text, "name resolver error: "):
-		return "the name did not resolve", true
+		return "name resolution failed", true
 	case !strings.HasPrefix(text, "connection error: desc = "):
 		return "", false
 	case strings.Contains(text, "transport: authentication handshake failed"):
 		if strings.Contains(text, x509UnknownAuthority) {
-			return "the TLS handshake failed: " + x509UnknownAuthority, true
+			return "TLS failed: " + x509UnknownAuthority, true
 		}
-		return "the TLS handshake failed", true
+		return "TLS failed", true
 	case strings.Contains(text, "no such host"):
-		return "the name did not resolve", true
-	case strings.Contains(text, "transport: Error while dialing"):
-		return "could not connect", true
+		return "name resolution failed", true
+	case strings.Contains(text, "connection refused"):
+		return "connection refused", true
+	case strings.Contains(text, "i/o timeout"):
+		return "timed out", true
 	}
-	return "the connection failed", true
+	return "the request failed", true
 }
 
 // storeRefusal is a Secret Manager call's failure as storeFailure words it: Error is the words,
