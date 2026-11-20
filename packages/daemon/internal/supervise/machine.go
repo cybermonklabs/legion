@@ -1032,8 +1032,10 @@ type Deps struct {
 	// The claim's own session id is what it carries, read before any path that clears it
 	// (forgetSession). Nil tells no one — a daemon with no Envoy listener — and a claim that
 	// recorded no session tells nothing. It is called inside the machine's decision, so it returns
-	// at once and does the call elsewhere.
-	SessionGone func(session string)
+	// at once and does the call elsewhere; what it returns is closed once that call has ended, and
+	// no process of the claim starts before then (awaitSessionStops). A nil channel is a stop with
+	// nothing left in flight.
+	SessionGone func(session string) <-chan struct{}
 	// RoleHolder reads the session the Envoy listener names as role's holder, with that holder's
 	// state (`live`, `unresponsive`, `gone`, or `lapsed` from an older listener), or no holder for
 	// a role no claim names (notify.HTTPPublisher.RoleHolder). A forget of a session this claim
@@ -1527,6 +1529,11 @@ type Machine struct {
 	// a start that succeeds clears it as well: the launch that started was handed the process it
 	// replaces (start).
 	stopUnconfirmed bool
+	// sessionStops are the clean stops of the claim's Envoy session this machine has sent
+	// (sessionGone), each closed once that stop has ended, and waited out by the next start of
+	// the claim's process (awaitSessionStops). It is memory only, as the stops are: a restarted
+	// daemon has none in flight.
+	sessionStops []<-chan struct{}
 	// relaunch is the relaunch relaunchLater left waiting, tried again when TimerRelaunch fires; it
 	// lives as long as that timer, which letGo disarms with it. It is memory only, as the timer is: a
 	// restart launches that claim again as an unfinished launch.
@@ -3089,7 +3096,14 @@ const (
 // another claim's session. A resume by the id runs under the id and under the id the file it finds
 // is named for (holdByID). One another claim holds is refused here, as a launch failure the caller
 // charges, and nothing starts under it.
+//
+// Nothing starts while a clean stop of the claim's Envoy session is in flight either: each try
+// waits those stops out first (awaitSessionStops), and a try whose context ends while it waits is
+// a start cut short, as one the runtime was still making is.
 func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, resumeWay, error) {
+	if err := m.awaitSessionStops(ctx); err != nil {
+		return runtime.Locator{}, wayNone, err
+	}
 	spec, err := m.spawnSpec(ctx, token, false)
 	if err != nil {
 		return runtime.Locator{}, wayNone, err
@@ -3166,6 +3180,45 @@ func (m *Machine) resumeByID(ctx context.Context, token string, spec runtime.Spa
 	}
 	m.claim.AgentResumeGeneration = m.claim.Generation
 	return loc, wayAgentLookup, nil
+}
+
+// launchWaitsForSessionStop is the line a start logs when a clean stop of the claim's Envoy
+// session is still in flight as it begins, so the wait it makes for that stop is in the log.
+const launchWaitsForSessionStop = "supervise: the launch waits for the clean stop of the session the claim records"
+
+// awaitSessionStops holds a start of the claim's process until every clean stop of its Envoy
+// session this machine has sent has ended (sessionStops, Deps.SessionGone), or until ctx ends: a
+// suspension that cancels the start (stopStart), or the daemon's stop.
+//
+// The stop reads the client instance id of the registration it deletes before it deletes it
+// (cleanSessionStop in internal/daemon), and the listener keeps every registration whose id the
+// delete does not name. A process this claim started before that read was answered — a death's
+// relaunch in the same decision, or a wake's resume of a suspended claim — would register the
+// same session id first, and the read would hand back that process's own id. Then only the stop's
+// moment would keep the new registration, and a listener whose clock runs behind this daemon's
+// stamps it before that moment, so the stop of the ended process would remove the relaunch that
+// replaced it. Started once the stop has ended, the relaunch registers after the read, under an id
+// the delete does not name, and stays whatever either clock says; a delete still on its way to the
+// listener then meets that id too. Each stop ends within its own budget
+// (CleanSessionStopBudget in internal/daemon, 5 s), which bounds the wait; a listener that answers
+// promptly costs it the stop's two requests.
+func (m *Machine) awaitSessionStops(ctx context.Context) error {
+	for len(m.sessionStops) > 0 {
+		select {
+		case <-m.sessionStops[0]:
+			m.sessionStops = m.sessionStops[1:]
+			continue
+		default:
+		}
+		m.log.Info(launchWaitsForSessionStop, "session", m.claim.Session, "inFlight", len(m.sessionStops))
+		select {
+		case <-m.sessionStops[0]:
+			m.sessionStops = m.sessionStops[1:]
+		case <-ctx.Done():
+			return fmt.Errorf("wait for the clean stop of the claim's Envoy session: %w", ctx.Err())
+		}
+	}
+	return nil
 }
 
 // spawnSpec is the launch's spec: what the daemon builds for this claim, with what only the
@@ -3508,7 +3561,10 @@ func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
 // registration still there. The second is told, as every stop is, once the process has ended,
 // and before any relaunch has registered, since the relaunch was still parked when the
 // suspension came. The delete's two conditions then guard a relaunch's registration as they do
-// for any stop: cleanSessionStop (internal/daemon/daemon.go) says what they keep.
+// for any stop: cleanSessionStop (internal/daemon/daemon.go) says what they keep. Neither stop
+// holds the decision, but each holds the relaunch: the stop is kept in flight (sessionStops) and
+// the next start of the claim's process waits until it has ended (awaitSessionStops), so the
+// relaunch registers after every read a stop makes.
 //
 // The daemon dates the stop when it is told, and the listener keeps a registration written after
 // that moment. Told after the process has ended, the stop comes after the process's last
@@ -3522,8 +3578,8 @@ func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
 // It reads the session id from the claim before anything clears it (forgetSession), and a claim
 // that recorded none — never registered, or already forgotten — has nothing to stop. A relaunch
 // of the claim registers the same session again — in the same decision after a death, or at a
-// later wake after a suspension — which is the state the listener should then read, so the stop
-// says what is true when it is sent.
+// later wake after a suspension — once the stop has ended, which is the state the listener should
+// then read, so the stop says what is true when it is sent.
 //
 // A claim that records a session it does not hold sends no stop (holdRecorded, plan E's t-e-54).
 // The stop deletes the registration the listener holds for the session id, whichever process
@@ -3555,7 +3611,9 @@ func (m *Machine) sessionGone(ctx context.Context) {
 			"session", m.claim.Session, "error", err)
 		return
 	}
-	m.deps.SessionGone(m.claim.Session)
+	if stopping := m.deps.SessionGone(m.claim.Session); stopping != nil {
+		m.sessionStops = append(m.sessionStops, stopping)
+	}
 }
 
 // forgetSession drops the session the claim recorded, leaving the claim as one no agent has

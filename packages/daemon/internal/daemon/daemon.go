@@ -125,20 +125,24 @@ const (
 	// busyBackoffFirst is the Sandbox runtime's first wait before a launch's request the API server
 	// answered overloaded is sent again (sandbox.Options.BusyBackoff), doubled up to 8 s.
 	busyBackoffFirst = 250 * time.Millisecond
-	// cleanSessionStopBudget bounds one clean stop of an Envoy session registration — the
+	// CleanSessionStopBudget bounds one clean stop of an Envoy session registration — the
 	// registry read and the delete that follows it, together (cleanSessionStop). It is longer
 	// than the listener's own budget for one route (sendRequestBudget,
 	// packages/envoy/cmd/listener/api.go: 3.5 s) and shorter than two of them, so a listener
 	// answering promptly answers both inside it, while a read that spends the whole budget sends
 	// no delete and one answered late leaves the delete less than its own route's budget — which
-	// costs that session at most the wait it already had. It is short enough that a listener
-	// which never answers is abandoned while the claim's relaunch is still a launch backoff and
-	// a process boot away (launchBackoffFirst), rather than left in flight for as long as the
-	// listener likes, and it is at most half of stopBudget, so a stop the daemon's stop waits for
-	// (sessionStopsInFlight) that was sent before the halt or in the first half of the stop's
-	// budget ends inside that budget. What keeps a stop that does land late off the relaunch's
-	// registration is the two conditions the stop carries (cleanSessionStop), not this bound.
-	cleanSessionStopBudget = 5 * time.Second
+	// costs that session at most the wait it already had. It is also the longest a relaunch of
+	// the claim waits for the stop before it starts its process
+	// (supervise.Machine.awaitSessionStops), so a listener which never answers holds that
+	// relaunch two and a half launch backoffs at most (launchBackoffFirst), rather than for as
+	// long as the listener likes, and it is at most half of stopBudget, so a stop the daemon's
+	// stop waits for (sessionStopsInFlight) that was sent before the halt or in the first half of
+	// the stop's budget ends inside that budget. What keeps a stop that does land late off the
+	// relaunch's registration is the two conditions the stop carries (cleanSessionStop), not this
+	// bound. It is exported for the tests of the daemon's binary (cmd/legion), which link every
+	// package the binary does and hold Go's shared HTTP transport, which the stop's own transport
+	// is cloned from (notify.stopTransport), to limits after this budget; it is no setting.
+	CleanSessionStopBudget = 5 * time.Second
 )
 
 // storeOpenRetry is the wait between two attempts to open the store whose error the next attempt
@@ -183,6 +187,9 @@ type overrides struct {
 	// stopBudget is how long the daemon's stop waits for its own work once it begins; zero is
 	// stopBudget.
 	stopBudget time.Duration
+	// sessionStop is what a test sets of every clean stop the daemon sends (sessionStopOverrides);
+	// the zero value is the production stop.
+	sessionStop sessionStopOverrides
 	// controllerFirstWake is how soon after the workflow runtime starts it applies its first
 	// controller tick (workflowRuntime.controllerFirstWake); zero is firstControllerTick.
 	controllerFirstWake time.Duration
@@ -939,6 +946,8 @@ type plan struct {
 	controllerRetry time.Duration
 	// stopBudget is how long the stop waits for the daemon's own work once it begins (stopBudget).
 	stopBudget time.Duration
+	// sessionStop is what a test set of every clean stop (overrides.sessionStop).
+	sessionStop sessionStopOverrides
 	// secretsEnroller is the daemon's agent-secrets token login as the machines' Enroller
 	// (newSecretsLogin); nil when the deployment enrolls no pod.
 	secretsEnroller supervise.Enroller
@@ -1111,7 +1120,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
-		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision,
+		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision, sessionStop: o.sessionStop,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)
@@ -1722,7 +1731,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		SessionLost:             p.sessionLost,
 		SessionStoreFault:       p.sessionStoreFault,
 		ProviderErrorRunReached: p.providerErrorRunReached,
-		SessionGone:             cleanSessionStop(&sessionStops, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
+		SessionGone:             cleanSessionStop(&sessionStops, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], p.sessionStop, log),
 		RoleHolder:              roleHolderLookup(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),
 		Clock:                   p.clock,
 		Log:                     log,
@@ -1780,7 +1789,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 // notices go through (notify.New), beside controller.NewProber, on the same base URL and bearer.
 //
 // The machine calls it inside its own decision, under its lock, so the read and the delete run on
-// a goroutine of their own, on a context of their own that only cleanSessionStopBudget ends (send):
+// a goroutine of their own, on a context of their own that only CleanSessionStopBudget ends (send):
 // not the decision's, which the machine's caller can end the moment the decision returns, and not
 // supervision's, which the halt cancels. inFlight is told when the stop starts and, if it counted
 // it, when it ends (sessionStopsInFlight says which stops the daemon's stop waits for).
@@ -1791,40 +1800,50 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 //
 // That delete must never take the registration of the process that replaced the ended one. For
 // a death the very decision that asks for the stop goes on to relaunch the claim under the same
-// session id (Machine.died); for a suspension a later wake resumes it under that id, which can
-// register before the stop's read is answered. Either relaunch registers that id again. So the
-// stop names the ended process's own registration — its client instance id, read from the
-// listener first (send) — and carries goneAt beside it, and the listener deletes only under
-// both. What each condition is for, and why neither alone would do, is on
-// notify.DeleteConditions.
+// session id (Machine.died); for a suspension a later wake resumes it under that id. Either
+// relaunch registers that id again. So the stop names the ended process's own registration — its
+// client instance id, read from the listener first (send) — and carries goneAt beside it, and the
+// listener deletes only under both. What each condition is for, and why neither alone would do,
+// is on notify.DeleteConditions. The id is the ended process's only because the read is answered
+// before the relaunch registers, which no clock orders: the channel the stop returns is closed
+// once send has returned, and the machine starts no process of the claim before then
+// (supervise.Machine.awaitSessionStops). A relaunch that registered before the read would hand
+// the read its own id, and a listener whose clock runs behind this daemon's stamps that
+// registration before goneAt, so the delete would remove it. A delete that lands after the
+// relaunch registered — sent before the budget ran out, and judged by the listener once the
+// relaunch had written its entry — names the ended process's id and keeps the relaunch's.
 //
 // The listener keeps the entry when either condition refuses it, so the id rescues no
 // registration the moment refuses: a heartbeat whose write lands after the moment, or a listener
 // clock ahead of this daemon's, is kept even where the id names the ended process, and that
 // session waits for its record to expire.
 //
-// The read and the delete share one budget, cleanSessionStopBudget, so a listener that never
+// The read and the delete share one budget, CleanSessionStopBudget, so a listener that never
 // answers does not leave the stop in flight for as long as it likes, and nothing else ends them:
-// send says why the daemon's stop must not.
+// send says why the daemon's stop must not. A test alone sets another budget, or ends the stops
+// in flight itself (sessionStopOverrides).
 //
 // A listener that refuses the delete, keeps the registration, or cannot be reached costs the
 // session nothing beyond the wait it already had: the registration lapses on its own when its
 // record expires (the session bucket's maximum age, 5 minutes by default). With no listener
 // configured nothing is told.
-func cleanSessionStop(inFlight *sessionStopsInFlight, envoyURL, token string, log *slog.Logger) func(string) {
+func cleanSessionStop(inFlight *sessionStopsInFlight, envoyURL, token string, set sessionStopOverrides, log *slog.Logger) func(string) <-chan struct{} {
 	if envoyURL == "" {
 		return nil
 	}
-	stop := sessionStop{sessions: notify.New(envoyURL, token), log: log}
-	return func(session string) {
+	stop := sessionStop{sessions: notify.New(envoyURL, token), log: log, budget: set.budget, end: set.end}
+	return func(session string) <-chan struct{} {
 		goneAt := time.Now()
 		counted := inFlight.start()
+		ended := make(chan struct{})
 		go func() {
+			defer close(ended)
 			if counted {
 				defer inFlight.end()
 			}
 			stop.send(session, goneAt)
 		}()
+		return ended
 	}
 }
 
@@ -1832,7 +1851,7 @@ func cleanSessionStop(inFlight *sessionStopsInFlight, envoyURL, token string, lo
 // (cleanSessionStop), which no decision waits for and the halt does not end. The daemon's stop
 // waits for them last, in a final wait (supervision.stop), and that wait is for every clean stop
 // started before it began: one sent before the halt, and one sent after it while the daemon's
-// stop still waits for the decisions. Each runs to its own budget (cleanSessionStopBudget), so
+// stop still waits for the decisions. Each runs to its own budget (CleanSessionStopBudget), so
 // one sent late can still be in flight when the stop's budget runs out: run then stops waiting at
 // that budget and logs `legion daemon stopped waiting for its work`, whose `deciding` names no
 // claim when that stop is all that is left (awaitStop).
@@ -1905,12 +1924,31 @@ func roleHolderLookup(envoyURL, token string) func(ctx context.Context, role str
 
 // sessionStop sends this daemon's clean stops, one call of send each; cleanSessionStop says when a
 // machine asks for one and what the delete's two conditions keep. It holds what every stop
-// shares: the listener client, the log that says what became of each stop, and the budget a
-// stop's read and delete share, cleanSessionStopBudget when zero; only a test sets another.
+// shares: the listener client, the log that says what became of each stop, and what a test set of
+// it (sessionStopOverrides): the budget a stop's read and delete share, CleanSessionStopBudget when
+// zero, and the channel that ends the stops in flight, none when nil.
 type sessionStop struct {
 	sessions *notify.HTTPPublisher
 	log      *slog.Logger
 	budget   time.Duration
+	end      <-chan struct{}
+}
+
+// sessionStopOverrides is what a test sets of every clean stop the daemon sends
+// (overrides.sessionStop); production sets neither field.
+//
+// budget, when not zero, is the budget each stop's read and delete share in place of
+// CleanSessionStopBudget: a test that holds the stop's read at its listener until the claim's
+// relaunch has begun gives it minutes where production gives seconds, so the machine's load
+// between the two is not read as a listener that never answered.
+//
+// end, when not nil, ends every stop in flight once the test closes it, as the end of its budget
+// would: the read or the delete in flight is given up then. A test that holds the stop's delete at
+// its listener closes it to let the relaunch start with that delete still on its way, on an event
+// of its own rather than the budget's time.
+type sessionStopOverrides struct {
+	budget time.Duration
+	end    <-chan struct{}
 }
 
 // send is the work of the goroutine cleanSessionStop starts, with goneAt the moment the machine
@@ -1938,28 +1976,45 @@ type sessionStop struct {
 // process's own last heartbeat without asking the listener anything.
 //
 // Nothing but its budget ends it: not the decision that sent it, and not the daemon's stop, which
-// waits for it or leaves it running (sessionStopsInFlight). The halt ends the machines' context,
-// but a decision can return just before the halt with its stop still in flight — an idle release
-// the workflow's outbox decided on serve's context, not the machines', or an operator's
-// suspension a route decided — and a released claim is the one a message's wake acts on. Cut
-// short there, its stop would leave the registration standing, and a message to the role would
-// be stored for a session that reads nothing, with no wake raised, until the registration's
-// record expires.
+// waits for it or leaves it running (sessionStopsInFlight); a test can end it sooner (end). The
+// halt ends the machines' context, but a decision can return just before the halt with its stop
+// still in flight — an idle release the workflow's outbox decided on serve's context, not the
+// machines', or an operator's suspension a route decided — and a released claim is the one a
+// message's wake acts on. Cut short there, its stop would leave the registration standing, and a
+// message to the role would be stored for a session that reads nothing, with no wake raised, until
+// the registration's record expires. Each line it logs names the budget it ran under, the moment
+// that budget began and the deadline its context holds (budgetBegan and deadline, in Unix
+// milliseconds; the deadline is made from that one reading of the clock), so a read the listener
+// did not answer says how long it was given and when it gave up, and a stop that ran under any
+// other span than its budget says so in its own line.
 func (s sessionStop) send(session string, goneAt time.Time) {
 	budget := s.budget
 	if budget == 0 {
-		budget = cleanSessionStopBudget
+		budget = CleanSessionStopBudget
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	budgetBegan := time.Now()
+	ctx, cancel := context.WithDeadline(context.Background(), budgetBegan.Add(budget))
 	defer cancel()
+	deadline, _ := ctx.Deadline()
+	log := s.log.With("budget", budget, "budgetBegan", budgetBegan.UnixMilli(), "deadline", deadline.UnixMilli())
+	if s.end != nil {
+		go func() {
+			select {
+			case <-s.end:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+	}
 	registration, err := s.sessions.ReadSessionRegistration(ctx, session)
 	if err != nil {
-		s.log.Warn("the Envoy listener did not answer what a dead role's session registration is, so no clean stop was sent",
+		log.Warn("the Envoy listener did not answer what a dead role's session registration is, so no clean stop was sent",
 			"session", session, "error", err)
 		return
 	}
 	if !registration.Registered {
-		s.log.Info("the Envoy listener answered no registration of a dead role's session, so none was stopped", "session", session)
+		log.Info("the Envoy listener answered no registration of a dead role's session, so none was stopped",
+			"session", session)
 		return
 	}
 	stopped, err := s.sessions.DeleteSession(ctx, session, notify.DeleteConditions{
@@ -1969,17 +2024,18 @@ func (s sessionStop) send(session string, goneAt time.Time) {
 	if err != nil {
 		// A refused delete and an unreachable listener did not stop the session, and an answer
 		// that could not be read to its end leaves whether it did unknown; the error says which.
-		s.log.Warn("the Envoy listener did not confirm the clean stop of a dead role's session", "session", session, "error", err)
+		log.Warn("the Envoy listener did not confirm the clean stop of a dead role's session",
+			"session", session, "error", err)
 		return
 	}
 	if !stopped.Deleted {
-		s.log.Info("the Envoy listener kept the registration of a dead role's session",
+		log.Info("the Envoy listener kept the registration of a dead role's session",
 			"session", session, "goneAt", goneAt.UnixMilli(),
 			"clientInstanceID", registration.ClientInstanceID, "lastSeen", registration.LastSeen,
 			"reason", stopped.Reason)
 		return
 	}
-	s.log.Info("the Envoy session of a role whose process is gone was stopped", "session", session)
+	log.Info("the Envoy session of a role whose process is gone was stopped", "session", session)
 }
 
 // start supervises every claim the store holds. A claim with a live locator is re-adopted — its

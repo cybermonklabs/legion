@@ -4375,7 +4375,7 @@ A note can be lost in each case in which the guard's note can, and in each of th
 The `kernel-protected` note of an agent's end may reach nobody.
 The outbox delivers a note only to a live session that holds the role's topic when the note's row runs (`roleMessage`, `packages/daemon/internal/daemon/outbox.go`).
 When the daemon finds the role's process gone, its supervisor asks the Envoy listener to delete that session's registration (`died`, and `cleanSessionStop`, `packages/daemon/internal/daemon/daemon.go`).
-It then starts the same session again.
+It then starts the same session again, once that stop has ended: its read and its delete answered, or its 5-second budget spent.
 A row that runs while no live session holds the topic ends undelivered, with the log line `outbox role message finished undelivered: its role has no live holder`.
 A row whose holder did not confirm the note runs again on the row's backoff (`roleMessage`'s retry); whether such a row reaches the relaunched session has not been measured.
 The `ended` line in the container's log is the record of the kill in every case.
@@ -7307,6 +7307,10 @@ The reaper frees that claim once nobody has answered for it inside the live wind
 A suspension whose own stop ends a live process sends the same read and the same delete: an idle release, any other suspension by the daemon or by an operator, and a tree root's own exit, each once the runtime's stop of that process has returned (`supervise.Deps.SessionGone`).
 Its moment is when that stop returned, and both runtimes answer that stop only once the process has ended, so on clocks that agree the process's last heartbeat is stamped before that moment.
 A stop the runtime refused sends nothing, because that process may still be running, and a delete then would take a live session's registration away until its next heartbeat.
+No process of the claim starts while its clean stop is in flight, a death's own relaunch and a wake's resume alike, so the relaunch registers only after the stop's read, under a client instance the delete does not name, and the stop leaves it alone whatever the listener's clock says.
+A delete sent before the stop's budget ran out can land after the relaunch registered, and it still names the ended process's client instance, so it leaves the relaunch's registration standing.
+That holds where the ended process's entry names its client instance: an entry an older Envoy client wrote names none, so the delete rests on the moment alone, and one that lands after the relaunch registered removes the relaunch's registration when the listener's clock runs behind the daemon's.
+A listener that does not answer holds that relaunch for the stop's 5-second budget at most, and the daemon logs `supervise: the launch waits for the clean stop of the session the claim records` while it waits.
 No wake acts on a claim the daemon or an operator suspended ([Idle release](#idle-release)).
 After its stop, an Envoy direct message to that session is stored for the stopped session, and a person's targeted Dispatch message to it is recorded `queued`: the listener stores it, or Dispatch publishes it on the session's agent subject itself when no store of the listener's holds the session.
 The session reads either message if the claim is resumed within the stream's 72 hours.
