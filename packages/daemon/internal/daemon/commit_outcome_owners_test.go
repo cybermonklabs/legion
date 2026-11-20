@@ -547,7 +547,8 @@ func TestAWakeWhoseTakeOutcomeIsUnknownIsResumedByItsRetry(t *testing.T) {
 }
 
 // mappingDropRig is the mapping rig with its pool faulted, after a read that served acme/widgets
-// and zeta/tools, and with zeta/tools then dropped from the mapping.
+// and zeta/tools, and with zeta/tools then dropped. Its log begins empty, so callers read only
+// the faulted mapping operation and its retry.
 func mappingDropRig(t *testing.T, opts ...func(*workflowRuntime)) (*workflowRuntime, *testdb.CommitFault, *syncBuffer, func() []string) {
 	t.Helper()
 	var fault *testdb.CommitFault
@@ -563,6 +564,7 @@ func mappingDropRig(t *testing.T, opts ...func(*workflowRuntime)) (*workflowRunt
 	if served := repositoryNames(w.repositories.Accepted()); !slices.Equal(served, []string{"acme/widgets", "zeta/tools"}) {
 		t.Fatalf("the first read serves %v, want acme/widgets and zeta/tools", served)
 	}
+	logs.Reset()
 	client.mappings = []dispatch.RepoProject{{Repo: "acme/widgets", Project: "LEGION", Default: true}}
 	return w, fault, logs, func() []string { return githubFilterSubjects(t, stream) }
 }
@@ -704,7 +706,7 @@ func TestAnUnownedPassCountsOnlyTheReleasesItsTransactionsAnswered(t *testing.T)
 	fault.Refuse(false)
 	testwait.WithinPolling(t, testwait.Bounded(t, 10*time.Second, time.Second), testwait.Poll,
 		"LEGION-208's release line while the pass is live", func() bool {
-			return strings.Contains(logs.String(), "unowned release: releasing an issue's pod, which no claim of it can use issue=LEGION-208")
+			return strings.Contains(logs.String(), `msg="unowned release: releasing an issue's pod, which no claim of it can use" issue=LEGION-208`)
 		})
 	close(gate)
 	select {
