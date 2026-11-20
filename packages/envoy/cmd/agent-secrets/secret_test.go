@@ -25,6 +25,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 
+	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
@@ -153,15 +154,22 @@ const testAccount = "111122223333"
 const adaSignIn = "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc123/ada@example.com"
 
 // secretBroker is a fake broker for the secret forms: GET /v1/settings answers settings, and each
-// reread is answered by answer and recorded, in order, or refused with the status fail names when
-// it is set.
+// reread a session signs is answered by answer and recorded, in order, or refused with the status
+// fail names when it is set, or with failSigned's status and code where only a signed reread is
+// refused. A reread with no proof is answered 202 as the broker answers one, saying nothing of
+// what it serves, and recorded apart (unsigned).
 type secretBroker struct {
-	mu       sync.Mutex
-	rereads  []string
-	answers  []Reread
-	answer   func(name string) Reread
-	fail     int
-	settings Settings
+	mu          sync.Mutex
+	rereads     []string
+	answers     []Reread
+	signers     []string
+	unsigned    []string
+	answer      func(name string) Reread
+	fail        int
+	failSigned  int
+	signedCode  string
+	signedError string
+	settings    Settings
 }
 
 // failRereads makes the broker refuse every reread from now on with status.
@@ -171,9 +179,26 @@ func (b *secretBroker) failRereads(status int) {
 	b.fail = status
 }
 
+// failSignedRereads makes the broker refuse every signed reread from now on with status and code,
+// as a broker answers a proof it cannot check (503 DATABASE_UNAVAILABLE) or does not accept (401
+// PROOF_INVALID), while it still takes a reread with no proof.
+func (b *secretBroker) failSignedRereads(status int, code string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.failSigned, b.signedCode, b.signedError = status, code, "the broker did not take this proof"
+}
+
+func (b *secretBroker) lapseSignedRereads() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.failSigned, b.signedCode, b.signedError = http.StatusUnauthorized, "PROOF_INVALID", "proof invalid: not live"
+}
+
 // startSecretBroker serves a secretBroker on AGENT_SECRETS_URL for the rest of t, answering
 // GET /v1/settings with policytest's namespace in testAccount, as a broker of this release that
-// reads the type tag.
+// reads the type tag. The forms find a session's key directory as their broker identity
+// (AGENT_SECRETS_KEY_DIR, newKeyDir), so their rereads are signed and answered in full; a row
+// about a form with no identity sets up the environment that has none (withNoBrokerIdentity).
 func startSecretBroker(t *testing.T, answer func(name string) Reread) *secretBroker {
 	t.Helper()
 	return startSecretBrokerWith(t, Settings{SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: testAccount, AWSRegion: "us-east-1", SecretTypeTag: true}, answer)
@@ -202,17 +227,32 @@ func startSecretBrokerWith(t *testing.T, settings Settings, answer func(name str
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/secrets/") && strings.HasSuffix(r.URL.Path, "/reread"):
 			name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/secrets/"), "/reread")
 			b.mu.Lock()
-			fail := b.fail
+			fail, failSigned, signedCode, signedError := b.fail, b.failSigned, b.signedCode, b.signedError
 			b.mu.Unlock()
 			if fail != 0 {
 				w.WriteHeader(fail)
 				writeJSON(w, map[string]string{"code": "RATE_LIMITED", "error": "too many secret rereads; try again later"})
 				return
 			}
+			if r.Header.Get("Proof") == "" {
+				b.mu.Lock()
+				b.unsigned = append(b.unsigned, name)
+				b.mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusAccepted)
+				writeJSON(w, map[string]any{"accepted": true, "reason": api.RereadAcceptedReason})
+				return
+			}
+			if failSigned != 0 {
+				w.WriteHeader(failSigned)
+				writeJSON(w, map[string]string{"code": signedCode, "error": signedError})
+				return
+			}
 			reread := b.answer(name)
 			b.mu.Lock()
 			b.rereads = append(b.rereads, name)
 			b.answers = append(b.answers, reread)
+			b.signers = append(b.signers, proofEID(r))
 			b.mu.Unlock()
 			writeJSON(w, reread)
 		default:
@@ -221,7 +261,34 @@ func startSecretBrokerWith(t *testing.T, settings Settings, answer func(name str
 	}))
 	t.Cleanup(srv.Close)
 	t.Setenv("AGENT_SECRETS_URL", srv.URL)
+	t.Setenv("AGENT_SECRETS_KEY_DIR", newKeyDir(t))
 	return b
+}
+
+// rereadSigners is the enrollment each signed reread's proof named, in order.
+func (b *secretBroker) rereadSigners() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.signers...)
+}
+
+// rereadUnsigned is every reread the broker took with no proof, in order.
+func (b *secretBroker) rereadUnsigned() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.unsigned...)
+}
+
+// withNoBrokerIdentity gives the rest of t a process with no broker identity at all: no key
+// directory, no sign-in, no helper and no machine, in a home, state and runtime directory of its
+// own (isolateChain), with the broker the secret forms already point at kept.
+func withNoBrokerIdentity(t *testing.T) {
+	t.Helper()
+	broker := os.Getenv("AGENT_SECRETS_URL")
+	isolateChain(t)
+	t.Setenv("AGENT_SECRETS_URL", broker)
+	t.Setenv("AGENT_SECRETS_KEY_DIR", t.TempDir())
+	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
 }
 
 // recorded is every reread the broker answered, and its answers, in order.
@@ -391,7 +458,7 @@ func TestAWSRefusalNamesTheSourceAndTheChoice(t *testing.T) {
 		{"half a key pair is no source", map[string]string{"AWS_ACCESS_KEY_ID": "AKIAEXAMPLE", "AWS_PROFILE": "work"}, nil,
 			"the AWS profile work (AWS_PROFILE)", "choose another with AWS_PROFILE", "AWS_PROFILE=work "},
 		{"web identity outranks AWS_PROFILE", map[string]string{"AWS_WEB_IDENTITY_TOKEN_FILE": tokenFile, "AWS_ROLE_ARN": "arn:aws:iam::111122223333:role/agent", "AWS_PROFILE": "admin"}, nil,
-			"the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names (" + tokenFile + "), which outranks AWS_PROFILE",
+			"the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names, which outranks AWS_PROFILE",
 			"choose another by unsetting AWS_WEB_IDENTITY_TOKEN_FILE, which outranks AWS_PROFILE, or by naming another token file and role in it and AWS_ROLE_ARN",
 			"AWS_WEB_IDENTITY_TOKEN_FILE=" + tokenFile + " AWS_ROLE_ARN=arn:aws:iam::111122223333:role/agent "},
 		{"keys outrank web identity", map[string]string{"AWS_ACCESS_KEY_ID": "AKIAEXAMPLE", "AWS_SECRET_ACCESS_KEY": "not-a-secret", "AWS_WEB_IDENTITY_TOKEN_FILE": tokenFile}, nil,
@@ -752,10 +819,10 @@ func TestTheValueReaderRemovesATrailingLineEndingBeforeItStores(t *testing.T) {
 }
 
 // TestSecretCreateAndRetagRefuseShape: `--shape` is a flag of no form of this CLI. A create that
-// names it is refused by the flag reader itself, exiting 2 with the reader's own words, before
-// the store is called and before standard input is read — the value is never asked for, so a
-// writer who typed the old flag loses nothing — and a retag that names it is refused the same
-// way, leaving the secret's tags as they were.
+// names it is refused by the flag reader itself, exiting 2 with the reader's refusal of an
+// argument that is no flag, before the store is called and before standard input is read — the
+// value is never asked for, so a writer who typed the old flag loses nothing — and a retag that
+// names it is refused the same way, leaving the secret's tags as they were.
 func TestSecretCreateAndRetagRefuseShape(t *testing.T) {
 	onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
 		store.put(t, "API_KEY", policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "").Tags, "v1")
@@ -767,7 +834,7 @@ func TestSecretCreateAndRetagRefuseShape(t *testing.T) {
 			{"retag", "API_KEY", "--shape", "none"},
 		} {
 			_, stderr, code := runSecret(args...)
-			if code != exitUsageError || !strings.Contains(stderr, "flag provided but not defined: -shape") {
+			if code != exitUsageError || !strings.Contains(stderr, "an argument that is not a flag of this form (not printed)") {
 				t.Fatalf("%v: exit %d stderr %q; want %d naming the flag the reader does not define", args, code, stderr, exitUsageError)
 			}
 		}
@@ -928,7 +995,7 @@ func TestSecretRetagOfASharedSecretSaysAnAdministratorChangesIt(t *testing.T) {
 		if code != 1 {
 			t.Fatalf("%v: exit %d, stderr %q; want 1", args, code, stderr)
 		}
-		for _, want := range []string{accessDenied, "the store refused the AWS SDK's default credential chain: " + adaSignIn, "a shared secret's owner and tier are an administrator's to change"} {
+		for _, want := range []string{"Secrets Manager TagResource: AWS refused it: AccessDeniedException (missing permission: secretsmanager:TagResource; AWS's message is not printed)", "the store refused the AWS SDK's default credential chain: " + adaSignIn, "a shared secret's owner and tier are an administrator's to change"} {
 			if !strings.Contains(stderr, want) {
 				t.Fatalf("%v: stderr %q must contain %q", args, stderr, want)
 			}
@@ -941,7 +1008,7 @@ func TestSecretRetagOfASharedSecretSaysAnAdministratorChangesIt(t *testing.T) {
 		t.Fatalf("tags = %v, want OWNED_KEY's owner unchanged", tags)
 	}
 	_, stderr, code := runSecret("retag", "OWNED_KEY", "--tier", "agent")
-	if code != 1 || !strings.Contains(stderr, accessDenied) || !strings.Contains(stderr, "the store refused the AWS SDK's default credential chain: "+adaSignIn) || strings.Contains(stderr, "administrator") {
+	if code != 1 || !strings.Contains(stderr, "Secrets Manager TagResource: AWS refused it: AccessDeniedException") || strings.Contains(stderr, "is not authorized to perform") || !strings.Contains(stderr, "the store refused the AWS SDK's default credential chain: "+adaSignIn) || strings.Contains(stderr, "administrator") {
 		t.Fatalf("an owned secret's refused retag: exit %d, stderr %q; want 1 with AWS's refusal alone", code, stderr)
 	}
 	if rereads, _ := broker.recorded(); len(rereads) != 0 {

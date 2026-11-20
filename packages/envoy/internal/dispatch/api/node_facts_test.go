@@ -268,8 +268,9 @@ func TestEveryNodeKindCarriesItsFacts(t *testing.T) {
 	}))).Ask
 
 	design := createProjectDocument(t, handler, "CORE", "Design notes", "# Design\n")
-	created(t, "write version 2 of the project document", dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/CORE/artifacts", map[string]string{
+	created(t, "write version 2 of the project document", dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/CORE/artifacts", map[string]any{
 		"name": "Design notes", "content": "# Design\n\nRevised.\n",
+		"precondition": uploadBase(t, handler, design.ID),
 	}, "alice"))
 	designRef := "dispatch://CORE/artifact/" + design.Slug
 	designComment := decodeBody[model.Comment](t, created(t, "comment on the project document", dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+design.ID+"/comments", map[string]any{

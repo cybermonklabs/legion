@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -49,8 +50,8 @@ func newSettingsCache(pool *store.Pool, wake <-chan struct{}) *SettingsCache {
 }
 
 // Load returns the latest settings the cache read whose deploy repository is a well-formed
-// owner/repo (splitRepo), or nil while it has read none. A later read that finds no row, or a
-// malformed repository, leaves the settings before it in place.
+// owner/repo (refs.SplitGitHubRepo), or nil while it has read none. A later read that finds no
+// row, or a malformed repository, leaves the settings before it in place.
 func (c *SettingsCache) Load() *DeliverySettings {
 	return c.current.Load()
 }
@@ -102,7 +103,7 @@ func (c *SettingsCache) reload(ctx context.Context) bool {
 		}
 		return false
 	}
-	if _, _, err := splitRepo(settings.DeployRepo); err != nil {
+	if _, _, err := refs.SplitGitHubRepo(settings.DeployRepo); err != nil {
 		slog.Error("dispatch delivery: deploy_repo setting", "error", err)
 		return true
 	}

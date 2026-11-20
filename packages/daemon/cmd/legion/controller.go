@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
@@ -207,9 +208,12 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	// controller carrying one for a controller the daemon launched (`controller: daemon`). So are
 	// the Slack channels the daemon tells its own controller (LEGION_SLACK_CHANNELS): only that
 	// controller hears a project's mentions, and an inherited list is no project's word for this
-	// one. A machine that holds its Dispatch credential at the broker drops the operator's own
-	// Dispatch bearer and pointer as well: either would be presented in place of the traded token
-	// as a bearer Dispatch refuses (controllerDispatchBroker). The drop is not the whole of it — the
+	// one. So is OMP_SESSION_EXCLUSIVE (runtime.SessionExclusiveVariable), which a resumed pane is
+	// told: this controller resumes no recorded session, and an inherited value would stop it where
+	// Oh My Pi would otherwise move a held session to a new id. A machine that holds its Dispatch
+	// credential at the broker drops the operator's own Dispatch bearer and pointer as well: either
+	// would be presented in place of the traded token as a bearer Dispatch refuses
+	// (controllerDispatchBroker). The drop is not the whole of it — the
 	// operator's HOME is the controller's, and the envoy.json there holds that person's
 	// `dispatch.token`, which no delete here reaches — so the controller's set carries
 	// DISPATCH_TOKEN_BROKER, the session's word that its Dispatch credential is this machine's
@@ -228,6 +232,7 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	delete(env, "LEGION_BOOT_TOKEN")
 	delete(env, "LEGION_BOOT_TOKEN_FILE")
 	delete(env, "LEGION_SLACK_CHANNELS")
+	delete(env, runtime.SessionExclusiveVariable)
 	if cfg.DispatchTokenBroker {
 		delete(env, "DISPATCH_TOKEN")
 		delete(env, "DISPATCH_TOKEN_FILE")
@@ -251,7 +256,7 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 		omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation), controllerDir)
 	secret, designSteps, err := probeAndMint(ctx, cfg.DaemonURL, daemon.ControllerProbe{
 		Omp: invocation, Prefix: cfg.OmpLaunchPrefix, Env: env, WorkDir: controllerDir, Stdin: os.Stdin, Stderr: stderr,
-		Contract: api.DaemonAPIVersion, Log: slog.New(slog.NewTextHandler(stderr, nil)),
+		Contract: api.DaemonAPIVersion, Log: slog.New(slog.NewTextHandler(stderr, redact.HandlerOptions(nil))),
 	}, operatorToken)
 	if err != nil {
 		removeDirs(created)

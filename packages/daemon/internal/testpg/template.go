@@ -94,10 +94,16 @@ func CloneStore(t testing.TB, prefix string) *store.Store {
 }
 
 // ClonePool is Clone opened as a pool, closed when the test ends — before the clone is dropped,
-// since Clone registered that cleanup first.
+// since Clone registered that cleanup first. The pool is built from store.PoolConfig, as the
+// daemon's own is, so a test that wraps it with store.NewPool writes through the store's text
+// rule.
 func ClonePool(t testing.TB, prefix string) *pgxpool.Pool {
 	t.Helper()
-	pool, err := pgxpool.New(context.Background(), Clone(t, prefix))
+	config, err := store.PoolConfig("LEGION_TEST_PG_DSN", Clone(t, prefix))
+	if err != nil {
+		t.Fatalf("configure a pool on the cloned database: %v", err)
+	}
+	pool, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {
 		t.Fatalf("open a pool on the cloned database: %v", err)
 	}

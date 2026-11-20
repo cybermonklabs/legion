@@ -2,9 +2,9 @@ package daemon
 
 // The early release (dispatch://INFRA-2981 R5, R9, verification's c-early-release): an answer a
 // role gives stands for its round through any turn after it, an answered claim is handed no task
-// until the round ends, and an answer brings the round's end forward while silence delays nothing
-// past the bound. These cases drive the pod-update rig of podupdate_test.go, with the bound of
-// podupdate_bound_test.go.
+// until the round ends, and an answer brings the round's end forward once no turn and no claim's
+// activity report holds it (roundEnd.holding), while silence delays nothing past the bound. These
+// cases drive the pod-update rig of podupdate_test.go, with the bound of podupdate_bound_test.go.
 
 import (
 	"testing"
@@ -114,9 +114,10 @@ func TestPodUpdateEarlyReleaseAnAnsweredClaimIsHandedNoTaskUntilTheRoundEnds(t *
 }
 
 // A claim that answers brings the round's end forward, and a claim that says nothing delays
-// nothing past the bound. Two claims, neither in a turn: where both answer ten minutes in, the pod
-// is replaced then; where one says nothing, the pod waits for it a minute before the bound and is
-// replaced at the bound.
+// nothing past the bound. Two claims, neither in a turn and neither reporting background work
+// (the rig's answers report none): where both answer ten minutes in, the pod is replaced then;
+// where one says nothing, the pod waits for it a minute before the bound and is replaced at the
+// bound.
 func TestPodUpdateEarlyReleaseAnAnswerReleasesTheRoundAndSilenceDelaysNothingPastTheBound(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

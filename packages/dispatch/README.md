@@ -24,6 +24,13 @@ surface. Below the `xl` breakpoint, navigation is a drawer and the margin is a b
 opening a thread uses a full-height view with a bottom-pinned composer. Controls use 44 px
 minimum touch targets.
 
+An upload replaces whatever document the owner already holds under the name being uploaded, so it names the token of the version it replaces.
+It reads that document's token when the person chooses the file to upload (`GET /api/v1/issues/{key}/artifacts/{slug}/text`, which resolves a slug or a filename) and sends it as the upload's `precondition`, so a write landing between that choice and the upload is refused `409 PRECONDITION_FAILED` instead of writing over the text it left.
+That is the whole window the dashboard guards: a change made before the file was chosen is replaced without a refusal, since the upload names the token the document held at the choice.
+Every attempt of one press sends that one token, because the idempotency key covers the whole request body.
+A first upload of a name replaces no version and names no token, and neither does a document whose tree is outside the Proof schema: it renders no markdown and so has no token, and an upload is how it is repaired.
+Any other failure of that read ends the upload and says so, rather than uploading with no token: the page does not know what it would be replacing.
+
 ## Development
 
 Run commands from this package:
@@ -34,10 +41,13 @@ bun run build:web
 bun run typecheck
 bun run lint
 bun run test
+bun run test:web web/src/path/to/file.test.tsx
 ```
 
 `bun run build:web` produces `web/dist` for the Dispatch server. `bun run dev`
-runs the Vite development server for interface work.
+runs the Vite development server for interface work. `bun run test:web <file>` runs one unit
+test file; a bare `bun test <file>` loads no DOM, since the DOM comes from the preloads
+`test:web` names (`web/src/__tests__/register-dom.ts`).
 
 ## End-to-end tests
 
@@ -136,9 +146,10 @@ DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch_<issue>?sslm
   bun run e2e
 ```
 
-One spec by hand is the Playwright command itself, as in
-`bunx playwright test --config e2e/playwright.config.ts --project=chromium e2e/broadcast.e2e.ts`
-(`bun run e2e` runs the same after the contracts and SPA builds). Playwright stops the harness
+One spec is `bun run e2e -- e2e/claim.e2e.ts --project=chromium`, which builds the contracts and
+the SPA first, or the Playwright command itself, as in
+`bunx playwright test --config e2e/playwright.config.ts --project=chromium e2e/broadcast.e2e.ts`,
+which builds nothing. Playwright stops the harness
 when the run ends, a Ctrl-C included, and exits with its own status.
 
 A SIGTERM stops the stacks this suite starts and no more. A run that holds a stubbed row also
@@ -360,17 +371,29 @@ DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch_<issue>?sslm
 It needs `DISPATCH_E2E_PROCESSES=2`, which `e2e:multiprocess` sets; any value other than `oidc`
 or unset is refused.
 
-Three rules the code does not show:
+The rules a row follows:
 
+- A row binds `page`, `browser` or `context`, and a file it writes goes under
+  `testInfo.outputPath()`. A claim that needs no browser goes in `e2e/__tests__/` or a Go test
+  (`e2e/no-browser-rows.ts`).
+- A row takes under 2 s, or carries `// SLOW(>=2s): <why>` directly above it;
+  `bun e2e/tools/check-slow-rows.ts <report.json>` checks a run's report for both.
+- A helper whose next step depends on what the page shows reads it with `settledState`
+  (`e2e/settled.ts`), never with a one-instant read such as `isVisible()` or `count()`.
+- An assertion fails with the change reverted, and what decides its scope, such as the seeding
+  or a selector, is asserted too and seen failing once: a selector that cannot fail is no guard.
+- A row of `e2e/__tests__/` starts a subprocess it waits for through `runBounded`, and takes its
+  timeout from `rowLimit(...)` (`e2e/__tests__/bounded-subprocess.ts`).
+- A markdown shape is a file in `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/` and
+  `bun run gen` in `pmdoc/gen` (`pmdoc/doc.go`), never a string in a spec.
+- A real-stack row takes `@pr`, the pull-request lane's tag, only with a `// @pr: <why>` line
+  beside it.
 - In an Inbox test, move focus and the pointer off a row before you expect it to leave the list:
   the Inbox keeps the row under the reader's hand drawn (`ViewportAnchor`, `heldRow`), and
   `.check()` and `.click()` leave the pointer on it.
 - In the windowed Agents list, role queries skip a hidden row where CSS locators, `getByText` and
   counts do not (`shownAgentRows` and `agentRow` in `e2e/agents.ts`), and `toBeHidden()` passes
   when nothing matches, so put `toHaveCount(1)` beside it where the row must be mounted.
-- Apply the nightly job's re-recorded set by replacing `e2e/__recordings__` with its artifact
-  (`dispatch-browser-recordings-<attempt>`), never by copying it over the directory: a copy keeps
-  every recording no row writes any more.
 
 ## Local instance
 
@@ -529,7 +552,11 @@ optional ones:
   line and every other section runs.
 
 One rule governs every result the script records, beside the refusals above.
-A result at a 40-character commit the repository of the check's issue does not hold is refused `400 RESULT_COMMIT_UNKNOWN`, naming the commit and that `owner/repo`.
+The record route takes a result at a 40-character commit the repository of the check's issue holds, or at one a repository the issue links an open or merged pull request in holds (`https://github.com/<owner>/<repo>/pull/<n>`), and refuses any other `400 RESULT_COMMIT_UNKNOWN`, naming the commit, each `owner/repo` it asked, at most 10 of the linked pull requests whose state it could not read and a count of the rest, and every linked pull request in whose repository it could not read the commit, with how to mend it.
+It asks the issue's own repository first, and reads the links only where GitHub does not say that repository holds the commit: where GitHub proves it does not, and where that read does not answer, which stores the result under the issue's own repository unless a linked repository holds the commit.
+Where a read of a linked pull request or of a linked repository does not answer and no repository is shown to hold the commit, it refuses the result `502 GITHUB_UNREADABLE`, and where its own read of the issue's links fails, it answers a server error, `500 INTERNAL`; either way it stores nothing, and the caller records the result again.
+One record reads at most 10 linked pull requests, each distinct repository once, and a refusal says how many links the bound left unread.
+The script links no pull request to any issue it writes, so no linked repository is asked about any result it records.
 Only GitHub's `422 No commit found for SHA` refuses, and the script reads `PROJECT`'s repository mappings once, in its setup, to know which of two runs it is.
 Where `PROJECT` maps no default repository, every result recorded outside the reading section is stored because the check's issue resolves to no repository, which is never asked about; inside the section, each stored result names a commit it seeded its fake GitHub with, and the one commit it seeds nothing with is the refusal it drives.
 Where `PROJECT` already maps one, every issue the script writes resolves to that repository, so the setup reads that repository's default-branch head from GitHub with `gh` and every result is recorded at that head: no check stands down, and the run prints no `SKIP` for a recorded result.
@@ -547,6 +574,27 @@ approval request it left open. Nothing it writes is read by a second run. Agains
 DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
   FAKE_GITHUB_PORT=9022 DEV_SIGNIN_LOGIN=alice \
   bash packages/dispatch/e2e/acceptance/verification.sh
+```
+
+`e2e/acceptance/write-guards.sh` drives the three guards on a write the same way, through the
+real CLI and the HTTP API beside it. A person approves an issue's specification and the question
+`dispatch ask` opens on that issue names the review: who gave it, when, that they approved, their
+reason, and the line asking the sender to say what changed since it. An agent uploads a document
+holding a question, the person answers it, and the agent uploads the body it composed again,
+writing the same question with no `#id`: the uploaded block takes the live block's id, so the
+issue still holds that one answered ask and the settlement writes the answer onto the block
+again. An upload naming a token the live document has moved past is refused `409 PRECONDITION_FAILED`,
+whose answer carries the live token, the live version and `dispatch doc-read`; the command exits
+non-zero, nothing is written, and the same upload naming the token `dispatch doc-read` prints is
+taken. A replacement that names no token at all is refused `400 PRECONDITION_REQUIRED` by every
+server, under no setting, so that check runs against the one server the rest of the script
+drives. Its inputs are `DISPATCH_URL`, the bearer, `PROJECT` and `DEV_SIGNIN_LOGIN`, which is
+required here because the review and the answer are a person's writes. It writes three issues in
+`PROJECT` and closes all three, also when a check fails. Against `bun run dispatch:local`:
+
+```bash
+DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE DEV_SIGNIN_LOGIN=alice \
+  bash packages/dispatch/e2e/acceptance/write-guards.sh
 ```
 
 `e2e/acceptance/ci-check.sh` drives a check that CI proves the same way, through the HTTP API and
@@ -714,6 +762,17 @@ bash, such as dash, busybox `sh` or zsh, it prints `UNKNOWN: run this with bash`
   the device's `TMOUT` unset, since bash's `read` takes it as a timeout; a read that stops before
   the end refuses the run.
 
+Two settings bound the two reads of the origin, each as curl's `--connect-timeout` and
+`--max-time`: `OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS` (3 s when unset or empty) and
+`OUTSIDE_PATH_ORIGIN_READ_SECONDS` (10 s). Each must be a whole number of seconds from 2 to
+999999, in digits; any other value refuses the run, naming the setting. A curl built with the
+synchronous resolver (neither threaded nor c-ares) gives up before it resolves a name, 127.0.0.1
+included, with under 1000 ms of the bound left, which a 1 s bound reaches once 1 ms has passed;
+curl reads 0 as no bound; and curl 7.55 and later refuse a bound past 2147483 s where a long has 32
+bits. They do not bound the probes, whose 3 s to connect and 5 s in all the classifier's rules
+count on. The script's tests set both to twice their longest row's timeout, so a fake Dispatch that
+a loaded host keeps off the CPU makes a read late, never a verdict wrong.
+
 ```bash
 OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt \
   bash outside-path-reach.sh
@@ -811,6 +870,23 @@ docker rmi "ghcr.io/cybermonklabs/legion/envoy:${acceptance_image_tag}"
 `e2e/seed.ts` empties its database before each scenario. Always set
 `PLAYWRIGHT_DATABASE_URL` to an isolated test database when using a deployed URL.
 
+## The stubbed layer
+
+`bun run e2e:stub` runs the stubbed layer: the rows of the `*.stub.e2e.ts` files, in a real
+browser against the answers `bun run e2e:stub:record` recorded under `e2e/__recordings__/`, with
+no Go server, Postgres or fake in the run. Each such file declares its `test` with
+`stubbed(seed)` (`e2e/stub/stub-test.ts`).
+
+A stubbed row asserts what the browser does with a fixed answer. Four kinds of claim stay on the
+real stack: what the server decides, a read of the row's own write, a frame the server sends, and
+a clock. A stubbed row skips only inside its own body: a `describe`-level skip whose condition
+reads a worker fixture is seen by neither the row map nor the replay (`e2e/tools/row-map.ts`).
+
+A new real-stack spec file needs a line in `e2e/stub/real-stack-reasons.ts` saying what the
+server decides for its rows, and a new stub file a header comment saying why a recording can
+answer its rows. After either, `bun e2e/tools/row-map.ts --write` regenerates `e2e/row-map.md`,
+which `e2e/__tests__/row-map.test.ts` holds to a fresh generation.
+
 The stubbed layer reads three variables of its own, and a run that is not recording needs none
 of them. `DISPATCH_E2E_STUB_RECORD=1` makes the stubbed rows meet the real harness and write
 what they fetched (`bun run e2e:stub:record`). `DISPATCH_E2E_STUB_PORT` moves the static file
@@ -822,16 +898,25 @@ writes any more. A fourth, `DISPATCH_E2E_STUB_ONLY=1`, is how the config carries
 the stubbed layer alone" to the rest of the run; set by hand it tells `globalSetup` to start no
 stack at all, for the whole run and real-stack projects included, which then find no server to
 address.
+
+Apply the nightly job's re-recorded set by replacing `e2e/__recordings__` with its artifact
+(`dispatch-browser-recordings-<attempt>`), never by copying it over the directory: a copy keeps
+every recording no row writes any more.
+
+## Projects
+
 The suite has fifteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
 three the `-alone` projects below take (`aloneProjects` in `e2e/playwright.config.ts`) and the
-stubbed layer's own (`packages/dispatch/AGENTS.md`, "The stubbed layer", which the last two
-projects of the list run).
+stubbed layer's own ("The stubbed layer" above), which the last two projects of the list run.
 `iphone` runs, from those same specs, only the tests tagged `@phone` (written at the end of the
-test's or its `test.describe`'s title); a test takes the tag when the phone viewport can change
-what it
-asserts, and not when it only reaches the same control by another route, which is in
-`packages/dispatch/AGENTS.md`, "Phone acceptance". An untagged test drops out of `iphone` with
-no failure, and `e2e/__tests__/row-configurations.test.ts` refuses a row that runs twice in one
+test's or its `test.describe`'s title). A phone width is one under 768 px. A test takes the tag
+only where the phone can change what it asserts: its layout, touch (`e2e/touch.ts`), a surface
+only a phone has, a row only a phone runs, or a request count `iphone` got wrong; not where it
+only reaches the same control by another route. `iphone` does not replace the check on a real
+phone ("Phone check" below). `iphone`, `webkit` and `firefox` pick rows by title tag, so a test
+that loses its tag drops out of them with no failure: read a project's rows with
+`bunx playwright test --config e2e/playwright.config.ts --project=<name> --list`. And
+`e2e/__tests__/row-configurations.test.ts` refuses a row that runs twice in one
 engine, viewport, origin and server-process count. The iPhone project uses Chromium with iPhone
 13 viewport, touch, and user-agent emulation. A deployed run (`bun run e2e:deployed`) uses the
 same projects but the two stubbed ones and the three `-alone` ones, so its `iphone` project also
@@ -896,6 +981,17 @@ worker count itself rather than taking the configuration's default, and which wr
 as `--project=<name>`, since the option is variadic and would read the file after a space as a
 second project name.
 `bun run e2e:install` installs all three browsers.
+
+## Accessibility and visual review
+
+`e2e/review-routes.ts` lists every route of `web/src/app.tsx`, reviewed or excluded with a
+reason, and two layers read it: the axe scan of `e2e/accessibility.e2e.ts` and the visual review
+of `e2e/visual.e2e.ts`, whose baselines are committed as
+`e2e/__screenshots__/<project>/<route>-<scheme>.png`. An axe finding is fixed in `web/src`;
+`e2e/accessibility-exclusions.ts` takes an entry only where the fix would change what another row
+claims. A baseline comes only from the pinned container, through
+`e2e/visual-run.sh --update-snapshots`; the script's header says how to take one from CI on a
+machine with no container.
 
 ## Phone check
 

@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -862,8 +863,10 @@ func checkMapping(ctx context.Context, client dispatch.Client, mappings []dispat
 	for _, m := range entries {
 		if m.parse != nil {
 			// A name Dispatch spells unparseably is read for no App at all, Dispatch's own
-			// among them, so it carries no gap to record.
-			refused = append(refused, refusedRepository{Repo: m.mapping.Repo, Reason: m.parse.Error()})
+			// among them, so it carries no gap to record. The parse error quotes Dispatch's
+			// spelling, which legion state and a child-release-stalled notice carry on, so it is
+			// kept as a far side's text is.
+			refused = append(refused, refusedRepository{Repo: m.mapping.Repo, Reason: storetext.FarSideError(m.parse.Error())})
 			continue
 		}
 		var reasons []string
@@ -875,7 +878,9 @@ func checkMapping(ctx context.Context, client dispatch.Client, mappings []dispat
 			for index, role := range appauth.Roles {
 				switch {
 				case reads.failed[index] != nil:
-					unread = append(unread, fmt.Sprintf("the %s App's installation on %s could not be read: %v", role, reads.repo, reads.failed[index]))
+					// The reason is served by legion state and quoted in a child-release-stalled
+					// notice, so GitHub's error is kept as any far side's error text is.
+					unread = append(unread, fmt.Sprintf("the %s App's installation on %s could not be read: %s", role, reads.repo, storetext.FarSideError(reads.failed[index].Error())))
 					if readErr == nil {
 						readErr = fmt.Errorf("check the %s App's installation on %s: %w", role, reads.repo, reads.failed[index])
 					}
@@ -961,7 +966,9 @@ func checkWebhookApp(ctx context.Context, client dispatch.Client, repo ghrepo.Re
 	case dispatch.Missing(err):
 		return "this Dispatch does not answer the webhook App check"
 	case err != nil:
-		return "the webhook App check failed: " + err.Error()
+		// legion state serves the gap's reason, so Dispatch's error is kept as any far side's
+		// error text is.
+		return "the webhook App check failed: " + storetext.FarSideError(err.Error())
 	case !installed:
 		return fmt.Sprintf("Dispatch's GitHub App is not installed on %s: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed", repo)
 	}
@@ -1247,18 +1254,21 @@ func (w *workflowRuntime) logUnmappedCommitIssueTrailerRepos(accepted []mappedRe
 // retry, and logs the mapping the daemon serves. A read GitHub refuses for its rate limit never
 // refuses the boot, however long the limit stands: a repository the daemon holds a default branch
 // for is served on it at once and read again after the limit's reset (holdLimited), and one it
-// holds none for is waited out and read once more, and left out for now if GitHub still does not
-// answer (waitOutLimits). A 404, and every other answer that is no limit, refuses the boot, and a
-// 5xx is retried on appMintRetry (bootReadTransient).
+// holds none for is waited out, within the start's waits, and read once more, and left out for now
+// if GitHub still does not answer (waitOutLimits). GitHub's rate limit on the implement App token
+// a read mints is waited out on the start's waits as the start's own mint is (boundedAttempt). A
+// 404, and every other answer that is no limit, refuses the boot, and a 5xx is retried on
+// appMintRetry (bootReadTransient).
 func (w *workflowRuntime) nameMapping(ctx context.Context) error {
+	const call = "repository read"
 	var named []mappedRepository
 	var limited []limitedRead
 	mapped := w.repositories.Mapped()
-	err := bootprobe.Run(ctx, "repository read", appMintRetry, w.log, readinessAttempt(func(ctx context.Context) error {
+	err := bootprobe.Run(ctx, call, appMintRetry, w.log, boundedAttempt(func(ctx context.Context) error {
 		var err error
 		named, limited, err = nameAccepted(ctx, mapped, w.defaultBranches)
 		return err
-	}, appMintAttempt, bootReadTransient))
+	}, appMintAttempt, bootReadTransient, w.startWaits, call))
 	if err != nil {
 		return err
 	}
@@ -3140,7 +3150,10 @@ func (w *workflowRuntime) withAncestry(ctx context.Context, issue intake.Dispatc
 		}
 		issue.Ancestry = chain
 	}
-	if !reread || recorded != nil && (issue.Parent == parentKey(recorded.Parent) || issue.Seq != 0 && issue.Seq <= recorded.LastDispatchSeq) {
+	// The record holds what the store kept of a parent and a chain, so Dispatch's are compared as
+	// the store would keep them (storetext.Text, storetext.Strings); the walk itself reads Dispatch
+	// by the keys as Dispatch gave them.
+	if !reread || recorded != nil && (storetext.Text(issue.Parent) == parentKey(recorded.Parent) || issue.Seq != 0 && issue.Seq <= recorded.LastDispatchSeq) {
 		return issue, nil
 	}
 	var roots []record.Issue
@@ -3162,7 +3175,7 @@ func (w *workflowRuntime) withAncestry(ctx context.Context, issue intake.Dispatc
 				"root", root.Key, "event", issue.Key, "ancestry", root.Ancestry, "error", err)
 			continue
 		}
-		if slices.Equal(chain, root.Ancestry) {
+		if slices.Equal(storetext.Strings(chain), root.Ancestry) {
 			continue
 		}
 		if issue.Reread == nil {
@@ -3342,7 +3355,9 @@ func (w *workflowRuntime) prepareUnmapped(ctx context.Context, issue intake.Disp
 	}
 	repo, err := ghrepo.Parse("the repository Dispatch resolves "+issue.Key+" to", issue.ResolvedRepo)
 	if err != nil {
-		issue.RepositoryRefusal = err.Error()
+		// The refusal is posted on the issue (intake.DispatchIssue.RepositoryRefusal), and the
+		// error quotes what Dispatch resolved the issue to, so it is kept as a far side's text is.
+		issue.RepositoryRefusal = storetext.FarSideError(err.Error())
 		return issue, nil
 	}
 	if boot {

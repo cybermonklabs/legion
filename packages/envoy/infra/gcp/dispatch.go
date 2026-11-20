@@ -642,10 +642,11 @@ type Dispatch struct {
 	Kubeconfig       pulumi.StringOutput `pulumi:"kubeconfig"`
 	Principal        pulumi.StringOutput `pulumi:"principal"`
 	AgentToken       pulumi.StringOutput `pulumi:"agentToken" provider:"secret"`
-	// ServiceAccountIssuer and ServiceAccountSubject are the issuer and subject of the app's and
-	// the listener's service-account tokens: the cluster's OIDC issuer, and those pods' Kubernetes
-	// service account. A federated credential trusting the pair (an Azure identity's, for the
-	// keyless form) admits exactly those pods; the front door's pods run as an account of their own.
+	// ServiceAccountIssuer and ServiceAccountSubject are the issuer and subject of the app's
+	// service-account tokens: the cluster's OIDC issuer, and those pods' Kubernetes service
+	// account. A federated credential trusting the pair (an Azure identity's, for the keyless form)
+	// admits exactly those pods; the listener's and the front door's pods run as accounts of their
+	// own.
 	ServiceAccountIssuer  pulumi.StringOutput `pulumi:"serviceAccountIssuer"`
 	ServiceAccountSubject pulumi.StringOutput `pulumi:"serviceAccountSubject"`
 }
@@ -2210,9 +2211,10 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 	comp.Principal = database.principal
 	comp.AgentToken = database.agentToken.Result
 	comp.Url = pulumi.String(s.serverURL()).ToStringOutput()
-	// The app's and the listener's pods run as ServiceAccount <hostname> in the component's
-	// namespace, the account newDispatchKubernetes registers, and Kubernetes names a token's subject
-	// after it. The front door's pods run as <hostname>-tailnet, which this subject never names.
-	comp.ServiceAccountSubject = pulumi.String("system:serviceaccount:" + s.namespace + ":" + s.hostname).ToStringOutput()
+	// The app's pods run as ServiceAccount <hostname> in the component's namespace, the account
+	// newDispatchKubernetes registers, and Kubernetes names a token's subject after it. The
+	// listener's pods run as <hostname>-listener and the front door's as <hostname>-tailnet, which
+	// this subject never names.
+	comp.ServiceAccountSubject = pulumi.String(dispatchServiceAccountSubject(s)).ToStringOutput()
 	return comp, nil
 }

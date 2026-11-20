@@ -54,8 +54,8 @@ name: PR Title
 # queue took the pull request only once it passed. Of the 40 pull requests merged from
 # 2026-11-17T11:00Z to 2026-11-18T11:00Z, 17 had a green ci-ok before their approval and were
 # enqueued within 5 minutes of the approval's review run passing, a median of 29.9 minutes after
-# the approval. Legion's leak guard refuses a private name before a review is posted (AGENTS.md,
-# "The guard runs before the write").
+# the approval. Legion's leak guard refuses a private name before a review is posted (the package
+# doc of packages/daemon/internal/leakguard).
 #
 # A newer run that replaces an older one still waiting loses nothing, since it repeats every check
 # on the title and body as they now are, and no run in progress is cancelled (the concurrency

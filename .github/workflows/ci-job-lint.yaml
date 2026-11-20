@@ -161,9 +161,10 @@ jobs:
             exit 1
           fi
 
-      # A package's `bun run lint` checks only the paths its recipe names. This is the command
-      # AGENTS.md documents, over the whole tree, so a fixture, config or test file that Biome
-      # would rewrite fails here instead of on the next person who runs it.
+      # A package's `bun run lint` checks only the paths its recipe names. This is the command the
+      # root README.md's "Development" section documents, over the whole tree, so a fixture,
+      # config or test file that Biome would rewrite fails here instead of on the next person who
+      # runs it.
       - name: Check the whole tree with Biome
         run: bunx biome check .
 

@@ -369,11 +369,11 @@ func TestRevokeRefusesWrongOperator(t *testing.T) {
 	}
 }
 
-// TestOnlyTheCredentialThatEnrolledAPodEndsItsEnrollment: a pod enrollment carries no operator to
-// tell one service credential from another, so it is ended only by the launcher credential that
-// made it. Another service's credential, and a second credential of the same service (a restarted
-// Legion daemon, which logs in again with a fresh key), are refused and end nothing; the enrolling
-// credential ends it.
+// TestOnlyTheCredentialThatEnrolledAPodEndsItsEnrollment: a service's pod enrollment carries no
+// operator to tell one service credential from another, so it is ended only by the launcher
+// credential that made it. Another service's credential, and a second credential of the same
+// service (a restarted Legion daemon, which logs in again with a fresh key), are refused and end
+// nothing; the enrolling credential ends it.
 func TestOnlyTheCredentialThatEnrolledAPodEndsItsEnrollment(t *testing.T) {
 	svc := newService(t)
 	ctx := context.Background()

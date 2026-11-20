@@ -39,14 +39,21 @@ and an OAuth refusal of a trade or of a machine login's refresh prints `the brok
 code, which whoever answers at that URL could fill with the credential it carries. A
 code prints there only where it is one the program matched against its own list: `renew`'s exit
 on a terminal refusal, and the helper's log of a refusal it acts on; the helper's log of a
-sign-in the broker refused names its code as that marker. What these programs print or log of an
-answer they accept prints whatever the URL; `--json` writes a 2xx body verbatim.
-Every other value of a broker's answer this CLI prints - the request, grant and enrollment ids,
-a request's state, who decided it and the broker's sentence about it, whom and where a pending
-request waits on, `self`'s lines, the cells of `machine list` and `grant list`, and `machine
-login`'s `user_code` and `verification_uri` - prints on one line: as it came where it holds no
-control character, Go-quoted where it holds one, which a broker's code and words beside a clean
-URL print under too.
+sign-in the broker refused names its code as that marker. Every value of an answer `AGENT_SECRETS_URL`
+answered that this CLI prints - the request, grant and enrollment ids, a request's state, who
+decided it and the broker's sentence about it, whom and where a pending request waits on,
+`self`'s lines, the cells of `machine list` and `grant list`, and the broker's settings - prints
+as the broker's address lets it print: beside a URL that prints, on one line, as it came where it
+holds no control character and Go-quoted where it holds one; beside one that does not, as
+`(not printed: …)`, except, beside a URL with no user info, query, fragment or `%` (one refused
+for its host alone, such as a host with an underscore or a trailing dot), a request, grant,
+enrollment or machine login id that is a UUID, the shape of every id the broker makes, and that
+the URL does not hold in any case or form: such an id is no credential and prints whole, in every
+form and table alike, so `agent-secrets status <id>`
+can follow a request. `--json` writes a 2xx body verbatim, every field, since it asks for the body
+by name. Of a machine login the helper relays, the `user_code` prints on one line, and the
+`verification_uri` as the URL above prints: whole where it is a plain http(s) URL, `(not printed:
+the value carries a credential or is not a plain http(s) URL)` otherwise.
 The helper's log lines name the `credential_id` of the machine login the broker issued, which the
 log's own format escapes the same way.
 People and launchers use its other forms to log a
@@ -180,10 +187,14 @@ are under the home the password database gives the process's user.
 
 `agent-secrets identity` answers by exit status alone (0 for a launcher's key dir or a helper
 session, 1 otherwise) and asks nothing of the network. `agent-secrets identity --source` walks the
-chain without registering anything and prints the source a command would use — `key-dir: <dir>`,
-`sign-in: <person>`, `helper: <socket>`, `machine: the cached enrollment in <dir>`, or `machine:`
-and the identity it would trade — then `helper: <socket>` whenever the helper answered and is not
-that source; with none, stdout is empty, the refusal above is on stderr, and it exits 1. A
+chain without registering anything and prints the source a command would use — `key-dir:
+AGENT_SECRETS_KEY_DIR`, or where it is unset `key-dir: $XDG_RUNTIME_DIR/agent-secrets
+(AGENT_SECRETS_KEY_DIR is unset)` or `key-dir: /run/user/$UID/agent-secrets (AGENT_SECRETS_KEY_DIR
+and XDG_RUNTIME_DIR are unset)`, `sign-in: <person>`,
+`helper: <socket>`, `machine: the cached enrollment in the machine cache (…)`, or `machine:` and
+the identity it would trade — then `helper: <socket>` whenever the helper answered and is not
+that source; with none, stdout is empty, the refusal above is on stderr, and it exits 1. The key
+dir and the machine cache each hold a `key.pem`, so no line names either by its path. A
 `helper: <socket>` line ends with the release the running helper reports for itself,
 `(agent-secrets-helper <release>)`; a helper from before that report answers `unknown op version`,
 and the line ends `(a helper from before this release; its binary is /proc/<pid>/exe)` instead.
@@ -375,8 +386,9 @@ agent-secrets grant revoke <grant_id>
 agent-secrets-helper sessions
 ```
 
-`machine list` shows your machines' logins, `grant list` the live grants of your sessions and
-those you approved, and `agent-secrets-helper sessions` the sessions this machine's helper holds.
+`machine list` shows your machines' logins and your pods' logins, `grant list` the live grants of
+your sessions and those you approved, and `agent-secrets-helper sessions` the sessions this
+machine's helper holds.
 `grant revoke` ends a grant: from your own shell it is the operator's revoke of any of these
 grants, and from inside a session it ends a grant given to the broker identity (enrollment) the
 session signs as; a grant of another enrollment is refused `was given to another broker identity

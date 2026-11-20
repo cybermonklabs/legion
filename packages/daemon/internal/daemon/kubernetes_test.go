@@ -31,10 +31,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -193,6 +196,105 @@ func TestAKubernetesDaemonRefusesALegacyPerClaimSandboxBeforeItOpensItsStore(t *
 		if !strings.HasPrefix(request, "GET ") {
 			t.Errorf("the cluster check sent %s; it may only read", request)
 		}
+	}
+}
+
+// The store opens outside the start budget the cluster check spends, and the steps after the open
+// get a budget of their own (c-boot-db-retry case 7). Here the real cluster check uses 22 s of the
+// 30 s budget, and the database accepts the first connection and never answers it: the first
+// attempt ends at its own limit, the second opens the store, and the fresh database is migrated
+// to the binary's newest migration more than 30 s into the start. That is the start LINUX's
+// daemon could not make on 2026-10-26, which opened its store on what the cluster check had left
+// of the budget and exited with `context deadline exceeded`.
+func TestAKubernetesDaemonOpensItsStoreAfterAClusterCheckThatUsedMostOfItsBudget(t *testing.T) {
+	const censusTakes = 22 * time.Second
+	var census sync.Once
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var body map[string]any
+		switch r.URL.Path {
+		case "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/sandboxes.agents.x-k8s.io":
+			body = map[string]any{"apiVersion": "apiextensions.k8s.io/v1", "kind": "CustomResourceDefinition",
+				"metadata": map[string]any{"name": "sandboxes.agents.x-k8s.io"},
+				"spec":     map[string]any{"versions": []any{map[string]any{"name": "v1beta1", "served": true}}}}
+		case "/apis/apps/v1/namespaces/agent-sandbox-system/deployments/agent-sandbox-controller":
+			body = map[string]any{"apiVersion": "apps/v1", "kind": "Deployment",
+				"metadata": map[string]any{"name": "agent-sandbox-controller", "namespace": "agent-sandbox-system"},
+				"status":   map[string]any{"availableReplicas": 1}}
+		case "/apis/agents.x-k8s.io/v1beta1/namespaces/legion/sandboxes":
+			// The census is the first read of the project's Sandboxes, and the only slow one.
+			census.Do(func() {
+				select {
+				case <-time.After(censusTakes):
+				case <-r.Context().Done():
+				}
+			})
+			body = map[string]any{"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "SandboxList", "metadata": map[string]any{}, "items": []any{}}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			body = map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "NotFound", "code": 404}
+		}
+		_ = json.NewEncoder(w).Encode(body)
+	}))
+	defer apiServer.Close()
+	cfg := kubernetesConfig(t, apiServer.URL)
+	database := testdb.Database(t, "legion_daemon_late_open")
+	cfg.PostgresDSN = pgProxy(t, database, silentConnection)
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	newest := all[len(all)-1].Version
+	reader, err := store.Open(context.Background(), database)
+	if err != nil {
+		t.Fatalf("open the fresh database to read its schema version: %v", err)
+	}
+	t.Cleanup(reader.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	started := time.Now()
+	go func() { done <- run(ctx, cfg, quietLogger(), overrides{clock: stillClock{}, listen: heldListen}) }()
+	// What follows the migration is not this test's: the runtime this configuration builds may
+	// refuse it (it names no session store), and the test stops the start once it reads the
+	// migration, so run may return before or after the stop, with anything but a refusal of the
+	// store it opened.
+	var version int
+	var ended error
+	returned := false
+	testwait.Holds(2*time.Minute, 250*time.Millisecond, func() bool {
+		if version, _ = reader.SchemaVersion(context.Background()); version == newest {
+			return true
+		}
+		select {
+		case ended = <-done:
+			returned = true
+			return true
+		default:
+			return false
+		}
+	})
+	took := time.Since(started)
+	if returned {
+		// run may have returned between the migration's end and the read before it.
+		version, _ = reader.SchemaVersion(context.Background())
+	} else {
+		cancel()
+		select {
+		case ended = <-done:
+		case <-time.After(time.Minute):
+			t.Fatal("run did not return within a minute of its stop")
+		}
+	}
+	if version != newest {
+		t.Fatalf("run returned %v %s into the start, and its database's schema version is %d, want %d", ended, took.Round(time.Second), version, newest)
+	}
+	if ended != nil && strings.Contains(ended.Error(), "connect to Postgres") {
+		t.Errorf("run = %v, want no refusal of the store it opened", ended)
+	}
+	if took <= bootTimeout {
+		t.Errorf("the database was migrated %s into the start, inside its first %s budget: the cluster check and the first attempt did not spend what this test is for", took, bootTimeout)
 	}
 }
 
@@ -545,8 +647,8 @@ func TestKubernetesSetupReachesTheSandboxRuntime(t *testing.T) {
 
 // runtime.kubernetes.sandbox reaches sandbox.Options member for member: the type, the canary list
 // and the microvm block with its ComputeClass, its storage class (the one the loader settled,
-// runtime.kubernetes.storage_class where the file names none) and its metadata endpoint, while
-// leaving the block out runs every pod in gVisor.
+// runtime.kubernetes.storage_class where the file names none), its keep_volume and its metadata
+// endpoint, while leaving the block out runs every pod in gVisor.
 func TestKubernetesSandboxReachesTheSandboxRuntime(t *testing.T) {
 	cfg := config.Config{Project: "TEST", Projects: map[string]config.Project{"TEST": {}}}
 	k := config.Kubernetes{
@@ -555,7 +657,7 @@ func TestKubernetesSandboxReachesTheSandboxRuntime(t *testing.T) {
 	}
 	k.Sandbox = config.SandboxConfig{
 		Type: config.SandboxMicroVM, CanaryIssues: []string{"TEST-7"},
-		MicroVM: &config.MicroVMConfig{ComputeClass: "example-microvm", StorageClass: "gp2", Metadata: &config.MetadataConfig{
+		MicroVM: &config.MicroVMConfig{ComputeClass: "example-microvm", StorageClass: "gp2", KeepVolume: true, Metadata: &config.MetadataConfig{
 			WorkloadPool:     "example-project.svc.id.goog",
 			IdentityProvider: "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster",
 		}},
@@ -566,7 +668,7 @@ func TestKubernetesSandboxReachesTheSandboxRuntime(t *testing.T) {
 	}
 	want := sandbox.SandboxConfig{
 		Type: sandbox.SandboxMicroVM, CanaryIssues: []string{"TEST-7"},
-		MicroVM: &sandbox.MicroVM{ComputeClass: "example-microvm", StorageClass: "gp2", Metadata: &sandbox.MetadataEndpoint{
+		MicroVM: &sandbox.MicroVM{ComputeClass: "example-microvm", StorageClass: "gp2", KeepVolume: true, Metadata: &sandbox.MetadataEndpoint{
 			WorkloadPool:     "example-project.svc.id.goog",
 			IdentityProvider: "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster",
 		}},
@@ -1083,12 +1185,10 @@ func TestNewSecretsLoginLogsInWithTheDaemonsToken(t *testing.T) {
 	if enroller == nil || client == nil {
 		t.Fatal("want an enroller and a client")
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for !strings.Contains(logged.String(), "agent-secrets: logged in with the daemon's ServiceAccount token") || client.LoginStatus().State != "issued" {
-		if time.Now().After(deadline) {
-			t.Fatalf("log = %s, state %q; want the token login logged and issued", logged.String(), client.LoginStatus().State)
-		}
-		time.Sleep(time.Millisecond)
+	if !testwait.Holds(2*time.Second, time.Millisecond, func() bool {
+		return strings.Contains(logged.String(), "agent-secrets: logged in with the daemon's ServiceAccount token") && client.LoginStatus().State == "issued"
+	}) {
+		t.Fatalf("log = %s, state %q; want the token login logged and issued", logged.String(), client.LoginStatus().State)
 	}
 	mu.Lock()
 	defer mu.Unlock()

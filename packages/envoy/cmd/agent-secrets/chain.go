@@ -29,6 +29,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // errSourceAbsent is what a source of the chain answers, through sourceAbsent, when it has nothing
@@ -49,11 +50,13 @@ func absent(format string, args ...any) error {
 // signerSource is one source of the chain. build answers its signer, registering a session where
 // the source is one that registers its own (a sign-in that has none yet, the machine); describe
 // answers what `identity --source` prints after the name, found the way build finds it and
-// registering nothing.
+// registering nothing; held answers the signer for an identity the source holds now, with no wait
+// and no machine trade (heldSigner).
 type signerSource struct {
 	name     string
 	build    func(ctx context.Context) (enrollmentID string, signer Signer, err error)
 	describe func(ctx context.Context) (string, error)
+	held     func() (proofSigner, error)
 }
 
 // signerChain is the chain for a process whose key directory is dir, in R4's order.
@@ -67,20 +70,15 @@ func selectSigner(dir string) (string, Signer, error) {
 	if err := migrateKeyDirMachineSession(dir); err != nil {
 		return "", nil, err
 	}
-	ctx := context.Background()
-	var reasons []string
-	for _, source := range signerChain(dir) {
-		id, signer, err := source.build(ctx)
-		switch {
-		case err == nil:
-			return id, signer, nil
-		case errors.Is(err, errSourceAbsent):
-			reasons = append(reasons, source.name+": "+err.Error())
-		default:
-			return "", nil, err
-		}
+	type built struct {
+		id     string
+		signer Signer
 	}
-	return "", nil, noBrokerIdentity(reasons)
+	_, got, err := walkChain(signerChain(dir), func(source signerSource) (built, error) {
+		id, signer, err := source.build(context.Background())
+		return built{id, signer}, err
+	})
+	return got.id, got.signer, err
 }
 
 // describeSource is the source selectSigner would sign with, and what `identity --source` says
@@ -89,53 +87,91 @@ func describeSource(dir string) (name, detail string, err error) {
 	if err := migrateKeyDirMachineSession(dir); err != nil {
 		return "", "", err
 	}
-	ctx := context.Background()
-	var reasons []string
-	for _, source := range signerChain(dir) {
-		detail, err := source.describe(ctx)
+	return walkChain(signerChain(dir), func(source signerSource) (string, error) {
+		return source.describe(context.Background())
+	})
+}
+
+// heldSigner is a broker identity this process already holds, for a call that signing only adds
+// to: a secret form's reread, which the broker answers in full only for a session, and which goes
+// unsigned all the same where this finds none. It walks the chain in its order and takes the first
+// source's held signer (signerSource.held): what each source holds now, with no wait on a launcher
+// still enrolling or a machine registration in progress, and no machine trade. A source with
+// nothing for the caller is passed over; one that is present but not usable now (a launcher still
+// enrolling, a broken key or record, a stopped helper) stops the walk with its error, named by its
+// source, as the chain stops, so the reread never signs as another identity than the one the
+// caller set up. It moves no machine session an older client left in the key directory, since
+// that move takes the machine cache's exclusive lock (migrateKeyDirMachineSession): such a key
+// directory is signed with as it stands. With no source holding anything it names each source and
+// why.
+//
+// A person's sign-in is the one held signer that may register again: its lease lapses after
+// BROKER_LEASE_SECONDS and nothing renews it, so its signer keeps signInSigner's register, and the
+// reread's call (doProofBuilt) registers the session again once when the broker says the
+// enrollment is not live. That costs one trade of the person's own sign-in, with this machine's
+// identity as its actor, and one enrollment; it waits on nothing and registers no machine session.
+func heldSigner() (proofSigner, error) {
+	name, signer, err := walkChain(signerChain(keyDir()), func(source signerSource) (proofSigner, error) {
+		return source.held()
+	})
+	if err != nil && !errors.Is(err, errNoBrokerIdentity) {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	return signer, err
+}
+
+// walkChain is the one walk of the chain: it asks each source in its order for what pick reads
+// of it, and returns the first source's name with what it found. A source with nothing for the
+// caller (errSourceAbsent) is passed over, and its reason kept; any other error stops the walk
+// with that source's name and the error, as the chain stops. With no source left it is
+// errNoBrokerIdentity, naming each source and why.
+func walkChain[T any](chain []signerSource, pick func(signerSource) (T, error)) (string, T, error) {
+	var none T
+	reasons := make([]string, 0, len(chain))
+	for _, source := range chain {
+		got, err := pick(source)
 		switch {
 		case err == nil:
-			return source.name, detail, nil
+			return source.name, got, nil
 		case errors.Is(err, errSourceAbsent):
 			reasons = append(reasons, source.name+": "+err.Error())
 		default:
-			return "", "", err
+			return source.name, none, err
 		}
 	}
-	return "", "", noBrokerIdentity(reasons)
+	return "", none, fmt.Errorf("%w: %s", errNoBrokerIdentity, strings.Join(reasons, "; "))
 }
 
-// noBrokerIdentity is the chain's refusal when no source had an identity: each source, and why.
-func noBrokerIdentity(reasons []string) error {
-	return fmt.Errorf("no broker identity for this process: %s", strings.Join(reasons, "; "))
-}
+// errNoBrokerIdentity is the chain's refusal when no source has a broker identity, from every
+// walk of it (walkChain: selectSigner, describeSource and heldSigner alike); the error wrapping
+// it names each source and why.
+var errNoBrokerIdentity = errors.New("no broker identity for this process")
 
 // keyDirSource is a launcher's key and enrollment in dir. Its session is the launcher's to make
 // again, so its signer registers nothing. A fresh enrollment.pending with no key.pem beside it is
 // a launcher still enrolling this process, which is present: the chain stops there rather than
 // sign as a weaker identity while the launcher is slow (buildSigner has already waited for it).
+// dir holds key.pem, so no line names it or a file in it by its path: each names the setting
+// (keyDirName), with the system's reason where a file call failed.
 func keyDirSource(dir string) signerSource {
 	build := func(context.Context) (string, Signer, error) {
 		keyPath := filepath.Join(dir, keyFile)
 		if !exists(keyPath) {
 			if freshMarker(dir) {
-				return "", nil, fmt.Errorf("%s is there and no key.pem yet: the launcher that wrote it is still enrolling this process", filepath.Join(dir, pendingMarker))
+				return "", nil, fmt.Errorf("%s holds %s and no key.pem yet: the launcher that wrote it is still enrolling this process", keyDirName(), pendingMarker)
 			}
-			return "", nil, absent("no key.pem in %s (AGENT_SECRETS_KEY_DIR; a launcher puts one there for a box or a pod)", dir)
+			return "", nil, absent("no key.pem in %s (a launcher puts one there for a box or a pod)", keyDirName())
 		}
-		key, err := loadKey(keyPath)
+		key, err := loadKey(keyPath, keyDirFile(keyFile))
 		if err != nil {
 			return "", nil, err
 		}
-		id, err := readTrimmed(filepath.Join(dir, enrollmentFile))
+		id, err := readEnrollment(filepath.Join(dir, enrollmentFile), keyDirFile("the enrollment file"))
 		if err != nil {
 			if reason, rerr := readTrimmed(filepath.Join(dir, enrollmentErrorFile)); rerr == nil {
 				return "", nil, fmt.Errorf("%w (%s: %s)", err, enrollmentErrorFile, reason)
 			}
 			return "", nil, err
-		}
-		if id == "" {
-			return "", nil, fmt.Errorf("%s: empty", filepath.Join(dir, enrollmentFile))
 		}
 		return id, &fileSigner{key: key, enrollmentID: id}, nil
 	}
@@ -143,27 +179,47 @@ func keyDirSource(dir string) signerSource {
 		if _, _, err := build(ctx); err != nil {
 			return "", err
 		}
-		return dir, nil
+		return keyDirName(), nil
+	}, held: func() (proofSigner, error) {
+		_, signer, err := build(context.Background())
+		return signer, err
 	}}
+}
+
+// readEnrollment is the enrollment id the enrollment file at path holds, which every refusal names
+// as file (the key dir's or the machine cache's) and never by its path: a file it cannot read
+// prints the system's reason alone (redact.File), and one that holds no id says so.
+func readEnrollment(path, file string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", file, redact.File(err))
+	}
+	id := strings.TrimSpace(string(data))
+	if id == "" {
+		return "", fmt.Errorf("%s is empty", file)
+	}
+	return id, nil
 }
 
 // signInSource is the sign-in of the person this process acts for (signInSigner).
 func signInSource() signerSource {
 	noSignIn := func() error {
-		return absent("nobody has signed in on this machine with `%s` (%s)", brokerclient.SignInCommand, brokerclient.SignIns(homeGetenv).Dir)
+		return absent("nobody has signed in on this machine with `%s` (%s holds no sign-in)", brokerclient.SignInCommand, brokerclient.SignInStoreName)
 	}
+	build := func(context.Context) (string, Signer, error) {
+		signer, err := signInSigner()
+		if err != nil {
+			return "", nil, err
+		}
+		if signer == nil {
+			return "", nil, noSignIn()
+		}
+		return signer.enrollmentID, signer, nil
+	}
+
 	return signerSource{
-		name: "sign-in",
-		build: func(context.Context) (string, Signer, error) {
-			signer, err := signInSigner()
-			if err != nil {
-				return "", nil, err
-			}
-			if signer == nil {
-				return "", nil, noSignIn()
-			}
-			return signer.enrollmentID, signer, nil
-		},
+		name:  "sign-in",
+		build: build,
 		describe: func(context.Context) (string, error) {
 			store := brokerclient.SignIns(homeGetenv)
 			records, err := store.List()
@@ -181,6 +237,10 @@ func signInSource() signerSource {
 				return "", err
 			}
 			return record.Person, nil
+		},
+		held: func() (proofSigner, error) {
+			_, signer, err := build(context.Background())
+			return signer, err
 		},
 	}
 }
@@ -213,16 +273,22 @@ func helperSource() signerSource {
 			return "", helperFailure(answer.sock, helperRefusal(answer.resp), true)
 		}
 	}
+	build := func(context.Context) (string, Signer, error) {
+		sock, err := find()
+		if err != nil {
+			return "", nil, err
+		}
+		return "", &helperSigner{sock: sock}, nil
+	}
+
 	return signerSource{
-		name: "helper",
-		build: func(context.Context) (string, Signer, error) {
-			sock, err := find()
-			if err != nil {
-				return "", nil, err
-			}
-			return "", &helperSigner{sock: sock}, nil
-		},
+		name:     "helper",
+		build:    build,
 		describe: func(context.Context) (string, error) { return find() },
+		held: func() (proofSigner, error) {
+			_, signer, err := build(context.Background())
+			return signer, err
+		},
 	}
 }
 
@@ -248,7 +314,7 @@ func machineChainSource() signerSource {
 				return "", err
 			}
 			if cached != nil {
-				return "the cached enrollment in " + machineCacheDir(), nil
+				return "the cached enrollment in " + machineCacheName, nil
 			}
 			identity, skipped, err := machineSource(ctx, false)
 			if err != nil {
@@ -258,6 +324,13 @@ func machineChainSource() signerSource {
 				return "", absent("%s", joinSkipped(skipped))
 			}
 			return identity.Describe(), nil
+		},
+		held: func() (proofSigner, error) {
+			signer, err := readMachineCacheNow()
+			if err != nil {
+				return nil, err
+			}
+			return signer, nil
 		},
 	}
 }

@@ -95,6 +95,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -144,9 +145,9 @@ var commands = []command{
 	{"machine login-status", "agent-secrets machine login-status",
 		"Print \"issued\" and exit 0 while this machine's helper holds a launcher credential; otherwise\nprint the last login's state and exit 1."},
 	{"machine list", "agent-secrets machine list [--json]",
-		"List your own machines' logins that can still reach a secret, under this machine's login:\neach one's id, host, who approved it, when it was issued and expires, and whether it has\nexpired with sessions still running. Dispatch's machine-login page lists the same, and every\nservice's login beside them."},
+		"List your own machines' logins, and the logins of your pods (pods whose Kubernetes account the\nbroker's BROKER_POD_OPERATORS maps to you), that can still reach a secret, under this machine's\nlogin: each one's id, host, who approved it, when it was issued and expires, and whether it\nhas expired with sessions still running. Dispatch's machine-login page lists the same, and\nevery service's login beside them."},
 	{"machine revoke", "agent-secrets machine revoke <credential_id>",
-		"End one of your own machines' logins under this machine's login, as Dispatch's machine-login\npage does: it enrolls nothing more, and every session it enrolled ends. Revoking this\nmachine's own login ends this machine's broker access too."},
+		"End one of your own machines' logins, or a login of one of your pods, under this machine's\nlogin, as Dispatch's machine-login page does: it enrolls nothing more, and every session it\nenrolled ends. Revoking this machine's own login ends this machine's broker access too."},
 	{"grant list", "agent-secrets grant list [--json]",
 		"List the live grants of your sessions and those you approved, under this machine's login:\neach one's id, secrets, how it was granted, who approved it, who decided it (the model judge\nfor a grant it approved), its session and operator, and when it expires. Dispatch's Live\ngrants page lists the same."},
 	{"grant revoke", "agent-secrets grant revoke <grant_id>",
@@ -391,7 +392,9 @@ func cmdGroup(group string, args []string, stdout, stderr io.Writer) int {
 	case "grant revoke":
 		return cmdGrantRevoke(args[1:], stdout, stderr)
 	}
-	fmt.Fprintf(stderr, "agent-secrets %s: unknown form %q; the forms are %s\n", group, args[0], strings.Join(verbs, ", "))
+	// The argument is not printed: a word that is no form is where a credential pasted in the
+	// wrong place lands.
+	fmt.Fprintf(stderr, "agent-secrets %s: unknown form (not printed); the forms are %s\n", group, strings.Join(verbs, ", "))
 	return exitUsageError
 }
 
@@ -403,10 +406,12 @@ func writeCommandHelp(w io.Writer, c command) {
 // newFlagSet is the flag set of the form named name: its errors and its -h go to stderr, and -h
 // prints the form's synopsis and summary, then its flags when it defines any. A form with no
 // flags parses its arguments with it too, so its -h answers as every other form's does and any
-// flag is a usage error.
-func newFlagSet(name string, stderr io.Writer) *flag.FlagSet {
+// flag is a usage error. A failure names the flag and never the value (flagSet.Parse). No flag
+// takes a default from AGENT_SECRETS_KEY_DIR, which PrintDefaults would print: keygen and enroll
+// read it after Parse where --out is not given.
+func newFlagSet(name string, stderr io.Writer) *flagSet {
 	c := lookupCommand(name)
-	flags := flag.NewFlagSet(strings.TrimSpace("agent-secrets "+name), flag.ContinueOnError)
+	flags := &flagSet{flag.NewFlagSet(strings.TrimSpace("agent-secrets "+name), flag.ContinueOnError)}
 	flags.SetOutput(stderr)
 	flags.Usage = func() {
 		writeCommandHelp(flags.Output(), c)
@@ -420,6 +425,77 @@ func newFlagSet(name string, stderr io.Writer) *flag.FlagSet {
 	return flags
 }
 
+// flagSet is a form's flag set (newFlagSet): a flag.FlagSet whose Parse says a failure in words
+// of its own. Go's flag package quotes the value that did not parse ("invalid value %q for flag
+// -%s"), the argument whose syntax did not ("bad flag syntax: %s") and the argument it took for a
+// flag it does not define ("flag provided but not defined: -%s"), in the line it prints and the
+// error it answers: a URL flag's value can carry a credential, and an argument that starts with
+// '-' can be a token pasted in the wrong place.
+type flagSet struct{ *flag.FlagSet }
+
+// Parse parses arguments as flag.FlagSet.Parse does, except that a failure prints and answers
+// fixed text: "invalid value for flag -<name>" (or "invalid boolean value for flag -<name>") for
+// a value the flag refused, "bad flag syntax: a flag that does not parse" for an argument whose
+// syntax does not, "an argument that is not a flag of this form (not printed)" for one that names
+// no flag the form defines, and Go's own words only for a flag given no value, which names a flag
+// the form defines. The form's usage, which lists the flags it takes, follows each on the flag
+// set's output, and -h prints the usage and answers flag.ErrHelp, as before. While Go's parse runs
+// its output is discarded, and each flag's value records whether it refused its text
+// (parsingValue).
+func (f *flagSet) Parse(arguments []string) error {
+	var refused *flag.Flag
+	f.VisitAll(func(named *flag.Flag) { named.Value = parsingValue{named.Value, named, &refused} })
+	out := f.Output()
+	f.SetOutput(io.Discard)
+	err := f.FlagSet.Parse(arguments)
+	f.SetOutput(out)
+	f.VisitAll(func(named *flag.Flag) { named.Value = named.Value.(parsingValue).Value })
+	switch text := fmt.Sprint(err); {
+	case err == nil:
+		return nil
+	case errors.Is(err, flag.ErrHelp):
+		f.Usage()
+		return err
+	case refused != nil && isBoolFlag(refused.Value):
+		err = fmt.Errorf("invalid boolean value for flag -%s", refused.Name)
+	case refused != nil:
+		err = fmt.Errorf("invalid value for flag -%s", refused.Name)
+	case strings.HasPrefix(text, "flag provided but not defined: -"):
+		err = errors.New("an argument that is not a flag of this form (not printed)")
+	case !strings.HasPrefix(text, "flag needs an argument: -"):
+		err = errors.New("bad flag syntax: a flag that does not parse")
+	}
+	fmt.Fprintln(out, err)
+	f.Usage()
+	return err
+}
+
+// parsingValue is a flag's Value while flagSet.Parse runs: it sets as the value it wraps does, and
+// records named in refused where that value refuses its text, so Parse names the flag without it.
+type parsingValue struct {
+	flag.Value
+	named   *flag.Flag
+	refused **flag.Flag
+}
+
+func (v parsingValue) Set(text string) error {
+	err := v.Value.Set(text)
+	if err != nil {
+		*v.refused = v.named
+	}
+	return err
+}
+
+// IsBoolFlag is the wrapped value's, so a boolean flag still takes no argument.
+func (v parsingValue) IsBoolFlag() bool { return isBoolFlag(v.Value) }
+
+// isBoolFlag reports whether value is a boolean flag's, which Go's flag package sets with no
+// argument.
+func isBoolFlag(value flag.Value) bool {
+	b, ok := value.(interface{ IsBoolFlag() bool })
+	return ok && b.IsBoolFlag()
+}
+
 func exitUsage(err error) int {
 	if errors.Is(err, flag.ErrHelp) {
 		return 0
@@ -429,7 +505,7 @@ func exitUsage(err error) int {
 
 // flagGiven reports whether flags' command line gave the flag name, so a flag given an empty or
 // zero value is told apart from one not given.
-func flagGiven(flags *flag.FlagSet, name string) bool {
+func flagGiven(flags *flagSet, name string) bool {
 	given := false
 	flags.Visit(func(f *flag.Flag) { given = given || f.Name == name })
 	return given
@@ -446,6 +522,10 @@ func reportError(stderr io.Writer, prefix string, err error) {
 	}
 	fmt.Fprintf(stderr, "%s: %v\n", prefix, err)
 }
+
+// unexpectedArgument is how a form refuses an argument it does not take (refuseUnexpectedArgument):
+// without the argument, which is where a credential pasted in the wrong place lands.
+const unexpectedArgument = "unexpected argument (not printed: an argument this form does not take may be a credential pasted in the wrong place)"
 
 // refuse prints a command's refusal together with where this CLI looked for the secret
 // (source.go): reportError's line with the source named, so a refusal of this CLI's can never be
@@ -517,16 +597,20 @@ func encodeKeyPEM(key *ecdsa.PrivateKey) ([]byte, error) {
 	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil
 }
 
-func loadKey(path string) (*ecdsa.PrivateKey, error) {
+// loadKey is the session key the key.pem at path holds, which every refusal names as file
+// (outKeyFile, keyDirFile(keyFile), machineCacheKeyFile) and never by its path: a file it cannot
+// read prints the system's reason alone (redact.File), and content that is no key prints
+// parseKeyPEM's fixed text.
+func loadKey(path, file string) (*ecdsa.PrivateKey, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
+		return nil, fmt.Errorf("read %s: %w", file, redact.File(err))
 	}
-	return parseKeyPEM(data, path)
+	return parseKeyPEM(data, file)
 }
 
-// parseKeyPEM is a session key as its PKCS#8 PEM bytes hold it, named for the refusal: a key dir's
-// key.pem, or the box key inside a person's sign-in record (brokerclient.SignInRecord).
+// parseKeyPEM is a session key as its PKCS#8 PEM bytes hold it, named for the refusal as name
+// names it. Each refusal is fixed text: the PKCS#8 parser's words describe the key's bytes.
 func parseKeyPEM(data []byte, name string) (*ecdsa.PrivateKey, error) {
 	block, _ := pem.Decode(data)
 	if block == nil {
@@ -534,7 +618,7 @@ func parseKeyPEM(data []byte, name string) (*ecdsa.PrivateKey, error) {
 	}
 	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", name, err)
+		return nil, fmt.Errorf("%s: not a PKCS#8 private key", name)
 	}
 	key, ok := parsed.(*ecdsa.PrivateKey)
 	if !ok {
@@ -562,7 +646,7 @@ func buildSigner() (enrollmentID string, signer Signer, err error) {
 	gaveUp := awaitEnrollment(dir, wait)
 	enrollmentID, signer, err = selectSigner(dir)
 	if err != nil && gaveUp {
-		err = fmt.Errorf("%w (waited %s while %s was there)", err, wait, filepath.Join(dir, pendingMarker))
+		err = fmt.Errorf("%w (waited %s while %s held %s)", err, wait, keyDirName(), pendingMarker)
 	}
 	return enrollmentID, signer, err
 }
@@ -652,6 +736,11 @@ func writeVerbatim(w io.Writer, raw []byte) {
 	w.Write(raw)
 }
 
+// jsonFlag is --json's usage line wherever a form prints the broker's answer: the body as the
+// broker wrote it, every field, where the form's own lines print each value as the broker's
+// address lets its answer print (brokeraddr.Address.Words). The flag asks for the body by name.
+const jsonFlag = "print the broker's response body verbatim: every field as the broker wrote it, none withheld, even beside an AGENT_SECRETS_URL that is not a plain http(s) URL"
+
 // nextBackoff advances the backoff the poll loops of this package keep: two seconds, doubling
 // to a ten-second cap. `machine login` sleeps it between reads of its helper; the exec form's
 // wait sleeps it only after a read the broker did not hold (a broker from before ?wait=, or a
@@ -669,13 +758,18 @@ func nextBackoff(cur time.Duration) time.Duration {
 func cmdKeygen(args []string, stdout, stderr io.Writer) int {
 	flagArgs, positional := splitArgs(args, map[string]bool{"out": true})
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets keygen: unexpected argument %q\n", positional[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, "keygen")
 	}
 	flags := newFlagSet("keygen", stderr)
-	out := flags.String("out", os.Getenv("AGENT_SECRETS_KEY_DIR"), "directory to write key.pem into")
+	// --out's default, AGENT_SECRETS_KEY_DIR, is read after Parse rather than given to the flag,
+	// as enroll's is: PrintDefaults, which -h and every usage error print, would print it, and it
+	// is the directory of key.pem, a file that holds a credential.
+	out := flags.String("out", "", "directory to write key.pem into; AGENT_SECRETS_KEY_DIR when not given")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
+	}
+	if !flagGiven(flags, "out") {
+		*out = os.Getenv("AGENT_SECRETS_KEY_DIR")
 	}
 	if *out == "" {
 		fmt.Fprintln(stderr, "agent-secrets keygen: --out (or AGENT_SECRETS_KEY_DIR) is required")
@@ -691,12 +785,14 @@ func cmdKeygen(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agent-secrets keygen: %v\n", err)
 		return 1
 	}
+	// The directory and the key are named by the flag and the variable, never by their path
+	// (outDir, outKeyFile): key.pem holds the session key.
 	if err := os.MkdirAll(*out, 0o700); err != nil {
-		fmt.Fprintf(stderr, "agent-secrets keygen: %v\n", err)
+		fmt.Fprintf(stderr, "agent-secrets keygen: make %s: %v\n", outDir, redact.File(err))
 		return 1
 	}
 	if err := writeFileAtomic(filepath.Join(*out, keyFile), pemBytes, 0o600); err != nil {
-		fmt.Fprintf(stderr, "agent-secrets keygen: %v\n", err)
+		fmt.Fprintf(stderr, "agent-secrets keygen: write %s: %v\n", outKeyFile, redact.File(err))
 		return 1
 	}
 	thumb, err := proof.Thumbprint(&key.PublicKey)
@@ -826,7 +922,7 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 	flags := newFlagSet("request", stderr)
 	reason := flags.String("reason", "", "why these secrets are needed; necessary where a person approves")
 	ttlFlagValue := flags.Duration("ttl", 0, ttlFlag)
-	asJSON := flags.Bool("json", false, "print the response body verbatim")
+	asJSON := flags.Bool("json", false, jsonFlag)
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -859,12 +955,16 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 	if *asJSON {
 		writeVerbatim(stdout, raw)
 	} else {
-		// Every value on these lines is the broker's, so each prints on one line
-		// (redact.OneLine), as every broker-answer value this CLI prints does.
-		fmt.Fprintf(stdout, "request_id: %s\nstate: %s\nsource: %s\n", redact.OneLine(result.RequestID), redact.OneLine(result.State), c.source(ctx))
-		printDetail(stdout, result.Detail)
+		// Every value on these lines is the broker's, so each prints as the broker's address
+		// lets its answer print (brokeraddr.Address.Words): on one line beside a clean address,
+		// and not at all beside one that carries a credential, which whoever answers there can
+		// repeat in any value. It was redact.OneLine alone until the values beside a
+		// credentialed address were found to print whole; --json still prints the body as it
+		// came, since it is asked for by name.
+		fmt.Fprintf(stdout, "request_id: %s\nstate: %s\nsource: %s\n", idWords(c.baseURL, result.RequestID), c.baseURL.Words(result.State), c.source(ctx))
+		printDetail(stdout, c.baseURL, result.Detail)
 		if result.State == "pending" {
-			fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL, result.JudgeDeciding))
+			fmt.Fprintln(stdout, waitingOn(c.baseURL, result.Approver, result.ApproveURL, result.JudgeDeciding))
 		}
 	}
 	switch result.State {
@@ -884,7 +984,7 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	flagArgs, positional := splitArgs(args, nil)
 	flags := newFlagSet("status", stderr)
-	asJSON := flags.Bool("json", false, "print the response body verbatim")
+	asJSON := flags.Bool("json", false, jsonFlag)
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -907,17 +1007,17 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 		writeVerbatim(stdout, raw)
 		return 0
 	}
-	fmt.Fprintf(stdout, "state: %s\nsource: %s\n", redact.OneLine(result.State), c.source(ctx))
+	fmt.Fprintf(stdout, "state: %s\nsource: %s\n", c.baseURL.Words(result.State), c.source(ctx))
 	if result.State == "pending" {
-		fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL, result.JudgeDeciding))
+		fmt.Fprintln(stdout, waitingOn(c.baseURL, result.Approver, result.ApproveURL, result.JudgeDeciding))
 	}
 	if result.GrantID != nil {
-		fmt.Fprintf(stdout, "grant_id: %s\n", redact.OneLine(*result.GrantID))
+		fmt.Fprintf(stdout, "grant_id: %s\n", idWords(c.baseURL, *result.GrantID))
 	}
 	if result.Decision != nil {
-		fmt.Fprintf(stdout, "decided_by: %s\n", redact.OneLine(result.Decision.By))
+		fmt.Fprintf(stdout, "decided_by: %s\n", c.baseURL.Words(result.Decision.By))
 	}
-	printDetail(stdout, result.Detail)
+	printDetail(stdout, c.baseURL, result.Detail)
 	return 0
 }
 
@@ -996,11 +1096,10 @@ func revokeAsSession(grantID string) (c *client, failed, err error) {
 func cmdSelf(name string, args []string, stdout, stderr io.Writer) int {
 	flagArgs, positional := splitArgs(args, nil)
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets %s: unexpected argument %q\n", name, positional[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, name)
 	}
 	flags := newFlagSet(name, stderr)
-	asJSON := flags.Bool("json", false, "print the response body verbatim")
+	asJSON := flags.Bool("json", false, jsonFlag)
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -1023,14 +1122,15 @@ func cmdSelf(name string, args []string, stdout, stderr io.Writer) int {
 	if result.Operator != nil {
 		operator = *result.Operator
 	}
+	words := c.baseURL.Words
 	fmt.Fprintf(stdout, "enrollment_id: %s\nkind: %s\noperator: %s\nlease_expires_at: %s\nsource: %s\n",
-		redact.OneLine(result.EnrollmentID), redact.OneLine(result.Kind), redact.OneLine(operator), result.LeaseExpiresAt.Format(time.RFC3339), c.source(ctx))
+		idWords(c.baseURL, result.EnrollmentID), words(result.Kind), words(operator), result.LeaseExpiresAt.Format(time.RFC3339), c.source(ctx))
 	for _, g := range result.Grants {
 		if g.ExpiresAt == nil {
-			fmt.Fprintf(stdout, "grant: %s (request %s, until this session ends)\n", redact.OneLine(g.GrantID), redact.OneLine(g.RequestID))
+			fmt.Fprintf(stdout, "grant: %s (request %s, until this session ends)\n", idWords(c.baseURL, g.GrantID), idWords(c.baseURL, g.RequestID))
 			continue
 		}
-		fmt.Fprintf(stdout, "grant: %s (request %s, expires %s)\n", redact.OneLine(g.GrantID), redact.OneLine(g.RequestID), g.ExpiresAt.Format(time.RFC3339))
+		fmt.Fprintf(stdout, "grant: %s (request %s, expires %s)\n", idWords(c.baseURL, g.GrantID), idWords(c.baseURL, g.RequestID), g.ExpiresAt.Format(time.RFC3339))
 	}
 	return 0
 }
@@ -1074,7 +1174,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		githubRepos = append(githubRepos, name)
 		return nil
 	})
-	githubReadOnly := flags.Bool("github-read-only", false, "narrow the GitHub App token further, to contents: read, metadata: read, pull_requests: read and actions: read")
+	githubReadOnly := flags.Bool("github-read-only", false, "narrow the GitHub App token further, to contents, metadata, pull_requests, actions, checks and statuses, each at read (the last three where the App's installation holds them)")
 	githubToken := flags.Bool("github-token", false, "hand over each GitHub App token alone, in place of the JSON object of installations the release carries: the form a command that sends the token to GitHub needs, and it needs --github-owner")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
@@ -1122,16 +1222,17 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	}
 
 	state, grantID, requestID, detail := result.State, result.GrantID, result.RequestID, result.Detail
-	// shownID is the request's id as the lines below print it: the broker's, so on one line
-	// (redact.OneLine). requestID itself is what the polls ask after.
-	shownID := redact.OneLine(requestID)
+	// shownID is the request's id as the lines below print it: the broker's, so as its address
+	// lets its answer print, and beside an address that does not, whole where it has the broker's
+	// id shape (idWords). requestID itself is what the polls ask after.
+	shownID := idWords(c.baseURL, requestID)
 	// pollErr is the last status poll's failure while the polls fail in a way a retry can cure
 	// (retryable), and nil once one reads the request again. Such a poll does not end the wait:
 	// the approver may still decide before --wait runs out, and a grant this command has stopped
 	// waiting for is one nothing collects.
 	var pollErr error
 	if state == "pending" {
-		reportPending(stderr, requestID, result.Approver, result.ApproveURL, result.JudgeDeciding, *wait, src())
+		reportPending(stderr, c.baseURL, shownID, result.Approver, result.ApproveURL, result.JudgeDeciding, *wait, src())
 		judging := result.JudgeDeciding
 		deadline := time.Now().Add(*wait)
 		// backoff is the sleep before the next read after one that came back undecided before
@@ -1159,7 +1260,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 				// The judge held the request and has given it up: it is its person's now, and the
 				// agent is told who that is and where they decide it, once.
 				if judging && !status.JudgeDeciding && state == "pending" {
-					fmt.Fprintf(stderr, "agent-secrets: the model judge could not decide it; %s\n", waitingOn(status.Approver, status.ApproveURL, false))
+					fmt.Fprintf(stderr, "agent-secrets: the model judge could not decide it; %s\n", waitingOn(c.baseURL, status.Approver, status.ApproveURL, false))
 					judging = false
 				}
 			case retryable(err):
@@ -1182,19 +1283,19 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	case "granted":
 	case "pending":
 		if pollErr != nil {
-			fmt.Fprintf(stderr, "agent-secrets: the wait for request %s to %s ran out while its status could not be read: %v; nothing was run. Check it with: agent-secrets status %s\n", shownID, src(), pollErr, shownID)
+			fmt.Fprintf(stderr, "agent-secrets: the wait for request %s to %s ran out while its status could not be read: %v; nothing was run. %s\n", shownID, src(), pollErr, statusHint(c.baseURL, requestID))
 			return exitPending
 		}
-		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is still waiting for approval; nothing was run. Check it with: agent-secrets status %s\n", shownID, src(), shownID)
+		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is still waiting for approval; nothing was run. %s\n", shownID, src(), statusHint(c.baseURL, requestID))
 		return exitPending
 	case "denied":
-		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was denied%s\n", shownID, src(), deniedBecause(detail))
+		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was denied%s\n", shownID, src(), deniedBecause(c.baseURL, detail))
 		return exitDenied
 	case "cancelled", "expired":
 		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was %s\n", shownID, src(), state)
 		return 1
 	default:
-		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is in unexpected state %q\n", shownID, src(), state)
+		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is in unexpected state %s\n", shownID, src(), c.baseURL.Words(strconv.Quote(state)))
 		return 1
 	}
 	if grantID == nil {
@@ -1271,75 +1372,6 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0 // unreachable: syscall.Exec replaces this process on success
-}
-
-// reportPending says, once, before the exec form's wait, who decides the request — a person, or
-// the model judge while it holds the request — where the secrets it would inject come from (src),
-// and on which page of the broker a person decides it when its answer names one (waitingOn).
-func reportPending(stderr io.Writer, requestID string, approver *string, brokerPage string, judging bool, wait time.Duration, src source) {
-	fmt.Fprintf(stderr, "agent-secrets: request %s to %s is waiting for approval; waiting up to %s\n", redact.OneLine(requestID), src, wait)
-	fmt.Fprintf(stderr, "agent-secrets: %s\n", waitingOn(approver, brokerPage, judging))
-}
-
-// waitingOn is the sentence that says whom a pending request waits on and where they decide it:
-// the approver its credential record names (a person's login, or anyone signed in for a shared
-// secret), and the page where that person decides it. That page is brokerPage, the record's page
-// on the secrets broker, which the broker's answer carries as approve_url. It is the one place a
-// line of this command names the broker's own host, and it names it because a person must open
-// that page: the host is the one AGENT_SECRETS_URL already names, and no other line says where an
-// answer came from (source_test.go's TestNoSessionLineNamesAHostOrAStoreID). The approver alone
-// chooses the wording, so one switch writes all three sentences and the page is the suffix that
-// switch appends: a broker from before that page carries none, the suffix is empty, and the same
-// sentence names the approver alone, with no page - the request waits on the same person, who
-// opens the broker themselves. The broker names an approver for every pending request; one from
-// before it did names none, and the sentence says so rather than guessing. The page is the
-// broker's, so it prints on one line (redact.OneLine): as it came, or Go-quoted where a control
-// character in it would start a line of its own.
-//
-// A request the model judge holds (judging, the answer's judge_deciding) carries no page: its
-// keys are ones the judge decides, so the sentence says the judge is deciding it and that nobody
-// is asked, and never that its approver must approve it. If the judge cannot decide it, a later
-// answer carries the page, and the exec form says so.
-func waitingOn(approver *string, brokerPage string, judging bool) string {
-	if judging {
-		return "the model judge is deciding it; nobody is asked to approve it unless the judge cannot decide it"
-	}
-	where := ""
-	if brokerPage != "" {
-		where = ": " + redact.OneLine(brokerPage)
-	}
-	switch {
-	case approver == nil:
-		return "waiting for approval on the secrets broker" + where + "; the broker does not say whose"
-	case *approver == record.AnyoneApprover:
-		return "waiting for anyone signed in to the secrets broker to approve it" + where
-	default:
-		return "waiting for " + redact.OneLine(*approver) + " to approve it on the secrets broker" + where
-	}
-}
-
-// deniedBecause is what the exec form's denied line adds to name why: ": " and the broker's own
-// sentence about the refusal (RequestResult.Detail), which names the secret that refused the
-// request and the rule that did, as ": GCLOUD_DEMO: requester-not-listed". An agent reading that
-// line on stderr then knows which secret it may not have and that asking again will not help,
-// rather than only that something was denied. A broker that recorded no detail, and one from
-// before the field, adds nothing, so such a denial reads exactly as it always has.
-func deniedBecause(detail *string) string {
-	if detail == nil {
-		return ""
-	}
-	return ": " + redact.OneLine(*detail)
-}
-
-// printDetail writes the broker's own sentence about a request, the one the request row keeps as
-// its decision_detail, as the "detail: <text>" line the request and status forms both end with.
-// A broker that recorded none, and one from before the field, writes no line at all, so such an
-// answer reads exactly as it always has.
-func printDetail(stdout io.Writer, detail *string) {
-	if detail == nil {
-		return
-	}
-	fmt.Fprintf(stdout, "detail: %s\n", redact.OneLine(*detail))
 }
 
 // sessionIdentityVars are the AGENT_SECRETS_* variables the exec form's child keeps: the broker's

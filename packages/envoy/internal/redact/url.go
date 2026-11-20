@@ -51,6 +51,8 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/tlsalert"
 )
 
 // NotPrinted stands in for a value URL will not print.
@@ -561,6 +563,18 @@ type classified struct {
 func (c *classified) Error() string { return c.text }
 func (c *classified) Unwrap() error { return c.err }
 
+// The words class names a failure by, which Class prints and which a caller that classifies a
+// failure redact cannot see into - one gRPC hands the client only as text - names the same failure
+// by, so one failure has one set of words wherever it prints.
+const (
+	ClassNotAURL        = "not a valid URL"
+	ClassNameResolution = "name resolution failed"
+	ClassRefused        = "connection refused"
+	ClassTimedOut       = "timed out"
+	ClassTLS            = "TLS failed"
+	ClassRequestFailed  = "the request failed"
+)
+
 // class names the kind of failure err is, in fixed text; server is who answered an HTTP status,
 // "the broker" for Error and Cause and "the server" for Class. A failure Error, Cause, Class,
 // Masked or File already put in words (a classified) keeps those words: they name the server that
@@ -576,25 +590,32 @@ func class(err error, server string) string {
 	case errors.As(err, &worded):
 		return worded.text
 	case errors.As(err, &ue) && ue.Op == "parse":
-		return "not a valid URL"
+		return ClassNotAURL
 	case errors.As(err, &dns):
-		return "name resolution failed"
+		return ClassNameResolution
 	case errors.Is(err, syscall.ECONNREFUSED):
-		return "connection refused"
+		return ClassRefused
 	case errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout():
-		return "timed out"
+		return ClassTimedOut
 	case tlsFailure(err):
-		return "TLS failed"
+		return ClassTLS
 	case errors.As(err, &re) && re.Response != nil:
 		return fmt.Sprintf("%s answered HTTP %d", server, re.Response.StatusCode)
 	default:
-		return "the request failed"
+		return ClassRequestFailed
 	}
 }
 
-// tlsFailure reports whether err, or an error it wraps, is a TLS record, alert or certificate
-// failure (tlsError).
+// tlsFailure reports whether err, or an error it wraps, is a TLS alert, the far side's or this
+// side's own (tlsalert.In, which reads the *net.OpError crypto/tls returns one as over TCP, and
+// QUIC's tls.AlertError), or a TLS record or certificate failure (tlsRecordOrCertificate).
 func tlsFailure(err error) bool {
+	return tlsalert.In(err) || tlsRecordOrCertificate(err)
+}
+
+// tlsRecordOrCertificate reports whether err, or an error it wraps, is a TLS record or
+// certificate failure (tlsError).
+func tlsRecordOrCertificate(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -603,10 +624,10 @@ func tlsFailure(err error) bool {
 	}
 	switch u := err.(type) {
 	case interface{ Unwrap() error }:
-		return tlsFailure(u.Unwrap())
+		return tlsRecordOrCertificate(u.Unwrap())
 	case interface{ Unwrap() []error }:
 		for _, e := range u.Unwrap() {
-			if tlsFailure(e) {
+			if tlsRecordOrCertificate(e) {
 				return true
 			}
 		}
@@ -614,11 +635,11 @@ func tlsFailure(err error) bool {
 	return false
 }
 
-// tlsError reports whether err itself, not an error it wraps, is a TLS record, alert or
-// certificate failure.
+// tlsError reports whether err itself, not an error it wraps, is a TLS record or certificate
+// failure.
 func tlsError(err error) bool {
 	switch err.(type) {
-	case tls.RecordHeaderError, tls.AlertError, *tls.CertificateVerificationError,
+	case tls.RecordHeaderError, *tls.CertificateVerificationError,
 		x509.UnknownAuthorityError, x509.HostnameError, x509.CertificateInvalidError:
 		return true
 	}

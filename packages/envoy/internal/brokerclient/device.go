@@ -138,19 +138,22 @@ func withStatusOf(ctx context.Context, answered *statusOf) context.Context {
 }
 
 // statusOf is a transport that records what became of the last request it carried, which is all a
-// refusal may say of an answer whose library error quotes its body: the answer's status, or 0
-// where the request got no answer, so a redirect whose target fails is not read as the redirect;
-// and its body, which records how a read of it failed (readErr), so an answer the client could
-// not read whole is not read as a document it read and refused. One call at a time uses it.
+// refusal may say of an answer whose library error quotes its body: the host it went to, the
+// answer's status, or 0 where the request got no answer, so a redirect whose target fails is not
+// read as the redirect; and its body, which records how a read of it failed (readErr), so an
+// answer the client could not read whole is not read as a document it read and refused, and keeps
+// what was read of it (answer) for redact.Answered, which prints a registered code alone. One call
+// at a time uses it.
 type statusOf struct {
 	base   http.RoundTripper
+	host   string
 	status int
 	body   *readOf
 }
 
 func (s *statusOf) RoundTrip(request *http.Request) (*http.Response, error) {
 	response, err := s.base.RoundTrip(request)
-	s.status, s.body = 0, nil
+	s.host, s.status, s.body = request.URL.Host, 0, nil
 	if err == nil {
 		s.status = response.StatusCode
 		s.body = &readOf{ReadCloser: response.Body}
@@ -168,14 +171,32 @@ func (s *statusOf) readErr() error {
 	return s.body.err
 }
 
-// readOf is an answer's body that keeps the first error other than io.EOF a read of it ends in.
+// answer is what was read of the last answer's body, at most answerKept bytes, for
+// redact.Answered alone: it is the server's text, and prints in no other way.
+func (s *statusOf) answer() []byte {
+	if s.body == nil {
+		return nil
+	}
+	return s.body.kept
+}
+
+// answerKept is how much of an answer's body a statusOf keeps: an error body is short, and a
+// longer one is no refusal redact.Answered reads.
+const answerKept = 64 << 10
+
+// readOf is an answer's body that keeps the first error other than io.EOF a read of it ends in,
+// and the first answerKept bytes read of it.
 type readOf struct {
 	io.ReadCloser
-	err error
+	err  error
+	kept []byte
 }
 
 func (r *readOf) Read(p []byte) (int, error) {
 	n, err := r.ReadCloser.Read(p)
+	if room := answerKept - len(r.kept); room > 0 {
+		r.kept = append(r.kept, p[:min(n, room)]...)
+	}
 	if err != nil && err != io.EOF && r.err == nil {
 		r.err = err
 	}

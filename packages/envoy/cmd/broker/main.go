@@ -456,7 +456,7 @@ func main() {
 	enr := &enroll.Service{
 		Store: st, Lease: lease, Carry: time.Duration(cfg.SessionCarrySeconds) * time.Second, Pod: pod,
 		ServiceLogins: cfg.ServiceLogins, ServicesByAccount: cfg.ServicesByAccount,
-		VMServicesByAccount: cfg.VMServicesByAccount,
+		VMServicesByAccount: cfg.VMServicesByAccount, PodOperators: cfg.PodOperators,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
 	// The broker's one read of Dispatch, where BROKER_JUDGE_DISPATCH_URL names one: the request
@@ -658,7 +658,10 @@ func main() {
 	if discovered.GoogleIdentities != nil {
 		googleCallers = api.GoogleTokens{Verifier: discovered.GoogleIdentities}
 	}
-	api.Register(mux, api.Deps{PublicURL: cfg.PublicURL, RereadRate: rereadRate,
+	// detached counts the rereads the API runs after answering 202, which srv.Shutdown does not
+	// wait for; the stop sequence waits for them (brokerStop.WaitDetached).
+	detached := &api.Detached{}
+	api.Register(mux, api.Deps{PublicURL: cfg.PublicURL, RereadRate: rereadRate, Detached: detached,
 		APIAccounts: cfg.APIAccounts, AccountTokens: pod,
 		PodRegistrars: cfg.PodRegistrars, PodRegistrationTokens: discovered.PodRegistration,
 		GoogleAPIAccounts: cfg.GoogleAPIAccounts, GoogleAccountTokens: googleCallers,
@@ -807,7 +810,7 @@ func main() {
 	}
 	stop(context.Background(), brokerStop{
 		Drain: drain, DrainNow: drainNow, Draining: draining.Store,
-		Shutdown: srv.Shutdown, ShutdownAirlock: airlockShutdown, ShutdownMetrics: metricsServer.Shutdown,
+		Shutdown: srv.Shutdown, WaitDetached: detached.Wait, ShutdownAirlock: airlockShutdown, ShutdownMetrics: metricsServer.Shutdown,
 		EndServing: started.EndServing, CloseStore: st.Close,
 		Log: slog.Default(),
 	})
@@ -1177,18 +1180,18 @@ func airlockCACertificatePEM(ca *airlockproxy.Authority) string {
 // its configuration: the audience and skew every request object is checked against, and, for each
 // service account, the registered service a pod running as it proves, for each Google
 // service account, the one a machine of that fleet proves and the person its exchange entry
-// names, and, for each google-service-account
-// secret, the one account the deployment binds it to and so the only one its release mints a
-// token for. A grant lasts the lifetime its request signed, or until its session ends. rules and
-// caCertificate are the airlock's, read at boot: a name the rules name is released as
-// placeholders, and every such release carries the proxy's URL and this certificate. retry is the
-// one retry policy and process-wide retry budget of the three minters that call an upstream over
-// HTTP (main's is secrets.NewRetry on the process's registry, which broker_mint_attempts_total is
-// counted on), so a GitHub brownout that spends the budget leaves a Google mint's failure
-// unretried too: each holds the one pointer, which typeMinters' copies keep. dispatch is the
-// broker's one read of Dispatch (judgeDispatch), nil where BROKER_JUDGE_DISPATCH_URL is unset;
-// where it is set it also names a Legion pod's issue's assignee, whose Inbox lists that pod's
-// request for a shared secret.
+// names, for each service account BROKER_POD_OPERATORS maps, the person a pod enrolled under its
+// login acts for, and, for each google-service-account secret, the one account the deployment
+// binds it to and so the only one its release mints a token for. A grant lasts the lifetime its
+// request signed, or until its session ends. rules and caCertificate are the airlock's, read at
+// boot: a name the rules name is released as placeholders, and every such release carries the
+// proxy's URL and this certificate. retry is the one retry policy and process-wide retry budget
+// of the three minters that call an upstream over HTTP (main's is secrets.NewRetry on the
+// process's registry, which broker_mint_attempts_total is counted on), so a GitHub brownout that
+// spends the budget leaves a Google mint's failure unretried too: each holds the one pointer,
+// which typeMinters' copies keep. dispatch is the broker's one read of Dispatch (judgeDispatch),
+// nil where BROKER_JUDGE_DISPATCH_URL is unset; where it is set it also names a Legion pod's
+// issue's assignee, whose Inbox lists that pod's request for a shared secret.
 func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, retry *secrets.Retry, dispatch *judge.Dispatch) *requests.Machine {
 	githubApp := secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry}
 	m := &requests.Machine{
@@ -1196,6 +1199,7 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
 		ServicesByAccount:   cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount,
+		PodOperators:        cfg.PodOperators,
 		VMPersonsByAccount:  vmPersonsByAccount(cfg.ExchangeGoogleAccounts),
 		// The two types whose minter calls an endpoint of its own carry the local stack's
 		// stand-in endpoints when it named them, and the real ones otherwise: a minter left

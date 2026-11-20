@@ -7,6 +7,7 @@ import (
 	"errors"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -259,8 +260,10 @@ func TestSecretCreateRefusesBadAdminAndScopes(t *testing.T) {
 	for _, tc := range []struct {
 		flag, value, want string
 	}{
-		{"--admin", "yes", `--admin is true, not "yes"`},
-		{"--admin", "none", `--admin is true, not "none"`},
+		// The refused value is not printed (valueNotPrinted): a flag's value is where a pasted
+		// credential lands.
+		{"--admin", "yes", "--admin is true (the value is not printed)"},
+		{"--admin", "none", "--admin is true (the value is not printed)"},
 		{"--scopes", "cloud-platform,bigquery", "--scopes: scopes separates its names with spaces, not commas"},
 		{"--scopes", "https://www.googleapis.com/auth/cloud-platform", "--scopes: scopes names the part of a Google scope"},
 		{"--scopes", "Cloud-Platform", "--scopes: scopes names the part of a Google scope"},
@@ -268,7 +271,7 @@ func TestSecretCreateRefusesBadAdminAndScopes(t *testing.T) {
 		useStdin(t, "stored-value")
 		args := append(slices.Clone(base), tc.flag, tc.value)
 		_, stderr, code := runSecret(args...)
-		if code != exitUsageError || !strings.Contains(stderr, tc.want) {
+		if code != exitUsageError || !strings.Contains(stderr, tc.want) || strings.Contains(stderr, strconv.Quote(tc.value)) {
 			t.Errorf("%s %q: exit %d stderr %q; want a usage error naming %q", tc.flag, tc.value, code, stderr, tc.want)
 		}
 	}

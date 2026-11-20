@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"slices"
 
-	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/machine"
@@ -177,28 +176,6 @@ func accountAuth(needs power, h func(*server, http.ResponseWriter, *http.Request
 	}}
 }
 
-// accountAuthAfterRecordKind is a route whose handler authenticates its own caller, because what
-// it may answer is settled before any credential is read: the two decide routes read the record's
-// kind first and refuse a secret request 403 DECIDE_ON_BROKER_PAGE naming the broker's own page,
-// to every caller, token or none. Register checks nothing for such a row; the handler spends the
-// account class's per-address bucket and then authenticates a machine login's decision exactly as
-// accountAuth does (decideRecord), so one is still decided only on a listed service's
-// ServiceAccount token.
-//
-// The row declares the power that caller must hold all the same, and the handler is given it:
-// authenticate cannot check it here, since it is the handler that reads the caller, so the check
-// is decideRecord's, against the same accountPowers and with the same 403 ACCOUNT_LACKS_POWER as
-// every other row of that authority. Until the handler notes the listed caller it found, the
-// answer's record names the caller unauthenticated, as tokenLogin's does before its token
-// verifies, and never public: authenticate reads no credential for the route, but its handler
-// does.
-func accountAuthAfterRecordKind(needs power, h func(*server, http.ResponseWriter, *http.Request, power)) routeHandler {
-	return routeHandler{auth: authNone, power: needs, serve: func(s *server, w http.ResponseWriter, r *http.Request, _ caller) {
-		answer.FromContext(r.Context()).NoteCaller(answer.CallerUnauthenticated, "")
-		h(s, w, r, needs)
-	}}
-}
-
 // serviceAuth is a route for a service calling the broker with its own Kubernetes ServiceAccount
 // token, the account BROKER_SERVICE_LOGINS lets log in as that service — a deployment's Legion
 // daemon, which registers the pods it starts and releases the session names it registered. The
@@ -209,6 +186,10 @@ func accountAuthAfterRecordKind(needs power, h func(*server, http.ResponseWriter
 // BROKER_SERVICE_LOGINS may name an account BROKER_SERVICES binds to a service: every pod of such
 // an account logs that service in, so a caller here may be the very pod a request names, and the
 // account and the pod uid are what tell the two apart.
+//
+// An account that BROKER_POD_OPERATORS maps to a person is refused, 403 PERSON_ACCOUNT
+// (serviceCaller), for a token bound to a pod and for a token bound to no pod. A person's pod
+// calls no route of this class.
 //
 // It is a class of its own rather than a power of accountAuth's because the two lists are two
 // authorities: BROKER_API_ACCOUNTS names the callers that relay a person's decisions and read
@@ -350,17 +331,18 @@ func routes() []apiRoute {
 		{http.MethodGet, "/v1/pending", accountAuth(relaysDecisions, (*server).listPending)},
 		// Approve a pending machine login as the named person, who must type its code: the broker
 		// takes the person's name on the caller's word, from a listed service's ServiceAccount
-		// token, which the handler verifies itself — and whose name must carry relaysDecisions,
-		// the power this row declares — after it has read the record's kind. It reads the kind
-		// first because a secret request is refused before any caller is looked at: it is decided
-		// only on the broker's own page by a person signed in to the broker, so this answers 403
-		// DECIDE_ON_BROKER_PAGE naming that page to every caller, token or none, writing nothing.
-		{http.MethodPost, "/v1/credential-requests/{record}/approve", accountAuthAfterRecordKind(relaysDecisions, (*server).approveRecord)},
+		// token whose name carries relaysDecisions. It reads the record only once the caller is
+		// authenticated, so a caller with no token, or one the broker does not accept, is refused
+		// the same whether the id names a record or not. A secret request is decided only on the
+		// broker's own page by a person signed in to the broker, so for one this answers the listed
+		// caller 403 DECIDE_ON_BROKER_PAGE naming that page (or naming none, on a broker that signs
+		// nobody in), or 403 JUDGE_DECIDES while the model judge holds it, writing nothing.
+		{http.MethodPost, "/v1/credential-requests/{record}/approve", accountAuth(relaysDecisions, (*server).approveRecord)},
 		// Deny a pending machine login as the named person, who must type its code, on the
 		// caller's word and behind the same authentication and the same power as approve. A
 		// secret request is refused the same way, writing nothing, with 403
 		// DECIDE_ON_BROKER_PAGE naming the page where a person signed in to the broker denies it.
-		{http.MethodPost, "/v1/credential-requests/{record}/deny", accountAuthAfterRecordKind(relaysDecisions, (*server).denyRecord)},
+		{http.MethodPost, "/v1/credential-requests/{record}/deny", accountAuth(relaysDecisions, (*server).denyRecord)},
 		// Dismiss an expired credential request, a secret request or a machine login whose deadline
 		// passed before anybody decided it, as the named person, for good: it leaves every list
 		// that asks for expired records, the person's own and, for a shared request, everybody's.
@@ -372,15 +354,22 @@ func routes() []apiRoute {
 		// Find a pending machine login by the confirmation code its machine shows.
 		{http.MethodPost, "/v1/machine-logins/lookup", accountAuth(relaysDecisions, (*server).lookupMachineLogin)},
 		// List the machine logins the named person may revoke, every service's, such as the Legion
-		// daemon's, whoever approved it, and the person's own machines', that are not revoked and
-		// are unexpired or expired with a session still running, each naming who approved it. The
-		// person is the one the caller names.
+		// daemon's, whoever approved it, the person's own machines', and the logins of the person's
+		// own pods, that are not revoked and are unexpired or expired with a session still running,
+		// each naming who approved it. A person's pod login is a token login of a Kubernetes account
+		// that BROKER_POD_OPERATORS maps to a person, made with a token of one of its pods or with
+		// one bound to no pod. It carries a service and a subject, but only that person's list holds
+		// it, and its person field names that person. The person is the one the caller names.
 		{http.MethodGet, "/v1/launcher-credentials", accountAuth(relaysDecisions, (*server).listLauncherCredentials)},
 		// End a machine login, expired or not: a service's (its token login, or one a person approved
 		// before token logins) as anyone signed in, a person's machine's as the person who approved
-		// it. Its launcher proofs stop authenticating and every session it enrolled, pods included,
-		// ends with its grants and pending requests. The revoking person is the login the request
-		// names, which the broker still takes on the caller's word: a revoke only takes power away.
+		// it, and a person's pod login as the person BROKER_POD_OPERATORS maps the pod's account to,
+		// and as nobody else. Its launcher proofs stop authenticating and every session it enrolled,
+		// pods included, ends with its grants and pending requests. The revoke does not keep a pod
+		// out: the pod logs in again with its token under a new login while BROKER_SERVICE_LOGINS
+		// names its account, and that login acts for the person only while BROKER_POD_OPERATORS
+		// still maps the account to the person. The revoking person is the login the request names,
+		// which the broker still takes on the caller's word: a revoke only takes power away.
 		{http.MethodPost, "/v1/launcher-credentials/{id}/revoke-by-approver", accountAuth(relaysDecisions, (*server).revokeLauncherCredential)},
 		// List the live grants of the named person's sessions, automatic or approved, and those the
 		// person approved. The person is the one the caller names.
@@ -413,10 +402,13 @@ func routes() []apiRoute {
 		// period has committed before the review reads it. It is the one route readsGrantLog
 		// reaches: the review reads the broker's record and changes nothing in it.
 		{http.MethodGet, "/v1/grant-log", accountAuth(readsGrantLog, (*server).listGrantLog)},
-		// List the logins of the calling credential's operator's own machines, as Dispatch's
-		// machine-logins page lists them, without the service logins that page also lists.
+		// List the calling credential's operator's own logins, their machines' logins and the token
+		// logins of the accounts BROKER_POD_OPERATORS maps to them, as Dispatch's machine-logins
+		// page lists them, without the service logins that page also lists. This route, the machine
+		// revoke below and the two grant routes refuse a person's pod login 403 PERSON_POD_LOGIN
+		// and a service's login 403 SERVICE_CREDENTIAL (operatorOf). The retire refuses neither.
 		{http.MethodGet, "/v1/operator/machines", launcherAuth((*server).listOperatorMachines)},
-		// End one of the operator's own machines' logins: no proof signed with it authenticates again
+		// End one of the operator's own logins: no proof signed with it authenticates again
 		// and every session it enrolled ends. A service's login is not found here, like an unknown
 		// id. Revoking the calling machine's own login ends this machine's access.
 		{http.MethodPost, "/v1/operator/machines/{id}/revoke", launcherAuth((*server).revokeOperatorMachine)},
@@ -430,13 +422,22 @@ func routes() []apiRoute {
 		// End a grant as the operator: the revocation Dispatch's page offers, which also withholds an
 		// automatic grant's secrets from its session.
 		{http.MethodPost, "/v1/operator/grants/{id}/revoke", launcherAuth((*server).revokeOperatorGrant)},
-		// The namespace prefix, AWS account and region, and the agent-secrets key the broker serves:
-		// what the CLI needs so it and the broker never disagree about which secret a name means.
+		// The store, the namespace prefix, the agent-secrets key and the account or project it is
+		// in, and the Google exchange audience: what the CLI needs so it and the broker never
+		// disagree about which secret a name means. It needs no credential, because a machine's
+		// CLI reads the exchange audience here before it holds any credential of the broker's, to
+		// mint the identity token it trades for its first one, and the secret forms read the rest
+		// under a cloud credential alone.
 		{http.MethodGet, "/v1/settings", public((*server).readSettings)},
-		// Reread one secret from Secrets Manager now, as whoever just wrote it may ask: the change is
-		// served, or gone, within seconds instead of at the next five-minute reload. Open to any caller,
-		// and rate-limited both per source address and over every caller at once, since each reread holds
-		// the policy's writer lock while it reads; a reread only moves the broker toward AWS's own truth.
+		// Reread one secret from the secret store now, as whoever just wrote it may ask: the change
+		// is served, or gone, within seconds instead of at the next five-minute reload, on every pod.
+		// Open to any caller, and rate-limited both per source address and over every caller at
+		// once, since each reread holds the policy's writer lock while it reads; a reread only moves
+		// the broker toward the store's own truth. A caller that sends no proof is answered 202 at
+		// once, the same for every name, and the reread runs after that answer; a session that
+		// signs the call is answered once the reread is done, with whether the broker now serves
+		// the name, why not, and as which type; and a proof the broker does not accept as a
+		// session's is 401 PROOF_INVALID, whatever the name.
 		{http.MethodPost, "/v1/secrets/{name}/reread", public((*server).rereadSecret)},
 		// A person's approval page for one credential-request record, an HTML page on the broker's
 		// own origin: the record's secret names, the enrollment the broker verified asked, the

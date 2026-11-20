@@ -818,8 +818,9 @@ func requireHealthy(t *testing.T, addr string) {
 // refusedSecretEnv is what TestMainLogsRealBoundAddress and TestTheBinaryLogsOneJSONObjectPerLine
 // start a broker with: a database of its own, a port the kernel picks, and a fake Secrets Manager
 // holding one secret it serves, one whose owner tag names nobody, which it refuses
-// owner-tag-malformed at boot, and one owned by example-service, which BROKER_SERVICES registers.
-func refusedSecretEnv(t *testing.T) []string {
+// owner-tag-malformed at boot, and one owned by example-service, which BROKER_SERVICES registers,
+// on the database at databaseURL.
+func refusedSecretEnv(t *testing.T, databaseURL string) []string {
 	t.Helper()
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
 	const key = "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
@@ -832,7 +833,7 @@ func refusedSecretEnv(t *testing.T) []string {
 		t.Fatal(err)
 	}
 	return []string{
-		"BROKER_DATABASE_URL=" + storetest.URL(t),
+		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
 		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
@@ -857,7 +858,8 @@ func refusedSecretEnv(t *testing.T) []string {
 // rest; and one owned by example-service, which BROKER_SERVICES registers, and asserts the binary
 // serves it: the policy loader main builds carries the configured services.
 func TestMainLogsRealBoundAddress(t *testing.T) {
-	broker := startBroker(t, brokerOptions{Env: refusedSecretEnv(t)})
+	databaseURL := storetest.URL(t)
+	broker := startBroker(t, brokerOptions{Env: refusedSecretEnv(t, databaseURL)})
 	addr, boot := broker.Addr, broker.Boot
 	refused := map[string]any{"severity": "ERROR", "name": "example/agent-secrets/untagged-key", "reason": "owner-tag-malformed", "owner": "", "first_load": true}
 	if lines := recordsWith(boot, policy.RefusedMessage, map[string]any{"name": "example/agent-secrets/untagged-key"}); len(lines) != 1 || !carries(lines[0], refused) {
@@ -879,17 +881,8 @@ func TestMainLogsRealBoundAddress(t *testing.T) {
 
 	requireHealthy(t, addr)
 
-	reread, err := http.Post("http://"+addr+"/v1/secrets/SERVICE_KEY/reread", "application/json", nil)
-	if err != nil {
-		t.Fatalf("POST /v1/secrets/SERVICE_KEY/reread: %v", err)
-	}
-	defer reread.Body.Close()
-	var answer struct {
-		Served bool   `json:"served"`
-		Reason string `json:"reason"`
-	}
-	if err := json.NewDecoder(reread.Body).Decode(&answer); err != nil || reread.StatusCode != http.StatusOK || !answer.Served {
-		t.Fatalf("reread SERVICE_KEY = status %d, %+v, %v; want served, its owner a service BROKER_SERVICES registers", reread.StatusCode, answer, err)
+	if status, _, answer := broker.sessionReread(t, databaseURL, "SERVICE_KEY"); status != http.StatusOK || answer["served"] != true {
+		t.Fatalf("a session's reread of SERVICE_KEY = status %d, %v; want served, its owner a service BROKER_SERVICES registers", status, answer)
 	}
 }
 
@@ -904,7 +897,7 @@ func TestMainLogsRealBoundAddress(t *testing.T) {
 // the address, so a broker writing any other shape fails here, naming the line, rather than in a
 // wait for an address it never reads.
 func TestTheBinaryLogsOneJSONObjectPerLine(t *testing.T) {
-	broker := startBroker(t, brokerOptions{NoWaitForListening: true, Env: refusedSecretEnv(t)})
+	broker := startBroker(t, brokerOptions{NoWaitForListening: true, Env: refusedSecretEnv(t, storetest.URL(t))})
 	// line reads the first line of log carrying message as a record, failing t unless it is one
 	// JSON object with time, message and severity as wanted and fields among its fields.
 	line := func(log, message, severity string, fields map[string]any) map[string]any {
@@ -961,7 +954,8 @@ func TestTheBinaryLogsOneJSONObjectPerLine(t *testing.T) {
 // broker that runs no NATS auth service, and nothing else; the API's address answers GET /metrics
 // and GET /livez 404, so no caller of the API reaches either.
 func TestTheBrokerServesItsMetricsOnAPortOfItsOwn(t *testing.T) {
-	broker := startBroker(t, brokerOptions{Env: refusedSecretEnv(t)})
+	databaseURL := storetest.URL(t)
+	broker := startBroker(t, brokerOptions{Env: refusedSecretEnv(t, databaseURL)})
 	metricsAddr := broker.MetricsAddr(t)
 	host, port, err := net.SplitHostPort(metricsAddr)
 	if err != nil || host != "127.0.0.1" || port == "0" || metricsAddr == broker.Addr {
@@ -973,8 +967,8 @@ func TestTheBrokerServesItsMetricsOnAPortOfItsOwn(t *testing.T) {
 	if reads[`read="list"`] < 1 {
 		t.Fatalf("after its boot the broker counts %v store reads; want its boot's whole-namespace loads as read=\"list\"", reads)
 	}
-	if status, _, _ := post(t, "http://"+broker.Addr+"/v1/secrets/SERVICE_KEY/reread"); status != http.StatusOK {
-		t.Fatalf("POST /v1/secrets/SERVICE_KEY/reread = %d; want 200", status)
+	if status, _, _ := broker.sessionReread(t, databaseURL, "SERVICE_KEY"); status != http.StatusOK {
+		t.Fatalf("a session's POST /v1/secrets/SERVICE_KEY/reread = %d; want 200", status)
 	}
 	after := scrapeMetric(t, metricsAddr, "broker_policy_store_reads_total")
 	if after[`read="describe"`] != reads[`read="describe"`]+1 || after[`read="list"`] != reads[`read="list"`] {
@@ -1028,8 +1022,9 @@ func TestFakeSecretsFileServesUnderTheGCPStore(t *testing.T) {
 	]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	databaseURL := storetest.URL(t)
 	broker := startBroker(t, brokerOptions{Env: []string{
-		"BROKER_DATABASE_URL=" + storetest.URL(t),
+		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
 		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
@@ -1038,21 +1033,12 @@ func TestFakeSecretsFileServesUnderTheGCPStore(t *testing.T) {
 		"BROKER_SECRETS_KMS_KEY_ARN=",
 		"BROKER_SECRETS_KMS_KEY_NAME=" + key,
 	}})
-	addr, boot := broker.Addr, broker.Boot
+	boot := broker.Boot
 	if strings.Contains(boot, "agent secret policy refused") {
 		t.Fatalf("boot log refuses a fake secret on the configured key:\n%s", boot)
 	}
-	reread, err := http.Post("http://"+addr+"/v1/secrets/DEMO_KEY/reread", "application/json", nil)
-	if err != nil {
-		t.Fatalf("POST /v1/secrets/DEMO_KEY/reread: %v", err)
-	}
-	defer reread.Body.Close()
-	var answer struct {
-		Served bool   `json:"served"`
-		Reason string `json:"reason"`
-	}
-	if err := json.NewDecoder(reread.Body).Decode(&answer); err != nil || reread.StatusCode != http.StatusOK || !answer.Served {
-		t.Fatalf("reread DEMO_KEY = status %d, %+v, %v; want served under the GCP store's key", reread.StatusCode, answer, err)
+	if status, _, answer := broker.sessionReread(t, databaseURL, "DEMO_KEY"); status != http.StatusOK || answer["served"] != true {
+		t.Fatalf("a session's reread of DEMO_KEY = status %d, %v; want served under the GCP store's key", status, answer)
 	}
 }
 
