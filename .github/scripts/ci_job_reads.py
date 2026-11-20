@@ -2195,6 +2195,9 @@ BROWSER_VERDICT_STEP = "Fail when a leg failed or the merged report holds a fail
 BROWSER_BLOBS_REFUSED_STEP = "Report a refused blob download as a refused read"
 BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
 BROWSER_WAIT_STORE_STEP = "Wait for the S3-compatible server"
+# One name, two steps: the shard job's and the alone job's download of the binaries job's
+# artifact, both running artifact_download.py.
+BROWSER_DOWNLOAD_STEP = "Download the binaries the binaries job built"
 # One name, two steps: the shard job's and the alone job's, each running a script of its own,
 # since the shard job's machine also runs the file store whose log that job collects.
 BROWSER_RECORD_STEP = "What the run left behind"
@@ -2505,6 +2508,12 @@ SCRIPT_TEST_GATES = [
     harness("dispatch_browser_samples_test", "Test the browser lane's memory and CPU sampler",
             f"{SCRIPTS}/dispatch-browser-samples.test.sh", [
         (f"{SCRIPTS}/dispatch-browser-samples.sh", "the script under test"),
+    ]),
+    harness("artifact_download_test", "Test the browser lane's artifact download (a stand-in API and storage)",
+            f"{SCRIPTS}/artifact_download.test.sh", [
+        (f"{SCRIPTS}/artifact_download.py", "the script under test"),
+        (f"{SCRIPTS}/artifact_download_fake.py",
+         "the stand-in for the REST API and the artifact storage each case starts"),
     ]),
     harness("race_memory_test", "Test the race memory sampler", f"{SCRIPTS}/race_memory.test.sh", [
         (f"{SCRIPTS}/race_memory.py", "the module under test"),
@@ -3094,6 +3103,10 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds each stack's server port through it"),
+        (".github/scripts/artifact_download.py",
+         f"{at_browser(BROWSER_DOWNLOAD_STEP)} and {at_browser(BROWSER_DOWNLOAD_STEP, BROWSER_ALONE)} "
+         "run it for the binaries the binaries job uploaded, and it reads the job's budget out of "
+         "this workflow file"),
         (".github/scripts/dispatch-browser-samples.sh",
          f"{at_browser(BROWSER_SHARD_SPECS)} and {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)} "
          "start it and read its two summaries"),

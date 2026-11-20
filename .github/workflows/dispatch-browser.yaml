@@ -82,7 +82,9 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
-    # 540 + 120 + 120 + 524 = 1,304 s, 21 min 44 s, rounded up to the 22 minutes below.
+    # 540 + 525 = 1,065 s for every step but the download, each at its budget or maximum, under the
+    # 22 minutes below: they leave the download 255 s at least, and more as the steps before it
+    # spend less, which is the time .github/scripts/artifact_download.py waits.
     timeout-minutes: 22
     strategy:
       fail-fast: false
@@ -94,29 +96,16 @@ jobs:
         with:
           persist-credentials: false
       # why: .github/ci-notes/dispatch-browser.md#what-the-shard-job-downloads-in-place-of-a-go-build
-      - id: binaries
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        timeout-minutes: 2
-        continue-on-error: true
-        with:
-          name: dispatch-e2e-binaries
-          path: packages/envoy/out/dispatch-e2e-binaries-1
-      - name: Download the binaries again, after a first attempt that did not complete
-        if: steps.binaries.outcome != 'success'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        timeout-minutes: 2
-        with:
-          name: dispatch-e2e-binaries
-          path: packages/envoy/out/dispatch-e2e-binaries-2
-      # why: .github/ci-notes/dispatch-browser.md#what-the-shard-job-places-and-what-its-budget-leaves-for-it
-      - name: Place the binaries of the attempt that completed
+      - name: Download the binaries the binaries job built
+        # It must end by the job's start plus its 22 minutes less --after, 700 s: the browser
+        # step's 540 s and the 160 s of the steps after it at their maxima. When the job's start
+        # cannot be read, the script takes the latest time GitHub records before it in its place.
         env:
-          FIRST: ${{ steps.binaries.outcome }}
-        run: |
-          attempt=1
-          [ "$FIRST" = success ] || attempt=2
-          mkdir -p packages/envoy/out/dispatch-e2e-broker
-          cp -R "packages/envoy/out/dispatch-e2e-binaries-$attempt/." packages/envoy/out/dispatch-e2e-broker/
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 .github/scripts/artifact_download.py --name dispatch-e2e-binaries
+          --dest packages/envoy/out/dispatch-e2e-broker
+          --budget-of .github/workflows/dispatch-browser.yaml:shard --after 700
       # why: .github/ci-notes/dispatch-browser.md#why-the-shard-job-makes-the-downloaded-binaries-executable
       - name: Make the downloaded binaries executable
         run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
@@ -190,7 +179,9 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-alone-jobs-measured-steps-and-its-budget
-    # 180 + 120 + 120 + 442 = 862 s, 14 min 22 s, rounded up to the 15 minutes below.
+    # 180 + 443 = 623 s for every step but the download, each at its budget or maximum, under the
+    # 15 minutes below: they leave the download 277 s at least, and more as the steps before it
+    # spend less, which is the time .github/scripts/artifact_download.py waits.
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -201,28 +192,16 @@ jobs:
         with:
           persist-credentials: false
       # why: .github/ci-notes/dispatch-browser.md#what-the-alone-job-downloads-in-place-of-a-go-build
-      - id: binaries
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        timeout-minutes: 2
-        continue-on-error: true
-        with:
-          name: dispatch-e2e-binaries
-          path: packages/envoy/out/dispatch-e2e-binaries-1
-      - name: Download the binaries again, after a first attempt that did not complete
-        if: steps.binaries.outcome != 'success'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        timeout-minutes: 2
-        with:
-          name: dispatch-e2e-binaries
-          path: packages/envoy/out/dispatch-e2e-binaries-2
-      - name: Place the binaries of the attempt that completed
+      - name: Download the binaries the binaries job built
+        # It must end by the job's start plus its 15 minutes less --after, 257 s: the browser
+        # step's 180 s and the 77 s of the steps after it at their maxima. When the job's start
+        # cannot be read, the script takes the latest time GitHub records before it in its place.
         env:
-          FIRST: ${{ steps.binaries.outcome }}
-        run: |
-          attempt=1
-          [ "$FIRST" = success ] || attempt=2
-          mkdir -p packages/envoy/out/dispatch-e2e-broker
-          cp -R "packages/envoy/out/dispatch-e2e-binaries-$attempt/." packages/envoy/out/dispatch-e2e-broker/
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 .github/scripts/artifact_download.py --name dispatch-e2e-binaries
+          --dest packages/envoy/out/dispatch-e2e-broker
+          --budget-of .github/workflows/dispatch-browser.yaml:alone --after 257
       # why: .github/ci-notes/dispatch-browser.md#why-the-alone-job-makes-the-downloaded-binaries-executable
       - name: Make the downloaded binaries executable
         run: chmod +x packages/envoy/out/dispatch-e2e-broker/*

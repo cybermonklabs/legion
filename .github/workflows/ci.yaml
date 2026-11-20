@@ -154,6 +154,7 @@ jobs:
       dispatch_browser_latest_blobs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_latest_blobs_test }}
       dispatch_browser_run_reads_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_run_reads_test }}
       dispatch_browser_samples_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_samples_test }}
+      artifact_download_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.artifact_download_test }}
       race_memory_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.race_memory_test }}
       disk_watch_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.disk_watch_test }}
       priorities_seed_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.priorities_seed_check_test }}
@@ -359,6 +360,7 @@ jobs:
       dispatch_browser_latest_blobs_test: ${{ needs.changes.outputs.dispatch_browser_latest_blobs_test }}
       dispatch_browser_run_reads_test: ${{ needs.changes.outputs.dispatch_browser_run_reads_test }}
       dispatch_browser_samples_test: ${{ needs.changes.outputs.dispatch_browser_samples_test }}
+      artifact_download_test: ${{ needs.changes.outputs.artifact_download_test }}
       race_memory_test: ${{ needs.changes.outputs.race_memory_test }}
       disk_watch_test: ${{ needs.changes.outputs.disk_watch_test }}
       priorities_seed_check_test: ${{ needs.changes.outputs.priorities_seed_check_test }}

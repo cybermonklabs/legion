@@ -60,8 +60,11 @@ jobs:
   # five jobs starts with, and the pinned tools its setup steps download; `actions: read` is the
   # merge job's "Reading one, the rows" step, which reads this run's own attempt's jobs by running
   # `.github/scripts/dispatch-browser-run-reads.sh jobs` (and its "Reading three" step reads that
-  # same file). No `checks: write`, which the ci-ok report would need: this call passes no
-  # `ci-ok-changes`, so that step does not run and this workflow posts no check.
+  # same file), and the shard and alone jobs' download of the binaries job's artifact
+  # (`.github/scripts/artifact_download.py`), which lists this run's artifacts, reads the zip, and
+  # reads this run attempt's jobs and start. No `checks: write`, which the ci-ok report would
+  # need: this call passes no `ci-ok-changes`, so that step does not run and this workflow posts no
+  # check.
   full:
     permissions:
       contents: read

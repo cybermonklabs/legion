@@ -228,6 +228,12 @@ on:
           dispatch-browser-samples.test.sh and what it tests.
         type: string
         required: true
+      artifact_download_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.artifact_download_test:
+          artifact_download.test.sh and what it tests.
+        type: string
+        required: true
       race_memory_test:
         description: "ci.yaml's needs.changes.outputs.race_memory_test: race_memory.test.sh and what it tests."
         type: string
@@ -509,6 +515,13 @@ jobs:
       - name: Test the browser lane's memory and CPU sampler
         if: inputs.changes-result != 'success' || inputs.dispatch_browser_samples_test == 'true'
         run: .github/scripts/dispatch-browser-samples.test.sh
+
+      # The download dispatch-browser.yaml's shard and alone jobs make of the binaries job's
+      # artifact, against a stand-in API and storage that hold back their bytes in each way a
+      # read has met, and against one that sends nothing, which must fail it by name.
+      - name: Test the browser lane's artifact download (a stand-in API and storage)
+        if: inputs.changes-result != 'success' || inputs.artifact_download_test == 'true'
+        run: .github/scripts/artifact_download.test.sh
 
       - name: Test the race memory sampler
         if: inputs.changes-result != 'success' || inputs.race_memory_test == 'true'

@@ -913,6 +913,14 @@ dispatch_browser_samples_test: &dispatch_browser_samples_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/dispatch-browser-samples.test.sh'
   - '.github/scripts/dispatch-browser-samples.sh'
+artifact_download_test: &artifact_download_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/artifact_download.test.sh'
+  - '.github/scripts/artifact_download.py'
+  - '.github/scripts/artifact_download_fake.py'
 race_memory_test: &race_memory_test
   - *ci_router
   - *ci_filters_data
@@ -1027,6 +1035,7 @@ test:
   - *dispatch_browser_latest_blobs_test
   - *dispatch_browser_run_reads_test
   - *dispatch_browser_samples_test
+  - *artifact_download_test
   - *race_memory_test
   - *disk_watch_test
   - *priorities_seed_check_test
@@ -1517,6 +1526,7 @@ dispatch_browser:
   # why: .github/ci-notes/ci.md#dispatch_browser-the-workflow-that-holds-every-browser-step-which-this-job
   - '.github/workflows/dispatch-browser.yaml'
   # why: .github/ci-notes/ci.md#dispatch_browser-the-memory-and-cpu-sampler-the-shard-and-alone-jobs
+  - '.github/scripts/artifact_download.py'
   - '.github/scripts/dispatch-browser-samples.sh'
   - '.github/scripts/dispatch-browser-postgres.sh'
   - '.github/scripts/dispatch-browser-latest-blobs.sh'

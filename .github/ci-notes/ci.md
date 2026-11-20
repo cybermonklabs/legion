@@ -518,10 +518,11 @@ which holds this filter and that gate together.
 ## dispatch_browser: The memory and CPU sampler the shard and alone jobs'
 
 The memory and CPU sampler the shard and alone jobs' browser steps start and read
-back, the reading of the lanes' PostgreSQL those two jobs run before the suite,
-the script the merge job runs to take each leg's newest attempt, and the script
-that makes the merge job's two reads of its own run, which reads this run's own
-attempt's jobs and says a refused blob download was a refused read. Beside them,
+back, the download those two jobs make of the binaries job's artifact, the reading
+of the lanes' PostgreSQL they run before the suite, the script the merge job runs
+to take each leg's newest attempt, and the script that makes the merge job's two
+reads of its own run, which reads this run's own attempt's jobs and says a refused
+blob download was a refused read. Beside them,
 the twelve scripts that hold the bodies of the shard, the alone, the visual and the
 merge jobs' steps: the shard job's wait for the file store it starts, its
 browser step and the record of what that run left behind, the alone job's
@@ -1684,8 +1685,10 @@ Each job of dispatch-browser.yaml carries its own limit.
 The same rule as the docs job's: a caller that declares no `permissions:` hands the
 called workflow the default GITHUB_TOKEN permissions rather than this file's block.
 `contents: read` is every job of dispatch-browser.yaml's checkout; `actions: read` is the
-merge job's `gh api .../actions/runs/<id>/jobs` read of this run's jobs, and `checks: write`
-that job's last step, the ci-ok report.
+merge job's `gh api .../actions/runs/<id>/jobs` read of this run's jobs, and the shard and
+alone jobs' download of the binaries job's artifact (.github/scripts/artifact_download.py),
+which lists this run's artifacts, reads the zip, and reads this run attempt's jobs and start;
+and `checks: write` is the merge job's last step, the ci-ok report.
 
 ## What the lane input reads
 

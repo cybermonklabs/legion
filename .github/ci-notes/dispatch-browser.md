@@ -291,14 +291,21 @@ other alone legs took 38 and 39 s, and its budget cancelled it 3 s into its chec
 pull's time was one layer: the other nine arrived in 6 s and the 122 MB Firefox layer in
 346 s, and shard (4) of that run, pulling in the same minute, took 200 s on two layers. A
 merge group drops its entry for a cancelled leg as for a failed one, and every group behind
-it is built again. So the download now carries a budget of its own and a second attempt
+it is built again. The pull is counted at that 355 s: no step holds it, so no step budget
+can cut it and no step can read it again, and Docker's own retry ("Retrying in 5 seconds" in
+that log) answers a failed read, not a slow one. The download is counted at no figure of its
+own. It reads until the time this budget leaves it and no longer
 (.github/ci-notes/dispatch-browser.md#what-the-shard-job-downloads-in-place-of-a-go-build),
-and the pull is counted at that 355 s: no step holds it, so no step
-budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
-seconds" in that log) answers a failed read, not a slow one. The job's budget is the
-browser step's 540 s, the two download attempts' 120 s each, and the steps without a
-budget at 219 - 5 - 45 + 355 = 524 s: 1,304 s, 21 min 44 s, rounded up to the 22 minutes
-of the shard job's `timeout-minutes`. The browser step's own budget is unchanged, and it still fires before the job's.
+so the job's budget holds every other step at its budget or maximum, and what is over is the
+download's: the browser step's 540 s and the steps without a budget at
+219 - 5 - 45 + 355 = 524 s, with 1 s for the contracts build the table above predates (its
+most over the six container legs of run 44740967543, which ran it), 1,065 s. The 22 minutes
+of the shard job's `timeout-minutes` leave the download 255 s of them when every other step
+takes its maximum, which is not less than the two 120 s attempts they were sized for when a
+download had attempts, and as much more as the steps before it leave unspent: in run
+44740967543 those took 45 s in shard (1), so its download would have had 575 s, where the
+two attempts had 240 s. The browser step's own budget is unchanged, and it still fires before
+the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
 again at this change's head, the suite holds 1,427 rows in 194 files, which is two
@@ -325,27 +332,69 @@ The directory is the one run-broker.sh built the broker's three binaries in, whi
 where packages/dispatch/e2e/real-broker.ts:30-31 runs requestseed from; the server
 binary rides along in it and is named by path in DISPATCH_E2E_SERVER_BIN (.github/scripts/dispatch-browser-shard-suite.sh).
 
-A BOUND OF ITS OWN AND A SECOND ATTEMPT. A read of this artifact took 2 to 6 s on every
-leg but one, which took 428 s (the budget note above), so a slow read is answered by
-reading again rather than by waiting. Each attempt carries this file's floor of 2
-minutes, twenty times the longest of the other reads. That is not this file's rule of
-the measured maximum plus 15 per cent, which the 428 s read would put at 9 minutes: those
-9 minutes are the wait this bound is here to cut, since the same bytes took seconds on
-every other leg. The second attempt runs only when the first did not end in success, and
-a second failure fails the job there, by name.
+WAITED FOR, AND NOT TIMED. The step runs .github/scripts/artifact_download.py and not
+actions/download-artifact, because the action keeps no byte it has read. It reads the zip
+over one connection, and a read that fails or sends nothing for 30 s starts again from byte 0;
+it reads at most five times in all (v8.0.1's dist/index.js, streamExtract and
+streamExtractExternal), so a step budget around it throws away whatever the read had. Three
+reads of this artifact were slow where their siblings took seconds, and in each the storage
+answered at once and then sent too little of the body, slowly or not at all, which the action's
+log cannot tell apart: run 43660292614's shard (5) read 105,780,613 bytes in 234 s, run
+44228250420's shard (4) 106,240,136 bytes in 427 s, and run 44740967543's shard (1) read
+108,662,781 bytes twice, 120 s each under the two 2-minute attempts this step had then, and
+had all of neither, so the leg ran no row and the merge job failed the run ("no blob report
+arrived from: shard-1"). In all three the action's first deprecation warning came 0.20 to
+0.34 s after the read began; its zip reader prints it when it is made, which is after the
+response's headers arrived. Whether the action began any of those reads again is not in the
+logs, which it writes at debug level only. A second read on the same runner was slow as well,
+so reading again from byte 0 does not answer a slow read, and the 2-minute bound ended reads
+that the job's budget had time for: shard (1) had spent 45 s before its download.
 
-EACH ATTEMPT INTO A DIRECTORY OF ITS OWN. A step that runs past its budget in a
-`container:` job ends the `docker exec` that started it, and the action's process inside
-the container can outlive it (moby/moby#9098) and go on writing the files it was
-extracting. Into a directory of its own, those writes reach nothing a later step reads:
-the step after the two copies the attempt that succeeded into the directory
-run-broker.sh serves from.
+The script reads the zip in eight ranges at once, asks for each byte once and keeps each
+byte once. A connection that fails, ends early or sends nothing for 30 s, the action's own
+figure for this read ("Blob storage chunk did not respond in 30000ms"), ends, and the rest of
+its range is read on a new connection from the byte where it stopped; an idle connection takes
+half of the widest range still being read, so one slow connection does not set the pace. A
+split cannot shorten a request already sent: the storage goes on sending the busy connection's
+old range past its new end until the script closes that connection, and the script drops those
+bytes. In seventeen reads of a 108,662,781-byte zip against the test's stand-in, healthy, slow
+and silent part way, the stand-in sent 24,320 to 5,211,046 bytes more than the zip, at most
+4.8 per cent; the most was at full speed, where the busy connections send fastest before they
+close.
 
-## What the shard job places, and what its budget leaves for it
+It waits under one bound, the time the job's budget leaves it: the job's start plus the job's
+`timeout-minutes`, less `--after`, the steps after it at their budgets and maxima, which here
+are the browser step's 540 s and the table's 159 s of steps after the download with the
+contracts build's 1 s, 700 s. The job's start is the one in-progress job of this run attempt
+whose `runner_name` is the step's `RUNNER_NAME`, and its age is read on GitHub's clock alone:
+the jobs API answer's `Date` header less the job's `started_at`, so a runner clock that is
+off moves nothing. When it cannot be read (the API fails, no job or two jobs match, or the
+start it gives falls after the step began), the latest of two times GitHub records before the
+job's start stands for it: this run attempt's `run_started_at`, and the binaries artifact's
+`created_at`, which the binaries job made before this job was queued. Each is earlier than the
+start, so the bound it gives is never later than the true one. The bound takes no estimate of
+the steps before the download: no step bounds `Initialize containers`, the image pull, so no sum
+of their budgets could stand in for the start, and a sum of their measured times is passed by
+the first slower run (the checkout this table puts at 8 s took 11 to 14 s on all seven legs of
+run 44758704517). Every API read, its body included, is held to that bound, and the reads that
+come before it is known to 4 s each: the slowest jobs read of runs 44758704517 and 44773074892,
+2.9 s with the process's own start, plus 15 per cent, rounded up (the script's EARLY_READ).
 
-The step budget note above does not count this step, which is new here. It copies one
-106 MB artifact on the runner's disk (141 ms for those bytes on a pod), and the 16 s
-that rounding up to 22 minutes leaves hold it.
+A storage that sends nothing, refuses connections or answers 5xx fails the step at that time
+by name, saying what the storage did with the requests: no answer, a 200 with the whole zip, a
+206 for other bytes than those asked for, or the status it gave. Run 44758704517's storage
+answered 3 of its 148 range requests with 503, and each range was read again and answered 206.
+One too slow for that time fails by name with the bytes that did arrive. An artifact the run
+does not hold or whose upload recorded no digest, a digest other than the one its upload
+recorded, or a storage that refuses three freshly signed URLs fails at once. The storage URL
+is signed again once half of the minute GitHub's REST reference gives it has passed, and after
+the storage refuses it. Its test, .github/scripts/artifact_download.test.sh, drives each of
+these against a stand-in for the API and the storage.
+
+The zip lands in a temporary file under $RUNNER_TEMP and is extracted only once its digest
+matched, into a new directory beside the destination that then takes the destination's name,
+so a process that outlived a step the runner ended (moby/moby#9098) could write only there,
+and an extraction that fails leaves no file in the destination.
 
 ## Why the shard job makes the downloaded binaries executable
 
@@ -606,22 +655,22 @@ that budget plus the maxima above of every step without one, which summed to 137
 
 The shard job's note "THE TWO NETWORK READS, AT A BUSY HOUR" holds here too, and one of its
 two legs is this job's: in run 44213916667 alone (chromium-alone) spent 355 s pulling the
-image, and the 6-minute budget cancelled it 3 s into its checkout. The download carries the
-same budget and second attempt as there, and the pull is counted at that 355 s. The job's
-budget is the browser step's 180 s, the two download attempts' 120 s each, and the steps
-without a budget at 137 - 5 - 45 + 355 = 442 s: 862 s, 14 min 22 s, rounded up to the 15
-minutes of the alone job's `timeout-minutes`, whose 38 s left over hold the new step that places the binaries
-(.github/ci-notes/dispatch-browser.md#what-the-shard-job-places-and-what-its-budget-leaves-for-it).
-The browser step's own budget is unchanged, and it still
-fires first.
+image, and the 6-minute budget cancelled it 3 s into its checkout. The pull is counted at
+that 355 s, and the download, as there, at no figure of its own: the job's budget holds the
+browser step's 180 s and the steps without a budget at 137 - 5 - 45 + 355 = 442 s, with 1 s
+for the contracts build, 623 s, and the 15 minutes of the alone job's `timeout-minutes` leave
+the download 277 s of them when every other step takes its maximum, and as much more as the
+steps before it leave unspent: in run 44740967543 those took 43 to 45 s on the three legs. The
+browser step's own budget is unchanged, and it still fires first.
 
 ## What the alone job downloads in place of a Go build
 
 What the binaries job built, in place of this job's own actions/setup-go
 and go-envoy cache restore, which are gone: the shard job's step of this name says why,
 and this job runs the same two scripts from the same directory.
-The shard job's steps of these names say why each attempt carries its own budget and
-directory and why there is a second; the four steps are the same here.
+The shard job's step of this name says why it is .github/scripts/artifact_download.py and
+how long it waits. Here `--after` is the browser step's 180 s and the table's 76 s of steps
+after the download with the contracts build's 1 s, 257 s.
 
 ## Why the alone job makes the downloaded binaries executable
 
