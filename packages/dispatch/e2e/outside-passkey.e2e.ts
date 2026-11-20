@@ -2,7 +2,7 @@ import { baseUrl } from "./api";
 import { harnessPorts } from "./harness-ports";
 import { googleOutsideOrigin, googleSignIn } from "./harness-signin";
 import { sql } from "./psql";
-import { sqlLiteral } from "./seed";
+import { resetDatabase, sqlLiteral } from "./seed";
 import { type BrowserContext, expect, type Locator, type Page, type Response, test } from "./test";
 import { addVirtualPasskey, type VirtualPasskey } from "./virtual-passkey";
 
@@ -357,6 +357,70 @@ test.describe("outside passkey sign-in", () => {
       });
     } finally {
       await Promise.all([aliceContext.close(), outsiderContext.close(), strangerContext.close()]);
+    }
+  });
+
+  // The reset every row begins with (e2e/test.ts) empties the passkeys and the open ceremonies,
+  // which no foreign key ties to a table the reset names: a passkey one row enrolled must not
+  // sign in in the next. The counts before the reset are this row's control: a row that enrolled
+  // nothing would pass the counts after it for no reason.
+  test("the reset between rows leaves no passkey and no open ceremony, so a passkey enrolled before it signs in no more", async ({
+    browser,
+  }) => {
+    const aliceContext = await browser.newContext();
+    const outsiderContext = await browser.newContext();
+    const count = async (table: "passkeys" | "passkey_ceremonies") =>
+      Number((await sql(`select count(*) from ${table}`)).trim());
+    try {
+      const outsiderPage = await outsiderContext.newPage();
+      await addVirtualPasskey(outsiderPage);
+      await test.step("alice lists the outsider on PRIV and makes a link; the outsider enrolls with it", async () => {
+        await aliceSignsIn(await aliceContext.newPage());
+        await aliceWrites(aliceContext, "POST", "/api/v1/projects", {
+          key: "PRIV",
+          name: "Private work",
+        });
+        await aliceWrites(aliceContext, "PUT", `/api/v1/projects/PRIV/access/people/${outsider}`);
+        const { url } = (await aliceWrites(
+          aliceContext,
+          "POST",
+          `/api/v1/projects/PRIV/access/people/${outsider}/invitations`
+        )) as { url: string };
+        await outsiderPage.goto(url);
+        await outsiderPage.getByRole("button", { name: "Create a passkey" }).click();
+        await expect(outsiderPage.getByText(`Signed in as ${outsider}`)).toBeVisible();
+      });
+
+      await test.step("a sign-in begun and never finished leaves an open ceremony; then the reset runs", async () => {
+        const begun = await outsiderPage.evaluate(async () => {
+          const response = await fetch("/auth/passkey/login/begin", {
+            body: "{}",
+            headers: { "Content-Type": "application/json" },
+            method: "POST",
+          });
+          return response.status;
+        });
+        expect(begun, "POST login/begin from the outside origin's page").toBe(200);
+        expect(await count("passkeys"), "passkeys before the reset").toBe(1);
+        expect(
+          await count("passkey_ceremonies"),
+          "open ceremonies before the reset"
+        ).toBeGreaterThan(0);
+        await aliceContext.close();
+        await resetDatabase();
+        expect(await count("passkeys"), "passkeys after the reset").toBe(0);
+        expect(await count("passkey_ceremonies"), "open ceremonies after the reset").toBe(0);
+      });
+
+      await test.step("the passkey enrolled before the reset signs in no more", async () => {
+        await outsiderPage.reload();
+        await outsiderPage.getByRole("button", { name: "Sign in with a passkey" }).click();
+        await expect(outsiderPage.getByRole("alert")).toHaveText(
+          "Dispatch does not know this passkey: it was removed, so it signs in no more. Ask a project's owner for a new link."
+        );
+      });
+    } finally {
+      await Promise.all([aliceContext.close(), outsiderContext.close()]);
     }
   });
 });
