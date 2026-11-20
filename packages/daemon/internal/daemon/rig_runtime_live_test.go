@@ -225,7 +225,7 @@ func (r *rigRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtim
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = workDir
-	cmd.Env = l.paneEnvironment(variables, workDir)
+	cmd.Env = l.launchEnvironment(spec, variables, workDir)
 	// Each pane keeps a state home of its own, as the sandbox runtime gives each role one
 	// (roleStateHome), so its Oh My Pi runs a worker-daemon broker of its own; endRoleProcesses
 	// ends what the pane's generation left under it once the pane's process group has ended.
