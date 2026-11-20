@@ -34,9 +34,10 @@ const (
 // ServiceEntry is one service the auth service admits by its platform identity.
 type ServiceEntry struct {
 	Kind Kind
-	// MachineID is the machine id the grant is built for, which Dispatch's, a listener's and an
-	// edge listener's name their durable and queue group by; required for those kinds and
-	// refused for the others.
+	// MachineID is the machine id the grant is built for, which Dispatch's and a listener's
+	// name their durable and queue group by. An edge listener's entry names one too, the machine
+	// it runs on: this build holds no edge listener's grant, and the auth service's refusal of its
+	// connection names that machine. Required for those three kinds and refused for the others.
 	MachineID string
 	// Account is the platform account whose token the service presents: a ServiceAccount
 	// subject, or a Google account address.
@@ -114,7 +115,11 @@ func parseService(text string) (ServiceEntry, error) {
 	switch entry.Kind {
 	case KindDispatch, KindListener, KindEdgeListener:
 		if machineID == noMachineID {
-			return ServiceEntry{}, fmt.Errorf("%s entry %q names no machine id: a %s's grant names its durable and its queue group by one", ServicesVariable, text, entry.Kind)
+			reason := "a " + string(entry.Kind) + "'s grant names its durable and its queue group by one"
+			if entry.Kind == KindEdgeListener {
+				reason = "an edge listener's entry names the machine it runs on, which the auth service's refusal of its connection names"
+			}
+			return ServiceEntry{}, fmt.Errorf("%s entry %q names no machine id: %s", ServicesVariable, text, reason)
 		}
 		if !natsgrant.SessionToken(machineID) {
 			return ServiceEntry{}, fmt.Errorf("%s entry %q names a machine id that is not one subject token", ServicesVariable, text)
