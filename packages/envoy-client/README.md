@@ -865,7 +865,11 @@ after its five-minute grace. So each trade runs under the login's lock, the file
 for 30 s is taken as one whose holder died. Only one caller takes a stale lock: it first creates
 the take-over's own lock, `.lock.steal`, and looks at the lock again under it, so a second caller
 that found the same stale lock finds the first one's fresh lock and waits. A `.lock.steal` left
-for 5 s by a caller that died taking over is removed. Under the lock a process reads the file again,
+for 5 s by a caller that died or stopped taking over is removed. Every removal is of the very file
+the caller looked at: the file is moved aside, and removed only where its device, inode,
+modification time and holder value are all the ones the caller saw; otherwise it is put back. The
+inode alone tells nothing, since XFS gives a new file the number of one removed a moment before.
+Under the lock a process reads the file again,
 refreshes only when the access token kept there has less than a minute left, keeps the rotated
 login, and trades. Two sessions of one machine never spend one refresh token, and none refreshes
 while another still presents the access token that the refresh would end. The broker's
