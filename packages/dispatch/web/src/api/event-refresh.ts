@@ -1585,7 +1585,7 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * event refreshes: those whose key holds an address it changes the words under, on a comment's
  * edit (its body), an ask's edit (its question) and a document's new version (its blocks' words),
  * and none on any other event. The issue page's names reads are kept fresh by events
- * (`useIssueTree`'s `EVENT_FRESH`), never by their age, and a names read's key is the set of
+ * (`reference-target.ts`'s `EVENT_FRESH`), never by their age, and a names read's key is the set of
  * addresses it names, so a page that comes to hold another set reads again under a key of its
  * own: only a change of words under the same address needs a rule.
  * An issue's write that changes its title (`issue.updated` naming `title` among its changes, or

@@ -2,7 +2,6 @@ import { type InfiniteData, useQuery, useQueryClient } from "@tanstack/react-que
 import { type ReactNode, useRef } from "react";
 import { Link } from "react-router-dom";
 
-import { api } from "../../api/client";
 import type { DispatchEvent, DisplayTree } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
 import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
@@ -23,7 +22,7 @@ import { drawnLine, firstLineOf } from "./issue-tree";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES } from "./page-words";
 import { ROW_LINK } from "./row-references";
-import { issueAsksQuery } from "./useIssueTree";
+import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
 
 /**
  * The reader's pins, as links to what they pinned: each pinned ask, comment and message by its
@@ -36,9 +35,9 @@ import { issueAsksQuery } from "./useIssueTree";
  * focused row's, in its facts (`FocusedNodeFacts.tsx`).
  *
  * The words come from the reads the outline and the history are drawn from, so the list costs no
- * request of its own: each read here is the outline's, under its key and with its options
- * (`useIssueTree.ts`: kept fresh by events, never read again by its age, and by a window focus
- * only while its last read failed, `EVENT_FRESH`), so it shares the outline's answer and is read
+ * request of its own: each read here is the outline's, by its definition (`useIssueTree.ts`) and
+ * with its options (`EVENT_FRESH`: kept fresh by events, never read again by its age, and by a
+ * window focus only while its last read failed), so it shares the outline's answer and is read
  * again only when the outline's is. A record's words are the server's reading of its text, as its
  * row draws them, and its first line is drawn whole, wrapping rather than cut. Where a read has
  * not answered, has failed, or holds no words for a pin - a handoff, an event older than the
@@ -60,18 +59,8 @@ export function IssuePins({
   const eventPins = pinnedEventIds([...(dismissed ?? [])]);
   const reading = pins.length > 0;
   const asks = useQuery({ ...issueAsksQuery(issueKey), ...EVENT_FRESH, enabled: reading });
-  const comments = useQuery({
-    enabled: reading,
-    queryFn: () => api.listComments(issueKey),
-    queryKey: ["comments", issueKey],
-    ...EVENT_FRESH,
-  });
-  const messages = useQuery({
-    enabled: reading,
-    queryFn: () => api.listIssueMessages(issueKey),
-    queryKey: ["issue-messages", issueKey],
-    ...EVENT_FRESH,
-  });
+  const comments = useQuery({ ...issueCommentsQuery(issueKey), ...EVENT_FRESH, enabled: reading });
+  const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH, enabled: reading });
   // The history's own log, under its key (`IssueHistory.tsx`), which the history under this list
   // reads: watched here and never asked for, so a pinned line is drawn from the pages it holds.
   const log = useQuery<InfiniteData<DispatchEvent[]>>({
