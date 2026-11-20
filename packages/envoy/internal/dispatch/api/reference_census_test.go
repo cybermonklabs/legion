@@ -422,8 +422,9 @@ func (h hiddenObjects) leaksOf(value any, path string) []leak {
 // from the stored rows, that each such column holds one. Three readers then walk every GET row of
 // the route table whose read classes include project, graph, people or agents, filled with the
 // objects of the project each sees, and every answer is scanned for an object hidden from that
-// reader: alice, an open viewer who sees PUB; alice's token that lists PUB, which sees PUB and
-// neither PRIV's sessions nor its people; and bob, a restricted member who sees PRIV alone. A found
+// reader: alice, an open viewer who sees PUB and not PRIV's session, which has acted in PRIV
+// (access.SessionClause); alice's token that lists PUB, which sees PUB and neither PRIV's sessions
+// nor its people; and bob, a restricted member who sees PRIV alone. A found
 // one fails naming the route, the JSON path of the answer, and what the object is. The stored
 // payloads are read too: every leaf of a payload a reader may read (eventReadableSQL) that names an
 // object hidden from that reader must sit under a key leaveOutHiddenReferences leaves out
@@ -454,7 +455,7 @@ func TestNoAnswerNamesAnObjectItsReaderCannotSee(t *testing.T) {
 		objects censusObjects
 		hidden  hiddenObjects
 	}{
-		{callerAlice, fixture.public, hiddenObjectsOf(t, fixture, seedPrivate, nil, nil)},
+		{callerAlice, fixture.public, hiddenObjectsOf(t, fixture, seedPrivate, []string{sessionOfPrivate}, nil)},
 		{callerAlicePubToken, fixture.public, hiddenObjectsOf(t, fixture, seedPrivate, []string{sessionOfPrivate}, []string{cross.publicPerson})},
 		{callerBob, fixture.private, hiddenObjectsOf(t, fixture, seedPublic, []string{sessionOfPublic}, []string{cross.privatePerson, seedAlice})},
 	}

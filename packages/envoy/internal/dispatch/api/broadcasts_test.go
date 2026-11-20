@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -453,6 +454,44 @@ func TestBroadcastWithNoReachableRecipientIsRefusedAndWritesNothing(t *testing.T
 	if summaries := decodeBody[[]json.RawMessage](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/broadcasts", nil, "alice")); len(summaries) != 0 {
 		t.Fatalf("broadcast list = %v, want nothing written", summaries)
 	}
+}
+
+// A broadcast leaves out a session its sender may not see exactly as one nobody holds, and asks the
+// listener nothing about it. alice, an open viewer who does not see PRIV, sends to privateSession,
+// which has acted in PRIV, beside s-pub, which she sees, and then to s-nobody, which nobody holds,
+// beside s-pub: each send reaches s-pub alone and leaves the other out "no live session" with no
+// title, and each reads s-pub's record from the listener and no other. The walk's listener holds
+// privateSession live, so a send that asked it would have reached it.
+func TestABroadcastLeavesOutASessionItsSenderMayNotSeeAsOneNobodyHolds(t *testing.T) {
+	walk := seedHiddenWrites(t)
+	type exclusion struct{ SessionID, Title, Reason string }
+	send := func(session string) {
+		t.Helper()
+		answer, _, calls := walk.recorded(t, callerAlice, http.MethodPost, "/api/v1/broadcasts", map[string]any{
+			"body": "To walked sessions.", "delivery": "btw", "session_ids": []string{session, "s-pub"},
+		})
+		if answer.Code != http.StatusCreated {
+			t.Fatalf("alice broadcasts to %s and s-pub: %d %s, want 201", session, answer.Code, strings.TrimSpace(answer.Body.String()))
+		}
+		sent := decodeBody[broadcastResponse](t, answer)
+		excluded := []exclusion{}
+		for _, left := range sent.Excluded {
+			excluded = append(excluded, exclusion{left.SessionID, left.Title, left.Reason})
+		}
+		if want := []exclusion{{session, "", "no live session"}}; !slices.Equal(excluded, want) || !slices.Equal(sendTargets(sent), []string{"s-pub"}) {
+			t.Errorf("alice's broadcast to %s and s-pub reaches %v and leaves out %+v; want s-pub reached and %+v", session, sendTargets(sent), excluded, want)
+		}
+		// The send's delivery runs behind its answer, so only the record reads it made before the
+		// answer are its own here.
+		reads := slices.DeleteFunc(calls, func(call string) bool { return !strings.HasPrefix(call, "GET /v1/registry/") })
+		slices.Sort(reads)
+		if want := []string{"GET /v1/registry/s-pub?include=unresponsive,stopped"}; !slices.Equal(reads, want) {
+			t.Errorf("alice's broadcast to %s and s-pub read the listener's records %v, want %v", session, reads, want)
+		}
+		awaitBackgroundWrites(t, walk.server)
+	}
+	send(privateSession)
+	send("s-nobody")
 }
 
 // INFRA-249. The live list is the listener's in-memory cache of the registry, and a session

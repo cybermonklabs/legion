@@ -26,6 +26,15 @@ import (
 // cookie, or a token of theirs that holds it, may add or remove any session and sends no body
 // of its own, and the write is recorded as the person with the agent beside them. Every other
 // credential is refused that, 403 FOLLOWER_FORBIDDEN.
+//
+// The session in the path is held to what the writer sees (sessionHiddenFromReader,
+// access.SessionClause): one it may not see is a session nobody holds. Its ask is still read
+// first, so a missing or hidden ask answers as it does for any session, and then the write
+// answers before it takes the ask's lock or reads its followers: a follow 404 SESSION_NOT_FOUND
+// and an unfollow 404 FOLLOWER_NOT_FOUND. While a project is private, and in every deployment
+// for a writer that is not open, a session nobody holds is one the writer does not see either, so
+// the two take this one path. An open writer of a deployment that holds no private project sees
+// every session and reads nothing for it (R9).
 
 func parseAskID(r *http.Request) (string, error) {
 	id := r.PathValue("id")
@@ -166,9 +175,14 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 	}
 
 	// What the writer sees, resolved before the transaction holds a connection: the ask's owner
-	// is read as the writer may read it (loadAskOwner).
+	// is read as the writer may read it (loadAskOwner), and so is the session (the file comment).
 	who, ok := s.readerOf(w, r)
 	if !ok {
+		return
+	}
+	hidden, err := s.sessionHiddenFromReader(r.Context(), sessionID)
+	if err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	tx, err := s.begin(r.Context())
@@ -180,6 +194,14 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 	own, err := s.loadAskOwner(r.Context(), tx, who, askID)
 	if err != nil {
 		s.writeHandlerError(w, err)
+		return
+	}
+	if hidden {
+		if follow {
+			writeError(w, codeSessionNotFound, http.StatusNotFound, "no session "+sessionID)
+			return
+		}
+		writeFollowerNotFound(w)
 		return
 	}
 	if err := s.deps.Events.LockOwners(r.Context(), tx, own.event("", actor, nil)); err != nil {
@@ -204,7 +226,7 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 	}
 	if !changed {
 		if !follow {
-			writeError(w, "FOLLOWER_NOT_FOUND", http.StatusNotFound, "session does not follow this ask")
+			writeFollowerNotFound(w)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -225,4 +247,10 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 	}
 	s.publish(r.Context(), event)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// writeFollowerNotFound answers an unfollow of a session that does not follow the ask: one that
+// never did, and one the writer may not see (changeAskFollower), in the same words.
+func writeFollowerNotFound(w http.ResponseWriter) {
+	writeError(w, "FOLLOWER_NOT_FOUND", http.StatusNotFound, "session does not follow this ask")
 }
