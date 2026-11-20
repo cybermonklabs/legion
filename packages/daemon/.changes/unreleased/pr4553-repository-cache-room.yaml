@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  A repository cache's `GET /healthz` reports its volume's size and the bytes available to it
+  (`volumeBytes`, `availableBytes`, or `volumeError` when the statfs fails), read at each request,
+  and the time of its fetch's and its repack's last failure for lack of space since that step's
+  last success (`fetchOutOfSpaceAt`, `repackOutOfSpaceAt`). A failure counts when git's output says
+  `No space left on device` or `Out of diskspace`, or when the volume has less than 1 GiB available.
+  The repack's failure is kept in `.legion-repack-out-of-space` on the volume, so a cache pod that
+  replaces it reports it until the next repack succeeds. The capability report gains the deployment
+  row `repository-cache-room` with the source `caches`: open while a cache reports such a failure,
+  its detail naming the cache, its volume, its claim and where room comes from, and carried by the
+  tick's `openCapabilities` to the project's controller. The daemon API contract moves to 181, and a
+  plugin below it is served that row without its `source`. `scripts/e2e/pack-memory-job.sh`
+  measures git and jj memory in a large workspace under gVisor as one Kubernetes Job.

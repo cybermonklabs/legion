@@ -1,0 +1,4 @@
+kind: Changed
+body: |-
+  Declares daemon API contract 181, which adds the capability row `repository-cache-room` with the
+  source `caches` to the state the `legion` MCP tool reads.
