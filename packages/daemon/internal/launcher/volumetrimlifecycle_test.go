@@ -86,6 +86,9 @@ func useLauncherTrimmer(t *testing.T, f *trimFixture, prepare ...func(trim *trim
 	podTrimmer = func(ctx context.Context, trim *trimmer) {
 		trim.volumeRoot, trim.procRoot, trim.self, trim.roots = f.root, f.proc, f.self, f.roots
 		trim.now, trim.ticks = f.clock.now, f.ticks.make
+		// Its settings stay the launcher's (manager.volumeTrim). Each read of them is recorded,
+		// which tells the fixture's tick how an interval ends (settingsReads).
+		trim.settings = f.asked.of(trim.settings)
 		// The sweeps of these cases delete in this process, as the sweeps of a case that drives
 		// the trimmer directly do and for the same reason (trimFixture.trimmer): what they are
 		// about is the trimmer's life in the launcher process, and the deleter the pod runs is
