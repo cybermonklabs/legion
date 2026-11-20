@@ -353,6 +353,7 @@ func TestStreamConfigExcludesRoleLanes(t *testing.T) {
 		"notifications.envoy.exceptions.notifications.team.>",
 		"notifications.envoy.kept.>",
 		"notifications.envoy.resume.>",
+		"notifications.envoy.takeover.>",
 	}
 	if !reflect.DeepEqual(streamCfg.Subjects, wantSubjects) {
 		t.Fatalf("stream subjects = %v, want %v", streamCfg.Subjects, wantSubjects)
@@ -442,6 +443,28 @@ var streamGenerations = map[int]struct {
 			"notifications.envoy.exceptions.notifications.team.>",
 			"notifications.envoy.kept.>",
 			"notifications.envoy.resume.>",
+		},
+	},
+	// Generation 5 adds the listener's takeover lane, the subject the stream carries each role a
+	// session took from another on, with how far the copy of the other's role messages has read
+	// (TakeoverSubjectPrefix, listenerOwnStreamLanes).
+	5: {
+		maxAge:     72 * time.Hour,
+		duplicates: 72 * time.Hour,
+		subjects: []string{
+			"notifications.agent.>",
+			"notifications.dispatch.>",
+			"notifications.github.>",
+			"notifications.slack.>",
+			"notifications.legion.>",
+			"notifications.ghostwispr.>",
+			"notifications.whatsapp.>",
+			"notifications.team.>",
+			"notifications.envoy.exceptions.notifications.agent.>",
+			"notifications.envoy.exceptions.notifications.team.>",
+			"notifications.envoy.kept.>",
+			"notifications.envoy.resume.>",
+			"notifications.envoy.takeover.>",
 		},
 	},
 }
@@ -660,10 +683,10 @@ func TestEnsureStreamWithConfigStartsWhenADeployedSubjectOverlapsItsOwn(t *testi
 }
 
 // capturedLogs collects the default slog logger's JSON records for one test. Its writes and reads
-// share a lock because a bus client an earlier test closed can still be logging: nats.go's close
-// queues the disconnected and closed callbacks on the connection's async dispatcher and returns
-// without waiting for them (nats.go v1.50.0, nats.go:5892-5910), the bus's closed callback logs
-// through the default logger, and every test of the package shares one binary.
+// share a lock because a bus client an earlier test closed can still be logging: nats.go v1.55.0
+// queues the disconnected and closed callbacks on its async dispatcher and returns without waiting
+// for them. The bus's closed callback logs through the default logger, and every test of the
+// package shares one binary.
 type capturedLogs struct {
 	logtest.Buffer
 }

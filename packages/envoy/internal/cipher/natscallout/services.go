@@ -1,0 +1,189 @@
+package natscallout
+
+import (
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+
+	"github.com/sjawhar/envoy/internal/cipher/api"
+	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/natsgrant"
+)
+
+// ServicesVariable is the setting ParseServices reads.
+const ServicesVariable = "BROKER_NATS_SERVICES"
+
+// Kind is which of the grants a service connection is answered with.
+type Kind string
+
+// The kinds of service the auth service admits, each answered with its grant of
+// natsgrant: Dispatch's, a listener's, a Legion daemon's and the measurement job's. An edge
+// listener's entry is read too, for the projects it serves (EdgeListeners), even by a broker that
+// runs no auth service (config.EdgeListenerKind), and its connection is refused by name
+// (scopeGrant): natsgrant holds no edge listener's grant yet.
+const (
+	KindDispatch     Kind = "dispatch"
+	KindListener     Kind = "listener"
+	KindDaemon       Kind = "daemon"
+	KindMeasure      Kind = "measure"
+	KindEdgeListener Kind = config.EdgeListenerKind
+)
+
+// ServiceEntry is one service the auth service admits by its platform identity.
+type ServiceEntry struct {
+	Kind Kind
+	// MachineID is the machine id the grant is built for, which Dispatch's and a listener's
+	// name their durable and queue group by. An edge listener's entry names one too, the machine
+	// it runs on: this build holds no edge listener's grant, and the auth service's refusal of its
+	// connection names that machine. Required for those three kinds and refused for the others.
+	MachineID string
+	// Account is the platform account whose token the service presents: a ServiceAccount
+	// subject, or a Google account address.
+	Account string
+	// Google is whether Account is a Google service account.
+	Google bool
+	// AllProjects is the grant whole; otherwise the projects come from the broker's exchange
+	// list for Account, but for an edge listener, whose projects are Projects.
+	AllProjects bool
+	// Projects is the projects an edge listener's entry lists, sorted, each once; nil for every
+	// other kind.
+	Projects []string
+}
+
+// name is the name the user the auth service answers this entry's connections with carries,
+// <kind>/<machine id or account>, which a server's connection listing (/connz) reports.
+func (e ServiceEntry) name() string {
+	if e.MachineID != "" {
+		return string(e.Kind) + "/" + e.MachineID
+	}
+	return string(e.Kind) + "/" + e.Account
+}
+
+// noMachineID is how an entry writes a kind that takes no machine id, and allProjectsScope and
+// exchangeScope the two scopes an entry takes.
+const (
+	noMachineID      = "-"
+	allProjectsScope = "*"
+	exchangeScope    = "-"
+)
+
+// ParseServices reads BROKER_NATS_SERVICES: whitespace-separated <kind>/<machine id or ->/<* or
+// ->=<account> entries, in order, where * is the grant whole and - means "the projects this
+// account's exchange entry lists", and the account is written as BROKER_API_ACCOUNTS writes one
+// (config.ParseAccount). An edge listener's entry writes, in place of * or -, the projects it
+// serves: edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>. It refuses, naming the entry: an
+// unknown kind; a dispatch, listener or edge-listener entry with no machine id, and a daemon or
+// measure entry with one; a machine id that is not one subject token; a measure entry with -,
+// since its grant holds a KV read no project scope can hold and it reads no project's messages;
+// an edge listener's entry with * or -, or whose projects are no list of at most
+// oauthwire.MaxProjects project keys named once each; an account config.ParseAccount refuses (a
+// namespace's default account, a Google default or service-agent account); and an account given
+// twice, since one account connects as one service.
+func ParseServices(raw string) ([]ServiceEntry, error) {
+	var services []ServiceEntry
+	seen := map[string]string{}
+	for _, text := range strings.Fields(raw) {
+		entry, err := parseService(text)
+		if err != nil {
+			return nil, err
+		}
+		if other, twice := seen[entry.Account]; twice {
+			return nil, fmt.Errorf("%s names the account %s in both %q and %q; one account connects as one service, so name it once", ServicesVariable, entry.Account, other, text)
+		}
+		seen[entry.Account] = text
+		services = append(services, entry)
+	}
+	return services, nil
+}
+
+func parseService(text string) (ServiceEntry, error) {
+	form := func() error {
+		return fmt.Errorf("%s must be <kind>/<machine id or ->/<* or ->=<account> entries, an edge-listener entry's projects <KEY>[,<KEY>…] in place of * or -, the kind one of dispatch, listener, edge-listener, daemon or measure and the account system:serviceaccount:<namespace>:<name> or google:<service account email>, got %q", ServicesVariable, text)
+	}
+	head, account, ok := config.CutNATSServiceEntry(text)
+	if !ok {
+		return ServiceEntry{}, form()
+	}
+	parts := strings.Split(head, "/")
+	if len(parts) != 3 {
+		return ServiceEntry{}, form()
+	}
+	entry := ServiceEntry{Kind: Kind(parts[0])}
+	machineID, scope := parts[1], parts[2]
+	switch entry.Kind {
+	case KindDispatch, KindListener, KindEdgeListener:
+		if machineID == noMachineID {
+			reason := "a " + string(entry.Kind) + "'s grant names its durable and its queue group by one"
+			if entry.Kind == KindEdgeListener {
+				reason = "an edge listener's entry names the machine it runs on, which the auth service's refusal of its connection names"
+			}
+			return ServiceEntry{}, fmt.Errorf("%s entry %q names no machine id: %s", ServicesVariable, text, reason)
+		}
+		if !natsgrant.SessionToken(machineID) {
+			return ServiceEntry{}, fmt.Errorf("%s entry %q names a machine id that is not one subject token", ServicesVariable, text)
+		}
+		entry.MachineID = machineID
+	case KindDaemon, KindMeasure:
+		if machineID != noMachineID {
+			return ServiceEntry{}, fmt.Errorf("%s entry %q names a machine id, which a %s's grant does not take; write -", ServicesVariable, text, entry.Kind)
+		}
+	default:
+		return ServiceEntry{}, form()
+	}
+	switch {
+	case entry.Kind == KindEdgeListener:
+		projects, err := edgeProjects(text, scope)
+		if err != nil {
+			return ServiceEntry{}, err
+		}
+		entry.Projects = projects
+	case scope == allProjectsScope:
+		entry.AllProjects = true
+	case scope == exchangeScope:
+		if entry.Kind == KindMeasure {
+			return ServiceEntry{}, fmt.Errorf("%s entry %q holds the measurement job to its exchange projects, which its grant cannot be held to: it reads a KV bucket and no project's messages, so write *", ServicesVariable, text)
+		}
+	default:
+		return ServiceEntry{}, form()
+	}
+	parsed, err := config.ParseAccount(ServicesVariable, text, account)
+	if errors.Is(err, config.ErrAccountForm) {
+		return ServiceEntry{}, form()
+	}
+	if err != nil {
+		return ServiceEntry{}, err
+	}
+	entry.Account, entry.Google = parsed.Address, parsed.Google
+	return entry, nil
+}
+
+// edgeProjects reads an edge listener's scope, the projects it serves: project keys separated by
+// commas, at most oauthwire.MaxProjects, each named once, answered sorted. * and - are refused:
+// an edge listener serves only the projects its entry names.
+func edgeProjects(text, scope string) ([]string, error) {
+	if scope == allProjectsScope || scope == exchangeScope {
+		return nil, fmt.Errorf("%s entry %q gives an edge listener %s, and an edge listener serves only the projects its entry names: write them as <KEY>[,<KEY>…]", ServicesVariable, text, scope)
+	}
+	projects := strings.Split(scope, ",")
+	slices.Sort(projects)
+	if err := oauthwire.ValidProjects(projects); err != nil {
+		return nil, fmt.Errorf("%s entry %q lists projects that are no list of project keys: %w", ServicesVariable, text, err)
+	}
+	return projects, nil
+}
+
+// EdgeListeners is each edge listener's entry of services as the broker's API reads it
+// (api.Deps.EdgeListeners): the account its platform token names and the projects the entry
+// lists, the projects GET /v1/project-repositories answers it about. An entry of any other kind
+// is none, whatever projects its own grant reaches.
+func EdgeListeners(services []ServiceEntry) []api.EdgeListener {
+	var edges []api.EdgeListener
+	for _, entry := range services {
+		if entry.Kind == KindEdgeListener {
+			edges = append(edges, api.EdgeListener{Account: entry.Account, Google: entry.Google, Projects: slices.Clone(entry.Projects)})
+		}
+	}
+	return edges
+}

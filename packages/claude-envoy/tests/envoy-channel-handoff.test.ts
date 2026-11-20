@@ -820,6 +820,59 @@ test("a heartbeat that confirms this session as holder refreshes the role record
   }
 })
 
+test("a heartbeat the chain holds while shutdown begins writes no role once it is let go", async () => {
+  const stateDirectory = scratchState()
+  const identity = new SessionIdentity("ses_claude", "/tmp")
+  const roleFile = roleStateFile(stateDirectory, "ses_claude")
+  await mkdir(dirname(roleFile), { recursive: true })
+  await writeFile(roleFile, JSON.stringify({ session_id: "ses_claude", role: "reviewer" }))
+  const release = Promise.withResolvers<void>()
+  let holdRegistration = false
+  let registrationHeld = false
+  let shutdownBegun = false
+  const roleCallsAfterShutdown: string[] = []
+  const session = await startChannelSession(
+    sessionOptions(identity, stateDirectory, {
+      client: recordingClient([], {
+        subscribe: async (input) => {
+          if (holdRegistration) {
+            registrationHeld = true
+            await release.promise
+          }
+          return noInterest(input.sessionID)
+        },
+        getRole: async (role) => {
+          if (shutdownBegun) roleCallsAfterShutdown.push(`getRole ${role}`)
+          return { role, holder: identity.id, last_seen: 1, state: "live" }
+        },
+        setRole: async (input) => {
+          if (shutdownBegun) roleCallsAfterShutdown.push(`setRole ${input.role}`)
+          return { claimed: true, interest: noInterest() }
+        },
+      }),
+      heartbeatMs: 20,
+    }),
+  )
+
+  try {
+    holdRegistration = true
+    await waitFor(async () => registrationHeld, "a heartbeat held inside its registration")
+    holdRegistration = false
+    // Shutdown begins while the body is held in `register()`, and the body is let go only once
+    // the forwarder has closed: what it does after `register()` is what this row reads.
+    shutdownBegun = true
+    const shuttingDown = session.shutdown()
+    await waitFor(async () => session.topics().length === 0, "the forwarder to close")
+    release.resolve()
+    await shuttingDown
+    await settled()
+    expect(roleCallsAfterShutdown).toEqual([])
+  } finally {
+    release.resolve()
+    await session.shutdown()
+  }
+})
+
 test("a record already past the sweep's age survives a startup whose claim was refused, and the heartbeat restores it", async () => {
   const stateDirectory = scratchState()
   const identity = new SessionIdentity("ses_claude", "/tmp")

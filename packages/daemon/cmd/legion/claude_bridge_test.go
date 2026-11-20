@@ -165,6 +165,43 @@ func goneShim(t *testing.T) *os.File {
 	return stdout
 }
 
+// The bridge's own lines pass the URL rule. A turn's outcome that cannot be reported is logged
+// with the error of the post, which quotes the daemon's URL as the pane names it
+// (LEGION_DAEMON_URL), user name and query included: the line keeps the URL's host and path, and
+// neither the user name nor the query reaches the pane.
+func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
+	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdout.Close()
+	// A port nothing listens on, so the report's post fails at its dial.
+	const daemon = "127.0.0.1:1"
+	bootToken := filepath.Join(t.TempDir(), "boot-token")
+	if err := os.WriteFile(bootToken, []byte("boot-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The stand-in starts a turn of its own and ends it, which the bridge reports, and waits.
+	p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\n"+
+		`printf '%s\n' '{"type":"system","subtype":"init"}' '{"type":"result","subtype":"success","is_error":false}'`+"\n"+
+		"exec sleep 300\n", stdout,
+		"LEGION_DAEMON_URL=http://legion-reader@"+daemon+"/daemon?token=planted-query-token-3",
+		"LEGION_BOOT_TOKEN_FILE="+bootToken, "LEGION_GENERATION=4")
+	p.await("the failed report logged", func() bool {
+		return strings.Contains(p.logged(), "could not report the outcome of turn 1")
+	})
+	p.hangUp()
+	logged := p.logged()
+	if want := `Post "http://` + daemon + `/daemon"`; !strings.Contains(logged, want) {
+		t.Errorf("the bridge logged:\n%s\nwant the report's failure naming %s", logged, want)
+	}
+	for _, credential := range []string{"legion-reader", "planted-query-token-3"} {
+		if strings.Contains(logged, credential) {
+			t.Errorf("the bridge logged:\n%s\nwhich holds %q", logged, credential)
+		}
+	}
+}
+
 // claudeBridgeProcess is `legion claude-bridge` run as a process of its own (this package's test
 // binary as the real `legion`) on a stand-in Claude Code: a shell script that ignores its arguments
 // and touches $CLAUDE_STANDIN_READY once it is ready for the bridge's signals.
@@ -177,9 +214,9 @@ type claudeBridgeProcess struct {
 	stderr string // the file holding what the bridge logged
 }
 
-// startClaudeBridge starts the bridge on the stand-in script with stdout as its stdout, and returns
-// once its inbox is open and Claude Code is ready.
-func startClaudeBridge(t *testing.T, script string, stdout *os.File) *claudeBridgeProcess {
+// startClaudeBridge starts the bridge on the stand-in script with stdout as its stdout and env
+// added to its environment, and returns once its inbox is open and Claude Code is ready.
+func startClaudeBridge(t *testing.T, script string, stdout *os.File, env ...string) *claudeBridgeProcess {
 	t.Helper()
 	dir := t.TempDir()
 	// The bridge runs under a TMPDIR of the test's own, with room for its inbox's socket.
@@ -198,6 +235,7 @@ func startClaudeBridge(t *testing.T, script string, stdout *os.File) *claudeBrid
 	p.cmd = exec.Command(os.Args[0], "claude-bridge", "--", claude, "--resume", "s")
 	p.cmd.Env = append(os.Environ(), testMainEnv+"=1", "TMPDIR="+p.tmp, "CLAUDE_CONFIG_DIR="+t.TempDir(),
 		"LEGION_ROLE=implementer", "LEGION_ISSUE=ACME-7", "CLAUDE_STANDIN_READY="+ready)
+	p.cmd.Env = append(p.cmd.Env, env...)
 	p.cmd.Stdout, p.cmd.Stderr = stdout, stderr
 	// Its own process group, so the cleanup kills Claude Code with it whatever the bridge did.
 	p.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
