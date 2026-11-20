@@ -1121,6 +1121,8 @@ docs:
   - 'packages/envoy/internal/weborigin/*'
   - 'packages/dispatch/**'
   - 'scripts/e2e/lib/held-port.py'
+  # why: .github/ci-notes/ci.md#docs-socket-root-fixture
+  - 'packages/test-fixtures/src/socket-root.ts'
   - 'packages/proof-editor/src/**'
   - 'packages/contracts/src/**'
   - 'packages/envoy-client/src/**'

@@ -2280,3 +2280,10 @@ The natslive tests compile `packages/envoy/internal/sockettest` through the list
 
 The two-build browser half starts the Dispatch e2e harness, and
 `packages/dispatch/e2e/harness-start.ts` imports `@legion/test-fixtures/socket-root`.
+
+## docs: socket-root fixture
+
+`docs/site/media/harness.ts` imports `packages/dispatch/e2e/harness-start.ts`, which imports
+`@legion/test-fixtures/socket-root`, so the docs site's tools program
+(`docs/site/tsconfig.tools.json`) compiles `packages/test-fixtures/src/socket-root.ts`.
+`docs-pages.yaml`'s `on.push.paths` names it too, since that list equals this filter.

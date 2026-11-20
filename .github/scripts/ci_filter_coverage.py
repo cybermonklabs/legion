@@ -42,7 +42,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from go_build_tags import constraint_names, decode_stream, go_files, go_skips_dir, is_tag, platforms
+from go_build_tags import (constraint_names, decode_stream, go_environment, go_files, go_skips_dir, is_tag,
+                           platforms)
 from workflow_paths import PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns
 
 WORKFLOW = ".github/workflows/ci.yaml"
@@ -314,13 +315,28 @@ def workflow_documents(problems: list[Annotation]) -> dict:
 GO_COMMAND = re.compile(r"\bgo\s+(?:-C\s+\S+\s+)?(?:test|vet|build|run|list|install|generate)\b")
 FIELDS = ("Dir,ImportPath,ForTest,Standard,GoFiles,CgoFiles,TestGoFiles,XTestGoFiles,EmbedPatterns,"
           "TestEmbedPatterns,XTestEmbedPatterns,Error")
+# The go this check starts from: the one the PATH of check-ci-filters.sh resolves, which that script
+# hands on, since a version manager's python3 shim can start this interpreter under a PATH of its
+# own whose first go is another one (mise's puts the Go it would pick first).
+GO = os.environ.get("CI_FILTERS_GO") or "go"
+# The go commands' environment is go_build_tags.go_environment(), which this module imports, so the
+# build-tag reader's go list and the closures here run under one rule.
+# The platform every go command here is listed for unless the command sets its own: that of the
+# ubuntu-24.04 runner each job of ci.yaml with a go command runs on, as setup-go's `go env` there
+# prints it (GOOS='linux', GOARCH='amd64', CGO_ENABLED='1' with CC='gcc'; the ci-filters job of
+# run 43856832016, image ubuntu-24.04 20261111.370.1). Without it a listing is the host's: a
+# darwin machine's go lists the _darwin.go files, and a worker pod's go.env turns cgo off.
+# check-ci-filters.sh's header says why linux/amd64 is exact for the jobs on other runners too.
+CI_PLATFORM = {"GOOS": "linux", "GOARCH": "amd64", "CGO_ENABLED": "1"}
 
 
 @dataclass
 class Session:
-    """The go commands' environment and results. GOPROXY=off over an empty module cache: no
-    download, no rewrite of a go.work.sum, and the same answer on a warm machine as on a cold
-    runner. A third-party package then fails to load, which loses nothing first-party
+    """The go commands' environment and results. Every go command runs under go_environment(),
+    which leaves no variable of the caller's that chooses the toolchain or what a listing holds,
+    for CI_PLATFORM unless the command names its own, and with GOPROXY=off over an empty module
+    cache: no download, no rewrite of a go.work.sum, and the same answer on a warm machine as on a
+    cold runner. A third-party package then fails to load, which loses nothing first-party
     (check-ci-filters.sh's header says why). The toolchain is the exception that cache cannot
     hold: `toolchain()` resolves it first, under the machine's own cache and proxy."""
 
@@ -328,6 +344,7 @@ class Session:
     cache: dict = field(default_factory=dict)
     toolchains: dict = field(default_factory=dict)
     tmp: str = ""
+    environment: dict = field(default_factory=go_environment)
 
     def __post_init__(self):
         self.tmp = tempfile.mkdtemp(prefix="check-ci-filters-")
@@ -335,7 +352,9 @@ class Session:
         os.mkdir(f"{self.tmp}/modcache")
 
     def toolchain(self, workdir: str) -> str:
-        """The go binary the module in `workdir` pins, resolved under the ambient environment.
+        """The go binary the module in `workdir` pins, as GO resolves it under go_environment():
+        GOTOOLCHAIN's own rules applied to go.work or go.mod, and not a caller's GOROOT or
+        GOTOOLCHAIN.
 
         GOTOOLCHAIN=auto satisfies a `go` directive above the installed go by fetching that
         toolchain into GOMODCACHE, so the empty cache below would make every go command fetch it
@@ -348,15 +367,15 @@ class Session:
         rather than which download it could not make.
         """
         if workdir not in self.toolchains:
-            root = subprocess.run(["go", "env", "GOROOT"], cwd=REPO / workdir,
+            root = subprocess.run([GO, "env", "GOROOT"], cwd=REPO / workdir, env=self.environment,
                                   capture_output=True, text=True).stdout.strip()
             exe = Path(root) / "bin" / "go" if root else None
-            self.toolchains[workdir] = str(exe) if exe and exe.is_file() else "go"
+            self.toolchains[workdir] = str(exe) if exe and exe.is_file() else GO
         return self.toolchains[workdir]
 
     def go(self, run_: Run, args: list) -> str:
-        env = dict(os.environ, GOPROXY="off", GOMODCACHE=f"{self.tmp}/modcache", GOFLAGS="",
-                   GOWORK="", GOTOOLCHAIN="local")
+        env = dict(self.environment, **CI_PLATFORM, GOPROXY="off", GOMODCACHE=f"{self.tmp}/modcache",
+                   GOTOOLCHAIN="local")
         env.update(dict(run_.env))
         if run_.race:
             env["CGO_ENABLED"] = "1"  # -race needs cgo
