@@ -53,6 +53,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -697,8 +698,10 @@ func (b *gcpBackend) signIn(ctx context.Context) error {
 	case err != nil:
 		return fmt.Errorf("ask the metadata server for this machine's access token: %w", err)
 	default:
+		// The metadata server's answer prints only where it is a service account's: it is any
+		// text whoever answers at GCE_METADATA_HOST writes, line breaks included.
 		principal := gcpMetadataPrincipal(ctx)
-		if principal == "" {
+		if !brokerclient.ServiceAccountShaped(principal) {
 			principal = metadataGenericPrincipal
 		}
 		b.source, b.sourcePhrase, b.principal, b.creds = sourceMetadata, "the metadata server", principal, creds
@@ -839,8 +842,10 @@ func (b *gcpBackend) personEmail(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("Google's userinfo endpoint does not name the account behind %s, as it names none for a token without an email scope: %w", b.sourcePhrase, err)
 	case email == "":
 		return "", fmt.Errorf("Google's userinfo endpoint names no email for %s", b.sourcePhrase)
+	case !personAccount(email) && brokerclient.ServiceAccountShaped(email):
+		return "", fmt.Errorf("Google's userinfo endpoint names %s as the service account %s, which is no person's email", b.sourcePhrase, email)
 	case !personAccount(email):
-		return "", fmt.Errorf("Google's userinfo endpoint names %s as %s, which is no person's email", b.sourcePhrase, email)
+		return "", fmt.Errorf("Google's userinfo endpoint names %s as an account that is no person's email (not printed: it has neither a person's email's shape nor a service account's)", b.sourcePhrase)
 	}
 	return strings.ToLower(email), nil
 }

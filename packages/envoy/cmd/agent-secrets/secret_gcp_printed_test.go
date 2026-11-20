@@ -601,3 +601,46 @@ func TestTheWellKnownCredentialsFileIsNamedByItsSettingNeverItsPath(t *testing.T
 		})
 	}
 }
+
+// TestAnAccountGooglesAnswerNamesPrintsOnlyWhereItIsAServiceAccounts: the metadata server's
+// email, which the using line names, and Google userinfo's email for an account that is no
+// person's, which --owner me's refusal names, are text whoever answers writes, line breaks
+// included. Each prints only where it has a service account's shape; any other answer prints as
+// fixed words. Control: a service account's email still prints in both places, so the check sees
+// the answer.
+func TestAnAccountGooglesAnswerNamesPrintsOnlyWhereItIsAServiceAccounts(t *testing.T) {
+	planted := "hunter2pw-" + "accountanswer-" + "c71d"
+	for _, row := range []struct {
+		name, email, want string
+		owner             bool
+	}{
+		{"the metadata server's email, two lines", planted + "\nagent-secrets secret list: forged line", "using the metadata server: " + metadataGenericPrincipal, false},
+		{"control: the metadata server's email, a service account's", "machine@example.iam.gserviceaccount.com", "using the metadata server: machine@example.iam.gserviceaccount.com", false},
+		{"userinfo's email, no person's", planted, "names the access token in CLOUDSDK_AUTH_ACCESS_TOKEN as an account that is no person's email (not printed", true},
+		{"control: userinfo's email, Compute Engine's default service account", "123456789012-compute@developer.gserviceaccount.com", "as the service account 123456789012-compute@developer.gserviceaccount.com, which is no person's email", true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			fake := newFakeSecretManager()
+			startFakeSecretManager(t, fake)
+			useNoADC(t)
+			useNoGcloud(t)
+			args := []string{"list"}
+			if row.owner {
+				real := gcpUserinfo
+				gcpUserinfo = func(context.Context, *google.Credentials) (string, error) { return row.email, nil }
+				t.Cleanup(func() { gcpUserinfo = real })
+				t.Setenv("CLOUDSDK_AUTH_ACCESS_TOKEN", "lent-ada-token")
+				args = []string{"create", "NEW_TEST", "--owner", "me", "--tier", "agent"}
+			} else {
+				useGCPIdentity(t, "", row.email)
+			}
+			broker := startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+			refuseValueReads(t)
+			_, stderr, _ := runSecret(args...)
+			wantNamedNotPrinted(t, "stderr", stderr, []string{row.want}, "hunter2pw-", "forged line")
+			if row.owner {
+				requireNothingWritten(t, fake, broker)
+			}
+		})
+	}
+}

@@ -89,20 +89,34 @@ func (p *PoolIdentity) Describe() string {
 // the one shape of AGENT_SECRETS_POOL_AUDIENCE Describe prints.
 var poolProvider = regexp.MustCompile(`^//iam\.googleapis\.com/projects/[0-9]+/locations/global/workloadIdentityPools/[a-z0-9-]+/providers/[a-z0-9-]+$`)
 
-// serviceAccountEmail and serviceAccountID are the two ways Google names a service account, its
-// email and its numeric unique id: the shapes of an account serviceAccountWords prints.
+// serviceAccountEmail and serviceAccountID are the ways Google names a service account, its
+// email and its numeric unique id: the shapes of an account ServiceAccountShaped admits. An email
+// is a name of lower-case letters, digits and dashes at a domain under gserviceaccount.com: a
+// user-managed account's (<name>@<project>.iam.gserviceaccount.com), a Google service agent's
+// (service-<number>@gcp-sa-<service>.iam.gserviceaccount.com), Compute Engine's default
+// (<project number>-compute@developer.gserviceaccount.com), App Engine's default
+// (<project id>@appspot.gserviceaccount.com) and Cloud Build's (<number>@cloudbuild...).
 var (
-	serviceAccountEmail = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]+\.iam\.gserviceaccount\.com$`)
+	serviceAccountEmail = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}@[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)*\.gserviceaccount\.com$`)
 	serviceAccountID    = regexp.MustCompile(`^[0-9]{1,32}$`)
 )
 
-// serviceAccountWords is account as a message names it: whole where it is a service account's
-// email or unique id, else as the service account setting names, which is not printed.
+// ServiceAccountShaped reports whether account has the shape of a Google service account's email
+// or unique id: lower-case letters, digits and dashes in Google's own forms, no control character
+// and nothing a pasted credential's text could pass as. A message prints an account Google or a
+// setting named only where it is so shaped, agent-secrets' using line and userinfo refusal among
+// them.
+func ServiceAccountShaped(account string) bool {
+	return serviceAccountEmail.MatchString(account) || serviceAccountID.MatchString(account)
+}
+
+// serviceAccountWords is account as a message names it: whole where it has a service account's
+// shape (ServiceAccountShaped), else as the service account setting names, which is not printed.
 func serviceAccountWords(account, setting string) string {
-	if serviceAccountEmail.MatchString(account) || serviceAccountID.MatchString(account) {
+	if ServiceAccountShaped(account) {
 		return account
 	}
-	return "the service account " + setting + " names (not printed: it is no service account's email or unique id)"
+	return "the service account " + setting + " names (not printed: it has neither the shape of a service account's email nor of its unique id)"
 }
 
 // Token trades the external credential for a federated access token and spends it on one
