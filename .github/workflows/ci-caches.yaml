@@ -220,9 +220,11 @@ jobs:
       # same loops over .github/go-release-targets.json, .github/agent-secrets-client-targets.json
       # and .github/envoy-infra-targets.json, with the same GOOS, GOARCH and CGO_ENABLED per
       # target, so the modules it downloads, the go-licenses it builds under ~/.cache/legion and
-      # the objects it leaves are the ones lint restores. One script and not a copy of those
-      # loops, because a copy stops warming a target the day lint gains one, and nothing fails:
-      # lint just builds those objects cold on every run.
+      # the objects it leaves are the ones lint restores. go-licenses sits there in a directory that
+      # names this runner's OS and CPU (scripts/go-third-party-notices.sh), so a lint on another CPU
+      # that restores this entry finds no go-licenses at its own path and builds one rather than run
+      # this one. One script and not a copy of those loops, because a copy stops warming a target
+      # the day lint gains one, and nothing fails: lint just builds those objects cold on every run.
       - name: Write every Go release archive's third-party notices and cross-build the commands
         if: steps.go-notices.outputs.cache-hit != 'true'
         run: .github/scripts/go-release-notices.sh "$RUNNER_TEMP/notices"
