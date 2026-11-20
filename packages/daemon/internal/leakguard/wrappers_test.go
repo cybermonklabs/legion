@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -349,15 +350,17 @@ func TestTheJJWrapperReadsTheConfigurationThePushWouldUse(t *testing.T) {
 	}
 }
 
-// The jj wrapper reads git.executable-path from the repository the push would use, wherever the
-// caller names it. clap takes `-R` and `--repository` after `git push` as well as before it, the
-// last of them names the repository, and `-R=<path>` names <path>. The read once took the
-// repository only from in front of `git push`, and kept a `-R=<path>` as the path `=<path>`: a
-// `jj git push -R <a repository whose own configuration names another git>` then read the
-// configuration of the directory it ran in, or failed and was taken for an unset value, and the
-// push went through that other git, with no pre-push hook and so no leak check. jj answers `git`
-// when nothing sets the value, so a read that fails is an error, and the wrapper refuses it.
-func TestTheJJWrapperReadsTheRepositoryThePushWouldUse(t *testing.T) {
+// The jj wrapper checks the push jj would make, from the repository that push uses and through
+// whatever jj expands the command line to. clap takes `-R` and `--repository` after `git push` as
+// well as before it, the last of them names the repository, and `-R=<path>` names <path>; jj puts
+// an alias's words in place of the command word, expands an alias those words name in turn, and
+// puts ui.default-command in front of a command line that names no command, reading both from the
+// repository the command runs in. The wrapper once took the repository only from in front of
+// `git push`, kept a `-R=<path>` as the path `=<path>`, took a failed read for an unset value, and
+// read only the words it was given: each of those let a push through another git, with no
+// pre-push hook and so no leak check. jj answers `git` when nothing sets the value, so a read that
+// fails is an error, and the wrapper refuses it, as it refuses an expansion it cannot read.
+func TestTheJJWrapperChecksThePushJJWouldMake(t *testing.T) {
 	jj, err := exec.LookPath("jj")
 	if err != nil {
 		t.Fatalf("this test runs the real jj, which reads the configuration: %v", err)
@@ -391,33 +394,68 @@ func TestTheJJWrapperReadsTheRepositoryThePushWouldUse(t *testing.T) {
 	if err := os.WriteFile(configFile, []byte("git.executable-path = \"/usr/bin/git\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// aliased names another git in its own configuration, beside the aliases jj reads from the
+	// repository a command runs in. jj ignores the alias that has a built-in command's name.
+	aliased := filepath.Join(dir, "aliased")
+	run.Run(dir, fixturegit.JJInit(aliased, false)...)
+	// defaulted names another git and runs `git push` for a command line that names no command.
+	defaulted := filepath.Join(dir, "defaulted")
+	run.Run(dir, fixturegit.JJInit(defaulted, false)...)
+	// carrier names no git of its own; its alias pushes from another, which does.
+	carrier := filepath.Join(dir, "carrier")
+	run.Run(dir, fixturegit.JJInit(carrier, false)...)
+	for _, setting := range []struct{ repository, key, value string }{
+		{aliased, "git.executable-path", "/usr/bin/git"},
+		{aliased, "aliases.p", `["git", "push"]`},
+		{aliased, "aliases.pp", `["p"]`},
+		{aliased, "aliases.v", `["version"]`},
+		{aliased, "aliases.log", `["git", "push"]`},
+		{aliased, "aliases.nl", `["git", "push\nx"]`},
+		{defaulted, "git.executable-path", "/usr/bin/git"},
+		{defaulted, "ui.default-command", `["git", "push"]`},
+		{carrier, "aliases.pa", `["git", "push", "-R", ` + strconv.Quote(another) + `]`},
+	} {
+		run.Run(setting.repository, "jj", "config", "set", "--repo", setting.key, setting.value)
+	}
 
-	// Each command runs in dir, which is no repository, as a push of another directory's
-	// repository does.
 	for _, tc := range []struct {
 		name string
+		// in is the directory the command runs in; dir, which is no repository, where empty, as a
+		// push of another directory's repository does.
+		in   string
 		args []string
-		// names is what a refusal must name; empty where the wrapper must run the push.
-		names string
+		// names is what a refusal must name; none where the wrapper must run the command.
+		names []string
 	}{
-		{name: "a -R after git push naming a repository that names another git", args: []string{"git", "push", "-R", another}, names: "/usr/bin/git"},
-		{name: "a --repository= after git push naming that repository", args: []string{"git", "push", "--repository=" + another}, names: "/usr/bin/git"},
-		{name: "a -R= in front of git push naming that repository", args: []string{"-R=" + another, "git", "push"}, names: "/usr/bin/git"},
-		{name: "a second -R, the last, naming that repository", args: []string{"-R", plain, "git", "push", "-R", another}, names: "/usr/bin/git"},
-		{name: "a --config-file= after git push naming another git", args: []string{"git", "push", "-R", plain, "--config-file=" + configFile}, names: "/usr/bin/git"},
-		{name: "a -R naming no repository", args: []string{"git", "push", "-R", filepath.Join(dir, "nowhere")}, names: "could not read"},
+		{name: "a -R after git push naming a repository that names another git", args: []string{"git", "push", "-R", another}, names: []string{"/usr/bin/git"}},
+		{name: "a --repository= after git push naming that repository", args: []string{"git", "push", "--repository=" + another}, names: []string{"/usr/bin/git"}},
+		{name: "a -R= in front of git push naming that repository", args: []string{"-R=" + another, "git", "push"}, names: []string{"/usr/bin/git"}},
+		{name: "a second -R, the last, naming that repository", args: []string{"-R", plain, "git", "push", "-R", another}, names: []string{"/usr/bin/git"}},
+		{name: "a --config-file= after git push naming another git", args: []string{"git", "push", "-R", plain, "--config-file=" + configFile}, names: []string{"/usr/bin/git"}},
+		{name: "a -R naming no repository", args: []string{"git", "push", "-R", filepath.Join(dir, "nowhere")}, names: []string{"could not read"}},
+		{name: "an alias that expands to git push", in: aliased, args: []string{"p"}, names: []string{"/usr/bin/git", "through aliases.p"}},
+		{name: "an alias that expands to an alias that expands to git push", in: aliased, args: []string{"pp"}, names: []string{"/usr/bin/git", "through aliases.pp, aliases.p"}},
+		{name: "ui.default-command set to git push", in: defaulted, names: []string{"/usr/bin/git", "through ui.default-command"}},
+		{name: "an alias whose -R names a repository that names another git", in: carrier, args: []string{"pa"}, names: []string{"/usr/bin/git", "through aliases.pa"}},
+		{name: "an alias with a line break in a word", in: aliased, args: []string{"nl"}, names: []string{"line break"}},
 		{name: "a second -R, the last, naming a repository that names no git", args: []string{"-R", another, "git", "push", "-R", plain}},
 		{name: "a -R after git push naming a repository that names no git", args: []string{"git", "push", "-R", plain}},
+		{name: "an alias that expands to no push", in: aliased, args: []string{"v"}},
+		{name: "an alias with a built-in command's name, which jj ignores", in: aliased, args: []string{"log", "-r", "@", "--no-graph"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := run.Try(dir, append([]string{script}, tc.args...)...)
-			refused := strings.Contains(out, "LEAK CHECK SETUP ERROR")
-			if refused != (tc.names != "") {
-				t.Fatalf("the wrapper refused=%v, want %v: %v\n%s", refused, tc.names != "", err, out)
+			in := tc.in
+			if in == "" {
+				in = dir
 			}
-			if tc.names == "" {
+			out, err := run.Try(in, append([]string{script}, tc.args...)...)
+			refused := strings.Contains(out, "LEAK CHECK SETUP ERROR")
+			if refused != (len(tc.names) > 0) {
+				t.Fatalf("the wrapper refused=%v, want %v: %v\n%s", refused, len(tc.names) > 0, err, out)
+			}
+			if len(tc.names) == 0 {
 				if err != nil {
-					t.Fatalf("the wrapper did not run the push: %v\n%s", err, out)
+					t.Fatalf("the wrapper did not run the command: %v\n%s", err, out)
 				}
 				return
 			}
@@ -425,8 +463,10 @@ func TestTheJJWrapperReadsTheRepositoryThePushWouldUse(t *testing.T) {
 			if !errors.As(err, &exited) || exited.ExitCode() != 2 {
 				t.Fatalf("the refusal exited %v, want 2, the shared check's own setup-error status\n%s", err, out)
 			}
-			if !strings.Contains(out, tc.names) {
-				t.Fatalf("the refusal does not name %q:\n%s", tc.names, out)
+			for _, name := range tc.names {
+				if !strings.Contains(out, name) {
+					t.Fatalf("the refusal does not name %q:\n%s", name, out)
+				}
 			}
 		})
 	}
