@@ -263,8 +263,10 @@ test("a reopened issue's page names no unsent edit before typing, and an edit ty
 });
 
 // SLOW(>=2s): two document loads with a Yjs sync each; the row's claim is about what the second
-// one finds in the tab's store, so neither load can go.
-test("an edit applied before its acknowledgement clears its row on reload", async ({ browser }) => {
+// one does with the rows the first left, so neither load can go.
+test("an edit applied before its acknowledgement is sent again on reload and its row clears on that send's answer", async ({
+  browser,
+}) => {
   const issue = await makeIssue();
   const alice = await asUser(browser, "alice");
   const paragraph = "applied before acknowledgement";
@@ -274,6 +276,7 @@ test("an edit applied before its acknowledgement clears its row on reload", asyn
     await page.goto(`/issues/${issue.key}/spec`);
     await expect(connectedDot(page)).toHaveText("connected");
 
+    // The server applies the typing and every answer it sends is held, so the tab keeps each row.
     transport.holdServerFrames();
     await typeAtEnd(page, paragraph);
     await expect
@@ -283,10 +286,20 @@ test("an edit applied before its acknowledgement clears its row on reload", asyn
       .poll(() => pendingEditCount(page, issue.primary_artifact_id), PROBE)
       .toBeGreaterThan(0);
 
+    // The reloaded page is a client of its own, and sends each row the earlier load left again
+    // (web/src/features/doc/pending-sync.ts, `admit`). Its document already holds the paragraph,
+    // which says nothing of whether the server stored it - the room relays an edit before its store
+    // takes it - so a row clears only on the server's applied answer to the frame that sent it
+    // again, and while those answers are held every row stays.
     await page.reload();
-    await expect.poll(() => pendingEditCount(page, issue.primary_artifact_id), PROBE).toBe(0);
+    await expect(documentEditor(page)).toContainText(paragraph);
+    expect(await pendingEditCount(page, issue.primary_artifact_id)).toBeGreaterThan(0);
     await transport.releaseServerFrames();
-    expect((await getArtifactText(issue.primary_artifact_id)).markdown).toContain(paragraph);
+    await expect.poll(() => pendingEditCount(page, issue.primary_artifact_id), PROBE).toBe(0);
+    // Sent again, the edit lands nothing new: the document holds the paragraph once.
+    expect(
+      (await getArtifactText(issue.primary_artifact_id)).markdown.split(paragraph)
+    ).toHaveLength(2);
   } finally {
     await alice.close();
   }
