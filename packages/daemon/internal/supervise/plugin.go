@@ -138,13 +138,14 @@ const PodUpdateContract = 46
 // whose own end runs the relaunch back through here.
 //
 // A post that arrives carrying a credit over a machine that already holds one gives the new
-// credit straight back to the gate, keeping the flag for the wake the held one was taken for.
-// The pass reads the views the machines last published, so a wake parked a moment before it
-// counted is one its reading misses (internal/daemon's parkedWakes), and the post that reading
-// raises reaches a machine whose refresh is already waiting. The flag is one bit and says only
-// that a credit is held, so taking the second onto it would lose it: the decision would return
-// at the guard below over the wake already waiting, the end of it would keep one flag for the
-// two credits, and that wake's turn would give back one credit for two admissions.
+// credit straight back to the gate, keeping the one held for the wake it was taken for. The pass
+// reads the views the machines last published, so a wake parked a moment before it counted is
+// one its reading misses (internal/daemon's parkedWakes), and the post that reading raises
+// reaches a machine whose refresh is already waiting. A machine holds one credit, so taking the
+// second in place of the first would leave the first held by nothing: the decision would return
+// at the guard below over the wake already waiting, that wake's turn would give back one credit
+// for two admissions, and the other would wait for a sweep's correction to take it back
+// (reclaimCredit).
 //
 // A decision reached with no credit asks the gate itself, at the guard below, which is the
 // machine's one ask of it (admitRefresh). Three roads reach that guard holding none, and the
@@ -162,7 +163,7 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, credit *Ref
 			// This machine already holds a credit: the post's own goes back.
 			credit.Release()
 		} else {
-			m.refreshCredit = credit
+			m.holdCredit(credit)
 		}
 	}
 	if m.claim.PluginContract == m.deps.PluginContract {
@@ -186,7 +187,7 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, credit *Ref
 				"state", m.claim.State, "pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract, "trigger", trigger)
 			return nil
 		}
-		m.refreshCredit = c
+		m.holdCredit(c)
 	}
 	return m.relaunchStale(ctx, WakePluginRefresh, trigger)
 }

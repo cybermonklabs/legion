@@ -211,10 +211,14 @@ type Timer struct {
 type StalePlugin struct {
 	Claim   claim.Token
 	Trigger string
-	// Credit is the refresh gate credit the pass that posted this took for this claim, or nil
-	// when the post carries none: the controller's claim, a claim in a turn, or a post with no
-	// gate. The machine holds it from here until the end of the decision that runs the turn of
-	// the wake it pays for, and gives it back there (endRefreshLane); Release is idempotent.
+	// Credit is the credit of the stale-plugin refresh gate the pass that posted this took for
+	// this claim, or nil: the pass posts the controller's claim and a claim it read in a turn
+	// with none (internal/daemon's refreshStalePlugins). The decision of this post gives the
+	// credit back unless the machine takes it as its own (Machine.Handle, settleUntakenCredit,
+	// refreshPlugin): a row that ignores the post, a settle or fence that returns first, and a
+	// post over a credit already held all give it back as that decision ends. A credit the
+	// machine takes goes back at the end of the decision that ends with no refresh wake of this
+	// claim's waiting (endRefreshLane), and so at once where its decision raises none.
 	Credit *RefreshCredit
 }
 

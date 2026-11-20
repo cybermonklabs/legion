@@ -603,9 +603,9 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 		// them: it ends the very process the refresh wake was parked over. The credit comes
 		// back inside that same decision, which ends with no refresh wake of this machine's own
 		// waiting (supervise's endRefreshLane, Machine.unlock), and the next sweep's pass is
-		// what spends it, posting another stale claim on it. No correction takes a credit back:
-		// every credit comes back on the one path its holder gives it back on
-		// (supervise.RefreshGate, its rule of return).
+		// what spends it, posting another stale claim on it. The correction stays the backstop
+		// for a credit lost to a path that gives none back: it takes back a credit whose
+		// machine no longer holds it for a refresh wake (supervise.RefreshGate.Correct).
 		//
 		// It reads a full gate too, and waits for one in the same way, for the same reason: a
 		// lane that never fills one has the drain below to answer for, and the end of this case

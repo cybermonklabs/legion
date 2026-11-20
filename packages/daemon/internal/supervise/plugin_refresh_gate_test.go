@@ -284,7 +284,7 @@ func TestARefreshWhoseClaimRegisteredCurrentInsideTheWaitRelaunchesNothing(t *te
 // Every branch of refreshPlugin that raises no gated relaunch gives its credit straight back. The
 // lane gives up nothing by any of them — the next sweep decides the claim again as it stands then
 // — so a credit held through one would be a refresh the gate counts that nothing is waiting for,
-// and K of them would stop the lane for good until the sweep's own correction caught up.
+// and K of them would stop the lane until a sweep's correction took them back (reclaimCredit).
 //
 // A branch that leaves a wake of this claim's waiting is run on to that wake's turn (settle),
 // because the credit that wake holds is half of what such a row says: every row ends with the
@@ -321,15 +321,15 @@ func TestEveryRefreshThatRaisesNoRelaunchGivesItsCreditBack(t *testing.T) {
 			h.mustRefreshPass(gate, "boot")
 			h.wantWaitingWake(WakePluginRefresh)
 		}, func(h *harness) {
-			// One flag holds one credit, so the lagged post's own goes back to the gate where
+			// A machine holds one credit, so the lagged post's own goes back to the gate where
 			// it arrives and the one the waiting wake holds goes back at that wake's turn,
 			// which is run here: a row that stopped at the post would read the arrival release
 			// alone and say nothing of the credit the gate is bounded by.
 			//
 			// The negative control of this row is the arrival release reverted (the post's
-			// credit taken onto the flag the machine already holds): the two admissions are
-			// then held by one flag, the wake's turn gives back one of them, and the lane is a
-			// credit short for as long as it takes the sweep's own correction to find it.
+			// credit taken in place of the one the machine already holds): the first credit is
+			// then held by nothing, the wake's turn gives back the second, and the lane is a
+			// credit short until a sweep's correction takes the first back (reclaimCredit).
 			waiting := h.wantWaitingWake(WakePluginRefresh)
 			h.advance(waiting.At.Sub(h.clock.Now()))
 		}, refreshAsks{asked: 2, granted: 2, released: 2}},

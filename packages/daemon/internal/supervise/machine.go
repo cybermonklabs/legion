@@ -1488,10 +1488,16 @@ type Machine struct {
 	// own closure (retryHolding). The mark itself is the claim's and durable, written by the
 	// launch that commits this intent.
 	pluginRelaunch *pluginIntent
-	// refreshCredit is the credit this machine holds of the stale-plugin refresh gate: one
-	// of the K the lane may have in the wake pacing at once, taken before the relaunch it pays
-	// for was decided. nil means no credit is held. The credit's Publish and Release are
-	// idempotent, so endRefreshLane can call either without checking state.
+	// refreshCredit is the credit of the stale-plugin refresh gate this machine holds, nil for
+	// none: one of the K the lane may have in the wake pacing at once, taken before the relaunch
+	// it pays for was decided — by the daemon's pass, which hands it over on the post it makes
+	// (StalePlugin.Credit), or inside the decision itself (refreshPlugin, admitRefresh) — and made
+	// this machine's own in one place (holdCredit). It goes back at the end of the decision that
+	// holds it unless a refresh wake of this machine's own is waiting (endRefreshLane), and a
+	// sweep's correction takes it back from a machine that holds it for no such wake
+	// (reclaimCredit). One is all a machine holds: a post that arrives carrying a credit over one
+	// held gives its own straight back (refreshPlugin). It is memory only, as the wake it is
+	// taken for is: a restart leaves the gate empty.
 	refreshCredit *RefreshCredit
 	// identity is the latest hello2 identity for the claim's current incarnation,
 	// kept until its enrollment lands; enrollmentSent is whether that enrollment has been handed
@@ -2216,9 +2222,10 @@ func (m *Machine) stoppingProcess() func() {
 // section that takes mu without it reads the claim or counts goroutines and changes none of the
 // three. The sections that defer it are Handle, which every event and every timer of this package
 // comes through, ReleaseUncertainLaunch, markRound (PodUpdateTold), PublishUpdateAsk, StartedBy,
-// ReadProcess and Retree; the sections that take mu without it are Claim, OnDurableState, Wait,
-// compaction and the two goroutine tails in delivery.go and secrets.go. It is that rule a section
-// added later has to keep, rather than this list of the sections there are now.
+// ReadProcess, Retree and the refresh gate's reclaimCredit; the sections that take mu without it
+// are Claim, OnDurableState, Wait, compaction and the two goroutine tails in delivery.go and
+// secrets.go. It is that rule a section added later has to keep, rather than this list of the
+// sections there are now.
 func (m *Machine) unlock() {
 	m.endRefreshLane()
 	m.publish()

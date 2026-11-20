@@ -236,10 +236,6 @@ type overrides struct {
 	// the decision would hold the machine's lock, which an agent's request waits on at its grant
 	// check (supervise.Machine.Claim).
 	beforeDecision func(claim.Token, supervise.Event)
-	// afterRefreshAdmit runs in refreshStalePlugins between the Admit and the supervisor.post for
-	// each admitted claim, naming the claim and its credit, with no lock held. nil, in production,
-	// is nothing. It is the seam a test removes a claim at to prove the post-drop release.
-	afterRefreshAdmit func(claim.Token, *supervise.RefreshCredit)
 }
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
@@ -912,8 +908,6 @@ type plan struct {
 	streamWaitBegan func(claim.Token)
 	// beforeDecision is overrides.beforeDecision; nil runs nothing.
 	beforeDecision func(claim.Token, supervise.Event)
-	// afterRefreshAdmit is overrides.afterRefreshAdmit; nil runs nothing.
-	afterRefreshAdmit func(claim.Token, *supervise.RefreshCredit)
 }
 
 // appOwners is, for a daemon of runtimeName, the owner accounts the addressing of every launch
@@ -1053,7 +1047,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
-		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision, afterRefreshAdmit: o.afterRefreshAdmit,
+		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)
@@ -1387,8 +1381,9 @@ type supervision struct {
 	// hand gives it supervise.NewRefreshGate(0), the gate of a daemon that paces nothing, which
 	// grants every refresh.
 	refreshGate supervise.RefreshAdmitter
-	// afterRefreshAdmit is the test seam between Admit and supervisor.post in
-	// refreshStalePlugins, as overrides.afterRefreshAdmit describes. No production path sets it.
+	// afterRefreshAdmit is a test's seam between Admit and supervisor.post in
+	// refreshStalePlugins, run for each admitted claim with no lock held; nil runs nothing. A
+	// test sets it on the supervision it builds by hand, and no production path sets it.
 	afterRefreshAdmit func(claim.Token, *supervise.RefreshCredit)
 	// pauses is the project's pause (projectPause), nil without a workflow: the boot loads its
 	// flag before it restores any claim, and asks the stop of every claim it finds live while the
@@ -1703,8 +1698,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	supervisionOf := &supervision{
 		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
 		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate, pauses: pauses,
-		afterRefreshAdmit: p.afterRefreshAdmit,
-		cancel:            cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
+		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
 		stopping: stopping, beginStop: beginStop, sessionStops: &sessionStops,
 	}
 	// The machines' report of a stalled turn they ended goes to supervision, which is built
@@ -2130,15 +2124,17 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // refusal, since this pass re-reads every stale claim at every sweep, which is why the refused
 // claim is passed over in silence rather than remembered anywhere. The admission is taken
 // before the post, never after the machine has decided, so a refresh in flight is counted: the
-// gate counts every credit it has granted and not had back, and no re-read lowers that count
-// (supervise.RefreshGate, its rule of return). The pass gives back the credit of a post the
-// supervisor drops, because no machine ever decides that post (supervisor.post). Before any of
-// this the gate is corrected from the refresh wakes the machines really hold — the lane's own
-// kind, the one kind only this lane parks (supervise.WakePluginRefresh, parkedWakes) — which
-// raises the count when the lane holds wakes no admission is behind, and otherwise leaves it at
-// the credits out. The boot pass corrects an empty gate, which is what a restart leaves: no
-// machine of this daemon holds a wake yet, so the reading is zero and the fleet's refresh starts
-// with every credit free (supervise.RefreshGate.Correct).
+// gate counts every credit it has granted and not had back (supervise.RefreshGate, its rule of
+// return). The pass gives back the credit of a post the supervisor drops, because no machine ever
+// decides that post (supervisor.post). Before any of this the gate is corrected: it takes back
+// each credit, granted before its previous correction, that the machine holding it no longer
+// holds for a refresh wake of its own, which is the backstop for a credit lost to a path
+// that gives none back, and then sets its count from the refresh wakes the machines really hold
+// — the lane's own kind, the one kind only this lane parks (supervise.WakePluginRefresh,
+// parkedWakes) — which raises the count when the lane holds wakes no admission is behind, and
+// otherwise leaves it at the credits out. The boot pass corrects an empty gate, which is what a
+// restart leaves: no machine of this daemon holds a wake yet, so the reading is zero and the
+// fleet's refresh starts with every credit free (supervise.RefreshGate.Correct).
 //
 // A claim whose machine already holds a waiting wake is passed over before the gate is asked at
 // all, read from the same snapshot the correction counts (parkedWakes). The machine decides such

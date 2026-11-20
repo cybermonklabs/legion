@@ -665,13 +665,18 @@ func (b *inbox) take() (inboxItem, bool) {
 }
 
 // close ends the inbox. A mark it still holds is closed, since no event before it will be
-// handled now and its asker waits for nothing more.
+// handled now and its asker waits for nothing more. A refresh post it still holds gives back the
+// credit of the stale-plugin refresh gate it carries, since no machine will decide that post and
+// the post is the credit's one holder until one does (supervise.RefreshGate, its rule of return).
 func (b *inbox) close() {
 	b.mu.Lock()
 	b.closed = true
 	for _, item := range b.items {
 		if item.drained != nil {
 			close(item.drained)
+		}
+		if stale, ok := item.ev.(supervise.StalePlugin); ok {
+			stale.Credit.Release()
 		}
 	}
 	b.items = nil

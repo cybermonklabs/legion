@@ -4,19 +4,28 @@ import "testing"
 
 const gateRate = 8
 
+// grant is every credit the gate grants in a row, up to limit, before it refuses one. The credits
+// it grants stay out. A gate that grants limit credits without refusing one fails the test rather
+// than granting for ever.
+func grant(t *testing.T, g *RefreshGate, limit int) []*RefreshCredit {
+	t.Helper()
+	var credits []*RefreshCredit
+	for range limit {
+		c := g.Admit()
+		if c == nil {
+			return credits
+		}
+		credits = append(credits, c)
+	}
+	t.Fatalf("the gate granted %d admissions in a row, want it to refuse one inside %d asks", len(credits), limit)
+	return nil
+}
+
 // admissions is how many credits the gate grants in a row, up to limit, before it refuses one.
 // The credits it grants stay out.
 func admissions(t *testing.T, g *RefreshGate, limit int) int {
 	t.Helper()
-	granted := 0
-	for range limit {
-		if g.Admit() == nil {
-			return granted
-		}
-		granted++
-	}
-	t.Fatalf("the gate granted %d admissions and did not refuse one, want it bounded at %d", granted, limit)
-	return 0
+	return len(grant(t, g, limit))
 }
 
 // admit is one admission the test needs granted.
@@ -63,8 +72,8 @@ func TestWithNoPacingTheRefreshGateGrantsEveryRefresh(t *testing.T) {
 			}
 		}
 		g.Correct(gateRate * 4)
-		if g.held != 0 || g.out != 0 {
-			t.Fatalf("at rate %d the gate holds %d with %d credits out, want neither counted", rate, g.held, g.out)
+		if g.held != 0 || len(g.out) != 0 {
+			t.Fatalf("at rate %d the gate holds %d with %d credits out, want neither counted", rate, g.held, len(g.out))
 		}
 		for i := range gateRate * 4 {
 			if g.Admit() == nil {
@@ -151,10 +160,7 @@ func TestTheRefreshGateGivesItsWholeShareBackAtTheNextSweep(t *testing.T) {
 	g := NewRefreshGate(gateRate)
 	for sweep := 1; sweep <= 3; sweep++ {
 		g.Correct(0)
-		var credits []*RefreshCredit
-		for c := g.Admit(); c != nil; c = g.Admit() {
-			credits = append(credits, c)
-		}
+		credits := grant(t, g, gateRate+1)
 		if len(credits) != gateRate {
 			t.Fatalf("the gate granted %d admissions at sweep %d, want the rate, %d", len(credits), sweep, gateRate)
 		}
@@ -219,19 +225,47 @@ func TestADroppedPostsCreditIsReleasedByTheCaller(t *testing.T) {
 }
 
 // A credit given back twice gives back one: every path that ends a credit's life may release it,
-// and a second release takes nothing more off the count.
+// and a second release takes nothing more off the count, before a correction or after it.
 func TestACreditReleasedTwiceComesBackOnce(t *testing.T) {
 	g := NewRefreshGate(gateRate)
 	kept := admit(t, g)
 	c := admit(t, g)
 	c.Release()
 	c.Release()
+	if g.held != 1 || len(g.out) != 1 {
+		t.Fatalf("the gate holds %d with %d out after one credit released twice and one kept, want 1 and 1", g.held, len(g.out))
+	}
 	g.Correct(0)
-	if g.held != 1 || g.out != 1 {
-		t.Fatalf("the gate holds %d with %d out after one credit released twice and one kept, want 1 and 1", g.held, g.out)
+	if g.held != 1 || len(g.out) != 1 {
+		t.Fatalf("the gate holds %d with %d out after a correction, with one credit released twice and one kept, want 1 and 1", g.held, len(g.out))
 	}
 	kept.Release()
 	if got := admissions(t, g, gateRate+1); got != gateRate {
 		t.Fatalf("the gate granted %d once both credits were back, want %d", got, gateRate)
+	}
+}
+
+// A credit no machine has taken yet is held by the post that carries it, which the decision of
+// that post or the stop's close of the inbox it waits in gives back (the gate's rule of return),
+// so no correction takes it back however many sweeps the post waits: a post a machine has not yet
+// handled keeps its credit, as the lane's bound requires. The gate has no machine to ask about it,
+// and asks none.
+//
+// The negative control is a correction that takes back every credit granted before the previous
+// one whose machine it cannot ask: the post's credit is then gone at the second correction, and
+// the gate grants its whole share while the post still waits to be decided.
+func TestACreditStillInItsPostIsKeptByEveryCorrection(t *testing.T) {
+	g := NewRefreshGate(gateRate)
+	posted := admit(t, g)
+	for sweep := 1; sweep <= 3; sweep++ {
+		g.Correct(0)
+		if g.held != 1 || len(g.out) != 1 {
+			t.Fatalf("the gate holds %d with %d out after correction %d over a credit still in its post, want 1 and 1",
+				g.held, len(g.out), sweep)
+		}
+	}
+	posted.Release()
+	if got := admissions(t, g, gateRate+1); got != gateRate {
+		t.Fatalf("the gate granted %d once the post's credit was back, want %d", got, gateRate)
 	}
 }
