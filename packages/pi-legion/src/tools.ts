@@ -147,9 +147,7 @@ const pauseWords = (id: number, since: string, by: string, reason: string): stri
  * when the summary has no such line.
  *
  * Each field is taken off the pause it belongs to, under the state's own names (`paused.id`,
- * `paused.by.kind`, `lastPause.endedBy.session`), rather than inside a helper handed the pause
- * whole: the read-set census (`packages/pi-shared/src/daemon-client.test.ts`) matches a read by
- * the field's name under its parent's, and a helper's parameter names no field of the state.
+ * `paused.by.kind`, `lastPause.endedBy.session`), the names `LEGION_ANSWER_READS` declares.
  */
 function pauseSummary(state: LegionState): string | undefined {
   const paused = state.paused;
@@ -188,8 +186,8 @@ function pauseSummary(state: LegionState): string | undefined {
  * nothing of what waits, where a 0 would say that nothing does: the daemon leaves the key off the
  * state it serves a caller it reads as below the contract that added the key (`api.stateFor`,
  * `withoutWakesWaiting`; `LegionStateResponse` says which callers those are). The loop runs over
- * the state's own list, so the census sees each `dueAt` read under `wakesWaiting`
- * (`pauseSummary` says why).
+ * the state's own list, so each `dueAt` is read under `wakesWaiting`, the name
+ * `LEGION_ANSWER_READS` declares.
  */
 function wakesWaitingSummary(state: LegionState): string | undefined {
   if (state.wakesWaiting === undefined) return undefined;

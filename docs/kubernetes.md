@@ -7014,7 +7014,7 @@ While the project runs after a pause has ended, the state carries `lastPause` in
 `<who>` is `the controller (session <id>)` or `the operator`.
 The summary of the controller's `read_state` prints each line in the same words, and adds how many rows the pause holds.
 Its times are the daemon's own strings, where `legion state` prints each time at whole seconds.
-A caller from a pod whose plugin speaks a contract below the one that added the two keys is served the state with neither (`withoutPause`, `internal/api/server.go`).
+A caller from a pod whose plugin speaks a contract below the one that added the two keys is served the state with neither (`withoutPause`, `internal/api/shaping.go`).
 
 The daemon logs four messages, each with the claim it is about where it has one:
 
@@ -7043,6 +7043,9 @@ The daemon logs four messages, each with the claim it is about where it has one:
 
 - While the project is paused, an operation that would start a turn of a role other than the controller answers 409 `PROJECT_PAUSED`, with the pause that stands, and changes nothing.
   These are the controller's `compact` and `fresh_session`, and the operator's `legion claims resume`, `retry`, `compact`, `spawn` and `deliver`.
+
+A caller whose plugin speaks a contract below the one that added the pause is served each of these refusals as the plain failure, its `code` and `error` alone, with no `setting`, `pause` or `lastPause`, and is served the release records' resumes without their `pause`.
+The contract the caller states in its request decides that, or, where it states none, the claims of the pod it asks from, as on the state (`placedByPod`, `internal/api/shaping.go`).
 
 `legion project release` (dispatch://INFRA-3583) is not in this release.
 It is designed to refuse while the project is paused, and while a pause's hold stands on any pod.

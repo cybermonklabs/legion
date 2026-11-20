@@ -1396,8 +1396,8 @@ test("every key legionSettings types is a scalar, so no path below a typed key i
 // The read-set census: the answer schemas, held to the set of fields plugin code reads.
 //
 // `LEGION_ANSWER_READS` (`packages/contracts/src/legion-api.ts`) is the declared read set: one
-// entry per field plugin code takes the value of, by the schema's exported name and the path of
-// the field within it. This census holds the schemas and that set to one another in three
+// entry per field a read in plugin code names, by the schema's exported name and the path of the
+// field within it. This census holds the schemas and that set to one another in three
 // directions: a field the set does not name is optional, a name of the set is read somewhere in
 // the consumer sources, and a field those sources read is named by the set.
 //
@@ -1406,11 +1406,16 @@ test("every key legionSettings types is a scalar, so no path below a typed key i
 // answers the Go CLI reads — is outside the census by that rule rather than by a list of names,
 // and keeps every field the daemon always writes required.
 //
-// Both directions that read the sources match by name, and the limit of that is known: a
-// property of some other object with the same name is read as a read of the field, which keeps
-// the field required (the set may name it) instead of making it optional. That errs toward
-// refusing a body the plugin could have read, not toward a plugin reading a field that is not
-// there, which is the side this issue cares about.
+// Both directions that read the sources match a read by the field's name under its parent's name,
+// as the source writes the two (`paused.by.kind`), whichever schema the value was taken from. So a
+// consumer source takes each field off its parent under the parent's own name: a field a helper
+// reads off a parameter it was handed is named under the parameter, not under a field of the
+// answer, and is no read this census sees, which is why `pauseSummary`
+// (`packages/pi-legion/src/tools.ts`) takes each field off the state's own `paused` and
+// `lastPause`. The limit of matching by name is known too: a property of some other object with
+// the same name is read as a read of the field, which keeps the field required (the set may name
+// it) instead of making it optional. That errs toward refusing a body the plugin could have read,
+// not toward a plugin reading a field that is not there, which is the side this issue cares about.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** The directories whose TypeScript consumes a daemon answer, their test files left out: a test

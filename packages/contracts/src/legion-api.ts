@@ -906,8 +906,8 @@ const legionIssue = z.object({
 /** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history.
  * No plugin code reads a field of it: the controller's boot check read `project` here until it
  * read the health answer instead, and the controller's `read_state` hands the state to its
- * agent whole. So every field is optional, as `LEGION_ANSWER_READS` requires of a field no
- * plugin code takes the value of. */
+ * agent whole. So every field is optional, as `LEGION_ANSWER_READS` requires of a field no read
+ * in plugin code names. */
 const daemonInfo = z.object({
   project: nonEmptyString.optional(),
   schemaVersion: z.number().int().nonnegative().optional(),
@@ -2105,10 +2105,9 @@ export const LegionChildRequest = z.strictObject({
  * `pi-legion/src/stall-evidence.ts` read the architect's claim state, and the controller's
  * `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status, hold reason, slot,
  * design gate, and the state and both turn times of the architect's claim and of every worker's.
- * The record route and the
- * state's `issues{}` answer the same node, so the read set below names these paths at both,
- * `LegionIssueRecordResponse` as they stand and `LegionStateResponse` under the state's prefix.
- * They are written once here because the two entries must say the same thing.
+ * The record route and the state's `issues{}` answer the same node, so the read set below names
+ * these paths at both, `LegionIssueRecordResponse` as they stand and `LegionStateResponse` under
+ * the state's prefix. They are written once here because the two entries must say the same thing.
  *
  * The summary reads the state and never the record route. Its fields are in this list because
  * the summary reads them on the node that the two answers share. Each of them is `.optional()`
@@ -2141,19 +2140,21 @@ const ISSUE_RECORD_READS = [
 ] as const;
 
 /**
- * The declared read set: every field of an answer schema that plugin code takes the value of,
- * by the answer schema's exported name and the path of the field within it. A path names each
- * key from that schema's root, with a record's value written `{}` and a list's element `[]`, as
- * the object census in `legion-api.test.ts` writes them, and a discriminated union's member by
- * its index after `|` (`paused.by|0.session`, the controller's entry). An answer schema with no
- * entry here is one no plugin code reads a field of.
+ * The declared read set: every field of an answer schema that a read in plugin code names, by the
+ * answer schema's exported name and the path of the field within it. A read names a field by the
+ * field's name under its parent's name, whichever answer schema that read took the value from, so
+ * a field is named in every answer schema that has one of that name under a parent of that name.
+ * A path names each key from that schema's root, with a record's value written `{}` and a list's
+ * element `[]`, as the object census in `legion-api.test.ts` writes them, and a discriminated
+ * union's member by its index after `|` (`paused.by|0.session`, the controller's entry). An
+ * answer schema with no entry here is one whose fields no read in plugin code names.
  *
  * It is the other half of "the reader requires only what it reads" (dispatch://INFRA-2694). A
  * field this set does not name is `.optional()` above, so a daemon that serves this contract
  * without that field is still read; a field it names may stay required. The census in
  * `packages/pi-shared/src/daemon-client.test.ts` holds the two to each other in three
- * directions: a required field this set does not name fails it, a name of this set that no
- * consumer source takes the value of fails it too, and a field a consumer source reads of its
+ * directions: a required field this set does not name fails it, a name of this set that no read
+ * in a consumer source names fails it too, and a field a consumer source reads of its
  * own parent that this set does not name fails it as well. The consumer sources are
  * `packages/pi-shared/src`, `packages/pi-legion/src`, `packages/pi-legion/extensions` and
  * `packages/claude-envoy/src`, their test files left out.
@@ -2172,14 +2173,14 @@ const ISSUE_RECORD_READS = [
  *
  * One node several paths reach is named at each of them: the claim view is read at an issue's
  * `architect` and sits under `workers{}.claim` as well, and the issue record is the same node as
- * the state's `issues{}`, so both carry the same lines. The census matches a read by the field's
- * name under its parent's, so a field of one name under a parent of one name is named in every
- * answer that has it, read there or not: the pause and resume answers name the actor's `kind`
- * and a controller's `session` under `by` and `endedBy`, which the summary reads of the state's
- * pauses, though no plugin code reads either answer. A discriminator is required whatever a
- * reader takes, since a body without it matches no member of the union: one no plugin code reads
- * (`locator.runtime`, `waitingOn.kind`) is in no entry, and one the summary reads (the pause
- * actor's `kind`) is named at each member, as any read is.
+ * the state's `issues{}`, so both carry the same lines. As the first paragraph says, a field is
+ * named in every answer that has one of its name under a parent of its parent's name, read there
+ * or not: the pause and resume answers name the actor's `kind` and a controller's `session` under
+ * `by` and `endedBy`, which the summary reads of the state's pauses, though no plugin code reads
+ * either answer. A discriminator is required whatever a reader takes, since a body without it
+ * matches no member of the union: one no plugin code reads (`locator.runtime`, `waitingOn.kind`)
+ * is in no entry, and one the summary reads (the pause actor's `kind`) is named at each member,
+ * as any read is.
  */
 export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = {
   // The three readers of an issue's record ask the record route for it (dispatch://INFRA-2694),
