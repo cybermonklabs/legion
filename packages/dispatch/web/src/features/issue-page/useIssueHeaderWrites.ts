@@ -7,7 +7,9 @@ import type { Issue, IssueDetails, UserIssueState, UserState } from "../../api/t
 import { type SubmitGuard, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { stateForIssue } from "../issue/pins";
 import { type IssueDrafts, type IssueUpdateInput, useIssueDrafts } from "../issue/useIssueDrafts";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import {
+  type KeyedPress,
   type KeyedWriteOptions,
   type KeyedWriteResult,
   useKeyedWrite,
@@ -73,15 +75,17 @@ export interface IssueHeaderWrites {
   /** The drafts of the title, the route and the parent, and the submits that save them. */
   readonly drafts: IssueDrafts;
   /** The title, the route and the parent, which the drafts save, and a status sent through the
-   *  drafts (`requestStatusSubmit`); the Status pill's pick is a write of its own (`pickStatus`). */
-  readonly updateIssue: KeyedWriteResult<Issue, IssueUpdateInput, unknown>;
+   *  drafts (`requestStatusSubmit`); the Status pill's pick is a write of its own (`pickStatus`).
+   *  Each press names its issue (`IssueFieldsSave`). */
+  readonly updateIssue: KeyedWriteResult<Issue, IssueFieldsSave, unknown>;
   /** The labels, which the popover saves as one set when it closes. */
-  readonly labels: KeyedWriteResult<Issue, string[], unknown>;
+  readonly labels: KeyedWriteResult<Issue, IssueLabelsSave, unknown>;
   /** The pin, applied to the person's state at once and rolled back on a refusal. */
-  readonly pin: KeyedWriteResult<UserIssueState, boolean, PinRollback>;
+  readonly pin: KeyedWriteResult<UserIssueState, IssuePinSave, PinRollback>;
   /** One press at a time on the pin, whose write is optimistic. */
   readonly pinGuard: SubmitGuard;
-  readonly releaseClaim: KeyedWriteResult<Issue, void, unknown>;
+  /** The release of the claim on the issue a press names, by its key. */
+  readonly releaseClaim: KeyedWriteResult<Issue, string, unknown>;
   /** The status a pick is saving right now, which the pill and the closed line show: the newest
    *  pending write of this issue's fields that holds a status, whichever caller on the page made
    *  it, so the header and Details show one status. A pick waiting in the issue's line behind an
@@ -101,11 +105,33 @@ export interface IssueHeaderWrites {
    * last write, which a status sent through it would replace.
    */
   readonly pickStatus: (next: string) => void;
-  /** A parent Dispatch refused, with the reason it gave, drawn where the parent is edited. */
+  /** A parent Dispatch refused, with the reason it gave, or one the reader stopped, which may have
+   *  been saved, drawn where the parent is edited. */
   readonly parentSaveFailed: boolean;
   readonly parentError: string;
   /** A title Dispatch refuses every time (too long, or the issue is closed), or null. */
   readonly titleRefusal: string | null;
+}
+
+/** One write of the issue's fields: the issue it is of and its change, both taken at the press,
+ *  so its request, its line, its label and its landing are of that issue, and so is a Retry of
+ *  it, whichever issue the hook is drawn for by then (`useKeyedWrite` runs the newest render's
+ *  options over the press's own variables). */
+export interface IssueFieldsSave {
+  readonly input: IssueUpdateInput;
+  readonly issueKey: string;
+}
+
+/** One save of an issue's labels: the issue and the whole set, taken at the press. */
+export interface IssueLabelsSave {
+  readonly issueKey: string;
+  readonly labels: string[];
+}
+
+/** One pin or unpin of an issue, taken at the press. */
+export interface IssuePinSave {
+  readonly issueKey: string;
+  readonly pinned: boolean;
 }
 
 /** What the pin's optimistic write puts back when Dispatch refuses it. */
@@ -118,12 +144,17 @@ export function useIssueHeaderWrites(
   state: UserIssueState
 ): IssueHeaderWrites {
   const queryClient = useQueryClient();
-  // Every write here names `write` first: its answer and its variables are what the callbacks
-  // below read.
+  // Every write here states its method - `write` with its own, a `request` with the request's -
+  // and takes the issue it is of from its press, never from the issue this hook is drawn for
+  // when a callback or a Retry runs. `write` comes first: its answer and its variables are what
+  // the callbacks below read.
   const releaseClaim = useKeyedWrite({
-    write: (_variables, bounds) => api.releaseIssueClaim(issue.key, bounds),
+    // A release made again after one that landed needs no `removedEvenIfGone`: Dispatch answers a
+    // release of an issue nobody holds with the issue, as it answers the first.
+    method: "DELETE",
+    write: (issueKey: string, bounds) => api.releaseIssueClaim(issueKey, bounds),
     inline: true,
-    label: () => `Claim on ${issue.key} released`,
+    label: (issueKey) => `Claim on ${issueKey} released`,
     onSuccess: (next) => {
       if (next !== null) mergeIssue(queryClient, next);
       void queryClient.invalidateQueries({ queryKey: ["issues"] });
@@ -139,19 +170,19 @@ export function useIssueHeaderWrites(
   const mutationKey = ["issue-update", issue.key];
   // What the two writes of the issue's fields share, written once so the pick can never part
   // from `updateIssue`'s key, line, request or landing.
-  const fieldWrite: KeyedWriteOptions<Issue, IssueUpdateInput, unknown> = {
+  const fieldWrite: KeyedWriteOptions<Issue, IssueFieldsSave, unknown> = {
     mutationKey,
-    label: (input) => issueUpdateLabel(issue.key, input),
-    target: () => `issue:${issue.key}`,
-    request: (input) => issuePatchRequest(issue.key, input),
-    onSuccess: (next, input) => {
-      landIssueWrite(queryClient, issue.key, next);
+    label: ({ input, issueKey }) => issueUpdateLabel(issueKey, input),
+    target: ({ issueKey }) => `issue:${issueKey}`,
+    request: ({ input, issueKey }) => issuePatchRequest(issueKey, input),
+    onSuccess: (next, { input, issueKey }) => {
+      landIssueWrite(queryClient, issueKey, next);
       drafts.onIssueSuccess(next ?? issue, input);
     },
   };
   const updateIssue = useKeyedWrite({
     ...fieldWrite,
-    inline: (input) => !statusPickOnly(input),
+    inline: ({ input }) => !statusPickOnly(input),
     onSettled: (_data, error) => {
       drafts.onIssueSettled(error);
     },
@@ -167,18 +198,25 @@ export function useIssueHeaderWrites(
   // with no answer reads the issue again rather than leave the old labels showing
   // (`landIssueWrite`).
   const labels = useKeyedWrite({
-    label: () => `Labels of ${issue.key}`,
-    target: () => `issue:${issue.key}`,
-    request: (next: string[]) => issuePatchRequest(issue.key, { labels: next }),
-    onSuccess: (next) => {
-      landIssueWrite(queryClient, issue.key, next);
+    label: ({ issueKey }: IssueLabelsSave) => `Labels of ${issueKey}`,
+    target: ({ issueKey }) => `issue:${issueKey}`,
+    request: ({ issueKey, labels: next }) => issuePatchRequest(issueKey, { labels: next }),
+    onSuccess: (next, { issueKey }) => {
+      landIssueWrite(queryClient, issueKey, next);
     },
   });
-  const drafts = useIssueDrafts(issue, updateIssue);
+  // The drafts save the fields of the issue this hook is drawn for, so each of their presses
+  // names that issue, and reads back the change its newest press carried.
+  const drafts = useIssueDrafts(issue, {
+    mutate: (input) => updateIssue.mutate({ input, issueKey: issue.key }),
+    retry: updateIssue.retry,
+    variables: updateIssue.variables?.input,
+  });
   const pinGuard = useSubmitGuard();
   const pin = useKeyedWrite({
-    label: (pinned: boolean) => `${issue.key} ${pinned ? "pinned" : "unpinned"}`,
-    write: (pinned: boolean, bounds) => api.putIssueState(issue.key, { pinned }, bounds),
+    label: ({ issueKey, pinned }: IssuePinSave) => `${issueKey} ${pinned ? "pinned" : "unpinned"}`,
+    method: "PUT",
+    write: ({ issueKey, pinned }, bounds) => api.putIssueState(issueKey, { pinned }, bounds),
     onSettled: () => {
       pinGuard.release();
       void queryClient.invalidateQueries({ queryKey: userStateQuery().queryKey });
@@ -186,26 +224,29 @@ export function useIssueHeaderWrites(
       // its write settled: with an answer, landed with none (`null`), or refused.
       void queryClient.invalidateQueries({ exact: true, queryKey: ["issues", "pinned"] });
     },
-    onMutate: async (pinned) => {
+    onMutate: async ({ issueKey, pinned }) => {
       await queryClient.cancelQueries({ queryKey: userStateQuery().queryKey });
       const previous = queryClient.getQueryData<UserState>(userStateQuery().queryKey);
+      // The press's issue shows pinned at once: from the state this hook is handed where the
+      // press is of its issue, else as the person's state read holds that issue.
+      const shown = issueKey === issue.key ? state : stateForIssue(previous, issueKey);
       queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) => ({
         ...current,
-        [issue.key]: { ...state, pinned },
+        [issueKey]: { ...shown, pinned },
       }));
       return { previous };
     },
-    onError: (_error, _pinned, context) => {
+    onError: (_error, { issueKey }, context) => {
       queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) => ({
         ...current,
-        [issue.key]: stateForIssue(context?.previous, issue.key),
+        [issueKey]: stateForIssue(context?.previous, issueKey),
       }));
     },
-    onSuccess: (next) => {
+    onSuccess: (next, { issueKey }) => {
       if (next === null) return;
       queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) => ({
         ...current,
-        [issue.key]: next,
+        [issueKey]: next,
       }));
     },
   });
@@ -213,13 +254,17 @@ export function useIssueHeaderWrites(
   // Every pending write of this issue's fields on the page - `updateIssue`'s and `statusWrite`'s,
   // which carry one mutation key, of every caller of this hook - in the order they were made, so
   // the last that holds a status is the newest pick. A pick waiting its turn in the issue's line
-  // is pending from its press, so it shows at once.
+  // is pending from its press, so it shows at once. The mutation cache holds each as the press
+  // its keyed write made (`KeyedPress`), with the save inside it.
   const pendingStatuses = useMutationState({
     filters: { exact: true, mutationKey, status: "pending" },
-    select: (mutation) => (mutation.state.variables as IssueUpdateInput | undefined)?.status,
+    select: (mutation) => {
+      const press = mutation.state.variables as KeyedPress<IssueFieldsSave> | undefined;
+      return press?.variables.input.status;
+    },
   });
   const pickStatus = (next: string) => {
-    statusWrite.mutate({ status: next });
+    statusWrite.mutate({ input: { status: next }, issueKey: issue.key });
   };
   const pendingStatus = pendingStatuses.filter((status) => status !== undefined).at(-1);
   const statusSaving = pendingStatus !== undefined;
@@ -227,9 +272,16 @@ export function useIssueHeaderWrites(
     drafts,
     labels,
     // A refused parent save (PARENT_INPUT, ISSUE_CLOSED) renders the server's reason inline,
-    // like a route validation error, instead of the generic update failure line.
-    parentError: apiErrorMessage(updateIssue.error, "Could not save parent."),
-    parentSaveFailed: updateIssue.isError && updateIssue.variables?.parent !== undefined,
+    // like a route validation error, instead of the generic update failure line. One the reader
+    // stopped may have been saved; the editor has closed, and saving it again is a press of its
+    // own (`requestParentSubmit`).
+    parentError:
+      updateIssue.error instanceof SendStoppedError
+        ? stoppedWriteNote("the new parent", "saved", {
+            anew: "Saving it again sends it as a new write.",
+          })
+        : apiErrorMessage(updateIssue.error, "Could not save parent."),
+    parentSaveFailed: updateIssue.isError && updateIssue.variables?.input.parent !== undefined,
     pendingStatus,
     pickStatus,
     pin,
@@ -241,7 +293,7 @@ export function useIssueHeaderWrites(
     // generic line and its Retry.
     titleRefusal:
       updateIssue.isError &&
-      updateIssue.variables?.title !== undefined &&
+      updateIssue.variables?.input.title !== undefined &&
       apiErrorCodeIn(updateIssue.error, titleRefusals)
         ? updateIssue.error.message
         : null,

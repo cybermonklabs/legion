@@ -35,9 +35,14 @@ func uploadImage(t *testing.T, handler http.Handler, issueKey, name, pixels stri
 	return decodeBody[uploadedArtifact](t, response)
 }
 
+// uploadDocument uploads a document to the owner, naming the token of the version it replaces
+// where the owner already holds that name, as every replacement does.
 func uploadDocument(t *testing.T, handler http.Handler, owner, name, content string) uploadedArtifact {
 	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodPost, owner+"/artifacts", map[string]string{"name": name, "content": content}, "alice")
+	response := dispatchRequest(t, handler, http.MethodPost, owner+"/artifacts", map[string]any{
+		"name": name, "content": content,
+		"precondition": uploadBaseNamed(t, handler, owner+"/artifacts", name),
+	}, "alice")
 	if response.Code != http.StatusCreated {
 		t.Fatalf("upload %s to %s: status=%d body=%s", name, owner, response.Code, response.Body.String())
 	}

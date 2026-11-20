@@ -64,7 +64,8 @@ type routeShape struct {
 	Params any
 	// Advice is a zero value of the advice shape the success answer carries beside its payload
 	// (withAdvice, withRawAdvice and withSuggestions merge an `advice` sibling into the payload
-	// object rather than nesting it, write_advice.go:471-517); nil for an answer that carries none.
+	// object rather than nesting it: withAdvice and withRawAdvice in write_advice.go,
+	// withSuggestions in suggestions.go); nil for an answer that carries none.
 	Advice any
 	// Refusals are this route's refusal bodies richer than errorBody, each with its status.
 	Refusals []routeAnswer
@@ -731,6 +732,9 @@ var routeShapes = map[string]routeShape{
 	},
 	"POST /api/v1/issues/{key}/results": {
 		Status: http.StatusCreated, Response: checkResultRecorded{}, Request: checkResultInput{},
+	},
+	"POST /api/v1/issues/{key}/results/dry-run": {
+		Status: http.StatusOK, Response: checkResultDryRun{}, Request: checkResultInput{},
 	},
 	"POST /api/v1/results/{id}/retract": {
 		Status: http.StatusCreated, Response: model.CheckResultRetraction{},

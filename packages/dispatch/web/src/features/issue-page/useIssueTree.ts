@@ -144,7 +144,10 @@ export const issueAsksQuery = (key: string) =>
  * What every read of the tree takes: it is kept fresh by events, never by its age. The page's
  * stage mounts the tree's slot again on every press of a view, so under the app's 30 s
  * `staleTime` (`main.tsx`) a press more than 30 s after the load would read every one of the
- * tree's reads again, though nothing they hold has changed.
+ * tree's reads again, though nothing they hold has changed. Staleness is per observer, so the
+ * page's writer (`outline-writer.tsx`), which observes the asks, the comments and the messages
+ * under the tree's keys, takes it too: under the app's defaults a window focus more than 30 s
+ * after the load would read all three again for the writer alone.
  * The feed's rules (`api/event-refresh.ts`) refresh each read when an event can change it; among
  * them, `["comments", key]` on a comment event and on a document's upload or new version;
  * `["asks", key]` on an ask event, a reply on an ask, a review of a document and a block
@@ -156,15 +159,15 @@ export const issueAsksQuery = (key: string) =>
  * rename, removal or review, and an ask or comment in it; and a names read
  * (`["reference-targets", …]`) on an event that changes the words or the name under an address
  * its key holds, on the issue or project document that address is of: a comment's edit, an
- * ask's edit, a document's new version, rename or removal, and an issue's write that changes its
- * title (`referenceNameTargets`). A names read's key is the set of addresses it names, so a tree
- * that comes to hold another set reads again under a key of its own, and only a change under an
- * address the tree already names needs a rule. No rule there names `["whoami"]`: the reader's
- * login does not change while the page is open. A gap in the feed refreshes every read the app
- * holds (`refreshQueries`), these among them, and window focus fetches again only a read in
+ * ask's edit, a document's creation, new version, rename or removal, and an issue's write that
+ * changes its title (`referenceNameTargets`). A names read's key is the set of addresses it names,
+ * so a tree that comes to hold another set reads again under a key of its own, and only a change
+ * under an address the tree already names needs a rule. No rule there names `["whoami"]`: the
+ * reader's login does not change while the page is open. A gap in the feed refreshes every read the
+ * app holds (`refreshQueries`), these among them, and window focus fetches again only a read in
  * error (`refetchFailedOnFocus`).
  */
-const EVENT_FRESH = {
+export const EVENT_FRESH = {
   refetchOnWindowFocus: refetchFailedOnFocus,
   staleTime: Number.POSITIVE_INFINITY,
 } as const;

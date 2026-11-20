@@ -37,7 +37,7 @@ const (
 )
 
 // reviewBody is a review's body as a Legion role writes it: what the role said, then the Legion
-// footer naming the session that wrote it and the head it read (skills/legion-worker/SKILL.md).
+// footer naming the session that wrote it and the head it read (prompts/roles/reviewer.md).
 // The session it names is the one the shared fixtures record on the reviewer's claim
 // (seedRoundOneRows), so it is the reviewer's own review, and a fixture about another session
 // writes its own body. It names no entry, so it decides its round and moves no commit the reviewer

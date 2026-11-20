@@ -19,7 +19,8 @@ const ttl = 60 * time.Second
 const expiredRetention = time.Hour
 
 var (
-	// ErrUnauthenticated means Mint was not given the live, authenticated claim a route obtained.
+	// ErrUnauthenticated means Mint was not given the live, authenticated claim a route obtained,
+	// or MintController no session.
 	ErrUnauthenticated = errors.New("grant requires an authenticated claim")
 	// ErrExpired means the grant's sixty-second window elapsed before redemption.
 	ErrExpired = errors.New("grant expired")
@@ -28,9 +29,16 @@ var (
 	ErrUnavailable = errors.New("grant is unavailable")
 )
 
-// Grant is the in-memory capability returned by Mint or MintController. ID is the bearer and is
-// never persisted or logged. CapabilityHash is deliberately private: routes compare it through
-// StillMatches, so a grant authenticates only while its claim holds the capability that minted it.
+// Grant is the in-memory capability returned by Mint, MintController or MintOperatorController. ID
+// is the bearer and is never persisted or logged. CapabilityHash is deliberately private: routes
+// compare it through StillMatches, so a grant authenticates only while its claim holds the
+// capability that minted it.
+//
+// A controller grant (Controller) says who minted it, because a project's pause records who acted
+// (decision 19 of dispatch://INFRA-3759): Session is the controller session that minted it
+// (MintController), and Operator is set where the operator's bearer minted it instead
+// (MintOperatorController). Exactly one of the two is set on every controller grant, and neither
+// on a claim's.
 type Grant struct {
 	ID         string
 	Issue      string
@@ -40,6 +48,8 @@ type Grant struct {
 	Claim      claim.Token
 	ExpiresAt  time.Time
 	Controller bool
+	Operator   bool
+	Session    string
 
 	capabilityHash []byte
 }
@@ -85,21 +95,39 @@ func (g *Grants) Mint(c supervise.Claim) (Grant, error) {
 	return grant, nil
 }
 
-// MintController records a sixty-second controller grant: for the operator's bearer, or for the
-// session registered with the current controller capability. Authorization happens at the route:
-// the service keeps no bearer and cannot accidentally copy one into a grant record.
-func (g *Grants) MintController() (Grant, error) {
+// MintController records a sixty-second controller grant for session, the session registered with
+// the current controller capability. Authorization happens at the route (the grants route's
+// controller-session form): the service keeps no secret and cannot accidentally copy one into a
+// grant record. A blank session is refused, since a controller grant that names no session would
+// read as nobody's.
+func (g *Grants) MintController(session string) (Grant, error) {
+	if session == "" {
+		return Grant{}, ErrUnauthenticated
+	}
+	return g.mintController(Grant{Session: session})
+}
+
+// MintOperatorController records a sixty-second controller grant for the operator's bearer, which
+// the route compared before it asked (the grants route's empty form, which `legion issue status`
+// takes). The service keeps no bearer.
+func (g *Grants) MintOperatorController() (Grant, error) {
+	return g.mintController(Grant{Operator: true})
+}
+
+// mintController records grant, which names who minted it, as a controller grant.
+func (g *Grants) mintController(grant Grant) (Grant, error) {
 	id, err := grantID()
 	if err != nil {
 		return Grant{}, err
 	}
-	grant := Grant{ID: id, ExpiresAt: g.now().Add(ttl), Controller: true}
+	grant.ID, grant.ExpiresAt, grant.Controller = id, g.now().Add(ttl), true
 	g.record(grant)
 	return grant, nil
 }
 
-// RevokeControllers ends every controller grant, so none minted under a controller capability
-// outlives the capability a new mint replaces. A revoked id is unavailable, like one never minted.
+// RevokeControllers ends every controller grant, the operator's among them, so none minted under a
+// controller capability outlives the capability a new mint replaces. A revoked id is unavailable,
+// like one never minted.
 func (g *Grants) RevokeControllers() {
 	g.mu.Lock()
 	defer g.mu.Unlock()

@@ -200,6 +200,12 @@ on:
         description: "ci.yaml's needs.changes.outputs.main_bypass_check_test: main-bypass-check.test.sh and what it tests."
         type: string
         required: true
+      edited_migrations_base_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.edited_migrations_base_test:
+          edited-migrations-base.test.sh and what it tests.
+        type: string
+        required: true
       dispatch_browser_latest_blobs_test:
         description: >-
           ci.yaml's needs.changes.outputs.dispatch_browser_latest_blobs_test:
@@ -468,6 +474,12 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.main_bypass_check_test == 'true'
         run: .github/scripts/main-bypass-check.test.sh
 
+      # The base envoy-go-checks' edited-migrations check compares a run's tree with, per event,
+      # over fixture remotes cloned one commit deep as actions/checkout leaves a run's tree.
+      - name: Test the edited-migrations check's choice of base (fixture git remotes; no GitHub)
+        if: inputs.changes-result != 'success' || inputs.edited_migrations_base_test == 'true'
+        run: .github/scripts/edited-migrations-base.test.sh
+
       # The attempt selection dispatch-browser.yaml's merge job runs over the legs' blob
       # artifacts. A run holds every attempt's artifacts, so the newest of each leg has to be
       # chosen or a re-run is judged on the attempt it replaced; these are the assertions that
@@ -574,10 +586,11 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.check_ts_filters_test == 'true'
         run: .github/scripts/check-ts-filters.test.sh
 
-      # Beside the two checks above, and needing no Go either: every case is one line of text,
-      # read by the line reader of .github/scripts/go-test-step-expansion.py, or the hash of a
-      # script that file's AUDITED_SCRIPTS pins. The script's own run compiles the three Go
-      # modules it covers and is run by hand rather than by any job.
+      # Beside the two checks above, and needing no Go either: every case is text, read by the
+      # line and step readers of .github/scripts/go-test-step-expansion.py (the step reader over
+      # every go test step of ci.yaml and the workflows its jobs call, so a step it would refuse
+      # fails here), or the hash of a script that file's AUDITED_SCRIPTS pins. The script's own
+      # run compiles the three Go modules it covers and is run by hand rather than by any job.
       - name: Test the go test step expansion
         if: inputs.changes-result != 'success' || inputs.go_test_step_expansion_test == 'true'
         run: .github/scripts/go-test-step-expansion.test.sh

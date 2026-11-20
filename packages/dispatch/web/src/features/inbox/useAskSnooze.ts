@@ -4,14 +4,19 @@ import { useState } from "react";
 import { api, askSnoozeRequest } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { InboxRow } from "../../api/types";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { SendStoppedError } from "../writes/keyed-write";
+import { livePress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { plainWrite, useWrites } from "../writes/write-store";
 
 export interface AskSnoozeWrite {
-  /** The server's reason after a refused save, until the next attempt. */
+  /** The server's reason after a refused save, or what one the reader stopped may have done and
+   *  what Retry does with it, until the next attempt. */
   error: string | undefined;
   /** True after a save failed until the next attempt starts. */
   failed: boolean;
+  /** The ask the newest save is of while that save is in flight or failed, which the list around
+   *  the row holds (`useLiveRegistration`); `undefined` while none is. */
+  liveAskId: string | undefined;
   pending: boolean;
   /** What the in-flight write is doing, and `undefined` when none is: the moment a snooze is
    *  saving, or `null` for an un-snooze. The optimistic update has already moved the row by
@@ -24,32 +29,48 @@ export interface AskSnoozeWrite {
   submit: (until: string | null) => void;
 }
 
+/** One press of a row's snooze: the ask it is of, and the moment, or `null` to bring it back. */
+interface AskSnoozePress {
+  readonly askId: string;
+  readonly until: string | null;
+}
+
 /**
  * The one way the SPA writes a row's snooze. The new moment lands on every inbox cache at once,
  * so the row drops into `Later` (or climbs back out) on the click, rolls back if the server
  * refuses, and the list refetches once the save settles - the same shape as the issue field
  * writes, without their cross-surface caches: a snooze is on the ask and shows nowhere else.
+ *
+ * Each press carries the ask it is of: `retry()` runs the newest render's `write` with the
+ * press's own values (`useKeyedWrite`), so every byte a Retry sends rides in the press. A host
+ * may draw the row's control for one ask after another, so the Retry of a press the reader
+ * stopped is of that press's ask, and so is the ask the save holds in the list while it is live
+ * (`liveAskId`), whichever ask the hook is rendered for by then.
  */
 export function useAskSnooze(askId: string): AskSnoozeWrite {
   const queryClient = useQueryClient();
   const inboxKey = inboxQuery().queryKey;
   // The row says why its snooze was refused, where the reader pressed it.
   const mutation = useKeyedWrite({
-    write: (until: string | null, bounds) =>
-      until === null
-        ? api.unsnoozeAsk(askId, bounds)
-        : api.snoozeAsk(askId, until, bounds).then(() => undefined),
+    // A snooze is a `PUT`, and bringing the row back a `DELETE`.
+    method: ({ until }: AskSnoozePress) => (until === null ? "DELETE" : "PUT"),
+    write: (press: AskSnoozePress, bounds) =>
+      press.until === null
+        ? api.unsnoozeAsk(press.askId, bounds)
+        : api.snoozeAsk(press.askId, press.until, bounds).then(() => undefined),
     inline: true,
-    label: (until) => (until === null ? "Ask brought back now" : "Ask snoozed"),
-    onMutate: async (until) => {
+    label: ({ until }) => (until === null ? "Ask brought back now" : "Ask snoozed"),
+    onMutate: async (press) => {
       await queryClient.cancelQueries({ queryKey: inboxKey });
       const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
       queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
-        current?.map((row) => (row.id === askId ? { ...row, snoozed_until: until } : row))
+        current?.map((row) =>
+          row.id === press.askId ? { ...row, snoozed_until: press.until } : row
+        )
       );
       return previous;
     },
-    onError: (_error, _until, previous) => {
+    onError: (_error, _press, previous) => {
       for (const [key, data] of previous ?? []) {
         queryClient.setQueryData(key, data);
       }
@@ -59,23 +80,30 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
     },
   });
   return {
-    error: mutation.error?.message,
+    // A save the reader stopped may have been made, and Retry makes it again (`retry`): the
+    // error's own words are a composer's, of a message.
+    error:
+      stoppedNote(
+        mutation,
+        mutation.variables?.until === null ? "the un-snooze" : "the snooze",
+        "saved"
+      ) ?? mutation.error?.message,
     failed: mutation.isError,
+    liveAskId: livePress(mutation)?.askId,
     pending: mutation.isPending,
-    pendingUntil: mutation.isPending ? mutation.variables : undefined,
-    retry: () => {
-      if (mutation.variables !== undefined) mutation.mutate(mutation.variables);
-    },
-    submit: (until) => mutation.mutate(until),
+    pendingUntil: mutation.isPending ? mutation.variables?.until : undefined,
+    retry: mutation.retry,
+    submit: (until) => mutation.mutate({ askId, until }),
   };
 }
 
-/** One ask the server refused, with the reason it gave - the same message the per-row control
- *  shows, so a sign-out never reads like a validation refusal. */
-export interface AskSnoozeFailure {
-  askId: string;
-  reason: string;
-}
+/** One ask whose snooze Dispatch did not confirm: one it refused, with the reason it gave - the
+ *  same message the per-row control shows, so a sign-out never reads like a validation refusal -
+ *  or one the reader stopped (`stopped`), which may have been saved and is no refusal, so it
+ *  carries no reason. */
+export type AskSnoozeFailure =
+  | { readonly askId: string; readonly reason: string; readonly stopped: false }
+  | { readonly askId: string; readonly stopped: true };
 
 export interface AskSnoozeManyWrite {
   /** True while a bulk save is in flight. */
@@ -129,11 +157,18 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
           })
         )
       );
-      const failed = ids.flatMap((askId, index) => {
+      const failed = ids.flatMap((askId, index): AskSnoozeFailure[] => {
         const result = results[index];
         if (result === undefined || result.status !== "rejected") return [];
         const reason: unknown = result.reason;
-        return [{ askId, reason: reason instanceof Error ? reason.message : String(reason) }];
+        if (reason instanceof SendStoppedError) return [{ askId, stopped: true }];
+        return [
+          {
+            askId,
+            reason: reason instanceof Error ? reason.message : String(reason),
+            stopped: false,
+          },
+        ];
       });
       const refused = new Set(failed.map(({ askId }) => askId));
       for (const [key, data] of refused.size === 0 ? [] : previous) {

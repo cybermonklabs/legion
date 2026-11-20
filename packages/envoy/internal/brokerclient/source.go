@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // Source is one platform identity this process can prove, read fresh each time it is asked: the
@@ -33,28 +34,34 @@ type Source interface {
 // ProjectedToken is the identity of a pod: the projected Kubernetes service-account token its
 // runtime mounts, minted for the broker's exchange audience. The kubelet rewrites that file in
 // place well before the token expires, so it is read at call time and never once at start.
+//
+// The file is the one MachineTokenFileVar names, and nothing this type prints names its path: a
+// person who pasted the token itself into that variable would otherwise see it in every refusal
+// and in every log line that names the identity (Describe). A refusal names the variable, and a
+// read error the system's reason alone (redact.File).
 type ProjectedToken struct {
 	// Path is the file the token is read from.
 	Path string
 }
 
-// NewProjectedToken is the identity of a pod holding its projected service-account token at path.
+// NewProjectedToken is the identity of a pod holding its projected service-account token at path,
+// the file MachineTokenFileVar names.
 func NewProjectedToken(path string) *ProjectedToken { return &ProjectedToken{Path: path} }
 
 func (p *ProjectedToken) Token(context.Context) (string, string, error) {
 	data, err := os.ReadFile(p.Path)
 	if err != nil {
-		return "", "", fmt.Errorf("read the projected service-account token %s: %w", p.Path, err)
+		return "", "", fmt.Errorf("read %s: %w", p.Describe(), redact.File(err))
 	}
 	token := strings.TrimSpace(string(data))
 	if token == "" {
-		return "", "", fmt.Errorf("the projected service-account token %s is empty", p.Path)
+		return "", "", fmt.Errorf("%s is empty", p.Describe())
 	}
 	return token, oauthwire.SubjectTokenTypeKubernetes, nil
 }
 
 func (p *ProjectedToken) Describe() string {
-	return "the projected service-account token " + p.Path
+	return "the projected service-account token " + MachineTokenFileVar + " names"
 }
 
 // MetadataIdentity is the identity of a machine on Google Cloud: the Google identity token its
@@ -80,6 +87,14 @@ func (m *MetadataIdentity) Token(ctx context.Context) (string, string, error) {
 	return token, oauthwire.SubjectTokenTypeGoogle, nil
 }
 
+// Describe names the audience MachineAudienceVar sets: as written when it is a plain http(s) URL
+// (internal/redact's allow-list), and by the variable alone otherwise, since the audience is a
+// configured value a person can paste a credential into, and this text is in every trade's log
+// line and error.
 func (m *MetadataIdentity) Describe() string {
-	return "this machine's Google identity token for " + m.Audience + " (" + googleidentity.MetadataHostVar + " names the metadata server)"
+	audience := "the audience " + MachineAudienceVar + " names"
+	if redact.Clean(m.Audience) {
+		audience = m.Audience + " (" + MachineAudienceVar + ")"
+	}
+	return "this machine's Google identity token for " + audience + " (" + googleidentity.MetadataHostVar + " names the metadata server)"
 }
