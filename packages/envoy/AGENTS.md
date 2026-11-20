@@ -16,8 +16,6 @@ Paths are from `packages/envoy`, except those under `.github/`, `.dispatch/` and
 
 - `internal/cistore`: each pull-request head's CI record, whose settlement publishes `notifications.github.<owner>.<repo>.pr.<n>.checks`.
   Commit statuses reach it only through Dispatch's CI reconcile (`cmd/dispatch/README.md`, "CI reconcile"); the listener publishes no `status` webhook event.
-  Each `check_runs` entry of a settlement carries `conclusion`, GitHub's own word for that run.
-  The summary loop (`loop.go`) logs `checks held a head` for a record it has not settled after 10 minutes with no event, naming what holds it, and `checks settlement published` for each settlement it publishes; the troubleshooting page, "A head got no `CI settled` message", says how to read them with the daemon's drop lines.
 
 - `cmd/natstail` prints the envelopes on a NATS subject; `cmd/mcp` is the MCP bridge; `cmd/spec-check` and `cmd/architecture-check` judge a checkout's `.dispatch/` as Dispatch's importer does.
 
