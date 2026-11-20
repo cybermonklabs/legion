@@ -1,10 +1,13 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
+import { settle } from "../../__tests__/fake-clock";
 import { keyMinted } from "../../__tests__/kept-sends-harness";
-import { ApiError } from "../../api/client";
+import { ApiError, NetworkError } from "../../api/client";
 import {
   keyExpired,
   keySpent,
+  MAX_BACKOFF_MS,
+  refusedByDispatch,
   retriesUnderItsKey,
   retryNote,
   SendExpiredError,
@@ -100,6 +103,60 @@ test("a key spent before the write began carries its first attempt and stops the
   ).catch((error: unknown) => error);
   expect(attempts).toBe(1);
   expect(refusal).toBeInstanceOf(SendExpiredError);
+});
+
+/** Whether the error a write ends with is Dispatch's verdict that it made nothing
+ *  (`refusedByDispatch`), where its attempts end with `failures` in order, each after the page's
+ *  wait, for a person still signed in, so a second `401` is Dispatch's refusal. */
+async function verdictAfter(failures: readonly Error[]): Promise<boolean> {
+  jest.useFakeTimers();
+  try {
+    let attempts = 0;
+    const ended = writeUnderKey(
+      () => {
+        const failure = failures[Math.min(attempts, failures.length - 1)];
+        attempts += 1;
+        return Promise.reject(failure);
+      },
+      keyMinted(Date.now()),
+      { carried: null, unauthorized: async () => true }
+    ).catch((error: unknown) => error);
+    for (let wait = 1; wait < failures.length; wait += 1) {
+      await settle();
+      jest.advanceTimersByTime(MAX_BACKOFF_MS);
+    }
+    const error = await ended;
+    expect(attempts).toBe(failures.length);
+    expect(error).toBe(failures.at(-1));
+    return refusedByDispatch(error);
+  } finally {
+    jest.useRealTimers();
+  }
+}
+
+// A refusal says Dispatch made nothing only where no attempt went unanswered before it. An attempt
+// the page had no answer to - the connection failed, or Dispatch answered a 5xx - may have landed,
+// and a retry Dispatch then refuses says nothing of it: a snooze is a `PUT` and sends no key, so
+// its retry runs Dispatch's handler again, which refuses a moment that has passed or an ask that
+// has gone; and a second `401` refuses any write. That write's event may still come.
+test("a refusal after an attempt the page had no answer to is no verdict that nothing was made", async () => {
+  // Each attempt's error is an object of its own, as each answer is.
+  const pastMoment = () =>
+    new ApiError(400, { code: "SNOOZE_INPUT", error: "snoozed_until is in the past" });
+  const lost = () =>
+    new NetworkError("/api/v1/asks/ask-1/snooze", new TypeError("Failed to fetch"));
+  const lapsed = () => new ApiError(401, { code: "UNAUTHORIZED", error: "sign in" });
+
+  expect(await verdictAfter([pastMoment()])).toBe(true);
+  expect(await verdictAfter([lapsed(), lapsed()])).toBe(true);
+  expect(await verdictAfter([lost(), pastMoment()])).toBe(false);
+  expect(
+    await verdictAfter([
+      new ApiError(503, { code: "UNAVAILABLE", error: "down" }),
+      new ApiError(404, { code: "ASK_NOT_FOUND", error: "no such ask" }),
+    ])
+  ).toBe(false);
+  expect(await verdictAfter([lost(), lapsed(), lapsed()])).toBe(false);
 });
 
 // The key stops only the write that sends it. A `PUT` or a `DELETE` sends none, so Dispatch

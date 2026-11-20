@@ -442,6 +442,55 @@ test("a hold past its deadline takes its write's events until SEND_DEADLINE_MS a
   }
 });
 
+// A bulk snooze answered before its deadline, at 20 s, lets its reads go at its answer and still
+// waits for its write's events until `SEND_DEADLINE_MS` after that answer, past its deadline: an
+// event at 35 s is its own, ahead of a snooze pressed after its answer, and once that wait has run
+// at 50 s it waits for none, so the next event ends the later snooze's hold.
+test("a hold answered before its deadline takes its write's events until SEND_DEADLINE_MS after its answer, and none after", async () => {
+  jest.useFakeTimers();
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const server = heldServer("rows");
+  const observer = new QueryObserver(queryClient, { queryFn: server.queryFn, queryKey: ["inbox"] });
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    await settle();
+    server.answer();
+    await settle();
+
+    const bulk = holdBackReads(queryClient, {
+      endsOn: snoozeWritten,
+      events: 2,
+      keys: [["inbox"]],
+    });
+    jest.advanceTimersByTime(20_000);
+    bulk();
+    // Pressed 5 s after that answer, so its own deadline, at 55 s, is after the bulk's wait.
+    jest.advanceTimersByTime(5_000);
+    const later = holdBackReads(queryClient, { endsOn: snoozeWritten, keys: [["inbox"]] });
+    void queryClient.invalidateQueries({ queryKey: ["inbox"] });
+    await settle();
+    expect(server.requests()).toBe(1);
+
+    // At 35 s, past the bulk snooze's deadline and within its wait: the event is its own, and the
+    // read waits for the later's.
+    jest.advanceTimersByTime(10_000);
+    hearLiveEvent(queryClient, snoozeEvent(), "alice");
+    await settle();
+    expect(server.requests()).toBe(1);
+
+    // At 50 s the bulk snooze's wait has run, and it waits for no event: the next is the later
+    // snooze's, and the read asks.
+    jest.advanceTimersByTime(15_000);
+    hearLiveEvent(queryClient, snoozeEvent(), "alice");
+    await settle();
+    expect(server.requests()).toBe(2);
+    later();
+  } finally {
+    unsubscribe();
+    jest.useRealTimers();
+  }
+});
+
 // A snooze the page tries for as long as the reader leaves it may never be answered. Past its
 // deadline its hold holds no read and still waits for its write's events, for no longer than
 // `IDEMPOTENCY_KEY_TTL_MS` after it began: an event just within that is its own, and the one
