@@ -2906,6 +2906,38 @@ func TestProjectAccessSettingsComeTogether(t *testing.T) {
 	}
 }
 
+// TestTheDirectoryURLIsGooglesUnlessSet pins BROKER_DIRECTORY_URL: unset, the broker reads no
+// address of its own, so the group reader calls Google's Directory API; set, it is read without
+// the slashes it ends in, as a test's stand-in is named; and a value that is no absolute http(s)
+// URL refuses the start naming the setting, since a group read could make no call to it.
+func TestTheDirectoryURLIsGooglesUnlessSet(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DirectoryURL != "" {
+		t.Fatalf("with BROKER_DIRECTORY_URL unset the broker reads %q; want nothing, so the reader calls Google's own address", cfg.DirectoryURL)
+	}
+
+	e := validEnv()
+	e["BROKER_DIRECTORY_URL"] = " http://directory.internal.example:8080// "
+	if cfg, err = Load(env(e)); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DirectoryURL != "http://directory.internal.example:8080" {
+		t.Fatalf("BROKER_DIRECTORY_URL is read as %q; want the URL without its spaces and trailing slashes", cfg.DirectoryURL)
+	}
+
+	for _, bad := range []string{"directory.internal.example", "//directory.internal.example", "ftp://directory.internal.example", "http://", "http://%zz"} {
+		e := validEnv()
+		e["BROKER_DIRECTORY_URL"] = bad
+		_, err := Load(env(e))
+		if err == nil || !strings.Contains(err.Error(), "BROKER_DIRECTORY_URL") || !strings.Contains(err.Error(), "absolute http(s) URL") {
+			t.Errorf("Load(BROKER_DIRECTORY_URL=%q) = %v; want a refusal naming the variable", bad, err)
+		}
+	}
+}
+
 // userinfoURL is scheme://user:password@rest, built here so no test line spells a URL that
 // carries a credential in the form a secret scanner reads as one.
 func userinfoURL(scheme, user, password, rest string) string {

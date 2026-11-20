@@ -434,6 +434,16 @@ type Config struct {
 	// dev-<name> account is one person's own, so it may list no registered service among its
 	// requesters.
 	ServiceAccountSecrets map[string]string
+	// BROKER_DIRECTORY_URL: the base URL of the Directory API the broker reads each group's
+	// members at (internal/cipher/groups), an absolute http(s) URL, read without the slashes it
+	// ends in. Unset, it is Google's own, https://admin.googleapis.com; a test sets it to its
+	// stand-in. The broker calls it only when a served secret names a group, as its owner or in
+	// its requesters, and only its members.list. The read's token is the pod's own Google
+	// service account's, which the broker mints for that same account with the one scope
+	// admin.directory.group.member.readonly: the account needs Token Creator on itself to mint
+	// it, and Workspace's Groups Reader role for the read. A pod that runs as a Workload Identity
+	// principal and no service account reads no group.
+	DirectoryURL string
 	// BROKER_SERVICES: the registered services, whitespace-separated name=<service account>
 	// entries, such as legion-daemon=system:serviceaccount:legion:legion-worker. A name (lowercase
 	// letters, digits and hyphens, at most 64, not shared) is what a secret's owner tag may name; the
@@ -2222,6 +2232,13 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if cfg.ServiceAccountSecrets, err = parseServiceAccountSecrets("BROKER_SERVICE_ACCOUNT_SECRETS", getenv("BROKER_SERVICE_ACCOUNT_SECRETS")); err != nil {
 		return Config{}, err
+	}
+	// Optional, and held to its form when given, as BROKER_PROJECT_ACCESS_URL is: a value no call
+	// could be made to would boot and then leave every group unread.
+	if cfg.DirectoryURL = strings.TrimRight(strings.TrimSpace(getenv("BROKER_DIRECTORY_URL")), "/"); cfg.DirectoryURL != "" {
+		if err := httpURLSetting("BROKER_DIRECTORY_URL", cfg.DirectoryURL); err != nil {
+			return Config{}, err
+		}
 	}
 	cfg.SignInDeviceAudience = strings.TrimSpace(getenv("BROKER_SIGNIN_DEVICE_AUDIENCE"))
 	if cfg.GoogleOIDCAudience == "" {
