@@ -271,7 +271,8 @@ func TestPodUsageRefusals(t *testing.T) {
 }
 
 // TestAPodTokenFileThatCannotBeReadIsNamed: a pod whose projected token file is missing or blank
-// exits 1 naming the file, and asks the broker nothing — a blank file is never sent as a token.
+// exits 1 naming the file by its flag, --pod-token-file, and not by its path, and asks the broker
+// nothing — a blank file is never sent as a token.
 func TestAPodTokenFileThatCannotBeReadIsNamed(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "absent")
 	blank := writePodToken(t, "")
@@ -284,8 +285,8 @@ func TestAPodTokenFileThatCannotBeReadIsNamed(t *testing.T) {
 			if code != 1 {
 				t.Fatalf("exit %d, want 1 (stderr %q)", code, stderr.String())
 			}
-			if !strings.Contains(stderr.String(), path) {
-				t.Fatalf("stderr %q does not name the token file %q", stderr.String(), path)
+			if !strings.Contains(stderr.String(), "--pod-token-file") || strings.Contains(stderr.String(), path) {
+				t.Fatalf("stderr %q does not name the token file by --pod-token-file alone, without its path %q", stderr.String(), path)
 			}
 			if n := len(calls()); n != 0 {
 				t.Fatalf("the broker was asked %d times, want none", n)

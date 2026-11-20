@@ -95,9 +95,11 @@ func TestTheResumedPaneRunsTheConfiguredModel(t *testing.T) {
 	host := Host{StateDir: dir}
 	promptFile := writeLaunchPrompt(t, spec, host)
 	inner, pairs, err := NewOmpLauncher(nil, shellprefix.Word(omp)).Launch(spec, host, promptFile)
-	if err != nil || pairs != nil {
-		t.Fatalf("Launch = %v, %v", pairs, err)
+	if want := []string{"-e", runtime.SessionExclusiveVariable + "=1"}; err != nil || !slices.Equal(pairs, want) {
+		t.Fatalf("Launch = %q, %v; want the resumed pane's one pair %q", pairs, err, want)
 	}
+	// Every resume below runs in the resumed pane's environment, its one pair included.
+	environ = append(environ, pairs[1])
 
 	// The control, and it runs first: the same command with the flag taken out reads the session's
 	// own pin, which at this point is the one the saving turn wrote and nothing else.
