@@ -11,12 +11,13 @@ import type { InventoryLine } from "./s10-inputs-io";
  *
  * `s10-judged.json` (`JudgedRecord`, `judgedRecordOf`) chains the stage to its inputs and names the
  * sha256 of every file written; `requests/<ask id>/outcome.json` (`JudgedOutcome`,
- * `judgedOutcomeOf`) is one request's one outcome, every key present; and `outcomes.jsonl`
- * (`OutcomeLine`, `outcomeLinesOf`), which only a run that gave every request its outcome writes,
- * lists them in the inventory's order. `judgedStageOf` reads a directory whole, each file held to
- * the sha256 its record names. A stage that stopped stays `started`, and `reportedOutcomesOf`
- * gives each request of the inventory its outcome, `unjudged` where no run reached it: the one
- * place that kind is made.
+ * `judgedOutcomeOf`) is one request's one outcome, every key present, with its outcome under the
+ * tool rule of each version of point 5 (`byRule`, version 5's the one that counts) and the calls
+ * each refuses; and `outcomes.jsonl` (`OutcomeLine`, `outcomeLinesOf`), which only a run that gave
+ * every request its outcome writes, lists them in the inventory's order. `judgedStageOf` reads a
+ * directory whole, each file held to the sha256 its record names. A stage that stopped stays
+ * `started`, and `reportedOutcomesOf` gives each request of the inventory its outcome, `unjudged`
+ * where no run reached it: the one place that kind is made.
  */
 
 export const JUDGED_FILE = "s10-judged.json";
@@ -24,7 +25,7 @@ export const OUTCOMES_FILE = "outcomes.jsonl";
 export const OUTCOME_FILE = "outcome.json";
 
 /** The version of the stage's shapes, which every reader checks. */
-export const JUDGED_VERSION = 2;
+export const JUDGED_VERSION = 3;
 
 /** The deviation kinds the stage writes, in `s10_judge.py`'s order (its `DEVIATION_KINDS`). */
 export const DEVIATION_KINDS = [
@@ -57,13 +58,41 @@ export interface Deviation {
   problems: string[];
 }
 
+/**
+ * The versions of point 5's tool rule each outcome is recorded under, over the same transcripts,
+ * and the one that counts (`s10_transcripts.py`'s `RULE_VERSIONS` and `COUNTING_RULE`).
+ */
+export const RULE_VERSIONS = ["v3", "v4", "v5"] as const;
+export type RuleVersion = (typeof RULE_VERSIONS)[number];
+export const COUNTING_RULE: RuleVersion = "v5";
+
+/** One tool call a version of the rule makes a deviation. */
+export interface ToolCallDeviation {
+  judge: string;
+  callId: string;
+  tools: string[];
+  reason: string;
+}
+
+/** A request's outcome under one version of the rule. */
+export interface RuleOutcome {
+  outcome: "hold" | "verdict" | "deviation";
+  verdict: string | null;
+  deviation: DeviationKind | typeof UNJUDGED | null;
+}
+
+/** A request's outcome under one version of the rule, with the calls that version refuses. */
+export interface JudgedRuleOutcome extends RuleOutcome {
+  toolCallDeviations: ToolCallDeviation[];
+}
+
 /** `requests/<ask id>/outcome.json`: one request's one outcome. */
 export interface JudgedOutcome {
   askId: string;
   issueKey: string | null;
   group: string;
   cases: number;
-  outcome: "hold" | "verdict" | "deviation";
+  outcome: RuleOutcome["outcome"];
   /** The verdict of a hold or of five valid answers; null for a deviation. */
   verdict: string | null;
   deviation: Deviation | null;
@@ -73,6 +102,8 @@ export interface JudgedOutcome {
   /** What the sandbox recorded of its checks and its pod; null where no sandbox ran. */
   sandbox: Record<string, unknown> | null;
   judgedAt: string | null;
+  /** The outcome under each version of the rule; `COUNTING_RULE`'s is the outcome above. */
+  byRule: Record<RuleVersion, JudgedRuleOutcome>;
 }
 
 /** One line of `outcomes.jsonl`. */
@@ -81,9 +112,10 @@ export interface OutcomeLine {
   issueKey: string | null;
   group: string;
   cases: number;
-  outcome: JudgedOutcome["outcome"];
+  outcome: RuleOutcome["outcome"];
   verdict: string | null;
   deviation: DeviationKind | null;
+  byRule: Record<RuleVersion, RuleOutcome>;
   outcomeSha256: string;
 }
 
@@ -216,6 +248,81 @@ function heldToKind(
     );
 }
 
+/** One version's outcome read back, held to its kind of outcome. */
+function ruleOutcomeOf(value: unknown, where: string): RuleOutcome {
+  const record = objectOrNull(value, where, "rule outcome");
+  if (record === null) throw new CorpusError(`${where} holds no outcome`);
+  const outcome = outcomeKindAt(record.outcome, where);
+  const verdict = textOrNull(record.verdict, where, "verdict");
+  const deviation = record.deviation === null ? null : deviationKindAt(record.deviation, where);
+  heldToKind(outcome, verdict, deviation, where);
+  return { outcome, verdict, deviation };
+}
+
+/** A tool call one version refuses, read back. */
+function toolCallDeviationOf(value: unknown, where: string): ToolCallDeviation {
+  const record = objectOrNull(value, where, "tool call") ?? {};
+  if (!Array.isArray(record.tools))
+    throw new CorpusError(`${where} holds a tool call with no tools`);
+  return {
+    judge: textAt(record.judge, where, "tool call judge"),
+    callId: textAt(record.callId, where, "tool call id"),
+    tools: record.tools.map((one) => textAt(one, where, "tool call tool")),
+    reason: textAt(record.reason, where, "tool call reason"),
+  };
+}
+
+/**
+ * One version's outcome in `outcome.json`, with the calls that version refuses: a version that
+ * refuses a call gives no verdict, and a `tool-call` deviation names at least one call.
+ */
+function judgedRuleOf(value: unknown, where: string): JudgedRuleOutcome {
+  const outcome = ruleOutcomeOf(value, where);
+  const calls = recordOf(value)?.toolCallDeviations;
+  if (!Array.isArray(calls)) throw new CorpusError(`${where} holds no list of refused tool calls`);
+  const toolCallDeviations = calls.map((call) => toolCallDeviationOf(call, where));
+  if (
+    (toolCallDeviations.length > 0 && outcome.outcome !== "deviation") ||
+    (outcome.deviation === "tool-call" && toolCallDeviations.length === 0)
+  ) {
+    throw new CorpusError(`${where} holds refused tool calls its outcome does not reflect`);
+  }
+  return { ...outcome, toolCallDeviations };
+}
+
+/** One value for each version of the rule, made by `make`. */
+function eachRule<T>(make: (version: RuleVersion) => T): Record<RuleVersion, T> {
+  const byRule = {} as Record<RuleVersion, T>;
+  for (const version of RULE_VERSIONS) byRule[version] = make(version);
+  return byRule;
+}
+
+/**
+ * `byRule` read back: exactly the outcome under each of `RULE_VERSIONS`, each read by `read`, and
+ * `COUNTING_RULE`'s equal to the outcome itself.
+ */
+function byRuleOf<T extends RuleOutcome>(
+  value: unknown,
+  where: string,
+  counted: RuleOutcome,
+  read: (one: unknown, at: string) => T
+): Record<RuleVersion, T> {
+  const record = objectOrNull(value, where, "byRule");
+  if (record === null || Object.keys(record).sort().join() !== [...RULE_VERSIONS].sort().join()) {
+    throw new CorpusError(`${where} records no outcome under exactly ${RULE_VERSIONS.join(", ")}`);
+  }
+  const byRule = eachRule((version) => read(record[version], `${where} byRule.${version}`));
+  const counting = byRule[COUNTING_RULE];
+  if (
+    counting.outcome !== counted.outcome ||
+    counting.verdict !== counted.verdict ||
+    counting.deviation !== counted.deviation
+  ) {
+    throw new CorpusError(`${where} records under ${COUNTING_RULE} another outcome than its own`);
+  }
+  return byRule;
+}
+
 /** `requests/<ask id>/outcome.json` read back, refused in any other shape. */
 export function judgedOutcomeOf(text: string, path: string): JudgedOutcome {
   const record = parsed(text, path);
@@ -231,6 +338,7 @@ export function judgedOutcomeOf(text: string, path: string): JudgedOutcome {
     "judges",
     "sandbox",
     "judgedAt",
+    "byRule",
   ];
   for (const key of keys) {
     if (!Object.hasOwn(record, key)) throw new CorpusError(`${path} has no ${key}`);
@@ -248,6 +356,12 @@ export function judgedOutcomeOf(text: string, path: string): JudgedOutcome {
   }
   heldToKind(outcome, verdict, deviation, path);
   if (!Array.isArray(record.judges)) throw new CorpusError(`${path} holds judges that are no list`);
+  const byRule = byRuleOf(
+    record.byRule,
+    path,
+    { outcome, verdict, deviation: deviation?.kind ?? null },
+    judgedRuleOf
+  );
   return {
     askId: textAt(record.askId, path, "askId"),
     issueKey: textOrNull(record.issueKey, path, "issueKey"),
@@ -260,6 +374,7 @@ export function judgedOutcomeOf(text: string, path: string): JudgedOutcome {
     judges: record.judges.map((one) => objectOrNull(one, path, "judge") ?? {}),
     sandbox: objectOrNull(record.sandbox, path, "sandbox"),
     judgedAt: textOrNull(record.judgedAt, path, "judgedAt"),
+    byRule,
   };
 }
 
@@ -282,6 +397,7 @@ export function outcomeLinesOf(text: string, path: string): OutcomeLine[] {
       outcome,
       verdict,
       deviation,
+      byRule: byRuleOf(record.byRule, where, { outcome, verdict, deviation }, ruleOutcomeOf),
       outcomeSha256: sha256At(record.outcomeSha256, where, "outcomeSha256"),
     };
   });
@@ -380,7 +496,13 @@ export async function judgedStageOf(directory: string): Promise<JudgedStage> {
       if (
         outcome === undefined ||
         record.files[file] !== line.outcomeSha256 ||
-        outcome.outcome !== line.outcome
+        outcome.outcome !== line.outcome ||
+        RULE_VERSIONS.some(
+          (version) =>
+            outcome.byRule[version].outcome !== line.byRule[version].outcome ||
+            outcome.byRule[version].verdict !== line.byRule[version].verdict ||
+            outcome.byRule[version].deviation !== line.byRule[version].deviation
+        )
       ) {
         throw new CorpusError(
           `${join(directory, OUTCOMES_FILE)} lists ${line.askId} otherwise than its outcome`
@@ -407,6 +529,12 @@ export function reportedOutcomesOf(
         `the judged stage holds an outcome of ${askId}, which the inventory does not`
       );
   }
+  const unjudged = (): JudgedRuleOutcome => ({
+    outcome: "deviation",
+    verdict: null,
+    deviation: UNJUDGED,
+    toolCallDeviations: [],
+  });
   return inventory.map(
     (line) =>
       outcomes.get(line.askId) ?? {
@@ -425,6 +553,7 @@ export function reportedOutcomesOf(
         judges: [],
         sandbox: null,
         judgedAt: null,
+        byRule: eachRule(unjudged),
       }
   );
 }

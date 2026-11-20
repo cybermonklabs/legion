@@ -29,7 +29,7 @@ sandbox) with the bundles and the calls sent beside it. In order, before any jud
    never a body.
 
 Each of those refusals stops the run, since every later request would meet the same sandbox.
-Then, as version 4 of point 5 has it, it records the recursive relative-path and type manifests
+Then, as point 5 has it from version 4 on, it records the recursive relative-path and type manifests
 of the bundle directory and the skill directory (`manifests_now`): the first must hold exactly the
 five bundles, the second exactly the skill's three files of point 2 (`manifest_problem`). Where
 either does not, it starts no judge, and the request is a deviation. Otherwise it runs one
@@ -89,9 +89,9 @@ CALLS_FILE = "/work/s10/calls.json"
 RESULTS_FILE = "/work/s10/results.json"
 SESSIONS = "/work/s10/sessions"
 
-# Point 5, version 4: the directory `skill://approval-review` resolves to, the skill's files of
+# Point 5, from version 4: the directory `skill://approval-review` resolves to, the skill's files of
 # point 2 in it, and the recursive relative-path and type manifest each of the two directories a
-# judge may `glob` must have, before its first judge and after its last.
+# judge may `glob` or `read` must have, before its first judge and after its last.
 SKILL_DIR = "/opt/legion/pi-envoy/dist/skills/approval-review"
 SKILL_FILES = ("SKILL.md", "references/never-decide.md", "references/reviewer-principles.md")
 SKILL_MANIFEST = [["SKILL.md", "f"], ["references", "d"], ["references/never-decide.md", "f"],
@@ -376,18 +376,25 @@ def manifests_now(bundle_dir):
             "skill": manifest_of(os.path.realpath(SKILL_DIR))}
 
 
-def manifest_problem(manifests):
-    """Why the manifests recorded around one request's judges break point 5 (version 4), or None:
+def manifest_problem(manifests, finished=True):
+    """Why the manifests recorded around one request's judges break point 5 (version 5), or None:
     before the first judge, the bundle directory holds exactly `judge-1.md` to `judge-5.md` and the
     skill directory exactly `SKILL.md` and `references/` with its two files, each a regular file,
-    and no link or other entry in either; once the last judge has returned, the same manifests."""
+    and no link or other entry in either; once the last judge has returned, the same manifests.
+    `finished` is a result's check, which needs both: a result whose manifests before the judges
+    pass and that holds none after them broke the rule. Only the check before the first judge,
+    where no judge has run yet, passes `finished=False`."""
     if not isinstance(manifests, dict) or not isinstance(manifests.get("before"), dict):
         return "the sandbox recorded no manifests of the bundle and skill directories before the judges"
     before = manifests["before"]
     for name, wanted in (("bundle", BUNDLE_MANIFEST), ("skill", SKILL_MANIFEST)):
         if before.get(name) != wanted:
             return f"before the first judge the {name} directory's manifest is {before.get(name)}, not {wanted}"
-    if "after" in manifests and manifests["after"] != before:
+    if not finished:
+        return None
+    if not isinstance(manifests.get("after"), dict):
+        return "the sandbox recorded no manifests of the bundle and skill directories after the last judge"
+    if manifests["after"] != before:
         return f"after the last judge the manifests are {manifests['after']}, not the ones recorded before"
     return None
 
@@ -588,7 +595,7 @@ def main():
     omp_output = None
     if record["refused"] is None:
         record["manifests"] = {"before": manifests_now(record.get("bundleDirectory"))}
-        if manifest_problem(record["manifests"]) is None:
+        if manifest_problem(record["manifests"], finished=False) is None:
             returncode, stdout, stderr = run_omp(environ)
             record["omp"] = {"returncode": returncode}
             omp_output = (stdout, stderr)

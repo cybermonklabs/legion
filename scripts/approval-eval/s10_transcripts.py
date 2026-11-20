@@ -1,14 +1,24 @@
 """Point 5's checks of the claim's judging, decided from the transcripts the sandbox kept, in code,
-before any answer is compared (version 4 of "The claim's bundle and its arguments").
+before any answer is compared ("The claim's bundle and its arguments", version 5).
 
 - The session's own transcript holds the one `eval` call of the sandbox's `CELL` and nothing else
   (`session_problems`); each recorded `agent()` call has one judge transcript (`judge_transcripts`).
-- No judge made a tool call, attempted, failed, denied or answered, but its `yield` answer, which is
-  exempt from the path check; a `read` or `grep` of its own bundle file or of a
-  `skill://approval-review` file; or a `glob` whose scope stays inside its bundle directory or the
-  skill directory (`tool_call_problems`). Each target is checked as given, as the tool's default
-  fills it, and normalized as it resolves on the sandbox's file system (`target_of`, `resolved`),
-  with every path the tool's result says it reached (`detail_paths`).
+- No judge made a tool call, attempted, failed, denied or answered, but what point 5's tool rule
+  allows (`tool_call_problems`). The rule is applied as each of its versions writes it
+  (`RULE_VERSIONS`), over the same transcripts, and version 5's is the one that counts:
+  - version 3: a `read`, `grep` or `glob` of its own bundle file or of a `skill://approval-review`
+    file, and nothing else, its `yield` answer included;
+  - version 4: a `read` or `grep` of its own bundle file or of a skill file; a `glob` whose scope
+    stays inside its bundle directory or the skill directory; and its `yield` answer, exempt from
+    the path check;
+  - version 5: version 4's, and a `read` of the bundle directory, of the skill directory or of its
+    `references/`, which answers the names, sizes and ages of a directory's entries and no text.
+  Each target is checked as given, as the tool's default fills it, and normalized as it resolves
+  on the sandbox's file system (`target_of`, `resolved`), with every path the tool's result says it
+  reached (`detail_paths`). A target is read in the grammar this check models of omp 18.16.0's
+  path and glob syntax (`expansions`, `SELECTOR`); one that holds any other syntax, or brace
+  alternatives or a character class that could spell a parent step, a `/` or an absolute part,
+  is refused, not placed.
 - Each judge was asked point 2's model, none is marked a fallback, and each model omp reports
   serving it is that model (`model_problems`).
 - Each answer is valid by the frozen `JUDGE_SCHEMA` (`answer_problem`), which may use only the
@@ -29,11 +39,15 @@ from dataclasses import dataclass  # noqa: E402
 import s10_sandbox as SANDBOX  # noqa: E402
 from s10_store import under  # noqa: E402
 
-# Point 5, version 4. The tool omp's subagents return their schema's answer by, exempt from the
-# path check; the tools a judge may call on a file system target; and, by tool, the arguments that
-# name no target (search text, a count, a switch, the call's stated intent), as omp 18.16.0's
-# schemas name them. Any other argument is taken for a target the rule cannot place, which makes
-# the case a deviation.
+# Point 5's tool rule, by the versions of the section that wrote it, and the one that counts.
+RULE_VERSIONS = (3, 4, 5)
+COUNTING_RULE = 5
+
+# The tool omp's subagents return their schema's answer by, exempt from the path check from version
+# 4; the tools a judge may call on a file system target; and, by tool, the arguments that name no
+# target (search text, a count, a switch, the call's stated intent), as omp 18.16.0's schemas name
+# them. Any other argument is taken for a target the rule cannot place, which makes the case a
+# deviation.
 ANSWER_TOOL = "yield"
 READ_TOOLS = ("read", "grep", "glob")
 NO_TARGET_ARGUMENTS = {
@@ -43,8 +57,29 @@ NO_TARGET_ARGUMENTS = {
 }
 SKILL_SCHEME = "skill://"
 SKILL_NAME = "approval-review"
-# A part of a path that is a pattern, which a `glob` matches and no `read` or `grep` names.
-GLOB_CHARACTERS = re.compile(r"[*?\[\]{}]")
+# Where omp 18.16.0's glob tool starts a path's pattern: the first `/`-part holding one of these
+# (`J3`/`FB` in its path helpers); the parts before it are the directory its walk starts from.
+GLOB_START = re.compile(r"[*?\[{]")
+
+# Syntax a target may not hold, because omp 18.16.0 reads it in a way this check does not model:
+# its path helpers take a backslash for a `/`, strip enclosing double quotes and, where a path as
+# written does not exist, split it on blank space or a `,` outside braces (and always on `;`,
+# which `call_problem` splits; `expansions` refuses a `,` outside braces); its URL patterns decode
+# `%` escapes; and parentheses, `|` and `!` are the syntax of extended globs and negation. A target
+# holding any of them is refused, never placed.
+UNMODELLED = re.compile(r"[\\\"'%()|!\s]")
+
+# A line or page selector after a path (`judge-1.md:1-40`, `:raw`, `:5-16,960-973`), as omp's read
+# tool takes one; any other text after the first `:` is refused.
+SELECTOR = re.compile(r"(?::(?:raw|img|conflicts|-\d+|\d+(?:-\d*|\+\d+)?(?:,\d+(?:-\d+)?)*))*")
+
+# What a character class may hold: letters, digits, `_` and ranges between two of them, with a
+# literal `-` first or last. Every such character and range lies above `/` and `.`, so no class can
+# spell a parent step or a separator; a negated, empty or other class is refused.
+CLASS = re.compile(r"-?(?:[A-Za-z0-9_](?:-[A-Za-z0-9_])?)+-?")
+
+# The most strings one target's brace alternatives may expand to before it is refused.
+MAX_EXPANSIONS = 256
 
 # The JSON Schema keywords and types `answer_problem` reads: a schema with any other is refused, so
 # no answer passes a rule this validator would not check.
@@ -99,7 +134,7 @@ def tool_calls_of(entries):
 
 @dataclass(frozen=True)
 class Scope:
-    """What point 5 (version 4) lets one judge's `read`, `grep` and `glob` reach, every path as it
+    """What point 5 (each version) lets one judge's `read`, `grep` and `glob` reach, every path as it
     resolves on the sandbox's file system: the judge's own bundle file and the directory that holds
     it, the skill directory that `skill://approval-review` resolves to and its three files, the
     working directory a path is relative to, and the links the sandbox's listing records."""
@@ -157,66 +192,147 @@ def scope_of(bundle, work, listing):
                  links=links)
 
 
+def class_taken(content):
+    """Whether a character class's content is one `CLASS` takes, each range running forwards."""
+    return CLASS.fullmatch(content) is not None and all(
+        low <= high for low, high in re.findall(r"([A-Za-z0-9_])-([A-Za-z0-9_])", content))
+
+
+def expansions(text):
+    """Every string `text`'s brace alternatives expand to, nested ones included, its character
+    classes kept as written; None where `text` holds syntax this check does not model: an
+    unbalanced brace or bracket, a `,` outside braces, an empty alternative or one holding a `/`,
+    a class `class_taken` refuses, or more than `MAX_EXPANSIONS` strings. A brace alternative holds
+    no `/`, so every expansion has the `/`-parts of `text` in the same places."""
+
+    def sequence(at, inside):
+        found = [""]
+        while at < len(text):
+            char = text[at]
+            if char in ",}":
+                return (found, at) if inside else (None, at)
+            if char == "]":
+                return None, at
+            if char == "{":
+                alternatives, at = braces(at + 1)
+                if alternatives is None:
+                    return None, at
+                found = [one + two for one in found for two in alternatives]
+            elif char == "[":
+                end = text.find("]", at + 1)
+                if end < 0 or not class_taken(text[at + 1:end]):
+                    return None, at
+                found = [one + text[at:end + 1] for one in found]
+                at = end + 1
+            else:
+                found = [one + char for one in found]
+                at += 1
+            if len(found) > MAX_EXPANSIONS:
+                return None, at
+        return (None if inside else found), at
+
+    def braces(at):
+        alternatives = []
+        while True:
+            found, at = sequence(at, True)
+            if found is None or any(one == "" or "/" in one for one in found):
+                return None, at
+            alternatives.extend(found)
+            if len(alternatives) > MAX_EXPANSIONS:
+                return None, at
+            closed = text[at] == "}"
+            at += 1
+            if closed:
+                return alternatives, at
+
+    return sequence(0, False)[0]
+
+
 def target_of(raw, tool, scope):
     """One file system target a call names, as point 5 checks it: its literal part, resolved, and
-    the pattern parts after it; None where it names no place the rule can allow (another scheme,
-    another skill, a home path, an empty path). An exclusion (`!…`) names a place too. A line or
-    page selector after a name (`judge-1.md:1-40`) is the same file. `skill://approval-review`
-    alone is the skill directory to a `glob` and its `SKILL.md` to a `read` or `grep`, as each
-    tool's default fills it; a relative path is from the working directory."""
+    every pattern part after it over every expansion of its brace alternatives; None where it names
+    no place the rule can allow (another scheme, another skill, a home path, an empty path) or holds
+    syntax this check does not model (`UNMODELLED`, `SELECTOR`, `expansions`). An exclusion (`!…`)
+    names a place too. A line or page selector after a name (`judge-1.md:1-40`) is the same file.
+    `skill://approval-review` alone is the skill directory to a `glob` and its `SKILL.md` to a
+    `read` or `grep`, as each tool's default fills it; a relative path is from the working
+    directory. The literal part ends where omp's glob tool starts the pattern (`GLOB_START`)."""
     if not isinstance(raw, str):
         return None
     text = raw.strip()
     if text.startswith("!"):
         text = text[1:]
-    if "://" in text:
-        scheme, rest = text.split("://", 1)
-        name, _, tail = rest.split(":", 1)[0].partition("/")
-        if f"{scheme}://" != SKILL_SCHEME or name != SKILL_NAME:
+    url = "://" in text
+    if url:
+        scheme, text = text.split("://", 1)
+        if f"{scheme}://" != SKILL_SCHEME:
+            return None
+    text, colon, selector = text.partition(":")
+    if not SELECTOR.fullmatch(colon + selector):
+        return None
+    if url:
+        name, _, tail = text.partition("/")
+        if name != SKILL_NAME:
             return None
         if tail == "" and tool != "glob":
             tail = "SKILL.md"
         text = scope.skill_dir + ("/" + tail if tail else "")
-    else:
-        text = text.split(":", 1)[0]
-    if text == "" or text.startswith("~"):
+    if text == "" or text.startswith("~") or UNMODELLED.search(text):
         return None
-    path = text if text.startswith("/") else os.path.join(scope.work, text)
-    parts = path.split("/")
-    first = next((index for index, part in enumerate(parts) if GLOB_CHARACTERS.search(part)), len(parts))
-    return resolved("/".join(parts[:first]) or "/", scope.links), [part for part in parts[first:] if part]
+    found = expansions(text)
+    if found is None:
+        return None
+
+    def parts_of(one):
+        return (one if one.startswith("/") else os.path.join(scope.work, one)).split("/")
+
+    parts = parts_of(text)
+    first = next((index for index, part in enumerate(parts) if GLOB_START.search(part)), len(parts))
+    pattern = [part for one in found for part in parts_of(one)[first:] if part]
+    return resolved("/".join(parts[:first]) or "/", scope.links), pattern
 
 
-def in_scope(tool, target, scope):
-    """Whether one target stays where point 5 lets `tool` reach: for a `glob`, its literal part
-    inside the bundle directory or the skill directory and no parent step in its pattern; for a
-    `read` or `grep`, no pattern and exactly its own bundle file or one of the skill's files."""
+def in_scope(tool, target, scope, version=COUNTING_RULE):
+    """Whether one target stays where version `version` of point 5's rule lets `tool` reach: under
+    every version, exactly its own bundle file or one of the skill's files, with no pattern; from
+    version 4, for a `glob`, any literal part inside the bundle directory or the skill directory with
+    no `.` or `..` part in any expansion of its pattern; from version 5, for a `read`, the bundle
+    directory, the skill directory or its `references/` itself."""
     if target is None or target[0] is None:
         return False
     literal, pattern = target
-    if tool == "glob":
-        return ".." not in pattern and (under(literal, scope.bundle_dir) or under(literal, scope.skill_dir))
-    return not pattern and (literal == scope.bundle or literal in scope.skill_files)
+    if not pattern and (literal == scope.bundle or literal in scope.skill_files):
+        return True
+    if version >= 4 and tool == "glob":
+        return (not {".", ".."} & set(pattern)
+                and (under(literal, scope.bundle_dir) or under(literal, scope.skill_dir)))
+    directories = (scope.bundle_dir, scope.skill_dir, os.path.join(scope.skill_dir, "references"))
+    return version >= 5 and tool == "read" and not pattern and literal in directories
 
 
 def detail_paths(details, work):
     """The paths a tool's result says it reached: the path it resolved, the scope and the search
-    path it read, and each file it found or matched, each from the result's own working directory."""
+    path it read, and each file it found or matched, each from the result's own working directory.
+    A glob over several targets writes its scope as their paths joined by `, `, which are split."""
     if not isinstance(details, dict):
         return []
     cwd = details["cwd"] if isinstance(details.get("cwd"), str) else work
-    found = [details.get(key) for key in ("resolvedPath", "searchPath", "scopePath")]
+    found = [details.get(key) for key in ("resolvedPath", "searchPath")]
+    if isinstance(details.get("scopePath"), str):
+        found += details["scopePath"].split(", ")
     found += list(details.get("files") or [])
     found += [one.get("path") for one in details.get("fileMatches") or [] if isinstance(one, dict)]
     source = (details.get("meta") or {}).get("source") if isinstance(details.get("meta"), dict) else None
     if isinstance(source, dict) and source.get("type") == "path":
         found.append(source.get("value"))
-    return [one if one.startswith("/") else os.path.join(cwd, one) for one in found if isinstance(one, str) and one]
+    return [one if one.startswith("/") or "://" in one else os.path.join(cwd, one)
+            for one in found if isinstance(one, str) and one]
 
 
-def call_problem(tool, call, scope):
-    """Why one `read`, `grep` or `glob` call reaches outside point 5's scope, or None: every target
-    it names as given, the tool's default where it names none, and every path its result reports."""
+def call_problem(tool, call, scope, version=COUNTING_RULE):
+    """Why one `read`, `grep` or `glob` call reaches outside version `version`'s scope, or None:
+    every target it names as given, the tool's default where it names none, and every path its
+    result reports."""
     targets = []
     for arguments in call["arguments"] or [{}]:
         if not isinstance(arguments, dict):
@@ -236,30 +352,31 @@ def call_problem(tool, call, scope):
     for details in call["details"]:
         targets.extend(detail_paths(details, scope.work))
     for raw in targets:
-        if not in_scope(tool, target_of(raw, tool, scope), scope):
+        if not in_scope(tool, target_of(raw, tool, scope), scope, version):
             return repr(raw)
     return None
 
 
-def tool_call_problems(label, calls, scope):
-    """Point 5's tool calls of one judge (version 4): its `yield` answer is exempt from the path
-    check; a `read` or `grep` may reach only its own bundle file or a skill file, a `glob` only
-    inside its bundle directory or the skill directory; every other call is a deviation, attempted,
-    failed, denied or answered."""
+def tool_call_problems(label, calls, scope, version=COUNTING_RULE):
+    """The tool calls of one judge that version `version` of point 5's rule makes a deviation,
+    attempted, failed, denied or answered, each as `{judge, callId, tools, reason, problem}`: its
+    `yield` answer is exempt from version 4; a `read`, `grep` or `glob` is held to that version's
+    scope (`in_scope`); every other call is one."""
     problems = []
     for call_id, call in sorted(calls.items()):
-        names = call["names"]
-        if names == {ANSWER_TOOL}:
+        names = sorted(call["names"])
+        found = {"judge": label, "callId": call_id, "tools": names}
+        if names == [ANSWER_TOOL] and version >= 4:
             continue
-        if len(names) != 1 or not names <= set(READ_TOOLS):
-            problems.append(f"{label} called {sorted(names) or 'a tool with no name'} ({call_id})")
+        if len(names) != 1 or names[0] not in READ_TOOLS:
+            problems.append({**found, "reason": "no file system tool the rule allows",
+                             "problem": f"{label} called {names or 'a tool with no name'} ({call_id})"})
             continue
-        tool = next(iter(names))
-        reason = call_problem(tool, call, scope)
+        reason = call_problem(names[0], call, scope, version)
         if reason is not None:
-            allowed = ("its bundle directory or the skill directory" if tool == "glob"
-                       else f"its own bundle file or a {SKILL_SCHEME}{SKILL_NAME} file")
-            problems.append(f"{label} called {tool} on {reason}, which reaches outside {allowed} ({call_id})")
+            problems.append({**found, "reason": reason,
+                             "problem": f"{label} called {names[0]} on {reason}, which version {version} of point "
+                                        f"5's rule does not allow ({call_id})"})
     return problems
 
 

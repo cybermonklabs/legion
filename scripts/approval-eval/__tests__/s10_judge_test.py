@@ -33,6 +33,7 @@ import signal  # noqa: E402
 import socket  # noqa: E402
 import tempfile  # noqa: E402
 import unittest  # noqa: E402
+from collections import Counter  # noqa: E402
 from unittest import mock  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -531,7 +532,12 @@ class JudgingTest(Base):
         found = self.outcome("a1")
         self.assertEqual((found["outcome"], found["verdict"], found["deviation"]), ("verdict", "approve", None))
         self.assertEqual(sorted(found), sorted(["askId", "issueKey", "group", "cases", "outcome", "verdict",
-                                                "deviation", "judgement", "judges", "sandbox", "judgedAt"]))
+                                                "deviation", "judgement", "judges", "sandbox", "judgedAt", "byRule"]))
+        # Its `yield` answers are version 3's deviations, and allowed by versions 4 and 5.
+        self.assertEqual({name: (one["outcome"], one["verdict"], one["deviation"], len(one["toolCallDeviations"]))
+                          for name, one in found["byRule"].items()},
+                         {"v3": ("deviation", None, "tool-call", 5), "v4": ("verdict", "approve", None, 0),
+                          "v5": ("verdict", "approve", None, 0)})
         self.assertEqual(found["judgement"]["votes"], {"approve": 5})
         self.assertEqual(found["judgement"]["neighbour_asks"], [ask_id("c1")])
         self.assertEqual(found["judgement"]["judge_models"],
@@ -566,6 +572,10 @@ class JudgingTest(Base):
         self.assertEqual(written, record["files"])
         self.assertIn(f"requests/{ask_id('a1')}/sandbox/listing.txt.xz", written)
         self.assertEqual(record["counts"]["byVerdict"], {"approve": 1})
+        counted = {name: (one["verdicts"], one["deviationsByKind"]) for name, one in record["counts"]["byRule"].items()}
+        self.assertEqual(counted, {"v3": (0, {"tool-call": 1}), "v4": (1, {}), "v5": (1, {})})
+        self.assertEqual(self.outcomes()[0]["byRule"]["v3"], {"outcome": "deviation", "verdict": None,
+                                                              "deviation": "tool-call"})
 
     def test_a_deviation_of_the_inputs_and_a_fact_that_holds_start_no_judge(self):
         admission = write_inputs(self.inputs, self.out, [
@@ -618,48 +628,75 @@ class JudgingTest(Base):
         self.assertEqual(self.outcome("a1")["deviation"]["kind"], "started")
         self.assertEqual(self.outcome("a2")["verdict"], "approve")
 
-    def test_point_five_version_four_lets_these_calls_pass(self):
+    def test_point_five_version_five_lets_these_calls_pass(self):
         def allowed(index, bundle):
             directory = os.path.dirname(bundle)
-            listed = {"scopePath": os.path.relpath(directory, self.work), "cwd": self.work,
+            relative = os.path.relpath(directory, self.work)
+            listed = {"scopePath": relative, "cwd": self.work,
                       "files": [os.path.relpath(os.path.join(directory, f"judge-{n}.md"), self.work) for n in range(1, 6)]}
             return [
                 ("read", {"path": os.path.relpath(bundle, self.work) + ":1-40", "i": "Reading"}, None),
+                ("read", {"path": bundle + ":5-16,960-973"}, None),
                 ("grep", {"pattern": "verdict", "path": bundle},
                  {"scopePath": os.path.relpath(bundle, self.work), "searchPath": bundle, "cwd": self.work,
                   "files": [os.path.relpath(bundle, self.work)]}),
                 ("glob", {"path": bundle}, None),
                 ("glob", {"path": directory}, listed),
                 ("glob", {"path": directory + "/*"}, listed),
-                ("glob", {"path": os.path.relpath(directory, self.work) + "/judge-*.md", "limit": 10}, listed),
+                ("glob", {"path": relative + "/judge-*.md", "limit": 10}, listed),
+                ("glob", {"path": directory + "/judge-{1,{2,3}}.md"}, None),
+                ("glob", {"path": directory + "/judge-[1-5].md"}, None),
                 ("glob", {"path": HARNESS + "/**"}, {"scopePath": HARNESS, "files": [HARNESS + "/references/"]}),
                 ("glob", {"path": "skill://approval-review"}, None),
-                ("glob", {"path": "skill://approval-review/references/*"}, None),
+                ("glob", {"path": "skill://approval-review/references/*"},
+                 {"scopePath": "skill://approval-review/references/*",
+                  "files": ["skill://approval-review/references/never-decide.md"]}),
+                ("glob", {"path": f"{directory}/*;skill://approval-review/**"},
+                 {"scopePath": f"{relative}/*, skill://approval-review/**", "cwd": self.work}),
                 ("read", {"path": "skill://approval-review"}, {"resolvedPath": HARNESS + "/SKILL.md"}),
                 ("read", {"path": "skill://approval-review/references/never-decide.md:raw"},
                  {"resolvedPath": HARNESS + "/references/never-decide.md"}),
                 ("read", {"path": HARNESS + "/references/reviewer-principles.md"}, None),
+                # Version 5's directory reads: its bundle directory, the skill directory, its references/.
+                ("read", {"path": relative}, {"isDirectory": True, "resolvedPath": directory}),
+                ("read", {"path": HARNESS}, {"isDirectory": True, "resolvedPath": HARNESS}),
+                ("read", {"path": "skill://approval-review/references"}, None),
                 ("yield", {"data": json.dumps({"path": "/etc/passwd"})}, None)]
         self.assertEqual(self.judged_kind(judge_tools=allowed), "approve")
+        by_rule = self.outcome("a1")["byRule"]
+        self.assertEqual(by_rule["v5"], {"outcome": "verdict", "verdict": "approve", "deviation": None,
+                                         "toolCallDeviations": []})
+        # Version 4 refuses the three directory reads of each judge, and nothing else.
+        refused = by_rule["v4"]["toolCallDeviations"]
+        self.assertEqual((by_rule["v4"]["outcome"], by_rule["v4"]["deviation"]), ("deviation", "tool-call"))
+        self.assertEqual(sorted(Counter(one["judge"] for one in refused).values()), [3] * 5)
+        self.assertEqual({tuple(one["tools"]) for one in refused}, {("read",)})
+        self.assertEqual(by_rule["v3"]["deviation"], "tool-call")
 
     def test_any_other_tool_call_is_a_deviation(self):
         def own(make):
             return lambda index, bundle: make(bundle, os.path.dirname(bundle))
 
+        def globbed(path):
+            return own(lambda bundle, directory: [("glob", {"path": path(bundle, directory)}, None)])
+
         cases = {
             "a read of another bundle": own(lambda bundle, directory: [("read", {"path": bundle[:-4] + "x.md"}, None)]),
-            "a read of the bundle directory": own(lambda bundle, directory: [("read", {"path": directory}, None)]),
+            "a read of the bundles' parent": own(lambda bundle, directory: [
+                ("read", {"path": os.path.dirname(directory)}, None)]),
             "a grep of the bundle directory": own(lambda bundle, directory: [
                 ("grep", {"pattern": "x", "path": directory}, None)]),
             "a grep with no path": own(lambda bundle, directory: [("grep", {"pattern": "x"}, None)]),
             "a glob with no path": own(lambda bundle, directory: [("glob", {}, None)]),
-            "a glob of the bundles' parent": own(lambda bundle, directory: [
-                ("glob", {"path": os.path.dirname(directory) + "/*/judge-1.md"}, None)]),
-            "a glob whose pattern climbs": own(lambda bundle, directory: [("glob", {"path": directory + "/../*"}, None)]),
-            "a glob of the working directory": own(lambda bundle, directory: [("glob", {"path": "."}, None)]),
-            "a glob of another skill": own(lambda bundle, directory: [("glob", {"path": "skill://dispatch/**"}, None)]),
+            "a glob of the bundles' parent": globbed(lambda bundle, directory: os.path.dirname(directory) + "/*/judge-1.md"),
+            "a glob whose pattern climbs": globbed(lambda bundle, directory: directory + "/../*"),
+            "a glob whose pattern holds a dot part": globbed(lambda bundle, directory: directory + "/*/./x"),
+            "a glob of the working directory": globbed(lambda bundle, directory: "."),
+            "a glob of another skill": globbed(lambda bundle, directory: "skill://dispatch/**"),
             "a glob its result says left": own(lambda bundle, directory: [
                 ("glob", {"path": directory}, {"scopePath": "/etc", "files": ["/etc/passwd"]})]),
+            "a glob over two scopes, one left": own(lambda bundle, directory: [
+                ("glob", {"path": directory}, {"scopePath": f"{directory}, /etc"})]),
             "a glob with an argument that may be a target": own(lambda bundle, directory: [
                 ("glob", {"path": directory, "pattern": "/etc/*"}, None)]),
             "a search": own(lambda bundle, directory: [("web_search", {"query": "his answer"}, None)]),
@@ -670,6 +707,34 @@ class JudgingTest(Base):
                 ("read", {"path": "skill://approval-review/../x"}, None)]),
             "a list with one other path": own(lambda bundle, directory: [
                 ("grep", {"pattern": "x", "path": f"{bundle};/work"}, None)]),
+            # Point 5's glob grammar: what could spell a parent step, a `/` or a split, or is not modelled.
+            "brace alternatives that climb": globbed(lambda bundle, directory: HARNESS + "/{..,..}/agent-secrets/**"),
+            "one brace alternative that climbs": globbed(lambda bundle, directory: directory + "/{..}/*"),
+            "a nested alternative that climbs": globbed(lambda bundle, directory: directory + "/{a,{b,..}}/*"),
+            "a brace alternative with a slash": globbed(lambda bundle, directory: directory + "/{../x,y}/*"),
+            "a brace alternative that is absolute": globbed(lambda bundle, directory: directory + "/{/etc,y}/*"),
+            "an empty brace alternative": globbed(lambda bundle, directory: directory + "/{,a}/*"),
+            "an unbalanced brace": globbed(lambda bundle, directory: directory + "/{a/*"),
+            "a closing brace alone": globbed(lambda bundle, directory: directory + "/a}/*"),
+            "a list split inside braces": globbed(lambda bundle, directory: directory + "/{a;../..}/*"),
+            "too many expansions": globbed(lambda bundle, directory: directory + "/" + "{a,b}" * 9),
+            "a class of dots": globbed(lambda bundle, directory: directory + "/[.][.]/*"),
+            "a negated class": globbed(lambda bundle, directory: directory + "/[!a]*"),
+            "a caret class": globbed(lambda bundle, directory: directory + "/[^a]*"),
+            "a range over the dot": globbed(lambda bundle, directory: directory + "/[--0]*"),
+            "a backwards range": globbed(lambda bundle, directory: directory + "/[z-a]*"),
+            "a POSIX class": globbed(lambda bundle, directory: directory + "/[[:alpha:]]*"),
+            "an unclosed class": globbed(lambda bundle, directory: directory + "/[a*"),
+            "an extended glob": globbed(lambda bundle, directory: directory + "/@(..)/*"),
+            "a negated extended glob": globbed(lambda bundle, directory: directory + "/!(x)"),
+            "backslashes": globbed(lambda bundle, directory: directory + "\\..\\..\\*"),
+            "a list split on a comma": globbed(lambda bundle, directory: directory + "/*,/etc/*"),
+            "a file and a comma": globbed(lambda bundle, directory: bundle + ",/etc"),
+            "a list split on a blank": globbed(lambda bundle, directory: directory + "/* /etc/*"),
+            "a quoted path": globbed(lambda bundle, directory: f'"{directory}/../.."'),
+            "a percent escape": globbed(lambda bundle, directory: "skill://approval-review/%2e%2e/*"),
+            "a selector that is a path": own(lambda bundle, directory: [
+                ("read", {"path": bundle + ":5-16,/etc/passwd"}, None)]),
         }
         for name, tools in cases.items():
             with self.subTest(name=name):
@@ -690,6 +755,8 @@ class JudgingTest(Base):
             "a link before": {"before": dict(wanted, skill=SANDBOX.SKILL_MANIFEST[:3] + [
                 ["references/reviewer-principles.md", "l"]])},
             "none recorded": None,
+            "a finished result missing only after": {"before": wanted},
+            "after that is no record": {"before": wanted, "after": None},
         }
         for name, manifests in cases.items():
             with self.subTest(name=name):
@@ -1116,9 +1183,12 @@ class SandboxTest(unittest.TestCase):
             self.assertIn(["references/more.md", "l"], SANDBOX.manifest_of(root))
             self.assertIsNone(SANDBOX.manifest_of(os.path.join(root, "SKILL.md")))
         wanted = {"bundle": SANDBOX.BUNDLE_MANIFEST, "skill": SANDBOX.SKILL_MANIFEST}
-        self.assertIsNone(SANDBOX.manifest_problem({"before": wanted}))
+        self.assertIsNone(SANDBOX.manifest_problem({"before": wanted}, finished=False))
         self.assertIsNone(SANDBOX.manifest_problem({"before": wanted, "after": wanted}))
+        self.assertIn("after the last judge", SANDBOX.manifest_problem({"before": wanted}))
         self.assertIn("bundle directory", SANDBOX.manifest_problem({"before": dict(wanted, bundle=None)}))
+        self.assertIn("bundle directory",
+                      SANDBOX.manifest_problem({"before": dict(wanted, bundle=None)}, finished=False))
         self.assertIn("skill directory", SANDBOX.manifest_problem({"before": dict(wanted, skill=wanted["skill"][:3])}))
         self.assertIn("after the last judge",
                       SANDBOX.manifest_problem({"before": wanted, "after": dict(wanted, skill=[])}))

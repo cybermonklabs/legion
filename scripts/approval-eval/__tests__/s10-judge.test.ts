@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE, type Registration, runDigestOf } from "../reserve";
 import { INPUTS_VERSION, type InventoryLine } from "../s10-inputs-io";
 import { admissionOf, JUDGE_COMMAND, main } from "../s10-judge-admit";
-import { judgedStageOf, reportedOutcomesOf, UNJUDGED } from "../s10-judged-io";
+import { judgedOutcomeOf, judgedStageOf, reportedOutcomesOf, UNJUDGED } from "../s10-judged-io";
 
 /**
  * The claim's judging stage. Its driver, `s10_judge.py`, and the modules beside it are tested by
@@ -229,6 +229,53 @@ describe("s10_judge.py and the modules beside it", () => {
     expect(stage.lines?.map((line) => line.outcome)).toEqual(["verdict"]);
     const [judged] = [...stage.outcomes.values()];
     expect(judged?.verdict).toBe("approve");
+    // Under version 3's rule its five `yield` answers are deviations; versions 4 and 5 allow them.
+    expect(judged?.byRule.v3.deviation).toBe("tool-call");
+    expect(judged?.byRule.v3.toolCallDeviations.map((one) => one.tools)).toEqual(
+      Array(5).fill(["yield"])
+    );
+    expect([judged?.byRule.v4.verdict, judged?.byRule.v5.verdict]).toEqual(["approve", "approve"]);
+    expect(stage.lines?.[0]?.byRule.v3).toEqual({
+      outcome: "deviation",
+      verdict: null,
+      deviation: "tool-call",
+    });
+    const text = JSON.stringify(judged);
+    type Rules = Record<
+      string,
+      { verdict?: unknown; deviation?: unknown; toolCallDeviations?: unknown }
+    >;
+    const changed = (change: (outcome: { byRule: Rules }) => void): string => {
+      const outcome = JSON.parse(text) as { byRule: Rules };
+      change(outcome);
+      return JSON.stringify(outcome);
+    };
+    expect(judgedOutcomeOf(text, "outcome.json").byRule.v5.verdict).toBe("approve");
+    for (const refused of [
+      changed((outcome) => {
+        outcome.byRule.v5.verdict = "request_changes";
+      }),
+      changed((outcome) => {
+        delete outcome.byRule.v4;
+      }),
+      changed((outcome) => {
+        outcome.byRule.v6 = outcome.byRule.v5;
+      }),
+      changed((outcome) => {
+        delete outcome.byRule.v3.toolCallDeviations;
+      }),
+      changed((outcome) => {
+        outcome.byRule.v3.toolCallDeviations = [];
+      }),
+      changed((outcome) => {
+        outcome.byRule.v4.toolCallDeviations = outcome.byRule.v3.toolCallDeviations;
+      }),
+      changed((outcome) => {
+        outcome.byRule.v3.deviation = UNJUDGED;
+      }),
+    ]) {
+      expect(() => judgedOutcomeOf(refused, "outcome.json")).toThrow();
+    }
     const line = (askId: string): InventoryLine => ({
       askId,
       issueKey: "ACME-1",
@@ -247,6 +294,11 @@ describe("s10_judge.py and the modules beside it", () => {
     );
     expect(reported.map((one) => one.deviation?.kind ?? one.verdict)).toEqual([
       "approve",
+      UNJUDGED,
+    ]);
+    expect(Object.values(reported[1]?.byRule ?? {}).map((one) => one.deviation)).toEqual([
+      UNJUDGED,
+      UNJUDGED,
       UNJUDGED,
     ]);
   }, 180_000);

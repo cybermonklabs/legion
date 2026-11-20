@@ -59,17 +59,21 @@ Each request, once, in the inventory's order (point 6):
   sent to the sandbox (`s10_sandbox.py`, one Kubernetes Job, `s10_job.py`), whose one `omp -p`
   makes those five calls. Its result is read from the Job's log, the Job is deleted, and every
   file of the result is kept, the gateway key's bytes replaced. Then, in code and before any
-  answer is compared (point 5, version 4, `s10_transcripts.py`): the sandbox's own checks, and a
+  answer is compared (point 5, version 5, `s10_transcripts.py`): the sandbox's own checks, and a
   result whose files can be read (`sandbox`); the bundle and skill directories had the required
   trees before the first judge and the same after the last (`manifest`); no kept file held the
   gateway key's bytes (`key`); the session's own transcript holds the one `eval` call and nothing
   else (`session`); there are five judges' transcripts (`transcript`); no judge made a tool call
   but its `yield` answer, a `read` or `grep` of its own bundle file or of a
-  `skill://approval-review` file, or a `glob` inside its bundle directory or the skill directory,
-  every target as given, defaulted and resolved (`tool-call`); each judge was asked point 2's
-  model, none is marked a fallback, and each model omp reports serving it is that model
-  (`model`). Then five valid answers (`answers`); the verdict is S10's `aggregate` over them,
-  through its `finish_judgement`, and it must be the verdict point 2's rule gives (`verdict`).
+  `skill://approval-review` file, a `read` of the bundle directory, the skill directory or its
+  `references/`, or a `glob` inside its bundle directory or the skill directory, every target as
+  given, defaulted and resolved (`tool-call`); each judge was asked point 2's model, none is marked
+  a fallback, and each model omp reports serving it is that model (`model`). Then five valid
+  answers (`answers`); the verdict is S10's `aggregate` over them, through its
+  `finish_judgement`, and it must be the verdict point 2's rule gives (`verdict`). Each outcome
+  also records its outcome under the tool rule of versions 3, 4 and 5, with the calls each makes a
+  deviation (`byRule`), so the analysis reports what changes under each with no further judging;
+  version 5's is the one that counts.
 
 Stops. A request is started once its `started.json` is kept, before S10's code runs on it, and a
 request started and not finished is a deviation (`started`) that no later run judges again: the
@@ -502,11 +506,17 @@ class Context:
 
 
 def outcome_of(line, outcome, verdict=None, deviation=None, judgement=None, judges=None, sandbox=None,
-               judged_at=None):
-    """One request's outcome, every key of it present (`s10-judged-io.ts` reads the same shape)."""
+               judged_at=None, by_rule=None):
+    """One request's outcome, every key of it present (`s10-judged-io.ts` reads the same shape).
+    `byRule` is its outcome under each version of point 5's tool rule (`by_rule_of`); where no
+    judge's transcript was read, each version's is the outcome itself, with no call."""
+    if by_rule is None:
+        same = {"outcome": outcome, "verdict": verdict, "deviation": deviation and deviation["kind"],
+                "toolCallDeviations": []}
+        by_rule = {f"v{version}": dict(same) for version in CHECKS.RULE_VERSIONS}
     return {"askId": line["askId"], "issueKey": line["issueKey"], "group": line["group"], "cases": line["cases"],
             "outcome": outcome, "verdict": verdict, "deviation": deviation, "judgement": judgement,
-            "judges": judges or [], "sandbox": sandbox, "judgedAt": judged_at}
+            "judges": judges or [], "sandbox": sandbox, "judgedAt": judged_at, "byRule": by_rule}
 
 
 def deviation(line, kind, reason, problems=None, **more):
@@ -516,6 +526,23 @@ def deviation(line, kind, reason, problems=None, **more):
         raise ValueError(f"{kind!r} is no deviation kind of this stage")
     return outcome_of(line, "deviation", deviation={"kind": kind, "reason": reason, "problems": problems or [reason]},
                       **more)
+
+
+def by_rule_of(problems, tool_calls, verdict):
+    """A judged request's outcome under each version of point 5's tool rule, over the same
+    transcripts: every problem but the tool calls is the same under each; `tool_calls` holds, by
+    version, the calls that version makes a deviation; `verdict` is the verdict five valid answers
+    give, or None. Each version's outcome, its first deviation kind, and those calls."""
+    by_rule = {}
+    for version in CHECKS.RULE_VERSIONS:
+        kinds = [kind for kind in DEVIATION_KINDS
+                 if (tool_calls[version] if kind == "tool-call" else problems[kind])]
+        outcome = {"outcome": "deviation", "verdict": None, "deviation": kinds[0]} if kinds else \
+            {"outcome": "verdict", "verdict": verdict, "deviation": None}
+        outcome["toolCallDeviations"] = [{key: one[key] for key in ("judge", "callId", "tools", "reason")}
+                                         for one in tool_calls[version]]
+        by_rule[f"v{version}"] = outcome
+    return by_rule
 
 
 def built_bundles(shadow, ask_id, calls):
@@ -578,6 +605,7 @@ def judged_request(context, line, calls, bundles, run, row, job, key_held):
     problems["sandbox"] = sandbox_problems(context, run, record)
     judges = []
     answers = [None] * JUDGES
+    tool_calls = {version: [] for version in CHECKS.RULE_VERSIONS}
     if not problems["sandbox"]:
         manifest = SANDBOX.manifest_problem(record.get("manifests"))
         if manifest is not None:
@@ -608,7 +636,9 @@ def judged_request(context, line, calls, bundles, run, row, job, key_held):
             bundle = next(path for path in bundles if f"`{path}`" in call["prompt"])
             made = CHECKS.tool_calls_of(entries)
             scope = CHECKS.scope_of(bundle, shadow.WORK, listing)
-            problems["tool-call"].extend(CHECKS.tool_call_problems(call["label"], made, scope))
+            for version in CHECKS.RULE_VERSIONS:
+                tool_calls[version].extend(CHECKS.tool_call_problems(call["label"], made, scope, version))
+            problems["tool-call"] = [one["problem"] for one in tool_calls[CHECKS.COUNTING_RULE]]
             wrong, served = CHECKS.model_problems(call["label"], entries, pins.asked, pins.model)
             problems["model"].extend(wrong)
             agent = os.path.basename(name)[:-len(".jsonl")]
@@ -641,7 +671,8 @@ def judged_request(context, line, calls, bundles, run, row, job, key_held):
     sandbox = {"job": run.job, **facts,
                **{key: (record or {}).get(key) for key in ("refused", "listing", "metadata", "runtime", "manifests",
                                                            "keyFound")}}
-    more = {"judgement": judgement, "judges": judges, "sandbox": sandbox, "judged_at": judged_at}
+    by_rule = by_rule_of(problems, tool_calls, judgement and judgement.get("verdict"))
+    more = {"judgement": judgement, "judges": judges, "sandbox": sandbox, "judged_at": judged_at, "by_rule": by_rule}
     listed = [problem for kind in DEVIATION_KINDS for problem in problems[kind]]
     if listed:
         kind = next(kind for kind in DEVIATION_KINDS if problems[kind])
@@ -722,14 +753,19 @@ def judge(context, line):
 # ---------- the run ----------
 
 def counts_of(outcomes):
-    kinds = Counter(outcome["deviation"]["kind"] for outcome in outcomes if outcome["outcome"] == "deviation")
-    verdicts = Counter(outcome["verdict"] for outcome in outcomes if outcome["outcome"] == "verdict")
-    return {"requests": len(outcomes),
-            "holds": sum(1 for outcome in outcomes if outcome["outcome"] == "hold"),
-            "verdicts": sum(verdicts.values()),
-            "byVerdict": dict(sorted(verdicts.items())),
-            "deviations": sum(kinds.values()),
-            "deviationsByKind": dict(sorted(kinds.items()))}
+    """The stage's counts: by version 5's rule, which counts, and under each version (`byRule`)."""
+    def counted(rows):
+        kinds = Counter(row["deviation"] for row in rows if row["outcome"] == "deviation")
+        verdicts = Counter(row["verdict"] for row in rows if row["outcome"] == "verdict")
+        return {"requests": len(rows), "holds": sum(1 for row in rows if row["outcome"] == "hold"),
+                "verdicts": sum(verdicts.values()), "byVerdict": dict(sorted(verdicts.items())),
+                "deviations": sum(kinds.values()), "deviationsByKind": dict(sorted(kinds.items()))}
+
+    counts = counted([dict(outcome, deviation=outcome["deviation"] and outcome["deviation"]["kind"])
+                      for outcome in outcomes])
+    counts["byRule"] = {f"v{version}": counted([outcome["byRule"][f"v{version}"] for outcome in outcomes])
+                        for version in CHECKS.RULE_VERSIONS}
+    return counts
 
 
 def finish(stage, inventory):
@@ -744,6 +780,8 @@ def finish(stage, inventory):
         lines.append(json.dumps({"askId": line["askId"], "issueKey": line["issueKey"], "group": line["group"],
                                  "cases": line["cases"], "outcome": outcome["outcome"], "verdict": outcome["verdict"],
                                  "deviation": outcome["deviation"] and outcome["deviation"]["kind"],
+                                 "byRule": {name: {key: one[key] for key in ("outcome", "verdict", "deviation")}
+                                            for name, one in outcome["byRule"].items()},
                                  "outcomeSha256": stage.record["files"][path]}, sort_keys=True))
     text = ("\n".join(lines) + "\n").encode("utf-8") if lines else b""
     if not stage.has(OUTCOMES_FILE):
