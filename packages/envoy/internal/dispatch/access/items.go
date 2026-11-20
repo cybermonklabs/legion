@@ -53,8 +53,10 @@ func MessagePartiesSQL(idExpr string) string {
 
 // MessageClause passes the messages row alias names: one on an issue when the viewer sees the
 // issue's project, and one on no issue when the viewer may read its conversation (PartyClause
-// over MessagePartiesSQL). A conversation whose parties were never stated passes an open viewer
-// alone, as every conversation did before a project could be private.
+// over MessagePartiesSQL). A conversation whose parties were never stated, a message whose node
+// Dispatch does not hold or whose node names no party, passes an open viewer alone while no
+// project is private, as every conversation did before a project could be, and no viewer but the
+// server's once one is.
 func MessageClause(alias, viewerParam string) string {
 	return clause("MessageClause", `(case when `+alias+`.issue_key is not null then `+IssueProjectClause(alias+`.issue_key`, viewerParam)+`
 		else `+PartyClause(MessagePartiesSQL(alias+`.id::text`), viewerParam)+` end)`)

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // The agent view is one live session's own conversation on a page's live socket: its turns, tool
@@ -41,11 +42,17 @@ const (
 // rule of GET /api/v1/agents/{session_id}/messages (liveViewReads): only a credential acting as
 // its person may watch a session's conversation — the person scope, which /ws/live cannot take
 // from the route table's gate because it is one socket serving every view, so it is refused here
-// with the gate's code (liveReadRefusal) — and the conversation of a session the caller may not
-// see answers as one nobody answers for (relayAgentConversation). The view names its kind and a
-// session uuid alone; a deployment with no relay (no NATS) has nothing to watch. A frame carries
-// no HTTP header, so a refusal carries no WWW-Authenticate challenge beside it.
+// with the gate's code, in the words the view has always refused it in — and the conversation of a
+// session the caller may not see answers as one nobody answers for (relayAgentConversation). The
+// view names its kind and a session uuid alone; a deployment with no relay (no NATS) has nothing to
+// watch. A frame carries no HTTP header, so a refusal carries no WWW-Authenticate challenge beside
+// it.
 func (s *server) startAgentView(ctx context.Context, stream liveStreamer, sub string, view LiveView, _ *EventsLiveResume) (liveSubscription, *LiveError) {
+	if !stream.Holds(model.ScopePerson) {
+		refusal := liveRefusal(sub, codeScopeRequired, "this socket's credential does not hold the "+
+			model.ScopePerson+" scope, which watching an agent's conversation requires")
+		return nil, &refusal
+	}
 	if refusal := liveReadRefusal(ctx, sub, liveAgentView, stream.Holds, s.liveReader(stream)); refusal != nil {
 		return nil, refusal
 	}

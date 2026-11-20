@@ -367,7 +367,9 @@ them the pull requests whose issue they see and the deploys that shipped them, w
 no setup form and no session-groups editor. The Priorities, Pipeline, broadcasts and
 machine-login pages answer **Page not found**, and Settings shows no Groups and no Delivery
 timeline. The API refuses them, and every token they make, every read of the whole deployment,
-`403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`.
+`403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`, except that they
+revoke their own credential grants and end their own sign-ins, as a full member does: the secrets
+broker decides whose each one is.
 
 A private project's Legion daemon needs a `dsp_` token that lists the project: the shared token and
 a token that lists no project read the private project as missing. A person who sees the project
@@ -393,10 +395,11 @@ this order:
    holds, and one who sees it but does not own it is `403 PROJECT_OWNER_REQUIRED`.
 3. A key the list does not name is `409 PRIVATE_PROJECT_NOT_PROVISIONED`.
 4. A store that cannot hold the project private yet is `409 PRIVATE_PROJECTS_INCOMPLETE`, naming
-   the command that repairs it: `envoy-dispatch backfill-graph-store` while a row of the project
-   has no node naming its project, `envoy-dispatch backfill-session-projects` until the sessions'
-   projects are filled, and `envoy-dispatch scrub-access-events` until the stored access events
-   are scrubbed.
+   what repairs it: each row of the project that has no node naming its project, with the cure
+   the project census prints for it (`envoy-dispatch backfill-graph-store`, or none for a node
+   that names another project, which a person compares with its row),
+   `envoy-dispatch backfill-session-projects` until the sessions' projects are filled, and
+   `envoy-dispatch scrub-access-events` until the stored access events are scrubbed.
 5. Last, in the same transaction, Dispatch writes the project's key in the hub's
    `envoy_private_projects` bucket, the record by which Envoy's listeners are to hold the
    project's messages back from a token that does not list it. When the hub refuses that write,
@@ -424,9 +427,9 @@ envoy-dispatch project-visibility <KEY> public
 So to take a key off the list, make the project public first, and only then remove its key. At
 start Dispatch also logs, at INFO, the listed keys no private project holds yet. With a list, each
 server logs an ERROR line as it starts, and then once an hour, while the store cannot hold a
-private project for one of the reasons of step 4, naming the reason and the command that repairs
-it. Every response carries `Dispatch-Private-Projects: 1`
-while the list names a project or the database holds a private one, and
+private project for one of the reasons of step 4, naming the reason and what repairs it. Every
+response carries `Dispatch-Private-Projects: 1` while the list names a project, the database holds
+a private one, or the server's last read of the database's private projects failed, and
 `Dispatch-Private-Projects: 0` otherwise.
 
 ## Health check

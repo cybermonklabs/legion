@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -40,12 +41,8 @@ func TestRouteProbesNameEveryRowAndFillEveryGETWildcard(t *testing.T) {
 		for _, match := range patternWildcard.FindAllStringSubmatch(route.Pattern, -1) {
 			want = append(want, match[1])
 		}
-		var got []string
-		for filled := range probe.Probe {
-			got = append(got, filled)
-		}
+		got := slices.Sorted(maps.Keys(probe.Probe))
 		slices.Sort(want)
-		slices.Sort(got)
 		if !slices.Equal(got, want) {
 			t.Errorf("%s: the Probe fills %v, the pattern holds %v", name, got, want)
 		}

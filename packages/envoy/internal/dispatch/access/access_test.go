@@ -318,18 +318,25 @@ func passes(callers ...string) map[string]bool {
 // one that lists projects when it acted in a project the viewer sees. A session with no pair is
 // judged by its listener record's projects: an open viewer reads it when the record names no
 // project the viewer does not see (ses_new_priv, whose record names PRIV, reaches no open viewer
-// that does not see PRIV), and a viewer that is not open when the record names a project it sees.
-// While a project is private, a session with neither a pair nor a listener record (ses_neither)
-// passes for no viewer but its own and the server's.
+// that does not see PRIV; ses_new_mixed, whose record names PRIV and PUB, reaches carol alone), an
+// empty list included (ses_new_empty), and a viewer that is not open when the record names a
+// project and every project it names is one the viewer sees (ses_new_mixed reaches neither bob nor
+// carol's token that lists PRIV, though each sees PRIV). While a project is private, a session the
+// listener record does not list projects for (ses_new_none, whose listener sent no projects key)
+// is one whose projects nothing Dispatch holds names, and it passes for no viewer but its own and
+// the server's, as does a session with neither a pair nor a listener record (ses_neither).
 // A role of a private project the viewer does not see (legion-priv-architect, which nobody holds,
 // and legion-priv-planner, which ses_pub holds) passes for no viewer but the server's. Any other
-// role passes for an open viewer unless a session that holds it now does not pass (priv-architect,
-// held by ses_priv), and for any other viewer when a session that holds it now passes. For a
+// role passes for a viewer when a session that holds it now passes for that viewer, and for an open
+// viewer as well when no session that holds it now fails (priv-architect, held by ses_priv alone,
+// reaches no open viewer that does not see PRIV; mixed-architect, held by ses_priv and ses_pub,
+// reaches every caller here, each of whom reads one of its holders). For a
 // restricted viewer or one that lists projects, a person passes when it sees a project the viewer
 // sees or is the viewer. A conversation of no project passes when the viewer's own person or
 // session is a party, or the viewer is open, and every session party passes SessionClause: carol's
 // token that lists no project does not read her own conversation with ses_priv, nor bob his with
-// ses_pub.
+// ses_pub. A conversation that names no party (null parties, an empty list, a direct message whose
+// node Dispatch does not hold) passes no viewer but the server's while a project is private.
 //
 // With no private project every session, role and conversation reads as before a project could be
 // private (R9): an open viewer reads each one, and a viewer that is not open reads a session only
@@ -342,14 +349,16 @@ func TestTheClausesOverTheSeededCallers(t *testing.T) {
 	// The pairs of a filled deployment: session_projects_filled holds its row, so the open arm reads
 	// the pairs (TestAnOpenViewerReadsNoOtherSessionWhileTheFillIsUnfinished holds the unfilled one).
 	// The listener's record (route_roster) lists the sessions with no history: ses_new_priv with a
-	// token that lists PRIV, ses_new_pub with one that lists PUB, and ses_new_none with no list, as
-	// envoy.Session leaves an empty one out. ses_neither has neither a pair nor a record.
+	// token that lists PRIV, ses_new_pub with one that lists PUB, ses_new_mixed with one that lists
+	// PRIV and PUB, ses_new_empty with one that lists no project ([]), and ses_new_none with no
+	// projects key, which a listener that does not record a session's projects sends. ses_neither
+	// has neither a pair nor a record.
 	if _, err := database.Pool.Exec(ctx, `
 		insert into session_projects_filled default values;
 		insert into session_projects (session_id, project_key) values ('ses_priv', 'PRIV'), ('ses_pub', 'PUB'), ('ses_both', 'PUB'), ('ses_both', 'PRIV'),
 			('ses_priv_other', 'PRIV'), ('ses_priv_other', 'OTHER');
 		insert into route_roster (answered, sessions, sent_at, expires_at) values (true,
-			'[{"session_id":"ses_new_priv","projects":["PRIV"]},{"session_id":"ses_new_pub","projects":["PUB"]},{"session_id":"ses_new_none"}]',
+			'[{"session_id":"ses_new_priv","projects":["PRIV"]},{"session_id":"ses_new_pub","projects":["PUB"]},{"session_id":"ses_new_mixed","projects":["PRIV","PUB"]},{"session_id":"ses_new_empty","projects":[]},{"session_id":"ses_new_none"}]',
 			now(), now() + interval '1 hour');
 		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event) values
 			('role', 'priv-architect', 'held_by', 'session', 'ses_priv', now(), '{}', 0),
@@ -358,7 +367,9 @@ func TestTheClausesOverTheSeededCallers(t *testing.T) {
 			('role', 'pub-architect', 'held_by', 'session', 'ses_priv', now(), '{}', 0, false);
 		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event) values
 			('role', 'pub-architect', 'held_by', 'session', 'ses_pub', now(), '{}', 0),
-			('role', 'legion-priv-planner', 'held_by', 'session', 'ses_pub', now(), '{}', 0);
+			('role', 'legion-priv-planner', 'held_by', 'session', 'ses_pub', now(), '{}', 0),
+			('role', 'mixed-architect', 'held_by', 'session', 'ses_priv', now(), '{}', 0),
+			('role', 'mixed-architect', 'held_by', 'session', 'ses_pub', now(), '{}', 0);
 	`); err != nil {
 		t.Fatalf("seed sessions and roles: %v", err)
 	}
@@ -396,16 +407,23 @@ func TestTheClausesOverTheSeededCallers(t *testing.T) {
 		{"SessionClause ses_priv_other", SessionClause("$2", "$1"), "ses_priv_other", passes(), openAnd(byBob, byCarolPriv)},
 		{"SessionClause ses_new_priv", SessionClause("$2", "$1"), "ses_new_priv", passes(byBob, byCarol, byCarolPriv), openAnd()},
 		{"SessionClause ses_new_pub", SessionClause("$2", "$1"), "ses_new_pub", passes(byAlice, byCarol, byCarolUnlisted, byShared), openAnd()},
-		{"SessionClause ses_new_none", SessionClause("$2", "$1"), "ses_new_none", passes(byAlice, byCarol, byCarolUnlisted, byShared), openAnd()},
+		{"SessionClause ses_new_mixed", SessionClause("$2", "$1"), "ses_new_mixed", passes(byCarol), openAnd()},
+		{"SessionClause ses_new_empty", SessionClause("$2", "$1"), "ses_new_empty", passes(byAlice, byCarol, byCarolUnlisted, byShared), openAnd()},
+		{"SessionClause ses_new_none", SessionClause("$2", "$1"), "ses_new_none", passes(), openAnd()},
 		{"SessionClause ses_neither", SessionClause("$2", "$1"), "ses_neither", passes(), openAnd()},
 		{"RoleClause priv-architect", RoleClause("$2", "$1"), "priv-architect", passes(byBob, byCarol, byCarolPriv), openAnd(byBob, byCarolPriv)},
 		{"RoleClause pub-architect", RoleClause("$2", "$1"), "pub-architect", passes(byAlice, byCarol, byCarolUnlisted, byShared), openAnd()},
 		{"RoleClause legion-priv-architect", RoleClause("$2", "$1"), "legion-priv-architect", passes(byCarol), openAnd()},
 		{"RoleClause legion-priv-planner", RoleClause("$2", "$1"), "legion-priv-planner", passes(byCarol), openAnd()},
 		{"RoleClause legion-pub-architect", RoleClause("$2", "$1"), "legion-pub-architect", passes(byAlice, byCarol, byCarolUnlisted, byShared), openAnd()},
+		{"RoleClause mixed-architect", RoleClause("$2", "$1"), "mixed-architect", everyone, openAnd(byBob, byCarolPriv)},
 		{"PartyClause bob and ses_pub", PartyClause("$2", "$1"), []string{"person:" + bob, "session:ses_pub"}, passes(byAlice, byCarol, byCarolUnlisted, byShared), openAnd()},
 		{"PartyClause bob and ses_priv", PartyClause("$2", "$1"), []string{"person:" + bob, "session:ses_priv"}, passes(byBob, byCarol), openAnd(byBob)},
 		{"PartyClause carol and ses_priv", PartyClause("$2", "$1"), []string{"person:" + carol, "session:ses_priv"}, passes(byCarol, byCarolPriv), openAnd(byCarolPriv)},
+		{"PartyClause of no stated parties", PartyClause("$2::text[]", "$1"), []string(nil), passes(), openAnd()},
+		{"PartyClause of an empty list of parties", PartyClause("$2::text[]", "$1"), []string{}, passes(), openAnd()},
+		{"PartyClause of a direct message whose node Dispatch does not hold", PartyClause(MessagePartiesSQL("$2::text"), "$1"),
+			"00000000-0000-4000-8000-0000000000d1", passes(), openAnd()},
 	}
 	read := func(who string, viewer model.Viewer, p probe) bool {
 		t.Helper()

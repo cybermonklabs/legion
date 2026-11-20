@@ -96,13 +96,13 @@ func workflowRunsOfOneCommit(rawQuery string) bool {
 // that a person is asking.
 //
 // hidden answers whether the person asking may not see the repository (its owner and name as the
-// path spells them). A hidden repository answers exactly what one the App is not installed on
-// answers, step for step: a deployment with no App key still answers that it has none, as it does
-// for every repository, and a rate limit still answers the rate limit; every other outcome of the
-// token mint, a minted token included, answers that the App is not installed on it, and the token
-// is dropped with no read of GitHub made. So a hidden repository is never answered as a
-// deployment with no App key answers every repository, nor as anything a visible one answers.
-// hidden is asked only after those two shared answers, and an error from it is a 500.
+// path spells them), and an error from it is a 500. It is asked before GitHub is sent anything, and
+// after the one answer every repository shares, a deployment with no App key's. A hidden repository
+// sends GitHub no request and answers what one the App is not installed on answers when GitHub is
+// not asked either: the rate limit, while a limit is in force on the App's scope (where the
+// installation lookup of an uninstalled repository is held unsent), and otherwise that the App is
+// not installed on it. So a hidden repository is never answered as a deployment with no App key
+// answers every repository, nor as anything a visible one answers.
 func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client, hidden func(owner, repo string) (bool, error)) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
@@ -116,22 +116,33 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client,
 		api.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "the GitHub proxy reads a pull request, an issue, a commit's check runs or a commit's workflow runs only", "code": "GITHUB_PATH_REFUSED"})
 		return
 	}
+	// A nil client is the deployment with no App key (githubapp.ErrNoAppKey), which answers every
+	// repository alike.
+	if client == nil {
+		unavailable(w, "the GitHub App is not configured")
+		return
+	}
+	concealed, err := hidden(owner, repo)
+	if err != nil {
+		slog.Error("dispatch: GitHub proxy could not read whether the caller sees the repository", "repository", owner+"/"+repo, "error", err)
+		api.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal server error", "code": "INTERNAL"})
+		return
+	}
+	if concealed {
+		if limited := client.HeldLimit(r.Context(), githubapp.AppScope); limited != nil {
+			rateLimited(w, limited)
+			return
+		}
+		unavailable(w, "the GitHub App is not installed on "+owner+"/"+repo)
+		return
+	}
 	token, err := client.RepositoryToken(r.Context(), owner, repo)
 	if limited, ok := githubapp.AsRateLimit(err); ok {
 		rateLimited(w, limited)
 		return
 	}
-	if errors.Is(err, githubapp.ErrNoAppKey) {
-		unavailable(w, "the GitHub App is not configured")
-		return
-	}
-	concealed, hiddenErr := hidden(owner, repo)
 	switch {
-	case hiddenErr != nil:
-		slog.Error("dispatch: GitHub proxy could not read whether the caller sees the repository", "repository", owner+"/"+repo, "error", hiddenErr)
-		api.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal server error", "code": "INTERNAL"})
-		return
-	case concealed, errors.Is(err, githubapp.ErrNoInstallation):
+	case errors.Is(err, githubapp.ErrNoInstallation):
 		unavailable(w, "the GitHub App is not installed on "+owner+"/"+repo)
 		return
 	case err != nil:

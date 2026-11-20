@@ -634,9 +634,16 @@ func (s *server) beginCommentWrite(ctx context.Context, who model.Actor, owner o
 // issue-level, a reply, a reply on an ask, one anchored to a document's quote - but not a
 // suggestion: that is a proposed document edit, and accepting it, its only outcome, is refused
 // on a closed issue, which is what write says (refuseClosed). The owner is read as who reads it
-// (ownerStatus).
+// (ownerStatus). An issue the path names by its key alone is read before its lock is asked for
+// (lockedOwnerReadOnceFound), so a hidden one is refused without waiting behind its project's
+// writers, as a key no issue holds is; a document owner was read as who reads it before this
+// (documentOwnerForHandler).
 func (s *server) lockCommentOwner(ctx context.Context, tx pgx.Tx, who model.Actor, owner owner, route commentRoute, write closedWrite) (*string, error) {
-	status, open, err := ownerStatus(ctx, who, owner, lockedOwnerRead(tx))
+	read := lockedOwnerRead(tx)
+	if owner.IssueKey != nil {
+		read = lockedOwnerReadOnceFound(tx)
+	}
+	status, open, err := ownerStatus(ctx, who, owner, read)
 	if err != nil {
 		return nil, err
 	}
@@ -690,14 +697,13 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		s.writeHandlerError(w, err)
 		return
 	}
-	// What the writer sees, resolved before any transaction holds a connection: the thread target
-	// below lists the owner's open asks as the writer may read them (askIDInputForOwner).
-	reader, ok := s.readerOf(w, r)
+	// What the writer sees, resolved before any transaction holds a connection: the owner checks
+	// read the owner as it may, and the thread target below lists the owner's open asks as it may
+	// read them (askIDInputForOwner).
+	writer, ok := s.readerAs(w, r, actor)
 	if !ok {
 		return
 	}
-	writer := actor
-	writer.Viewer = reader.Viewer
 
 	// Every Envoy listener lookup this comment needs happens here, with no transaction and no
 	// pooled connection held (resolveCommentDeliveries). beginCommentWrite re-reads the issue's
@@ -712,7 +718,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		write = refusedWhenClosed
 	}
 	if len(mentionTargets) > 0 {
-		if err := s.refuseOwnerBeforeResolving(r.Context(), reader, owner, write); err != nil {
+		if err := s.refuseOwnerBeforeResolving(r.Context(), writer, owner, write); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -722,7 +728,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			return s.resolveCommentDeliveries(ctx, owner, input, mentionTargets, delivery)
 		},
 		func(ctx context.Context, resolved commentResolution) (commentWrite, error) {
-			return s.beginCommentWrite(ctx, reader, owner, resolved, write)
+			return s.beginCommentWrite(ctx, writer, owner, resolved, write)
 		},
 		errorf(http.StatusConflict, "ROUTE_CHANGED",
 			"the issue's delivery route changed while this comment was being written; post it again"),

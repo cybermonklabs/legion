@@ -135,7 +135,9 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	// two replace the set one after the other: the stored set is always one whole set, the set of
 	// the one that finishes last (TestTwoDesignGatePublishesOfOneIssueAtOnceLeaveOneWholeSet). The
 	// row is read as the caller reads it: an issue of a project it does not see is one no row
-	// holds. The code is written here rather than taken from loadIssue, which answers the package's
+	// holds, and it is read so once before the lock is asked for (lockOwnerOnceFound), so a hidden
+	// issue is refused without waiting behind its project's writers, as a key no issue holds is.
+	// The code is written here rather than taken from loadIssue, which answers the package's
 	// plain NOT_FOUND: the daemon must tell a Dispatch that knows no such issue from a Dispatch that
 	// does not serve this route at all, and that one answers the router's own
 	// `404 {"code":"NOT_FOUND"}` (routes/router.go), which is the plain code loadIssue would give
@@ -143,7 +145,7 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	// loadIssue's code every publication against a Dispatch older than the route would be dropped
 	// as a refusal no retry repairs.
 	var issue string
-	if err := store.LockOwnerAndRead(r.Context(), tx, store.IssueOwner(r.PathValue("key")), `
+	if err := lockOwnerOnceFound(r.Context(), tx, store.IssueOwner(r.PathValue("key")), `
 		select key from issues where key = $1 and `+access.ProjectClause("project_key", "$2")+`
 	`, []any{r.PathValue("key"), refs.VisibilityArg(who)}, &issue); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

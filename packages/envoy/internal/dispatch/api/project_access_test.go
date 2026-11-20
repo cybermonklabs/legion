@@ -27,13 +27,7 @@ const (
 // three access people.
 func newAccessServer(t *testing.T) (http.Handler, *store.Store) {
 	t.Helper()
-	return newAccessServerWith(t, testServerOptions{})
-}
-
-// newAccessServerWith is newAccessServer's server under options.
-func newAccessServerWith(t *testing.T, options testServerOptions) (http.Handler, *store.Store) {
-	t.Helper()
-	handler, database, _ := newTestServer(t, options)
+	handler, database, _ := newTestServer(t, testServerOptions{})
 	seedPeople(t, database, accessCarol, accessDave, accessErin)
 	markRestricted(t, database, accessErin)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{

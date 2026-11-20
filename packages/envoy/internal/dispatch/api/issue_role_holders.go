@@ -189,12 +189,13 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	}
 	key := r.PathValue("key")
 	if daemon := legionDaemonSessionOf(key); actor.Kind != "session" || actor.ID != daemon {
-		// The refusal names the key the caller sent and the rule, and nothing read or derived
-		// from it, so an issue of a project the caller may not see is refused in the words a key
-		// nobody holds is (the hidden-object walk compares the two byte for byte).
+		// The refusal is built from the key the caller sent alone, its project the key up to its
+		// first -, and from nothing read, so an issue of a project the caller may not see is refused
+		// in the words a key nobody holds in that project is.
+		project, _, _ := strings.Cut(key, "-")
 		writeError(w, "ROLE_HOLDER_FORBIDDEN", http.StatusForbidden, fmt.Sprintf(
-			"only the Legion daemon of %s's project names the sessions that hold its roles. That daemon writes as session legion-daemon:<project>, the key up to its first -.",
-			key))
+			"only the Legion daemon of project %s names the sessions that hold the roles of %s. That daemon writes as session %s.",
+			project, key, daemon))
 		return
 	}
 	if input.Holders == nil {
@@ -246,18 +247,19 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// The issue row is read in the write's own transaction, under the issue's owner lock, which a
-	// second write of the same issue waits for (store.LockOwner, the advisory lock every writer of
-	// the issue takes), so the two replaces run one after the other: the second reads the rows that
-	// the first committed, and each answers the set that it stored. The lock and the read are one
-	// batch, and the read is a plain select, so while no earlier build is in the fleet the
-	// transaction takes no row lock of an owner table and holds no transaction id until its first
-	// write (INFRA-636; beside an earlier build LockOwnerAndRead also takes the issue's row, as that
-	// build's writers do); it does not stop a reader. An issue of a project the writer may not see
-	// is read as no issue (access.ProjectClause), so the write answers it as it answers a key nobody
-	// holds.
+	// The issue row is read in the write's own transaction, once before the issue's owner lock and
+	// once under it (lockOwnerOnceFound): an issue of a project the writer may not see is read as no
+	// issue (access.ProjectClause) before any lock, so the write answers it as it answers a key
+	// nobody holds, and waits for no writer of it. Under the lock, which a second write of the same
+	// issue waits for (store.LockOwner, the advisory lock every writer of the issue takes), the two
+	// replaces run one after the other: the second reads the rows that the first committed, and each
+	// answers the set that it stored. The lock and the second read are one batch, and the reads are
+	// plain selects, so while no earlier build is in the fleet the transaction takes no row lock of
+	// an owner table and holds no transaction id until its first write (beside an earlier build
+	// LockOwnerAndRead also takes the issue's row, as that build's writers do); it does not
+	// stop a reader.
 	var issue string
-	if err := store.LockOwnerAndRead(r.Context(), tx, store.IssueOwner(key), `
+	if err := lockOwnerOnceFound(r.Context(), tx, store.IssueOwner(key), `
 		select key from issues where key = $1 and `+access.ProjectClause("project_key", "$2")+`
 	`, []any{key, refs.VisibilityArg(who)}, &issue); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
