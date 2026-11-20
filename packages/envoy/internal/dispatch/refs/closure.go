@@ -52,6 +52,9 @@ const (
 // registry's own rewrite compares the uuid as text, which no index serves, and this arm runs once
 // for every link of the issue. Its target is the document the walk reaches, and the block of it
 // where the row names one, so a document hidden from them is neither listed nor walked on from.
+// The issue itself is held to the acting person in the statement too (the registry's issue
+// predicate over $1, which names only parameters, so Postgres tests it once, before it walks):
+// an issue they may not see has no closure, whatever the caller read of it before.
 var closureQuery = sync.OnceValue(func() string {
 	visibleSource := VisibleEnd(`r.from_kind`,
 		`case when r.from_kind = 'artifact' then (select s.ref_key from artifacts s where s.id = r.from_id::uuid) else r.from_id end`,
@@ -90,7 +93,7 @@ var closureQuery = sync.OnceValue(func() string {
 		select distinct on (c.ref_key) c.ref_key, c.depth, c.via_kind, c.via_id
 		from closure c
 		join artifacts a on a.ref_key = c.ref_key
-		where a.issue_key is distinct from $1
+		where a.issue_key is distinct from $1 and ` + VisibleKind("issue", `$1`, `$2`) + `
 		order by c.ref_key, c.depth, c.via_kind, c.via_id
 	`
 })
