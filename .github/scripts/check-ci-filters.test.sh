@@ -804,42 +804,6 @@ replace "$root/.github/ci-filters.yaml" "  - 'fixtures/**'" \
 run_check "$root"
 check "a ! pattern matching nothing is no dead pattern" "$(is "$status" 0)"
 
-echo "case: a directory listing of files_but_tests leaves out a file git ignores"
-# A local run leaves ignored files behind (packages/dispatch's e2e writes packages/envoy's
-# .dispatch-e2e.lock and dispatch-e2e/). Listed as reads, each would be refused as matching no
-# file of the repository, since repo_files() leaves it out, on a tree CI's fresh checkout passes.
-root=$(fixture ignored-listed)
-replace "$root/.github/scripts/ci_job_reads.py" 'from ci_filter_coverage import Read, at, gate, run' \
-  'from ci_filter_coverage import Read, at, files_but_tests, gate, run'
-replace "$root/.github/scripts/ci_job_reads.py" 'reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]' \
-  'reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition"), *[Read(path, "the app walks fixtures") for path in files_but_tests("fixtures", suffix="", tree=True)]]'
-# With no RULES row, fixtures/data.json is read through the listing alone, so a listing that kept
-# no tracked file would leave 'fixtures/**' matching no read, which rule 9's second direction
-# refuses: the case holds the tracked file kept as well as the ignored ones dropped.
-replace "$root/.github/scripts/ci_job_reads.py" \
-  'RULES = {"mod/lib/lib_test.go": [Read("fixtures/data.json", "lib_test.go reads ../../fixtures/data.json")]}' 'RULES = {}'
-printf '/fixtures/run.lock\n/fixtures/run/\n' > "$root/.gitignore"
-echo lock > "$root/fixtures/run.lock"
-mkdir -p "$root/fixtures/run"
-echo log > "$root/fixtures/run/out.log"
-run_check "$root"
-check "passes" "$(is "$status" 0)"
-check "and names no ignored file" "$(is "$(contains "$out" 'fixtures/run')" false)"
-
-echo "case: files_but_tests refuses a directory not spelled as repo_files() spells a path"
-# ./fixtures, fixtures/ or an absolute path would list no file of repo_files(), and the reads
-# would go missing with nothing failing.
-for spelling in ./fixtures fixtures/ "$work/abs"; do
-  root=$(fixture "listed-$(printf '%s' "$spelling" | tr -c 'a-z' '-')")
-  replace "$root/.github/scripts/ci_job_reads.py" 'from ci_filter_coverage import Read, at, gate, run' \
-    'from ci_filter_coverage import Read, at, files_but_tests, gate, run'
-  replace "$root/.github/scripts/ci_job_reads.py" 'reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]' \
-    "reads=[Read(\".github/workflows/ci.yaml\", \"a job reads its own definition\"), *[Read(path, \"the app walks fixtures\") for path in files_but_tests(\"$spelling\", suffix=\"\", tree=True)]]"
-  run_check "$root"
-  check "fails for $spelling" "$(is "$status" 1)"
-  check "and names the spelling" "$(contains "$out" "files_but_tests is given '$spelling', which is not a path relative to the repository root in normal form")"
-done
-
 # Rule 9's second direction, the other way round: a pattern that matches files of the repository
 # none of which its job reads selects the job for a change no step of it can see. The app job's
 # reads are its closure, the fixture its test opens and ci.yaml, and docs/readme.md is none of
@@ -3436,5 +3400,66 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names both quantifiers" \
   "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's paths-filter steps read .github/ci-filters.yaml under predicate-quantifier some and some-with-excludes, so one filter of it means two things")"
+
+echo "case: the files a table lists from a directory are the repository's, not the disk's"
+# ci_job_reads.py's files_but_tests lists a directory's files but its Go tests for the reads no
+# glob can write. A local e2e run leaves build outputs git ignores in packages/envoy (the
+# harness's lock, out/dispatch-e2e-broker); no checkout CI makes has them, and rule 9 refused the
+# envoy_smoke gate's read of each as matching no file. So the list is repo_files(): the tracked
+# files still on disk and the untracked ones git does not ignore, in the order a walk visits them.
+root="$work/files-but-tests"
+mkdir -p "$root/pkg/sub" "$root/pkg/testdata" "$root/pkg/out"
+printf 'pkg/out/\n' > "$root/.gitignore"
+for f in a.go a_test.go z.go notes.txt sub/b.go testdata/c.go gone.go out/build.go new.go; do
+  printf 'package x\n' > "$root/pkg/$f"
+done
+git -C "$root" init -q
+git -C "$root" add .gitignore pkg/a.go pkg/a_test.go pkg/z.go pkg/notes.txt pkg/sub/b.go pkg/testdata/c.go pkg/gone.go
+rm "$root/pkg/gone.go"
+# listed_files <root> <suffix> <tree|flat>: files_but_tests("pkg") run from <root>, as the check
+# runs from the repository's, skipping testdata.
+listed_files() {
+  (cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 -c '
+import os
+import sys
+from pathlib import Path
+
+import ci_filter_coverage
+import ci_job_reads as reads
+
+os.chdir(sys.argv[1])
+ci_filter_coverage.REPO = Path.cwd()
+reads.repository_files.cache_clear()
+print(" ".join(reads.files_but_tests("pkg", suffix=sys.argv[2], tree=sys.argv[3] == "tree", skip=("testdata",))))
+' "$@")
+}
+check "lists the tracked and the new files, a directory's own before its subdirectory's" \
+  "$(is "$(listed_files "$root" .go tree)" "pkg/a.go pkg/new.go pkg/z.go pkg/sub/b.go")"
+check "and no ignored build output, test file, deleted file or skipped directory for any suffix" \
+  "$(is "$(listed_files "$root" "" tree)" "pkg/a.go pkg/new.go pkg/notes.txt pkg/z.go pkg/sub/b.go")"
+check "and without the tree, the directory's own files" \
+  "$(is "$(listed_files "$root" .go flat)" "pkg/a.go pkg/new.go pkg/z.go")"
+# ./pkg, pkg/ or an absolute path would match no path of repo_files(), which spells each relative
+# and in normal form, so the reads would go missing with nothing failing: each is refused.
+for spelling in ./pkg pkg/ "$root/pkg"; do
+  refusal=$( (cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 -c '
+import os
+import sys
+from pathlib import Path
+
+import ci_filter_coverage
+import ci_job_reads as reads
+
+os.chdir(sys.argv[1])
+ci_filter_coverage.REPO = Path.cwd()
+reads.repository_files.cache_clear()
+try:
+    reads.files_but_tests(sys.argv[2])
+except ValueError as exc:
+    print(exc)
+' "$root" "$spelling") )
+  check "refuses the directory spelled $spelling, naming the spelling" \
+    "$(contains "$refusal" "files_but_tests is given '$spelling', which is not a path relative to the repository root in normal form")"
+done
 
 summary "check-ci-filters.sh holds each filter to its job's Go closure, its rules and its table"

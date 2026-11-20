@@ -1167,8 +1167,10 @@ selects every job there.
 ## The commit main pointed at before the push the bypass check read
 
 The commit main pointed at before the push the bypass check read: envoy-go-checks compares
-every migration it holds with this run's tree, the range the push landed. A dispatch
-without it fails that check, which cannot tell what the run lands.
+every migration it holds with this run's tree, the range the push landed. A dispatch on
+main without it fails that check, which cannot tell what the run lands. A dispatch on
+another branch without it, a full run started by hand, compares with the branch's merge
+base with main (.github/scripts/edited-migrations-base.sh).
 
 ## What a newer push cancels, and what is never cancelled
 

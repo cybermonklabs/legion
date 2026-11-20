@@ -1010,7 +1010,8 @@ The step "Pull the stack's Postgres image" was added later, for the reason
 .github/ci-notes/dispatch-browser.md#the-stacks-postgres-image-pulled-here-for-the-same-reason gives,
 and its pull is counted at the 120 s the browser step spent before the stack's first output
 on the run that found it: 240 + 314 + 120 = 674 s, 11 min 14 s, rounded up to the 12 minutes
-of the visual job's `timeout-minutes`.
+it had. The reverse-order browser step runs the same rows on a new stack of the same size, with
+a new seed, and has the first step's 4-minute budget, so the job budget is 12 + 4 = 16 minutes.
 
 #4383 counted the steps without a budget at 314 s, the five columns' figure before the sixth
 was added (240 + 314 + 120 = 674 s), where #2856 had already re-measured them at 333 s over the
@@ -1057,15 +1058,32 @@ start, so the 120 s is the bound this pull is given, not a measure of the pull a
 digest is the browser step's, written twice, and the two must stay the same: a pull of
 another digest here leaves that step to pull its own inside its budget again.
 
+## Why the visual job runs its rows again in reverse order
+
+The same rows again in reverse order, on a new stack and a new seed: the phone rows before
+the desktop rows, and each project's rows last first (packages/dispatch/e2e/visual-order.ts).
+One seed serves a whole run, so a row whose page reads a write another row made fails one
+of the two runs by its own name, and a baseline that holds another row's write is found
+here rather than as a flake. It runs when the normal run failed too, since that is when its
+answer says most, and not when the normal run never started: a setup step that failed
+leaves nothing for either run to compare. Its budget is the first step's, for the same
+rows on a new stack of the same size.
+
+Its results go to `test-results-reverse` (Playwright's `--output`, which e2e/visual-run.sh
+passes on), so the normal run's stay in `test-results`, where a reader of a failed run
+looks for the shots, however this run ends.
+
 ## Why the visual job's upload is always
 
 Always, not on failure alone: a reader of a green run wants the report too, and a run
 that wrote a baseline no tree holds yet - a route this layer gained - leaves it here,
-which is how that file reaches the pull request from a machine with no container.
+which is how that file reaches the pull request from a machine with no container. It
+holds both runs: the normal run's results under test-results, the reverse run's under
+test-results-reverse.
 
 ## Why the visual upload keeps a pattern that matches no file
 
-The third pattern matches no file in THIS job and is not dead: it is what fixes the
+The last pattern matches no file in THIS job and is not dead: it is what fixes the
 archive's layout. This job runs one stack, and for one stack e2e/harness-pool.ts
 leaves `logDir` unset, so the harness writes to stderr and no `worker-*/log/*.log`
 is ever created. upload-artifact takes the archive root from the least common

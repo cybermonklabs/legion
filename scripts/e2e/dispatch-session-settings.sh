@@ -75,6 +75,11 @@ mkdir -p "$evidence/logs" "$evidence/checks"
 transcript_to "$evidence/transcript.log"
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-session-settings.$$.XXXXXXXX")
+# Every program the run execs from here on carries its mark (run_marks, lib/process-tree.sh): the
+# driver hands it to each Oh My Pi it starts, and the listener's and Dispatch's `env -i` starts name
+# it. A fork of this shell that execs nothing carries none and is stopped by its pid (run_marks'
+# comment there). The transcript's tee, started above, carries none.
+export LEGION_E2E_RUN=$work
 driver=$root/scripts/e2e/lib/dispatch-session-settings.ts
 check=setup
 timeout_hook=
@@ -93,21 +98,27 @@ fail() { echo "FAIL $check: $*" >&2; exit 1; }
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
 
-# stop_omp PID ends one Oh My Pi the driver started, and only while its command line still names
-# this run's work directory, so a pid the kernel gave to another process since is never signalled.
-# It is continued first: a check stops one with SIGSTOP, and a stopped process keeps a TERM pending.
+# stop_omp PID ends one Oh My Pi the driver started, and only while it still carries the run's mark
+# (names_dir and run_marks, lib/process-tree.sh), so a pid the kernel gave to another process since
+# is never signalled: a shell that works under this run's work directory names it on its command
+# line and carries no mark. It is continued first: a check stops one with SIGSTOP, and a stopped
+# process keeps a TERM pending.
 stop_omp() {
-  grep -qsF "$work" "/proc/$1/cmdline" || return 0
+  names_dir "$work" "${run_marks[@]}" "$1" || return 0
   signalable "$1" || return 0
   kill -CONT "$1" 2>/dev/null || true
   stop_pid "$1"
 }
 
 cleanup() {
-  local status=$? pid
+  local status=$? pid start
   set +e
+  # Each line is a pid and its start, which the driver read as it started it (session-settings-omp.ts).
   if [ -f "$work/omp.pids" ]; then
-    while read -r pid; do stop_omp "$pid"; done <"$work/omp.pids"
+    while read -r pid start; do
+      [ -z "$start" ] || started_at[$pid]=$start
+      stop_omp "$pid"
+    done <"$work/omp.pids"
   fi
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
@@ -203,6 +214,7 @@ note "pi-envoy $(jq -r .version "$work/pi-envoy/package.json") from this checkou
 mkdir -p "$work/nats-store"
 "$nats_bin" -js -a 127.0.0.1 -p -1 -sd "$work/nats-store" >"$evidence/logs/nats.log" 2>&1 &
 nats_pid=$!
+record_start "$nats_pid" || true
 until_true 60 "the nats-server to be ready" grep -q 'Server is ready' "$evidence/logs/nats.log"
 nats_url="nats://127.0.0.1:$(awk -F: '/Listening for client connections on/ {print $NF; exit}' "$evidence/logs/nats.log")"
 
@@ -218,12 +230,13 @@ envoy_port=$(bun "$driver" free-port)
 dispatch_port=$(bun "$driver" free-port)
 # Neither service inherits this shell (dispatch-user-turns.sh's reasoning): a HOME or XDG directory
 # holding legion/envoy.json would hand Dispatch a production configuration.
-env -i PATH="$PATH" HOME=/nonexistent ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT="$envoy_port" \
+env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT="$envoy_port" \
   ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-session-settings-$$" NATS_URLS="$nats_url" \
   "$work/envoy-listener" >"$evidence/logs/listener.log" 2>&1 &
 listener_pid=$!
+record_start "$listener_pid" || true
 until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"
-env -i PATH="$PATH" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
+env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
   DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" \
   DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT="$dispatch_port" \
   DISPATCH_SERVER_URL="http://127.0.0.1:$dispatch_port" DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
@@ -231,6 +244,7 @@ env -i PATH="$PATH" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME
   ENVOY_TOKEN="$(cat "$work/envoy-token")" NATS_URLS="$nats_url" \
   "$work/dispatch" >"$evidence/logs/dispatch.log" 2>&1 &
 dispatch_pid=$!
+record_start "$dispatch_pid" || true
 until_true 120 "Dispatch to serve, with NATS" sh -c "curl -fsS http://127.0.0.1:$dispatch_port/healthz | jq -e '.ok and .nats'"
 
 # The broken provider's port: bound and never listened on, by a process of the run's own, so every
@@ -242,6 +256,7 @@ print(s.getsockname()[1], flush=True)
 sys.stdout.close()
 time.sleep(1e9)' >"$work/broken-port" &
 holder_pid=$!
+record_start "$holder_pid" || true
 until_true 30 "the broken provider's port to be held" test -s "$work/broken-port"
 broken_port=$(cat "$work/broken-port")
 

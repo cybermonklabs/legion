@@ -349,6 +349,7 @@ daemon_go_tests:
   - 'scripts/e2e/lib/loopback-dsn.sh'
   - 'scripts/e2e/lib/port-file.sh'
   - 'scripts/e2e/lib/held-port.py'
+  - 'scripts/e2e/lib/process-tree.sh'
   - 'scripts/e2e/lib/built-from.sh'
   - 'packages/pi-legion/package.json'
   - 'packages/pi-envoy/package.json'
@@ -872,6 +873,13 @@ main_bypass_check_test: &main_bypass_check_test
   - '.github/scripts/main-bypass-check.test.sh'
   - '.github/scripts/main-bypass-check.sh'
   - '.github/workflows/main-bypass-check.yaml'
+edited_migrations_base_test: &edited_migrations_base_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/edited-migrations-base.test.sh'
+  - '.github/scripts/edited-migrations-base.sh'
 dispatch_browser_latest_blobs_test: &dispatch_browser_latest_blobs_test
   - *ci_router
   - *ci_filters_data
@@ -1002,6 +1010,7 @@ test:
   - *find_pr_payload_test
   - *merge_group_cancels_test
   - *main_bypass_check_test
+  - *edited_migrations_base_test
   - *dispatch_browser_latest_blobs_test
   - *dispatch_browser_run_reads_test
   - *dispatch_browser_samples_test

@@ -204,6 +204,12 @@ on:
         description: "ci.yaml's needs.changes.outputs.main_bypass_check_test: main-bypass-check.test.sh and what it tests."
         type: string
         required: true
+      edited_migrations_base_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.edited_migrations_base_test:
+          edited-migrations-base.test.sh and what it tests.
+        type: string
+        required: true
       dispatch_browser_latest_blobs_test:
         description: >-
           ci.yaml's needs.changes.outputs.dispatch_browser_latest_blobs_test:
@@ -475,6 +481,12 @@ jobs:
       - name: Test the main bypass check's decision
         if: inputs.changes-result != 'success' || inputs.main_bypass_check_test == 'true'
         run: .github/scripts/main-bypass-check.test.sh
+
+      # The base envoy-go-checks' edited-migrations check compares a run's tree with, per event,
+      # over fixture remotes cloned one commit deep as actions/checkout leaves a run's tree.
+      - name: Test the edited-migrations check's choice of base (fixture git remotes; no GitHub)
+        if: inputs.changes-result != 'success' || inputs.edited_migrations_base_test == 'true'
+        run: .github/scripts/edited-migrations-base.test.sh
 
       # The attempt selection dispatch-browser.yaml's merge job runs over the legs' blob
       # artifacts. A run holds every attempt's artifacts, so the newest of each leg has to be

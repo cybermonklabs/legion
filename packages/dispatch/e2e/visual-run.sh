@@ -4,10 +4,18 @@
 #
 #   e2e/visual-run.sh                      # compare every baseline
 #   e2e/visual-run.sh --update-snapshots   # take them again
+#   DISPATCH_E2E_VISUAL_ORDER=reverse e2e/visual-run.sh   # compare them with the rows reversed
 #
 # Every argument it is given is passed on to Playwright, so the update path is the same command
 # with one more flag: a baseline a person takes and a baseline CI compares come out of the same
 # run of the same binaries in the same image, which is the whole point of the layer.
+#
+# WHY A SECOND ORDER. One seed serves the whole run, so a page that writes state as it draws
+# changes what every row after it compares. The review seed writes each such mark before any row
+# runs (`seedReviewRoutes`, e2e/review-seed.ts), and CI's visual job runs the rows a second time
+# with `DISPATCH_E2E_VISUAL_ORDER=reverse` (e2e/visual-order.ts): the phone rows first, and each
+# project's rows last first. A row that reads another row's write then fails one of the two runs
+# by its own name. The variable reaches the container through the `DISPATCH_E2E_` sweep below.
 #
 # WHY THE SEED RUNS ON THE HOST AND THE SHOTS IN THE CONTAINER. `e2e/psql.ts` spawns the `psql`
 # binary, and both `resetDatabase()` (e2e/seed.ts) and the delivery fixtures
