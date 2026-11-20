@@ -243,9 +243,10 @@ func TestDocumentUploadRollbackNeverReachesTheRoom(t *testing.T) {
 	f.connectPlainSocket(t)
 	closeTestGate(f.failure.releaseBeforeApply)
 	responses := make(chan *httptest.ResponseRecorder, 1)
+	base := uploadBaseField(t, f.handler, f.issue.PrimaryArtifactID)
 	go func() {
 		responses <- multipartRequest(t, f.handler, "/api/v1/issues/"+f.issue.Key+"/artifacts", map[string]string{
-			"name": "spec.md",
+			"name": "spec.md", "precondition": base,
 		}, "spec.md", "text/markdown", []byte("after"), "alice")
 	}()
 	waitForPostApply(t, f.failure)
@@ -701,9 +702,9 @@ func (d *postApplyFailureDocs) ProjectMark(ctx context.Context, artifactID, mark
 	return errors.New("forced post-projection failure")
 }
 
-func (d *postApplyFailureDocs) ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor) (string, error) {
+func (d *postApplyFailureDocs) ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor, precondition *model.EditPrecondition) (string, error) {
 	d.waitBeforeApply()
-	_, err := d.API.ReplaceText(ctx, artifactID, markdown, actor)
+	_, err := d.API.ReplaceText(ctx, artifactID, markdown, actor, precondition)
 	if err != nil {
 		return "", err
 	}

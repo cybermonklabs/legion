@@ -83,8 +83,8 @@ export function IssueTitleRow({
   // it no longer waits queued behind another write.
   const went = () => drafts.title.trim() === sent.current && !drafts.titleQueued;
   // The editor's text as the reader last wrote it in this edit. The draft takes that text trimmed
-  // as a write of it lands with the edit open (`onIssueSettled`). While the draft is the
-  // reader's text trimmed, the editor and the heading under it hold the reader's text, so the
+  // as a switch or a hide sends it with the edit open, since every end trims. While the draft is
+  // the reader's text trimmed, the editor and the heading under it hold the reader's text, so the
   // editor's value does not change under them: a space typed before the next word stays, and the
   // caret stays where it was.
   const [written, setWritten] = useState("");

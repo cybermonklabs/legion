@@ -71,7 +71,6 @@ function renderStaged(fake: FakeDocumentRuntime) {
                   onEditorHandle={(handle) => handed.push(handle)}
                   onToolbarChange={() => {}}
                   onVersionChange={() => {}}
-                  resting={false}
                   showDiff={false}
                 />
               ) : null}

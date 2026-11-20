@@ -2736,7 +2736,8 @@ async function expectCrumbTargets(page: Page, where: string): Promise<void> {
 // own entries, which this tree does not hold yet.
 // SLOW(>=2s): the whole issue seeded and loaded at a phone's size on a reply's address, waited on
 // until the reply has the focus, then zoomed into and measured, axe's target-size rule run on it,
-// and the same loaded, zoomed into and read by axe again at 1440 by 900 px.
+// and the same loaded, zoomed into and read by axe again at 1440 by 900 px, then zoomed out and
+// the reply's thread folded.
 test("a crumb draws its node's first line, cut at a word @phone @phone-only", async ({
   browser,
 }) => {
@@ -2852,6 +2853,25 @@ test("a crumb draws its node's first line, cut at a word @phone @phone-only", as
     await expectCrumbTargets(page, "390 by 664 px");
     await zoomIntoReply(DESKTOP, " at 1440 px");
     await expectCrumbTargets(page, "1440 by 900 px");
+
+    // The reply's address holds the path to it open to land the reader there. Out of the zoom,
+    // Left on the reply steps to its thread, and Left on the thread, a branch of that path,
+    // folds it at once: held open, the fold drew nothing and Left said nothing.
+    const replyId = seeded.comments.replies[0] ?? "";
+    await page.keyboard.press(",");
+    await expect(crumbs, "`,` did not zoom out at 1440 px").toHaveCount(0);
+    await focusRow(page, replyId);
+    await page.keyboard.press("ArrowLeft");
+    await expect
+      .poll(() => focusedNodeId(page), { message: "Left on the reply did not step to its thread" })
+      .toBe(thread?.id ?? "");
+    await page.keyboard.press("ArrowLeft");
+    await expect(
+      nodeRow(page, thread?.id ?? "").first(),
+      "Left on the thread the address goes through drew it still open"
+    ).toHaveAttribute("aria-expanded", "false");
+    await expect(nodeRow(page, replyId), "the folded thread still draws the reply").toHaveCount(0);
+    await expect(pageStatus(page), "Left on the thread said something").toHaveCount(0);
   });
 });
 

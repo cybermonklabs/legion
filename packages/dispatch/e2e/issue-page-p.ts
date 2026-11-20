@@ -817,6 +817,43 @@ export interface LabelsAgainstTheCount {
   readonly whole: number;
 }
 
+/** Reads `LabelsAgainstTheCount` off the header's properties line `line`, inside the page.
+ *  Playwright sends the page a page function's own source and nothing it closes over, so this
+ *  closes over nothing, and a page function builds it there from `LABELS_READING`. */
+function readLabelsAgainstTheCount(line: Element): LabelsAgainstTheCount {
+  const box = line.querySelector('[data-testid="issue-header-labels"]');
+  if (box === null) throw new Error("the header draws no labels' box");
+  const outer = box.getBoundingClientRect();
+  const edges = (rect: DOMRect) =>
+    `${rect.left.toFixed(1)}-${rect.right.toFixed(1)} x ${rect.top.toFixed(1)}-${rect.bottom.toFixed(1)}`;
+  const cut: string[] = [];
+  let whole = 0;
+  for (const chip of box.querySelectorAll("[data-header-label]")) {
+    const rect = chip.getBoundingClientRect();
+    const inside =
+      rect.left >= outer.left - 0.5 &&
+      rect.right <= outer.right + 0.5 &&
+      rect.top >= outer.top - 0.5 &&
+      rect.bottom <= outer.bottom + 0.5;
+    const outside =
+      rect.right <= outer.left + 0.5 ||
+      rect.left >= outer.right - 0.5 ||
+      rect.bottom <= outer.top + 0.5 ||
+      rect.top >= outer.bottom - 0.5;
+    if (inside) whole += 1;
+    else if (!outside)
+      cut.push(`${(chip.textContent ?? "").trim()}: ${edges(rect)} in ${edges(outer)}`);
+  }
+  const count = line.querySelector('[data-testid="issue-labels-left"]');
+  return { cut, left: Number(/\d+/.exec(count?.textContent ?? "")?.[0] ?? "0"), whole };
+}
+
+/** The source of `readLabelsAgainstTheCount`, which a page function turns back into the reading
+ *  with `new Function`, as `labelsAgainstTheCount` does. A row whose one page function reads the
+ *  line at many widths reads with it too, so the two read a chip the same way. Dispatch sends no
+ *  Content-Security-Policy, so the page may build a function from a string. */
+export const LABELS_READING = String(readLabelsAgainstTheCount);
+
 /**
  * Reads `LabelsAgainstTheCount` on the header's properties line. With `narrowBy`, it reads the
  * frame after the line narrows by that many px: in one task, so before any frame is drawn and
@@ -828,36 +865,16 @@ export function labelsAgainstTheCount(
   page: Page,
   narrowBy?: number
 ): Promise<LabelsAgainstTheCount> {
-  return propertiesLine(page).evaluate((line, narrowBy) => {
-    if (narrowBy !== undefined) {
-      line.style.maxWidth = `${line.getBoundingClientRect().width - narrowBy}px`;
-    }
-    const box = line.querySelector('[data-testid="issue-header-labels"]');
-    if (box === null) throw new Error("the header draws no labels' box");
-    const outer = box.getBoundingClientRect();
-    const edges = (rect: DOMRect) =>
-      `${rect.left.toFixed(1)}-${rect.right.toFixed(1)} x ${rect.top.toFixed(1)}-${rect.bottom.toFixed(1)}`;
-    const cut: string[] = [];
-    let whole = 0;
-    for (const chip of box.querySelectorAll("[data-header-label]")) {
-      const rect = chip.getBoundingClientRect();
-      const inside =
-        rect.left >= outer.left - 0.5 &&
-        rect.right <= outer.right + 0.5 &&
-        rect.top >= outer.top - 0.5 &&
-        rect.bottom <= outer.bottom + 0.5;
-      const outside =
-        rect.right <= outer.left + 0.5 ||
-        rect.left >= outer.right - 0.5 ||
-        rect.bottom <= outer.top + 0.5 ||
-        rect.top >= outer.bottom - 0.5;
-      if (inside) whole += 1;
-      else if (!outside)
-        cut.push(`${(chip.textContent ?? "").trim()}: ${edges(rect)} in ${edges(outer)}`);
-    }
-    const count = line.querySelector('[data-testid="issue-labels-left"]');
-    return { cut, left: Number(/\d+/.exec(count?.textContent ?? "")?.[0] ?? "0"), whole };
-  }, narrowBy);
+  return propertiesLine(page).evaluate(
+    (line, { narrowBy, reading }) => {
+      if (narrowBy !== undefined) {
+        line.style.maxWidth = `${line.getBoundingClientRect().width - narrowBy}px`;
+      }
+      const read = new Function(`return ${reading}`)() as (line: Element) => LabelsAgainstTheCount;
+      return read(line);
+    },
+    { narrowBy, reading: LABELS_READING }
+  );
 }
 
 /** Holds the header's labels' box at the width the chips it draws now fill, rounded up to a

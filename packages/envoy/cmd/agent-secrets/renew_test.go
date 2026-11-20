@@ -304,8 +304,9 @@ func TestRenewRefusesAnUnreadableOrBlankPodTokenFile(t *testing.T) {
 				}
 			}
 			var stderr bytes.Buffer
-			if code := cmdRenew([]string{"--pod-token-file", path}, io.Discard, &stderr); code != exitUsageError || !strings.Contains(stderr.String(), path) {
-				t.Fatalf("renew --pod-token-file %s: exit %d stderr %q, want usage naming the file", name, code, stderr.String())
+			if code := cmdRenew([]string{"--pod-token-file", path}, io.Discard, &stderr); code != exitUsageError ||
+				!strings.Contains(stderr.String(), "--pod-token-file") || strings.Contains(stderr.String(), path) {
+				t.Fatalf("renew --pod-token-file %s: exit %d stderr %q, want usage naming the file by --pod-token-file, never by its path", name, code, stderr.String())
 			}
 			if want := "ERROR: enrollment " + testEnrollmentID + " cannot read its pod token"; !strings.Contains(stderr.String(), want) {
 				t.Fatalf("renew --pod-token-file %s: stderr %q, want %q", name, stderr.String(), want)

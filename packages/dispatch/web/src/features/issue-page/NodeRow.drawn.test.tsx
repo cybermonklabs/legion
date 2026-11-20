@@ -1,6 +1,4 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -36,6 +34,7 @@ import { RowText } from "./RowText";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
 import { ProvidersSlot } from "./slots/providers";
 import { addressesAsShortForms } from "./tree-drafts";
+import { overflowing, wordsScrollRules, wordsScrollSheet } from "./words-scroll-fixtures";
 
 /**
  * What one row of the tree draws, read as a reader reads it (R1, R6, R9,
@@ -629,41 +628,26 @@ test("a node whose read sends no reading of its text draws the text as stored", 
   }
 });
 
-/** The selector list of each rule of `styles.css` that gives a block a sideways scroll of its
- *  own: it is drawn as a block, held to the width of what holds it, and scrolls along its own x
- *  axis. The browser applies these rules and no DOM of a unit test does, so a row reads them
- *  here. A list is kept whole, since a comma inside `:is(…)` separates no selectors. */
-function sidewaysScrollRules(): string[] {
-  const css = readFileSync(join(import.meta.dir, "..", "..", "styles.css"), "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    ""
-  );
-  return [...css.matchAll(/([^{};]+)\{([^{}]*)\}/g)].flatMap(([, selectors = "", body = ""]) => {
-    const declared = new Set(body.split(";").map((one) => one.replace(/\s+/g, " ").trim()));
-    const scrolls = ["display: block", "max-width: 100%", "overflow-x: auto"].every((one) =>
-      declared.has(one)
-    );
-    return scrolls ? [selectors.trim()] : [];
-  });
-}
-
 // Decision 282: at 390 px a note whose body holds a table of sixteen columns, drawn in its row,
 // made the whole page 794 px wide. A wide block in a node's words - a table, a code block -
 // scrolls sideways inside itself, as a table does in a document's reading, so neither the row
-// nor the page does. The row's own blocks are the ones a rule of `styles.css` gives that scroll;
-// the widths are the browser suite's to read, since no DOM of a unit test lays any out.
+// nor the page does. The row's own blocks are the ones a rule of `styles.css` gives that scroll,
+// drawn as a block held to the width of what holds it; the widths are the browser suite's to
+// read, since no DOM of a unit test lays any out.
 test("a table and a code block in a row's words each scroll sideways on their own", () => {
   const text = "| One | Two |\n| --- | --- |\n| 1 | 2 |\n\n```\nconst wide = true;\n```";
   const view = renderRow(
     node({ id: "notes-md#b-n1", text, tree: displayTree(text), type: "callout" })
   );
   try {
-    const rules = sidewaysScrollRules();
+    const rules = wordsScrollRules().filter(({ declared }) =>
+      ["display: block", "max-width: 100%"].every((one) => declared.has(one))
+    );
     for (const block of ["table", "pre"]) {
       const drawn = view.container.querySelector(`[data-node-words] ${block}`);
       if (drawn === null) throw new Error(`the row's words draw no ${block}`);
       expect(
-        rules.some((selectors) => [...document.querySelectorAll(selectors)].includes(drawn)),
+        rules.some(({ selectors }) => [...document.querySelectorAll(selectors)].includes(drawn)),
         `no rule of styles.css scrolls the ${block} in a row's words sideways on its own`
       ).toBe(true);
     }
@@ -677,12 +661,11 @@ test("a table and a code block in a row's words each scroll sideways on their ow
 // sideways; every other row's stay out of the tab order. The row hands its focus to its words.
 test("out of the tab order, a focused row's code block and table keep their tab stop, named, and an unfocused row's do not", () => {
   const text = "| One | Two |\n| --- | --- |\n| 1 | 2 |\n\n```\nconst wide = true;\n```";
-  // The rules that make each block scroll, which the hook reads through the computed style.
-  const sheet = document.createElement("style");
-  sheet.textContent = sidewaysScrollRules()
-    .map((selectors) => `${selectors} { overflow-x: auto; }`)
-    .join("\n");
+  // The rules that make each block scroll, which the hook reads through the computed style, and
+  // each block's content laid out past its box, as a wide one's is.
+  const sheet = wordsScrollSheet();
   document.head.append(sheet);
+  const restore = overflowing("[data-node-words] pre, [data-node-words] table");
   const drawn = (focused: boolean) => {
     const view = renderRow(
       node({ id: "notes-md#b-n1", text, tree: displayTree(text), type: "callout" }),
@@ -712,6 +695,7 @@ test("out of the tab order, a focused row's code block and table keep their tab 
       { label: null, role: null, tabIndex: "-1" },
     ]);
   } finally {
+    restore();
     sheet.remove();
   }
 });
@@ -1248,27 +1232,38 @@ test("more is drawn on a cut row and never beside words a body draws whole", asy
   }
 });
 
-// Decision 263: a row in view is cut before the page paints it, also where its words arrive
-// after the row. A statement is drawn from its document's blocks before the coverage read
-// brings its words, so its row mounts in view with none: the mount measures it whole, and the
-// batch its coming near starts holds it in view at that length. The commit that brings its words
-// measures it again as one that mounts, and it is drawn cut with no animation frame run. CI run
-// 44547033390 caught it otherwise at 390 px: the words were drawn whole, 472 px tall, and stayed
-// whole for the 59 frames recorded after.
-test("a row in view whose words arrive after it is drawn cut before the page is painted", async () => {
-  const text = Array.from({ length: 3000 }, (_unused, at) => `word${at + 1}`).join(" ");
-  // Words not drawn yet run no height; drawn, they run 400 lines of 24 px.
-  const restore = layOut(9600, (element) => ((element.textContent ?? "").trim() === "" ? 0 : 9600));
+/** 3,000 words, which run 400 lines of 24 px where they are drawn whole. */
+const LONG_WORDS = Array.from({ length: 3000 }, (_unused, at) => `word${at + 1}`).join(" ");
+
+/**
+ * What a row in view draws in the commit that draws it from `next`, before the page is painted:
+ * the row is drawn from `first` and measured as its coming near measures it, then, if `relaidOut`
+ * is given, laid out again by it and measured again as it stands in view, and then drawn from
+ * `next` with every animation frame held, so none runs. `words` is how tall the browser lays a
+ * row's words out (`layOut`). `cutBefore` is whether the row was cut before `next` was drawn.
+ */
+async function redrawnInView({
+  first,
+  next,
+  relaidOut,
+  words,
+}: {
+  readonly first: TreeNode;
+  readonly next: TreeNode;
+  readonly relaidOut?: () => void;
+  readonly words: (element: HTMLElement) => number;
+}): Promise<{ cutBefore: boolean; maxHeight: string | undefined; more: string | undefined }> {
+  const restore = layOut(9600, words);
   const near = installIntersectionObserver();
   try {
-    const statement = { id: "spec#b-r1", type: "requirement" } as const;
-    const row = renderRow(node({ ...statement, text: "" }), { body: false });
+    const row = renderRow(first, { body: false });
     try {
       await measureNearWords(near);
-      expect(
-        row.container.querySelector("[data-node-more]"),
-        "a row with no words was cut"
-      ).toBeNull();
+      if (relaidOut !== undefined) {
+        relaidOut();
+        await measureNearWords(near);
+      }
+      const cutBefore = row.container.querySelector("[data-node-more]") !== null;
       const frames: FrameRequestCallback[] = [];
       const frame = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
         frames.push(callback);
@@ -1276,15 +1271,13 @@ test("a row in view whose words arrive after it is drawn cut before the page is 
       });
       try {
         await act(async () => {
-          row.redraw(node({ ...statement, text, tree: displayTree(text) }));
+          row.redraw(next);
         });
-        expect(
-          row.container.querySelector("[data-node-more]")?.textContent,
-          "the words that arrived were drawn whole in view"
-        ).toBe(`${CONTROL_LABELS.read_more} · 2,955 ${CONTROL_LABELS.read_more_words}`);
-        expect(row.container.querySelector<HTMLElement>("[data-node-words]")?.style.maxHeight).toBe(
-          "144px"
-        );
+        return {
+          cutBefore,
+          maxHeight: row.container.querySelector<HTMLElement>("[data-node-words]")?.style.maxHeight,
+          more: row.container.querySelector("[data-node-more]")?.textContent ?? undefined,
+        };
       } finally {
         frame.mockRestore();
       }
@@ -1295,6 +1288,57 @@ test("a row in view whose words arrive after it is drawn cut before the page is 
     near.restore();
     restore();
   }
+}
+
+// Decision 263: a row in view is cut before the page paints it, also where its words arrive
+// after the row. A statement is drawn from its document's blocks before the coverage read
+// brings its words, so its row mounts in view with none: the mount measures it whole, and the
+// batch its coming near starts holds it in view at that length. The commit that brings its words
+// measures it again as one that mounts, and it is drawn cut with no animation frame run. CI run
+// 44547033390 caught it otherwise at 390 px: the words were drawn whole, 472 px tall, and stayed
+// whole for the 59 frames recorded after.
+test("a row in view whose words arrive after it is drawn cut before the page is painted", async () => {
+  const statement = { id: "spec#b-r1", type: "requirement" } as const;
+  const drawn = await redrawnInView({
+    first: node({ ...statement, text: "" }),
+    next: node({ ...statement, text: LONG_WORDS, tree: displayTree(LONG_WORDS) }),
+    // Words not drawn yet run no height; drawn, they run 400 lines of 24 px.
+    words: (element) => ((element.textContent ?? "").trim() === "" ? 0 : 9600),
+  });
+  expect(drawn.cutBefore, "a row with no words was cut").toBe(false);
+  expect(drawn.more, "the words that arrived were drawn whole in view").toBe(
+    `${CONTROL_LABELS.read_more} · 2,955 ${CONTROL_LABELS.read_more_words}`
+  );
+  expect(drawn.maxHeight).toBe("144px");
+});
+
+// Decision 261: a row in view keeps its length unless it draws other words. A new comment on the
+// issue adds an address to the names read, which then reads under a key of its own, so every
+// block row drawn from that read takes a new reading of the same words (`tree-drafts.ts`'s
+// `treeOf`). A row measured whole, whose words then run past the cut, as a narrower width runs
+// them, is held whole in view by the batch that measures it again; a new reading of the same
+// words draws nothing new, so the row stays whole, with no animation frame run.
+test("a row held whole in view stays whole when a later read draws the same words anew", async () => {
+  const statement = { id: "spec#b-r1", text: LONG_WORDS, type: "requirement" } as const;
+  // The server reads one text into one tree (`pmdoc.DisplayJSON`), where the page's own parse
+  // gives each block a new id, so the later read's answer is a copy of the first.
+  const reading = displayTree(LONG_WORDS);
+  // Five lines of 24 px where the row is first measured, which six lines hold whole.
+  let run = 120;
+  const drawn = await redrawnInView({
+    first: node({ ...statement, tree: reading }),
+    next: node({ ...statement, tree: structuredClone(reading) }),
+    // The words now run 400 lines, and the batch holds the row in view at its length.
+    relaidOut: () => {
+      run = 9600;
+    },
+    words: () => run,
+  });
+  expect(drawn.cutBefore, "the batch cut a row in view").toBe(false);
+  expect(drawn.more, "a new reading of the same words cut the row held whole in view").toBe(
+    undefined
+  );
+  expect(drawn.maxHeight).toBe("");
 });
 
 // R16: an open question's options are the choices of its answer. A press on one leaves the

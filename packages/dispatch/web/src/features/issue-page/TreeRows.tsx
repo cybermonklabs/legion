@@ -76,9 +76,9 @@ export function TreeRows({
    *  editor's caret places as the reader writes. */
   unplaced: string | undefined;
   /** The id of the node the tree is zoomed to, whose row is drawn open by definition, so it
-   *  draws no fold control, whose press drew nothing. Undefined where the tree is drawn from the
-   *  issue, which is no row. */
-  zoomRoot: string | undefined;
+   *  draws no fold control, whose press drew nothing. Absent where the tree is drawn from the
+   *  issue, which is no row, and for a view that zooms nothing. */
+  zoomRoot?: string;
 }): ReactNode {
   // Each row's author by the page's one rule for naming one (`AgentText.author`), read once for
   // every row rather than once a row: a name and a shape for every node, the page's own words

@@ -62,8 +62,9 @@ func (s *server) writeApproverGrants(w http.ResponseWriter, r *http.Request, app
 // session.
 type revokeByApproverBody struct {
 	// The login of the person revoking: for a grant, its approver or its session's operator; for a
-	// person's machine login, the person who approved it; for a service's machine login, anyone
-	// signed in.
+	// person's machine login, the person who approved it; for a person's pod login, the person
+	// BROKER_POD_OPERATORS maps the pod's account to; for a service's machine login, anyone signed
+	// in.
 	Approver string `json:"approver"`
 }
 

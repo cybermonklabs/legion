@@ -12,6 +12,8 @@ import {
   pagePaperBg,
 } from "../../theme/classes";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { stoppedNote } from "../writes/useKeyedWrite";
 import { chipOfLostAction } from "./approval-chip-box";
 import { type FocusFallback, useFocusKeeper } from "./focus-keeper";
 import type { IssueAction } from "./IssueActionsMenu";
@@ -114,7 +116,10 @@ export function IssueHeader({
       disabled: writes.pin.isPending,
       id: "pin",
       pressed: state.pinned,
-      run: () => writes.pinGuard.guard(() => writes.pin.mutate(!state.pinned)),
+      run: () =>
+        writes.pinGuard.guard(() =>
+          writes.pin.mutate({ issueKey: issue.key, pinned: !state.pinned })
+        ),
       text: state.pinned ? CONTROL_LABELS.unpin_issue : CONTROL_LABELS.pin_issue,
     },
     isClosed
@@ -144,7 +149,9 @@ export function IssueHeader({
   // Whether this header says the issue's refused write: a refused parent is said beside its
   // editor, in Details (`IssueMargin.tsx`), and a status pick alone rolls back in its own control.
   const issueRefused =
-    updateIssue.isError && !statusPickOnly(updateIssue.variables) && !writes.parentSaveFailed;
+    updateIssue.isError &&
+    !statusPickOnly(updateIssue.variables?.input) &&
+    !writes.parentSaveFailed;
 
   return (
     <header
@@ -205,9 +212,14 @@ export function IssueHeader({
                 : ANSWER_LINES.saving_field}
           </span>
         ) : null}
+        {/* A write the reader stopped is said as stopped, as today's header says it
+            (`stoppedNote`, `stoppedWriteNote`): it may have been saved, and its Retry is a press
+            of its own. Any other refusal keeps its plain line. */}
         <RefusalLine
           failed={writes.pin.isError}
-          message="Could not save pin status."
+          message={
+            stoppedNote(writes.pin, "the pin status", "saved") ?? "Could not save pin status."
+          }
           onRetry={() => writes.pinGuard.retryLast(writes.pin)}
           pending={writes.pin.isPending}
         />
@@ -218,7 +230,13 @@ export function IssueHeader({
         ) : null}
         <RefusalLine
           failed={issueRefused && writes.titleRefusal === null}
-          message="Could not update this issue."
+          message={
+            updateIssue.error instanceof SendStoppedError
+              ? stoppedWriteNote("this change to the issue", "saved", {
+                  anew: "Retry sends what the field holds now as a new write.",
+                })
+              : "Could not update this issue."
+          }
           onRetry={drafts.retry}
           pending={updateIssue.isPending}
         />

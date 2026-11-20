@@ -23,14 +23,16 @@ import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from ".
 import { pathToTarget } from "./issue-address";
 import { drawnLine, firstLineOf, lineWords, type TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
+import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES, nodeStateWord } from "./page-words";
-import { PRESS_ENDS, usePressFocus } from "./press-focus";
+import { type Press, trackPress, usePressFocus } from "./press-focus";
+import { FAILED_READ_RETRY, FailedReadLine } from "./slots/failed-read-line";
 import { CYCLE_STATES, EVERYTHING, TreeRows } from "./TreeRows";
-import { focusIsLoose, rowSelectorOf } from "./tree-focus";
+import { focusIsLoose, nodeRowSelectorOf, rowSelectorOf } from "./tree-focus";
 import {
   DRAWN_LEVELS,
   NARROW_LEVELS,
@@ -69,9 +71,11 @@ import { moveToRow, useTreeKeymap } from "./useTreeKeymap";
  * was pressed on, until the reader's next key or move.
  *
  * The page opens with the focus on the first open question that waits on the reader, its path
- * unfolded and its row in the viewport, and on the outline's first row where none does. A
- * write from the line at the foot takes the reader to what they wrote once its read has drawn
- * it, its branch unfolded (`outline-writer.tsx`'s `Landing`).
+ * unfolded and its row in the viewport, and on the outline's first row where none does; where a
+ * read the rows come from stood failed as the reads settled, it opens on that read's Retry, over
+ * the tree, since the question that waits may be what the read failed to bring. A write from the
+ * line at the foot takes the reader to what they wrote once its read has drawn it, its branch
+ * unfolded (`outline-writer.tsx`'s `Landing`).
  *
  * Below 1024 px the page with no filter on is read one node at a time: the path down to the node
  * the reader is on is a breadcrumb, and the outline draws that node and one level below it, and
@@ -84,6 +88,7 @@ export function IssueTree({
   artifacts,
   context,
   emptyLine,
+  failedReads = NO_FAILED_READS,
   filtering,
   focusReveal,
   holdsEscape,
@@ -91,6 +96,7 @@ export function IssueTree({
   landingReport,
   onEditing,
   readsHeld = true,
+  readsSettled = true,
   request,
   reveal,
   root,
@@ -104,9 +110,11 @@ export function IssueTree({
    *  acts from the moment its row is drawn. */
   addressActs?: RefObject<AbortController | undefined>;
   /** Which following of the address `reveal` comes from: the location's own key
-   *  (`useLocation().key`), a new one at each navigation - a link followed again to the address
-   *  the reader is at among them - and the same one at every render of it. The tree lands on
-   *  the address's node once per following (`slots/body.tsx`); left out, once per node. */
+   *  (`useLocation().key`), a new one at each link followed - one followed again to the address
+   *  the reader is at among them - the entry's own one again at Back and Forward, and the same
+   *  one at every render of it. The tree lands on the address's node once per key it has not
+   *  landed on last (`slots/body.tsx`; left out, once per node): Back to an entry past a link
+   *  that named another node lands again, and Back past one that named no node does not. */
   addressKey?: string;
   /** Each artifact of the issue by its slug, which is how a node names the document it is or
    *  belongs to (`issue-artifacts.ts`). */
@@ -116,6 +124,13 @@ export function IssueTree({
   /** What the page says where the preset's query matched nothing under the issue, drawn only
    *  where it is given and while the reads are held (`readsHeld`). */
   emptyLine?: string;
+  /** Each read the tree's rows or their names come from that stands failed
+   *  (`outline-reads.ts`), in the order the page gives them: each is drawn as its line, with a
+   *  Retry that asks that read alone again, over the tree and never in it (`FailedReadLine`).
+   *  The rows the reads hold stay drawn under them. Where one the rows come from stands failed
+   *  as the reads settle (`readsSettled`), the page opens on the first such line's Retry. None
+   *  unless the page gives them. */
+  failedReads?: readonly FailedRead[];
   /** Whether the preset or its query filters the tree (`presets.ts`'s `PresetView.filtering`):
    *  while one does, every branch of the view it left is drawn open, and while nothing filters
    *  the fold is the frontier's alone. */
@@ -137,11 +152,19 @@ export function IssueTree({
    *  editor rather than leaving the row with nothing to put a caret in, and hands that editor to
    *  the row; `undefined` whenever the reader is editing nothing. */
   onEditing: OnEditing;
-  /** Whether every read the tree is built from holds an answer, which a failed read never does
-   *  (`slots/body.tsx`). Until then a node the tree lacks may not have arrived yet, so a tree with
-   *  no node draws no `emptyLine`, and `q` and `w` with nowhere to go say nothing
-   *  (`useTreeKeymap.ts`). Held unless the page says otherwise. */
+  /** Whether each read the tree's nodes come from holds an answer, which a failed read never
+   *  does: the six reads - the coverage, the decisions, the results, the asks, the comments and
+   *  the messages - and each document's blocks (`outline-reads.ts`'s `readsHeld`). Until then a
+   *  node the tree lacks may not have arrived yet, so a tree with no node draws no `emptyLine`,
+   *  and `q` and `w` with nowhere to go say nothing (`useTreeKeymap.ts`). The names are no part
+   *  of it: the page gives no `emptyLine` that reads the nodes' words until they are held
+   *  (`slots/body.tsx`). Held unless the page says otherwise. */
   readsHeld?: boolean;
+  /** Whether every read the tree's rows come from has answered, with its data or its failure
+   *  (`outline-reads.ts`): the page's first focus waits for it, so it lands once, where every
+   *  read the rows come from has drawn them; a later read that draws rows above it takes no
+   *  focus from it. Settled unless the page says otherwise. */
+  readsSettled?: boolean;
   /** What the Contents list last asked of the outline (`outline-request.tsx`): go to a node, and
    *  draw that node's branch alone while Focus branch is on, or the whole outline again once it
    *  is turned off. Each ask is acted on once (`useTakeOutlineRequest`). */
@@ -205,6 +228,10 @@ export function IssueTree({
   const reader = useQuery(whoAmIQuery()).data?.login;
   const body = useRef<HTMLDivElement | null>(null);
   const crumbLine = useRef<HTMLParagraphElement | null>(null);
+  // The failed reads' lines over the tree, and which of them is the first read the rows come
+  // from, whose Retry the page opens on (`opening`): -1 where none of them is.
+  const lines = useRef<HTMLDivElement | null>(null);
+  const firstFailed = failedReads.findIndex((read) => read.placesRows);
   const reportHere = useCallback((line: string) => {
     if (line === "") {
       setReport(undefined);
@@ -240,6 +267,22 @@ export function IssueTree({
       setZoom(undefined);
     }
   }
+  // The branches of the address's path the reader folded since its landing (`landingKey`): each
+  // is let go of the path's hold for that following. They are forgotten as soon as the page
+  // follows anything else, so the next following holds the whole path again: Back and Forward
+  // give an earlier entry's own location key back, and a fold kept under that key drew the node
+  // that entry names nowhere, and its landing never landed.
+  const [released, setReleased] = useState<{
+    readonly ids: ReadonlySet<string>;
+    readonly landing: string | undefined;
+  }>({ ids: NO_FOLDS, landing: undefined });
+  if (released.landing !== undefined && released.landing !== landingKey) {
+    setReleased({ ids: NO_FOLDS, landing: undefined });
+  }
+  // The address's path and following as last drawn, which a fold reads (`unfold`).
+  const pathHold = useRef<{ readonly ids: readonly string[]; readonly landing?: string }>({
+    ids: [],
+  });
   // Where the zoomed tree is rooted. Nothing chosen opens it on the issue itself, so a reader
   // on a phone sees the whole issue and can reach any branch of it; an address that names a
   // node opens it on that node's parent, so the node the address named is one of the rows.
@@ -268,21 +311,27 @@ export function IssueTree({
   // depth: a `#b-` fragment names a block of a document the page opens folded. A branch of
   // that path the reader folded shut is opened again, since the row the address names is
   // drawn nowhere while anything above it is closed - which is the one thing the filter's own
-  // opens do not do.
+  // opens do not do. The hold is there to land the reader: a branch of the path they fold
+  // after it, and every branch below it on the path, is theirs to fold for that following
+  // (`released`), since held open it recorded a fold that drew nothing and Left said nothing.
   const path = reveal ?? [];
-  /** `closed` with the address's own path taken out of it. */
+  pathHold.current = { ids: path.map((above) => above.id), landing: landingKey };
+  const releasedHere = released.landing === landingKey ? released.ids : NO_FOLDS;
+  const heldPath =
+    releasedHere.size === 0 ? path : path.filter((above) => !releasedHere.has(above.id));
+  /** `closed` with the address's own path, as it is held, taken out of it. */
   const openPath = (closed: ReadonlySet<string>): ReadonlySet<string> =>
-    path.length === 0 || closed.size === 0
+    heldPath.length === 0 || closed.size === 0
       ? closed
       : withoutIds(
           closed,
-          path.map((above) => above.id)
+          heldPath.map((above) => above.id)
         );
   const shown: OpenedBranches =
-    path.length === 0
+    heldPath.length === 0
       ? filtered
       : {
-          branches: new Set([...filtered.branches, ...path.map((above) => above.id)]),
+          branches: new Set([...filtered.branches, ...heldPath.map((above) => above.id)]),
           closed: openPath(filtered.closed),
           deeper: new Set([...filtered.deeper, ...path.map((above) => above.id)]),
         };
@@ -394,6 +443,16 @@ export function IssueTree({
         }
         return { branches, closed, deeper: held.deeper };
       });
+      // A fold of a branch the address's path holds open lets that branch, and the path below
+      // it, go of the hold for this following, so the fold is drawn.
+      const { ids, landing } = pathHold.current;
+      const at = open ? -1 : ids.indexOf(id);
+      if (at !== -1) {
+        setReleased((held) => ({
+          ids: new Set([...(held.landing === landing ? held.ids : []), ...ids.slice(at)]),
+          landing,
+        }));
+      }
       if (cycle !== EVERYTHING) return;
       setFoldedInEverything((held) => {
         const next = new Set(held);
@@ -497,9 +556,7 @@ export function IssueTree({
    *  unfolds the path to it and, where the tree is read one node at a time, zooms to it. */
   const reach = useCallback(
     (id: string) => {
-      const row = body.current?.querySelector<HTMLElement>(
-        `[data-node-row][data-node-id="${CSS.escape(id)}"]`
-      );
+      const row = body.current?.querySelector<HTMLElement>(nodeRowSelectorOf(id));
       if (row === null || row === undefined) goToNode(id);
       else row.focus();
     },
@@ -509,9 +566,7 @@ export function IssueTree({
   useEffect(() => {
     if (wanted === undefined) return;
     setWanted(undefined);
-    body.current
-      ?.querySelector<HTMLElement>(`[data-node-row][data-node-id="${CSS.escape(wanted)}"]`)
-      ?.focus();
+    body.current?.querySelector<HTMLElement>(nodeRowSelectorOf(wanted))?.focus();
   }, [wanted]);
 
   // A zoom draws the crumb line above the rows it roots the tree at, and the line is the way
@@ -593,6 +648,7 @@ export function IssueTree({
   );
   useTreeKeymap({
     container: body,
+    editing: editing !== undefined,
     holdsEscape,
     // `t h` takes the reader to the children's first row itself, each time it is pressed and
     // from any zoom (`reach`), and opens their own address too. The address alone moved the
@@ -690,7 +746,7 @@ export function IssueTree({
           ? undefined
           : rowSelectorOf(tabStop)
         : rows.some((row) => row.kind === "node" && row.node.id === targetId)
-          ? `[data-node-row][data-node-id="${CSS.escape(targetId)}"]`
+          ? nodeRowSelectorOf(targetId)
           : undefined;
     const row = selector === undefined ? null : body.current?.querySelector<HTMLElement>(selector);
     if (row === null || row === undefined) return;
@@ -726,16 +782,19 @@ export function IssueTree({
   // in the outline's own order, its path unfolded and its row in the viewport; where none waits
   // on them, on the outline's first row. It is the page opening: with no filter on, on an
   // address that names no node, before the reader has pressed, scrolled or touched anything and
-  // while nothing else holds the focus. The reads arrive one after another, so the first row
-  // takes the focus where it stands in the frame after it is drawn, and gives it to the question
-  // once the question's read has answered. Each focus waits for that frame for the reason an
-  // address's node does (`landOnRow`): given in the commit that draws the row, it laid the whole
-  // new page out inside the reader's press. The question is where it stays until the reader
-  // acts, waiting on them or answered since, and its row is held on screen while the reads
-  // still out draw rows above it: the page scrolls for the question alone. A read that draws its
-  // row again under another key - a node sits under the issue until its parent's read answers -
-  // takes its old element out of the page, and the browser drops the focus with it: the opening
-  // gives it back to the question's new row, as to the first row before it (`openingMayFocus`).
+  // while nothing else holds the focus. The reads arrive one after another, and a row drawn
+  // before a later read could take the focus and then lose it to the row that read drew above
+  // it a second later, with no act of the reader's: a second announcement to a screen reader,
+  // and a key pressed in that second acted on the wrong row. So the opening waits until every
+  // read the rows come from has answered (`readsSettled`), and places the focus once: on the
+  // question, or on the first row, which it never moves from after. Each focus waits for the
+  // frame after its row is drawn for the reason an address's node does (`landOnRow`): given in
+  // the commit that draws the row, it laid the whole new page out inside the reader's press.
+  // The question is where it stays until the reader acts, waiting on them or answered since, and
+  // its row is held on screen while what is drawn above it settles: the page scrolls for the
+  // question alone. A read that draws its row again under another key takes its old element
+  // out of the page, and the browser drops the focus with it: the opening gives it back to the
+  // same node's new row, the question's or the first row's (`openingMayFocus`).
   // An answer arriving for the question moves nothing: where it folds the branch the frontier
   // alone opened for the question, which takes the question's row out of the page with the
   // focus, the opening unfolds the path to it again where the tree stands, and zooms nowhere at
@@ -743,14 +802,19 @@ export function IssueTree({
   // is no page opening on what waits: it opens on the branch's first row, the node itself,
   // where it stands, since going to a question would leave the zoom for one outside the branch,
   // drawing every branch while the toggle read on, and below 1024 px zoom deeper for one inside
-  // it. `row` is the row the opening last focused, or the question's row from when it lands
-  // there, whose landing (`landing`, with the focus it found) tells whose the focus is until its
-  // frame comes; `next` is the first row whose focus it has asked of the next frame and not
-  // given yet, and `question` the question it opened on.
+  // it. Where a read the rows come from stood failed as the reads settled, the opening lands on
+  // the first such read's Retry instead (below). `row` is the row the opening last focused, or
+  // the question's row or the Retry from when it lands there, whose landing (`landing`, with the
+  // focus it found) tells whose the focus is until its frame comes; `next` is the row whose
+  // focus it has asked of the next frame and not given yet, `question` the question it opened
+  // on, `placed` the node of the first row it opened on, and `failed` whether a read the rows
+  // come from stood failed as the reads settled.
   const opening = useRef<{
     done: boolean;
+    failed?: boolean;
     landing?: { readonly from: Element | null; readonly signal: AbortSignal };
     next?: { readonly frame: number; readonly row: HTMLElement };
+    placed?: string;
     question?: string;
     row?: HTMLElement;
   }>({ done: false });
@@ -769,25 +833,57 @@ export function IssueTree({
       held.done = true;
       return;
     }
+    if (!readsSettled) return;
+    // Where a read the rows come from stood failed as the reads settled, the question that waits
+    // on the reader may be one it failed to bring, so the page does not open on the first row as
+    // if none waited: it opens on the first such read's Retry, over the tree, as the stage gives
+    // a view's failed read's Retry the focus, in the frame after it is drawn (`landOnRow`), and
+    // the opening is done once the Retry holds the focus. Whether one stood failed is read once,
+    // at the settling, so a read that fails later moves no focus. A line that leaves the page
+    // before its frame comes, its read answered, hands the opening on: to the Retry of the next
+    // line whose read the rows come from, where another such read still stands failed, and to the
+    // question or the first row the reads now draw where none does. The names place no row, so a
+    // failed names read changes nothing here; each line is drawn in the order the reads are
+    // given, one Retry each.
+    held.failed ??= firstFailed !== -1;
+    const retry =
+      held.failed && firstFailed !== -1
+        ? lines.current?.querySelectorAll<HTMLElement>(FAILED_READ_RETRY)[firstFailed]
+        : undefined;
+    if (retry !== undefined) {
+      // Its landing still waits for its frame.
+      if (held.landing?.signal.aborted === false && held.row === retry) return;
+      if (!openingMayFocus(body.current, held.row)) {
+        held.done = true;
+        return;
+      }
+      held.row = retry;
+      held.landing = {
+        from: document.activeElement,
+        signal: landOnRow(retry, onScreenHold, () => {
+          held.done = true;
+        }).signal,
+      };
+      return;
+    }
     const question =
       held.question ??
-      (branchAtMount.current === undefined
+      (branchAtMount.current === undefined && held.placed === undefined
         ? nodesInOrder(root).find((node) => node.type === "ask" && node.waiting)?.id
         : undefined);
     const questionRow =
       question === undefined
         ? undefined
-        : body.current?.querySelector<HTMLElement>(
-            `[data-node-row][data-node-id="${CSS.escape(question)}"]`
-          );
+        : body.current?.querySelector<HTMLElement>(nodeRowSelectorOf(question));
     const active = document.activeElement;
     // The question's row holds the focus the opening gave it, by its landing or in the render
     // that unfolded the path to it (`unfoldTo`): it is the row the opening focused.
     if (questionRow?.contains(active) === true) held.row = questionRow;
     // Until its frame, the landing on the question is what tells whether the focus is still the
-    // page's (`landOnRow`): nothing holds it, or it is where the landing found it - on the row
-    // the opening focused before - or on the question's row. A focus a script put on anything
-    // else meanwhile ends the opening, as it would have once the row held it.
+    // page's (`landOnRow`): nothing holds it, or it is where the landing found it - the app's
+    // main element, which the page's change of address focuses - or on the question's row. A
+    // focus a script put on anything else meanwhile ends the opening, as it would have once the
+    // row held it.
     const landingWaits = held.landing?.signal.aborted === false;
     const mayFocus = landingWaits
       ? focusIsLoose(body.current) ||
@@ -828,9 +924,18 @@ export function IssueTree({
       held.landing = { from: active, signal: landOnRow(questionRow, onScreenHold).signal };
       return;
     }
-    const first = rows.find((row) => row.kind === "node");
-    if (first?.kind !== "node") return;
+    // Once placed, the focus is the placed node's: a row drawn above it later takes none. A
+    // read that draws the placed node nowhere, its parent folded over it, ends the opening, and
+    // the focus it dropped goes to the row now at its place, as any dropped row's does (below).
+    const first = rows.find(
+      (row) => row.kind === "node" && (held.placed === undefined || row.node.id === held.placed)
+    );
+    if (first?.kind !== "node") {
+      if (held.placed !== undefined) held.done = true;
+      return;
+    }
     const key = rowKeyOf(first);
+    const placed = first.node.id;
     const row = body.current?.querySelector<HTMLElement>(rowSelectorOf(key));
     // The row the next frame is to focus is still the first.
     if (row === null || row === undefined || row === held.next?.row) return;
@@ -848,12 +953,13 @@ export function IssueTree({
         return;
       }
       held.row = row;
+      held.placed = placed;
       openingRow.current = key;
       row.focus({ preventScroll: true });
       openingRow.current = undefined;
     });
     held.next = { frame, row };
-  }, [goToNode, root, rootRow, rows, targetId, unfoldTo]);
+  }, [firstFailed, goToNode, readsSettled, root, rootRow, rows, targetId, unfoldTo]);
 
   // A read can answer without the node whose row holds the focus - a comment deleted - and the
   // row then leaves the tree with the focus, which the browser drops to the page's body: the
@@ -974,6 +1080,21 @@ export function IssueTree({
 
   return (
     <div className="mb-3 flex min-w-0 flex-col">
+      {/* Over the tree and never in it: an alert inside the tree would break its structure of
+          rows (`FailedReadLine`). */}
+      {failedReads.length === 0 ? null : (
+        <div className="mb-2 flex min-w-0 flex-col gap-2" ref={lines}>
+          {failedReads.map((read) => (
+            <FailedReadLine
+              failure={read.failure}
+              key={read.key}
+              message={read.message}
+              onRetry={read.retry}
+              retrying={read.retrying}
+            />
+          ))}
+        </div>
+      )}
       {breadcrumb.length === 0 ? null : (
         <p
           className={`flex min-w-0 flex-wrap items-baseline gap-1 text-xs ${textMutedOnCanvas}`}
@@ -1019,11 +1140,7 @@ export function IssueTree({
               type="button"
               {...authorText}
             >
-              {above.id === root.id
-                ? above.id
-                : firstLineOf(lineWords(above)).line === ""
-                  ? NODE_TYPE_NAMES[above.type]
-                  : drawnLine(firstLineOf(lineWords(above)))}
+              {crumbName(above, root.id)}
             </button>
           ))}
           <span {...pageChrome}>/</span>
@@ -1092,6 +1209,14 @@ const NO_FOLDS: ReadonlySet<string> = new Set();
 /** `ids` without the ids of `drop`. */
 function withoutIds(ids: ReadonlySet<string>, drop: readonly string[]): ReadonlySet<string> {
   return new Set([...ids].filter((id) => !drop.includes(id)));
+}
+
+/** What a crumb above a zoom says of `node`: the issue's key for the issue, the node's first line
+ *  for any other (`firstLineOf`), and its kind's word where it has no words. */
+function crumbName(node: TreeNode, issueId: string): string {
+  if (node.id === issueId) return node.id;
+  const first = firstLineOf(lineWords(node));
+  return first.line === "" ? NODE_TYPE_NAMES[node.type] : drawnLine(first);
 }
 
 /**
@@ -1259,15 +1384,15 @@ export function focusedNodeOf(node: TreeNode): FocusedNode {
  * control below the row rose by the body's height, and the click that ends the press landed on
  * something else or on nothing, so the control never fired. A press that leaves the focus on no
  * control is such a leave too: Safari focuses no button a press lands on. The press ends as the
- * tree's own press does (`press-focus.ts`'s `PRESS_ENDS`). Escape anywhere on the page lets go
+ * tree's own press does (`press-focus.ts`'s `trackPress`). Escape anywhere on the page lets go
  * of the row at once while a press keeps it, and the focus back in the tree by the time the
  * press has ended keeps it.
  *
  * A row the reader is editing in keeps its body (`editing`): the document's editor moves into
  * it, which drops the focus for a frame as it leaves the page, and that is no reader leaving the
  * tree. The editing ending with the focus out of the tree all the same - the reader moved on by
- * Tab or a press elsewhere before the editor had drawn the node's block (`useNodeEditing.ts`) -
- * is them gone, and lets go of the row then, as a blur to where the focus is would have.
+ * Tab, or by a press outside the editor's box once it is over (`useNodeEditing.ts`) - is them
+ * gone, and lets go of the row then, as a blur to where the focus is would have.
  *
  * The panel goes back to the issue's own facts whenever the focus leaves the tree, except for
  * Details, or the control that opens it: Details is where a reader reads the node's facts, and
@@ -1295,12 +1420,10 @@ export function useReleaseFocus({
   // editing ending with the focus out of that tree lets go of its row (`letGo`).
   const leftEditing = useRef<HTMLElement | null>(null);
   // Whether a press is under way, from its mousedown - whose default is what moves the focus,
-  // for a mouse and for a tap's mouse events alike - until the task after it ends, as the tree's
-  // own press is held (`usePressFocus`). The blur it causes reads it to tell a press from Tab or
-  // a script's blur.
-  const press = useRef<{ ending?: number; pressing: boolean }>({ pressing: false });
+  // for a mouse and for a tap's mouse events alike - until the task after it ends
+  // (`trackPress`). The blur it causes reads it to tell a press from Tab or a script's blur.
+  const press = useRef<Press | undefined>(undefined);
   useEffect(() => {
-    const held = press.current;
     // Lets go of the row a press kept, unless the focus has come back to its tree, whose row
     // that took it is the focused one now.
     const release = () => {
@@ -1312,33 +1435,16 @@ export function useReleaseFocus({
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") release();
     };
-    const pressed = () => {
-      window.clearTimeout(held.ending);
-      held.pressing = true;
-    };
-    const ended = () => {
-      if (!held.pressing) return;
-      window.clearTimeout(held.ending);
-      held.ending = window.setTimeout(() => {
-        held.pressing = false;
-        release();
-      }, 0);
-    };
     const listening = new AbortController();
-    const options = { capture: true, signal: listening.signal };
-    window.addEventListener("keydown", closeOnEscape, options);
-    window.addEventListener("mousedown", pressed, options);
-    for (const type of PRESS_ENDS) window.addEventListener(type, ended, options);
-    return () => {
-      listening.abort();
-      window.clearTimeout(held.ending);
-    };
+    window.addEventListener("keydown", closeOnEscape, { capture: true, signal: listening.signal });
+    press.current = trackPress({ onEnd: release, signal: listening.signal, starts: ["mousedown"] });
+    return () => listening.abort();
   }, []);
   // Lets go of the row of `tree`, which the focus left for `to`, by the rule above.
   const letGo = useCallback(
     (tree: HTMLElement, to: EventTarget | null) => {
       if (to instanceof Node && tree.contains(to)) return;
-      if (!press.current.pressing) {
+      if (press.current?.pressing !== true) {
         left.current = null;
         onLeave();
       } else {

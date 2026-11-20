@@ -140,14 +140,20 @@ test("a node draws its kind at the right of its row and every node starts at one
           `${where} does not focus that question at load`
         ).toBeFocused();
         // A waiting question's words are drawn whole and the focused row draws its body, so the
-        // row of the seed's 160 words is taller than the screen, which holds it from its top.
+        // row of the seed's 160 words is taller than the screen, which holds it from its top: at
+        // or below what stays at the top of the screen (the view row, at 390 px) and above the
+        // screen's foot. Read against the window's top alone, a row under that band passed.
         await expect
           .poll(
             async () => {
-              const top = rowOf(await drawnRows(page), question)?.box?.y ?? -1;
-              return top >= 0 && top < size.height;
+              const row = nodeRow(page, question).first();
+              const below = await belowWhatStays(row);
+              const top = (await row.boundingBox())?.y;
+              return below !== undefined && below >= 0 && top !== undefined && top < size.height;
             },
-            { message: `${where} holds the top of that question's row off screen` }
+            {
+              message: `${where} holds the top of that question's row under what stays at the top or off screen`,
+            }
           )
           .toBe(true);
       }
