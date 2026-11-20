@@ -507,9 +507,12 @@ func requirePredicatesInSQL(t *testing.T, reads []recordedRead) {
 					read.name, statement.SQL)
 			}
 			// A project's own visibility (`<project>.visibility = 'public'`, the public arm of
-			// the access rule a viewer is resolved by and a person's scope binds) is a test of a
-			// project and not of a node, and is no rule of the statement's own.
-			rules := strings.Count(statement.SQL, ".visibility") - strings.Count(statement.SQL, ".visibility = 'public'")
+			// the access rule a viewer is resolved by and a person's scope binds, or
+			// `<project>.visibility = 'private'`, the SessionClause and RoleClause gates that
+			// keep a session or role of an unseen private project hidden) is a test of a project
+			// and not of a node, and is no rule of the statement's own.
+			rules := strings.Count(statement.SQL, ".visibility") - strings.Count(statement.SQL, ".visibility = 'public'") -
+				strings.Count(statement.SQL, ".visibility = 'private'")
 			if markers != rules {
 				t.Errorf("%s states %d visibility rule and the registry rendered %d of them:\n%s",
 					read.name, rules, markers, statement.SQL)

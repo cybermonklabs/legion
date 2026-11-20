@@ -597,6 +597,38 @@ func TestARouteStatusFilterAnswersAFailedRosterReadAsTheDatabases(t *testing.T) 
 	requireReach(t, handler, key, "unknown", "", "unreachable")
 }
 
+// TestTheSessionProjectsSnapshotFollowsTheStoredRoster: SessionClause reads each listener
+// record from route_roster_session_projects, its indexed projection of route_roster's sessions.
+// The projection follows an insert and a later sessions update, so an older writer of
+// route_roster, and test fixtures that write it directly, leave the session rule the same answer
+// as the roster every route-status read shares.
+func TestTheSessionProjectsSnapshotFollowsTheStoredRoster(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	write := func(sessions, want string) {
+		t.Helper()
+		if _, err := database.Pool.Exec(ctx, `
+			insert into route_roster (answered, sessions, sent_at, expires_at)
+			values (true, $1::jsonb, now(), now() + interval '1 hour')
+			on conflict (id) do update
+			set sessions = excluded.sessions, sent_at = excluded.sent_at, expires_at = excluded.expires_at`,
+			sessions); err != nil {
+			t.Fatalf("store listener sessions %s: %v", sessions, err)
+		}
+		var same bool
+		if err := database.Pool.QueryRow(ctx,
+			`select projects = $1::jsonb from route_roster_session_projects where id`, want).Scan(&same); err != nil {
+			t.Fatalf("read the session-projects snapshot after %s: %v", sessions, err)
+		}
+		if !same {
+			t.Errorf("the session-projects snapshot after %s differs from %s", sessions, want)
+		}
+	}
+	write(`[{"session_id":"ses-priv","projects":["PRIV"]},{"session_id":"ses-none"}]`,
+		`{"ses-none":[],"ses-priv":["PRIV"]}`)
+	write(`[{"session_id":"ses-pub","projects":["PUB"]}]`, `{"ses-pub":["PUB"]}`)
+}
+
 // secondRouteStatusServer is a second server process beside served: the same database and the
 // same listener, but a pool of its own (storetest.SecondProcess), a roster cache of its own with
 // served's TTLs and fetch bound, and its own single-flight fetch, so the two share only what

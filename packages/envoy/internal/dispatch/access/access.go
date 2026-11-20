@@ -166,14 +166,14 @@ func PersonClause(loginExpr, viewerParam string) string {
 // acted in one of theirs too.
 //
 // A session with no pair, which has acted in no project, is judged by its listener record's
-// projects (listenerProjects, the projects of the credential it registered with): it passes an
-// open viewer when the record names no project the viewer does not see, an empty list included,
-// and a viewer that is not open when the record names a project the viewer sees (K6). While a
-// project is private, a session with neither a pair nor a listener record passes no viewer but its
-// own: nothing Dispatch holds says which projects it works for. A deployment that holds no
-// private project skips the reads of the private pairs and of the listener records: every project
-// is public, the open viewer sees each one, no pair is of a private project, and a viewer that is
-// not open reads a session by its pairs alone, as before (R9).
+// projects (listener_session_projects, the migration's primary-key projection of the credential it
+// registered with): it passes an open viewer when the record names no project the viewer does not
+// see, an empty list included, and a viewer that is not open when the record names a project it
+// sees (K6). While a project is private, a session with neither a pair nor a listener record passes
+// no viewer but its own: nothing Dispatch holds says which projects it works for. A deployment that
+// holds no private project skips the reads of the private pairs and of the listener records: every
+// project is public, the open viewer sees each one, no pair is of a private project, and a viewer
+// that is not open reads a session by its pairs alone, as before (R9).
 //
 // session_projects places every session in the projects it acted in only once
 // `envoy-dispatch backfill-session-projects` has written session_projects_filled's row: migration
@@ -184,39 +184,13 @@ func PersonClause(loginExpr, viewerParam string) string {
 // tests, so a statement makes it once (an InitPlan), and only for an open viewer of a deployment
 // that holds a private project.
 func SessionClause(sessionExpr, viewerParam string) string {
-	return clause("SessionClause", fmt.Sprintf(`(%[2]s or (%[1]s) = %[4]s::jsonb->>'session'
-		or (%[3]s and (not %[5]s or (exists (select 1 from session_projects_filled offset 0) and not exists (
-			select 1 from session_projects unseen
-			where unseen.session_id = (%[1]s) and not ((%[4]s::jsonb->'sees') ? unseen.project_key)
+	return clause("SessionClause", fmt.Sprintf(`session_clause_visible((%[1]s), %[2]s::jsonb,
+		case when %[3]s and %[4]s then exists (
+			select 1 from session_projects_filled
 			offset 0)
-			and (exists (select 1 from session_projects acted where acted.session_id = (%[1]s) offset 0)
-				or coalesce((%[6]s -> (%[1]s)) <@ (%[4]s::jsonb->'sees'), false)))))
-		or (not %[3]s and exists (
-			select 1 from session_projects acted
-			where acted.session_id = (%[1]s) and (%[4]s::jsonb->'sees') ? acted.project_key
-			offset 0)
-			and (not %[5]s or not exists (
-				select 1 from session_projects unseen
-				join projects hidden on hidden.key = unseen.project_key and hidden.visibility = 'private'
-				where unseen.session_id = (%[1]s) and not ((%[4]s::jsonb->'sees') ? unseen.project_key)
-				offset 0)))
-		or (not %[3]s and %[5]s
-			and not exists (select 1 from session_projects acted where acted.session_id = (%[1]s) offset 0)
-			and coalesce((%[6]s -> (%[1]s)) ?| array(select jsonb_array_elements_text(%[4]s::jsonb->'sees')), false)))`,
-		sessionExpr, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"), viewerParam, ViewerFlag(viewerParam, "private"),
-		listenerProjects))
+		else true end)`,
+		sessionExpr, viewerParam, ViewerFlag(viewerParam, "open"), ViewerFlag(viewerParam, "private")))
 }
-
-// listenerProjects is the listener's record of each session it lists, read from the stored answer
-// every process shares (the route_roster row, api/issue_route_status.go): one jsonb object from a
-// session's id to the projects of its credential as envoy.Session marshals them, [] where the list
-// is empty and so left out, and null when the row lists no session. A session the row does not
-// list has no record. It names no column of the row a clause tests, so a statement reads the row
-// once (an InitPlan), and only for a session with no session_projects pair while a project is
-// private.
-const listenerProjects = `(select jsonb_object_agg(listed->>'session_id', coalesce(listed->'projects', '[]'::jsonb))
-	from route_roster roster cross join jsonb_array_elements(roster.sessions) listed
-	where listed->>'session_id' is not null)`
 
 // roleProjectSQL is contracts.RoleProject in SQL, over the role name roleExpr gives: the project
 // key a Legion role's name, legion-<token>-…, gives, its token of lower-case letters and digits

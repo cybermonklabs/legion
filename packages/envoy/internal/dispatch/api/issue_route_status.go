@@ -195,8 +195,8 @@ func (s *server) readRouteRoster(ctx context.Context) (routeRoster, error) {
 	if s.deps.ListenerRosterUncached {
 		// An end-to-end test process: every read asks the listener itself, with no shared fetch,
 		// and answers what that call answered. It still stores the answer, as a fetch does, because
-		// the session rule reads each session's listener record from the stored row
-		// (access.SessionClause): a process that stored none would judge every session with no
+		// the route_roster_session_projects projection records each listener session for the session
+		// rule (access.SessionClause): a process that stored none would judge every session with no
 		// history as one the listener does not list.
 		var sent time.Time
 		if err := s.deps.Store.Pool.QueryRow(ctx, `select now()`).Scan(&sent); err != nil {

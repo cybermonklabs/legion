@@ -211,8 +211,8 @@ type Deps struct {
 	// session list (route_status on an issue read, GET /api/v1/agents) asks the listener rather
 	// than reading the stored answer every process shares (the route_roster row), so a test that
 	// changes the listener's sessions sees the change at its next read. Each answer is still
-	// stored, since the session rule reads the listener's record of a session from that row. A
-	// deployment leaves it false.
+	// stored, so route_roster_session_projects records the listener's sessions for SessionClause.
+	// A deployment leaves it false.
 	ListenerRosterUncached bool
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.

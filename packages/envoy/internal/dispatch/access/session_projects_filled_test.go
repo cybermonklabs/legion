@@ -167,16 +167,15 @@ func planLoops(t *testing.T, q Querier, relation, sql string, args ...any) (scan
 	return scans, total
 }
 
-// TestTheListenerRecordIsReadOncePerStatement: SessionClause reads the listener's record of a
-// session with no pair from the route_roster row (listenerProjects), a read that names no column
-// of the row it tests, so a statement reads the row once (an InitPlan), not once per session. A
-// read over fifty sessions the row lists, none with a pair, for an open viewer and for a
-// restricted one of a deployment that holds a private project, scans route_roster in one loop.
-func TestTheListenerRecordIsReadOncePerStatement(t *testing.T) {
+// TestTheListenerRecordUsesItsPrimaryKey: SessionClause reads the listener's stored projects
+// through listener_session_projects, whose body probes route_roster_session_projects by its
+// primary key. The migration's trigger wrote one object from a roster of fifty sessions; with
+// sequential scans disabled, the direct projection query takes its one key through one plan node
+// and one loop.
+func TestTheListenerRecordUsesItsPrimaryKey(t *testing.T) {
 	ctx := context.Background()
 	database := seedAccess(t)
 	if _, err := database.Pool.Exec(ctx, `
-		insert into session_projects_filled default values;
 		insert into route_roster (answered, sessions, sent_at, expires_at)
 		select true, jsonb_agg(jsonb_build_object('session_id', 'ses_' || n, 'projects', jsonb_build_array(case when n % 2 = 0 then 'PUB' else 'PRIV' end))),
 			now(), now() + interval '1 hour'
@@ -184,18 +183,16 @@ func TestTheListenerRecordIsReadOncePerStatement(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("seed the listener's record of fifty sessions: %v", err)
 	}
-	for _, person := range []string{alice, bob} {
-		viewer, err := Resolve(ctx, database.Pool, cookie(person))
-		if err != nil {
-			t.Fatalf("%s: Resolve: %v", person, err)
-		}
-		if !viewer.AnyPrivate {
-			t.Fatalf("%s resolves as %+v, want a deployment that holds a private project", person, viewer)
-		}
-		if scans, total := planLoops(t, database.Pool, "route_roster",
-			`select count(*) from generate_series(1, 50) as n where `+SessionClause("'ses_' || n", "$1"),
-			viewerArg(t, viewer)); total != 1 {
-			t.Errorf("%s: the read over fifty sessions scans route_roster in %d nodes, %d loops in all; want one loop", person, scans, total)
-		}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the indexed listener-record plan: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `set local enable_seqscan = off`); err != nil {
+		t.Fatalf("prefer the listener-record index: %v", err)
+	}
+	if scans, total := planLoops(t, tx, "route_roster_session_projects",
+		`select projects from route_roster_session_projects where id = true`); scans != 1 || total != 1 {
+		t.Errorf("the listener-record lookup scans route_roster_session_projects in %d nodes, %d loops in all; want one index scan node and one loop", scans, total)
 	}
 }

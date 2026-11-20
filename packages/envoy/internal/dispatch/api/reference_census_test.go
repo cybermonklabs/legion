@@ -177,6 +177,7 @@ var referenceDispositions = map[string]referenceDisposition{
 	"related_checks.source_issue_key":           {ownColumn, "the checked write's issue"},
 	"repo_projects.project":                     {ownColumn, "the mapping's project"},
 	"route_roster.sessions":                     {internalColumn, "the listener's stored session list, which every read filters as its own sessions"},
+	"route_roster_session_projects.projects":    {internalColumn, "the listener projects keyed by session id, which SessionClause reads"},
 	"search_term_queue.artifact_id":             {internalColumn, "a search index queue"},
 	"search_term_queue.issue_key":               {internalColumn, "a search index queue"},
 	"search_term_stats.project_key":             {internalColumn, "a project's search statistics"},
