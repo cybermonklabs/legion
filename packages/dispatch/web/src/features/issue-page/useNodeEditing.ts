@@ -134,13 +134,16 @@ export function nodeEditable(
  * what it is built of did not load, or the page handed the row no editor - the editing ends, and
  * the row says its editor could not open (`KEY_REPORTS.editor_closed`). While the caret is put
  * off by a press outside the tree (above), such a hold ends the editing at once too, with no
- * focus taken from where the reader is, and with the focus out of the tree the row says nothing
- * then: the tree lets go of the row, and of what was reported at it, as the editing ends with
- * the focus out of the tree (`IssueTree.tsx`'s `useReleaseFocus`). A node whose text no document
- * of this issue holds has nothing to put a caret in, and the key says so. Enter on the row while
- * it is edited, the focus back on the row itself, puts the caret in the node's block again, as
- * the first Enter did, once that hold is on; before then the first Enter's caret is still to
- * come.
+ * focus taken from where the reader is - Details, or the page's body where that press left the
+ * focus on nothing - and with the focus out of the tree the row says nothing then: the tree lets
+ * go of the row, and of what was reported at it, as the editing ends with the focus out of the
+ * tree (`IssueTree.tsx`'s `useReleaseFocus`). Seen while a press in the tree that ends the
+ * editing (below) is held, such a hold ends the editing as that press does, once it is over: the
+ * row the press focused says nothing of an editor it never asked for. A node whose text no
+ * document of this issue holds has nothing to put a caret in, and the key says so. Enter on the
+ * row while it is edited, the focus back on the row itself, puts the caret in the node's block
+ * again, as the first Enter did, once that hold is on; before then the first Enter's caret is
+ * still to come.
  *
  * A press that went down in the tree outside the editor's box ends the editing once it has ended,
  * as Tab out of the box does, unless the focus is back in that box by then, and leaves the focus
@@ -341,11 +344,15 @@ export function useNodeEditing({
     // outside the box brings no caret back: it ends the editing (the press rule). Where the
     // editor's hold cannot go on while the caret is put off - what it is built of did not load,
     // or the page handed the row no editor - the editing ends at once, as it does with no caret
-    // put off (`endUnplaced`), and no focus is taken from where the reader is; with the focus out
+    // put off (`endUnplaced`), and no focus is taken from where the reader is, the page's body
+    // included, where the row taking the focus would scroll the page to it; with the focus out
     // of the tree the row says nothing then, since the tree lets go of the row, and of what was
     // reported at it, as the editing ends with the focus out of the tree (`IssueTree.tsx`'s
-    // `useReleaseFocus`). So the editor's drawing is watched on while the caret is put off, until
-    // the hold is on, for an editor never handed over that draws the node's block.
+    // `useReleaseFocus`). Where a press in the tree that ends the editing (the press rule) is
+    // held as that is seen, the editing ends as that press ends it once it is over - the reader
+    // moved on - and the row it focused says nothing either. So the editor's drawing is watched
+    // on while the caret is put off, until the hold is on, for an editor never handed over that
+    // draws the node's block.
     //
     // The row is watched on after the caret is placed, until the reader's first act, for two
     // things the editor does to the caret before the reader has done anything. It changes its
@@ -474,10 +481,17 @@ export function useNodeEditing({
         return true;
       }
       // The row says its editor could not open, where the reader is: a focus their press put in
-      // the editor's box goes back to the row first, as Escape's does, since that box goes.
-      if (holdsRowsFocus(row)) row.focus();
+      // the editor's box goes back to the row first, as Escape's does, since that box goes, and
+      // the row takes it again on the next frame where it has fallen to nothing by then
+      // (`leaving`). With the caret put off and the focus elsewhere - in Details, on the page's
+      // body - the reader is out of the row, and the editing's end takes no focus: the row
+      // taking it from the page's body moved the reader off where they were, and scrolled the
+      // page to the row.
+      const rowsFocus = holdsRowsFocus(row);
+      if (rowsFocus) row.focus();
       report.current(KEY_REPORTS.editor_closed);
-      stopEditing();
+      if (putOff && !rowsFocus) setEditing(undefined);
+      else stopEditing();
       return true;
     };
     // Places the caret, or places it again where the focus has fallen to nothing or the caret
@@ -521,9 +535,13 @@ export function useNodeEditing({
       // handed the row no editor to hold.
       const unheld = load.current?.failed === true || (unhanded && hold.current === "awaited");
       if (putOff) {
-        // The reader has not moved on from the row: a hold that cannot go on ends the editing at
-        // once, as with no caret put off (below).
-        if (unheld) return endUnplaced(row, false);
+        // A hold that cannot go on ends the editing at once, as with no caret put off (below):
+        // as the reader moving on from the row where the press that is ending ends the editing
+        // by the press rule's own test - one in the tree outside the box (`pressEndsEditing`) -
+        // and else as a hold that cannot go on, which the row says.
+        if (unheld) {
+          return endUnplaced(row, pressedOn !== undefined && pressEndsEditing(box, row, pressedOn));
+        }
         // The focus back in the row or its editor's box asks for the caret again, unless a press
         // that ends the editing brought it there: one in the tree outside the box, by the press
         // rule's own test (`pressEndsEditing`).

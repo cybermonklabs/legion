@@ -23,7 +23,7 @@ import { jump, realClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
-import { issueCoverageQuery, issueResultsQuery } from "../../api/queries";
+import { issueCoverageQuery, issueResultsQuery, referenceTargetsQuery } from "../../api/queries";
 import type {
   Artifact,
   Comment,
@@ -5053,6 +5053,10 @@ test("a hold that fails to load while a press in Details has put off the row's c
       true
     );
     expect(
+      rowReport(view.container),
+      "a row says its editor could not open, with the focus out of the tree"
+    ).toBeUndefined();
+    expect(
       editable.contains(window.getSelection()?.anchorNode ?? null),
       "a caret went into the editor whose hold failed to load"
     ).toBe(false);
@@ -5126,9 +5130,117 @@ test("a page that hands the row no editor, drawing the node's block after a pres
     true
   );
   expect(
+    rowReport(view.container),
+    "a row says its editor could not open, with the focus out of the tree"
+  ).toBeUndefined();
+  expect(
     editable.contains(window.getSelection()?.anchorNode ?? null),
     "a caret went into an editor the row was never handed"
   ).toBe(false);
+});
+
+// The class search of #4205's 7a922b76: a press in Details put off the row's caret, and a press
+// then went down on another row of the tree, which ends the editing once it is over (the press
+// rule); what the editor's hold is built of failed to load while that press was held. Once the
+// press was over, the look for the caret ended the editing as a hold that cannot go on, and the
+// row the press had focused said that its editor could not open, of an editor it never asked
+// for. That press ends the editing as the reader moving on, as it does with no failure, and the
+// row it focused says nothing.
+test("a hold that fails to load while a press on another row is held, after a press in Details put off the caret, ends the editing with that press, and the row pressed says nothing", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const held = Promise.withResolvers<nodeCaret.HoldParts>();
+  const load = spyOn(nodeCaret, "loadEditsHold").mockReturnValue(held.promise);
+  try {
+    const { editable, view } = await enterBeforeDrawn(user);
+    const words = rowsFor(view.container, "comment-2")[0]?.querySelector<HTMLElement>(
+      "[data-node-words]"
+    );
+    if (words == null) throw new Error("the last comment's row is not drawn");
+    await drawStatementBlocks(editable);
+    await nextFrame();
+    const card = cardInDetails();
+    await user.click(card);
+    // The press is over a task after its click.
+    await waitInAct(0);
+    expect(
+      view.edited.at(-1),
+      "a press in Details while the editor's hold was loading ended the editing"
+    ).toBe("artifact-spec");
+
+    await user.pointer({ keys: "[MouseLeft>]", target: words });
+    expect(focusedRow(view.container), "the press did not focus the row it went down on").toBe(
+      "comment-2"
+    );
+    await failLoad(held.reject);
+    expect(view.edited.at(-1), "the editing ended while the press was held").toBe("artifact-spec");
+    await user.pointer({ keys: "[/MouseLeft]", target: words });
+    // The press is over a task after its click.
+    await waitInAct(0);
+    await waitFor(() =>
+      expect(view.edited.at(-1), "the editing did not end once the press was over").toBeUndefined()
+    );
+    await nextFrame();
+    expect(
+      rowReport(view.container),
+      "the row the press focused says its editor could not open"
+    ).toBeUndefined();
+    expect(focusedRow(view.container), "the focus left the row pressed").toBe("comment-2");
+  } finally {
+    load.mockRestore();
+  }
+});
+
+// The class search of #4205's 7a922b76: a press outside the tree on something that takes no
+// focus - words, blank space - leaves the focus on the page's body and puts off the row's caret,
+// and what the editor's hold is built of then failed to load. The editing ended as Escape's does,
+// whose next frame gives the row the focus where it has fallen to nothing (`leaving`): the row
+// took the focus from the page's body, where the reader had left it, scrolling the page to it,
+// and said nothing there, since the tree had let go of what was reported at it. The end of an
+// editing whose caret is put off takes no focus.
+test("a hold that fails to load after a press on words outside the tree put off the row's caret leaves the focus on the page's body", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const held = Promise.withResolvers<nodeCaret.HoldParts>();
+  const load = spyOn(nodeCaret, "loadEditsHold").mockReturnValue(held.promise);
+  const text = "Words outside the outline";
+  const outside = render(<p>{text}</p>).getByText(text);
+  try {
+    const { editable, view } = await enterBeforeDrawn(user);
+    await drawStatementBlocks(editable);
+    await nextFrame();
+    await user.click(outside);
+    // The press is over a task after its click.
+    await waitInAct(0);
+    expect(
+      view.edited.at(-1),
+      "a press outside the tree while the editor's hold was loading ended the editing"
+    ).toBe("artifact-spec");
+    expect(document.activeElement, "the press left the focus on an element").toBe(document.body);
+
+    await failLoad(held.reject);
+    await waitFor(() =>
+      expect(
+        view.edited.at(-1),
+        "the editing went on once the hold failed to load while the caret was put off"
+      ).toBeUndefined()
+    );
+    await nextFrame();
+    await nextFrame();
+    expect(
+      focusedRow(view.container),
+      "the editing's end took the focus from the page's body to a row"
+    ).toBeUndefined();
+    expect(document.activeElement, "the editing's end took the focus from the page's body").toBe(
+      document.body
+    );
+    expect(
+      rowReport(view.container),
+      "a row says its editor could not open, with the focus out of the tree"
+    ).toBeUndefined();
+  } finally {
+    load.mockRestore();
+  }
 });
 
 // The document's editor draws a document the room already holds as it is made, some microtasks
@@ -8831,7 +8943,8 @@ function AddressedBody({
  *  holds `comments` and nothing else, and its comments' read is left unread where `comments` is
  *  undefined, as is each read `unread` names by its query key. `follow` follows a link to an
  *  address, as a row's link or the router's does; `redraw` draws the same location again, as a
- *  read answering does; `reopen` takes the page off and draws it anew over the same reads, as a
+ *  read answering does, of `next` where it is given, as the issue's own read answering with a
+ *  document added does; `reopen` takes the page off and draws it anew over the same reads, as a
  *  later visit to it does; `client` holds the reads. `Slot` draws the address, the body where none
  *  is given, of `issue`, which holds no document where none is given. */
 function renderAddressedBody(
@@ -8847,12 +8960,13 @@ function renderAddressedBody(
   seedBodyReads(client, { comments });
   for (const queryKey of unread) client.removeQueries({ queryKey });
   const held: { navigate?: NavigateFunction } = {};
+  let drawn = issue;
   const draw = () => (
     <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <MarginProvider>
-            <AddressedBody held={held} issue={issue} Slot={Slot} />
+            <AddressedBody held={held} issue={drawn} Slot={Slot} />
           </MarginProvider>
         </KeymapProvider>
       </QueryClientProvider>
@@ -8870,7 +8984,10 @@ function renderAddressedBody(
       act(async () => {
         await held.navigate?.(to);
       }),
-    redraw: () => view.rerender(draw()),
+    redraw: (next: IssueDetails = drawn) => {
+      drawn = next;
+      view.rerender(draw());
+    },
     reopen: () => {
       view.unmount();
       return render(draw());
@@ -9020,6 +9137,61 @@ test("an address naming an item no node holds draws the item's failure once the 
     );
     expect(body.view.queryByRole("tree"), "the outline is drawn beside the failure").toBeNull();
   } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// The class search of #4205's 7a922b76, on the class of the tester's names-line finding: the
+// item's failed line left the page as a document added to the issue had its blocks read, which
+// holds the tree's reads out again (`readsHeld`), and came back once that read answered, saying
+// its failure again and taking the focus again. The following keeps the landing it settled on
+// while the reads are out again: the line stays drawn, with the focus on it and the same alert.
+test("an item's failed line stays drawn, with the focus on it and the same alert, while a document added to the issue has its blocks read", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const read = spyOn(api, "getComment").mockRejectedValue(serverDown());
+  const blocksOut = Promise.withResolvers<never[]>();
+  const blocks = spyOn(api, "getArtifactBlocks").mockReturnValue(blocksOut.promise as never);
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: GONE_COMMENT, key: KEY, kind: "comment" }),
+      TWO_THREADS
+    );
+    const heading = await waitFor(() =>
+      body.view.getByRole("heading", { name: "Couldn't load this comment" })
+    );
+    await waitFor(() =>
+      expect(document.activeElement, "the failure's line does not hold the focus").toBe(heading)
+    );
+    const alert = body.view.getByRole("alert");
+
+    // The issue's read answers with its spec and its decisions document, whose blocks are then
+    // read, and are out.
+    body.redraw(issueDetails());
+    await waitFor(() =>
+      expect(blocks, "the added documents' blocks were never read").toHaveBeenCalled()
+    );
+    await nextFrame();
+    expect(
+      heading.isConnected,
+      "the item's failed line left the page while the added documents' blocks were read"
+    ).toBe(true);
+
+    await act(async () => blocksOut.resolve([]));
+    await nextFrame();
+    expect(
+      heading.isConnected,
+      "the item's failed line was drawn anew once the added documents' blocks answered"
+    ).toBe(true);
+    expect(document.activeElement, "the focus left the item's failed line").toBe(heading);
+    expect(
+      body.view.getByRole("alert"),
+      "the item's alert was drawn again, which says a failure again that came only once"
+    ).toBe(alert);
+    expect(read, "the item was read again as the reads went out").toHaveBeenCalledTimes(1);
+  } finally {
+    blocks.mockRestore();
     names.mockRestore();
     read.mockRestore();
   }
@@ -10372,6 +10544,92 @@ test("a failed one more names read's line stays drawn, with the focus on its Ret
   }
 });
 
+// The class search of #4205's 7a922b76, on the same class: the one more read stood failed, and
+// a comment citing the address it failed on arrived while another read that holds no answer ran
+// again, which shuts the gate the batched read waits on (`useIssueTree`). The one more read was
+// measured against the tree's own set of addresses, which held that address from the comment
+// on, so nothing was left for it to name, while the batched read kept the set it was given until
+// the gate opened: every names read held an answer, and the line left the page with the focus
+// its Retry held, though no read had named that address. The one more read names it until the
+// batched read is asked for it, so the line stays drawn, with the focus on its Retry and the
+// same alert.
+test("a failed one more names read's line stays drawn, with the focus on its Retry, while a comment cites its address as the failed asks read runs again", async () => {
+  setViewport(1440);
+  const cited = "dispatch://CORE-7";
+  const blocks = spyOnSpecBlock("plan_task");
+  const names = spyOn(api, "getReferenceTargets").mockImplementation((refs) => {
+    // The batched read names the step, whose words cite an issue; the one more read names that
+    // issue, and fails.
+    if (!refs.includes(SPEC_BLOCK)) return Promise.reject(serverDown()) as never;
+    return Promise.resolve(stepNamed(`Hang the lanterns as ${cited} asks.`)) as never;
+  });
+  const asks = spyOn(api, "listIssueAsks").mockRejectedValueOnce(serverDown());
+  const asksOut = Promise.withResolvers<never>();
+  try {
+    const body = renderAddressedBody(`/issues/${KEY}`, [], StageSlot, issueDetails(), [
+      ["asks", KEY],
+    ]);
+    const { container } = body.view;
+    await failedLines(container, 2, "asks and one more names");
+    expect(
+      names.mock.calls.map(([refs]) => refs),
+      "the one more read did not name what the step's words cite"
+    ).toContainEqual([cited]);
+    await framesPass();
+    const line = failedLineSaying(container, STATE_LINES.names_unreadable);
+    const retry = line.querySelector<HTMLElement>(FAILED_READ_RETRY);
+    if (retry === null) throw new Error("the names' line drew no Retry");
+    const alert = line.querySelector('[role="alert"]');
+    await act(async () => retry.focus());
+    expect(focusPlace(container), "the names' Retry took no focus").toBe(
+      onRetryOf(STATE_LINES.names_unreadable)
+    );
+
+    // An event's refresh of the asks runs their read again and leaves it out, which shuts the
+    // gate; a comment citing the issue the one more read failed on arrives meanwhile.
+    asks.mockReturnValueOnce(asksOut.promise as never);
+    await act(async () => {
+      void body.client.invalidateQueries({ queryKey: ["asks", KEY] });
+    });
+    await waitFor(
+      () => expect(asks.mock.calls.length, "the asks read did not run again").toBe(2),
+      OWN_WORDS
+    );
+    const namesBefore = names.mock.calls.length;
+    await act(async () => {
+      body.client.setQueryData(
+        ["comments", KEY],
+        [{ ...readComment("head-c", 5), body: `Read ${cited} first.` }]
+      );
+    });
+    await waitFor(
+      () => expect(rowsFor(container, "head-c").length, "the comment was not drawn").toBe(1),
+      OWN_WORDS
+    );
+    await framesPass();
+    expect(
+      line.isConnected,
+      "the names' line left the page as a comment cited the address the one more read failed on"
+    ).toBe(true);
+    expect(
+      focusPlace(container),
+      "the focus left the names' Retry as a comment cited the address the one more read failed on"
+    ).toBe(onRetryOf(STATE_LINES.names_unreadable));
+    expect(
+      line.querySelector('[role="alert"]'),
+      "the names' alert was drawn again, which says a failure again that came only once"
+    ).toBe(alert);
+    expect(names.mock.calls.length, "the names were read while the asks read ran").toBe(
+      namesBefore
+    );
+  } finally {
+    await act(async () => asksOut.resolve([] as never));
+    asks.mockRestore();
+    blocks.mockRestore();
+    names.mockRestore();
+  }
+});
+
 // The class search of #4205's 2fffbc34: with both names reads failed - the one more read, and
 // the batched read under the set a comment brought - the line's alert was keyed by the sum of
 // their own failures, so one of them answering took its failures out of the sum and drew the
@@ -10425,12 +10683,15 @@ test("a names line both names reads stand failed by keeps its alert and the focu
     // key holds it, and answers; the batched read stands failed.
     moreAnswers = true;
     await act(async () => {
-      void body.client.invalidateQueries({ exact: true, queryKey: ["reference-targets", [cited]] });
+      void body.client.invalidateQueries({
+        exact: true,
+        queryKey: referenceTargetsQuery([cited]).queryKey,
+      });
     });
     await waitFor(
       () =>
         expect(
-          body.client.getQueryState(["reference-targets", [cited]])?.status,
+          body.client.getQueryState(referenceTargetsQuery([cited]).queryKey)?.status,
           "the one more read did not answer"
         ).toBe("success"),
       OWN_WORDS

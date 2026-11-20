@@ -237,9 +237,10 @@ interface Following {
 /**
  * Where `address` lands where it names a node the tree holds none of (`reveal` undefined), once
  * every read the tree is built from has answered (`readsHeld`): before that the node may not
- * have arrived yet. Undefined while the tree holds the node, while the reads are out, for an
- * address naming no node or opening a document, and while the old page's landing reads the item
- * (`pending`) with no landing settled since the address was followed.
+ * have arrived yet. Undefined while the tree holds the node, while the reads are out before the
+ * following has settled on a landing, for an address naming no node or opening a document, and
+ * while the old page's landing reads the item (`pending`) with no landing settled since the
+ * address was followed.
  *
  * Each following of the address (the location's own key) is decided on its own, once: a
  * following whose tree has held the address's node, or the nearest drawn ancestor of a turn only
@@ -261,6 +262,12 @@ interface Following {
  * focus. The failures are counted from the following's start, so an item whose read failed
  * before the address was followed again draws no failure of its own until its read fails again.
  * A block or the children is `absent`, as no read is left to draw it.
+ *
+ * The reads going out again after the following has settled on a landing - a document added to
+ * the issue, whose blocks are then read - leave that landing drawn, with its failures counted as
+ * before: the line, its alert and the focus it holds stay, where the line leaving the page and
+ * coming back once the reads answered said its failure again and took the focus again. It goes
+ * as before where the tree draws the address's node (`found`), and with the following.
  */
 export function useAddressFallback({
   address,
@@ -283,8 +290,16 @@ export function useAddressFallback({
   readonly search: string;
 }): AddressFallback | undefined {
   const item = outlineItemRoute(route, search, address);
+  // What this following has seen (`Following`), held from one render to the next, and anew for
+  // each following.
+  const following = useLocation().key;
+  const [followed, setFollowed] = useState<Following | undefined>(undefined);
+  const before = followed?.key === following ? followed : undefined;
   const unresolved = readsHeld && reveal === undefined;
-  const unheld = unresolved ? item : undefined;
+  // A following that has settled on a landing keeps reading the item while the reads are out
+  // again, so the landing stays drawn (above).
+  const unheld =
+    reveal === undefined && (readsHeld || before?.settled !== undefined) ? item : undefined;
   const unheldId = unheld?.id;
   const { asks, comments, messages } = reads;
   const openAsks = issue.open_asks;
@@ -305,11 +320,6 @@ export function useAddressFallback({
         : agentsOnlyAncestor(root, agentsOnly, comments, messages),
     [agentsOnly, comments, messages, root]
   );
-  // What this following has seen (`Following`), held from one render to the next, and anew for
-  // each following.
-  const following = useLocation().key;
-  const [followed, setFollowed] = useState<Following | undefined>(undefined);
-  const before = followed?.key === following ? followed : undefined;
   const found = before?.found === true || reveal !== undefined || agentsOnly !== undefined;
   // The issue's own route reads nothing: the landing reads an item only where it falls back.
   const read = found ? undefined : unheld;

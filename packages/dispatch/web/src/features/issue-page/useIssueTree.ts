@@ -448,11 +448,27 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // no request; the names already in hand stand while a new non-empty set loads and after its
   // read fails, and the line stays while a read under a new set is out, as above
   // (`useNamesFailures`).
+  //
+  // An address leaves this set only once the first read is asked for it (`askedFor`), not once
+  // the tree holds it some other way (`refs`): while the gate is shut, a comment that cites it
+  // brings it into the tree's own set and not into the first read's, which keeps the set it was
+  // given until the gate opens, and an address measured against the tree's set left the one
+  // more read with no read asked for it - every read then held an answer, and the line left the
+  // page with the focus its Retry held. An address the tree holds some other way comes into this
+  // set only as before, where it was in it already: the first read names it once the gate opens,
+  // and no second read is asked for it meanwhile. The set this held last (`kept`) is written
+  // during render, as `useLastAnswer`'s ref is, with the set of that render.
+  const kept = useRef<readonly string[]>([]);
   const extra = useMemo(() => {
     if (first === undefined) return [];
-    const asked = new Set(refs);
-    return treeReferences(firstTree).filter((reference) => !asked.has(reference));
-  }, [first, firstTree, refs]);
+    const asked = new Set(askedFor);
+    const held = new Set(refs);
+    const before = new Set(kept.current);
+    return treeReferences(firstTree).filter(
+      (reference) => !asked.has(reference) && (!held.has(reference) || before.has(reference))
+    );
+  }, [askedFor, first, firstTree, refs]);
+  kept.current = extra;
   const moreQuery = useMemo(() => referenceTargetsQuery(extra), [extra]);
   const moreHash = useMemo(() => hashKey(moreQuery.queryKey), [moreQuery]);
   const more = useQuery({ ...moreQuery, ...EVENT_FRESH });
@@ -489,10 +505,12 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // for a new one: neither a read under a new set while it is out nor one read answering while
   // another does not changes it. The second read holds an answer where nothing is left for it to
   // name (`NO_MORE_TARGETS`): its query is disabled then and would never run again to answer, so
-  // a line that waited on it would stay for good. Where a comment brings the address it failed
-  // on into the first read's set, the line stays on the first read's read of that set, until
-  // that read answers. The Retry asks again each names read that holds no answer under its set,
-  // and the line is busy while one of those runs.
+  // a line that waited on it would stay for good. Where a comment cites the address the second
+  // read failed on, that read goes on naming it until the first read is asked for it (`extra`),
+  // which it is not while the gate is shut, so the line stays on the second read's failure
+  // meanwhile; once the first read is asked for the address, the line stays on the first read's
+  // read of that set, until that read answers. The Retry asks again each names read that holds
+  // no answer under its set, and the line is busy while one of those runs.
   const targetsAnswered = targets.data !== undefined;
   const moreAnswered = moreHeld !== undefined;
   const failure = useNamesFailures([
