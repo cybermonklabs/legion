@@ -1,0 +1,5 @@
+kind: Changed
+body: The controller's escalation reference lists a pod the runtime cannot read among the holds an `update-stalled` notice's `reason` can name.
+time: 2026-11-20T03:45:16Z
+custom:
+    Issue: pr4547
