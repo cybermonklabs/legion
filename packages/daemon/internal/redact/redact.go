@@ -20,14 +20,12 @@
 // point: a cut made before the rule can stop inside a URL's userinfo or its query and leave a part
 // of either where the rule no longer finds it. Every such cut in the legion binary, the daemon's
 // and the pod's commands alike, is one of theirs but those named here, each of which says where it
-// cuts why it keeps no part of a URL's credential: the role log's cut of a line longer than its
+// cuts and what of a URL's credential it can keep: the role log's cut of a line longer than its
 // bound (the launcher's logLineCut); the sandbox's drop of the head a cut log read starts inside,
 // up to its first newline or else its first byte that ends a URL (dropCutHead, which readLog and
 // lastBytes share), and readLog's drop of the line its read bound stopped inside;
-// storetext.LogWhole's parts of a text the rule has read whole; a detail whose own rules have
-// masked every userinfo before its cut (capabilities' cleanDetail); and the volume deleter's
-// standard error and its reply, the words of legion's own subcommand about the paths it removes,
-// which hold no "://" (the launcher's saidBuffer and readReply). A text the URL rule has already
+// storetext.LogWhole's parts of a text the rule has read whole; and a detail whose own rules have
+// masked every userinfo before its cut (capabilities' cleanDetail). A text the URL rule has already
 // read whole, through URLCredentials or one of these helpers, may be cut by any means after it, as
 // the workflow's quote of a failed claim's sentence and its death account is (quoteBounded): the
 // supervisor keeps both through storetext's FarSideError and FarSideText. So what is cut and how

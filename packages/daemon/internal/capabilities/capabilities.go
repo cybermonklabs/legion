@@ -491,7 +491,7 @@ func truncate(text string, max int) string {
 		return text
 	}
 	cut := max
-	for at := max; at > 0 && at > max-utf8.UTFMax; at-- {
+	for at := max; at >= 0 && at > max-utf8.UTFMax; at-- {
 		if utf8.RuneStart(text[at]) {
 			cut = at
 			break
