@@ -234,14 +234,17 @@ func (p ImageProbe) startupBudgetDuration() time.Duration {
 // decide whether the prompt-named agents' models resolve (the LEGION-270 plan, decision 5). An
 // attempt's verdict is definitive — the API refusing what was sent (400, 401, 403, 422, or a
 // create's 404), an image the kubelet cannot use, a pod whose probe container exited on its own
-// and Failed, a log without the OK line or confirming another contract, or not resolving the
-// agents' models, or not checking the capability list, a ConfigMap or Secret the pod cannot mount,
-// or its container cannot be configured for — or waiting: a pod the pool has no room for (stuck),
-// which counts against no attempt budget, since a full pool says nothing about the image and the
-// daemon must stay up until it has room — or transient: anything else, a pod the kubelet itself
-// failed included, retried under p.Retry. The report counts the attempts that waited on capacity
-// and keeps the last one's reason, for the
-// pool-capacity row of the capability report.
+// and Failed with any exit but bootprobe.NoVerdictExit, a log without the OK line or confirming
+// another contract, or not resolving the agents' models, or not checking the capability list, a
+// ConfigMap or Secret the pod cannot mount, or its container cannot be configured for — or
+// waiting: a pod the pool has no room for (stuck), which counts against no attempt budget, since a
+// full pool says nothing about the image and the daemon must stay up until it has room — or
+// transient: anything else, a pod the kubelet itself failed included, and a probe container that
+// exited bootprobe.NoVerdictExit, having seen no failure and some check with no verdict (judge),
+// retried under p.Retry; when the retry gives up, its error carries the last attempt's detail,
+// which for that exit names each TLS run and step with no verdict. The report counts the attempts
+// that waited on capacity and keeps the last one's reason, for the pool-capacity row of the
+// capability report.
 func (r *Runtime) ProbeImage(ctx context.Context, p ImageProbe) (bootprobe.ImageReport, error) {
 	if p.Contract < 1 || p.Budget <= 0 || p.Retry.Initial <= 0 || p.Retry.Max < p.Retry.Initial {
 		return bootprobe.ImageReport{}, errors.New("image probe: a contract, a positive budget, and a positive retry wait are required")
@@ -1157,7 +1160,12 @@ var undefinedFlag = regexp.MustCompile(`(?:unknown flag|flag provided but not de
 // Outcome.Report. A pod the kubelet failed for
 // reasons of its own (kubeletFailure) is transient, whatever of its log could be read, and an
 // unread log is judged by the read's error. A Failed pod past those is one whose probe container
-// exited on its own: the image's refusal. The OK line must confirm this daemon's contract: an
+// exited on its own. One that exited bootprobe.NoVerdictExit is transient: the probe saw no
+// failure and some check with no verdict — a TLS run its own limit stopped short of an answer at a
+// site an earlier run reached, or a check the probe's deadline cut — which the detail names from
+// its no-verdict line (bootprobe.NoVerdict), so the retry runs a new pod. Any other exit is the
+// image's refusal, exit 1 included: a failure, or, from a CLI that predates the no-verdict exit,
+// a run its limit or deadline cut. The OK line must confirm this daemon's contract: an
 // image whose CLI predates the contract check prints none, having checked no contract, and is
 // refused, not waved through; one that confirmed another contract is refused naming both. And it
 // must say the prompt-named agents' models resolved: any other mark, or none, does not prove the
@@ -1188,11 +1196,16 @@ func (r *Runtime) judge(name, digest string, pod *corev1.Pod, logTail string, lo
 		return apiOutcome(digest, logErr, fmt.Sprintf("read probe pod %s's log", name), false)
 	}
 	if pod.Status.Phase == corev1.PodFailed {
-		ended := ""
+		ended, exit := "", int32(0)
 		for _, status := range pod.Status.ContainerStatuses {
 			if t := status.State.Terminated; status.Name == probeContainer && t != nil {
 				ended = fmt.Sprintf(" (container %s terminated: %s, exit code %d)", probeContainer, t.Reason, t.ExitCode)
+				exit = t.ExitCode
 			}
+		}
+		if exit == bootprobe.NoVerdictExit {
+			unjudged, _ := bootprobe.NoVerdict(logTail)
+			return bootprobe.Outcome{Detail: fmt.Sprintf("pod %s exited %d with no verdict: %s — log tail: %s", name, exit, unjudged, logTail)}
 		}
 		if flag := undefinedFlag.FindStringSubmatch(logTail); flag != nil {
 			return imageRefusal(digest, "pod %s Failed%s: its legion CLI has no %s, a flag this daemon's probe passes: build the image from this daemon's commit — log tail: %s",
