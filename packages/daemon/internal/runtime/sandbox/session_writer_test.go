@@ -174,6 +174,76 @@ func TestAMicroVMIssuePodCarriesTheWriterTokenBesideTheMetadataEndpointsToken(t 
 	}
 }
 
+// A microVM issue pod under keep_volume, whose disk is the claim its Sandbox owns and keeps across
+// its pods (keptVolume), carries the writer token exactly as a microVM pod without it does: the
+// Sandbox its launch makes owns the kept claim, and its pod template has one projected token of the
+// writer audience beside the metadata endpoint's, mounted once, read-only, in the roles container
+// at SessionWriterDir under RolesDir, which no role's namespace shows, and in no init container,
+// with the launcher told the audience. The same pod of a store that names no writer audience
+// carries none of it. And the writer audience is part of the session store the kept pod carries
+// for its life, as it is of an unkept one: one built without it under a store that names it, one
+// built with it under a store that names none, and one built with another have moved, and one
+// built under the very store a daemon reads has not.
+func TestAKeptVolumeMicroVMIssuePodCarriesTheWriterTokenUnderRolesDir(t *testing.T) {
+	kept := SandboxConfig{Type: SandboxMicroVM, MicroVM: keptMicroVM()}
+	r := sandboxRuntime(t, kept, func(o *Options) { o.SessionStore = cloudSQLWriterStore })
+	s := r.sandboxManifest(launchOf(t, r, rootSpec(t)))
+	if !ownsKeptVolume(&s) {
+		t.Fatalf("the Sandbox claims %+v, not the kept volume, so this case proves nothing", s.Spec.VolumeClaimTemplates)
+	}
+	pod := s.Spec.PodTemplate.Spec
+	want := map[string][]string{testWorkloadPool: {workloadIdentityTokenVolume}, testWriterAudience: {sessionWriterTokenVolume}}
+	if got := projectedTokens(pod); !maps.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("the kept-volume pod's projected tokens are %v, want exactly %v", got, want)
+	}
+	if got, wantAt := mountsNamed(pod, sessionWriterTokenVolume), []string{workerContainer + " " + SessionWriterDir + " read-only"}; !slices.Equal(got, wantAt) {
+		t.Errorf("%s is mounted at %v, want %v", sessionWriterTokenVolume, got, wantAt)
+	}
+	if got, ok := flagValue(containerNamed(t, pod, workerContainer).Command, "--session-writer-audience"); !ok || got != testWriterAudience {
+		t.Errorf("the kept-volume pod's launcher is told the writer audience %q (%t), want %s", got, ok, testWriterAudience)
+	}
+	t.Run("without a writer audience", func(t *testing.T) {
+		r := sandboxRuntime(t, kept, func(o *Options) { o.SessionStore = cloudSQLImpersonatingStore })
+		s := r.sandboxManifest(launchOf(t, r, rootSpec(t)))
+		if !ownsKeptVolume(&s) {
+			t.Fatalf("the Sandbox claims %+v, not the kept volume, so this case proves nothing", s.Spec.VolumeClaimTemplates)
+		}
+		checkNoSessionWriter(t, s.Spec.PodTemplate.Spec)
+	})
+	t.Run("a writer audience added, dropped or changed moves the kept pod", func(t *testing.T) {
+		another := cloudSQLWriterStore
+		another.Database.WriterAudience = strings.TrimSuffix(testWriterAudience, "legion-cluster") + "legion-cluster-next"
+		if !ompsessions.ValidWriterAudience(another.Database.WriterAudience) {
+			t.Fatalf("the other writer audience %q is no writer audience", another.Database.WriterAudience)
+		}
+		none := sandboxRuntime(t, kept, func(o *Options) { o.SessionStore = cloudSQLImpersonatingStore })
+		other := sandboxRuntime(t, kept, func(o *Options) { o.SessionStore = another })
+		spec := rootSpec(t)
+		pod := func(r *Runtime) *corev1.Pod { return &corev1.Pod{Spec: podOf(t, r, spec)} }
+		for name, tc := range map[string]struct {
+			r     *Runtime
+			pod   *corev1.Pod
+			moved bool
+		}{
+			"a kept pod without a writer audience under one": {r, pod(none), true},
+			"a kept pod with a writer audience under none":   {none, pod(r), true},
+			"a kept pod under another writer audience":       {other, pod(r), true},
+			"a kept pod under the same writer audience":      {r, pod(r), false},
+		} {
+			t.Run(name, func(t *testing.T) {
+				store, moved := tc.r.movedSessionStore(tc.pod)
+				if moved != tc.moved {
+					t.Errorf("movedSessionStore = %+v, %t; want moved %t", store, moved, tc.moved)
+				}
+				drifted := tc.r.driftedInPod(tc.pod, spec.Role)
+				if got := slices.ContainsFunc(drifted, func(m movedAddress) bool { return m.where == "the session store" }); got != tc.moved {
+					t.Errorf("driftedInPod = %v, want the session store moved %t", drifted, tc.moved)
+				}
+			})
+		}
+	})
+}
+
 // Under a writer audience the controller's pod runs the launcher's roles-dir form for its one role,
 // laid out as an issue pod lays out each of its roles: the command names the roles directory and
 // the controller, and neither --token-file nor --private-dir; the controller's own volumes are
