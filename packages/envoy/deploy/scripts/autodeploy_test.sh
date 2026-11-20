@@ -147,10 +147,17 @@ case "$1" in
     ;;
 esac
 EOF
-# curl answers /healthz 200 with NATS connected, but for new-image with
-# AUTODEPLOY_TEST_CANDIDATE_NATS set, which it reports as `nats`.
+# curl answers on Dispatch's port alone, AUTODEPLOY_TEST_PORT (default 8766): a check that dials
+# another, a quoted port among them, gets nothing, as from a port no process listens on. /healthz
+# answers 200 with NATS connected, but for new-image with AUTODEPLOY_TEST_CANDIDATE_NATS set, which
+# it reports as `nats`. /auth/start redirects to AUTODEPLOY_TEST_REDIRECT, the callback a good
+# deploy's login check expects, and to a wrong host when that is unset.
 cat >"$bin/curl" <<'EOF'
 #!/usr/bin/env bash
+case "$*" in
+  *"http://127.0.0.1:${AUTODEPLOY_TEST_PORT:-8766}/"*) ;;
+  *) exit 7 ;;
+esac
 case "$*" in
   *"/healthz"*)
     nats=true
@@ -160,7 +167,12 @@ case "$*" in
     printf '{"ok":true,"db":true,"nats":%s}' "$nats"
     ;;
   *"/auth/start"*)
-    printf 'https://github.com/login/oauth/authorize?redirect_uri=http%%3A%%2F%%2Fwrong.test%%3A8766%%2Fauth%%2Fcallback'
+    if [[ -n "${AUTODEPLOY_TEST_REDIRECT:-}" ]]; then
+      printf 'https://github.com/login/oauth/authorize?redirect_uri=%s' \
+        "$(python3 -c 'import sys, urllib.parse as u; print(u.quote(sys.argv[1], safe=""))' "$AUTODEPLOY_TEST_REDIRECT")"
+    else
+      printf 'https://github.com/login/oauth/authorize?redirect_uri=http%%3A%%2F%%2Fwrong.test%%3A8766%%2Fauth%%2Fcallback'
+    fi
     ;;
 esac
 EOF
@@ -179,13 +191,28 @@ EOF
 # duration, 0 (pg_client's unbounded) included, the command runs as it would have, so every case
 # runs as it did before this stand-in existed. Only a container run is recorded, because the
 # deployer also bounds its compose and manifest runs this way, and a case that reaches no client
-# reads an empty argument log as proof that nothing ran.
+# reads an empty argument log as proof that nothing ran. With AUTODEPLOY_TEST_CONFIG_TIMEOUT=1 a
+# `docker compose ... config` run ends as a timeout ends it, status 124, without running.
 cat >"$bin/timeout" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$2 $3" == "docker run" ]]; then
   printf 'timeout %s\n' "$*" >>"$AUTODEPLOY_TEST_ARGV"
 fi
+if [[ "${AUTODEPLOY_TEST_CONFIG_TIMEOUT:-}" == 1 && "$2 $3" == "docker compose" && " $* " == *" config "* ]]; then
+  exit 124
+fi
 exec "${@:2}"
+EOF
+# python3 is the real one, but for a run with AUTODEPLOY_TEST_PYTHON_FAIL=1, where it exits 3 having
+# read its input and printed nothing, as an interpreter that cannot run does.
+real_python3=$(command -v python3)
+cat >"$bin/python3" <<EOF
+#!/usr/bin/env bash
+if [[ "\${AUTODEPLOY_TEST_PYTHON_FAIL:-}" == 1 ]]; then
+  cat >/dev/null
+  exit 3
+fi
+exec "$real_python3" "\$@"
 EOF
 # The fake libpq, which splits a URL as libpq does rather than as the deployer does: the
 # credentials run to the first @ before the first /, a raw ? included, and a query key or value is
@@ -345,7 +372,7 @@ source "$AUTODEPLOY_TEST_TOOLS/libpq.sh"
 connection_password pg_dump "$@" || exit 1
 printf 'backup'
 EOF
-chmod +x "$bin/jj" "$bin/docker" "$bin/curl" "$bin/sleep" "$bin/timeout" "$tools/psql" "$tools/pg_dump"
+chmod +x "$bin/jj" "$bin/docker" "$bin/curl" "$bin/sleep" "$bin/timeout" "$bin/python3" "$tools/psql" "$tools/pg_dump"
 
 deploy_once() {
   PATH="$bin:$PATH" AUTODEPLOY_TEST_LOG="$log" AUTODEPLOY_TEST_ARGV="$argv" AUTODEPLOY_TEST_SCHEMA="$schema" \
@@ -464,6 +491,43 @@ fi
 no_secret 'Compose'"'"'s refusal of a DATABASE_URL it cannot read'
 [[ "$output" == *"not deploying new-image"* ]] || fail 'deployer did not refuse a DATABASE_URL Compose cannot read'
 
+# A configuration Compose refuses is logged by no text of Compose's: its output can begin with a
+# warning, and can quote a .env line whole. With a `${...}` warning first and NATS_URLS missing, the
+# refusal names NATS_URLS and holds no warning; an unterminated quote around a password with a space
+# in it, or around the agent token, logs neither value, and names the command that shows Compose's
+# message. The python3 step and Compose's timeout each name their cause.
+fresh_env
+sed -i '/^NATS_URLS=/d' "$compose/.env"
+with_line DISPATCH_PORT "DISPATCH_PORT=\${AUTODEPLOY_TEST_UNSET}"
+if output=$(deploy_once); then
+  fail 'deployer deployed with NATS_URLS missing behind a warning'
+fi
+[[ "$output" == *"a required variable is missing a value: NATS_URLS; not deploying new-image"* && "$output" != *level=warning* && "$output" != *AUTODEPLOY_TEST_UNSET* ]] ||
+  fail 'deployer did not name NATS_URLS alone when Compose warned first'
+for line in "DATABASE_URL=\"postgres://dispatch@db.test:5432/dispatch?password='se cret'" 'DISPATCH_AGENT_TOKEN="agent-token-CANARY-1234'; do
+  fresh_env
+  with_line "${line%%=*}" "$line"
+  if output=$(deploy_once); then
+    fail "deployer deployed with an unterminated quote: ${line%%=*}"
+  fi
+  if [[ "$output" == *cret* || "$output" == *CANARY* ]] ||
+    [[ "$output" != *"docker compose config exited 1; its message is not logged"*"docker compose -p dispatch-test -f $compose/dispatch.compose.yml config"* ]]; then
+    fail "deployer logged a value from Compose's refusal of ${line%%=*}, or no command to read it"
+  fi
+done
+fresh_env
+if output=$(AUTODEPLOY_TEST_PYTHON_FAIL=1 deploy_once); then
+  fail 'deployer deployed when python3 could not read the configuration'
+fi
+[[ "$output" == *"could not read the dispatch service's environment from docker compose config: python3 exited 3; not deploying new-image"* ]] ||
+  fail 'deployer did not name the python3 failure'
+fresh_env
+if output=$(AUTODEPLOY_TEST_CONFIG_TIMEOUT=1 deploy_once); then
+  fail 'deployer deployed when docker compose config timed out'
+fi
+[[ "$output" == *"docker compose config did not answer within 60 s; run \`ENVOY_IMAGE_TAG=new-image docker compose -p dispatch-test"* && ! -s "$log" ]] ||
+  fail 'deployer did not name the config timeout'
+
 # Without `docker compose`, the deployer refuses by name, before its backup.
 fresh_env
 test_real_docker=/bin/false
@@ -474,6 +538,117 @@ unset test_real_docker
 if [[ "$output" != *"docker compose cannot run"*"not deploying new-image"* ]] ||
   [[ -s "$log" ]] || grep -q '^pg_dump ' "$argv"; then
   fail 'deployer did not refuse, by name and before its backup, when docker compose cannot run'
+fi
+
+# compose_resolves NAME prints NAME as Compose resolves it from the test's compose/.env, by the real
+# binary (`docker compose config --environment`), the reading the deployer must share.
+compose_resolves() {
+  "$real_docker" compose -f "$compose/dispatch.compose.yml" config --environment 2>/dev/null |
+    awk -v key="$1=" 'index($0, key) == 1 && !found { print substr($0, length(key) + 1); found = 1 }'
+}
+# good_deploy NAME VAR=value... deploys with the login check's callback right, so only a check that
+# dials the wrong port, or a write Compose reads otherwise, can stop it. NAME is the row's.
+good_deploy() {
+  local name=$1
+  shift
+  output=$(
+    for assignment in "$@" AUTODEPLOY_TEST_REDIRECT=http://browser.test:8766/auth/callback; do
+      export "${assignment?}"
+    done
+    deploy_once
+  ) || true
+  if [[ "$output" != *"deployed new-image ("* ]] || [[ "$output" == *"rolling back"* ]]; then
+    fail "$name: a good deploy did not land, or was rolled back"
+  fi
+  [[ "$(compose_resolves ENVOY_IMAGE_TAG)" == new-image ]] ||
+    fail "$name: Compose resolves ENVOY_IMAGE_TAG to '$(compose_resolves ENVOY_IMAGE_TAG)' after the deploy, not new-image"
+  [[ $(grep -cE '^[[:space:]]*(export[[:space:]]+)?ENVOY_IMAGE_TAG[[:space:]]*=' "$compose/.env") == 1 ]] ||
+    fail "$name: more than one line sets ENVOY_IMAGE_TAG after the deploy"
+  # The schema record the deployer wrote is the value Compose reads back.
+  local written
+  written=$(sed -n 's/^ENVOY_IMAGE_SCHEMA=//p' "$compose/.env")
+  [[ "$written" == old-image:* && "$(compose_resolves ENVOY_IMAGE_SCHEMA)" == "$written" ]] ||
+    fail "$name: the deployer wrote ENVOY_IMAGE_SCHEMA=$written, and Compose resolves '$(compose_resolves ENVOY_IMAGE_SCHEMA)'"
+}
+
+# DISPATCH_PORT is read as Compose resolves it for the container: quoted, or from the shell through
+# `${...}`, the health and login checks dial the port Dispatch listens on, and a good deploy lands.
+fresh_env
+with_line DISPATCH_PORT 'DISPATCH_PORT="8766"'
+good_deploy 'DISPATCH_PORT="8766"'
+fresh_env
+with_line DISPATCH_PORT "DISPATCH_PORT=\${PORT_FROM_SHELL}"
+# The row's name is the .env line as written, `${...}` unexpanded.
+# shellcheck disable=SC2016
+good_deploy 'DISPATCH_PORT=${PORT_FROM_SHELL}' PORT_FROM_SHELL=9123 AUTODEPLOY_TEST_PORT=9123
+# The tag an operator wrote as `export ENVOY_IMAGE_TAG="old-image"` is read as old-image, and the
+# deploy's write leaves Compose reading new-image from one line, not the operator's line.
+fresh_env
+with_line ENVOY_IMAGE_TAG 'export ENVOY_IMAGE_TAG="old-image"'
+good_deploy 'export ENVOY_IMAGE_TAG="old-image"'
+[[ "$output" == *"(deployed old-image)"* ]] || fail 'the deployer did not read export ENVOY_IMAGE_TAG="old-image" as old-image'
+# A DISPATCH_PORT Compose resolves to no port is refused before the backup.
+fresh_env
+with_line DISPATCH_PORT 'DISPATCH_PORT=not-a-port'
+if output=$(deploy_once); then
+  fail 'deployer deployed with DISPATCH_PORT=not-a-port'
+fi
+if [[ "$output" != *"DISPATCH_PORT to 'not-a-port'"*"not deploying new-image"* || -s "$log" ]] ||
+  grep -q '^pg_dump ' "$argv"; then
+  fail 'deployer did not refuse DISPATCH_PORT=not-a-port before its backup'
+fi
+
+# The static check: autodeploy.sh and up-dispatch.sh read compose/.env through Compose's resolution
+# alone. No line uses a reader of the file's text (env_value, `source`/`.` of it, `set -a`, a
+# redirection from it, a sed/grep/awk/cat/read over it); a line naming $COMPOSE_ENV or compose/.env
+# is its definition, a message (log or echo, the name inside the string, never inside `$(...)`), or
+# within set_env_value, the one writer. Its own control is a copy of autodeploy.sh with one text read
+# planted, which it must refuse; and it fails when it finds nothing to judge.
+env_reads() {
+  python3 - "$@" <<'PY'
+import re, sys
+problems, judged, writer_seen = [], 0, False
+for path in sys.argv[1:]:
+    in_writer = False
+    for n, line in enumerate(open(path).read().splitlines(), 1):
+        body = line.strip()
+        if body.startswith("#") or not body:
+            continue
+        if re.match(r"set_env_value\(\)\s*\{", body):
+            in_writer, writer_seen = True, True
+            continue
+        if in_writer:
+            if body == "}":
+                in_writer = False
+            continue
+        names_env = "COMPOSE_ENV" in line or "compose/.env" in line or re.search(r"[\s\"'/]\.env\b", line)
+        if re.search(r"\benv_value\b|\bset -a\b|^\s*(source|\.)\s+\S*(env|ENV)", line):
+            problems.append(f"{path}:{n}: reads .env by its text: {body}")
+            continue
+        if not names_env:
+            continue
+        judged += 1
+        if re.match(r"(readonly\s+)?COMPOSE_ENV=", body):
+            continue
+        message = re.match(r"(\|\|\s*)?(log|echo)\s+\"|[a-z_]+=\"", body)
+        if message and not re.search(r"\$\([^)]*(COMPOSE_ENV|\.env)", line):
+            continue
+        problems.append(f"{path}:{n}: names .env outside a message and set_env_value: {body}")
+if judged == 0 or not writer_seen:
+    problems.append(f"UNKNOWN: judged {judged} lines naming .env and found set_env_value: {writer_seen}")
+print("\n".join(problems))
+sys.exit(1 if problems else 0)
+PY
+}
+here=$(dirname "$0")
+env_reads "$here/autodeploy.sh" "$here/up-dispatch.sh" >"$root/env-reads.txt" ||
+  fail "a script reads compose/.env by a path other than Compose's resolution: $(<"$root/env-reads.txt")"
+# The planted line is written as the script would hold it, so its $(...) and $COMPOSE_ENV stay unexpanded.
+# shellcheck disable=SC2016
+sed 's/^deployed_tag() {$/&\n  x=$(sed -n "s\/^DISPATCH_PORT=\/\/p" "$COMPOSE_ENV")/' "$here/autodeploy.sh" >"$root/planted.sh"
+grep -q 'DISPATCH_PORT=//p' "$root/planted.sh" || fail 'the static check'"'"'s control was not planted'
+if env_reads "$root/planted.sh" >/dev/null; then
+  fail 'the static check passed a copy of autodeploy.sh with a text read of compose/.env planted in it'
 fi
 
 # A deploy that fails its origin check with the schema where it was stops the candidate, confirms
@@ -843,6 +1018,15 @@ for case in \
     fail "deployer did not hand the clients $case_client_url, with the password as PGPASSWORD alone"
   fi
 done
+
+# Compose prints a value's `$` doubled in `config --format json`; the deployer halves it back. An
+# origin written `x$$y` in the .env, which Compose reads as `x$y`, is the origin the login check
+# expects, with one `$`.
+fresh_env
+with_line DISPATCH_SERVER_URL 'DISPATCH_SERVER_URL=http://browser.test:8766/x$$y'
+output=$(deploy_once) || true
+[[ "$output" == *"expected 'http://browser.test:8766/x\$y/auth/callback'"* ]] ||
+  fail 'deployer did not read a $ in DISPATCH_SERVER_URL as Compose gives it to the container'
 
 # A failed pull changes nothing: the previous image still serves, so there is nothing to stop or
 # restart, and the next pass tries the pull again.

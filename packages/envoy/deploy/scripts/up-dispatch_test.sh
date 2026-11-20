@@ -80,19 +80,25 @@ output=$(up_with "# no identity here" ENVOY_ACCOUNT_TOKEN_FILE=/srv/token) ||
   fail "refused ENVOY_ACCOUNT_TOKEN_FILE set in the shell"
 [[ $(<"$log") == "$started" ]] || fail "did not start Dispatch with ENVOY_ACCOUNT_TOKEN_FILE set in the shell"
 
-# A required variable missing a value is Compose's own refusal, by its line.
-if output=$(up_with "ENVOY_ACCOUNT_GOOGLE_AUDIENCE=envoy-listener" NATS_URLS=); then
+# A refusal prints no text of Compose's. A required variable missing a value behind a `${...}`
+# warning is named alone; an unterminated quote around a password (one with an @, one with a space)
+# or around the agent token prints no value, and names the command that shows Compose's message.
+# The second .env line is written as the file holds it, `${...}` unexpanded.
+# shellcheck disable=SC2016
+if output=$(up_with $'ENVOY_ACCOUNT_GOOGLE_AUDIENCE=envoy-listener\nDISPATCH_PORT=${UP_DISPATCH_TEST_UNSET}' NATS_URLS=); then
   fail "started Dispatch with NATS_URLS empty, which Compose refuses"
 fi
-[[ "$output" == *"Compose refused"*"NATS_URLS"* && ! -s "$log" ]] ||
-  fail "did not refuse, by Compose's line, a configuration Compose refuses"
-# A DATABASE_URL Compose cannot read is quoted back in Compose's line; its password, which holds an
-# @, is cut from what the script prints.
-if output=$(up_with "DATABASE_URL=\"postgres://dispatch:$canary@db.test:5432/dispatch"); then
-  fail "started Dispatch with a DATABASE_URL Compose cannot read"
-fi
-[[ "$output" == *"Compose refused"* && ! -s "$log" ]] || fail "did not refuse a DATABASE_URL Compose cannot read"
-[[ "$output" != *cret-canary* && "$output" != *cret%40* ]] || fail "the refusal carries the database password: $output"
+[[ "$output" == *"Compose refused"*"a required variable is missing a value: NATS_URLS"* && "$output" != *level=warning* && ! -s "$log" ]] ||
+  fail "did not name NATS_URLS alone when Compose warned first"
+for line in "DATABASE_URL=\"postgres://dispatch:$canary@db.test:5432/dispatch" \
+  "DATABASE_URL=\"postgres://dispatch@db.test:5432/dispatch?password='se cret'" 'DISPATCH_AGENT_TOKEN="agent-token-CANARY-1234'; do
+  if output=$(up_with "$line"); then
+    fail "started Dispatch with an unterminated quote in ${line%%=*}"
+  fi
+  [[ "$output" == *"Compose refused"*"docker compose config exited 1; its message is not printed"*"docker compose -f compose/dispatch.compose.yml config"* && ! -s "$log" ]] ||
+    fail "did not refuse an unterminated quote in ${line%%=*} with the command to read Compose's message"
+  [[ "$output" != *cret* && "$output" != *CANARY* ]] || fail "the refusal carries a value of ${line%%=*}: $output"
+done
 
 # Without `docker compose`, the script refuses by name.
 if output=$(test_real_docker=/bin/false up_with "ENVOY_ACCOUNT_GOOGLE_AUDIENCE=envoy-listener"); then

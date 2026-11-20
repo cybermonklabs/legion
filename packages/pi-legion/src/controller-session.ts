@@ -372,9 +372,12 @@ export function createControllerSession(deps: {
     // down below), a session change's re-claim included, whose notices wait for the change's reset
     // but whose widget does not. The bound follows who started the claim. The daemon-launched
     // controller's own claims (at `session_start`, and its re-claim after a session change) claim
-    // again until they land, as the claim boot does, rather than exiting for a relaunch that would
-    // meet the same 503: the daemon supervises them, and the widget shows a broken listener on the
-    // pane, not only in its log. A command a person typed (`/legion-claim-controller`,
+    // again, as the claim boot does, rather than exiting for a relaunch that would meet the same
+    // 503. Under `controller: daemon` the controller runs as `omp --mode rpc`, where the widget and
+    // the notices are frames to the daemon that nothing shows: each wait shows in the Oh My Pi log of
+    // the controller's session, and the daemon retires and relaunches a controller that never
+    // reports ready after its registration deadline (120 s x 3 by default), logging the claim, the
+    // reason and the launch it counts (supervise's registrationDeadline). A command a person typed (`/legion-claim-controller`,
     // `/legion-controller-start`), wherever it runs, the daemon-launched controller's pane
     // included, and any claim of a controller the daemon did not launch, also shows each wait as a
     // notice and gives up after CONTROLLER_CLAIM_BUSY_ATTEMPTS tries, so it fails where the person
