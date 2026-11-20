@@ -15,30 +15,36 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 )
 
-// commandBroker is a fake broker for what a release says of itself: every request is granted at
-// once, its one name released as "<NAME>-v1", and each release records the body it was sent and
-// echoes any github_app it was sent, as a broker that applied it does.
+// commandBroker is a fake broker for what a run sends and what a release says of itself: every
+// request for one name is granted at once, its name released as "<NAME>-v1" unless answers names
+// another value, and the broker records every call it receives, each POST /v1/requests body with
+// the request object it verified, and each release's body.
 //
 // knows is the release body's vintage the broker reads. A broker from before a field decodes the
 // release's body as the broker's readJSON (internal/cipher/api) does, refusing a field it does not
 // declare, and writes that refusal as readJSON writes it, 400 INVALID_NARROWING with the decoder's
-// own text. A narrowing to the owner "nobody" is refused 400 INVALID_NARROWING on its own
-// account, which names no unknown field.
+// own text. A release of REFUSED_APP is refused 400 INVALID_NARROWING on its own account, which
+// names no unknown field.
 type commandBroker struct {
 	srv   *httptest.Server
 	knows releaseBodyFields
 
-	mu     sync.Mutex
-	bodies []string // each release's body, "" for none
+	mu       sync.Mutex
+	calls    int                            // every call the broker received, on any route
+	requests []map[string]any               // each POST /v1/requests body, as the JSON object it was sent as
+	objects  []record.RequestObject         // the request object each of those bodies signed, as the broker verified it
+	bodies   []string                       // each release's body, "" for none
+	values   map[string]string              // what a name is released as, where it is not "<NAME>-v1"
+	leftOut  map[string]map[string][]string // the values answer's github_left_out, nil for none
 }
 
 // releaseBodyFields is which fields of the release body a fake broker reads.
 type releaseBodyFields int
 
 const (
-	knowsEveryField releaseBodyFields = iota // github_app, command and reason
-	knowsNarrowing                           // github_app alone: a broker from before command
-	knowsCommand                             // github_app and command: a broker from before reason
+	knowsEveryField releaseBodyFields = iota // command and reason
+	knowsNoField                             // neither: a broker from before command
+	knowsCommand                             // command alone: a broker from before reason
 )
 
 func newCommandBroker(t *testing.T, knows releaseBodyFields) *commandBroker {
@@ -46,14 +52,20 @@ func newCommandBroker(t *testing.T, knows releaseBodyFields) *commandBroker {
 	b := &commandBroker{knows: knows}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/requests", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Request string `json:"request"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		obj, err := record.VerifyRequestObject(body.Request, b.srv.URL, time.Minute, time.Now())
+		compact, _ := body["request"].(string)
+		obj, err := record.VerifyRequestObject(compact, b.srv.URL, time.Minute, time.Now())
+		b.mu.Lock()
+		b.requests = append(b.requests, body)
+		if err == nil {
+			b.objects = append(b.objects, obj)
+		}
+		b.mu.Unlock()
 		if err != nil || len(obj.Details) != 1 {
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -77,27 +89,14 @@ func newCommandBroker(t *testing.T, knows releaseBodyFields) *commandBroker {
 			return
 		}
 		var every struct {
-			GitHubApp *GitHubNarrowing `json:"github_app"`
-			Command   []string         `json:"command"`
-			Reason    string           `json:"reason"`
+			Command []string `json:"command"`
+			Reason  string   `json:"reason"`
 		}
-		var narrowingOnly struct {
-			GitHubApp *GitHubNarrowing `json:"github_app"`
+		var none struct{}
+		var commandOnly struct {
+			Command []string `json:"command"`
 		}
-		var commandToo struct {
-			GitHubApp *GitHubNarrowing `json:"github_app"`
-			Command   []string         `json:"command"`
-		}
-		var narrowing **GitHubNarrowing
-		var into any
-		switch b.knows {
-		case knowsNarrowing:
-			into, narrowing = &narrowingOnly, &narrowingOnly.GitHubApp
-		case knowsCommand:
-			into, narrowing = &commandToo, &commandToo.GitHubApp
-		default:
-			into, narrowing = &every, &every.GitHubApp
-		}
+		into := map[releaseBodyFields]any{knowsEveryField: &every, knowsNoField: &none, knowsCommand: &commandOnly}[b.knows]
 		if len(raw) > 0 {
 			decoder := json.NewDecoder(bytes.NewReader(raw))
 			decoder.DisallowUnknownFields()
@@ -107,25 +106,44 @@ func newCommandBroker(t *testing.T, knows releaseBodyFields) *commandBroker {
 				return
 			}
 		}
-		sent := struct{ GitHubApp *GitHubNarrowing }{*narrowing}
-		if sent.GitHubApp != nil && sent.GitHubApp.Owner == "nobody" {
+		name := r.PathValue("id")
+		if name == "REFUSED_APP" {
 			w.WriteHeader(http.StatusBadRequest)
-			writeJSON(w, map[string]string{"code": "INVALID_NARROWING", "error": "github_app.owner names no installation"})
+			writeJSON(w, map[string]string{"code": "INVALID_NARROWING", "error": "the release cannot be read"})
 			return
 		}
-		name := r.PathValue("id")
-		answer := map[string]any{"values": map[string]string{name: name + "-v1"}, "expires_at": nil}
-		if sent.GitHubApp != nil {
-			answer["github_app"] = sent.GitHubApp
+		b.mu.Lock()
+		value, named := b.values[name]
+		leftOut := b.leftOut
+		b.mu.Unlock()
+		if !named {
+			value = name + "-v1"
+		}
+		answer := map[string]any{"values": map[string]string{name: value}, "expires_at": nil}
+		if leftOut != nil {
+			answer["github_left_out"] = leftOut
 		}
 		writeJSON(w, answer)
 	})
 	// The handler reads b.srv.URL, so b.srv is assigned before the server serves: Start, which
 	// sets the URL, runs after the assignment and before the goroutine that serves.
-	b.srv = httptest.NewUnstartedServer(mux)
+	b.srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b.mu.Lock()
+		b.calls++
+		b.mu.Unlock()
+		mux.ServeHTTP(w, r)
+	}))
 	b.srv.Start()
 	t.Cleanup(b.srv.Close)
 	return b
+}
+
+// answers makes each release from here on answer values, by name, in place of "<NAME>-v1", and
+// leftOut as its github_left_out, none for nil.
+func (b *commandBroker) answers(values map[string]string, leftOut map[string]map[string][]string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.values, b.leftOut = values, leftOut
 }
 
 // take returns the release bodies the broker recorded since the last take, each without its
@@ -141,10 +159,20 @@ func (b *commandBroker) take() []string {
 	return bodies
 }
 
+// takeRequests returns how many calls the broker received on any route, each POST /v1/requests
+// body, and each request object those bodies signed, since the last takeRequests, and forgets
+// them.
+func (b *commandBroker) takeRequests() (calls int, bodies []map[string]any, objects []record.RequestObject) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	calls, bodies, objects = b.calls, b.requests, b.objects
+	b.calls, b.requests, b.objects = 0, nil, nil
+	return calls, bodies, objects
+}
+
 // TestExecSendsItsCommandWithTheRelease: the exec form names the command it runs, the arguments
-// after --, in the release's body, beside the narrowing its --github-* flags ask for and the
-// --reason its own call gave, so the broker can log what the grant was spent on and why this call
-// spent it; the command then runs with the value.
+// after --, in the release's body, beside the --reason its own call gave, so the broker can log
+// what the grant was spent on and why this call spent it; the command then runs with the value.
 func TestExecSendsItsCommandWithTheRelease(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	b := newCommandBroker(t, knowsEveryField)
@@ -155,7 +183,6 @@ func TestExecSendsItsCommandWithTheRelease(t *testing.T) {
 		body  string
 	}{
 		{"alone", nil, `{"command":["sh","-c","echo \"ran $APP\""]}`},
-		{"beside a narrowing", []string{"--github-owner", "ada"}, `{"github_app":{"owner":"ada"},"command":["sh","-c","echo \"ran $APP\""]}`},
 		{"with its reason", []string{"--reason", "rotate the key"}, `{"command":["sh","-c","echo \"ran $APP\""],"reason":"rotate the key"}`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -174,8 +201,8 @@ func TestExecSendsItsCommandWithTheRelease(t *testing.T) {
 // TestExecReleasesFromAnOlderBrokerWithoutTheCommand: a broker from before the command field, or
 // from before the reason field, refuses the whole body as INVALID_NARROWING naming the unknown
 // field and releases nothing, so the exec form sends the same release once more without the
-// command and the reason, its narrowing kept, and the command runs. Any other INVALID_NARROWING
-// is the broker's answer to the release itself: it is not sent again, and nothing runs.
+// command and the reason, and the command runs. Any other INVALID_NARROWING is the broker's answer
+// to the release itself: it is not sent again, and nothing runs.
 func TestExecReleasesFromAnOlderBrokerWithoutTheCommand(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
@@ -186,11 +213,9 @@ func TestExecReleasesFromAnOlderBrokerWithoutTheCommand(t *testing.T) {
 		flags  []string
 		bodies []string
 	}{
-		{"alone", knowsNarrowing, nil, []string{`{` + command + `}`, ``}},
-		{"beside a narrowing", knowsNarrowing, []string{"--github-owner", "ada"}, []string{`{"github_app":{"owner":"ada"},` + command + `}`, `{"github_app":{"owner":"ada"}}`}},
-		{"with its reason", knowsNarrowing, []string{"--reason", "rotate the key"}, []string{`{` + command + `,"reason":"rotate the key"}`, ``}},
-		{"with its reason, to a broker that reads the command", knowsCommand, []string{"--github-owner", "ada", "--reason", "rotate the key"},
-			[]string{`{"github_app":{"owner":"ada"},` + command + `,"reason":"rotate the key"}`, `{"github_app":{"owner":"ada"}}`}},
+		{"alone", knowsNoField, nil, []string{`{` + command + `}`, ``}},
+		{"with its reason", knowsNoField, []string{"--reason", "rotate the key"}, []string{`{` + command + `,"reason":"rotate the key"}`, ``}},
+		{"with its reason, to a broker that reads the command", knowsCommand, []string{"--reason", "rotate the key"}, []string{`{` + command + `,"reason":"rotate the key"}`, ``}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			b := newCommandBroker(t, row.knows)
@@ -205,10 +230,10 @@ func TestExecReleasesFromAnOlderBrokerWithoutTheCommand(t *testing.T) {
 		})
 	}
 
-	t.Run("a refusal of the narrowing", func(t *testing.T) {
+	t.Run("a refusal of the release itself", func(t *testing.T) {
 		b := newCommandBroker(t, knowsEveryField)
-		stdout, stderr, exit := runAgentSecrets(t, binary, b.srv.URL, keyDir, nil, "APP", "--github-owner", "nobody", "--", "sh", "-c", "echo ran-the-child")
-		if exit != 1 || strings.Contains(stdout, "ran-the-child") || !strings.Contains(stderr, "names no installation") {
+		stdout, stderr, exit := runAgentSecrets(t, binary, b.srv.URL, keyDir, nil, "REFUSED_APP", "--", "sh", "-c", "echo ran-the-child")
+		if exit != 1 || strings.Contains(stdout, "ran-the-child") || !strings.Contains(stderr, "the release cannot be read") {
 			t.Fatalf("exit %d, stdout %q, stderr %q; want exit 1 naming the broker's refusal and nothing run", exit, stdout, stderr)
 		}
 		if bodies := b.take(); len(bodies) != 1 {
@@ -247,5 +272,40 @@ func TestExecReleasesACommandOverTheBodyCap(t *testing.T) {
 	}
 	if len(sent.Command) != 32 || sent.Command[3] != strings.Repeat("é", 128) || sent.Command[4] != strings.Repeat("x", 120) {
 		t.Fatalf("the release named %d arguments (the 4th %d bytes), want 32, the 4th cut to 128 whole characters", len(sent.Command), len(sent.Command[min(3, len(sent.Command)-1)]))
+	}
+}
+
+// TestLeftOutPermissionsAreNamedOnStderr: a release whose values answer carries github_left_out
+// writes one line on stderr for each account it names, the accounts in order, each naming the
+// profile, the account and every entry left out since the installation does not hold it. The
+// command runs with the value the release carries, a GitHub profile's JSON object of
+// installations exactly as it came, and no line on stderr holds any part of its token. A release
+// that leaves nothing out writes no such line.
+func TestLeftOutPermissionsAreNamedOnStderr(t *testing.T) {
+	binary := buildAgentSecrets(t)
+	b := newCommandBroker(t, knowsEveryField)
+	keyDir := newKeyDir(t)
+	const token = "ghs_leftOutTokenNeverPrinted0123"
+	release := `{"installations":{"acme-org":{"installation_id":7,"token":"` + token + `","expires_at":"2100-01-01T00:00:00Z"}}}`
+	b.answers(map[string]string{"APP": release}, map[string]map[string][]string{
+		"APP": {"example-org": {"members"}, "acme-org": {"issues", "statuses:write"}},
+	})
+	stdout, stderr, exit := runAgentSecrets(t, binary, b.srv.URL, keyDir, nil, "APP", "--", "sh", "-c", `printf %s "$APP"`)
+	if exit != 0 || stdout != release {
+		t.Fatalf("exit %d, stdout %q, stderr %q; want exit 0 and the child's APP the release as it came", exit, stdout, stderr)
+	}
+	want := "agent-secrets: the profile APP left out issues, statuses:write for acme-org, since the installation there does not hold them\n" +
+		"agent-secrets: the profile APP left out members for example-org, since the installation there does not hold them\n"
+	if !strings.Contains(stderr, want) {
+		t.Fatalf("stderr = %q, want the lines %q", stderr, want)
+	}
+	if strings.Contains(stderr, token) {
+		t.Fatalf("stderr = %q holds the token", stderr)
+	}
+
+	b.answers(nil, nil)
+	stdout, stderr, exit = runAgentSecrets(t, binary, b.srv.URL, keyDir, nil, "APP", "--", "sh", "-c", `printf %s "$APP"`)
+	if exit != 0 || stdout != "APP-v1" || strings.Contains(stderr, "left out") {
+		t.Fatalf("exit %d, stdout %q, stderr %q; want exit 0, the value, and no left-out line", exit, stdout, stderr)
 	}
 }
