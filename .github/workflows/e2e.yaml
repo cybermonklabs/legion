@@ -163,7 +163,7 @@ jobs:
           # and natsd.
           go-version-file: ${{ matrix.go_version_file }}
           # Only a workflow that runs on a push to main writes an Actions cache entry here, and
-          # this workflow saves none (ci.yaml's header, "Caches").
+          # this workflow saves none (.github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs, "Caches").
           cache: false
 
       - name: Run the proof

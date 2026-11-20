@@ -1707,6 +1707,38 @@ notice comes once per handoff commit, from whichever read finds it first.
   GitHub lists, applies a lost head, review or approval-carrying push, and tells an architect
   `pull-request-missing`, so an issue whose next handoff lands does not wait for the backlog to
   drain.
+- **A head got no `CI settled` message.** The Envoy listener and the daemon each write a line
+  that says where the settlement stopped. Each line names the head and the generation, and the
+  publish line and the drop lines also name the snapshot, so a drop line matches the publish line
+  of the same settlement. Each line is written once for each record state or settlement while the
+  listener or the daemon runs, and again after a restart of it, or once the daemon has kept 4,096
+  dropped settlements since: each remembers in memory what it logged.
+  - The listener writes `checks held a head` for a head's record that it has
+    not settled after 10 minutes with no event. The line names what holds the record: `running`
+    names each check run that has not finished, `suites` names each check suite that is not
+    completed with its App and run count, and `overflowed`, `no_run_id`, `legacy` and `claimed`
+    name the other holds. It is a warning when every recorded check run has finished.
+  - The listener writes `checks settlement published` for each settlement it publishes.
+  - The daemon writes one line for each checks settlement it drops before it applies it:
+    `intake: a checks settlement was dropped: the decoder refused it` (a warning that names the
+    field in `reason`, and the `sha`, `generation` and `snapshot` of the payload where each
+    reads), `workflow: a checks settlement was dropped: no pull request is recorded
+    for it`, `workflow: a checks settlement stands for no head the record holds` (with
+    `recorded_head` and `head_run_open`), and `workflow: a checks settlement of the head was not
+    applied` (with `classification`, `stale` or `conflict`). A settlement envelope the daemon
+    cannot decode at all, such as one whose source is not `github`, is logged as `poison JetStream
+    message` (an error with the `subject`) and dropped. A settlement delivered again after it
+    applied writes no line.
+
+  A published settlement with no new `CI settled` message and no drop line is one of three things:
+  - The daemon applied it, and the line it would tell is the line it already told for that head,
+    so it tells nobody again. The earlier `CI settled` message of that head stands for it.
+  - The daemon applied it on a tree that lingers after its root left the workflow, where the
+    daemon tells nobody.
+  - In every other case, it was lost between the listener and the daemon.
+
+  No line at all for a finished head means that no event of that head reached the listener's
+  record.
 - **`an intake handler outran its limit and was cut`** (a warning with `consumer`, `event_id`,
   `fact` and `limit`). One message's handling ran past `limit`, the handler limit
   `worker_rpc_timeout_seconds` derives for this deployment, so the daemon cancelled the
