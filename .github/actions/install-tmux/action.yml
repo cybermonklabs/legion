@@ -1,0 +1,65 @@
+name: Install tmux
+description: >-
+  Installs the tmux the `tmux` row of .github/ci-tools.yaml pins, a static build of tmux's own
+  release, off PATH, and hands its path to the caller as the `binary` output. It stays off PATH
+  because the job keeps the runner's apt tmux there, and the step that runs this one names it.
+
+  The binary lives at $RUNNER_TEMP/tmux/tmux, the directory the caller's actions/cache/restore
+  restores under a key that ends in the row's digest
+  (.github/workflows/ci-job-pi-envoy.yaml, filled by .github/workflows/ci-caches.yaml). With
+  that entry restored this step reads no network: it holds the restored binary to the row's
+  digest, says `cache` served it, and refuses and removes a binary whose bytes are not the
+  pinned ones, since a key that names the digest can hold no other bytes honestly. With it
+  missed, ci_tools_fetch reads the release tarball, holds it to the row's `primary_digest`,
+  takes the binary out and holds that to the row's `digest`; where the release asset does not
+  serve the bytes it reads the row's second source, the copy of that binary in
+  ghcr.io/cybermonklabs/legion/ci, and a digest mismatch on either side refuses with no other
+  source read. That is the whole of the retry: each of the two sources is fetched under the
+  helper's one curl ladder, seven retries bounded by `--retry-max-time 60` with each attempt
+  bounded by the row's `max_time` of 60 s, so a miss costs at most about two minutes per source
+  against a host that hangs and about one against one that refuses at once
+  (.github/scripts/ci-tools.sh, at ci_tools_curl).
+
+  The row is for an x86_64 runner, and this step refuses any other machine.
+outputs:
+  binary:
+    description: >-
+      The path of the verified tmux binary, $RUNNER_TEMP/tmux/tmux, for the LEGION_TEST_TMUX of
+      the step that runs a test against it.
+    value: ${{ steps.install.outputs.binary }}
+runs:
+  using: composite
+  steps:
+    - id: install
+      name: Install tmux
+      shell: bash
+      run: |
+        set -euo pipefail
+        # shellcheck source=.github/scripts/ci-tools.sh
+        . "$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh"
+        machine=$(uname -m)
+        case "$machine" in
+          x86_64) row=tmux ;;
+          *)
+            echo "::error::install-tmux: .github/ci-tools.yaml holds no tmux row for a $machine runner" >&2
+            exit 1
+            ;;
+        esac
+        dir="$RUNNER_TEMP/tmux"
+        binary="$dir/tmux"
+        if [ -e "$binary" ]; then
+          # The caller's cache restored it. A refused binary goes, so no later step of the job
+          # can run bytes this row does not pin.
+          if ! ci_tools_verify "$row" "$binary" cache; then
+            rm -f -- "$binary"
+            exit 1
+          fi
+        else
+          mkdir -p "$dir"
+          # The row names a `primary_member`, so what reaches this path is the binary itself,
+          # from either source, with the mode mktemp gave it and not the archive's.
+          ci_tools_fetch "$row" "$binary"
+        fi
+        chmod 0755 "$binary"
+        "$binary" -V
+        echo "binary=$binary" >> "$GITHUB_OUTPUT"

@@ -42,9 +42,10 @@
 #      version while the row and its URLs move names a path the new archive does not hold, so
 #      that install fetches the right bytes and then fails to find the tool inside them. Where
 #      that is found depends on the side the member is written on. A stale `primary_member`
-#      breaks the install that reads the primary, which for the one row that names one, uv, is
-#      .github/actions/install-uv in the `daemon-go` job (.github/workflows/ci-job-daemon-go.yaml),
-#      on every pull request that selects it; a stale member on the second side is read only
+#      breaks the install that reads the primary, which for the two rows that name one is
+#      .github/actions/install-uv in the `daemon-go` job (.github/workflows/ci-job-daemon-go.yaml)
+#      for uv and .github/actions/install-tmux in the `pi-envoy` job for tmux, each on every pull
+#      request that selects it; a stale member on the second side is read only
 #      where that source is, which is the `tool-fallback` job
 #      (.github/workflows/ci-job-tool-fallback.yaml), a job of about five minutes (129885098900
 #      ran 14:15:38Z to 14:20:22Z, 284 s). This gate says it in lint, in a second.
@@ -75,8 +76,8 @@
 #      The `pulumi-docker` row's `version` is `const DockerPluginVersion` of
 #      packages/envoy/infra/internal/pulumitest/pulumitest.go, the constant the live programs
 #      pin the plugin at.
-#      The `crane`, `changie`, `elan` and `pulumi-cli` rows are their own pins: their installs
-#      hold no version of their own and install the version the row names.
+#      The `crane`, `changie`, `elan`, `tmux` and `pulumi-cli` rows are their own pins: their
+#      installs hold no version of their own and install the version the row names.
 #      A row whose name ends in `-aarch64` is the arm64 build of the row named without that
 #      suffix, and carries that row's `version`, so it answers to that row's pin: the jobs on
 #      ubuntu-24.04-arm install the one and the jobs on ubuntu-24.04 the other, and they are one
@@ -276,7 +277,7 @@ SECOND_FIELDS = {
 # A field whose value may be empty: `primary` on a row whose bytes a third party fetches,
 # `mirror_member` on a row that pushes an archive whole, `second_member` on a row whose second
 # source serves the pinned bytes themselves, and the three `primary_*` fields on a row whose
-# primary serves exactly what the row pins, which is every row but uv.
+# primary serves exactly what the row pins, which is every row but uv and tmux.
 MAY_BE_EMPTY = {
     "primary",
     "mirror_member",

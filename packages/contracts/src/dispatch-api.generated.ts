@@ -6619,9 +6619,11 @@ export interface components {
       server_pid: string;
       session_name: string;
       socket: string;
+      window_height?: number;
       window_id: string;
       window_index: number;
       window_name: string;
+      window_width?: number;
       zoomed: boolean;
     };
     ToolField: {

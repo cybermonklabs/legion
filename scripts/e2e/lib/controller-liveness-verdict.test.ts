@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { runJq } from "./run-jq.ts";
+import { runJq } from "./run-jq";
 import { scriptFunctions } from "./script-functions";
 
 // Stage 4b's controller liveness verdict (daemon-controller-liveness): the two lines a log monitor

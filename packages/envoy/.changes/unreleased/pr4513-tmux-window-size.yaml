@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+    A session's tmux place, as the listener's wire carries it and Dispatch answers it in an agent's
+    `tmux_place`, has the optional `window_width` and `window_height`, the window's size in cells.
+    A client older than them sends neither, and the machine page then lists the panes of a window
+    whose one pane floats instead of drawing it.
+time: 2026-11-19T17:07:04.858216371Z
+custom:
+    Issue: pr4513

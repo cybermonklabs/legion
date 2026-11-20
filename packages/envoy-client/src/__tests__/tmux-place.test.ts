@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, jest } from "bun:test";
+import { TMUX_LAYOUT_MAX } from "@legion/contracts";
+
 import type { ExecFn } from "../dispatch-cwd";
 import { readTmuxPlace, type TmuxPlace } from "../tmux-place";
 
@@ -11,7 +13,7 @@ const ENV = { TMUX: `${SOCKET},${SERVER_PID},0`, TMUX_PANE: PANE };
 const PANE_BOUND_MS = 1_000;
 
 /** The format the reader asks for, written out here so a change to the fields or their order has
- *  to be made twice: the listener reads these ten in this order. */
+ *  to be made twice: the listener reads these twelve in this order. */
 const FORMAT = [
   "#{session_name}",
   "#{window_id}",
@@ -22,6 +24,8 @@ const FORMAT = [
   "#{pid}",
   "#{pane_pid}",
   "#{window_layout}",
+  "#{window_width}",
+  "#{window_height}",
   "#{window_zoomed_flag}",
 ].join("\t");
 
@@ -32,7 +36,7 @@ function callOn(socket: string): string {
 
 const CALL = callOn(SOCKET);
 
-/** One answer's ten fields, as strings, before tmux joins them with tabs. */
+/** One answer's twelve fields, as strings, before tmux joins them with tabs. */
 type Fields = {
   sessionName: string;
   windowId: string;
@@ -43,6 +47,8 @@ type Fields = {
   pid: string;
   panePid: string;
   layout: string;
+  windowWidth: string;
+  windowHeight: string;
   zoomed: string;
 };
 
@@ -58,6 +64,8 @@ const ANSWER: Fields = {
   pid: SERVER_PID,
   panePid: String(process.pid),
   layout: "b2f1,208x52,0,0,5",
+  windowWidth: "208",
+  windowHeight: "52",
   zoomed: "0",
 };
 
@@ -74,6 +82,8 @@ function answer(changes: Partial<Fields> = {}): string {
     fields.pid,
     fields.panePid,
     fields.layout,
+    fields.windowWidth,
+    fields.windowHeight,
     fields.zoomed,
   ].join("\t")}\n`;
 }
@@ -88,6 +98,8 @@ const PLACE: TmuxPlace = {
   pane_id: PANE,
   pane_index: 1,
   layout: "b2f1,208x52,0,0,5",
+  window_width: 208,
+  window_height: 52,
   zoomed: false,
 };
 
@@ -224,10 +236,30 @@ describe("readTmuxPlace", () => {
     }
   });
 
-  it("drops a layout past 2000 characters and keeps the other nine members", async () => {
-    const layout = "b2f1,".repeat(401);
-    expect(layout.length).toBeGreaterThan(2_000);
-    const { exec, calls } = fakeExec({ [CALL]: answer({ layout }) });
+  it("reports the place without a window size tmux did not print as two numbers", async () => {
+    // The size serves the drawing alone: without it the page draws the window from its layout
+    // and lists the panes of one whose only pane floats, so the place itself still stands.
+    const { window_width: _width, window_height: _height, ...withoutSize } = PLACE;
+    for (const changes of [{ windowWidth: "" }, { windowHeight: "tall" }, { windowWidth: "-1" }]) {
+      const { exec, calls } = fakeExec({ [CALL]: answer(changes) });
+      const reading = await readTmuxPlace(ENV, exec);
+      expect(reading).toEqual({ kind: "place", place: withoutSize });
+      expect(reading.kind === "place" && Object.hasOwn(reading.place, "window_width")).toBe(false);
+      expect(calls).toEqual([CALL]);
+    }
+  });
+
+  it("drops a layout past the contract's cap and keeps the other members", async () => {
+    const inside = "b2f1,".repeat(Math.floor(TMUX_LAYOUT_MAX / 5));
+    const past = `${inside}5`;
+    expect([inside.length, past.length]).toEqual([TMUX_LAYOUT_MAX, TMUX_LAYOUT_MAX + 1]);
+    // At the cap the layout is sent; one character past it, it is not.
+    const atCap = fakeExec({ [CALL]: answer({ layout: inside }) });
+    expect(await readTmuxPlace(ENV, atCap.exec)).toEqual({
+      kind: "place",
+      place: { ...PLACE, layout: inside },
+    });
+    const { exec, calls } = fakeExec({ [CALL]: answer({ layout: past }) });
     const reading = await readTmuxPlace(ENV, exec);
     const { layout: _dropped, ...withoutLayout } = PLACE;
     expect(reading).toEqual({ kind: "place", place: withoutLayout });

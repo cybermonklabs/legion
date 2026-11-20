@@ -257,7 +257,10 @@ describe("an interrupted run cleans up and actually stops", () => {
         },
       })
     );
-    return { port: server.port, reached: arrival.promise, release: () => held.resolve() };
+    // Bun.serve on `port: 0` listens on TCP, so its port is set; the type also covers a unix socket.
+    const { port } = server;
+    if (port === undefined) throw new Error("the held state daemon has no TCP port");
+    return { port, reached: arrival.promise, release: () => held.resolve() };
   }
 
   test("a SIGTERM to the observer's own pid stops it immediately with exit 143, not a later failure", async () => {

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runJq } from "./run-jq.ts";
+import { runJq } from "./run-jq";
 
 // The parked-decision verdict (INFRA-214): each person's spec decision the outbox finished
 // undelivered, paired by its row with the line that relayed it, found it relayed, or relayed nothing

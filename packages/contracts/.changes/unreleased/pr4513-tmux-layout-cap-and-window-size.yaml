@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+    `TMUX_LAYOUT_MAX` is 8,000 characters, up from 2,000, so a layout in tmux 3.8's JSON form
+    holds as many panes as the old form held: over five window sizes measured on tmux 3.8, the
+    longest JSON form of a window whose old form fits in 2,000 characters is 7,592 characters (129
+    panes in a 200x50 window). `TmuxPlace` gains the optional `window_width` and `window_height`,
+    the window's size in cells, which a layout does not state when the window's one pane floats.
+time: 2026-11-19T17:07:04.858216371Z
+custom:
+    Issue: pr4513

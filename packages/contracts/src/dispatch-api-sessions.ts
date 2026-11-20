@@ -15,8 +15,14 @@ import { ActorSchema, InboundBySchema } from "./dispatch-api-core";
  * without; and because the listener stores whatever a session registers and Dispatch answers it
  * unchanged, a reader that trusted the sender's cap would parse a string no tmux wrote. One
  * number here, read by both, so neither side can drift from the other.
+ *
+ * The number is set by how many panes a layout may hold, not by its characters. 2,000
+ * characters of tmux's version 1 form hold at most 129 tiled panes (a 200x50 window, the most of
+ * five window sizes measured on tmux 3.8). tmux 3.8's JSON form spends about four times the
+ * characters on a pane, and that same window of 129 panes is 7,592 characters long in it, so
+ * 8,000 holds in the JSON form every window 2,000 held in version 1, and holds more in version 1.
  */
-export const TMUX_LAYOUT_MAX = 2_000;
+export const TMUX_LAYOUT_MAX = 8_000;
 
 // SubscriptionRemovedEventPayload is the wire payload of subscription.removed:
 // a human unsubscribed session_id from topics on this issue or document, and

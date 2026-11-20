@@ -10,10 +10,15 @@
 # not build, leaves no metafile, or leaves one naming no module of the repository, each refusal
 # showing the scratch directory as <scratch>; and a listed block holds exactly the files its
 # sources give, the union where it names two of them, a tsc program and a bundle, as the browser
-# suite's block of the real ci_ts_programs.py does.
+# suite's block of the real ci_ts_programs.py does. And the coverage: the pairs are held to the
+# tsc projects the workflow's steps typecheck, both ways, `bun run typecheck` read through the
+# package's own script; a tracked TypeScript file no program compiles is refused by name, the same
+# file in a program and a file git does not track are not; and a run that could list no tracked
+# file, no program or no repository says UNKNOWN and fails rather than printing a clean count.
 #
-# Each case builds a miniature repository under a temporary directory - a ci.yaml whose changes
-# job defines two filters through an anchor, a package and a library it compiles, and a
+# Each case builds a miniature repository under a temporary directory - a ci.yaml whose app job
+# typechecks the package and whose changes job defines two filters through an anchor, a package
+# and a library it compiles, both tracked by a git index of the fixture's own, and a
 # ci_ts_programs.py pairing them - and symlinks the real script, the engine it borrows the
 # changes job's filters from (ci_filter_coverage.py), the path model both import
 # (workflow_paths.py) and the Go build-tag module the engine imports (go_build_tags.py) into it,
@@ -45,15 +50,13 @@ fixture() {
     echo "  FAIL: the fixture name '$1' is already taken by an earlier case" >&2
     return 1
   fi
-  mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/bin" "$root/pkg/app/src" "$root/pkg/lib" \
-    "$root/other"
+  mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/bin" "$root/pkg/app/src" "$root/pkg/lib"
   for linked in check-ts-filters.sh ci_filter_coverage.py workflow_paths.py go_build_tags.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   echo '{}' > "$root/pkg/app/tsconfig.json"
   printf 'export const app = 1;\n' > "$root/pkg/app/src/main.ts"
   printf 'export const lib = 1;\n' > "$root/pkg/lib/lib.ts"
-  printf 'export const other = 1;\n' > "$root/other/thing.ts"
   # A file of the package, a file of the library, a path tsc printed relative to the repository
   # root, a file under node_modules and a file outside the repository: the last two are no part
   # of what a filter must select, and the three before them are.
@@ -136,6 +139,11 @@ PY
 name: CI
 on: [pull_request]
 jobs:
+  app:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Typecheck the app
+        run: bunx tsc --noEmit -p pkg/app
   changes:
     runs-on: ubuntu-24.04
     steps:
@@ -153,6 +161,10 @@ jobs:
             other:
               - 'other/**'
 YAML
+  # The tracked files, the two the program compiles: git's index, as a checkout's is, so a file a
+  # case writes later is untracked unless that case adds it.
+  git -C "$root" init -q
+  git -C "$root" add pkg/app/src/main.ts pkg/lib/lib.ts
   echo "$root"
 }
 
@@ -603,6 +615,116 @@ check "under a head naming both sources" \
   "$(contains "$written" '^              # tsc programs and filter dispatch_two_builds_go.s bundles load. An edit by hand is refused by that check, which writes these.$')"
 run_check "$root"
 check "the check passes over what it wrote" "$(is "$status" 0)"
+
+# THE COVERAGE. The fixture's app job typechecks pkg/app, which PROGRAMS pairs with the filter
+# app, and git tracks the two files that program compiles.
+echo "case: every tracked TypeScript file is in a typechecked program"
+root=$(fixture coverage-green)
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "counts the tracked files and the program" \
+  "$(contains "$out" '^coverage: 2 tracked TypeScript file(s), 2 in the 1 typechecked program(s), 0 in none$')"
+check "says the programs are the steps' and every tracked file is in one" \
+  "$(contains "$out" 'the programs are the ones the steps of 1 workflow file(s) typecheck, and every tracked TypeScript file is in one of them (2 files)$')"
+
+echo "case: a tracked TypeScript file no typechecked program compiles"
+root=$(fixture coverage-orphan)
+printf 'export const orphan = 1;\n' > "$root/pkg/lib/orphan.ts"
+git -C "$root" add pkg/lib/orphan.ts
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file and says no job typechecks it" \
+  "$(contains "$out" '^::error file=pkg/lib/orphan.ts::pkg/lib/orphan.ts is in no tsc program a CI job typechecks (PROGRAMS of .github/scripts/ci_ts_programs.py), so a type error in it fails no job')"
+check "counts it" \
+  "$(contains "$out" '^coverage: 3 tracked TypeScript file(s), 2 in the 1 typechecked program(s), 1 in none$')"
+check "prints no clean line" "$(is "$(contains "$out" 'every tracked TypeScript file is in one of them')" false)"
+
+echo "case: the same file in the program (the control)"
+root=$(fixture coverage-held)
+printf 'export const orphan = 1;\n' > "$root/pkg/lib/orphan.ts"
+git -C "$root" add pkg/lib/orphan.ts
+printf 'pkg/lib/orphan.ts\n' >> "$root/pkg/app/listed"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "counts it in the program" \
+  "$(contains "$out" '^coverage: 3 tracked TypeScript file(s), 3 in the 1 typechecked program(s), 0 in none$')"
+
+echo "case: a file git does not track is no committed file"
+root=$(fixture coverage-untracked)
+printf 'export const scratch = 1;\n' > "$root/pkg/lib/scratch.ts"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "counts the two tracked files alone" \
+  "$(contains "$out" '^coverage: 2 tracked TypeScript file(s), 2 in the 1 typechecked program(s), 0 in none$')"
+
+echo "case: git tracks no TypeScript file"
+root=$(fixture coverage-none-tracked)
+git -C "$root" rm -q --cached pkg/app/src/main.ts pkg/lib/lib.ts
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "says UNKNOWN and why" "$(contains "$out" '^coverage: UNKNOWN: git tracks no TypeScript file$')"
+check "prints no clean count" "$(is "$(contains "$out" '^coverage: 0 tracked')" false)"
+check "and no clean line" "$(is "$(contains "$out" 'every tracked TypeScript file is in one of them')" false)"
+
+echo "case: no repository to list the tracked files from"
+root=$(fixture coverage-no-repository)
+set +e
+out=$(GIT_DIR="$root/no-repository" PATH="$root/bin:$PATH" "$root/.github/scripts/check-ts-filters.sh" 2>&1)
+status=$?
+set -e
+check "fails" "$(is "$status" 1)"
+check "says UNKNOWN and why" "$(contains "$out" '^coverage: UNKNOWN: git could not list the tracked files$')"
+
+echo "case: PROGRAMS names no program"
+root=$(fixture coverage-no-program)
+replace "$root/.github/scripts/ci_ts_programs.py" 'PROGRAMS = [("app", "pkg/app", "app: Typecheck the app")]' 'PROGRAMS = []'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "says UNKNOWN and why" "$(contains "$out" '^coverage: UNKNOWN: PROGRAMS names no tsc program$')"
+check "and names the step whose program no row holds" \
+  "$(contains "$out" "::error file=.github/scripts/ci_ts_programs.py::pkg/app/tsconfig.json is typechecked by .github/workflows/ci.yaml's app job, step \"Typecheck the app\", and PROGRAMS has no row for it")"
+
+echo "case: a program that cannot be listed leaves the coverage unknown"
+root=$(fixture coverage-unlistable)
+printf 'error TS5083: cannot read file tsconfig.json\n' > "$root/pkg/app/fails"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "says UNKNOWN and names the program" \
+  "$(contains "$out" '^coverage: UNKNOWN: 1 program(s) could not be listed (pkg/app)$')"
+
+echo "case: a step typechecks a project PROGRAMS has no row for"
+root=$(fixture coverage-unpaired-step)
+mkdir -p "$root/pkg/tool"
+echo '{}' > "$root/pkg/tool/tsconfig.json"
+replace "$root/.github/workflows/ci.yaml" "        run: bunx tsc --noEmit -p pkg/app" \
+  $'        run: bunx tsc --noEmit -p pkg/app\n      - name: Typecheck the tool\n        run: bunx tsc --noEmit -p pkg/tool'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the project and the step" \
+  "$(contains "$out" "::error file=.github/scripts/ci_ts_programs.py::pkg/tool/tsconfig.json is typechecked by .github/workflows/ci.yaml's app job, step \"Typecheck the tool\", and PROGRAMS has no row for it")"
+
+echo "case: a PROGRAMS row no step typechecks"
+root=$(fixture coverage-stepless-row)
+replace "$root/.github/workflows/ci.yaml" "        run: bunx tsc --noEmit -p pkg/app" "        run: echo nothing typechecked"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the row" \
+  "$(contains "$out" '::error file=.github/scripts/ci_ts_programs.py::PROGRAMS names pkg/app, which no step of .github/workflows typechecks')"
+
+echo "case: a bun run typecheck step is read through the package's typecheck script"
+root=$(fixture coverage-recipe)
+printf '{"scripts": {"typecheck": "bunx tsc --noEmit"}}\n' > "$root/pkg/app/package.json"
+replace "$root/.github/workflows/ci.yaml" "        run: bunx tsc --noEmit -p pkg/app" \
+  $'        run: bun run typecheck\n        working-directory: pkg/app'
+run_check "$root"
+check "exits 0, the script's tsc call naming the package's own project" "$(is "$status" 0)"
+echo '{}' > "$root/pkg/app/tsconfig.check.json"
+printf '{"scripts": {"typecheck": "bunx tsc --noEmit && tsc --noEmit -p tsconfig.check.json"}}\n' \
+  > "$root/pkg/app/package.json"
+run_check "$root"
+check "fails when the script's second tsc call names a project no row holds" "$(is "$status" 1)"
+check "and names that project" \
+  "$(contains "$out" "::error file=.github/scripts/ci_ts_programs.py::pkg/app/tsconfig.check.json is typechecked by .github/workflows/ci.yaml's app job, step \"Typecheck the app\", and PROGRAMS has no row for it")"
 
 echo "case: a mode the script does not have"
 root=$(fixture bad-mode)

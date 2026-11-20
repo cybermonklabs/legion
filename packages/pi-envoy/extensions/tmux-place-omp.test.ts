@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, symlink } from "node:fs/promises";
 import * as path from "node:path";
 import {
   type Cleanup,
@@ -21,20 +21,26 @@ import {
 // answer only from the server `TMUX` names, and only for a pane whose own process is one of this
 // process's ancestors, so a set of variables with no pane behind it is refused.
 // LEGION_TEST_OMP names the binary and LEGION_TEST_NATS_URL the NATS server, as in
-// card-delivery-omp.test.ts (`ompNatsGuard`); a tmux on PATH is the third thing this file needs,
-// since the session runs the one it finds there itself, and it is guarded the same way. A run
-// without all three skips, except on GitHub Actions, where the pi-envoy job supplies them.
+// card-delivery-omp.test.ts (`ompNatsGuard`); LEGION_TEST_TMUX names the tmux, the third thing
+// this file needs, and it is guarded the same way. A run without all three skips, except on
+// GitHub Actions, where the pi-envoy job supplies them.
+// The case runs that one tmux binary for every command it sends, and the session in the pane
+// finds it as `tmux`, through a directory holding only a link to it, first on the pane's PATH. The
+// caller's PATH is never searched for one: a wrapper there (mise's shim, a dotfiles script) can run
+// another tmux in the case's environment than the one it runs for its caller, and tmux 3.8 writes
+// a window's layout in another form than tmux 3.7c and earlier, so such a run reads a form nobody
+// chose. The version the case holds the layout's form to is the case's server's own.
 // This file imports no `nats`, so the package's shared test process serves it: envoy.test.ts's
 // `mock.module("nats", …)` replaces that module for this process alone, and the session's NATS
 // connection is the binary's own, in a process of its own, which no mock here reaches.
 const ompNats = ompNatsGuard();
-const tmuxBinary = Bun.which("tmux");
+const tmuxBinary = process.env.LEGION_TEST_TMUX || null;
 const skip = ompNats.skip || (tmuxBinary === null && !ompNats.onActions);
 
 /** The binary, NATS server and tmux a case runs against; throws on GitHub Actions without them. */
 function setup(): { readonly binary: string; readonly nats: string; readonly tmux: string } {
   const run = ompNats.setup();
-  if (tmuxBinary === null) throw new Error("no tmux is on PATH on GitHub Actions");
+  if (tmuxBinary === null) throw new Error("LEGION_TEST_TMUX names no tmux on GitHub Actions");
   return { ...run, tmux: tmuxBinary };
 }
 
@@ -50,6 +56,12 @@ const PLACE_CACHE_MS = 500;
 /** How long a case waits for one thing the session owes it before failing on it. */
 const DEADLINE_MS = 60_000;
 
+/** How long the hook that ends a case gets: bun's own 5 s per hook is less than a teardown takes
+ *  on a loaded machine (the scratch root's removal, the stand-in's stop and, for the case outside
+ *  tmux, the session's end). It is the bound a teardown of one omp is given: 10 s for omp's
+ *  process group to end once it is asked to, and 5 s after SIGKILL. */
+const CLEANUP_MS = 15_000;
+
 /** What the case gives tmux, and holds the reported place to. The window is not the session's
  *  first and the pane is not the window's first, so an index reported from the wrong end of
  *  either shows up. */
@@ -61,7 +73,7 @@ const PANE_INDEX = 1;
 const cleanup: Cleanup = [];
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
-});
+}, CLEANUP_MS);
 
 /** `value` as one word of the shell tmux runs a pane's command through. */
 function quote(value: string): string {
@@ -95,16 +107,40 @@ async function tmuxCommand(
 }
 
 /** The environment the case's tmux server, and with it every pane, runs under: the harness's own
- *  HOME and PATH, with tmux's directory first, since the reading runs `tmux` from inside the pane.
- *  `LD_LIBRARY_PATH` goes with it, as a tmux outside the system directories needs its libraries
- *  named the way whatever put it on PATH named them. */
-function paneEnvironment(home: string, binary: string): Record<string, string> {
+ *  HOME, and a PATH whose first directory holds `tmux` alone, a link to the case's tmux binary,
+ *  since the reading runs `tmux` from inside the pane. `LD_LIBRARY_PATH` goes with it, as a tmux
+ *  outside the system directories needs its libraries named the way its caller named them. */
+function paneEnvironment(home: string, tmuxDirectory: string): Record<string, string> {
   const named = process.env.LD_LIBRARY_PATH;
   return {
     HOME: home,
-    PATH: [path.dirname(binary), "/usr/local/bin", "/usr/bin", "/bin"].join(":"),
+    PATH: [tmuxDirectory, "/usr/local/bin", "/usr/bin", "/bin"].join(":"),
     ...(named === undefined ? {} : { LD_LIBRARY_PATH: named }),
   };
+}
+
+/** A directory under `root` holding one entry, `tmux`, a link to `binary`. */
+async function tmuxDirectoryFor(root: string, binary: string): Promise<string> {
+  const directory = path.join(root, "tmux-bin");
+  await mkdir(directory);
+  await symlink(binary, path.join(directory, "tmux"));
+  return directory;
+}
+
+/** What `binary -V` prints to its caller, in the caller's own environment: a binary that is
+ *  itself a wrapper may run another tmux there than in the case's. */
+async function versionLine(binary: string): Promise<string> {
+  const child = Bun.spawn([binary, "-V"], { stdout: "pipe", stderr: "pipe" });
+  const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+  if (code !== 0) throw new Error(`${binary} -V failed (${code})`);
+  return out.trim();
+}
+
+/** Whether a tmux of `version` (`#{version}`: `3.4`, `3.7c`, `3.8`) writes `window_layout` in
+ *  the JSON form, which tmux 3.8 and later do (tmux's CHANGES for 3.8). */
+function writesJsonLayout(version: string): boolean {
+  const [, major = "0", minor = "0"] = /(\d+)\.(\d+)/.exec(version) ?? [];
+  return Number(major) > 3 || (Number(major) === 3 && Number(minor) >= 8);
 }
 
 /**
@@ -224,11 +260,28 @@ function layoutIfAny(body: Record<string, unknown>): string | undefined {
   return typeof layout === "string" ? layout : undefined;
 }
 
-/** The panes a `window_layout` string names, in its own order: every leaf cell is
+/** The panes a `window_layout` string names, in its own order, in either form tmux writes it:
+ *  the case reports whatever its tmux wrote, and CI's tmux (3.4) and a later one (3.8) write
+ *  different forms. tmux 3.7c and earlier write version 1, where every leaf cell is
  *  `<width>x<height>,<x>,<y>,<pane id>`, the id written without its `%`, while a cell holding
- *  other cells ends in `{` or `[` instead and names no pane. */
+ *  other cells ends in `{` or `[` instead and names no pane. tmux 3.8 writes version 2, the JSON
+ *  object `{"V":2,"L":<root cell>}`, where a pane's cell has `"t":"p"` and its id, with its `%`,
+ *  as `I`, and a split's cells are its array `c`, at any depth. */
 function layoutPanes(layout: string): string[] {
-  return [...layout.matchAll(/\d+x\d+,\d+,\d+,(\d+)/g)].map(([, id]) => `%${id}`);
+  if (!layout.startsWith("{")) {
+    return [...layout.matchAll(/\d+x\d+,\d+,\d+,(\d+)/g)].map(([, id]) => `%${id}`);
+  }
+  const panes: string[] = [];
+  const visit = (cell: unknown): void => {
+    if (typeof cell !== "object" || cell === null) return;
+    if ("t" in cell && cell.t === "p" && "I" in cell && typeof cell.I === "string") {
+      panes.push(cell.I);
+    }
+    if ("c" in cell && Array.isArray(cell.c)) for (const child of cell.c) visit(child);
+  };
+  const parsed: unknown = JSON.parse(layout);
+  if (typeof parsed === "object" && parsed !== null && "L" in parsed) visit(parsed.L);
+  return panes;
 }
 
 /** Polls `probe` until it returns a value, failing on `what` at the deadline with what `diagnose`
@@ -251,12 +304,13 @@ async function until<T>(
 
 // The whole of what a pane's session reports: every member of the place against what the case gave
 // tmux, and the layout against the window the case built. A member read from the wrong field of
-// the tmux answer, or dropped on the way to the wire, shows here and nowhere else — `window_id`
-// and `zoomed` are reported by nothing else at all. The split then proves the place is read afresh
-// rather than worked out once: the window the session sits in grows a pane, and a later
-// registration draws four. Which registration carries a place is not fixed: a registration takes
-// whatever the cache holds when it is built and waits on no tmux call, so the session's first
-// goes out before its first reading has answered and a heartbeat behind it carries the answer.
+// the tmux answer, or dropped on the way to the wire, shows here and nowhere else — `window_id`,
+// the window's size and `zoomed` are reported by nothing else at all. The split then proves the
+// place is read afresh rather than worked out once: the window the session sits in grows a pane,
+// split beside the last one so that it sits below the root's own cells, and a later registration
+// draws four. Which registration carries a place is not fixed: a registration takes whatever the
+// cache holds when it is built and waits on no tmux call, so the session's first goes out before
+// its first reading has answered and a heartbeat behind it carries the answer.
 test.skipIf(skip)(
   "a session in a tmux pane registers the pane it sits in, and the split that follows it",
   async () => {
@@ -267,7 +321,7 @@ test.skipIf(skip)(
     const socket = path.join(root, "tmux.sock");
     const environmentFile = path.join(root, "pane-environment");
     const log = path.join(root, "omp.log");
-    const environment = paneEnvironment(home, tmux);
+    const environment = paneEnvironment(home, await tmuxDirectoryFor(root, tmux));
     const run = (args: readonly string[]): Promise<string> =>
       tmuxCommand(tmux, socket, args, environment);
     const window = `${SESSION_NAME}:${WINDOW_INDEX}`;
@@ -276,6 +330,10 @@ test.skipIf(skip)(
 
     await run(["new-session", "-d", "-s", SESSION_NAME, "-x", "200", "-y", "60"]);
     try {
+      // The server is the binary the case was given, whatever wrapper that name may be: the
+      // version the binary gives its caller is the version of the server it started for the case.
+      const version = await run(["display-message", "-p", "#{version}"]);
+      expect(await versionLine(tmux)).toBe(`tmux ${version}`);
       // The window the case holds the place to, and its three panes: the binary in the middle one,
       // so neither the window's nor the pane's index is the first tmux would report for anything.
       await run(["new-window", "-d", "-t", window, "-n", WINDOW_NAME, "sleep 600"]);
@@ -309,7 +367,15 @@ test.skipIf(skip)(
       ).split("\n");
       const serverPid = tmuxVariable.split(",").at(-2);
       const windowId = await run(["display-message", "-p", "-t", window, "#{window_id}"]);
-      const threePanes = await run(["display-message", "-p", "-t", window, "#{window_layout}"]);
+      const [threePanes, width, height] = (
+        await run([
+          "display-message",
+          "-p",
+          "-t",
+          window,
+          "#{window_layout}\t#{window_width}\t#{window_height}",
+        ])
+      ).split("\t");
       expect(placeOf(first)).toEqual({
         socket,
         server_pid: serverPid,
@@ -320,14 +386,24 @@ test.skipIf(skip)(
         pane_id: paneVariable,
         pane_index: PANE_INDEX,
         layout: threePanes,
+        window_width: Number(width),
+        window_height: Number(height),
         zoomed: false,
+      });
+      // The form is the one this server's version writes, so the reader below reads the branch
+      // of `layoutPanes` that version needs, and a tmux other than the case's would show here.
+      expect({ jsonForm: layoutOf(first).startsWith("{"), version }).toEqual({
+        jsonForm: writesJsonLayout(version),
+        version,
       });
       expect(layoutPanes(layoutOf(first))).toEqual(
         (await run(["list-panes", "-t", window, "-F", "#{pane_id}"])).split("\n")
       );
       expect(layoutPanes(layoutOf(first))).toHaveLength(3);
 
-      await run(["split-window", "-d", "-t", `${window}.2`, "sleep 600"]);
+      // Split beside the last pane: the new pane and that one are a split of their own inside the
+      // root's, so a reader that does not go below the root's cells misses both.
+      await run(["split-window", "-d", "-h", "-t", `${window}.2`, "sleep 600"]);
       // The registrations taken from here on read the window after the split: a reading stands
       // for `PLACE_CACHE_MS`, and this waits that out before it counts what the stand-in holds.
       // The cache reads the split window on its own timer inside that lifetime, so the first

@@ -27829,6 +27829,9 @@
           "socket": {
             "type": "string"
           },
+          "window_height": {
+            "type": "integer"
+          },
           "window_id": {
             "type": "string"
           },
@@ -27837,6 +27840,9 @@
           },
           "window_name": {
             "type": "string"
+          },
+          "window_width": {
+            "type": "integer"
           },
           "zoomed": {
             "type": "boolean"

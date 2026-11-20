@@ -19,9 +19,12 @@
 # The pairs cover every gate whose job runs a typecheck, each read from that job's own steps:
 # contracts, envoy_client (packages/envoy-client and packages/broker-client), pi_shared,
 # pi_envoy, pi_legion, claude_envoy, dispatch_ui (packages/dispatch and packages/proof-editor),
-# docs (docs/site, in the docs-site.yaml job ci.yaml's docs job calls), conflicts_script
-# (scripts/conflicts) and test (scripts/dispatch, scripts/github-apps, scripts/sessions and
-# scripts/approval-eval).
+# docs (docs/site's two programs, in the docs-site.yaml job ci.yaml's docs job calls),
+# test_fixtures (packages/test-fixtures), envoy_go_checks (pmdoc's fixture generator and
+# packages/envoy/scripts), conflicts_script (scripts/conflicts) and test (scripts/dispatch,
+# scripts/github-apps, scripts/sessions, scripts/approval-eval, scripts/e2e/lib and scripts
+# itself). THE COVERAGE, below, holds the pairs to the workflows' steps both ways, so a step
+# with no pair, or a pair with no step, is a refusal rather than a gate this list forgets.
 # The gates left out are the ones whose job runs TypeScript but no typecheck, so there is no
 # program to derive: `dispatch_browser`, whose jobs are the browser suite itself, sharded and in
 # two-process mode, in the workflow ci.yaml's dispatch-browser job calls (the dashboard's and the
@@ -37,6 +40,20 @@
 # dispatch command the two-build Go step runs loads, from that command's bundle (the bundles,
 # below), and the share of packages/contracts/src that dispatch_browser and the two two-build
 # gates load, from dispatch_ui's programs and that bundle (the listed blocks, below).
+#
+# THE COVERAGE. A file no typechecked program holds is typechecked by no job: a type error in it
+# fails nothing, which is how scripts/e2e/lib/app-logins.ts, in no program while its directory's
+# tsconfig.json named one file, took a planted error through every step that typechecks scripts/.
+# So this check also reads every step of every workflow under .github/workflows for the tsc
+# projects it typechecks - each `tsc` or `bunx tsc` call's `-p` (`--project`), or the step's
+# working directory where it names none, and each tsc call of the `typecheck` script a `bun run
+# typecheck` step runs in that directory's package.json - and refuses a project no pair names, and
+# a pair whose project no step typechecks. Then it holds every TypeScript file git tracks
+# (`git ls-files` of *.ts, *.tsx, *.mts and *.cts, outside node_modules) to the union of the
+# pairs' programs, and refuses, by name, each file none of them lists. A run that read no
+# workflow, no program, no tracked file, or a program it could not list does not know which files
+# are covered: it prints `coverage: UNKNOWN` with what it could not read, and fails, rather than
+# printing a clean count over nothing.
 #
 # THE BUNDLES. A step that runs an entry with Bun loads that entry's runtime closure, which no
 # tsc program of its job lists: the two-build job's Go step runs cmd/dispatch/twobuild_cli_test.go,
@@ -151,6 +168,7 @@ esac
 TS_FILTERS_MODE="${1:-check}" PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 <<'PY'
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -441,6 +459,131 @@ for name, tree, sources, why in LISTED:
                                                f"({why}): the filter must select it, or a change to it starts no job"))
     print(f"filter {name}: {len(files)} listed file(s) under {tree}, from {named(sources)}")
 
+# THE COVERAGE: which tsc projects the steps of the workflows typecheck, held to the pairs both
+# ways, and every tracked TypeScript file held to the union of the pairs' programs.
+WORKFLOWS = engine.REPO / ".github" / "workflows"
+# A tsc call, `tsc` or `bunx tsc`, and its arguments up to the next shell separator.
+TSC_CALL = re.compile(r"(?:^|[\s;&|(])(?:bunx\s+)?tsc(?=[\s;&|)]|$)([^;&|)\n]*)")
+TYPECHECK_SCRIPT = re.compile(r"(?:^|[\s;&|(])bun\s+run\s+typecheck(?=[\s;&|)]|$)")
+
+
+def config_of(path: str) -> str:
+    """`path` as the tsconfig file `tsc -p` reads for it, repository-relative: a directory's
+    tsconfig.json, or the file itself."""
+    normal = Path(os.path.normpath(path))
+    return (normal / "tsconfig.json").as_posix() if (engine.REPO / normal).is_dir() else normal.as_posix()
+
+
+def tsc_projects(command: str, directory: str) -> list:
+    """The project each tsc call of `command`, run in `directory`, typechecks: its `-p`
+    (`--project`), or `directory` itself. A call that only lists or prints a project typechecks
+    nothing."""
+    projects = []
+    for call in TSC_CALL.finditer(command):
+        words = call.group(1).split()
+        if "--listFilesOnly" in words or "--showConfig" in words:
+            continue
+        project = "."
+        for flag, value in zip(words, words[1:]):
+            if flag in ("-p", "--project"):
+                project = value
+        projects.append(config_of(os.path.join(directory, project)))
+    return projects
+
+
+def typecheck_steps() -> tuple:
+    """Every project a step of a workflow typechecks, with the steps that do, as
+    {config: [step, ...]}, and how many workflow files were read. A step's `bun run typecheck`
+    is read through the `typecheck` script of the package.json in its working directory."""
+    steps: dict = {}
+    files = sorted(WORKFLOWS.glob("*.yaml")) + sorted(WORKFLOWS.glob("*.yml"))
+    for workflow in files:
+        shown = workflow.relative_to(engine.REPO).as_posix()
+        try:
+            document = yaml.safe_load(workflow.read_text())
+        except (OSError, yaml.YAMLError) as exc:
+            problems.append(engine.error(shown, f"could not read {shown} for the steps that typecheck ({exc})"))
+            continue
+        if not isinstance(document, dict):
+            continue
+        top = ((document.get("defaults") or {}).get("run") or {}).get("working-directory", ".")
+        for job_id, job in (document.get("jobs") or {}).items():
+            if not isinstance(job, dict):
+                continue
+            job_directory = ((job.get("defaults") or {}).get("run") or {}).get("working-directory", top)
+            for index, step in enumerate(job.get("steps") or []):
+                if not isinstance(step, dict) or not isinstance(step.get("run"), str):
+                    continue
+                directory = str(step.get("working-directory", job_directory))
+                command = "\n".join(line for line in step["run"].splitlines()
+                                    if not line.lstrip().startswith("#"))
+                where = f"{shown}'s {job_id} job, step {json.dumps(step.get('name', index + 1))}"
+                projects = tsc_projects(command, directory)
+                if TYPECHECK_SCRIPT.search(command):
+                    manifest = engine.REPO / directory / "package.json"
+                    try:
+                        recipe = json.loads(manifest.read_text())["scripts"]["typecheck"]
+                    except (OSError, ValueError, KeyError, TypeError) as exc:
+                        problems.append(engine.error(shown, f"{where} runs `bun run typecheck` in {directory}, and "
+                                                            f"{directory}/package.json gives no typecheck script "
+                                                            f"({type(exc).__name__}: {exc})"))
+                        continue
+                    projects += tsc_projects(recipe, directory)
+                for project in projects:
+                    steps.setdefault(project, []).append(where)
+    return steps, len(files)
+
+
+def tracked_typescript() -> list | None:
+    """Every TypeScript file git tracks outside node_modules, repository-relative and sorted, or
+    None when git cannot say."""
+    result = subprocess.run(["git", "ls-files", "-z", "--", "*.ts", "*.tsx", "*.mts", "*.cts"],
+                            cwd=engine.REPO, capture_output=True)
+    if result.returncode != 0:
+        return None
+    return sorted({path for path in result.stdout.decode().split("\0")
+                   if path and "node_modules" not in path.split("/")})
+
+
+typechecked, workflows_read = typecheck_steps()
+tabled = {config_of(path): path for _, path, _ in PROGRAMS}
+for project in sorted(set(typechecked) - set(tabled)):
+    problems.append(engine.error(TABLE, f"{project} is typechecked by {typechecked[project][0]}, and PROGRAMS has no "
+                                        f"row for it, so no filter is held to its files and the coverage below "
+                                        f"counts none of them: add its row"))
+if workflows_read > 0:
+    for project in sorted(set(tabled) - set(typechecked)):
+        problems.append(engine.error(TABLE, f"PROGRAMS names {tabled[project]}, which no step of .github/workflows "
+                                            f"typechecks, so the files it lists are typechecked by no job: add the "
+                                            f"step or drop the row"))
+
+programs = [path for _, path, _ in PROGRAMS]
+unread = [path for path in programs if files_of.get(("program", path)) is None]
+tracked = tracked_typescript()
+unknown = [reason for reason, missing in (
+    ("no workflow file was read under .github/workflows", workflows_read == 0),
+    ("PROGRAMS names no tsc program", not programs),
+    (f"{len(unread)} program(s) could not be listed ({', '.join(unread)})", bool(unread)),
+    ("git could not list the tracked files", tracked is None),
+    ("git tracks no TypeScript file", tracked == []),
+) if missing]
+if unknown:
+    print(f"coverage: UNKNOWN: {'; '.join(unknown)}")
+    problems.append(engine.error(TABLE, f"which tracked TypeScript files no typechecked program holds is unknown: "
+                                        f"{'; '.join(unknown)}"))
+else:
+    covered = set().union(*(files_of[("program", path)] for path in programs))
+    uncovered = [path for path in tracked if path not in covered]
+    print(f"coverage: {len(tracked)} tracked TypeScript file(s), {len(tracked) - len(uncovered)} in the "
+          f"{len(programs)} typechecked program(s), {len(uncovered)} in none")
+    for path in uncovered[:engine.SHOWN]:
+        problems.append(engine.error(path, f"{path} is in no tsc program a CI job typechecks (PROGRAMS of {TABLE}), "
+                                           f"so a type error in it fails no job: put it in the project its "
+                                           f"directory's typecheck reads, or give it a project and a step"))
+    if len(uncovered) > engine.SHOWN:
+        problems.append(engine.error(TABLE, f"{len(uncovered) - engine.SHOWN} more tracked TypeScript file(s) are "
+                                            f"in no typechecked program"))
+
 # Every problem, this check's own and the engine's (changes_filters and filter_blocks append
 # theirs to the same list), is an engine Annotation, written as the engine writes one: a
 # workflow command whose file and message are escaped, so no repository text can end it early.
@@ -453,6 +596,8 @@ if problems:
     raise SystemExit(1)
 print(f"every changes filter selects every file its job's typecheck compiles "
       f"({len(PROGRAMS)} programs, {len({name for name, _, _ in PROGRAMS})} filters) and every file the entries its "
-      f"job runs load ({len(BUNDLES)} bundles, {len({name for name, _, _ in BUNDLES})} filters), and every listed "
-      f"block holds exactly the files its programs compile and its bundles load ({len(LISTED)} blocks)")
+      f"job runs load ({len(BUNDLES)} bundles, {len({name for name, _, _ in BUNDLES})} filters), every listed "
+      f"block holds exactly the files its programs compile and its bundles load ({len(LISTED)} blocks), the "
+      f"programs are the ones the steps of {workflows_read} workflow file(s) typecheck, and every tracked "
+      f"TypeScript file is in one of them ({len(tracked or [])} files)")
 PY

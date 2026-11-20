@@ -12,5 +12,5 @@
     "types": ["bun"],
     "skipLibCheck": true
   },
-  "include": ["plan-ratings-read.test.ts"]
+  "include": ["*.ts"]
 }

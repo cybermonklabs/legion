@@ -179,8 +179,11 @@ jobs:
       # program with `bunx tsc --listFilesOnly`, and the modules each entry a gate's job runs
       # loads with `bun build --metafile`, and holds every such file to that gate's filter,
       # so the TypeScript half of what those filters must select is derived rather than
-      # hand-kept. In this job because the ci-filters job has neither Bun nor node_modules, and
-      # because this one is gated by no `changes` output, so a change anywhere can start it.
+      # hand-kept. It also holds those programs to the projects the workflows' steps typecheck,
+      # and fails naming each TypeScript file git tracks that none of them holds, which no job
+      # would typecheck. In this job because the ci-filters job has neither Bun nor
+      # node_modules, and because this one is gated by no `changes` output, so a change anywhere
+      # can start it.
       - name: Check every Bun gate's filter selects the files its typecheck compiles
         run: .github/scripts/check-ts-filters.sh
 

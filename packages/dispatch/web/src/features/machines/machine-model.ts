@@ -52,6 +52,13 @@ export interface MachineWindow {
    * layout for length, and the page then lists the panes below instead of drawing them.
    */
   readonly layout?: string;
+  /**
+   * The window's size in cells, as the session the layout came from reported it beside the
+   * layout, in the same call to tmux. A layout states the size in its root cell, except where the
+   * window's one pane floats; the drawing then draws the window at this size. Absent where that
+   * session reported none (a client older than the field), or where no layout was reported.
+   */
+  readonly size?: { readonly width: number; readonly height: number };
   readonly panes: readonly MachinePane[];
 }
 
@@ -188,11 +195,14 @@ function buildWindow(
 ): MachineWindow {
   const [freshest] = reports;
   const withLayout = reports.find((report) => report.place.layout !== undefined);
+  const width = withLayout?.place.window_width;
+  const height = withLayout?.place.window_height;
   return {
     layout: withLayout?.place.layout,
     panes: [...panes].sort(
       (left, right) => left.paneIndex - right.paneIndex || left.paneId.localeCompare(right.paneId)
     ),
+    ...(width === undefined || height === undefined ? {} : { size: { height, width } }),
     windowId,
     windowIndex: freshest.place.window_index,
     windowName: freshest.place.window_name,

@@ -12,6 +12,9 @@ import { tmuxServer } from "./tmux-server";
  *  and Dispatch read: the contract's own type, which the listener and the pages read it by.
  *  `layout` is tmux's `window_layout` string, which draws the window's split; it is absent when
  *  the window is split so finely that the string outgrew what a registration carries.
+ *  `window_width` and `window_height` are the window's size, read in the same call: a layout
+ *  states it in its root cell, except where the window's one pane floats, when tmux writes that
+ *  pane's cell alone and the drawing takes the window's size from these.
  *  A place crosses the wire outwards only: a registration carries the one this module reads
  *  (`transport.ts`'s `SubscribeInput.place`), and nothing here parses one back, so there is no
  *  wire schema for it — the contract's type is what holds both ends together.
@@ -46,12 +49,14 @@ const PLACE_FORMAT = [
   "#{pid}",
   "#{pane_pid}",
   "#{window_layout}",
+  "#{window_width}",
+  "#{window_height}",
   "#{window_zoomed_flag}",
 ].join("\t");
 
 /** How many fields `PLACE_FORMAT` asks for; an answer with any other count is from a tmux that
  *  expanded it differently, and nothing in it can be trusted to be what it looks like. */
-const PLACE_FIELDS = 10;
+const PLACE_FIELDS = 12;
 
 /** The variables a reading consults, over whatever else the environment holds. */
 type TmuxEnvironment = {
@@ -59,8 +64,8 @@ type TmuxEnvironment = {
   readonly TMUX_PANE?: string;
 } & Record<string, string | undefined>;
 
-/** A tmux index (`window_index`, `pane_index`) as a number; undefined for anything that is not
- *  one, an empty field included, which `Number` would read as 0. */
+/** A tmux index (`window_index`, `pane_index`) or size (`window_width`) as a number; undefined
+ *  for anything that is not one, an empty field included, which `Number` would read as 0. */
 function tmuxIndex(value: string): number | undefined {
   return /^\d+$/.test(value) ? Number(value) : undefined;
 }
@@ -102,12 +107,17 @@ export async function readTmuxPlace(env: TmuxEnvironment, exec: ExecFn): Promise
     pid = "",
     panePid = "",
     layout = "",
+    windowWidth = "",
+    windowHeight = "",
     zoomedFlag = "",
   ] = fields;
   if (pid !== serverPid || paneId === "" || !isAncestor(panePid)) return { kind: "refused" };
   const window = tmuxIndex(windowIndex);
   const index = tmuxIndex(paneIndex);
   if (window === undefined || index === undefined) return { kind: "refused" };
+  // The size serves the drawing alone, so a size that is not one costs the place nothing but it.
+  const width = tmuxIndex(windowWidth);
+  const height = tmuxIndex(windowHeight);
 
   return {
     kind: "place",
@@ -123,6 +133,9 @@ export async function readTmuxPlace(env: TmuxEnvironment, exec: ExecFn): Promise
       // Past the contract's `TMUX_LAYOUT_MAX` the place is still reported, without its layout:
       // the one cap this client and the page that parses a layout both hold to.
       ...(layout.length > TMUX_LAYOUT_MAX ? {} : { layout }),
+      ...(width === undefined || height === undefined
+        ? {}
+        : { window_height: height, window_width: width }),
       zoomed: zoomedFlag === "1",
     },
   };

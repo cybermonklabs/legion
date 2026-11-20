@@ -94,10 +94,12 @@
 # oven-sh/setup-bun left at ~/.bun/bin/bun: `cache` where that action restored Bun from this
 # repository's Actions cache instead of downloading the release asset, and `existing-install`
 # where a Bun of the pinned version was already at that path when the action started and that
-# action kept it, which it reports as a cache hit too. Neither names a store an install can
-# fetch a tool from — the one holds bytes a row already pins, the other is the runner's own
-# filesystem — so neither is a property of a row, no `second_source:` may name either, and
-# nothing in this file prints them.
+# action kept it, which it reports as a cache hit too. .github/actions/install-tmux writes
+# `cache` as well, where the job's own actions/cache/restore put the binary at the path that
+# action installs to, and it holds those bytes to the row as setup-bun does. Neither word names
+# a store an install can fetch a tool from — the one holds bytes a row already pins, the other
+# is the runner's own filesystem — so neither is a property of a row, no `second_source:` may
+# name either, and nothing in this file prints them.
 #
 # THIS FILE IS SOURCED, NEVER EXECUTED. It defines functions, declares the empty cache those
 # functions keep a read manifest row in, reads nothing and fetches nothing at load, and it is
@@ -211,10 +213,12 @@
 #   second_member      the member to take out of what `second_url` served, and "" to keep the
 #                      whole file. A `.whl` or a `.zip` is read with python3's zipfile and
 #                      anything else with `tar -xzO`, as the npm fetch reads its tarball.
-#   primary_digest     the sha256 of the bytes the PRIMARY URL serves, for the row whose own
+#   primary_digest     the sha256 of the bytes the PRIMARY URL serves, for a row whose own
 #                      `digest` is of something inside them: uv's `digest` is of the binary,
 #                      which PyPI's wheel and GitHub's tarball each hold, so the archive GitHub
-#                      serves has a digest of its own and this is it. A mismatch on it is the
+#                      serves has a digest of its own and this is it; tmux's `digest` is of the
+#                      binary too, the one file its tarball, its copy and its job's Actions
+#                      cache all hold. A mismatch on it is the
 #                      supply-chain signal a mismatch on `digest` is, and the second source is
 #                      not read after one. "" where the primary serves exactly the bytes the row
 #                      pins, which is every other row.

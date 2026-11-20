@@ -275,6 +275,26 @@ test("the model names a pane as the layout parser does, so a drawing can match t
   );
 });
 
+test("a window is drawn at the size the session its layout came from reported beside it", () => {
+  const window = (reports: Agent[]) =>
+    machineGrouping(reports, "devbox").servers[0].sessions[0].windows[0];
+  // The freshest report carries no layout, so the layout and its size are the older session's:
+  // the two are one reading of tmux, and the size of another reading may be of another moment.
+  const sized = window([
+    session({ session_id: "fresh", tmux_place: place({ window_height: 50, window_width: 200 }) }),
+    session({
+      last_seen: NOW - 60_000,
+      session_id: "older",
+      tmux_place: place({ layout: LAYOUT, pane_id: "%1", window_height: 24, window_width: 80 }),
+    }),
+  ]);
+  expect([sized.layout, sized.size]).toEqual([LAYOUT, { height: 24, width: 80 }]);
+  // A session older than the size reports none, and the window then has none.
+  const unsized = window([session({ session_id: "old", tmux_place: place({ layout: LAYOUT }) })]);
+  expect(unsized.layout).toBe(LAYOUT);
+  expect(Object.hasOwn(unsized, "size")).toBe(false);
+});
+
 test("a session in another machine's panes is no part of this machine's model", () => {
   const model = machineGrouping(
     [

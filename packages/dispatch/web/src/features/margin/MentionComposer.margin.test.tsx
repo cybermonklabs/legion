@@ -6,9 +6,11 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useEffect } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
+import type { IssueSummary } from "../../api/types";
 import type { ComposerAnchor, ComposerKind } from "../conversation/composer-model";
 import { MentionComposer } from "../conversation/MentionComposer";
 import type { RecordMarkPlacement } from "../doc/editor";
@@ -77,6 +79,9 @@ test("Composer uploads dropped files and inserts their references", async () => 
       kind: "file",
       name: "notes.md",
       primary: false,
+      project: "CORE",
+      ref_key: `${issue.key}/notes-md`,
+      session_id: null,
       slug: "notes-md",
       versions: [],
     },
@@ -308,7 +313,7 @@ test("Composer on a closed issue sends a quote anchor by its quote and occurrenc
       </QueryClientProvider>
     );
     expect(screen.queryByRole("button", { name: "Suggest" })).toBeNull();
-    expect(screen.queryByRole("button", { exact: true, name: "Ask" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Ask" })).toBeNull();
     await user.click(screen.getByLabelText("Comment"));
     await user.paste("After the close");
     await user.click(screen.getByRole("button", { name: "Send" }));
@@ -574,11 +579,11 @@ async function sendMarginAsk(user: UserEvent, question: string): Promise<HTMLEle
 
 test("the margin marks the words again and sends once more, under a key of its own, when the server refuses the anchor", async () => {
   const user = userEvent.setup();
-  const remarked: [string, string, string, RecordMarkPlacement | null][] = [];
+  const remarked: [string, string, string, RecordMarkPlacement | undefined][] = [];
   const bridge = stubDocumentBridge(specArtifact.id, {
     remarkMark(markId, kind, quote, placement) {
       remarked.push([markId, kind, quote, placement]);
-      return { markId: "m-2", placement, quote: MARK_ANCHOR.quote };
+      return { markId: "m-2", placement: placement ?? null, quote: MARK_ANCHOR.quote };
     },
   });
   let attempts = 0;
@@ -655,7 +660,11 @@ test("the composer never shows the server's words between the re-mark and the re
   const sent = Promise.withResolvers<void>();
   let waiting = false;
   const bridge = stubDocumentBridge(specArtifact.id, {
-    remarkMark: (_markId, _kind, quote, placement) => ({ markId: "m-2", placement, quote }),
+    remarkMark: (_markId, _kind, quote, placement) => ({
+      markId: "m-2",
+      placement: placement ?? null,
+      quote,
+    }),
     whenSent: async () => {
       waiting = true;
       return sent.promise;
@@ -939,24 +948,8 @@ test("Escape on a suggestion with only a replacement shows the discard prompt in
 
 test("Escape from the composer while its reference picker opens closes only the picker", async () => {
   const user = userEvent.setup();
-  const getIssue = spyOn(api, "getIssue").mockResolvedValue({
-    artifacts: [],
-    closed_at: null,
-    created_at: "2026-09-09T00:00:00Z",
-    created_by: { id: "alice", kind: "user" },
-    external_links: [],
-    key: "CORE-1",
-    labels: [],
-    last_seq: 1,
-    number: 1,
-    parent: null,
-    primary_artifact_id: "artifact-1",
-    project: "CORE",
-    route: null,
-    status: "open",
-    title: "Review the spec",
-    updated_at: "2026-09-09T00:00:00Z",
-  });
+  // The issue as the picker reads it: no document of its own to offer.
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue({ ...issue, artifacts: [] });
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -998,34 +991,37 @@ test("Escape from the composer while its reference picker opens closes only the 
 test("Enter in the reference picker's filter inserts the top match instead of submitting a ready-to-save draft", async () => {
   const user = userEvent.setup();
   const createComment = spyOn(api, "createComment").mockResolvedValue(undefined as never);
-  const getIssue = spyOn(api, "getIssue").mockResolvedValue({
-    artifacts: [],
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue({ ...issue, artifacts: [] });
+  const related: IssueSummary = {
+    advances: [],
+    advances_revision: 0,
+    assignee: null,
+    blocked_by: [],
+    claim: null,
     closed_at: null,
+    components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
     created_at: "2026-09-09T00:00:00Z",
-    created_by: { id: "alice", kind: "user" },
-    external_links: [],
-    key: "CORE-1",
+    created_by: null,
+    key: `${issue.project}-2`,
     labels: [],
     last_seq: 1,
-    number: 1,
+    open_asks: 0,
     parent: null,
-    primary_artifact_id: "artifact-1",
-    project: "CORE",
+    primary_artifact_id: "artifact-2",
+    priority: null,
+    progress: { tasks: null, children: null },
+    rank: "U",
+    repo: null,
+    resolved_repo: null,
     route: null,
-    status: "open",
-    title: "Review the spec",
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
+    status: "todo",
+    title: "Related work",
     updated_at: "2026-09-09T00:00:00Z",
-  });
-  const listIssues = spyOn(api, "listIssues").mockResolvedValue([
-    {
-      key: "CORE-2",
-      open_asks: 0,
-      parent: null,
-      status: "todo",
-      title: "Related work",
-      updated_at: "2026-09-09T00:00:00Z",
-    },
-  ]);
+  };
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([related]);
   const view = renderComposer("comment");
 
   try {
@@ -1133,7 +1129,7 @@ test("edit Composer PATCHes the author comment body and reads Save", async () =>
   const commentBlocks = spyOn(api, "commentBlocks").mockResolvedValue({
     blocks: [],
     indexed: false,
-    item: { id: "comment-1", issue_key: "CORE-1", kind: "comment" },
+    item: graphNode({ id: "comment-1", issue_key: issue.key, kind: "comment" }),
   });
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -1181,7 +1177,7 @@ test("edit Composer saves the text in the field at Save time, not the text of th
   const commentBlocks = spyOn(api, "commentBlocks").mockResolvedValue({
     blocks: [],
     indexed: false,
-    item: { id: "comment-1", issue_key: "CORE-1", kind: "comment" },
+    item: graphNode({ id: "comment-1", issue_key: issue.key, kind: "comment" }),
   });
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -1228,7 +1224,11 @@ test("the margin's own re-send carries what the reader typed while it waited", a
   const user = userEvent.setup();
   const sent = Promise.withResolvers<void>();
   const bridge = stubDocumentBridge(specArtifact.id, {
-    remarkMark: (_markId, _kind, quote, placement) => ({ markId: "m-2", placement, quote }),
+    remarkMark: (_markId, _kind, quote, placement) => ({
+      markId: "m-2",
+      placement: placement ?? null,
+      quote,
+    }),
     whenSent: () => sent.promise,
   });
   let attempts = 0;

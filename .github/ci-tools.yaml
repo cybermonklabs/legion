@@ -8,9 +8,9 @@
 # the same literal, and a refusal names the source that served the bytes.
 #
 # Each row's `version` agrees with the pin that decides which version a job installs:
-# for crane, changie, elan and the Pulumi CLI the row is the pin itself, since install-crane,
-# install-changie, install-elan and install-pulumi hold no version of their own and install the
-# version this row names,
+# for crane, changie, elan, tmux and the Pulumi CLI the row is the pin itself, since
+# install-crane, install-changie, install-elan, install-tmux and install-pulumi hold no version of
+# their own and install the version this row names,
 # `ARG MISE_VERSION` of packages/daemon/docker/worker.Dockerfile for mise,
 # `ARG JJ_TOOL` of that same file for jj,
 # `ARG UV_VERSION` of that same file for uv, whose `primary_digest` is that file's
@@ -78,8 +78,12 @@
 # holds these exact bytes, which .github/scripts/mirror-ci-tools.sh's read-back after the push
 # and the `tool-fallback` job's blob check (.github/workflows/ci-job-tool-fallback.yaml) are what
 # decide.
+# tmux takes a copy too. Its maintainers publish the static build the pi-envoy job runs as
+# release assets of tmux/tmux-builds, and the tmux the runner's apt installs is Ubuntu's own
+# build of 3.4, another program, so it cannot stand in for these bytes. As with elan, the claim
+# the copy makes is the narrower one: that the package holds these exact bytes.
 #
-# WHY THE BUN AND jj ROWS PIN THE INSTALLED BINARY AND NOT AN ARCHIVE.
+# WHY THE BUN, jj AND tmux ROWS PIN THE INSTALLED BINARY AND NOT AN ARCHIVE.
 # `oven-sh/setup-bun` at the commit .github/actions/setup-bun pins verifies no checksum at all,
 # and .github/actions/install-jj verifies the mise archive and nothing of the jj binary mise then
 # builds or downloads.
@@ -87,6 +91,10 @@
 # both can be held to is the digest of the binary that ends up installed.
 # That is what those rows pin, and the check runs on the primary path too: an install that got its
 # bytes from the third party verifies the same digest as one that got them from the second source.
+# The tmux row pins its binary too, for a reason of its own: the pi-envoy job restores that
+# binary from its Actions cache, and the one literal a restored file can be held to is the
+# digest of that file. The release tarball's own digest, the one GitHub records for the asset,
+# rides beside it in `primary_digest`, as uv's archive digest does.
 
 # WHY A DECLINE IS AN ENTRY UNDER `no_second_source:` AND NOT A ROW.
 # Some bytes CI installs are published in one place and nowhere else, and the manifest must be
@@ -138,7 +146,7 @@ tools:
     primary: https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz
     # The sha256 of the bytes the primary URL serves, for a row whose own `digest` is of
     # something inside them, and "" where the primary serves exactly the bytes this row pins,
-    # which is every row but uv.
+    # which is every row but uv and tmux.
     primary_digest: ""
     # The prose saying what `primary_digest` is of, which a refusal of a mismatch on it names.
     # "" where unused.
@@ -377,7 +385,8 @@ tools:
   # uv, which .github/actions/install-uv installs: the uv the worker image ships, pinned by
   # `ARG UV_VERSION` and `ARG UV_SHA256` of packages/daemon/docker/worker.Dockerfile, which the
   # image's own toolchain stage builds uv from.
-  # This is the one row whose `digest` is of a member. PyPI's wheel and GitHub's tarball are two
+  # This is one of the two rows whose `digest` is of a member of what the primary serves, the
+  # tmux row below being the other. PyPI's wheel and GitHub's tarball are two
   # archives of one binary, so the binary is the only literal both sources can be held to:
   # `digest` is of it, `primary_member` is where it sits in the tarball, and `primary_digest` is
   # the tarball itself, which is the `ARG UV_SHA256` the image checks.
@@ -435,6 +444,29 @@ tools:
     max_time: 60
     second_url: https://github.com/pulumi/pulumi/releases/download/v3.268.0/pulumi-v3.268.0-linux-x64.tar.gz
     second_member: ""
+
+  # tmux, the static x86-64 build of tmux's own release that .github/actions/install-tmux
+  # installs off PATH for the pi-envoy job's run of extensions/tmux-place-omp.test.ts against a
+  # tmux that writes `#{window_layout}` in the JSON form 3.8 introduced; the runner's apt tmux is
+  # 3.4, which writes the older form. The version is quoted so YAML reads it as text: a bare
+  # 3.10 would read as the number 3.1.
+  # The digest is of the binary itself, the one file the release tarball, the copy and the
+  # job's Actions cache all hand over, and `primary_digest` is the tarball's, the sha256 GitHub
+  # records for that release asset. The binary is linked statically, so it needs no package
+  # of the runner's, and `mirror_member` is that binary, which is what the copy holds.
+  - name: tmux
+    version: "3.8"
+    digest: 76b53fb73d5228ea2f27093f697e49c7047f193eae73c1f8777cf1a16e83cc4b
+    digest_of: the tmux binary itself, the 2450648-byte `tmux` member of the release tarball
+    primary_source: github-release
+    primary: https://github.com/tmux/tmux-builds/releases/download/v3.8/tmux-3.8-linux-x86_64.tar.gz
+    primary_digest: 147849ff18b62a8aa3d5d8f75dd07c3f9fdfad529f932236afdec838fc1d15e1
+    primary_digest_of: the release tarball tmux-3.8-linux-x86_64.tar.gz, whole
+    primary_member: tmux
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/tmux/tmux-builds/releases/download/v3.8/tmux-3.8-linux-x86_64.tar.gz
+    mirror_member: tmux
 
 # The URLs CI fetches that have no second source anywhere today, one entry per URL. Each is
 # allowed by its entry and by nothing else; the gate refuses any other unnamed release asset.

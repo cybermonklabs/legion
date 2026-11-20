@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "gen": "bun run gen.ts",
-    "check": "bun run gen.ts --check"
+    "check": "bun run gen.ts --check",
+    "typecheck": "bunx tsc --noEmit"
   },
   "dependencies": {
     "@legion/proof-editor": "workspace:*",

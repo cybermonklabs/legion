@@ -3,7 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { runJq } from "./run-jq.ts";
+import { runJq } from "./run-jq";
 
 // Stage 4b's verdict on a deployment's worker pod block (deployment-pod-block): the issue pod the
 // daemon launched from the block must carry its ServiceAccount, every volume as the block declares

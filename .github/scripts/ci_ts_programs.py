@@ -13,7 +13,10 @@ Each entry of PROGRAMS is (filter, project, why):
 
 The pairs are hand-kept and few; the files of each program are derived, which is the point. A
 job that typechecks a second project is a second entry (the dispatch-ui job typechecks the proof
-editor beside the dashboard, and the test job the four script directories that are no workspace).
+editor beside the dashboard, and the test job the six script projects that are no workspace).
+check-ts-filters.sh holds the pairs to the projects the workflows' steps typecheck, both ways, and
+every tracked TypeScript file to the union of their programs, so a typecheck step with no row
+here, a row with no step, and a file in none of them are each refused.
 """
 
 
@@ -34,12 +37,22 @@ PROGRAMS = [
     ("claude_envoy", "packages/claude-envoy", at("claude-envoy", "Typecheck Claude Envoy plugin")),
     ("dispatch_ui", "packages/dispatch", at("dispatch-ui", "Typecheck dispatch dashboard")),
     # The proof editor's and the docs site's steps run the same `bun run typecheck`, whose recipe
-    # names a project file of its own rather than the directory's tsconfig.json.
+    # names a project file of its own rather than the directory's tsconfig.json; the docs site's
+    # recipe names two, the files Bun runs and the content collections `astro build` loads.
     ("dispatch_ui", "packages/proof-editor/tsconfig.check.json",
      at("dispatch-ui", "Typecheck proof editor (bun run typecheck: bunx tsc --noEmit -p tsconfig.check.json)")),
     ("docs", "docs/site/tsconfig.tools.json",
      "docs-site.yaml's build job: Typecheck the docs site (bun run typecheck: tsc --noEmit -p tsconfig.tools.json), "
      "which ci.yaml's docs job calls"),
+    ("docs", "docs/site/tsconfig.content.json",
+     "docs-site.yaml's build job: Typecheck the docs site (bun run typecheck: tsc --noEmit -p tsconfig.content.json), "
+     "which ci.yaml's docs job calls"),
+    ("test_fixtures", "packages/test-fixtures",
+     at("test-fixtures", "Typecheck the shared test fixtures (bun run typecheck: bunx tsc --noEmit)")),
+    ("envoy_go_checks", "packages/envoy/internal/dispatch/pmdoc/gen",
+     at("envoy-go-checks", "Typecheck the pmdoc fixture generator (bun run typecheck: bunx tsc --noEmit)")),
+    ("envoy_go_checks", "packages/envoy/scripts",
+     at("envoy-go-checks", "Typecheck packages/envoy's Bun scripts (bunx tsc --noEmit -p packages/envoy/scripts)")),
     ("conflicts_script", "scripts/conflicts", at("conflicts-script", "Typecheck the conflict measurement script")),
     ("test", "scripts/dispatch",
      at("test", "Typecheck the Dispatch census script (bunx tsc --noEmit -p scripts/dispatch)")),
@@ -50,7 +63,9 @@ PROGRAMS = [
     ("test", "scripts/approval-eval",
      at("test", "Typecheck the approval-eval statistics (bunx tsc --noEmit -p scripts/approval-eval)")),
     ("test", "scripts/e2e/lib",
-     at("test", "Typecheck the plan ratings read test (bunx tsc --noEmit -p scripts/e2e/lib)")),
+     at("test", "Typecheck the live proofs' libraries (bunx tsc --noEmit -p scripts/e2e/lib)")),
+    ("test", "scripts",
+     at("test", "Typecheck the top-level scripts (bunx tsc --noEmit -p scripts)")),
 ]
 
 # The entries a step runs with Bun rather than typechecks: what such a step loads is the entry's

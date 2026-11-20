@@ -1,0 +1,15 @@
+{
+  // The TypeScript this directory's scripts run with Bun - airlock/slack.ts, which
+  // airlock-check.sh runs - which no workspace package holds, typechecked by
+  // ci-job-envoy-go-checks.yaml's `bunx tsc --noEmit -p packages/envoy/scripts`. The root package
+  // pins its TypeScript and Bun types.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "types": ["bun"]
+  },
+  "include": ["**/*.ts"]
+}

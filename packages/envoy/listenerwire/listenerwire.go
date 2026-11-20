@@ -52,9 +52,15 @@ type TmuxPlace struct {
 	PaneIndex   int    `json:"pane_index"`
 	// Layout is tmux's window_layout string, which draws how the window is split. Empty when the
 	// client dropped it: a window split finely enough grows a layout past what a registration
-	// carries, and the other nine members are sent without it rather than the place being lost.
+	// carries, and the other members are sent without it rather than the place being lost.
 	Layout string `json:"layout,omitempty"`
-	Zoomed bool   `json:"zoomed"`
+	// WindowWidth and WindowHeight are the window's size in cells (tmux's window_width and
+	// window_height), read in the same call as Layout. A layout states the window's size in its
+	// root cell, except where the window's one pane floats: tmux then writes that pane's cell
+	// alone, and these are the size the window is drawn at. Zero from a client older than them.
+	WindowWidth  int  `json:"window_width,omitempty"`
+	WindowHeight int  `json:"window_height,omitempty"`
+	Zoomed       bool `json:"zoomed"`
 }
 
 // APIError is the body of a /v1 error answer. Code names an answer a caller acts on beyond its

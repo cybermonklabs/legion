@@ -353,6 +353,20 @@ def install_omp(job):
     )
 
 
+def install_tmux(job):
+    return reads(
+        (".github/actions/install-tmux/**", at(job, "./.github/actions/install-tmux")),
+        (".github/ci-tools.yaml", ".github/actions/install-tmux/action.yml:53 holds a restored tmux binary to the "
+                                  "digest of the tmux row, and :61 installs that row's binary"),
+        (".github/scripts/ci-tools.sh", ".github/actions/install-tmux/action.yml:39 sources it: ci_tools_verify checks "
+                                        "a restored binary and ci_tools_fetch reads the row's two sources"),
+    )
+
+
+# The pi-envoy step that reads the tmux row's digest for the key of the tmux cache it restores.
+PI_ENVOY_TMUX_ROW_STEP = "Read the tmux row's digest, which ends the cache key"
+
+
 def setup_go(job, gomod, workflow=""):
     return reads((gomod, f"{at(job, 'actions/setup-go', workflow)} go-version-file"))
 
@@ -2430,7 +2444,7 @@ SCRIPT_TEST_GATES = [
                                                     "over a module with a negated tag"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
-        (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:50-52)"),
+        (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:54-56)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine it borrows the changes job's filters from, linked in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model both import, linked in beside it"),
         (f"{SCRIPTS}/go_build_tags.py", "the Go build-tag module the engine imports, linked in beside it"),
@@ -2618,6 +2632,19 @@ GATES = [
         ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.test.ts:6,28 spawns it"),
         ("scripts/priorities-seed.test.ts", at("test", "Test the priorities seed")),
         ("scripts/priorities-seed.ts", "scripts/priorities-seed.test.ts:4 imports it"),
+        # `tsc -p scripts` compiles scripts/e2e/plan-pointer-drive.ts, which imports the Dispatch
+        # e2e client and the pane scenario helper by path, and so their imports with them.
+        ("scripts/tsconfig.json", at("test", "Typecheck the top-level scripts")),
+        ("packages/dispatch/e2e/api.ts", "scripts/e2e/plan-pointer-drive.ts:62-69 imports it (tsc -p scripts)"),
+        ("packages/dispatch/web/src/api/paths.ts", "packages/dispatch/e2e/api.ts:19 imports it (tsc -p scripts)"),
+        ("packages/dispatch/web/src/api/types.ts", "packages/dispatch/e2e/api.ts:20 imports it (tsc -p scripts)"),
+        ("packages/dispatch/e2e/harness-ports.ts", "packages/dispatch/e2e/api.ts:21 imports it (tsc -p scripts)"),
+        ("packages/dispatch/e2e/harness-processes.ts", "packages/dispatch/e2e/api.ts:22 imports it (tsc -p scripts)"),
+        ("packages/dispatch/e2e/harness-embedder.ts", "packages/dispatch/e2e/harness-ports.ts:58 imports it (tsc -p scripts)"),
+        ("packages/dispatch/e2e/harness-real-broker.ts", "packages/dispatch/e2e/harness-ports.ts:60 imports it (tsc -p scripts)"),
+        ("packages/dispatch/e2e/harness-signin.ts", "packages/dispatch/e2e/harness-ports.ts:61 imports it (tsc -p scripts)"),
+        ("packages/dispatch/e2e/harness-broker.ts", "packages/dispatch/e2e/harness-real-broker.ts:21 imports it (tsc -p scripts)"),
+        ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "scripts/e2e/plan-pointer-drive.ts:70 imports it (tsc -p scripts)"),
         ("scripts/e2e/**", f"{at('test', 'bun test scripts/e2e/lib')} (lib/script-functions.test.ts:105-108 scans scripts/e2e/*.sh and lib/*); "
                            f"{at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
         (CONTRACTS_SRC, "scripts/e2e/lib/envoy-bridge.ts:9-10, session-settings-services.ts:6; scripts/dispatch/ask-census.ts:3-9 (tsc -p scripts/dispatch); "
@@ -2830,7 +2857,10 @@ GATES = [
         ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:120-123"),
         (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-envoy/src/skills-guard.test.ts:208-212 reads every .md of skillAndPromptRoots (:30-33)"),
     ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; extensions/envoy.ts:19-131 imports")
-      + install_jj("pi-envoy") + install_omp("pi-envoy") + bun_job("pi-envoy")),
+      + install_jj("pi-envoy") + install_omp("pi-envoy") + install_tmux("pi-envoy") + reads(
+        (".github/ci-tools.yaml", f"{at('pi-envoy', PI_ENVOY_TMUX_ROW_STEP)}: the tmux row's digest ends the cache key"),
+        (".github/scripts/ci-tools.sh", f"{at('pi-envoy', PI_ENVOY_TMUX_ROW_STEP)} sources it for ci_tools_digest"),
+    ) + bun_job("pi-envoy")),
 
     gate("pi_legion", "pi-legion", runs=[
         script_run("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts",
@@ -3657,6 +3687,7 @@ GATES = [
         (".github/actions/install-elan/**", at("tool-fallback", "./.github/actions/install-elan")),
         (".github/actions/install-uv/**", at("tool-fallback", "./.github/actions/install-uv")),
         (".github/actions/install-pulumi/**", at("tool-fallback", "./.github/actions/install-pulumi")),
+        (".github/actions/install-tmux/**", at("tool-fallback", "./.github/actions/install-tmux")),
         (".github/actions/install-docker-plugin/**",
          at("tool-fallback", "./.github/actions/install-docker-plugin")),
         (f"{DAEMON}/docker/worker.Dockerfile", f"{at('tool-fallback', TOOL_JJ_SEED_STEP)}: the rig reads ARG JJ_TOOL "

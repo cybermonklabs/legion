@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+    The tmux place a session registers carries its window's size (`window_width` and
+    `window_height`), read in the same tmux call as the layout, and keeps a layout of up to the
+    contract's 8,000 characters, where it dropped one past 2,000. A size tmux does not print as two
+    numbers is left out, and the place is still reported.
+time: 2026-11-19T17:07:04.858216371Z
+custom:
+    Issue: pr4513

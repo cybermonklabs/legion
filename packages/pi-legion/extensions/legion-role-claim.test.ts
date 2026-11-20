@@ -11,9 +11,9 @@ import type { ZodNumberProperty } from "@legion/pi-shared/pi-types";
 import { captureEnvironment, type EnvironmentRestore } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import type envoyEntryDefault from "../../pi-envoy/extensions/envoy";
-import type { resetNatsConnectForTests as ResetNatsConnectForTests } from "../../pi-envoy/extensions/envoy";
-import type legionEntryDefault from "./legion";
+import type { NatsConnection } from "nats";
+import type * as EnvoyEntry from "../../pi-envoy/extensions/envoy";
+import type * as LegionEntry from "./legion";
 
 /** The daemon's golden registration answer (`packages/daemon/internal/api`), so a field the daemon
  * adds to it reaches the stub below. */
@@ -31,18 +31,21 @@ const registered: Record<string, unknown> = JSON.parse(
 // module: the setter writes a slot of the process, not of one entry instance, so the `afterAll`
 // below puts that slot back with `resetNatsConnectForTests` and no later file dials this
 // stand-in.
-const natsStandInConnect = async () => ({
-  isClosed: () => false,
-  close: async () => undefined,
-  drain: async () => undefined,
-  flush: async () => undefined,
-  subscribe: () => ({
-    unsubscribe: () => undefined,
-    [Symbol.asyncIterator]: async function* () {
-      await new Promise<never>(() => undefined);
-    },
-  }),
-});
+// The stand-in answers the members the entry calls, not the whole `NatsConnection`, as
+// legion.test.ts's does.
+const natsStandInConnect = async (): Promise<NatsConnection> =>
+  ({
+    isClosed: () => false,
+    close: async () => undefined,
+    drain: async () => undefined,
+    flush: async () => undefined,
+    subscribe: () => ({
+      unsubscribe: () => undefined,
+      [Symbol.asyncIterator]: async function* () {
+        await new Promise<never>(() => undefined);
+      },
+    }),
+  }) as unknown as NatsConnection;
 
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import { hostAgentRegistryMock } from "@legion/pi-shared/test/host-registry";
@@ -63,9 +66,9 @@ const envoyConfigFile = join(envoyConfigDirectory, "envoy.json");
 /** The Envoy and Legion entries, each loaded once the environment below is in place. The one row
  *  of this file reads them from its own body, and nothing starts a pane before the `beforeAll`
  *  that fills them. */
-let envoyExtension: typeof envoyEntryDefault;
-let legionExtension: typeof legionEntryDefault;
-let resetNatsConnectForTests: typeof ResetNatsConnectForTests | undefined;
+let envoyExtension: typeof EnvoyEntry.default;
+let legionExtension: typeof LegionEntry.default;
+let resetNatsConnectForTests: typeof EnvoyEntry.resetNatsConnectForTests | undefined;
 let restoreEntryEnvironment: EnvironmentRestore | undefined;
 
 beforeAll(async () => {
@@ -97,11 +100,15 @@ beforeAll(async () => {
   // starts a session. The slot that dial goes in is the process's, so the set and the reset below
   // are one pair of hooks: a run that selects no row of this file does neither, where a set at
   // module scope would leave the next file of the same run dialling this stand-in.
-  const envoyEntry = await import("../../pi-envoy/extensions/envoy.ts?envoy-entry");
+  // A specifier with a query is a module of its own to Bun and no file tsc resolves, so each load
+  // is typed as the module it loads.
+  const envoySource = "../../pi-envoy/extensions/envoy.ts";
+  const envoyEntry: typeof EnvoyEntry = await import(`${envoySource}?envoy-entry`);
   envoyExtension = envoyEntry.default;
   resetNatsConnectForTests = envoyEntry.resetNatsConnectForTests;
   envoyEntry.setNatsConnectForTests(natsStandInConnect);
-  const legionEntry = await import("./legion.ts?legion-entry");
+  const legionSource = "./legion.ts";
+  const legionEntry: typeof LegionEntry = await import(`${legionSource}?legion-entry`);
   legionExtension = legionEntry.default;
   // The boot's capability report measures through this host rather than the production one, which
   // reaches Oh My Pi's own modules and runs the pane's `gh` and `dispatch`; what the rows say is

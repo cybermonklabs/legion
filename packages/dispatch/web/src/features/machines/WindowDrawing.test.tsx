@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type { Agent } from "../../api/types";
+import recorded from "./__fixtures__/tmux38-layouts.json";
 import type { MachinePane, MachineWindow } from "./machine-model";
 import { type PaneCounts, WindowDrawing } from "./WindowDrawing";
 
@@ -15,6 +16,42 @@ const NOTHING_OWED: PaneCounts = { asksForYou: new Map(), unreadReplies: new Map
 
 /** The three-pane window this design recorded from tmux 3.5a: `%0` over `%1` beside `%2`. */
 const THREE_PANES = "b05b,80x24,0,0[80x12,0,0,0,80x11,0,13{40x11,0,13,1,39x11,41,13,2}]";
+/** The same window as tmux 3.8 writes its layout, in the JSON form. */
+const THREE_PANES_JSON =
+  '{"V":2,"L":{"t":"v","w":80,"h":24,"x":0,"y":0,"c":[{"t":"p","w":80,"h":12,"x":0,"y":0,"a":true,"i":0,"I":"%0"},{"t":"h","w":80,"h":11,"x":0,"y":13,"c":[{"t":"p","w":40,"h":11,"x":0,"y":13,"i":1,"I":"%1"},{"t":"p","w":39,"h":11,"x":41,"y":13,"i":2,"I":"%2"}]}]}}';
+
+// Windows with floating panes, as tmux 3.8 and tmux 3.7c write them, each recorded on a server of
+// its own (`tmux-layout.test.ts` holds these windows with all that `list-panes` said of them).
+/** tmux 3.8: `split-window`, then `new-pane` from the top pane, which tmux writes right after
+ *  that pane: the floating %2 (index 2) before the tiled %1 (index 1) it lies over. */
+const SPLIT_THEN_FLOATING_38 =
+  '{"V":2,"L":{"t":"v","w":80,"h":24,"x":0,"y":0,"c":[{"t":"p","w":80,"h":12,"x":0,"y":0,"a":true,"i":0,"I":"%0"},{"t":"p","w":28,"h":8,"x":11,"y":9,"i":2,"z":0,"I":"%2"},{"t":"p","w":80,"h":11,"x":0,"y":13,"i":1,"I":"%1"}]}}';
+/** tmux 3.8: a second floating pane from the same pane, %3, in front of %2 and written first. */
+const TWO_FLOATING_38 =
+  '{"V":2,"L":{"t":"v","w":80,"h":24,"x":0,"y":0,"c":[{"t":"p","w":80,"h":12,"x":0,"y":0,"a":true,"i":0,"I":"%0"},{"t":"p","w":28,"h":8,"x":21,"y":11,"i":3,"z":0,"I":"%3"},{"t":"p","w":28,"h":8,"x":11,"y":9,"i":2,"z":1,"I":"%2"},{"t":"p","w":80,"h":11,"x":0,"y":13,"i":1,"I":"%1"}]}}';
+/** tmux 3.7c: the same window, its floating panes among the tiled cells and then named again
+ *  after the root, front first. */
+const TWO_FLOATING_37C =
+  "e84f,80x24,0,0[80x12,0,0,0,80x11,0,13,1,30x10,10,8,2,30x10,20,10,3]<30x10,20,10,3,30x10,10,8,2>";
+/** tmux 3.8: a window split left (%0) and right (%1), then `new-pane -t %0`, a floating pane
+ *  reaching over the right pane, which the string names after it. */
+const FLOATING_OVER_LATER_TILED_38 =
+  '{"V":2,"L":{"t":"h","w":80,"h":24,"x":0,"y":0,"c":[{"t":"p","w":40,"h":24,"x":0,"y":0,"a":true,"i":0,"I":"%0"},{"t":"p","w":28,"h":8,"x":31,"y":6,"i":2,"z":0,"I":"%2"},{"t":"p","w":39,"h":24,"x":41,"y":0,"i":1,"I":"%1"}]}}';
+/** tmux 3.8: the tiled pane killed, so the layout is the one floating pane's cell, at 11,6 in
+ *  the 80x24 window tmux lists, and states no window size. */
+const FLOATING_ONLY_38 =
+  '{"V":2,"L":{"t":"p","w":28,"h":8,"x":11,"y":6,"a":true,"i":0,"z":0,"I":"%1"}}';
+/** tmux 3.7c: the same window. */
+const FLOATING_ONLY_37C = "4cfd,30x10,10,5,1<30x10,10,5,1>";
+/** tmux 3.8: `resize-pane -x 60` takes the floating pane past the right edge (61 + 58 > 80). */
+const PAST_RIGHT_38 =
+  '{"V":2,"L":{"t":"v","w":80,"h":24,"x":0,"y":0,"c":[{"t":"p","w":80,"h":24,"x":0,"y":0,"a":true,"i":0,"I":"%0"},{"t":"p","w":58,"h":8,"x":61,"y":16,"i":1,"z":0,"I":"%1"}]}}';
+/** tmux 3.8: `move-pane -X -5 -Y -3` takes it left of and above the window. */
+const LEFT_ABOVE_38 =
+  '{"V":2,"L":{"t":"v","w":80,"h":24,"x":0,"y":0,"c":[{"t":"p","w":80,"h":24,"x":0,"y":0,"a":true,"i":0,"I":"%0"},{"t":"p","w":48,"h":18,"x":-4,"y":-2,"i":1,"z":0,"I":"%1"}]}}';
+/** tmux 3.8: `move-pane -X -40 -Y -20` takes it wholly outside the window. */
+const OFF_WINDOW_38 =
+  '{"V":2,"L":{"t":"v","w":80,"h":24,"x":0,"y":0,"c":[{"t":"p","w":80,"h":24,"x":0,"y":0,"a":true,"i":0,"I":"%10"},{"t":"p","w":28,"h":8,"x":-39,"y":-19,"i":1,"z":0,"I":"%11"}]}}';
 
 const NOW = 1_762_000_000_000;
 
@@ -46,8 +83,12 @@ function pane(paneId: string, paneIndex: number, agent: Agent, extra?: Partial<M
   } satisfies MachinePane;
 }
 
-function window(panes: readonly MachinePane[], layout?: string): MachineWindow {
-  return { layout, panes, windowId: "@1", windowIndex: 2, windowName: "agents" };
+function window(
+  panes: readonly MachinePane[],
+  layout?: string,
+  size?: MachineWindow["size"]
+): MachineWindow {
+  return { layout, panes, size, windowId: "@1", windowIndex: 2, windowName: "agents" };
 }
 
 /** happy-dom lays nothing out and has no `ResizeObserver`, so every case drives the component
@@ -64,6 +105,285 @@ function draw(node: ReactNode) {
 function boxes(): HTMLElement[] {
   return screen.getAllByTestId("window-pane");
 }
+
+/** Each drawn box's pane id, in document order: the order a browser paints sibling boxes with no
+ *  z-index in, back first. */
+function paneIds(): (string | null)[] {
+  return boxes().map((box) => box.getAttribute("data-pane"));
+}
+
+/** A box's place and size, as the drawing set them. */
+function placed(box: HTMLElement): string[] {
+  return [box.style.left, box.style.top, box.style.width, box.style.height];
+}
+
+/** `part` of `whole` as a CSS percentage, worked out the way the drawing writes one. */
+function percent(part: number, whole: number): string {
+  return `${(part / whole) * 100}%`;
+}
+
+test("floating panes are drawn over the tiled ones, the front of their stack on top", () => {
+  const agents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const panes = [pane("%0", 0, session("a".repeat(16), "Planner"))];
+  try {
+    for (const [layout, order] of [
+      // The floating %2 over the tiled %1, which the string names after it.
+      [SPLIT_THEN_FLOATING_38, ["%0", "%1", "%2"]],
+      [FLOATING_OVER_LATER_TILED_38, ["%0", "%1", "%2"]],
+      // %3 is the front of the two floating panes: tmux wrote it first, and it is drawn last.
+      [TWO_FLOATING_38, ["%0", "%1", "%2", "%3"]],
+      [TWO_FLOATING_37C, ["%0", "%1", "%2", "%3"]],
+      // The control: three tiled panes keep the layout's order.
+      [THREE_PANES_JSON, ["%0", "%1", "%2"]],
+    ] as const) {
+      const view = draw(
+        <WindowDrawing
+          counts={NOTHING_OWED}
+          now={NOW}
+          width={1440}
+          window={window(panes, layout)}
+        />
+      );
+      try {
+        expect({ layout, order: paneIds() }).toEqual({ layout, order: [...order] });
+        // No box carries a z-index of its own, so the document order is the paint order.
+        expect(boxes().map((box) => box.style.zIndex)).toEqual(order.map(() => ""));
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
+    agents.mockRestore();
+  }
+});
+
+test("a pane no session names is labelled with the index tmux gives it, wherever it is drawn", () => {
+  const agents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const panes = [pane("%0", 0, session("a".repeat(16), "Planner"))];
+  try {
+    // tmux's `list-panes` gives %1 index 1, %2 index 2 and %3 index 3 in both: tmux 3.8 writes
+    // each index, and tmux 3.7c writes the panes in index order.
+    for (const layout of [TWO_FLOATING_38, TWO_FLOATING_37C]) {
+      const view = draw(
+        <WindowDrawing
+          counts={NOTHING_OWED}
+          now={NOW}
+          width={1440}
+          window={window(panes, layout)}
+        />
+      );
+      try {
+        expect(
+          Object.fromEntries(
+            boxes().map((box) => [
+              box.getAttribute("data-pane"),
+              box.getAttribute("data-pane-index"),
+            ])
+          )
+        ).toEqual({ "%0": "0", "%1": "1", "%2": "2", "%3": "3" });
+        expect(within(boxes()[3]).getByText("Pane 3")).toBeDefined();
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
+    agents.mockRestore();
+  }
+});
+
+test("a floating pane past the window's edges is drawn as the part of it inside the window", () => {
+  const agents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const panes = [
+    pane("%0", 0, session("a".repeat(16), "Planner")),
+    pane("%1", 1, session("b".repeat(16), "Builder")),
+  ];
+  try {
+    for (const [layout, inside] of [
+      // 58 wide from column 61 of 80: the 19 columns up to the right edge.
+      [PAST_RIGHT_38, [percent(61, 80), percent(16, 24), percent(19, 80), percent(8, 24)]],
+      // 48 by 18 from -4, -2: the 44 by 16 from the window's top left corner.
+      [LEFT_ABOVE_38, ["0%", "0%", percent(44, 80), percent(16, 24)]],
+    ] as const) {
+      const view = draw(
+        <WindowDrawing
+          counts={NOTHING_OWED}
+          now={NOW}
+          width={1440}
+          window={window(panes, layout)}
+        />
+      );
+      try {
+        expect(screen.getByTestId("window-drawing").getAttribute("data-drawn")).toBe("layout");
+        const floating = boxes()[1];
+        expect(floating.getAttribute("data-floating")).toBe("true");
+        expect(placed(floating)).toEqual([...inside]);
+        // The session's name and state are in the part that is drawn.
+        expect(within(floating).getByText("Builder")).toBeDefined();
+        expect(screen.queryByTestId("window-off-window-panes")).toBeNull();
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
+    agents.mockRestore();
+  }
+});
+
+test("a floating pane wholly outside the window is named under the drawing, with its session", () => {
+  const agents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const hidden = session("b".repeat(16), "Hidden");
+  const view = draw(
+    <WindowDrawing
+      counts={NOTHING_OWED}
+      now={NOW}
+      width={1440}
+      window={window(
+        [pane("%10", 0, session("a".repeat(16), "Planner")), pane("%11", 1, hidden)],
+        OFF_WINDOW_38
+      )}
+    />
+  );
+  try {
+    // tmux shows nothing of %11, and neither does the drawing.
+    expect(paneIds()).toEqual(["%10"]);
+    const block = screen.getByTestId("window-off-window-panes");
+    expect(within(block).getByTestId("window-off-window-panes-reason").textContent).toBe(
+      "This window holds a floating pane that lies wholly outside the window, so tmux shows nothing of it, and the session in that pane is named here rather than above."
+    );
+    const rows = within(block).getAllByTestId("window-off-window-pane-row");
+    expect(rows.map((row) => row.getAttribute("data-pane"))).toEqual(["%11"]);
+    expect(rows[0].getAttribute("data-agent")).toBe(hidden.session_id);
+    expect(rows[0].getAttribute("data-pane-index")).toBe("1");
+    expect(within(rows[0]).getByRole("link", { name: "Hidden" })).toBeDefined();
+    // It is a pane the layout names, so it is not among the panes the layout leaves out.
+    expect(screen.queryByTestId("window-unnamed-panes")).toBeNull();
+  } finally {
+    view.unmount();
+    agents.mockRestore();
+  }
+});
+
+test("a window whose one pane floats is drawn at its session's window size, or listed", () => {
+  const agents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const panes = [pane("%1", 0, session("b".repeat(16), "Builder"))];
+  try {
+    for (const [layout, box] of [
+      [FLOATING_ONLY_38, [percent(11, 80), percent(6, 24), percent(28, 80), percent(8, 24)]],
+      [FLOATING_ONLY_37C, [percent(10, 80), percent(5, 24), percent(30, 80), percent(10, 24)]],
+    ] as const) {
+      const sized = draw(
+        <WindowDrawing
+          counts={NOTHING_OWED}
+          now={NOW}
+          width={1440}
+          window={window(panes, layout, { height: 24, width: 80 })}
+        />
+      );
+      try {
+        // The window tmux lists, 80x24, with the pane at its own place in it.
+        const drawn = screen.getByTestId("window-layout");
+        expect(drawn.style.height).toBe("864px");
+        expect([drawn.getAttribute("data-columns"), drawn.getAttribute("data-rows")]).toEqual([
+          "80",
+          "24",
+        ]);
+        expect(placed(boxes()[0])).toEqual([...box]);
+      } finally {
+        sized.unmount();
+      }
+      // A session that reported no size: the layout states none, so the panes are listed.
+      const unsized = draw(
+        <WindowDrawing
+          counts={NOTHING_OWED}
+          now={NOW}
+          width={1440}
+          window={window(panes, layout)}
+        />
+      );
+      try {
+        expect(screen.queryByTestId("window-pane")).toBeNull();
+        const list = screen.getByTestId("window-pane-list");
+        expect(list.getAttribute("data-reason")).toBe("no-window-size");
+        expect(within(list).getByTestId("window-pane-list-reason").textContent).toBe(
+          "This window's one pane floats, so its layout gives no size for the window, and its session reported none, so its panes are listed in layout order instead."
+        );
+        expect(
+          within(list)
+            .getAllByTestId("window-pane-row")
+            .map((row) => row.getAttribute("data-agent"))
+        ).toEqual(["b".repeat(16)]);
+      } finally {
+        unsized.unmount();
+      }
+    }
+  } finally {
+    agents.mockRestore();
+  }
+});
+
+test("a JSON layout with a cell below the root it cannot read is listed, never drawn short", () => {
+  const agents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const panes = [
+    pane("%0", 0, session("a".repeat(16), "Planner")),
+    pane("%1", 1, session("b".repeat(16), "Builder")),
+    pane("%2", 2, session("c".repeat(16), "Reviewer")),
+  ];
+  // %2's id without its `%`: a cell tmux did not write, inside the root's second child.
+  const broken = THREE_PANES_JSON.replace('"I":"%2"', '"I":"2"');
+  expect(broken).not.toBe(THREE_PANES_JSON);
+  const view = draw(
+    <>
+      <WindowDrawing counts={NOTHING_OWED} now={NOW} width={1440} window={window(panes, broken)} />
+      {/* The control: the unbroken layout draws all three. */}
+      <WindowDrawing
+        counts={NOTHING_OWED}
+        now={NOW}
+        width={1440}
+        window={window(panes, THREE_PANES_JSON)}
+      />
+    </>
+  );
+  try {
+    const [refused, drawn] = screen.getAllByTestId("window-drawing");
+    expect(refused.getAttribute("data-drawn")).toBe("list");
+    expect(within(refused).getByTestId("window-pane-list").getAttribute("data-reason")).toBe(
+      "unreadable-layout"
+    );
+    expect(
+      within(refused)
+        .getAllByTestId("window-pane-row")
+        .map((row) => row.getAttribute("data-pane"))
+    ).toEqual(["%0", "%1", "%2"]);
+    expect(drawn.getAttribute("data-drawn")).toBe("layout");
+    expect(within(drawn).getAllByTestId("window-pane")).toHaveLength(3);
+  } finally {
+    view.unmount();
+    agents.mockRestore();
+  }
+});
+
+test("a window of 60 panes whose tmux writes the JSON layout is drawn", () => {
+  const agents = spyOn(api, "listAgents").mockResolvedValue([]);
+  // Recorded from tmux 3.8: 60 tiled panes in a 400x200 window, 3,756 characters.
+  const view = draw(
+    <WindowDrawing
+      counts={NOTHING_OWED}
+      now={NOW}
+      width={1440}
+      window={window(
+        [pane("%0", 0, session("a".repeat(16), "Planner"))],
+        recorded.tiledSixtyPanes400x200
+      )}
+    />
+  );
+  try {
+    expect(screen.getByTestId("window-drawing").getAttribute("data-drawn")).toBe("layout");
+    expect(boxes()).toHaveLength(60);
+  } finally {
+    view.unmount();
+    agents.mockRestore();
+  }
+});
 
 test("a window is drawn at its own aspect ratio, each pane at the layout's percentages", () => {
   const agents = spyOn(api, "listAgents").mockResolvedValue([]);
@@ -111,6 +431,39 @@ test("a window is drawn at its own aspect ratio, each pane at the layout's perce
     ]);
   } finally {
     view.unmount();
+    agents.mockRestore();
+  }
+});
+
+test("a window whose tmux writes the JSON layout is drawn as the same boxes", () => {
+  const agents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const panes = [
+    pane("%0", 0, session("a".repeat(16), "Planner")),
+    pane("%1", 1, session("b".repeat(16), "Builder")),
+  ];
+  /** Each drawn pane's id and box, as the drawing placed it. */
+  const drawn = (layout: string) => {
+    const view = draw(
+      <WindowDrawing counts={NOTHING_OWED} now={NOW} width={1440} window={window(panes, layout)} />
+    );
+    try {
+      expect(screen.getByTestId("window-drawing").getAttribute("data-drawn")).toBe("layout");
+      return boxes().map((box) => [
+        box.getAttribute("data-pane"),
+        box.style.left,
+        box.style.top,
+        box.style.width,
+        box.style.height,
+      ]);
+    } finally {
+      view.unmount();
+    }
+  };
+  try {
+    const fromJson = drawn(THREE_PANES_JSON);
+    expect(fromJson.map(([paneId]) => paneId)).toEqual(["%0", "%1", "%2"]);
+    expect(fromJson).toEqual(drawn(THREE_PANES));
+  } finally {
     agents.mockRestore();
   }
 });
