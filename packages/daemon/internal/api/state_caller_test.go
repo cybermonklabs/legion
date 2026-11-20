@@ -650,18 +650,19 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// and neither the issues' answers, nor the leak check's cause, nor the entry numbers,
 			// nor the held list, nor the tree quiet time, nor `mergeWait`, nor the assignments,
 			// nor the entry times and the architect-stalled arms, nor the repositories' `apps`,
-			// nor the claim views' keys of contract 184, the ten bands between it and this
-			// daemon's own that these rows compare; a pod at whyAndLineFieldsContract is served
-			// the answers and none of the other nine; a pod at leakCheckCauseContract is served
-			// the cause and none of the eight above it; a pod at phaseEntriesContract is served
-			// the entry numbers and none of the seven above it; a pod at heldContract is served
-			// the held list and none of the six above it; a pod at quietTimeContract is served the
-			// measure and none of `mergeWait`, the assignments, the entry times, the repositories'
-			// `apps` and the claim views' keys of contract 184; a pod at mergeWaitContract is
-			// served `mergeWait` and none of the other four; a pod at assignmentsContract is
-			// served the assignments and none of the other three; a pod at entryTimesContract is
-			// served the entry times and neither of the other two; and a pod at
-			// repositoryAppsContract is served the repositories' `apps` and not those keys.
+			// nor the pause, nor the claim views' keys of contract 184, the eleven bands between
+			// it and this daemon's own that these rows compare; a pod at whyAndLineFieldsContract
+			// is served the answers and none of the other ten; a pod at leakCheckCauseContract is
+			// served the cause and none of the nine above it; a pod at phaseEntriesContract is
+			// served the entry numbers and none of the eight above it; a pod at heldContract is
+			// served the held list and none of the seven above it; a pod at quietTimeContract is
+			// served the measure and none of `mergeWait`, the assignments, the entry times, the
+			// repositories' `apps`, the pause and the claim views' keys of contract 184; a pod at
+			// mergeWaitContract is served `mergeWait` and none of the other five; a pod at
+			// assignmentsContract is served the assignments and none of the other four; a pod at
+			// entryTimesContract is served the entry times and none of the other three; a pod at
+			// repositoryAppsContract is served the repositories' `apps` and neither the pause nor
+			// those keys; and a pod at pauseContract is served the pause and not those keys.
 			if tc.rounds && tc.stall {
 				want := full
 				if !tc.answers {
