@@ -11,7 +11,8 @@ captured repositories by what they are rather than by their names. Each capture 
 with only these values replaced, in the repository itself and in its `parent`, `source`, `owner`
 and `organization`:
 
-  - each account's login, numeric id, node_id and avatar id:
+  - each account's login, node_id and avatar id, and its numeric id, a small id that names no
+    captured account:
       the person whose fork is captured           -> outside-author (id 1000001)
       the owner of the fork of a fork             -> outside-author (id 1000001)
       the organization that fork was made from    -> outside-org (id 1000002)
@@ -20,13 +21,18 @@ and `organization`:
   - each repository's name, numeric id and node_id:
       the forks and the repository they are made from -> sample-project
       the repository that is no fork                  -> sample-library
-      ids 2000001 to 2000005, and node_ids of the shape GitHub's legacy ids have
-        (base64 of `010:Repository<id>`)
+      ids 2000001 to 2000005, small ids that name no captured repository, and node_ids of the
+        shape GitHub's legacy ids have (base64 of `010:Repository<id>`);
+    GitHub serves some of these small ids as unrelated repositories and accounts, none of them
+    a captured one;
   - each repository's description -> "An invented repository of the fixture's own", and each
     topic a repository listed -> one topic, "invented-topic";
   - each repository's created_at, updated_at and pushed_at -> 2026-01-01T00:00:00Z, and its
     size and each of its counts (stargazers, watchers, forks, open issues, network,
     subscribers) -> 0;
+  - the `last-modified` header, which GitHub sets from the repository's updated_at ->
+    Thu, 01 Jan 2026 00:00:00 GMT, and the `etag` header -> the sha256 of
+    `invented etag of <file name>`;
   - the host of the homepage -> acme.example;
   - content-length, set to the body's length after these replacements.
 

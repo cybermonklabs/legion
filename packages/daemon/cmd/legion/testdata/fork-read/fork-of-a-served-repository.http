@@ -4,8 +4,8 @@ content-type: application/json; charset=utf-8
 content-length: 18287
 cache-control: private, max-age=60, s-maxage=60
 vary: Accept, Authorization, Cookie, X-GitHub-OTP,Accept-Encoding, Accept, X-Requested-With
-etag: "9edf7b1c67219ff096ed51c06fc6283592d6b26a54e6adef2c9704f7e11579dc"
-last-modified: Mon, 16 Nov 2026 16:01:24 GMT
+etag: "de8c2cf964ce95ef8ba228669d6032c8758052138033cf4959261755365fac68"
+last-modified: Thu, 01 Jan 2026 00:00:00 GMT
 x-github-media-type: github.v3; format=json
 x-accepted-github-permissions: metadata=read
 x-github-api-version-selected: 2022-11-28
