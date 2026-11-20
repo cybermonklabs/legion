@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/tlsalert/tlsalerttest"
 )
 
 // TestASourceNamesTheBrokerAndTheStoreItsSettingsDescribe: as a session's forms print it, a
@@ -615,6 +616,16 @@ func TestEveryUnreachableFailureIsClassified(t *testing.T) {
 	dial := func(errno syscall.Errno) error {
 		return &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", errno)}
 	}
+	// alerted is the error a GET of an https URL at addr fails with: a real TLS alert over TCP,
+	// which Go's TLS client returns as a *net.OpError, never as a tls.AlertError.
+	alerted := func(addr string) error {
+		response, err := http.Get("https://" + addr + "/")
+		if err == nil {
+			_ = response.Body.Close()
+			t.Fatalf("a GET at %s answered %d; want a TLS alert", addr, response.StatusCode)
+		}
+		return err
+	}
 	for _, row := range []struct {
 		name    string
 		err     error
@@ -632,6 +643,9 @@ func TestEveryUnreachableFailureIsClassified(t *testing.T) {
 		{"an HTTP answer to HTTPS", tls.RecordHeaderError{Msg: "first record does not look like a TLS handshake"}, answered, ""},
 		{"an HTTP answer to HTTPS, as net/http reports it", http.ErrSchemeMismatch, answered, ""},
 		{"an untrusted certificate", &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}, answered, ""},
+		{"a TLS alert the broker sent, over TCP", alerted(tlsalerttest.Remote(t)), answered, ""},
+		{"a TLS alert this client sent on a record it could not take, over TCP", alerted(tlsalerttest.Local(t)), answered, ""},
+		{"a TLS alert over QUIC", tls.AlertError(40), answered, ""},
 		{"EOF after the request", io.EOF, answered, ""},
 		{"a reset after the request", &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)}, answered, ""},
 		{"an error none of these covers", errors.New("something unforeseen"), "the request to the broker at secrets.internal.example failed", "answered"},

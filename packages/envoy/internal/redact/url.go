@@ -51,6 +51,8 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/tlsalert"
 )
 
 // NotPrinted stands in for a value URL will not print.
@@ -505,9 +507,16 @@ func class(err error, server string) string {
 	}
 }
 
-// tlsFailure reports whether err, or an error it wraps, is a TLS record, alert or certificate
-// failure (tlsError).
+// tlsFailure reports whether err, or an error it wraps, is a TLS alert, the far side's or this
+// side's own (tlsalert.In, which reads the *net.OpError crypto/tls returns one as over TCP, and
+// QUIC's tls.AlertError), or a TLS record or certificate failure (tlsRecordOrCertificate).
 func tlsFailure(err error) bool {
+	return tlsalert.In(err) || tlsRecordOrCertificate(err)
+}
+
+// tlsRecordOrCertificate reports whether err, or an error it wraps, is a TLS record or
+// certificate failure (tlsError).
+func tlsRecordOrCertificate(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -516,10 +525,10 @@ func tlsFailure(err error) bool {
 	}
 	switch u := err.(type) {
 	case interface{ Unwrap() error }:
-		return tlsFailure(u.Unwrap())
+		return tlsRecordOrCertificate(u.Unwrap())
 	case interface{ Unwrap() []error }:
 		for _, e := range u.Unwrap() {
-			if tlsFailure(e) {
+			if tlsRecordOrCertificate(e) {
 				return true
 			}
 		}
@@ -527,11 +536,11 @@ func tlsFailure(err error) bool {
 	return false
 }
 
-// tlsError reports whether err itself, not an error it wraps, is a TLS record, alert or
-// certificate failure.
+// tlsError reports whether err itself, not an error it wraps, is a TLS record or certificate
+// failure.
 func tlsError(err error) bool {
 	switch err.(type) {
-	case tls.RecordHeaderError, tls.AlertError, *tls.CertificateVerificationError,
+	case tls.RecordHeaderError, *tls.CertificateVerificationError,
 		x509.UnknownAuthorityError, x509.HostnameError, x509.CertificateInvalidError:
 		return true
 	}

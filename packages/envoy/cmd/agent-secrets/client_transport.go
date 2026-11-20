@@ -24,6 +24,7 @@ import (
 
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/tlsalert"
 )
 
 // errNothingSent is the cause of a call this client could not even build a request for.
@@ -118,7 +119,7 @@ func (e *cutOffError) withRoute(route string) error {
 // unreachable classifies a failed HTTP exchange, sending its reader to the layer that failed.
 // Any resolver error is name resolution, before the generic timeout branch. A dial that made no
 // connection (refused, network or host unreachable, any other dial error) is a non-answer, which
-// routing or a listener fixes. Only what proves a peer answered - a TLS record or certificate
+// routing or a listener fixes. Only what proves a peer answered - a TLS record, alert or certificate
 // error, EOF, or a reset once the connection existed - is "answered but the exchange failed",
 // which TLS or a proxy fixes. An error that fits none says no more than that the request failed,
 // rather than name a layer it cannot prove.
@@ -150,16 +151,16 @@ func unreachable(base brokeraddr.Address, method, callURL string, err error) err
 
 // peerAnswered reports whether err shows a peer took the connection and then broke the exchange:
 // a TLS record that is not TLS (an HTTP server answering an https URL, which net/http reports as
-// its fixed http.ErrSchemeMismatch in place of the record error), a TLS alert or certificate it
-// would not trust, or the stream ending or being reset once it existed.
+// its fixed http.ErrSchemeMismatch in place of the record error), a TLS alert, the broker's or this
+// client's own (tlsalert.In, which reads the *net.OpError crypto/tls returns one as over TCP), a
+// certificate it would not trust, or the stream ending or being reset once it existed.
 func peerAnswered(err error) bool {
 	var record tls.RecordHeaderError
-	var alert tls.AlertError
 	var verify *tls.CertificateVerificationError
 	var authority x509.UnknownAuthorityError
 	var hostname x509.HostnameError
 	var invalid x509.CertificateInvalidError
-	return errors.As(err, &record) || errors.Is(err, http.ErrSchemeMismatch) || errors.As(err, &alert) || errors.As(err, &verify) ||
+	return errors.As(err, &record) || errors.Is(err, http.ErrSchemeMismatch) || tlsalert.In(err) || errors.As(err, &verify) ||
 		errors.As(err, &authority) || errors.As(err, &hostname) || errors.As(err, &invalid) ||
 		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
 		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
