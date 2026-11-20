@@ -1,4 +1,5 @@
-import { expect, setDefaultTimeout, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
+import { closeSync, constants, openSync } from "node:fs"
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -10,15 +11,10 @@ const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
 /** The Dispatch token the hook is handed, in its environment or in envoy.json. */
 const DISPATCH_TOKEN = fixtureSecret("dsp")
 
-// Each row waits on its hooks' exits, and on nothing else. A hook run needs about 0.3-0.4 s of
-// CPU (`/usr/bin/time` in this mode: 0.18-0.23 s user, 0.12-0.15 s sys), starts no process but
-// the jj of a row that gives it a Legion state directory, and makes no request but to the row's
-// own stand-ins, so its wall time is that CPU over the share of a CPU the machine gives it. At
-// Bun's 5 s default, 21 of 23 rows exited 143 with the run confined to one CPU beside 32 busy
-// loops, which is how this box under load ran some of them. The limit below is a hang guard, not
-// a budget: with no limit, under the same load, the slowest row without a limit of its own took
-// 12.52 s, and this is three times that, rounded up. It fires only if a hook never exits.
-setDefaultTimeout(40_000)
+// Each row waits on its hooks' exits and on its stand-ins, and on no clock: a hook's wall time is
+// the CPU it needs over the share of a CPU the machine gives it. So no row has a bound of its own,
+// and the only one is the package's hang guard, `bun test --timeout=60000` (package.json), which
+// fires only if a hook never exits.
 
 /** Runs the hook as Claude Code does, with `env` as its whole environment and `preload` given to
  * Bun first where set. The session's cwd is the test's scratch HOME unless the input names one:
@@ -171,7 +167,7 @@ test("names an unreachable Dispatch whose password holds an '@' by no part of th
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
-}, 30_000)
+})
 
 test("a SessionStart carrying a session title records it, and one carrying none removes it", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-title-"))
@@ -584,6 +580,33 @@ async function jjDirectory(scratch: string, body: string): Promise<string> {
   return bin
 }
 
+/** The FIFOs of `unansweringJjDirectory`'s stand-ins, for the afterEach below. */
+const unansweringJjs: string[] = []
+// A stand-in still blocked on its FIFO when its row ends, which only a hook that waited on it
+// leaves, is let go here: opening the write end ends its read, so that hook exits and nothing of
+// the row outlives it. A FIFO with no reader left refuses the open (ENXIO), and one its row has
+// removed is gone (ENOENT); neither has anything to let go.
+afterEach(() => {
+  for (const fifo of unansweringJjs.splice(0)) {
+    try {
+      closeSync(openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK))
+    } catch {}
+  }
+})
+
+/** A directory holding a `jj` that never answers while its row runs, for `jjDirectory`'s place on
+ * the hook's PATH: it reads a FIFO no writer opens before the row has ended. So a hook that waited
+ * on it would never exit, and the package's hang guard would fail the row; the hook's exit is the
+ * fact that it gave up on jj, at any load. */
+async function unansweringJjDirectory(scratch: string): Promise<string> {
+  await mkdir(scratch, { recursive: true })
+  const fifo = join(scratch, "jj-answers")
+  const made = Bun.spawnSync(["mkfifo", fifo], { stderr: "pipe" })
+  if (made.exitCode !== 0) throw new Error(`mkfifo ${fifo}: ${made.stderr.toString()}`)
+  unansweringJjs.push(fifo)
+  return jjDirectory(scratch, `exec cat ${JSON.stringify(fifo)}`)
+}
+
 /** A Dispatch answering one empty open-asks snapshot, so a test can see the summary the hook
  * still prints beside whatever it wrote to the env file. */
 function openAsksServer() {
@@ -891,10 +914,9 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-jj-hangs-"))
   const stateDir = join(scratch, "state")
   await mkdir(stateDir)
-  const bin = await jjDirectory(scratch, "exec sleep 30")
+  const bin = await unansweringJjDirectory(scratch)
   const envFile = join(scratch, "session-env.sh")
   const server = openAsksServer()
-  const started = Date.now()
   try {
     const result = await runHook(hookInput, {
       HOME: scratch,
@@ -907,8 +929,8 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
       DISPATCH_TOKEN,
     })
 
+    // The hook exited although its jj never answered: it gave up on it.
     expect(result.exitCode).toBe(0)
-    expect(Date.now() - started).toBeLessThan(15_000)
     expect(result.stdout).toStartWith("Dispatch authored-ask summary:\n")
     expect(await readFile(envFile, "utf8")).toBe(
       [
@@ -958,7 +980,7 @@ test("keeps the session's own export when a later run of the same id has no jj t
     )
 
     // The resume: same session id, same file, and a jj that never answers.
-    const hanging = await jjDirectory(join(scratch, "hanging"), "exec sleep 30")
+    const hanging = await unansweringJjDirectory(join(scratch, "hanging"))
     expect((await runHook(hookInput, env(hanging))).exitCode).toBe(0)
 
     expect(await readFile(envFile, "utf8")).toBe(
@@ -973,4 +995,4 @@ test("keeps the session's own export when a later run of the same id has no jj t
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
-}, 20_000)
+})
