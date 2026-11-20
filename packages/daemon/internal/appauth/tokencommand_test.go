@@ -547,6 +547,42 @@ func TestTokenModeAPendingApprovalIsTransient(t *testing.T) {
 	}
 }
 
+// A human-tier profile's grant is reused, and its waiting request joined, only for the same
+// target, so while the review App's request for one owner waits on a person, the request for a
+// second owner is refused REQUEST_PENDING, `agent-secrets` exiting 1. That refusal is no answer
+// about the App or the owner: it is transient, as exit 75 is, so the second owner's lease is asked
+// for again once the first request is decided, rather than failing the role's bundles. The
+// stand-in answers the first owner's release and refuses the second's as the broker does; any
+// other exit 1 stays the configuration's answer, and so does the refusal's text from a command
+// that exits otherwise, which is no refusal `agent-secrets` made.
+func TestTokenModeAPendingRequestOfAnotherTargetIsTransient(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	command := fmt.Sprintf(`case "$LEGION_GITHUB_OWNER" in
+  alpha) printf '{"installations":{"alpha":{"installation_id":1,"token":"ghs_alpha","expires_at":"%s"}}}' ;;
+  beta) echo "agent-secrets: a request for one or more of these secrets is already pending: request 0123abcd is still pending (REQUEST_PENDING) (answer 0f0f0f0f); asked the broker AGENT_SECRETS_URL names (AWS Secrets Manager)" >&2; exit 1 ;;
+  delta) echo "wrapper: the client said (REQUEST_PENDING) and the wrapper failed" >&2; exit 3 ;;
+  *) echo "agent-secrets: no agent secret has this name (UNKNOWN_SECRET)" >&2; exit 1 ;;
+esac`, now.Add(time.Hour).Format(time.RFC3339))
+	github := &fakeTokenGitHub{slug: "legion-reviewer", appID: "67890"}
+	tokens := New(config.GitHubApps{Review: config.GitHubApp{AppID: "67890", TokenCommand: command}},
+		Options{BaseURL: github.serve(t).URL, Now: func() time.Time { return now }, Stderr: &bytes.Buffer{}})
+	defer tokens.Close()
+	if lease, err := tokens.Token(context.Background(), Review, "alpha"); err != nil || lease.Token != "ghs_alpha" {
+		t.Fatalf("Token(alpha) = %+v, %v; want the first owner's release", lease, err)
+	}
+	var transient *TransientError
+	_, err := tokens.Token(context.Background(), Review, "beta")
+	if !errors.As(err, &transient) || errors.Is(err, ErrNotInstalled) || !strings.Contains(err.Error(), "REQUEST_PENDING") {
+		t.Fatalf("Token(beta) while another target's request waits = %v, want a transient error carrying REQUEST_PENDING", err)
+	}
+	if _, err := tokens.Token(context.Background(), Review, "gamma"); err == nil || errors.As(err, &transient) {
+		t.Fatalf("Token(gamma) refused UNKNOWN_SECRET = %v, want the configuration's answer, not a transient error", err)
+	}
+	if _, err := tokens.Token(context.Background(), Review, "delta"); err == nil || errors.As(err, &transient) {
+		t.Fatalf("Token(delta), REQUEST_PENDING's text from a command that exited 3 = %v, want the configuration's answer, not a transient error", err)
+	}
+}
+
 // A command still running when its caller's deadline ends goes on: the caller gets
 // ErrCommandPending, the next caller joins the same run, and the command runs once.
 func TestTokenModeACallerDeadlineNeitherKillsNorRepeatsTheCommand(t *testing.T) {

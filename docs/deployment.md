@@ -34,11 +34,14 @@ A daemon started from a plain shell is no session: each `token_command` then fai
 
 The `sjawhar` account owns both Apps.
 The secrets broker holds them as `github-app` secrets, which release installation tokens and never the App's private key:
-`LEGION_IMPLEMENT_APP` (agent tier) and `LEGION_REVIEW_APP` (human tier: each new grant waits for a person's approval in Dispatch, and a later release under the same live grant reuses it).
+`LEGION_IMPLEMENT_APP` (agent tier) and `LEGION_REVIEW_APP` (human tier: each new grant waits for a person's approval in Dispatch, and a later release reuses a live grant only for the same profile and the same target).
 A caller asks the broker for a profile of such a secret, never for the secret itself: the broker's profiles file (`BROKER_PROFILES_FILE`, [the airlock](site/src/content/docs/broker/concepts.md#the-airlock)) names each profile, its source secret, its accounts, its permissions and who may ask for it, and the broker refuses a `github-app` secret that no profile names.
 Each role's `token_command` names two profiles of its App's secret: the profile of the secret's own name for the write token, and the profile of that name with `_READ` after it for the read token.
 The review App's command names `--ttl 12h`, because a human-tier request that names no lifetime gets 15 minutes, and the daemon renews a lease about 40 minutes after it mints one:
-without the flag every renewal would wait for a person, and with it the approver reads the twelve hours on the card and decides them.
+without the flag every renewal would wait for a person, and with it the approver reads the twelve hours on the card and decides them for that one profile and target.
+The broker reuses a live grant, and joins a waiting request, only for the same profile and the same target, so a daemon of a human-tier App on `token_command` needs one decision per profile and owner:
+one for the release of every account its boot reads (no target), and one each for the write and the read profile of each of its N owners, up to 2N+1 every twelve hours.
+While one of those requests waits on a person, the broker refuses a request of the same profile for another owner `REQUEST_PENDING`, and the daemon reads that as it reads exit 75: no answer about the App, so it asks again once the first is decided.
 A daemon that holds no App key uses both Apps through `token_command`, as the live proofs do for the implement App (`scripts/e2e/lib/github-apps.sh`, `app_token_command`):
 
 ```yaml
@@ -148,7 +151,8 @@ so `agent-secrets`' line naming the pending request appears in the daemon's log 
 App waits for its grant.
 A run is not cut off by the boot's 15-second attempt: the boot waits for it, logging that it waits,
 and the next attempt joins the same run, so a grant that waits on a person's approval is one
-request; `agent-secrets`' exit 75 (still waiting when its own wait ended) is retried.
+request; `agent-secrets`' exit 75 (still waiting when its own wait ended) is retried, and so is
+the broker's `REQUEST_PENDING` (another owner's request of the same profile still waiting).
 `legion config check` never runs it, and `installations` cannot be set beside it, since
 the release names every installation.
 
