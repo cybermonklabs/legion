@@ -37,10 +37,6 @@ var readsOfNoProject = map[string]string{
 		"horizon (events.Horizon): the newest event id and the time it was written, beside the snapshot's xmin, the " +
 		"bound below which every reader's page of the log is final. It answers no event's owner, type or payload, and " +
 		"a horizon read for one viewer would let a page pass an event a transaction still holds back",
-	// userAgentStatesQuery (GET /api/v1/me/agents/state), the one statement that reads it.
-	"select session_id, pinned_at from user_agent_pin": "the caller's own direct conversations " +
-		"(unreadDirectRepliesCTE): roots on no issue (`issue_key is null`) that the caller's own person sent a " +
-		"session, and the replies under them, rows of no project that the caller reads as their party",
 }
 
 // keyedRead is a statement that reads a project's rows by a key another statement of the same

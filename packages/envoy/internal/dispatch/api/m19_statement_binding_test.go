@@ -88,6 +88,7 @@ var m19BindingFragments = map[string]bool{
 	"PersonClause":            false,
 	"PersonDirectlyListedSQL": false,
 	"RoleClause":              false,
+	"RoleProjectClause":       false,
 	"SessionClause":           false,
 	"VisibleProjectsSQL":      false,
 }
