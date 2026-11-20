@@ -230,9 +230,19 @@ func requireHandBackBeforeCreation(t *testing.T, recorded *durableEvents, from i
 		return fmt.Sprintf("the hand-back and the standby's creation of the durable did not both reach the server: %q; %s", recorded.since(from), consumerState(publisher))
 	})
 	events := recorded.since(from)
-	if slices.Index(events, "-NAK") > slices.Index(events, durableCreated) {
+	if !slices.Contains(events[:slices.Index(events, durableCreated)], "-NAK") {
 		t.Fatalf("the hand-back landed after the standby created the durable, so it reached the standby's consumer: %q", events)
 	}
+	if handBackAfterCreation(events) {
+		t.Fatalf("a hand-back landed after the standby created the durable, so it reached the standby's consumer: %q", events)
+	}
+}
+
+// handBackAfterCreation reports whether a -NAK follows the first creation of the durable in events.
+// It reads every -NAK, not only the first: a -NAK after the creation behind an earlier one counts.
+func handBackAfterCreation(events []string) bool {
+	created := slices.Index(events, durableCreated)
+	return created >= 0 && slices.Contains(events[created+1:], "-NAK")
 }
 
 // requireNoHandBackAfterCreation waits for the standby's creation of the durable and fails the test
@@ -243,9 +253,8 @@ func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from 
 	waitFor(t, 60*time.Second, func() bool { return slices.Contains(recorded.since(from), durableCreated) }, func() string {
 		return fmt.Sprintf("the standby did not create the durable: %q; %s", recorded.since(from), consumerState(publisher))
 	})
-	events := recorded.since(from)
-	if slices.Index(events, "-NAK") > slices.Index(events, durableCreated) {
-		t.Fatalf("the hand-back landed after the standby created the durable, so it reached the standby's consumer: %q", events)
+	if events := recorded.since(from); handBackAfterCreation(events) {
+		t.Fatalf("a hand-back landed after the standby created the durable, so it reached the standby's consumer: %q", events)
 	}
 }
 

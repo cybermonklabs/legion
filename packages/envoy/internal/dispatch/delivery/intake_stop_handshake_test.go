@@ -439,17 +439,38 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 		row := startGivenUpRow(t)
 		naks := watchHandBacks(t, row.uri)
 		delivery := row.delivery()
+		// The stop waits in its hook until the subtest has seen the woken handler decide. Every
+		// wait and every failure is on the subtest's goroutine, not the stop's: a failure the hook
+		// reported could land after the subtest had ended. ended, closed by a cleanup that runs
+		// before the row's own, lets a stop still held there go on when the subtest ends early.
+		reached := make(chan struct{})
+		proceed := make(chan struct{})
+		ended := make(chan struct{})
+		t.Cleanup(func() { close(ended) })
+		var arming sync.Once
 		armed := func() {
+			arming.Do(func() { close(reached) })
 			select {
-			case <-row.decided:
-			case <-time.After(30 * time.Second):
-				t.Error("control: the given-up handler did not decide its hand-back within 30 s of the give-up")
+			case <-proceed:
+			case <-ended:
 			}
 		}
 		stopGiveUpArmed.Store(&armed)
 		t.Cleanup(func() { stopGiveUpArmed.Store(nil) })
 		row.hold.HoldReconnect(t, row.conn)
-		row.hold.AnswersWithinAttempt(t, row.conn, "StopDelivering", row.stopUnder(cancelled()))
+		stopped := row.stopUnder(cancelled())
+		select {
+		case <-reached:
+		case <-time.After(30 * time.Second):
+			t.Fatal("control: the stop did not arm its give-up within 30 s")
+		}
+		select {
+		case <-row.decided:
+		case <-time.After(30 * time.Second):
+			t.Fatal("control: the given-up handler did not decide its hand-back within 30 s of the give-up")
+		}
+		close(proceed)
+		row.hold.AnswersWithinAttempt(t, row.conn, "StopDelivering", stopped)
 		stopGiveUpArmed.Store(nil)
 		row.reconnect(t)
 		row.requireNoHandBack(t, delivery, naks)
