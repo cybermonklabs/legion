@@ -79,6 +79,12 @@ const tables = [
   // the issue key the next row's issue takes again.
   "workflow_tuples",
   "workflow_nodes",
+  // The passkeys people from outside enrolled (migration 20261120165538_outside_passkeys), which
+  // name their person by email with no foreign key to people, so the closure does not reach them:
+  // a passkey one row enrolled would stand on the next row's Access tab and sign in there. The
+  // owner's links of the same migration (outside_invitations) carry a key into projects, which
+  // the closure follows.
+  "passkeys",
   "user_sessions",
 ];
 

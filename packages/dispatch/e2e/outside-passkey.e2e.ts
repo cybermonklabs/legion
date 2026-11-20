@@ -286,8 +286,10 @@ test.describe("outside passkey sign-in", () => {
 
       await test.step("a link past its 24 hours is refused on the page", async () => {
         const expiring = await invite(alicePage, later);
+        // The link as if alice had made it 25 hours ago: both of its times move, since the table
+        // holds every link to expire after it was made.
         await sql(
-          `update outside_invitations set expires_at = now() - interval '1 minute' where email = ${sqlLiteral(later)} and used_at is null`
+          `update outside_invitations set made_at = made_at - interval '25 hours', expires_at = expires_at - interval '25 hours' where email = ${sqlLiteral(later)} and used_at is null`
         );
         const alert = await refusedLink(strangerContext, expiring);
         await expect(alert).toHaveText(
