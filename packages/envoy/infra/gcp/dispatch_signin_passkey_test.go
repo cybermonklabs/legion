@@ -41,9 +41,9 @@ func TestDispatchPodWithPasskeySignInRendersTheSetting(t *testing.T) {
 	require.Equal(t, readGolden(t, "dispatch-registrations.golden"), dispatchRegistrations(m))
 }
 
-// signInPasskey is taken wherever outsideOrigin is: beside the front door with Google sign-in off,
-// beside publicOrigin, and beside signInOutside, whose setting keeps its own place. Each renders
-// the setting right after the second origin.
+// signInPasskey is taken wherever outsideOrigin is taken with browser sign-in on: beside the front
+// door, beside publicOrigin, and beside signInOutside, whose setting keeps its own place. Each
+// renders the setting right after the second origin.
 func TestDispatchSignInPasskeyRendersWhereverOutsideOriginIsTaken(t *testing.T) {
 	withPasskey := func(base func() *gcp.DispatchArgs) func() *gcp.DispatchArgs {
 		return func() *gcp.DispatchArgs {
@@ -57,7 +57,7 @@ func TestDispatchSignInPasskeyRendersWhereverOutsideOriginIsTaken(t *testing.T) 
 		name string
 		args func() *gcp.DispatchArgs
 	}{
-		{"beside the front door with no Google sign-in", withPasskey(dispatchTailnetWithoutSignInArgs)},
+		{"beside the front door", withPasskey(dispatchArgs)},
 		{"beside publicOrigin", withPasskey(dispatchPublicOriginArgs)},
 		{"beside signInOutside", withPasskey(dispatchOutsideArgs)},
 	} {
@@ -101,9 +101,11 @@ func TestDispatchSignInPasskeyAbsentWhenUnset(t *testing.T) {
 
 // signInPasskey is refused by its own name, as a core.InputError naming it, before anything
 // registers wherever Dispatch could not serve passkey sign-in: without outsideOrigin, the origin
-// Dispatch serves it at and whose host a passkey is made for; beside iapAudience, where IAP signs a
-// person in, outsideOrigin set or not; and in a sandbox, which serves no https origin at all.
-// clusterOnly refuses it as it refuses every input that configures Dispatch
+// Dispatch serves it at and whose host a passkey is made for; without browser sign-in, since a
+// project owner signed in through Google makes the invitation a passkey is enrolled with, the
+// refusal naming each sign-in input still unset; beside iapAudience, where IAP signs a person in,
+// outsideOrigin set or not; and in a sandbox, which serves no https origin at all. clusterOnly
+// refuses it as it refuses every input that configures Dispatch
 // (TestDispatchClusterOnlyRefusesEveryDispatchInput).
 func TestDispatchRefusesASignInPasskeyItCannotServe(t *testing.T) {
 	const (
@@ -113,6 +115,9 @@ func TestDispatchRefusesASignInPasskeyItCannotServe(t *testing.T) {
 			"so it runs no passkey sign-in of its own; unset signInPasskey, or unset iapAudience"
 		inSandbox = "signInPasskey needs outsideOrigin, which needs the tailnet inputs or publicOrigin: without either the component builds the sandbox, " +
 			"whose own origin is an in-cluster http:// address where browser sign-in is refused; unset signInPasskey, or set the tailnet inputs or publicOrigin"
+		needsSignIn = "signInPasskey needs browser sign-in: a project owner, signed in through Google, makes the invitation a person from outside enrolls " +
+			"a passkey with, so without it nobody could invite anyone; set the sign-in inputs, or unset signInPasskey " +
+			"(the sign-in inputs are set together or not at all; unset: signInClientId, signInClientSecret, signInDomain)"
 	)
 	with := func(base func() *gcp.DispatchArgs, edit func(*gcp.DispatchArgs)) func() *gcp.DispatchArgs {
 		return func() *gcp.DispatchArgs {
@@ -124,6 +129,13 @@ func TestDispatchRefusesASignInPasskeyItCannotServe(t *testing.T) {
 	}
 	alone := func(*gcp.DispatchArgs) {}
 	withOrigin := func(a *gcp.DispatchArgs) { a.OutsideOrigin = dispatchOutsideOrigin }
+	// publicOrigin's fixture with its sign-in inputs unset: a Dispatch at publicOrigin that runs no
+	// browser sign-in, which the component takes without signInPasskey.
+	publicOriginWithoutSignIn := func() *gcp.DispatchArgs {
+		args := dispatchPublicOriginArgs()
+		args.SignInClientId, args.SignInClientSecret, args.SignInDomain = "", nil, ""
+		return args
+	}
 	for _, row := range []struct {
 		name string
 		args func() *gcp.DispatchArgs
@@ -132,6 +144,8 @@ func TestDispatchRefusesASignInPasskeyItCannotServe(t *testing.T) {
 		{"without outsideOrigin beside the front door", with(dispatchArgs, alone), needsOrigin},
 		{"without outsideOrigin beside the front door with no Google sign-in", with(dispatchTailnetWithoutSignInArgs, alone), needsOrigin},
 		{"without outsideOrigin beside publicOrigin", with(dispatchPublicOriginArgs, alone), needsOrigin},
+		{"with outsideOrigin beside the front door with no Google sign-in", with(dispatchTailnetWithoutSignInArgs, withOrigin), needsSignIn},
+		{"with outsideOrigin beside publicOrigin with no Google sign-in", with(publicOriginWithoutSignIn, withOrigin), needsSignIn},
 		{"beside iapAudience", with(dispatchIAPArgs, alone), besideIAP},
 		{"beside iapAudience with outsideOrigin", with(dispatchIAPArgs, withOrigin), besideIAP},
 		{"in a sandbox", with(dispatchSandboxArgs, alone), inSandbox},

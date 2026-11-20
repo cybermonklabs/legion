@@ -205,9 +205,11 @@ type DispatchArgs struct {
 	// SignInPasskey renders DISPATCH_SIGNIN_PASSKEY=1, which turns on Dispatch's passkey sign-in at
 	// outsideOrigin for people from outside the company: the passkey's relying party is that origin
 	// and its relying party ID that origin's host, so it needs outsideOrigin and renders right after
-	// DISPATCH_OUTSIDE_ORIGIN. It is no member of the sign-in group and does not need it. It is
-	// refused beside iapAudience, since IAP signs a person in, and in the sandbox, which serves no
-	// https origin. Unset renders nothing.
+	// DISPATCH_OUTSIDE_ORIGIN. It needs the sign-in inputs too, though it is no member of their
+	// group: a person from outside enrolls a passkey with an invitation a project owner makes while
+	// signed in through Google, so without them nobody could invite anyone. It is refused beside
+	// iapAudience, since IAP signs a person in, and in the sandbox, which serves no https origin.
+	// Unset renders nothing.
 	SignInPasskey bool `pulumi:"signInPasskey,optional"`
 	// PublicOrigin is the https origin Dispatch is served at when it has no front door: the
 	// address a reader is sent back to, DISPATCH_SERVER_URL and the url output, served by an
@@ -678,7 +680,7 @@ type Dispatch struct {
 // tailscale and tools images, outsideOrigin, signIn, signInOutside and signInPasskey are empty,
 // since nothing reads them. signInOutside is set only with signInOn, outsideOrigin is "" when its
 // input is unset, where the component renders no second origin, and signInPasskey is set only
-// with outsideOrigin.
+// with outsideOrigin and signInOn.
 // oidcIssuer is "" when its input is unset and oidcAudience is set, where the issuer rendered is
 // the cluster's own, which only the cluster half knows (dispatchCluster.issuer) and so is no
 // field here. existingCluster is the input of that name, its name and location checked
@@ -1564,10 +1566,18 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		return dispatchSettings{}, fmt.Errorf("signInOutside needs browser sign-in: it lets Google accounts outside signInDomain sign in beside the domain's own people%s",
 			dispatchGroupClause("sign-in", signInGroup))
 	}
-	// Passkey sign-in is served at the second origin alone, whose host the passkey is made for; the
-	// sandbox and the IAP door have refused it above, each by a rule of its own.
-	if args.SignInPasskey && outsideOrigin == "" {
-		return dispatchSettings{}, core.InputErrorf("signInPasskey", "signInPasskey needs outsideOrigin: Dispatch serves passkey sign-in at that origin alone, and a passkey is made for its host; set outsideOrigin, or unset signInPasskey")
+	// Passkey sign-in is served at the second origin alone, whose host the passkey is made for, and
+	// a person from outside enrolls a passkey with an invitation a project owner makes while signed
+	// in through Google, so it needs the sign-in inputs too; their clause names each one still unset.
+	// The sandbox and the IAP door have refused it above, each by a rule of its own.
+	if args.SignInPasskey {
+		if outsideOrigin == "" {
+			return dispatchSettings{}, core.InputErrorf("signInPasskey", "signInPasskey needs outsideOrigin: Dispatch serves passkey sign-in at that origin alone, and a passkey is made for its host; set outsideOrigin, or unset signInPasskey")
+		}
+		if !signInOn {
+			return dispatchSettings{}, core.InputErrorf("signInPasskey", "signInPasskey needs browser sign-in: a project owner, signed in through Google, makes the invitation a person from outside enrolls a passkey with, so without it nobody could invite anyone; set the sign-in inputs, or unset signInPasskey%s",
+				dispatchGroupClause("sign-in", signInGroup))
+		}
 	}
 	// The app's two images, which the app's pod runs in either mode: they belong to no group, so
 	// every consumer sets both and neither refusal trails a clause. The front door's two are the

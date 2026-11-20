@@ -1105,7 +1105,11 @@ settings ignores both, as it ignores every variable its settings table
 right after `DISPATCH_OUTSIDE_ORIGIN`, which turns on Dispatch's passkey sign-in at `outsideOrigin`
 for people from outside the company: the passkey's relying party is that origin, and its relying
 party ID is that origin's host. It needs `outsideOrigin` and is refused without it, naming it. It
-is not in the sign-in group and does not need it. The sandbox refuses it by name, as it refuses
+needs the sign-in group too, though it is not in that group: a person from outside enrolls a
+passkey with an invitation a project owner makes while signed in through Google, so without that
+group nobody could invite anyone, and it is refused with the clause naming each sign-in input
+still unset. So the second origin's host is then one Google takes in a redirect URI, never an IP
+address, which no browser makes a passkey for. The sandbox refuses it by name, as it refuses
 `outsideOrigin`, and so does `iapAudience`, since IAP signs a person in. With it unset the component
 renders exactly what it rendered before it existed. An `envoyImage` whose `envoy-dispatch`
 predates the setting ignores it, as it ignores every variable its settings table does not list.
@@ -1540,7 +1544,7 @@ above states, a `publicOrigin` that breaks the rule its own paragraph states or 
 tailnet inputs, an `iapAudience` without `publicOrigin` or `signInDomain` or beside
 `signInClientId`, `signInClientSecret`, `signInOutside`, `signInPasskey` or `outsideOrigin`, and,
 once it resolves, an `iapAudience` of another form than a backend service's, a `signInOutside`
-without the sign-in inputs, a `signInPasskey` without `outsideOrigin`, an
+without the sign-in inputs, a `signInPasskey` without `outsideOrigin` or the sign-in inputs, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` outside

@@ -3,11 +3,12 @@ body: |-
   `envoy-infra:gcp:Dispatch` takes an optional input `signInPasskey`. `signInPasskey: true`
   renders `DISPATCH_SIGNIN_PASSKEY=1` on the app's container right after
   `DISPATCH_OUTSIDE_ORIGIN`, which turns on Dispatch's passkey sign-in at `outsideOrigin` for
-  people from outside the company. It needs `outsideOrigin` and does not need the sign-in inputs.
-  It is refused without `outsideOrigin`, beside `iapAudience` (IAP signs a person in), in the
-  sandbox and under `clusterOnly`, each time naming `signInPasskey`. With it unset the component
-  renders exactly what it rendered before. An `envoy-dispatch` that predates the setting ignores
-  it.
+  people from outside the company. It needs `outsideOrigin` and the sign-in inputs: a project
+  owner, signed in through Google, makes the invitation a person enrolls a passkey with. It is
+  refused without either (the refusal names each sign-in input still unset), beside `iapAudience`
+  (IAP signs a person in), in the sandbox and under `clusterOnly`, each time naming
+  `signInPasskey`. With it unset the component renders exactly what it rendered before. An
+  `envoy-dispatch` that predates the setting ignores it.
 time: 2026-11-20T16:35:57Z
 custom:
     Issue: feat-signin-passkey-input
