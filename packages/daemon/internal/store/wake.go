@@ -193,21 +193,24 @@ func (c ClaimStates) MarshalText() ([]byte, error) { return []byte(c.String()), 
 // is nothing here for a transaction to make consistent, and the read is of a pod the release is
 // about to delete anyway.
 func (s *Store) ClaimStatesIn(ctx context.Context, project, issue string) (ClaimStates, error) {
-	rows, err := s.pool.Query(ctx, `select role, state from claims
-		where project = $1 and issue = $2 order by role`, project, issue)
-	if err != nil {
-		return nil, fmt.Errorf("read the claim states of %s: %w", issue, err)
-	}
-	defer rows.Close()
 	var states ClaimStates
-	for rows.Next() {
-		var role, state string
-		if err := rows.Scan(&role, &state); err != nil {
-			return nil, fmt.Errorf("read the claim states of %s: %w", issue, err)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select role, state from claims
+			where project = $1 and issue = $2 order by role`, project, issue)
+		if err != nil {
+			return err
 		}
-		states = append(states, ClaimRoleState{Role: claim.Role(role), State: supervise.ClaimState(state)})
-	}
-	if err := rows.Err(); err != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var role, state string
+			if err := rows.Scan(&role, &state); err != nil {
+				return fmt.Errorf("read the claim states of %s: %w", issue, err)
+			}
+			states = append(states, ClaimRoleState{Role: claim.Role(role), State: supervise.ClaimState(state)})
+		}
+		return rows.Err()
+	})
+	if err != nil {
 		return nil, fmt.Errorf("read the claim states of %s: %w", issue, err)
 	}
 	return states, nil
@@ -230,9 +233,12 @@ func (s *Store) ArmPodBackstop(ctx context.Context, b PodWakeBackstop) error {
 	if b.Project == "" || b.Issue == "" || b.Role == "" || b.DueAt.IsZero() {
 		return errors.New("a pod wake backstop needs its project, issue, role and due time")
 	}
-	_, err := s.pool.Exec(ctx, `insert into pod_wake_backstops (project, issue, role, release_id, due_at)
-		values ($1, $2, $3, $4, $5) on conflict do nothing`,
-		b.Project, b.Issue, string(b.Role), b.Release, b.DueAt)
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `insert into pod_wake_backstops (project, issue, role, release_id, due_at)
+			values ($1, $2, $3, $4, $5) on conflict do nothing`,
+			b.Project, b.Issue, string(b.Role), b.Release, b.DueAt)
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("arm the backstop of %s's %s: %w", b.Issue, b.Role, err)
 	}
