@@ -25,39 +25,36 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// promptJobWait bounds each wait of these tests for a fact they expect: a line on the terminal, a
-// stop, a process's end, the terminal's foreground. A fact that comes ends its wait at once, so the
-// bound costs a passing test nothing; it only delays the report of one that never comes. It is a
-// minute, as testwait.Eventually's is, and a wait discounts the long gaps between its polls
-// (waitBudget), because a loaded machine is slow in every step and sometimes stops a process for
-// minutes: on a dev box at a load average of 800 to 1,100 on 288 processors, 2 runs of this family
-// in 25 failed in a 10 s wait for a terminal line, and one of those tests took 270 s.
-const promptJobWait = time.Minute
+// promptJobMargin is how long before the test binary's deadline (go test's -timeout) every wait of
+// these tests gives up, and that moment is the one bound they have (waitsGaveUp). A wait polls for
+// a fact it expects: a line on the terminal, a stop, a process's end, the terminal's foreground. A
+// fact that comes ends its wait at once. A fact that never comes fails the test at that moment,
+// with the wait's own text, which says what it waited for and what the terminal showed.
+//
+// No wait has a span of its own, because each span these waits had ran out on a loaded machine
+// before the fact came. A 10 s wait for a terminal line failed 2 runs of this family in 25 on a dev
+// box at a load average of 800 to 1,100 on 288 processors, and one of those tests took 270 s. The
+// minute that replaced it counted the gaps between polls, each gap at most a second, so that a
+// test process the machine held up lost little of it. But when the test process ran and the shell
+// or the helper it waited for was starved, every 50 ms poll counted in full, so the minute was a
+// minute of wall time: beside other packages under load, newPromptShell's wait for bash's first
+// prompt gave up with nothing on the terminal.
+//
+// 30 s is the time a wait that gave up leaves for what must still run before go test's alarm panics
+// the binary: the failing test's cleanups (a SIGKILL of the helper and of bash, and the wait for
+// bash), each later wait of the test, which then fails at once, and the test's report. The alarm
+// prints no running test's log, and without -v a failed subtest's text is printed only once its
+// parent test ends, so a margin those steps outlast loses the text that names the wait.
+const promptJobMargin = 30 * time.Second
 
-// waitBudget is one wait's bound. Each gap between two polls counts at most a second of
-// promptJobWait, so a gap the machine held up for minutes costs the wait a second, not its whole
-// bound: it is not a wall-clock deadline. The test binary's own deadline, less a margin for
-// cleanup, still ends the wait (testwait.Bounded), so a wait never outlasts the binary's timeout
-// and reports what it waited for. A wait made of other waits passes them its budget, so their
-// polls count toward one bound.
-type waitBudget struct {
-	left     time.Duration
-	last     time.Time
-	deadline time.Time
-}
-
-func newWaitBudget(t *testing.T) *waitBudget {
-	now := time.Now()
-	return &waitBudget{left: promptJobWait, last: now, deadline: now.Add(testwait.Bounded(t, 24*time.Hour, 5*time.Second))}
-}
-
-// spent counts the gap since the last call, at most a second of it, and reports whether the
-// bound is used up or the test binary's deadline is near.
-func (b *waitBudget) spent() bool {
-	now := time.Now()
-	b.left -= min(now.Sub(b.last), time.Second)
-	b.last = now
-	return b.left <= 0 || now.After(b.deadline)
+// waitsGaveUp reports whether the moment every wait of these tests gives up has passed: the test
+// binary's deadline less promptJobMargin, the clamp testwait.Bounded gives. The day passed to it
+// stands for no bound of the wait's own: Bounded answers what is left before that moment when it is
+// sooner, and the day itself where there is no deadline (-timeout 0, and the helper, which bash
+// starts with no -test.timeout of its own), so such a wait never gives up; the test that started
+// the helper kills it in its cleanup.
+func waitsGaveUp(t *testing.T) bool {
+	return testwait.Bounded(t, 24*time.Hour, promptJobMargin) <= 0
 }
 
 // promptShell gives the prompt a parent interactive shell in the same session, so
@@ -189,12 +186,7 @@ func (s *promptShell) wait(want string) {
 // waitFirst waits until the terminal has shown one of wants, and answers the one it showed first.
 func (s *promptShell) waitFirst(wants ...string) string {
 	s.t.Helper()
-	return s.waitFirstBudget(newWaitBudget(s.t), wants...)
-}
-
-func (s *promptShell) waitFirstBudget(budget *waitBudget, wants ...string) string {
-	s.t.Helper()
-	first, _ := s.waitFrom(budget, 0, wants...)
+	first, _ := s.waitFrom(0, wants...)
 	return first
 }
 
@@ -202,12 +194,14 @@ func (s *promptShell) waitFirstBudget(budget *waitBudget, wants ...string) strin
 // a test that sees the same line several times waits for each one in turn.
 func (s *promptShell) next(want string) {
 	s.t.Helper()
-	_, s.from = s.waitFrom(newWaitBudget(s.t), s.from, want)
+	_, s.from = s.waitFrom(s.from, want)
 }
 
 // waitFrom waits until the terminal has shown, at or after from, one of wants, and answers the
-// one it showed first and where that match ends.
-func (s *promptShell) waitFrom(budget *waitBudget, from int, wants ...string) (string, int) {
+// one it showed first and where that match ends. Each read's 50 ms deadline is how a read of the
+// terminal is made to come back at all, not a bound on the wait: what one read does not bring, the
+// next brings.
+func (s *promptShell) waitFrom(from int, wants ...string) (string, int) {
 	s.t.Helper()
 	buf := make([]byte, 4096)
 	for {
@@ -220,7 +214,7 @@ func (s *promptShell) waitFrom(budget *waitBudget, from int, wants ...string) (s
 		if at >= 0 {
 			return first, from + at + len(first)
 		}
-		if budget.spent() {
+		if waitsGaveUp(s.t) {
 			s.t.Fatalf("waiting for one of %q; terminal showed %q", wants, s.out.String())
 		}
 		_ = s.controller.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
@@ -296,7 +290,7 @@ func termiosKey(t *unix.Termios) string {
 
 func (s *promptShell) waitForeground(pid int) {
 	s.t.Helper()
-	for budget := newWaitBudget(s.t); ; time.Sleep(time.Millisecond) {
+	for ; ; time.Sleep(time.Millisecond) {
 		foreground, err := unix.IoctlGetInt(s.ctlFd, unix.TIOCGPGRP)
 		if err != nil {
 			s.t.Fatal(err)
@@ -304,7 +298,7 @@ func (s *promptShell) waitForeground(pid int) {
 		if foreground == pid {
 			return
 		}
-		if budget.spent() {
+		if waitsGaveUp(s.t) {
 			s.t.Fatalf("terminal foreground group = %d, want %d", foreground, pid)
 		}
 	}
@@ -404,7 +398,7 @@ func TestPromptJobHelper(t *testing.T) {
 		// Started with &: start the prompt only once bash's line editor holds the
 		// terminal (canonical mode off), which a prompt in the background must
 		// neither take as its baseline nor show its label over.
-		for budget := newWaitBudget(t); ; time.Sleep(time.Millisecond) {
+		for ; ; time.Sleep(time.Millisecond) {
 			tio, err := unix.IoctlGetTermios(0, unix.TCGETS)
 			if err != nil {
 				t.Fatal(err)
@@ -412,7 +406,7 @@ func TestPromptJobHelper(t *testing.T) {
 			if tio.Lflag&unix.ICANON == 0 {
 				break
 			}
-			if budget.spent() {
+			if waitsGaveUp(t) {
 				t.Fatal("bash's line editor never took the terminal")
 			}
 		}
@@ -420,11 +414,11 @@ func TestPromptJobHelper(t *testing.T) {
 		if os.Getenv("AGENT_SECRETS_JOB_AFTER_SHELL_EXIT") != "" {
 			// Reach the prompt only once the shell's exit has taken the terminal from the
 			// session, as a prompt descheduled that long on a loaded machine would.
-			for budget := newWaitBudget(t); ; time.Sleep(time.Millisecond) {
+			for ; ; time.Sleep(time.Millisecond) {
 				if _, err := unix.IoctlGetInt(0, unix.TIOCGPGRP); errors.Is(err, unix.ENOTTY) {
 					break
 				}
-				if budget.spent() {
+				if waitsGaveUp(t) {
 					t.Fatal("the shell's exit never took the terminal")
 				}
 			}
@@ -556,14 +550,14 @@ func TestPromptJobHelper(t *testing.T) {
 // job bash has already seen stop.
 func (s *promptShell) jobStopped() {
 	s.t.Helper()
-	for budget := newWaitBudget(s.t); ; time.Sleep(10 * time.Millisecond) {
+	for ; ; time.Sleep(10 * time.Millisecond) {
 		s.reset()
 		s.send("jobs %1\r")
-		s.waitFirstBudget(budget, "PROMPT$ ")
+		s.wait("PROMPT$ ")
 		if strings.Contains(s.out.String(), "Stopped") {
 			return
 		}
-		if budget.spent() {
+		if waitsGaveUp(s.t) {
 			s.t.Fatalf("bash never saw the job stop: %q", s.out.String())
 		}
 	}
@@ -573,7 +567,7 @@ func (s *promptShell) jobStopped() {
 // sent, so none of it is left for the shell.
 func (s *promptShell) allInputRead() {
 	s.t.Helper()
-	for budget := newWaitBudget(s.t); ; time.Sleep(time.Millisecond) {
+	for ; ; time.Sleep(time.Millisecond) {
 		queued, err := unix.IoctlGetInt(s.terminal, unix.TIOCINQ)
 		if err != nil {
 			s.t.Fatal(err)
@@ -581,7 +575,7 @@ func (s *promptShell) allInputRead() {
 		if queued == 0 {
 			return
 		}
-		if budget.spent() {
+		if waitsGaveUp(s.t) {
 			s.t.Fatalf("the prompt left %d bytes unread", queued)
 		}
 	}
