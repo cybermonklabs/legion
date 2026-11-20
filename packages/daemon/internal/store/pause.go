@@ -437,14 +437,10 @@ func scanPause(row pgx.Row) (Pause, error) {
 	return p, nil
 }
 
-type queryRower interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
-
 // readOpenPause is project's open pause and whether there is one, read with lock appended to the
 // select (" for share", " for update", or "" for none). project is the Dispatch key.
-func readOpenPause(ctx context.Context, db queryRower, project, lock string) (Pause, bool, error) {
-	return scanOpenPause(db.QueryRow(ctx, `select `+pauseColumns+` from project_pauses
+func readOpenPause(ctx context.Context, tx pgx.Tx, project, lock string) (Pause, bool, error) {
+	return scanOpenPause(tx.QueryRow(ctx, `select `+pauseColumns+` from project_pauses
 		where project = $1 and ended_at is null`+lock, project), project)
 }
 
@@ -459,8 +455,8 @@ func readOpenPause(ctx context.Context, db queryRower, project, lock string) (Pa
 // table in a statement of its own (readIdleView, podResumesWithoutAFirstTurn): a claim of another
 // project's issue, which the operator's spawn makes under this project's token, is part of this
 // project's pause, whatever project its issue's key names.
-func readOpenPauseByToken(ctx context.Context, db queryRower, token, lock string) (Pause, bool, error) {
-	return scanOpenPause(db.QueryRow(ctx, `select `+pauseColumns+` from project_pauses
+func readOpenPauseByToken(ctx context.Context, tx pgx.Tx, token, lock string) (Pause, bool, error) {
+	return scanOpenPause(tx.QueryRow(ctx, `select `+pauseColumns+` from project_pauses
 		where lower(project) = $1 and ended_at is null`+lock, token), token)
 }
 
@@ -480,7 +476,16 @@ func scanOpenPause(row pgx.Row, project string) (Pause, bool, error) {
 // OpenPause is project's open pause, and whether one is open: what the daemon reads at boot and
 // at each outbox sweep to set its flag (decision 18). project is the Dispatch key.
 func (s *Store) OpenPause(ctx context.Context, project string) (Pause, bool, error) {
-	return readOpenPause(ctx, s.pool, project, "")
+	var (
+		pause Pause
+		open  bool
+	)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		pause, open, err = readOpenPause(ctx, tx, project, "")
+		return err
+	})
+	return pause, open, err
 }
 
 // LockOpenPauseTx is project's open pause read with its row locked for share, which a stop
@@ -515,7 +520,12 @@ func LockPauseTx(ctx context.Context, tx pgx.Tx, id int64) (Pause, error) {
 // without acting once the pause its row names has ended (decision 4). A pause no row holds is an
 // error.
 func (s *Store) PauseByID(ctx context.Context, id int64) (Pause, error) {
-	p, err := scanPause(s.pool.QueryRow(ctx, `select `+pauseColumns+` from project_pauses where id = $1`, id))
+	var p Pause
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		p, err = scanPause(tx.QueryRow(ctx, `select `+pauseColumns+` from project_pauses where id = $1`, id))
+		return err
+	})
 	if err != nil {
 		return Pause{}, fmt.Errorf("read pause %d: %w", id, err)
 	}
@@ -526,8 +536,13 @@ func (s *Store) PauseByID(ctx context.Context, id int64) (Pause, error) {
 // resume refused because the project is not paused names (PROJECT_NOT_PAUSED). project is the
 // Dispatch key.
 func (s *Store) LastEndedPause(ctx context.Context, project string) (Pause, bool, error) {
-	p, err := scanPause(s.pool.QueryRow(ctx, `select `+pauseColumns+` from project_pauses
-		where project = $1 and ended_at is not null order by ended_at desc, id desc limit 1`, project))
+	var p Pause
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		p, err = scanPause(tx.QueryRow(ctx, `select `+pauseColumns+` from project_pauses
+			where project = $1 and ended_at is not null order by ended_at desc, id desc limit 1`, project))
+		return err
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Pause{}, false, nil
 	}
@@ -709,12 +724,17 @@ func (s *Store) EndPauseStop(ctx context.Context, pause int64, token claim.Token
 	default:
 		return false, fmt.Errorf("end pause %d's stop of %s: %q is no way a stop ends", pause, token, end)
 	}
-	tag, err := s.pool.Exec(ctx, `update project_pause_stops set ended_at = $3, ended_as = $4
-		where pause_id = $1 and claim = $2 and ended_at is null`, pause, string(token), at, string(end))
+	var ended bool
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `update project_pause_stops set ended_at = $3, ended_as = $4
+			where pause_id = $1 and claim = $2 and ended_at is null`, pause, string(token), at, string(end))
+		ended = tag.RowsAffected() > 0
+		return err
+	})
 	if err != nil {
 		return false, fmt.Errorf("end pause %d's stop of %s: %w", pause, token, err)
 	}
-	return tag.RowsAffected() > 0, nil
+	return ended, nil
 }
 
 // RecordPauseStoppedTx records that the claim stopped for held at at, and whether it was owed a
@@ -836,17 +856,21 @@ func OpenPauseStopsTx(ctx context.Context, tx pgx.Tx, pause int64) ([]PauseStop,
 // that runs again, is not the resume's to launch. held's project is its Dispatch key, as the stops
 // and the issues table hold it.
 func (s *Store) OwedLaunchesWithNoIssueRecord(ctx context.Context, held Pause) ([]claim.Token, error) {
-	rows, err := s.pool.Query(ctx, `select distinct s.claim from project_pause_stops s
-		join claims c on c.token = s.claim
-		where s.project = $1 and (s.pause_id = $2 or s.ended_at >= $3) and s.ended_as = $4 and s.launch_owed
-			and c.state = $5 and c.suspended_by = $6
-			and not exists (select 1 from issues i where i.key = s.issue and i.project = s.project)
-		order by s.claim`, held.Project, held.ID, held.Since, string(PauseStopStopped),
-		string(supervise.StateSuspended), string(supervise.SuspendedByReleased))
-	if err != nil {
-		return nil, fmt.Errorf("read the launches pause %d owes claims of no issue record: %w", held.ID, err)
-	}
-	tokens, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	var tokens []string
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select distinct s.claim from project_pause_stops s
+			join claims c on c.token = s.claim
+			where s.project = $1 and (s.pause_id = $2 or s.ended_at >= $3) and s.ended_as = $4 and s.launch_owed
+				and c.state = $5 and c.suspended_by = $6
+				and not exists (select 1 from issues i where i.key = s.issue and i.project = s.project)
+			order by s.claim`, held.Project, held.ID, held.Since, string(PauseStopStopped),
+			string(supervise.StateSuspended), string(supervise.SuspendedByReleased))
+		if err != nil {
+			return err
+		}
+		tokens, err = pgx.CollectRows(rows, pgx.RowTo[string])
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("read the launches pause %d owes claims of no issue record: %w", held.ID, err)
 	}
@@ -870,11 +894,14 @@ func (s *Store) OwedLaunchesWithNoIssueRecord(ctx context.Context, held Pause) (
 // message is still owed in that gap. project is the project token, as pod_releases holds it.
 func (s *Store) StoppedByAPause(ctx context.Context, project, issue string, token claim.Token) (int64, error) {
 	var pause int64
-	if err := s.pool.QueryRow(ctx, `select coalesce((select case
-			when s.ended_at > coalesce((select max(r.at) from pod_releases r where r.project = $1 and r.issue = $2), '-infinity'::timestamptz)
-			then s.pause_id else 0 end
-		from project_pause_stops s where s.claim = $3 and s.ended_as = $4 order by s.id desc limit 1), 0)`,
-		project, issue, string(token), string(PauseStopStopped)).Scan(&pause); err != nil {
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select coalesce((select case
+				when s.ended_at > coalesce((select max(r.at) from pod_releases r where r.project = $1 and r.issue = $2), '-infinity'::timestamptz)
+				then s.pause_id else 0 end
+			from project_pause_stops s where s.claim = $3 and s.ended_as = $4 order by s.id desc limit 1), 0)`,
+			project, issue, string(token), string(PauseStopStopped)).Scan(&pause)
+	})
+	if err != nil {
 		return 0, fmt.Errorf("read the newest pause that stopped %s: %w", token, err)
 	}
 	return pause, nil
@@ -962,11 +989,16 @@ func ExpeditePauseStopRowsTx(ctx context.Context, tx pgx.Tx, project, issue stri
 // outbox runs and the restarted machine holds it again (decision 4 of dispatch://INFRA-3759: a
 // restart holds the stop again).
 func (s *Store) ExpeditePauseStops(ctx context.Context, pause int64, at time.Time) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `update outbox set next_at = $2
-		where `+pauseStopRowsOfPause+` and next_at > $2`,
-		pause, at)
+	var moved int64
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `update outbox set next_at = $2
+			where `+pauseStopRowsOfPause+` and next_at > $2`,
+			pause, at)
+		moved = tag.RowsAffected()
+		return err
+	})
 	if err != nil {
 		return 0, fmt.Errorf("make the stops of pause %d due: %w", pause, err)
 	}
-	return tag.RowsAffected(), nil
+	return moved, nil
 }
