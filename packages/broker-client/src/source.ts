@@ -17,7 +17,8 @@ export interface SubjectToken {
  * implementations here are a machine's three identities — a pod's projected token
  * (`projected-token.ts`), a Compute Engine machine's own Google identity token
  * (`metadata-identity.ts`) and a Google identity token minted through a workload identity pool
- * (`pool-identity.ts`) — and a person's sign-in on the machine (`person-identity.ts`).
+ * (`pool-identity.ts`) — a person's sign-in on the machine (`person-identity.ts`), and a
+ * machine's device login (`device-login.ts`), which the Go client has no counterpart of.
  */
 export interface TokenSource {
   /**
@@ -32,4 +33,12 @@ export interface TokenSource {
   /** The person whose sign-in this is, where it is one: a broker refusal that names a person is
    *  printed only where it names this one (`isKnownBrokerRefusal`). */
   readonly person?: string;
+  /**
+   * Runs `trade` with the subject token, for a source whose token another process can end while
+   * this one still holds it: a device login, whose every refresh revokes the access tokens it
+   * answered before (`device-login.ts`). The source holds what keeps other processes from ending
+   * the token until `trade` settles, and answers what `trade` answers. A source without it is
+   * read (`read`) and its token traded.
+   */
+  spend?<T>(trade: (subject: SubjectToken) => Promise<T>, signal?: AbortSignal): Promise<T>;
 }

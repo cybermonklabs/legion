@@ -76,7 +76,7 @@ test("an identity named with its variables missing is refused naming them", () =
     refused = error instanceof Error ? error.message : String(error);
   }
   expect(refused).toBe(
-    "AGENT_SECRETS_MACHINE_IDENTITY names no identity this machine can prove; it takes kubernetes, metadata or pool"
+    "AGENT_SECRETS_MACHINE_IDENTITY names no identity this machine can prove; it takes kubernetes, metadata, pool or device-login"
   );
   expect(refused).not.toContain(pasted);
 });

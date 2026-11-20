@@ -14,6 +14,8 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { forgetHeldSecrets } from "@legion/contracts/held-secrets";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { writeDeviceLoginFile } from "../../test/device-logins";
+import { DeviceLoginIdentity } from "../device-login";
 import { newDpopKey } from "../dpop";
 import { metadataIdentity } from "../metadata-identity";
 import { projectedToken } from "../projected-token";
@@ -167,11 +169,13 @@ function metadataSource(token: string): TokenSource {
 
 /**
  * The identity an entry's subject names, built from the real reader wherever one exists: a
- * projected token is read from a file this test writes, and a machine's Google identity token
- * from a metadata server this test serves. A person's sign-in is scripted here, its own reader
- * being the device grant, which `agent-secrets login` runs through the Go client.
+ * projected token is read from a file this test writes, a machine's Google identity token from a
+ * metadata server this test serves, and a machine login's access token from the device login file
+ * this test writes for `brokerUrl`, holding that token live, so the trade spends it with no
+ * refresh. A person's sign-in is scripted here, its own reader being the device grant, which
+ * `agent-secrets login` runs through the Go client.
  */
-async function corpusSource(spec: CorpusToken): Promise<TokenSource> {
+async function corpusSource(spec: CorpusToken, brokerUrl: string): Promise<TokenSource> {
   switch (spec.kind) {
     case "kubernetes-projected-file": {
       const path = join(makeDirectory(), "token");
@@ -188,6 +192,14 @@ async function corpusSource(spec: CorpusToken): Promise<TokenSource> {
         }),
         describe: () => "a person's sign-in",
       };
+    case "machine-login-access-token": {
+      const path = join(makeDirectory(), "device-login.json");
+      await writeDeviceLoginFile(path, brokerUrl, {
+        access_token: spec.token,
+        access_expires_at: new Date(Date.now() + 600_000).toISOString(),
+      });
+      return new DeviceLoginIdentity({ path, brokerUrl });
+    }
     default:
       throw new Error(
         `the corpus names the subject kind "${spec.kind}", which this suite does not know`
@@ -330,11 +342,15 @@ test("the wire corpus holds this client", async () => {
     // when the client is closed: a refusal the client trades again on (an unregistered pod
     // session) is then answered after the one trade this entry describes.
     const caller = new AbortController();
+    const subject = await corpusSource(exchange.subject, broker.url);
     const client = new BrokerTokenClient({
       brokerUrl: broker.url,
-      key: await newDpopKey(),
-      subject: await corpusSource(exchange.subject),
-      ...(exchange.actor === undefined ? {} : { actor: await corpusSource(exchange.actor) }),
+      // A device login proves its own key, the one its access token is bound to.
+      key: subject instanceof DeviceLoginIdentity ? await subject.key() : await newDpopKey(),
+      subject,
+      ...(exchange.actor === undefined
+        ? {}
+        : { actor: await corpusSource(exchange.actor, broker.url) }),
       session: exchange.session,
       projects: exchange.projects,
       // The entry's own form says whether this trade declines the launcher credential, so the
