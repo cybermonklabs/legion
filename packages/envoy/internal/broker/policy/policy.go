@@ -33,6 +33,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // The tags a namespace secret carries, and their fixed values.
@@ -72,10 +73,26 @@ const (
 	// (ParseGitHubOwners). A github-app secret without it is refused, since a public App can be
 	// installed by any account, and an installation on an account it does not list gets no token.
 	TagGitHubOwners = "github-owners"
-	// TagRequesters lists who may ask for the secret at all: people by lowercase email and
-	// registered services by name, separated by white space (ParseRequesters). A session or pod
-	// the list does not name is denied before owner and tier are read (ReasonRequesterNotListed),
-	// so the tag narrows who may ask and never widens it. It bounds no grant by itself: the
+	// TagGitHubRepositories fixes the repositories every token a github-app secret mints reaches:
+	// names of repositories of the one account its TagGitHubOwners lists, separated by white space
+	// (ParseGitHubRepositories). The minter sends them in GitHub's own token request on every
+	// release, check and airlock mint, so GitHub mints nothing wider, and refuses a caller's
+	// narrowing to a repository outside them (secrets.GitHubCap). A secret that carries it lists
+	// exactly one owner (TagRules), since a repository name means nothing without its account.
+	TagGitHubRepositories = "github-repositories"
+	// TagGitHubPermissions fixes the permissions every token a github-app secret mints holds:
+	// `<permission>:<read|write>` entries, separated by white space, each naming one of GitHub's
+	// App permissions as its access_tokens body spells it (ParseGitHubPermissions). The minter
+	// sends them in GitHub's own token request, as for TagGitHubRepositories, and checks that the
+	// token GitHub answers with holds no more than they name, beside the metadata read GitHub
+	// gives every token. A secret without it mints with every permission its App holds.
+	TagGitHubPermissions = "github-permissions"
+	// TagRequesters lists who may ask for the secret at all: people by lowercase email, registered
+	// services by name, and a service's pods of one Dispatch project as <service>/<PROJECT>,
+	// separated by white space (ParseRequesters). A session or pod the list does not name is denied
+	// before owner and tier are read (ReasonRequesterNotListed), so the tag narrows who may ask and
+	// never widens it. A project entry matches a pod of that service whose project the deployment
+	// itself names (Requester.Project), and no session. It bounds no grant by itself: the
 	// hour-long cap is the business of TagAdmin and of the google-service-account type, each of
 	// which demands one (TagRules).
 	TagRequesters = "requesters"
@@ -255,6 +272,127 @@ func ParseGitHubOwners(raw string) (string, error) {
 	return strings.Join(slices.Compact(owners), " "), nil
 }
 
+// ErrGitHubRepositoriesMissing is a github-repositories tag that names no repository: a cap to no
+// repository would mint a token GitHub refuses, which is a mistake rather than a policy.
+var ErrGitHubRepositoriesMissing = errors.New("github-repositories names at least one repository")
+
+// ErrGitHubRepositoriesComma is a github-repositories tag that holds a comma: its names are
+// separated by spaces, as github-owners' logins are, since an AWS tag value takes a space and no
+// comma.
+var ErrGitHubRepositoriesComma = errors.New(`github-repositories separates repository names with spaces, not commas ("<name> <name>")`)
+
+// ErrGitHubRepositoriesEntry is a github-repositories entry GitHub could not hold as a repository
+// name: anything but ASCII letters, digits, '.', '-' and '_', more than 100 of them, the names .
+// and .., or a name written with its owner ("owner/name").
+var ErrGitHubRepositoriesEntry = errors.New("github-repositories names repositories by name alone, in up to 100 ASCII letters, digits, '.', '-' and '_'")
+
+// ErrGitHubRepositoriesDuplicate is a github-repositories tag that names one repository twice,
+// compared without regard to case, as GitHub compares repository names.
+var ErrGitHubRepositoriesDuplicate = errors.New("github-repositories names each repository once")
+
+// ErrGitHubRepositoriesTooMany is a github-repositories tag naming more repositories than one
+// narrowed token request carries (secrets.MaxNarrowedRepositories).
+var ErrGitHubRepositoriesTooMany = fmt.Errorf("github-repositories names at most %d repositories", secrets.MaxNarrowedRepositories)
+
+// ParseGitHubRepositories reads a github-repositories tag: repository names of the one account the
+// secret's github-owners tag lists, separated by white space, each as GitHub's access_tokens body
+// takes it, without the owner. It refuses a comma anywhere (ErrGitHubRepositoriesComma), a list
+// that names no repository (ErrGitHubRepositoriesMissing), an entry GitHub could not hold
+// (ErrGitHubRepositoriesEntry), a name given twice without regard to case
+// (ErrGitHubRepositoriesDuplicate) and more than secrets.MaxNarrowedRepositories names
+// (ErrGitHubRepositoriesTooMany). It answers them as written, sorted and joined by single spaces,
+// so a Secret holding them stays comparable and two spellings of one list are one policy.
+func ParseGitHubRepositories(raw string) (string, error) {
+	if strings.Contains(raw, ",") {
+		return "", ErrGitHubRepositoriesComma
+	}
+	var names []string
+	for _, entry := range strings.Fields(raw) {
+		if !gitHubRepositoryName.MatchString(entry) || entry == "." || entry == ".." {
+			return "", fmt.Errorf("%w, not %q", ErrGitHubRepositoriesEntry, entry)
+		}
+		if slices.ContainsFunc(names, func(name string) bool { return strings.EqualFold(name, entry) }) {
+			return "", fmt.Errorf("%w, not %q twice", ErrGitHubRepositoriesDuplicate, entry)
+		}
+		names = append(names, entry)
+	}
+	if len(names) == 0 {
+		return "", ErrGitHubRepositoriesMissing
+	}
+	if len(names) > secrets.MaxNarrowedRepositories {
+		return "", ErrGitHubRepositoriesTooMany
+	}
+	slices.Sort(names)
+	return strings.Join(names, " "), nil
+}
+
+// ErrGitHubPermissionsMissing is a github-permissions tag that names no permission. GitHub reads
+// an access_tokens body with no permissions as every permission of the App, so a cap of nothing
+// would be the widest token of all; the tag is refused rather than read that way.
+var ErrGitHubPermissionsMissing = errors.New("github-permissions names at least one permission")
+
+// ErrGitHubPermissionsComma is a github-permissions tag that holds a comma: its entries are
+// separated by spaces, since an AWS tag value takes a space and no comma.
+var ErrGitHubPermissionsComma = errors.New(`github-permissions separates its entries with spaces, not commas ("<permission>:<level> <permission>:<level>")`)
+
+// ErrGitHubPermissionsEntry is a github-permissions entry that is not <permission>:<level>: a
+// permission in lowercase ASCII letters and underscores, as GitHub's access_tokens body spells it
+// ("checks", "pull_requests"), and a level that is read or write.
+var ErrGitHubPermissionsEntry = errors.New(`github-permissions names each permission as <permission>:<read|write>, in lowercase, as GitHub spells it ("checks:write")`)
+
+// ErrGitHubPermissionsDuplicate is a github-permissions tag that names one permission twice, at
+// one level or at two.
+var ErrGitHubPermissionsDuplicate = errors.New("github-permissions names each permission once")
+
+// gitHubPermissionName is what a GitHub App permission's key can be in an access_tokens body:
+// lowercase ASCII letters with single underscores between them ("checks", "pull_requests",
+// "organization_administration").
+var gitHubPermissionName = regexp.MustCompile(`^[a-z]+(_[a-z]+)*$`)
+
+// ParseGitHubPermissions reads a github-permissions tag: `<permission>:<read|write>` entries
+// separated by white space. It refuses a comma anywhere (ErrGitHubPermissionsComma), a list that
+// names nothing (ErrGitHubPermissionsMissing), an entry of another shape or level
+// (ErrGitHubPermissionsEntry) and a permission named twice (ErrGitHubPermissionsDuplicate). It
+// answers the entries sorted and joined by single spaces (GitHubPermissionsMap reads them back as
+// the access_tokens body's map), so a Secret holding them stays comparable.
+func ParseGitHubPermissions(raw string) (string, error) {
+	if strings.Contains(raw, ",") {
+		return "", ErrGitHubPermissionsComma
+	}
+	var entries []string
+	seen := map[string]bool{}
+	for _, entry := range strings.Fields(raw) {
+		name, level, ok := strings.Cut(entry, ":")
+		if !ok || !gitHubPermissionName.MatchString(name) || (level != "read" && level != "write") {
+			return "", fmt.Errorf("%w, not %q", ErrGitHubPermissionsEntry, entry)
+		}
+		if seen[name] {
+			return "", fmt.Errorf("%w, not %q twice", ErrGitHubPermissionsDuplicate, name)
+		}
+		seen[name] = true
+		entries = append(entries, entry)
+	}
+	if len(entries) == 0 {
+		return "", ErrGitHubPermissionsMissing
+	}
+	slices.Sort(entries)
+	return strings.Join(entries, " "), nil
+}
+
+// GitHubPermissionsMap is a github-permissions tag as ParseGitHubPermissions answered it, read back
+// as GitHub's access_tokens body names permissions, and nil for "".
+func GitHubPermissionsMap(permissions string) map[string]string {
+	if permissions == "" {
+		return nil
+	}
+	out := map[string]string{}
+	for _, entry := range strings.Fields(permissions) {
+		name, level, _ := strings.Cut(entry, ":")
+		out[name] = level
+	}
+	return out
+}
+
 // ErrScopesMissing is a scopes tag that names no scope: a tag that narrowed the token to nothing
 // would mint a token good for no API at all, which is a mistake rather than a policy. A secret
 // that wants the default mints it by carrying no scopes tag (TagScopes).
@@ -326,22 +464,33 @@ var ErrRequestersMissing = errors.New("requesters names at least one person or s
 // as github-owners' and BROKER_SERVICES' are, since an AWS tag value takes a space and no comma.
 var ErrRequestersComma = errors.New(`requesters separates its entries with spaces, not commas ("<email> <service>")`)
 
-// ErrRequestersEntry is a requesters entry that names neither a person nor a service: one holding
-// an @ that is not a lowercase email of the form a person signs in under (an uppercase one is
-// refused rather than lowercased, since the tag is compared against the sign-in as it is written),
-// or one naming a service the deployment does not register.
-var ErrRequestersEntry = errors.New("requesters names people by their lowercase sign-in email and services by their registered name")
+// ErrRequestersEntry is a requesters entry that names neither a person nor a service nor a
+// service's pods of one project: one holding an @ that is not a lowercase email of the form a
+// person signs in under (an uppercase one is refused rather than lowercased, since the tag is
+// compared against the sign-in as it is written), one naming a service the deployment does not
+// register, or a <service>/<PROJECT> entry whose project is no Dispatch project key.
+var ErrRequestersEntry = errors.New("requesters names people by their lowercase sign-in email, services by their registered name, and a service's pods of one project as <service>/<PROJECT>")
+
+// projectKeyPattern is a whole Dispatch project key (contracts.ProjectKeyPattern), the project
+// half of a <service>/<PROJECT> requesters entry.
+var projectKeyPattern = regexp.MustCompile(contracts.ProjectKeyPattern)
 
 // ParseRequesters reads a requesters tag for a caller that holds the deployment's registered
 // service list — the loader (Loader.Services), the one reader whose answer decides whether the
-// secret is served. People are named by lowercase email and services by name, separated by white
+// secret is served. People are named by lowercase email, services by name, and a service's pods
+// of one Dispatch project as <service>/<PROJECT>, separated by white
 // space. It refuses a comma anywhere (ErrRequestersComma), a list that names nobody
-// (ErrRequestersMissing), and an entry that is neither (ErrRequestersEntry). An entry holding an
+// (ErrRequestersMissing), and an entry that is none of these (ErrRequestersEntry). An entry holding an
 // @ is a person, and must be the lowercase email their sign-in names them by (emailPattern),
 // since Evaluate compares it against record.CanonicalLogin of the session's operator; any other
-// entry is a service, and must be one of services, ALWAYS, so a nil or empty list refuses every
+// entry is a service, or a service and a project split at its one slash, whose service must be
+// one of services, ALWAYS, so a nil or empty list refuses every
 // service entry, exactly as the owner tag already refuses a name the deployment does not
-// register (Loader.secret). ParseRequesterShapes checks a service entry's shape alone, for the
+// register (Loader.secret), and whose project must be a whole Dispatch project key
+// (contracts.ProjectKeyPattern). A broker from before project entries reads such an entry as a
+// service no deployment registers and refuses the whole secret (ReasonRequestersMalformed),
+// so a rollback serves it to nobody rather than to every pod of the service.
+// ParseRequesterShapes checks a service entry's shape alone, for the
 // one caller that holds no registered list. It answers the entries sorted, each
 // once and joined by single spaces, so a Secret holding them stays comparable, two spellings of
 // one list are one policy, and the value is one an AWS tag and a Secret Manager annotation both
@@ -369,17 +518,24 @@ func parseRequesters(raw string, services []string, registered bool) (string, er
 	}
 	var requesters []string
 	for _, entry := range strings.Fields(raw) {
-		switch {
-		case strings.Contains(entry, "@"):
+		if strings.Contains(entry, "@") {
 			if !emailPattern.MatchString(entry) {
 				return "", fmt.Errorf("%w, not %q", ErrRequestersEntry, entry)
 			}
+			requesters = append(requesters, entry)
+			continue
+		}
+		service, project, scoped := strings.Cut(entry, "/")
+		if scoped && !projectKeyPattern.MatchString(project) {
+			return "", fmt.Errorf("%w, not %q: %q is no Dispatch project key", ErrRequestersEntry, entry, project)
+		}
+		switch {
 		case registered:
-			if !slices.Contains(services, entry) {
+			if !slices.Contains(services, service) {
 				return "", fmt.Errorf("%w, not %q: no registered service has that name", ErrRequestersEntry, entry)
 			}
 		default:
-			if !record.ValidService(entry) {
+			if !record.ValidService(service) {
 				return "", fmt.Errorf("%w, not %q", ErrRequestersEntry, entry)
 			}
 		}
@@ -427,6 +583,11 @@ type TagSet struct {
 	// "" for a secret that lists nobody; Scopes its scopes tag as ParseScopes answered it, "" for
 	// a secret that names none.
 	Type, Owner, Tier, Requesters, Scopes string
+	// GitHubOwners, GitHubRepositories and GitHubPermissions are a github-app secret's
+	// github-owners, github-repositories and github-permissions tags as ParseGitHubOwners,
+	// ParseGitHubRepositories and ParseGitHubPermissions answered them, "" for each it does not
+	// carry. A caller that reads none of them (`agent-secrets`, which writes none) leaves them "".
+	GitHubOwners, GitHubRepositories, GitHubPermissions string
 	// BoundAccount is the account email the deployment's BROKER_SERVICE_ACCOUNT_SECRETS binds to
 	// this secret, and "" when it binds none. It is "" as well for a caller that does not hold
 	// the setting — `agent-secrets`, which never sees it, exactly as it never sees BROKER_SERVICES
@@ -509,13 +670,20 @@ func RequesterRule(t TagSet) RequesterFault {
 // TagRules is the one statement of what a secret's tags demand of each other, which the loader
 // applies to every secret it reads and `agent-secrets secret` create and retag apply before they
 // write (so it asks for no registered service list of its own). It takes a TagSet rather than a
-// positional list because the rules weigh eight values — the type, owner, tier, requesters,
-// scopes, admin and max-grant tags, and the deployment's binding of the secret to an
-// account — which no caller could pass in order without mistaking one for another. It answers
+// positional list because the rules weigh eleven values — the type, owner, tier, requesters,
+// scopes, admin, max-grant, github-owners, github-repositories and github-permissions tags, and
+// the deployment's binding of the secret to an account — which no caller could pass in order
+// without mistaking one for another. It answers
 // "" for a secret the rules allow, and otherwise the load reason that refuses it:
 //
 //   - ReasonScopesType: a secret that is not a google-service-account one carries a scopes tag.
 //     No other minter reads it, so the tag would narrow nothing and say that it had.
+//   - ReasonGitHubCapType: a secret that is not a github-app one carries a github-repositories
+//     or github-permissions tag, for the same reason.
+//   - ReasonGitHubCapOwners: a secret carries a github-repositories or github-permissions tag and
+//     its github-owners tag names other than one account. A repository name means nothing without
+//     its account, and a capped release mints for one installation, so a capped secret names the
+//     one account its tokens are for.
 //   - ReasonAdminTier: an admin secret is not human tier. An administrator's credential is
 //     released only by a person's approval, which agent tier does not ask for.
 //   - ReasonAdminRequesters: an admin secret carries no requesters tag. Who may ask for an
@@ -536,6 +704,12 @@ func RequesterRule(t TagSet) RequesterFault {
 func TagRules(t TagSet) string {
 	if t.Scopes != "" && t.Type != TypeGoogleServiceAccount {
 		return ReasonScopesType
+	}
+	if (t.GitHubRepositories != "" || t.GitHubPermissions != "") && t.Type != TypeGitHubApp {
+		return ReasonGitHubCapType
+	}
+	if (t.GitHubRepositories != "" || t.GitHubPermissions != "") && len(strings.Fields(t.GitHubOwners)) != 1 {
+		return ReasonGitHubCapOwners
 	}
 	if t.Admin && t.Tier != TierHuman {
 		return ReasonAdminTier
@@ -686,6 +860,11 @@ type Secret struct {
 	// GitHubOwners is a github-app secret's github-owners tag as ParseGitHubOwners answers it, and
 	// "" for every other secret. A string, not a slice, for the same reason as MaxGrant.
 	GitHubOwners string
+	// GitHubRepositories and GitHubPermissions are a github-app secret's github-repositories and
+	// github-permissions tags as ParseGitHubRepositories and ParseGitHubPermissions answer them,
+	// and "" where it carries none: the most every token minted from it reaches and holds
+	// (GitHubCap). Strings, not a slice and a map, for the same reason as MaxGrant.
+	GitHubRepositories, GitHubPermissions string
 	// Requesters is the secret's requesters tag as ParseRequesters answers it, and "" for a secret
 	// that carries none, which every session and pod may ask for. A string, not a slice, for the
 	// same reason as MaxGrant.
@@ -727,6 +906,18 @@ func (secret Secret) GitHubOwnerLogins() []string {
 	return strings.Fields(secret.GitHubOwners)
 }
 
+// GitHubCap is the most every token minted from this secret may reach and hold, from its
+// github-repositories and github-permissions tags, and the zero cap for a secret that carries
+// neither. Every release, check and airlock mint passes it to the minter (secrets.MintRequest),
+// which sends it in GitHub's own token request.
+func (secret Secret) GitHubCap() secrets.GitHubCap {
+	var repositories []string
+	if secret.GitHubRepositories != "" {
+		repositories = strings.Fields(secret.GitHubRepositories)
+	}
+	return secrets.GitHubCap{Repositories: repositories, Permissions: GitHubPermissionsMap(secret.GitHubPermissions)}
+}
+
 // ScopeURLs is Scopes as the list of whole Google OAuth scope URLs the minter asks Google for,
 // each name under googleScopePrefix, and nil when it is "" — a secret that names none, for which
 // the minter chooses its own default rather than reading an empty list as no scope at all.
@@ -759,7 +950,9 @@ func (secret Secret) requesterNames() []string {
 // a record decided before people were named by email, and such a login has a service name's own
 // alphabet, so an operator named "legion-daemon" would otherwise be served every secret that
 // lists the legion-daemon service. An empty Operator (a pod has no person) and an empty Service
-// (a session has no service) match nothing, never an entry.
+// (a session has no service) match nothing, never an entry. A <service>/<PROJECT> entry matches
+// only a requester of that service whose Project is that project, and a requester with no
+// Project, which every session is, matches none: the service alone never stands in for it.
 func (secret Secret) lists(r Requester) bool {
 	operator := record.CanonicalLogin(r.Operator)
 	for _, entry := range secret.requesterNames() {
@@ -767,7 +960,14 @@ func (secret Secret) lists(r Requester) bool {
 		if person && operator != "" && entry == operator {
 			return true
 		}
-		if !person && r.Service != "" && entry == r.Service {
+		if person || r.Service == "" {
+			continue
+		}
+		service, project, scoped := strings.Cut(entry, "/")
+		if !scoped && entry == r.Service {
+			return true
+		}
+		if scoped && service == r.Service && r.Project != "" && project == r.Project {
 			return true
 		}
 	}
@@ -786,7 +986,8 @@ func (secret Secret) approver() string {
 // Set is the policy as one load read it, or as a single name's reread left it (NewSet builds both).
 type Set struct {
 	// Version is the SHA-256 of every served secret's name, owner, tier, source, max-grant,
-	// github-owners, requesters, scopes and admin, and of the fingerprint of each one's
+	// github-owners, requesters, scopes, admin, github-repositories and github-permissions, and of
+	// the fingerprint of each one's
 	// airlock entry: equal versions are equal policies. A request records the version it was
 	// decided under, so a live grant is re-evaluated only once the policy changed.
 	Version string
@@ -847,8 +1048,9 @@ func setOf(secrets map[string]Secret, refused map[string]Refusal, pending map[st
 // scopes and no admin tag writes the pre-type digest bytes,
 // "<Name>\t<Owner>\t<Tier>\t<Source>\n" (a type secret's type is in its Source); one with any of
 // them adds the first two, as a fifth field (time.Duration's form, 0s for none) and a sixth
-// (empty for none), and then ends its line with "\trequesters=<list>", "\tscopes=<list>" and
-// "\tadmin=true", in that order, for each of those three it carries. A
+// (empty for none), and then ends its line with "\trequesters=<list>", "\tscopes=<list>",
+// "\tadmin=true", "\tgithub-repositories=<list>" and "\tgithub-permissions=<list>", in that
+// order, for each of those five it carries. A
 // secret the airlock's rules name adds one line more, "<Name>\tairlock=<digest>\n", rather than a
 // field of the line above it, so every line a deployment with no rules file writes is
 // byte-identical to the one it writes
@@ -880,13 +1082,20 @@ func NewSet(secrets map[string]Secret) *Set {
 		if s.secret.Admin {
 			admin = "\tadmin=true"
 		}
+		capped := ""
+		if s.secret.GitHubRepositories != "" {
+			capped += "\tgithub-repositories=" + s.secret.GitHubRepositories
+		}
+		if s.secret.GitHubPermissions != "" {
+			capped += "\tgithub-permissions=" + s.secret.GitHubPermissions
+		}
 		switch {
-		case s.secret.MaxGrant == 0 && s.secret.GitHubOwners == "" && !s.secret.SessionDefault && s.secret.Requesters == "" && s.secret.Scopes == "" && !s.secret.Admin:
+		case s.secret.MaxGrant == 0 && s.secret.GitHubOwners == "" && !s.secret.SessionDefault && s.secret.Requesters == "" && s.secret.Scopes == "" && !s.secret.Admin && capped == "":
 			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source)
 		case s.secret.SessionDefault:
-			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s\tdefault-grant=session%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin)
+			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s\tdefault-grant=session%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, capped)
 		default:
-			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin)
+			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin, capped)
 		}
 		if s.secret.AirlockDigest != "" {
 			fmt.Fprintf(digest, "%s\tairlock=%s\n", s.secret.Name, s.secret.AirlockDigest)
@@ -907,6 +1116,16 @@ type Requester struct {
 	// machine login's service is its own claim and only the pod's account can prove it: an
 	// account listed for another service, or for none, proves nothing here.
 	Service string
+	// Project is the one Dispatch project the deployment itself names for a pod whose Service is
+	// proved: the project BROKER_EXCHANGE_ACCOUNTS maps the account whose token login enrolled it
+	// to, while BROKER_SERVICE_LOGINS still names that account for the pod's service; where the
+	// pod's own verified account is mapped too, it must name the same project
+	// (requests.Machine.podProject). Several Legion projects' pods run as one account,
+	// legion-worker, and each project's daemon logs in as an account of its own, so the daemon's
+	// account is what tells their pods apart. It is empty for every session, for a pod with no
+	// proved service, for a pod whose launching login maps to no project, and for one the two
+	// accounts map to different projects. A <service>/<PROJECT> requesters entry reads it (lists).
+	Project string
 	// Withheld is the names the session's operator withheld from it by revoking a grant of them
 	// the session got without asking (requests.Machine.RevokeByApprover). Evaluate answers each as
 	// a human-tier secret.

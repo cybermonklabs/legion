@@ -1,0 +1,22 @@
+kind: Added
+body: |-
+  A `github-app` secret can cap every token it mints with two tags: `github-repositories`
+  (repositories of the one account its `github-owners` lists) and `github-permissions`
+  (`<permission>:<read|write>` entries, such as `checks:write`). The broker sends the cap in
+  GitHub's own installation-token request on every release, check and airlock mint, so a caller
+  that asks with no narrowing gets the capped token, and GitHub mints nothing wider. A token GitHub
+  answers with that holds more than the cap (beside `metadata: read`) is refused and revoked. A
+  narrowing past the cap, a repository outside it or `--github-read-only` on a secret whose
+  permissions the cap fixes, is refused `NARROWING_REFUSED` before GitHub is asked. New refusal
+  reasons: `github-repositories-malformed`, `github-permissions-malformed`, `github-cap-type` and
+  `github-cap-owners`.
+
+  A `requesters` entry can name one Dispatch project's pods of a service, `<service>/<PROJECT>`
+  (`legion-daemon/OSSV`). A pod's project is the one `BROKER_EXCHANGE_ACCOUNTS` maps the account
+  whose token login enrolled it to, while `BROKER_SERVICE_LOGINS` names that account for the
+  pod's service; the pod's own account, where mapped, must agree. A pod whose launching login maps
+  to no project, and every session, has none. A broker from before this release refuses a secret carrying such an entry as
+  `requesters-malformed`, so a rollback serves it to nobody: tag a secret with one only once this
+  release is deployed, and the entry itself is the secret's rollback guard.
+custom:
+  Issue: INFRA-3885

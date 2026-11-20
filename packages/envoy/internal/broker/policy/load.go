@@ -127,6 +127,21 @@ const (
 	// ReasonGitHubOwnersMalformed: a github-app secret's github-owners tag holds a comma, its logins
 	// being separated by spaces, or an entry that is not a GitHub login (ParseGitHubOwners).
 	ReasonGitHubOwnersMalformed = "github-owners-malformed"
+	// ReasonGitHubRepositoriesMalformed: the github-repositories tag holds a comma, names no
+	// repository, names one twice or more than one token request carries, or holds an entry
+	// GitHub could not hold as a repository name (ParseGitHubRepositories).
+	ReasonGitHubRepositoriesMalformed = "github-repositories-malformed"
+	// ReasonGitHubPermissionsMalformed: the github-permissions tag holds a comma, names nothing,
+	// names a permission twice, or holds an entry that is not <permission>:<read|write>
+	// (ParseGitHubPermissions).
+	ReasonGitHubPermissionsMalformed = "github-permissions-malformed"
+	// ReasonGitHubCapType: a secret that is not a github-app one carries a github-repositories or
+	// github-permissions tag (TagRules). No other minter reads either, so the tag would cap
+	// nothing while saying it had.
+	ReasonGitHubCapType = "github-cap-type"
+	// ReasonGitHubCapOwners: a secret carries a github-repositories or github-permissions tag and
+	// its github-owners tag names other than exactly one account (TagRules).
+	ReasonGitHubCapOwners = "github-cap-owners"
 	// ReasonDefaultGrantMalformed: default-grant is set to anything but "session".
 	ReasonDefaultGrantMalformed = "default-grant-malformed"
 	// ReasonRequestersMalformed: the requesters tag holds a comma, names nobody, names a person
@@ -456,15 +471,31 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 			return Secret{}, ReasonScopesMalformed, nil
 		}
 	}
+	// The github-app cap is read whatever the type, so a cap on a secret of another type is
+	// refused by TagRules (ReasonGitHubCapType) rather than dropped: a cap the broker ignored would
+	// say a token was capped while it was minted whole.
+	if raw, tagged := ls.Tags[TagGitHubRepositories]; tagged {
+		if s.GitHubRepositories, err = ParseGitHubRepositories(raw); err != nil {
+			return Secret{}, ReasonGitHubRepositoriesMalformed, nil
+		}
+	}
+	if raw, tagged := ls.Tags[TagGitHubPermissions]; tagged {
+		if s.GitHubPermissions, err = ParseGitHubPermissions(raw); err != nil {
+			return Secret{}, ReasonGitHubPermissionsMalformed, nil
+		}
+	}
 	if reason := TagRules(TagSet{
-		Type:         s.Type(),
-		Owner:        s.Owner,
-		Tier:         s.Tier,
-		Requesters:   s.Requesters,
-		Scopes:       s.Scopes,
-		Admin:        s.Admin,
-		MaxGrant:     s.MaxGrant,
-		BoundAccount: l.ServiceAccounts[s.Name],
+		Type:               s.Type(),
+		Owner:              s.Owner,
+		Tier:               s.Tier,
+		Requesters:         s.Requesters,
+		Scopes:             s.Scopes,
+		GitHubOwners:       s.GitHubOwners,
+		GitHubRepositories: s.GitHubRepositories,
+		GitHubPermissions:  s.GitHubPermissions,
+		Admin:              s.Admin,
+		MaxGrant:           s.MaxGrant,
+		BoundAccount:       l.ServiceAccounts[s.Name],
 	}); reason != "" {
 		return Secret{}, reason, nil
 	}

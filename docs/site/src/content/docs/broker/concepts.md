@@ -383,12 +383,38 @@ marked with tags or annotations:
   installation on an account the list does not
   name gets no token. A `github-app` secret without the tag, or with one that names no account, is
   refused `github-owners-missing`.
+- **`github-repositories`** and **`github-permissions`** are optional, read on a `github-app`
+  secret and refused on any other type (`github-cap-type`). They cap every token the secret mints:
+  `github-repositories` names repositories of the one account `github-owners` lists, by name
+  alone and separated by spaces (`proofs widgets`), and `github-permissions` names
+  `<permission>:<read|write>` entries as GitHub's token request spells them (`checks:write`). The
+  broker sends the cap in GitHub's own installation-token request on every release, check and
+  airlock mint, so GitHub mints nothing wider whatever the caller asked, and it refuses a token
+  GitHub answers with that holds more (beside the `metadata: read` GitHub gives every token) and
+  revokes it. A caller's narrowing must fit inside the cap: a repository outside it, or
+  `--github-read-only` on a secret whose permissions the cap fixes, is refused
+  `NARROWING_REFUSED` before GitHub is asked; a release with no narrowing gets the capped token.
+  A capped secret lists exactly one owner (`github-cap-owners`), since a capped release mints for one installation.
+  A comma, an empty list, a name written with its owner, a repository named twice, a permission
+  named twice, or an entry of another shape or level is refused `github-repositories-malformed`
+  or `github-permissions-malformed`. No `agent-secrets` flag writes either tag: the program that
+  declares the secret does. `agent-secrets secret show` prints both (`github_repositories`,
+  `github_permissions`), and `secret list --json` carries them.
 - **`requesters`** is optional. It names the only people and services that may ask for the secret
   at all: people by the lowercase email they sign in with, services by the name the deployment
-  registers them under, separated by spaces (`ada@example.com legion-daemon`). A session whose
-  person the list does not name, and a pod whose service it does not name, is denied
-  `requester-not-listed`. A comma, a list that names nobody, an email with a capital letter, or a
-  service the deployment does not register is refused `requesters-malformed`. The list narrows
+  registers them under, and a service's pods of one Dispatch project as `<service>/<PROJECT>`,
+  separated by spaces (`ada@example.com legion-daemon legion-daemon/OSSV`). A pod's project is the
+  one `BROKER_EXCHANGE_ACCOUNTS` maps the account whose token login enrolled it to, while
+  `BROKER_SERVICE_LOGINS` still names that account for the pod's service: every Legion project's
+  issue pods run as one account, and each project's daemon logs in as its own, so the daemon's
+  account names the project of the pods it launches. Where the pod's own account is mapped too,
+  it must name the same project. A pod enrolled under a login that maps to no project, or under a
+  credential a person approved, has none, and so does every session. A session whose
+  person the list does not name, and a pod whose service (or service and project) it does not
+  name, is denied `requester-not-listed`. A comma, a list that names nobody, an email with a
+  capital letter, a service the deployment does not register, or a project that is no project key
+  is refused `requesters-malformed`; a broker from before project entries refuses a list holding
+  one the same way, so a rollback serves such a secret to nobody. The list narrows
   who may ask and bounds no grant by itself: a secret that is neither `admin` nor
   `google-service-account` keeps whatever `max-grant` it has, or none, so a person's own mail and
   Drive logins stay at their tier and are capped by nothing. A `google-service-account` secret's
@@ -553,7 +579,10 @@ cannot read (`requesters-malformed`), an `admin` tag set to anything but `true`
 `max-grant` or one longer than an hour (`max-grant-required`), a `google-service-account` secret
 whose `requesters` are not its one person owner, or that lists a service where it may not
 (`requesters-not-owner`), a `scopes` list the broker cannot read (`scopes-malformed`), a `scopes`
-tag on any other type (`scopes-type`), a malformed
+tag on any other type (`scopes-type`), a `github-repositories` or `github-permissions` tag the
+broker cannot read (`github-repositories-malformed`, `github-permissions-malformed`), either on a
+secret that is not a `github-app` one (`github-cap-type`), either tag beside a `github-owners`
+naming other than one login (`github-cap-owners`), a malformed
 `max-grant`, a name that is not in the form above, a secret encrypted with any key but the
 agent-secrets key, the AWS-managed key included, a secret with no current value (created without
 one, so none of its versions carries the `AWSCURRENT` label), or a type secret whose stored value

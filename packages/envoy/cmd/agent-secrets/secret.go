@@ -987,6 +987,12 @@ type secretView struct {
 	Type       string `json:"type"`
 	// GitHubOwners is a github-app secret's github-owners tag, the accounts the broker mints for.
 	GitHubOwners string `json:"github_owners"`
+	// GitHubRepositories and GitHubPermissions are a github-app secret's github-repositories and
+	// github-permissions tags, the most every token it mints reaches and holds, or "" for a secret
+	// that caps neither (policy.TagGitHubRepositories, policy.TagGitHubPermissions). No flag of
+	// this CLI writes them; show prints them, so whoever reads the secret sees its cap.
+	GitHubRepositories string `json:"github_repositories"`
+	GitHubPermissions  string `json:"github_permissions"`
 	// Requesters is the requesters tag: the people and services that may ask for the secret at
 	// all, or "" where any session its owner and tier allow may.
 	Requesters string `json:"requesters"`
@@ -1026,6 +1032,7 @@ func (v secretView) withTags(tags map[string]string) secretView {
 	v.Owner, v.Tier = tags[policy.TagOwner], tags[policy.TagTier]
 	v.Type, v.GitHubOwners, v.MaxGrant, v.DefaultGrant = policy.TypeFromTags(tags), tags[policy.TagGitHubOwners], tags[policy.TagMaxGrant], tags[policy.TagDefaultGrant]
 	v.Requesters, v.Scopes, v.Admin = tags[policy.TagRequesters], tags[policy.TagScopes], tags[policy.TagAdmin]
+	v.GitHubRepositories, v.GitHubPermissions = tags[policy.TagGitHubRepositories], tags[policy.TagGitHubPermissions]
 	return v
 }
 
@@ -1130,8 +1137,8 @@ func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	fmt.Fprintf(stdout, "name: %s\nstore: %s\nsecret_name: %s\nowner: %s\ntier: %s\ntype: %s\ngithub_owners: %s\nrequesters: %s\nscopes: %s\nadmin: %s\nmax_grant: %s\ndefault_grant: %s\ncreated: %s\nlast_changed: %s\n",
-		view.Name, view.Store, view.SecretName, orDash(view.Owner), orDash(view.Tier), orDash(view.Type), orDash(view.GitHubOwners), orDash(view.Requesters), orDash(view.Scopes), orDash(view.Admin), orDash(view.MaxGrant), orDash(view.DefaultGrant), formatTime(view.Created), formatTime(view.LastChanged))
+	fmt.Fprintf(stdout, "name: %s\nstore: %s\nsecret_name: %s\nowner: %s\ntier: %s\ntype: %s\ngithub_owners: %s\ngithub_repositories: %s\ngithub_permissions: %s\nrequesters: %s\nscopes: %s\nadmin: %s\nmax_grant: %s\ndefault_grant: %s\ncreated: %s\nlast_changed: %s\n",
+		view.Name, view.Store, view.SecretName, orDash(view.Owner), orDash(view.Tier), orDash(view.Type), orDash(view.GitHubOwners), orDash(view.GitHubRepositories), orDash(view.GitHubPermissions), orDash(view.Requesters), orDash(view.Scopes), orDash(view.Admin), orDash(view.MaxGrant), orDash(view.DefaultGrant), formatTime(view.Created), formatTime(view.LastChanged))
 	decides, guidance := whoDecides(view, s.settings.JudgeKeys)
 	fmt.Fprintf(stdout, "decides: %s\nguidance: %s\n", decides, guidance)
 	switch {

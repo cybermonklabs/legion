@@ -103,21 +103,25 @@ var readOnlyPermissionsWithoutActions = func() map[string]string {
 // narrowsToken reports whether n narrows the token GitHub mints, not only which installation it is
 // minted for: whether it sends GitHub an access_tokens body.
 func (n *GitHubNarrowing) narrowsToken() bool {
-	return n != nil && (len(n.Repositories) > 0 || n.ReadOnly)
+	return n != nil && (len(n.Repositories) > 0 || n.ReadOnly || len(n.Permissions) > 0)
 }
 
 // accessTokensBody is narrowing as GitHub's access_tokens body, nil for a narrowing that names
-// neither repositories nor read-only (it narrows to its owner alone) and for none, whose tokens
-// are asked for with no body, as before narrowing existed. permissions is what a read-only
-// narrowing asks GitHub for: readOnlyPermissions, or readOnlyPermissionsWithoutActions for the
-// second request Mint makes of an installation that holds no actions. Marshalling a struct of a
-// string slice and a string map cannot fail, so its error is dropped.
+// neither repositories, read-only nor permissions (it narrows to its owner alone) and for none,
+// whose tokens are asked for with no body, as before narrowing existed. A narrowing a secret's
+// cap wrote permissions into (GitHubCap.narrow) asks for exactly those. permissions is what a
+// read-only narrowing asks GitHub for: readOnlyPermissions, or readOnlyPermissionsWithoutActions
+// for the second request Mint makes of an installation that holds no actions. Marshalling a
+// struct of a string slice and a string map cannot fail, so its error is dropped.
 func (n *GitHubNarrowing) accessTokensBody(permissions map[string]string) []byte {
 	if !n.narrowsToken() {
 		return nil
 	}
 	body := githubAccessTokensBody{Repositories: n.Repositories}
-	if n.ReadOnly {
+	switch {
+	case len(n.Permissions) > 0:
+		body.Permissions = n.Permissions
+	case n.ReadOnly:
 		body.Permissions = permissions
 	}
 	encoded, _ := json.Marshal(body)
@@ -157,6 +161,9 @@ func (n *GitHubNarrowing) refusal(err error, appID, owner string) error {
 	if n.ReadOnly {
 		causes = append(causes, "contents: read, metadata: read or pull_requests: read, which the App does not hold")
 	}
+	if len(n.Permissions) > 0 {
+		causes = append(causes, fmt.Sprintf("a permission the secret fixes (%s) that the App does not hold on that installation", permissionList(n.Permissions)))
+	}
 	return withAttempts(fmt.Errorf("%w: github app %s: GitHub answered HTTP 422 to the narrowed token for %s: likely %s; the caller fixes the narrowing", ErrMintNarrowingRefused, appID, owner, strings.Join(causes, ", or ")), err)
 }
 
@@ -172,7 +179,9 @@ func (n *GitHubNarrowing) refusedPermissions(err error) bool {
 
 // heldBy checks that token, as GitHub describes it, holds no more than n asked: for repositories, a
 // selection of named repositories, each one n names (GitHub names them in its own case); for
-// read-only, named permissions, each at most readOnlyPermissions'. GitHub applies the
+// read-only, named permissions, each at most readOnlyPermissions'; for permissions a secret's cap
+// fixed, named permissions, each one n names at no higher a level, or the metadata read GitHub
+// gives every token. GitHub applies the
 // access_tokens body and refuses what it cannot grant, so a token past it means something between
 // the broker and GitHub dropped or widened the body; refusing it keeps the narrowing the release
 // answers with true by construction. Its errors name the rule the answer failed and never a value
@@ -205,6 +214,22 @@ func (n *GitHubNarrowing) heldBy(token githubInstallationToken) error {
 			}
 			if token.Permissions[permission] != readOnlyPermissions[permission] {
 				return errors.New("GitHub's token holds more than read access to contents, metadata, pull requests or actions")
+			}
+		}
+	}
+	if len(n.Permissions) > 0 {
+		if len(token.Permissions) == 0 {
+			return errors.New("GitHub's token names no permissions, so it may hold more than the secret's github-permissions")
+		}
+		for _, permission := range slices.Sorted(maps.Keys(token.Permissions)) {
+			held, capped := token.Permissions[permission], n.Permissions[permission]
+			switch {
+			case permission == "metadata" && held == "read":
+				// GitHub gives every installation token metadata: read, named or not.
+			case capped == "":
+				return errors.New("GitHub's token holds a permission past the secret's github-permissions")
+			case held != capped && !(held == "read" && capped == "write"):
+				return errors.New("GitHub's token holds more of a permission than the secret's github-permissions allow")
 			}
 		}
 	}
@@ -481,6 +506,16 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err err
 			return Minted{}, fmt.Errorf("%w: github app %s: %s is not an account its github-owners tag lists", ErrMintNarrowingRefused, secret.AppID, narrowing.Owner)
 		}
 		owners = []string{owner}
+	}
+	// The secret's own cap (its github-repositories and github-permissions tags, req.GitHubCap)
+	// is applied to every mint, narrowed by the caller or not, release, check and airlock alike:
+	// GitHub's token request then carries it, so GitHub mints nothing wider whatever was asked,
+	// and heldBy holds GitHub's answer to it.
+	if narrowing, err = req.GitHubCap.narrow(narrowing, owners, secret.AppID); err != nil {
+		return Minted{}, err
+	}
+	if narrowing != nil {
+		owners = []string{narrowing.Owner}
 	}
 	body := narrowing.accessTokensBody(readOnlyPermissions)
 	now := time.Now

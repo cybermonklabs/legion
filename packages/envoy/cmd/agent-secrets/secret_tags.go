@@ -228,14 +228,17 @@ func checkAdmin(admin string, orNone bool) error {
 func checkTagsFor(tags map[string]string) error {
 	duration, _ := policy.ParseMaxGrant(tags[policy.TagMaxGrant])
 	set := policy.TagSet{
-		Type:         policy.TypeFromTags(tags),
-		Owner:        tags[policy.TagOwner],
-		Tier:         tags[policy.TagTier],
-		Requesters:   tags[policy.TagRequesters],
-		Scopes:       tags[policy.TagScopes],
-		BoundAccount: "",
-		Admin:        tags[policy.TagAdmin] == adminTrue,
-		MaxGrant:     duration,
+		Type:               policy.TypeFromTags(tags),
+		Owner:              tags[policy.TagOwner],
+		Tier:               tags[policy.TagTier],
+		Requesters:         tags[policy.TagRequesters],
+		Scopes:             tags[policy.TagScopes],
+		GitHubOwners:       tags[policy.TagGitHubOwners],
+		GitHubRepositories: tags[policy.TagGitHubRepositories],
+		GitHubPermissions:  tags[policy.TagGitHubPermissions],
+		BoundAccount:       "",
+		Admin:              tags[policy.TagAdmin] == adminTrue,
+		MaxGrant:           duration,
 	}
 	return tagRefusal(policy.TagRules(set), set, tags)
 }
@@ -244,7 +247,8 @@ func checkTagsFor(tags map[string]string) error {
 // policy.TagRules answered for set, and tags is the map set was built from. It answers nil for
 // "", the answer for a secret the rules allow, and a usage error for every other reason, so it
 // is this CLI's whole mirror of TagRules: an arm for
-// policy.ReasonScopesType, policy.ReasonAdminTier, policy.ReasonAdminRequesters,
+// policy.ReasonScopesType, policy.ReasonGitHubCapType, policy.ReasonGitHubCapOwners,
+// policy.ReasonAdminTier, policy.ReasonAdminRequesters,
 // policy.ReasonMaxGrantRequired and policy.ReasonRequestersNotOwner, and one fallback refusal
 // after the switch, which quotes the reason TagRules gave. That reason is this binary's own
 // TagRules answer, so a reason, or a requesters fault, with no arm here is a gap in this build
@@ -266,6 +270,12 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 			holder = withArticle(set.Type) + " secret"
 		}
 		return usageErr{fmt.Errorf("--scopes narrows the token a %s secret mints, and no other type's minter reads it, so %s holds none: remove the scopes tag with --scopes none, in a retag of its own, or write --type %s, or the broker refuses it as %s", policy.TypeGoogleServiceAccount, holder, policy.TypeGoogleServiceAccount, policy.ReasonScopesType)}
+	case policy.ReasonGitHubCapType:
+		// No flag of this CLI writes either cap tag: a program that declares the secret does, so
+		// the write this refuses is a retag of such a secret to another type.
+		return usageErr{fmt.Errorf("this secret's %s or %s tag caps the tokens a %s secret mints, and no other type's minter reads it: keep --type %s, or the broker refuses it as %s", policy.TagGitHubRepositories, policy.TagGitHubPermissions, policy.TypeGitHubApp, policy.TypeGitHubApp, policy.ReasonGitHubCapType)}
+	case policy.ReasonGitHubCapOwners:
+		return usageErr{fmt.Errorf("this secret's %s or %s tag caps its tokens to one account's installation, so its github-owners names that one account, not %q: write --github-owners with that one login, or the broker refuses it as %s", policy.TagGitHubRepositories, policy.TagGitHubPermissions, set.GitHubOwners, policy.ReasonGitHubCapOwners)}
 	case policy.ReasonAdminTier:
 		return usageErr{fmt.Errorf("an admin secret releases an administrator's credential, which a person approves each release of, so it is human tier, not %q: write --tier %s, or the broker refuses it as %s", set.Tier, policy.TierHuman, policy.ReasonAdminTier)}
 	case policy.ReasonAdminRequesters:

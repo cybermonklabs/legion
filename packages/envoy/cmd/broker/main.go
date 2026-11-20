@@ -462,7 +462,12 @@ func main() {
 	// The broker's one read of Dispatch, where BROKER_JUDGE_DISPATCH_URL names one: the request
 	// machine and the model judge share it, its token cache and its client.
 	dispatch := judgeDispatch(cfg)
-	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry), dispatch)
+	// The exchange's listed identities, built here rather than beside the exchange below because
+	// the request machine reads its map of an account to its projects as well: a pod's project,
+	// for a <service>/<PROJECT> requesters entry, is the one BROKER_EXCHANGE_ACCOUNTS names.
+	exchangePolicy, err := exchange.NewSet(cfg.ExchangeAccounts, cfg.ExchangeReadAccounts, cfg.ExchangeWorkflows, cfg.ExchangeGoogleAccounts, cfg.SignIn.Domain)
+	fatal(err)
+	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry), dispatch, exchangePolicy.ProjectsForAccount)
 	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
 	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
 	// person who decides it today rather than approving it while the pod is going away.
@@ -489,12 +494,10 @@ func main() {
 	oauthSecret, err := oauthStore.Secret(secretCtx)
 	cancelSecret()
 	fatal(err)
-	// The exchange's listed identities and the issuers whose tokens it accepts as a subject
-	// token. Both halves are optional and the grant is composed either way: a broker told about
-	// no issuer accepts no subject token at all, which the line below says once at boot rather
-	// than leaving an operator to read it out of a refusal.
-	exchangePolicy, err := exchange.NewSet(cfg.ExchangeAccounts, cfg.ExchangeReadAccounts, cfg.ExchangeWorkflows, cfg.ExchangeGoogleAccounts, cfg.SignIn.Domain)
-	fatal(err)
+	// The issuers whose tokens the exchange accepts as a subject token, beside its listed
+	// identities (exchangePolicy, built above). Both halves are optional and the grant is composed
+	// either way: a broker told about no issuer accepts no subject token at all, which the line
+	// below says once at boot rather than leaving an operator to read it out of a refusal.
 	exchangeConfig := oauth.ExchangeConfig{Policy: exchangePolicy}
 	if cfg.ExchangeK8sAudience != "" {
 		// The key source the account verifier already reads: a subject token is the same
@@ -1188,13 +1191,18 @@ func airlockCACertificatePEM(ca *airlockproxy.Authority) string {
 // unretried too: each holds the one pointer, which typeMinters' copies keep. dispatch is the
 // broker's one read of Dispatch (judgeDispatch), nil where BROKER_JUDGE_DISPATCH_URL is unset;
 // where it is set it also names a Legion pod's issue's assignee, whose Inbox lists that pod's
-// request for a shared secret.
-func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, retry *secrets.Retry, dispatch *judge.Dispatch) *requests.Machine {
+// request for a shared secret. projects is the exchange's map of an account to its projects
+// (exchange.Set.ProjectsForAccount, from BROKER_EXCHANGE_ACCOUNTS), which with
+// BROKER_SERVICE_LOGINS names a pod's project for a <service>/<PROJECT> requesters entry
+// (requests.Machine.podProject); nil names no pod's project.
+func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, retry *secrets.Retry, dispatch *judge.Dispatch, projects func(account string) ([]string, bool)) *requests.Machine {
 	githubApp := secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry}
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
 		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
 		ServicesByAccount:   cfg.ServicesByAccount,
+		ServiceLogins:       cfg.ServiceLogins,
+		ProjectsForAccount:  projects,
 		VMServicesByAccount: cfg.VMServicesByAccount,
 		VMPersonsByAccount:  vmPersonsByAccount(cfg.ExchangeGoogleAccounts),
 		// The two types whose minter calls an endpoint of its own carry the local stack's

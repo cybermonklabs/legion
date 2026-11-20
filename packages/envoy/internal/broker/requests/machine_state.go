@@ -299,6 +299,17 @@ type Machine struct {
 	// the service a pod whose projected token proved it runs as that account proves, when its
 	// launcher's service is that one (requester).
 	ServicesByAccount map[string]string
+	// ServiceLogins is BROKER_SERVICE_LOGINS, keyed by account: the service each account logs in
+	// as with its own projected token. requester reads it to take the project of the account whose
+	// login enrolled a pod only while that account is still a login of the pod's own service, as
+	// the login's credential authenticates only while its entry is there.
+	ServiceLogins map[string]string
+	// ProjectsForAccount answers the Dispatch projects BROKER_EXCHANGE_ACCOUNTS maps an account
+	// (system:serviceaccount:<namespace>:<name>) to, and false for an account no entry lists
+	// (exchange.Set.ProjectsForAccount, which cmd/broker wires). requester reads it for a pod's
+	// policy.Requester.Project; nil maps no account, so no pod has a project and no
+	// <service>/<PROJECT> requesters entry matches anyone.
+	ProjectsForAccount func(account string) ([]string, bool)
 	// VMServicesByAccount is BROKER_VM_SERVICES, keyed by a Google service account's email: the
 	// service a machine whose Google identity token the exchange took proves, when its launcher
 	// credential's service is that one (requester). It is read on every call, so an account
@@ -457,6 +468,8 @@ type enrollmentRow struct {
 // The withheld names are read by the enrollment's own id, and an adoption carries a session's
 // withheld_secrets rows to the enrollment it moves to, so these are the names withheld from the
 // session rather than from a box it has left.
+// A pod whose service is proved also gets its project (podProject), read on every call as the
+// service is, so a mapping dropped from the configuration stops its project's secrets at once.
 func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (policy.Requester, error) {
 	rows, err := q.Query(ctx, `select name from withheld_secrets where enrollment_id=$1`, e.ID)
 	if err != nil {
@@ -466,12 +479,15 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 	if err != nil {
 		return policy.Requester{}, err
 	}
-	var service string
+	var service, project string
 	if e.Subject != nil && e.Service != nil {
 		switch e.Kind {
 		case "pod":
 			if bound, ok := m.ServicesByAccount[*e.Subject]; ok && bound == *e.Service {
 				service = *e.Service
+				if project, err = m.podProject(ctx, q, e.ID, *e.Subject, service); err != nil {
+					return policy.Requester{}, err
+				}
 			}
 		case "session":
 			if read := exchange.ReadSubject(*e.Subject); read.Kind == exchange.SubjectMachine {
@@ -481,7 +497,46 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 			}
 		}
 	}
-	return policy.Requester{Operator: deref(e.Operator), Service: service, Withheld: withheld}, nil
+	return policy.Requester{Operator: deref(e.Operator), Service: service, Project: project, Withheld: withheld}, nil
+}
+
+// podProject is the one Dispatch project the deployment names for pod enrollment id, whose
+// verified service account account proves service, read through q. The account whose token login
+// enrolled the pod (launcher_credentials.subject), while BROKER_SERVICE_LOGINS still names it for
+// service (ServiceLogins), must map to exactly one project in BROKER_EXCHANGE_ACCOUNTS
+// (ProjectsForAccount), and that is the pod's project; where the pod's own account maps too, it
+// must map to that same project. Every public Legion project's pods run as the one account
+// legion-worker, which no entry maps, and each project's daemon logs in as an account of its own,
+// which its entry maps to its project, so the daemon's account is what names the project of the
+// pods it launches. It answers "" for a pod enrolled under a credential that names no subject (a
+// login a person approved), under a login the deployment no longer names for the service, under a
+// login that maps to no project or to several (a standing workload's, or a proof's), and for a pod
+// one project's daemon launched as another project's account: the pod's own account never stands
+// in for the launcher. With no ProjectsForAccount it answers "" and reads nothing.
+func (m *Machine) podProject(ctx context.Context, q querier, id, account, service string) (string, error) {
+	if m.ProjectsForAccount == nil {
+		return "", nil
+	}
+	rows, err := q.Query(ctx, `select c.subject from enrollments e join launcher_credentials c on c.id = e.launcher_credential_id where e.id=$1 and c.subject is not null`, id)
+	if err != nil {
+		return "", err
+	}
+	launchers, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return "", err
+	}
+	if len(launchers) != 1 || m.ServiceLogins[launchers[0]] != service {
+		return "", nil
+	}
+	launched, ok := m.ProjectsForAccount(launchers[0])
+	if slices.Sort(launched); !ok || len(slices.Compact(launched)) != 1 {
+		return "", nil
+	}
+	project := launched[0]
+	if own, ok := m.ProjectsForAccount(account); ok && slices.ContainsFunc(own, func(p string) bool { return p != project }) {
+		return "", nil
+	}
+	return project, nil
 }
 
 // Create verifies the request object (record.VerifyRequestObject, jti replay through the Replay

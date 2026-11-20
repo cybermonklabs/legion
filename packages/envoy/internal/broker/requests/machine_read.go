@@ -270,7 +270,7 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narr
 	}
 	if narrowing != nil {
 		if name, err := m.narrowingRefusal(checked.set, checked.granted, narrowing); err != nil {
-			if errors.Is(err, ErrNarrowingOwnerNotListed) {
+			if errors.Is(err, ErrNarrowingOwnerNotListed) || errors.Is(err, secrets.ErrMintNarrowingRefused) {
 				slog.Warn(NarrowingRefusedMessage, "grant", grantID, "enrollment", enrollmentID, "name", name, "error", err)
 			}
 			return Release{}, err
@@ -334,14 +334,16 @@ func (m *Machine) readValue(ctx context.Context, grantID, enrollmentID string, g
 }
 
 // narrowingRefusal is why narrowing cannot reach granted, with the name it refuses for, in the
-// order the three are reported: the grant holds no github-app secret
+// order the four are reported: the grant holds no github-app secret
 // (ErrNarrowingNotApplicable), a github-app secret of it does not list the narrowing's owner in
 // its github-owners tag in set, the snapshot the names are judged against
-// (ErrNarrowingOwnerNotListed), or the airlock holds back one of those names
-// (ErrNarrowingBehindAirlock, naming the first such name). GitHubApp.Mint refuses that owner
-// too, as a second barrier.
+// (ErrNarrowingOwnerNotListed), a github-app secret of it caps its tokens to less than the
+// narrowing asks for (secrets.GitHubCap.Refuses, an ErrMintNarrowingRefused: a repository outside
+// its github-repositories, or read-only beside its github-permissions), or the airlock holds back
+// one of those names (ErrNarrowingBehindAirlock, naming the first such name). GitHubApp.Mint
+// refuses that owner and that cap too, as a second barrier.
 //
-// Both places a narrowing is judged make these three refusals through this one function, so
+// Both places a narrowing is judged make these refusals through this one function, so
 // neither can answer one of them differently: the release of a grant (Values, where set is the
 // snapshot the release mints from and granted its granted names) and Create's check before
 // anybody is asked (checkNarrowing, where set is the snapshot the request is evaluated against
@@ -363,6 +365,9 @@ func (m *Machine) narrowingRefusal(set *policy.Set, granted []requestedSecret, n
 		held = true
 		if !slices.Contains(set.Secrets[g.name].GitHubOwnerLogins(), narrowing.Owner) {
 			return g.name, fmt.Errorf("%w: %s's github-owners tag does not list %s", ErrNarrowingOwnerNotListed, g.name, narrowing.Owner)
+		}
+		if err := set.Secrets[g.name].GitHubCap().Refuses(narrowing); err != nil {
+			return g.name, fmt.Errorf("%s: %w", g.name, err)
 		}
 	}
 	if !held {
@@ -533,11 +538,12 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 
 // mintRequest is the input one granted name's release gives its minter: the name, the type tag
 // its minters count their attempts under, the stored value as the line-ending rule spends it, the
-// tier, GitHub owners and Google OAuth scopes of the policy snapshot the release was checked
-// against, and the narrowing the caller asked for, nil where it asked for none. Create's check
-// builds its request here too and sets Check on it (checkNarrowingMint), which is the whole
-// worth of the check: it asks GitHub about the same secret, with the same owners and the same
-// narrowing, as the release it stands for.
+// tier, GitHub owners, GitHub cap and Google OAuth scopes of the policy snapshot the release was
+// checked against, and the narrowing the caller asked for, nil where it asked for none. Create's
+// check builds its request here too and sets Check on it (checkNarrowingMint), which is the whole
+// worth of the check: it asks GitHub about the same secret, with the same owners, the same cap and
+// the same narrowing, as the release it stands for. The airlock's own mints read through release
+// as well, so the cap reaches every token a github-app secret mints.
 func mintRequest(name, secretType string, served policy.Secret, value string, narrowing *secrets.GitHubNarrowing) secrets.MintRequest {
 	return secrets.MintRequest{
 		Name:            name,
@@ -545,6 +551,7 @@ func mintRequest(name, secretType string, served policy.Secret, value string, na
 		HumanTier:       served.Tier == policy.TierHuman,
 		Value:           value,
 		GitHubOwners:    served.GitHubOwnerLogins(),
+		GitHubCap:       served.GitHubCap(),
 		GoogleScopes:    served.ScopeURLs(),
 		GitHubNarrowing: narrowing,
 	}

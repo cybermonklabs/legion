@@ -3,6 +3,9 @@ package secrets
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -13,7 +16,10 @@ import (
 // (broker_mint_attempts_total).
 // GitHubOwners is a github-app secret's github-owners tag as lowercase logins; every other
 // type leaves it nil. GitHubNarrowing is the narrowing a release asked for, nil for the
-// owner-wide tokens; only the github-app minter reads it. GoogleScopes is a
+// owner-wide tokens; only the github-app minter reads it. GitHubCap is the most a github-app
+// secret's tokens may reach and hold, from its github-repositories and github-permissions tags
+// (policy.Secret.GitHubCap), the zero cap for a secret with neither and for every other type; the
+// github-app minter applies it to every mint, with or without a narrowing. GoogleScopes is a
 // google-service-account secret's scopes tag as the whole OAuth scope URLs
 // policy.Secret.ScopeURLs answers, and nil both for such a secret that names no scopes and for
 // every other type; the service-account minter then asks Google for the cloud-platform scope
@@ -26,6 +32,7 @@ type MintRequest struct {
 	GitHubOwners    []string
 	GoogleScopes    []string
 	GitHubNarrowing *GitHubNarrowing
+	GitHubCap       GitHubCap
 
 	// Check asks the minter whether it could serve this request, without serving it; only the
 	// github-app minter reads it. A check of a narrowing that names repositories or read-only
@@ -81,6 +88,92 @@ type GitHubNarrowing struct {
 	// actions: read, less the Actions grant an installation does not hold. A machine that must
 	// only read needs it, with or without Repositories.
 	ReadOnly bool
+	// Permissions, when not nil, are the permissions the token holds, as GitHub's access_tokens
+	// body names them, in place of ReadOnly's set; GitHub adds metadata: read to every token.
+	// No caller sets it: the github-app minter writes it from the secret's GitHubCap
+	// (GitHubCap.narrow), which a read-only narrowing cannot be applied beside.
+	Permissions map[string]string
+}
+
+// GitHubCap is the most every token minted from one github-app secret may reach and hold:
+// Repositories, names of repositories of the one account its github-owners lists (nil for no
+// repository cap), and Permissions, the permissions every token holds (nil for no permission cap),
+// from the secret's github-repositories and github-permissions tags. The minter sends the cap in
+// GitHub's own token request, so GitHub mints nothing wider whatever the broker's caller asked,
+// and it checks GitHub's answer against the cap before it releases the token (heldBy).
+type GitHubCap struct {
+	Repositories []string
+	Permissions  map[string]string
+}
+
+// caps reports whether c caps anything: the zero cap mints as every secret minted before the tags.
+func (c GitHubCap) caps() bool {
+	return len(c.Repositories) > 0 || len(c.Permissions) > 0
+}
+
+// Refuses is why c refuses a caller's narrowing, nil where it admits it or names none: a read-only
+// narrowing of a secret whose permissions c fixes (its fixed read set is not the cap's, so it is
+// refused rather than quietly widened or dropped), or a narrowing to a repository outside c's. It
+// wraps ErrMintNarrowingRefused, names the cap and what the narrowing asked for, and never a
+// stored value or a token. The broker asks it before any minter runs (requests' narrowingRefusal),
+// and the minter asks it again (narrow), as a second barrier.
+func (c GitHubCap) Refuses(narrowing *GitHubNarrowing) error {
+	if narrowing == nil || !c.caps() {
+		return nil
+	}
+	if narrowing.ReadOnly && len(c.Permissions) > 0 {
+		return fmt.Errorf("%w: the secret fixes its tokens' permissions (%s), so a read-only narrowing cannot be applied to it; ask without --github-read-only", ErrMintNarrowingRefused, permissionList(c.Permissions))
+	}
+	if len(c.Repositories) > 0 {
+		for _, name := range narrowing.Repositories {
+			if !slices.ContainsFunc(c.Repositories, func(allowed string) bool { return strings.EqualFold(allowed, name) }) {
+				return fmt.Errorf("%w: the secret's tokens reach %s alone, and the narrowing names %s", ErrMintNarrowingRefused, strings.Join(c.Repositories, ", "), name)
+			}
+		}
+	}
+	return nil
+}
+
+// narrow is the narrowing a release of a secret capped by c mints under: the caller's narrowing,
+// nil for none, with the cap applied, for owners, the accounts the release mints for (the
+// secret's github-owners, or the caller's one owner). A secret c caps nothing answers narrowing
+// as it is. Otherwise owners names exactly one account (policy.TagRules holds a secret capped to
+// repositories to one owner, and this refuses a capped release that would mint for several), a
+// narrowing c refuses is refused (Refuses), and the answer narrows to that account: to the
+// caller's repositories, or to all of c's where the caller named none; and to c's permissions.
+func (c GitHubCap) narrow(narrowing *GitHubNarrowing, owners []string, appID string) (*GitHubNarrowing, error) {
+	if !c.caps() {
+		return narrowing, nil
+	}
+	if len(owners) != 1 {
+		return nil, fmt.Errorf("%w: github app %s: a capped secret mints for one account, and it would mint for %d", ErrMintRefused, appID, len(owners))
+	}
+	if err := c.Refuses(narrowing); err != nil {
+		return nil, fmt.Errorf("github app %s: %w", appID, err)
+	}
+	capped := GitHubNarrowing{Owner: owners[0]}
+	if narrowing != nil {
+		capped = *narrowing
+	}
+	// An empty list names no repository as surely as a nil one does, so either takes the cap's
+	// repositories: GitHub reads a body with no repositories as every repository of the
+	// installation.
+	if len(c.Repositories) > 0 && len(capped.Repositories) == 0 {
+		capped.Repositories = slices.Clone(c.Repositories)
+	}
+	if len(c.Permissions) > 0 {
+		capped.Permissions = maps.Clone(c.Permissions)
+	}
+	return &capped, nil
+}
+
+// permissionList is permissions as `name:level` entries, sorted and comma-separated, for a message.
+func permissionList(permissions map[string]string) string {
+	entries := make([]string, 0, len(permissions))
+	for _, name := range slices.Sorted(maps.Keys(permissions)) {
+		entries = append(entries, name+":"+permissions[name])
+	}
+	return strings.Join(entries, ", ")
 }
 
 // MaxNarrowedRepositories is the most repositories a GitHubNarrowing names. GitHub's
