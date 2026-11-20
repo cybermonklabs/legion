@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { lstat, readFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { CannotRunError, CorpusError, outDirectory, UsageError } from "./corpus-io";
 import {
@@ -43,7 +43,11 @@ import {
  * the shape `s10-inputs-io.ts` reads back. The answer names those files by the sha256 of their
  * bytes, and the driver reads each only with that sha256.
  *
- * `--out` must be an absolute path outside the repository's workspace, as every stage's is.
+ * `--out` must be an absolute path outside the repository's workspace, as every stage's is, and
+ * exactly `<claim>/s10-judged` (point 13), where `<claim>` is the one directory that holds the
+ * build and the draw the inputs stage's record names and `--inputs` itself; and it may not be a
+ * link. So this claim run's judging has one place: a second, empty `--out`, or a copy of the
+ * inputs stage elsewhere, is refused, and a run into that one place resumes the stage there.
  */
 
 const USAGE = `usage: bun scripts/approval-eval/s10-judge-admit.ts <s10_judge.py's own arguments>
@@ -55,6 +59,9 @@ Exit status: 0 when the run is admitted, 2 when it is not.`;
 /** The command whose run this admits, as its digest names it. */
 export const JUDGE_COMMAND = join(import.meta.dir, "s10_judge.py");
 
+/** The judging stage's directory under the claim's own directory, as point 13's command names it. */
+export const JUDGED_NAME = "s10-judged";
+
 /** The judging may not run as the registered text fixes it. */
 export class S10JudgeAdmissionError extends CannotRunError {
   override readonly name = "S10JudgeAdmissionError";
@@ -65,6 +72,12 @@ export interface Admission {
   reference: string;
   claimRun: string;
   runDigest: string;
+  /**
+   * The claim's own directory (point 13's `$CLAIM`): the one parent of the build and the draw the
+   * inputs stage's record names and of `--inputs` itself.
+   */
+  claimDirectory: string;
+  /** `<claimDirectory>/s10-judged`, the one place this stage may be written. */
   out: string;
   inputs: {
     directory: string;
@@ -86,7 +99,7 @@ function sha256Of(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-/** `s10_judge.py`'s flags, as it reads them: each is required. */
+/** `s10_judge.py`'s flags, as it reads them: each is required but `--service-account`. */
 function flagsOf(args: readonly string[]): { inputs: string; out: string } {
   let values: Record<string, string | undefined>;
   try {
@@ -99,6 +112,7 @@ function flagsOf(args: readonly string[]): { inputs: string; out: string } {
         skill: { type: "string" },
         "never-decide": { type: "string" },
         image: { type: "string" },
+        "service-account": { type: "string" },
       },
       strict: true,
       allowPositionals: false,
@@ -179,6 +193,29 @@ export async function admissionOf(
         "claim run's inputs"
     );
   }
+  const claimDirectory = dirname(directory);
+  const parents = [record.directories.build, record.directories.draw].map((one) =>
+    dirname(resolve(one))
+  );
+  if (parents.some((one) => one !== claimDirectory)) {
+    throw new S10JudgeAdmissionError(
+      `${recordPath} names the build ${record.directories.build} and the draw ` +
+        `${record.directories.draw}, and --inputs is ${directory}: the claim's stages are the ` +
+        "directories of one claim directory, and the judging takes only the inputs stage there"
+    );
+  }
+  const judged = join(claimDirectory, JUDGED_NAME);
+  if (out !== judged) {
+    throw new S10JudgeAdmissionError(
+      `--out is ${out}, and this claim run's judging is written only to ${judged}, beside the ` +
+        "stages before it, so no second directory can judge the inventory again"
+    );
+  }
+  if ((await lstat(out).catch(() => null))?.isSymbolicLink() === true) {
+    throw new S10JudgeAdmissionError(
+      `${out} is a link: the judging is written only to the directory itself`
+    );
+  }
   const files: Record<string, string> = {};
   const inventoryPath = join(directory, INVENTORY_FILE);
   const inventoryBytes = await heldBytes(inventoryPath, record.inventorySha256);
@@ -218,6 +255,7 @@ export async function admissionOf(
     reference: access.reference,
     claimRun,
     runDigest: await runDigestOf(run, root),
+    claimDirectory,
     out,
     inputs: { directory, stageSha256: sha256Of(recordBytes), files },
   };

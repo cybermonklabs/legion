@@ -11,24 +11,42 @@ sandbox) with the bundles and the calls sent beside it. In order, before any jud
    and refuses (point 5) if a variable or a file names a Dispatch, Envoy, GitHub, broker or
    transcript-store credential, if a mount is not one of the runtime's, or if a file is outside
    the bundles, the calls and the runtime. The runtime is what `RUNTIME` names: the image's own
-   files, by the digest the Job pulls it by (the driver checks the digest the pod ran), which is
-   every file of the root file system when the listing is taken, since nothing but this program
-   has run in the container yet; the kernel's and the kubelet's own mounts (`/proc`, `/dev`,
-   `/sys`, `/etc/hosts`, `/etc/hostname`, `/etc/resolv.conf`); the three mounts of the gateway
-   key, `models.yml` and the overlay; and the `emptyDir`.
+   files, the image being the one the driver's own pod runs, by the digest the claim's run digest
+   names (`--image`, which the driver refuses to be any other; it checks the digest the pod ran),
+   and the listing taken before anything but this program has run in the container; the kernel's
+   and the kubelet's own mounts (`/proc`, `/dev`, `/sys`, `/etc/hosts`, `/etc/hostname`,
+   `/etc/resolv.conf`); the three mounts of the gateway key, `models.yml` and the overlay; and
+   the `emptyDir`. In the roots a run can write (`WRITABLE_ROOTS`), every file, link or other
+   entry but a directory must be this program's own, a mount's own, or under a path of the
+   image's own runtime that `IMAGE_OWN` names (omp's profile and native module, the shell's own
+   files, the caches the image's tools left); and no file anywhere may bear the name of a file a
+   claim stage writes (`CLAIM_FILE_NAMES`, `CLAIM_FILE_PATTERN`). A directory the run cannot read
+   is recorded as such: nothing in it can reach a judge, which runs as the same user.
 3. It measures point 2's runtime by content (`measure_runtime`) and refuses on any difference.
-4. It records whether the metadata server refuses a request that does not carry its header, and
-   refuses to go on if it answers one.
+4. It asks each node metadata server for the pod's credential, with the header they require
+   (`METADATA_REQUESTS`), and refuses unless every request fails to connect or is refused in the
+   400s (`metadata_refusal`): a judge must reach no cloud credential. It records each status, and
+   never a body.
 
-Then it runs one `omp -p` in `WORK`, its transcripts kept as files, asked to make one `eval` call
-whose code is `CELL`: the five recorded `agent()` calls and one `wait()` for them, as S10's round
-waits. omp 18.16.0 has no command that runs an eval cell without a model, so the session's own
-model makes that one call; the driver holds its transcript to that one call.
+Each of those refusals stops the run, since every later request would meet the same sandbox.
+Then, as version 4 of point 5 has it, it records the recursive relative-path and type manifests
+of the bundle directory and the skill directory (`manifests_now`): the first must hold exactly the
+five bundles, the second exactly the skill's three files of point 2 (`manifest_problem`). Where
+either does not, it starts no judge, and the request is a deviation. Otherwise it runs one
+`omp -p` in `WORK` with the `eval` tool alone (the scouts it starts keep the tools their
+definition declares, measured on omp 18.16.0), its transcripts kept as files, asked to make one
+`eval` call whose code is `CELL`: the five recorded `agent()` calls and one `wait()` for them, as
+S10's round waits. omp 18.16.0 has no command that runs an eval cell without a model, so the
+session's own model makes that one call; the driver holds its transcript to that one call. It
+writes nothing in either directory, and once the last judge has returned it records both
+manifests again, which must be the ones it recorded before.
 
 What comes back is written to the pod's log only (`print_result`): the record, the listing, every
 transcript file, the answers and omp's own output, as one xz-compressed tar in base64 lines that
-the driver reads with `kubectl logs` and checks by its sha256. This program decides nothing about
-an answer: the driver does, from the transcripts, before any answer is compared.
+the driver reads with `kubectl logs` and checks by its sha256. The gateway key's bytes are
+replaced in every file first (`redact_key`), and the record names each file that held them. This
+program decides nothing about an answer: the driver does, from the transcripts, before any answer
+is compared.
 """
 
 import base64
@@ -71,12 +89,56 @@ CALLS_FILE = "/work/s10/calls.json"
 RESULTS_FILE = "/work/s10/results.json"
 SESSIONS = "/work/s10/sessions"
 
+# Point 5, version 4: the directory `skill://approval-review` resolves to, the skill's files of
+# point 2 in it, and the recursive relative-path and type manifest each of the two directories a
+# judge may `glob` must have, before its first judge and after its last.
+SKILL_DIR = "/opt/legion/pi-envoy/dist/skills/approval-review"
+SKILL_FILES = ("SKILL.md", "references/never-decide.md", "references/reviewer-principles.md")
+SKILL_MANIFEST = [["SKILL.md", "f"], ["references", "d"], ["references/never-decide.md", "f"],
+                  ["references/reviewer-principles.md", "f"]]
+BUNDLE_MANIFEST = [[f"judge-{index}.md", "f"] for index in range(1, 6)]
+
 # The mounts the kernel and the kubelet make in every container, which hold no file of a run.
 SYSTEM_TREES = ("/proc", "/dev", "/sys")
 KUBELET_FILES = ("/etc/hosts", "/etc/hostname", "/etc/resolv.conf")
 
-# The link-local metadata server, asked without the header it requires of every request.
-METADATA_URL = "http://169.254.169.254/computeMetadata/v1/"
+# The roots the image's own user can write in, or that hold a user's files: what a run, rather
+# than the image, could have left there is refused unless it is this program's or a mount's own.
+WRITABLE_ROOTS = ("/home", "/root", "/tmp", "/var/tmp", "/run", "/srv", "/mnt", "/media", "/var/mail",
+                  "/var/local", "/var/spool", WORK_MOUNT)
+# What of those roots is the image's own runtime, by path prefix: the shell's own files, omp's
+# profile (its plugins and databases, `models.yml` the mount among them) and native module, the
+# caches the image's tools left when it was built, and the system's own run-time entries.
+IMAGE_OWN = (
+    "/home/legion/.bashrc", "/home/legion/.bash_logout", "/home/legion/.profile",
+    "/home/legion/.omp/natives/", "/home/legion/.omp/profiles/legion/",
+    "/home/legion/.cache/", "/home/legion/.config/google-chrome-for-testing", "/home/legion/.bun/install/cache/",
+    "/home/legion/.local/share/pki/", "/home/legion/.local/share/uv/", "/home/legion/.aws/cli/cache/",
+    "/home/legion/go/pkg/mod/", "/tmp/node-compile-cache/", "/tmp/uv-",
+    "/run/adduser", "/run/shm", "/var/spool/mail",
+)
+# The names of the files a claim stage writes (the build, the draw, the inputs, the judging, the
+# analysis, the records manifest and the sessions file), none of which may be in the sandbox.
+CLAIM_FILE_NAMES = frozenset({
+    "snapshot.json", "corpus.jsonl", "counts.json", "trees.json", "draw.json", "slices.json",
+    "inventory.jsonl", "s10-inputs.json", "s10-judged.json", "outcomes.jsonl", "outcome.json",
+    "report.json", "report.md", "sessions.txt", "confidence-cases.txt", "anchor-descriptors.json",
+})
+# A request file (`requests/<ask id>.json`) or a page record (`pages/<sha256>.json`) of the inputs.
+CLAIM_FILE_PATTERN = re.compile(
+    r"/requests/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$|/pages/[0-9a-f]{64}\.json$")
+
+# The node's metadata servers, each asked for the pod's cloud credential with the header they
+# require, `Metadata-Flavor: Google`: the link-local one, and the one Workload Identity serves on
+# the node itself. The sandbox goes on only where every request fails to connect or is refused
+# with an answer in the 400s, so no credential of the pod's account can reach a judge.
+METADATA_REQUESTS = tuple(
+    f"{server}/computeMetadata/v1/instance/service-accounts/default/{path}"
+    for server in ("http://169.254.169.254", "http://169.254.169.252:988")
+    for path in ("token", "identity?audience=s10-judge-sandbox"))
+METADATA_HEADER = {"Metadata-Flavor": "Google"}
+# What stands in a kept file where the gateway key's bytes were.
+KEY_REDACTION = b"[the model gateway key]"
 
 # A variable that names a Dispatch, Envoy, GitHub, broker or transcript-store credential, a token,
 # a file of one or the server one is for, or any other secret.
@@ -238,12 +300,20 @@ def listed_path(line):
     return path.split(" -> ", 1)[0] if line.startswith("l ") else path
 
 
+def image_own(path, layout):
+    """Whether a file under a root a run can write is a mount's own or the image's own runtime."""
+    return path in (layout["models"], layout["overlay"]) or path.startswith(IMAGE_OWN)
+
+
 def listing_refusal(lines, payload, layout):
-    """Why the listing holds a credential or a file outside the bundles, the calls and the runtime.
+    """Why the listing holds a credential, a claim stage's file, or a file outside the bundles, the
+    calls and the runtime.
 
     `payload` names the files the driver sent, by path. Under the `emptyDir` only those, and the
     directories that hold them, may be there; under the gateway key's mount only the key, by
-    Kubernetes' own `..data` links to it. Every other file is the image's own or a mount's."""
+    Kubernetes' own `..data` links to it; under every other root a run can write, only directories
+    and the image's own runtime (`image_own`). Every other file is the image's own, whose digest the
+    driver checks."""
     wanted_directories = {layout["work"]}
     for path in payload:
         parent = os.path.dirname(path)
@@ -255,6 +325,9 @@ def listing_refusal(lines, payload, layout):
         path = listed_path(line)
         if CREDENTIAL_FILE.search(path):
             return f"{path} names a credential"
+        entry = line[0] in "flo"
+        if entry and (os.path.basename(path) in CLAIM_FILE_NAMES or CLAIM_FILE_PATTERN.search(path)):
+            return f"{path} bears the name of a file a claim stage writes"
         if under(path, layout["work"]):
             if path in payload and line.startswith("f "):
                 placed.add(path)
@@ -264,9 +337,58 @@ def listing_refusal(lines, payload, layout):
             name = os.path.basename(path)
             if name != "key" and not name.startswith(".."):
                 return f"{path} is no part of the gateway key's one item"
+        elif entry and any(under(path, root) for root in WRITABLE_ROOTS) and not image_own(path, layout):
+            return f"{path} is under a root a run can write, and is neither this program's, a mount's nor the image's own"
     missing = sorted(set(payload) - placed)
     if missing:
         return f"{missing[0]} was sent and is not there"
+    return None
+
+
+def manifest_of(directory):
+    """A directory's recursive relative-path and type manifest: each entry below it, by its path
+    from it and its type (`d` a directory, `f` a regular file, `l` a link, `o` anything else),
+    sorted, no link followed. None where `directory` is no directory."""
+    try:
+        if not stat.S_ISDIR(os.lstat(directory).st_mode):
+            return None
+    except OSError:
+        return None
+    entries = []
+    pending = [""]
+    while pending:
+        relative = pending.pop()
+        for entry in os.scandir(os.path.join(directory, relative)):
+            path = os.path.join(relative, entry.name) if relative else entry.name
+            mode = entry.stat(follow_symlinks=False).st_mode
+            kind = ("l" if stat.S_ISLNK(mode) else "d" if stat.S_ISDIR(mode)
+                    else "f" if stat.S_ISREG(mode) else "o")
+            entries.append([path, kind])
+            if kind == "d":
+                pending.append(path)
+    return sorted(entries)
+
+
+def manifests_now(bundle_dir):
+    """The manifests of the bundle directory and of the directory `skill://approval-review`
+    resolves to."""
+    return {"bundle": None if bundle_dir is None else manifest_of(bundle_dir),
+            "skill": manifest_of(os.path.realpath(SKILL_DIR))}
+
+
+def manifest_problem(manifests):
+    """Why the manifests recorded around one request's judges break point 5 (version 4), or None:
+    before the first judge, the bundle directory holds exactly `judge-1.md` to `judge-5.md` and the
+    skill directory exactly `SKILL.md` and `references/` with its two files, each a regular file,
+    and no link or other entry in either; once the last judge has returned, the same manifests."""
+    if not isinstance(manifests, dict) or not isinstance(manifests.get("before"), dict):
+        return "the sandbox recorded no manifests of the bundle and skill directories before the judges"
+    before = manifests["before"]
+    for name, wanted in (("bundle", BUNDLE_MANIFEST), ("skill", SKILL_MANIFEST)):
+        if before.get(name) != wanted:
+            return f"before the first judge the {name} directory's manifest is {before.get(name)}, not {wanted}"
+    if "after" in manifests and manifests["after"] != before:
+        return f"after the last judge the manifests are {manifests['after']}, not the ones recorded before"
     return None
 
 
@@ -305,14 +427,52 @@ def runtime_refusal(measured):
 
 
 def ask_metadata():
-    """What the metadata server answers a request without its header: refused or answered."""
+    """What each metadata server answers a request for the pod's credential that carries the
+    header it requires: the status of each answer, None where no connection was made, and never
+    a byte of a body. The sandbox refuses unless each is None or in the 400s (`metadata_refusal`)."""
+    answers = []
+    for url in METADATA_REQUESTS:
+        request = urllib.request.Request(url, headers=METADATA_HEADER)
+        try:
+            with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=10) as response:
+                answers.append({"url": url, "status": response.status})
+        except urllib.error.HTTPError as error:
+            answers.append({"url": url, "status": error.code})
+        except OSError as error:
+            answers.append({"url": url, "status": None, "error": type(error).__name__})
+    return answers
+
+
+def metadata_refusal(answers):
+    """Why the metadata servers' answers let a judge reach a credential, or None: every request
+    failed to connect or was refused in the 400s."""
+    if len(answers or []) != len(METADATA_REQUESTS):
+        return "the metadata servers were not each asked"
+    for answer in answers:
+        status = answer.get("status")
+        if status is not None and not 400 <= status < 500:
+            return f"{answer.get('url')} answered {status} to a request with its header, so a judge could reach a credential"
+    return None
+
+
+def gateway_key():
+    """The model gateway key's bytes, as the Job mounts them, without the blanks around them;
+    None where there is no key to read."""
     try:
-        with urllib.request.urlopen(METADATA_URL, timeout=10) as response:
-            return {"refused": False, "status": response.status}
-    except urllib.error.HTTPError as error:
-        return {"refused": True, "status": error.code}
-    except OSError as error:
-        return {"refused": True, "status": None, "error": type(error).__name__}
+        with open(os.path.join(KEY_MOUNT, "key"), "rb") as handle:
+            key = handle.read().strip()
+    except OSError:
+        return None
+    return key or None
+
+
+def redact_key(files, key):
+    """`files` with every occurrence of the gateway key's bytes replaced, and the names of the
+    files that held one, so no kept file holds the key."""
+    if not key:
+        return dict(files), []
+    held = sorted(name for name, data in files.items() if key in data)
+    return {name: data.replace(key, KEY_REDACTION) for name, data in files.items()}, held
 
 
 def layout_of():
@@ -348,23 +508,24 @@ def place(files, layout):
 
 
 def run_omp(environ):
-    """The one `omp -p` the judges run under, with its transcripts as files in `SESSIONS`: its exit
-    status (None where it ran out of time), its standard output and its standard error."""
+    """The one `omp -p` the judges run under, given the `eval` tool alone (the scouts it starts
+    keep their own declared tools), with its transcripts as files in `SESSIONS`: its exit status
+    (None where it ran out of time), its standard output and its standard error."""
     env = {name: value for name, value in environ.items() if not name.startswith("S10_")}
     env["OMP_SESSION_STORAGE"] = "file"
     try:
-        completed = subprocess.run([OMP, "-p", "--session-dir", SESSIONS, PROMPT], cwd=WORK, env=env,
-                                   capture_output=True, timeout=OMP_TIMEOUT)
+        completed = subprocess.run([OMP, "-p", "--tools", "eval", "--session-dir", SESSIONS, PROMPT], cwd=WORK,
+                                   env=env, capture_output=True, timeout=OMP_TIMEOUT)
     except subprocess.TimeoutExpired as expired:
         return None, expired.stdout or b"", expired.stderr or b""
     return completed.returncode, completed.stdout, completed.stderr
 
 
 def collected(record, listing, omp_output):
-    """The files the result carries: the record, the listing, omp's output, every transcript, the
-    answers."""
-    files = {"record.json": (json.dumps(record, indent=2, sort_keys=True) + "\n").encode("utf-8"),
-             "listing.txt": ("\n".join(listing) + "\n").encode("utf-8")}
+    """The files the result carries: the listing, omp's output, every transcript, the answers, and
+    the record last, each with the gateway key's bytes replaced; the record names the files that
+    held them (`keyFound`)."""
+    files = {"listing.txt": ("\n".join(listing) + "\n").encode("utf-8")}
     if omp_output is not None:
         files["omp-stdout.txt"], files["omp-stderr.txt"] = omp_output
     for directory, _, names in os.walk(SESSIONS):
@@ -375,6 +536,8 @@ def collected(record, listing, omp_output):
     if os.path.exists(RESULTS_FILE):
         with open(RESULTS_FILE, "rb") as handle:
             files["results.json"] = handle.read()
+    files, record["keyFound"] = redact_key(files, gateway_key())
+    files["record.json"] = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode("utf-8")
     return files
 
 
@@ -393,6 +556,8 @@ def checked(environ, layout, record):
     files = payload_of(environ)
     place(files, layout)
     record["payload"] = {path: sha256_of(data) for path, data in sorted(files.items())}
+    bundle_dirs = {os.path.dirname(path) for path in files if path.endswith(".md")}
+    record["bundleDirectory"] = bundle_dirs.pop() if len(bundle_dirs) == 1 else None
     record["environment"] = sorted(environ)
     with open("/proc/self/mountinfo") as handle:
         record["mounts"] = mount_points(handle.read())
@@ -409,9 +574,7 @@ def checked(environ, layout, record):
     if refusal is not None:
         return listing, refusal
     record["metadata"] = ask_metadata()
-    if not record["metadata"]["refused"]:
-        return listing, "the metadata server answered a request that carried no header"
-    return listing, None
+    return listing, metadata_refusal(record["metadata"])
 
 
 def main():
@@ -424,9 +587,13 @@ def main():
         record["refused"] = f"the sandbox failed before any judge: {type(error).__name__}: {error}"
     omp_output = None
     if record["refused"] is None:
-        returncode, stdout, stderr = run_omp(environ)
-        record["omp"] = {"returncode": returncode}
-        omp_output = (stdout, stderr)
+        record["manifests"] = {"before": manifests_now(record.get("bundleDirectory"))}
+        if manifest_problem(record["manifests"]) is None:
+            returncode, stdout, stderr = run_omp(environ)
+            record["omp"] = {"returncode": returncode}
+            omp_output = (stdout, stderr)
+            record["manifests"]["after"] = manifests_now(record.get("bundleDirectory"))
+        record["manifest"] = manifest_problem(record["manifests"])
     print_result(collected(record, listing, omp_output))
     return 0
 

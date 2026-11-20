@@ -1,19 +1,21 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE, type Registration, runDigestOf } from "../reserve";
-import { INPUTS_VERSION } from "../s10-inputs-io";
+import { INPUTS_VERSION, type InventoryLine } from "../s10-inputs-io";
 import { admissionOf, JUDGE_COMMAND, main } from "../s10-judge-admit";
+import { judgedStageOf, reportedOutcomesOf, UNJUDGED } from "../s10-judged-io";
 
 /**
- * The claim's judging stage. Its driver, `s10_judge.py`, and the program its sandbox runs,
- * `s10_sandbox.py`, are tested by `s10_judge_test.py` under `python3 -m unittest`, which the first
- * test here runs, so this directory's one `bun test` runs them. The rest test the admission the
- * driver asks before it reads anything (`s10-judge-admit.ts`), over an inputs stage written here
- * in the shapes `s10-inputs-io.ts` reads back, with a registration made for this test's own digest
- * over a bundle root of its own, as `s10-inputs.test.ts` makes one.
+ * The claim's judging stage. Its driver, `s10_judge.py`, and the modules beside it are tested by
+ * `s10_judge_test.py` under `python3 -m unittest`, which the first test here runs, so this
+ * directory's one `bun test` runs them: over an inputs stage written here and read back through
+ * `s10-inputs-io.ts`'s parsers by the admission, which that suite judges; and a judged stage that
+ * suite writes is read back here through `s10-judged-io.ts`. The rest test the admission the
+ * driver asks before it reads anything (`s10-judge-admit.ts`), with a registration made for this
+ * test's own digest over a bundle root of its own, as `s10-inputs.test.ts` makes one.
  */
 
 const DIRECTORY = join(import.meta.dir, "..");
@@ -26,6 +28,7 @@ const sha256 = (text: string): string => createHash("sha256").update(text, "utf8
 
 let scratch: string;
 let root: string;
+let claim: string;
 let inputs: string;
 let files: { code: string; skill: string; never: string };
 const env: Record<string, string | undefined> = {};
@@ -115,7 +118,7 @@ function inputsFiles(changes: { state?: string; claimRun?: string } = {}): Recor
     throughEventId: 100,
     draw: { drawSha256: "5".repeat(64), slicesSha256: "6".repeat(64) },
     reserveAsk: "7".repeat(64),
-    directories: { build: "/claim/build", draw: "/claim/draw" },
+    directories: { build: join(claim, "build"), draw: join(claim, "draw") },
     startedAt: "2026-11-21T00:00:00Z",
     finishedAt: "2026-11-21T00:10:00Z",
     dropScanThrough: 120,
@@ -133,21 +136,21 @@ function inputsFiles(changes: { state?: string; claimRun?: string } = {}): Recor
   };
 }
 
-async function writeInputs(written: Record<string, string>): Promise<void> {
-  await rm(inputs, { recursive: true, force: true });
+async function writeInputs(written: Record<string, string>, at = inputs): Promise<void> {
+  await rm(at, { recursive: true, force: true });
   for (const [name, text] of Object.entries(written)) {
-    await mkdir(dirname(join(inputs, name)), { recursive: true });
-    await writeFile(join(inputs, name), text, "utf8");
+    await mkdir(dirname(join(at, name)), { recursive: true });
+    await writeFile(join(at, name), text, "utf8");
   }
 }
 
 /** The driver's own arguments, as the claim's command names them. */
-function args(): string[] {
+function args(inputsDirectory = inputs, out = join(claim, "s10-judged")): string[] {
   return [
     "--inputs",
-    inputs,
+    inputsDirectory,
     "--out",
-    join(scratch, "judged"),
+    out,
     "--code",
     files.code,
     "--skill",
@@ -168,7 +171,8 @@ async function registration(): Promise<Registration> {
 beforeAll(async () => {
   scratch = await mkdtemp(join(tmpdir(), "s10-judge-"));
   root = join(scratch, "bundle");
-  inputs = join(scratch, "inputs");
+  claim = join(scratch, "claim");
+  inputs = join(claim, "s10-inputs");
   await mkdir(join(root, "scripts/approval-eval"), { recursive: true });
   await writeFile(join(root, "scripts/approval-eval/s10_judge.py"), "the driver\n", "utf8");
   files = {
@@ -185,8 +189,12 @@ afterAll(async () => {
   await rm(scratch, { recursive: true, force: true });
 });
 
-describe("s10_judge.py and s10_sandbox.py", () => {
-  test("pass their own tests under python3 -m unittest", () => {
+describe("s10_judge.py and the modules beside it", () => {
+  test("pass their own tests under python3 -m unittest, over inputs the TypeScript parsers read", async () => {
+    await writeInputs(inputsFiles());
+    const admission = await admissionOf(args(), { registration: await registration(), root, env });
+    await writeFile(join(inputs, "admission.json"), JSON.stringify(admission), "utf8");
+    const keep = join(scratch, "judged-by-python");
     const run = Bun.spawnSync(
       [
         "python3",
@@ -200,7 +208,12 @@ describe("s10_judge.py and s10_sandbox.py", () => {
       ],
       {
         cwd: DIRECTORY,
-        env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
+        env: {
+          ...process.env,
+          PYTHONDONTWRITEBYTECODE: "1",
+          S10_INPUTS_FIXTURE: inputs,
+          S10_JUDGED_KEEP: keep,
+        },
         stdout: "pipe",
         stderr: "pipe",
       }
@@ -208,8 +221,35 @@ describe("s10_judge.py and s10_sandbox.py", () => {
     const report = run.stderr.toString();
     if (run.exitCode !== 0) console.error(report);
     expect(run.exitCode).toBe(0);
-    expect(report).toMatch(/^Ran \d+ tests/m);
-  }, 120_000);
+    expect(report).toMatch(/^Ran [1-9]\d* tests/m);
+    expect(report).not.toMatch(/skipped/);
+
+    const stage = await judgedStageOf(keep);
+    expect(stage.record.state).toBe("written");
+    expect(stage.lines?.map((line) => line.outcome)).toEqual(["verdict"]);
+    const [judged] = [...stage.outcomes.values()];
+    expect(judged?.verdict).toBe("approve");
+    const line = (askId: string): InventoryLine => ({
+      askId,
+      issueKey: "ACME-1",
+      group: "report",
+      cases: 1,
+      judged: null,
+      state: "deviation",
+      reason: "a test's line",
+      requestSha256: null,
+      counts: null,
+      dropScanThrough: null,
+    });
+    const reported = reportedOutcomesOf(
+      [line(judged?.askId as string), line(DEVIATION)],
+      stage.outcomes
+    );
+    expect(reported.map((one) => one.deviation?.kind ?? one.verdict)).toEqual([
+      "approve",
+      UNJUDGED,
+    ]);
+  }, 180_000);
 });
 
 describe("s10-judge-admit.ts", () => {
@@ -221,7 +261,8 @@ describe("s10-judge-admit.ts", () => {
     expect(admission.reference).toBe(REFERENCE);
     expect(admission.claimRun).toBe(START);
     expect(admission.runDigest).toBe(read.reads[0]?.run as string);
-    expect(admission.out).toBe(join(scratch, "judged"));
+    expect(admission.claimDirectory).toBe(claim);
+    expect(admission.out).toBe(join(claim, "s10-judged"));
     expect(admission.inputs.stageSha256).toBe(sha256(written["s10-inputs.json"] as string));
     const named = Object.fromEntries(
       Object.entries(written)
@@ -281,12 +322,11 @@ describe("s10-judge-admit.ts", () => {
   test("refuses an --out that is relative or inside the repository, and a run claim.ts does not register", async () => {
     await writeInputs(inputsFiles());
     const read = await registration();
-    const out = join(scratch, "judged");
-    const relative = args().map((one) => (one === out ? "relative/out" : one));
+    const relative = args(inputs, "relative/out");
     await expect(admissionOf(relative, { registration: read, root, env })).rejects.toThrow(
       "absolute path"
     );
-    const inside = args().map((one) => (one === out ? join(DIRECTORY, "judged") : one));
+    const inside = args(inputs, join(DIRECTORY, "judged"));
     await expect(admissionOf(inside, { registration: read, root, env })).rejects.toThrow(
       "outside the repository workspace"
     );
@@ -303,5 +343,39 @@ describe("s10-judge-admit.ts", () => {
       else process.env[RESERVE_VARIABLE] = saved;
     }
     expect(errors.join("\n")).toContain("This run's digest is");
+  });
+
+  test("judges only into its claim directory's s10-judged, over the inputs stage there", async () => {
+    const written = inputsFiles();
+    await writeInputs(written);
+    const read = await registration();
+    await expect(
+      admissionOf(args(inputs, join(scratch, "elsewhere", "s10-judged")), {
+        registration: read,
+        root,
+        env,
+      })
+    ).rejects.toThrow(`this claim run's judging is written only to ${join(claim, "s10-judged")}`);
+    await expect(
+      admissionOf(args(inputs, join(claim, "s10-judged-again")), { registration: read, root, env })
+    ).rejects.toThrow("so no second directory can judge the inventory again");
+    const copy = join(scratch, "copy", "s10-inputs");
+    await writeInputs(written, copy);
+    await expect(
+      admissionOf(args(copy, join(scratch, "copy", "s10-judged")), {
+        registration: read,
+        root,
+        env,
+      })
+    ).rejects.toThrow("the claim's stages are the directories of one claim directory");
+    await mkdir(join(scratch, "real-judged"), { recursive: true });
+    await symlink(join(scratch, "real-judged"), join(claim, "s10-judged"));
+    try {
+      await expect(admissionOf(args(), { registration: read, root, env })).rejects.toThrow(
+        "is a link"
+      );
+    } finally {
+      await rm(join(claim, "s10-judged"), { force: true });
+    }
   });
 });
