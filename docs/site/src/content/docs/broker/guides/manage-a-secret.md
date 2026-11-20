@@ -104,10 +104,14 @@ agent-secrets secret show: using the gcloud configuration ada (CLOUDSDK_ACTIVE_C
 ```
 
 On GCP the source is one of `the access token in CLOUDSDK_AUTH_ACCESS_TOKEN`,
-`the credentials file GOOGLE_APPLICATION_CREDENTIALS names (PATH)`,
+`the credentials file GOOGLE_APPLICATION_CREDENTIALS names`,
 `the gcloud configuration NAME (CLOUDSDK_ACTIVE_CONFIG_NAME)`,
-`the gcloud account (CLOUDSDK_CORE_ACCOUNT)`, `the well-known credentials file PATH`,
-`the active gcloud account (gcloud configuration NAME)` and `the metadata server`. The account
+`the gcloud account (CLOUDSDK_CORE_ACCOUNT)`,
+`the well-known credentials file (application_default_credentials.json in the directory CLOUDSDK_CONFIG names)`
+(or `in $HOME/.config/gcloud` where `CLOUDSDK_CONFIG` is unset),
+`the active gcloud account (gcloud configuration NAME)` and `the metadata server`. No source is
+named by a path: a credentials file's path is where a person who pasted the credential itself
+puts it. The account
 follows, with ` impersonating SA` where gcloud impersonates one, or `principal unknown` where the
 credential does not say whose it is: a lent token, an `authorized_user` file, and a gcloud login
 whose token comes from an access token file or a credential file override. The CLI asks for no
@@ -119,7 +123,7 @@ metadata server counts only when it yields a token in an answer that says it is 
 the line reads `using the AWS profile NAME (AWS_PROFILE): ARN`,
 `using the AWS profile NAME (AWS_DEFAULT_PROFILE): ARN`,
 `using the access keys in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY: ARN`,
-`using the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names (PATH): ARN`, or
+`using the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names: ARN`, or
 `using the AWS SDK's default credential chain: ARN`; where keys or a token file are set beside a
 profile variable, the line adds that they outrank it. Where the profile holds no credential of
 its own, the SDK goes on to a container's credentials endpoint or the machine's instance role,
@@ -497,7 +501,7 @@ that outrank it. A create that IAM lets make the secret but not add its value sa
 ```console
 $ agent-secrets secret retag DEMO_DEPLOY_TOKEN --tier human
 agent-secrets secret retag: using the active gcloud account (gcloud configuration box): robot@example-project.iam.gserviceaccount.com
-agent-secrets secret retag: rpc error: code = PermissionDenied desc = …; the store refused the active gcloud account (gcloud configuration box): robot@example-project.iam.gserviceaccount.com; choose another with a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an account in CLOUDSDK_CORE_ACCOUNT, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS (gcloud configurations here: ada, box); looked in GCP Secret Manager project 100000000001
+agent-secrets secret retag: Secret Manager UpdateSecret answered PermissionDenied (missing permission: secretmanager.secrets.update; its message is not printed); the store refused the active gcloud account (gcloud configuration box): robot@example-project.iam.gserviceaccount.com; choose another with a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an account in CLOUDSDK_CORE_ACCOUNT, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS (gcloud configurations here: ada, box); looked in GCP Secret Manager project 100000000001
 ```
 
 `--owner me` is the one place a sign-in must name a person. Under one that names none, the command

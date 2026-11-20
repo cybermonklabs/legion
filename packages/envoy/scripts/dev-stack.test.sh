@@ -8,7 +8,7 @@
 # stub at <dir>/<pkg> instead of compiling. The same fake go makes the prebuilt directory a
 # --binaries run is given, as the builds farm makes the real one. dev-stack.sh's own isolation,
 # port and stop logic lives entirely in the shell driver and never in the Go binaries it starts,
-# so a stub proves the driver's behaviour without depending on cmd/dispatch, cmd/broker or
+# so a stub proves the driver's behaviour without depending on cmd/dispatch, cmd/cipherd or
 # cmd/listener compiling.
 #
 # Each stub logs the line the real process logs once it is listening — the issuer's
@@ -311,7 +311,7 @@ echo "fake issuer: code-flow$code_clients device-flow$device_clients sign-in-as=
 echo "dev-oidc-issuer: issuer listening url=http://127.0.0.1:$$" >&2
 ISSUER
       ;;
-    broker)
+    cipherd)
       cat >"$target" <<'BROKER'
 #!/usr/bin/env bash
 echo "fake broker: database=${BROKER_DATABASE_URL:-} issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-}" >&2
@@ -420,7 +420,7 @@ echo "fake dispatch: oidc-issuer=${DISPATCH_OIDC_ISSUER:-} oidc-audience=${DISPA
 echo "time=2026-01-01T00:00:00.000Z level=INFO msg=\"dispatch: listening\" addr=127.0.0.1:$$" >&2
 DISPATCH
       ;;
-    agent-secrets | agent-secrets-helper | natsprobe | dev-airlock-stands)
+    cipher | cipher-helper | natsprobe | dev-proxy-stands)
       cat >"$target" <<'CLIENT'
 #!/usr/bin/env bash
 exit 0
@@ -781,8 +781,8 @@ listener_pid1="${server_pid[listener]}"
 grep -q '^go build -o ' "$go_calls1" ||
   fail "instance 1 built nothing through the fake go, so a run that records no go call proves nothing"
 # (s) Only --project-access runs the airlock's stands, so a run without it builds none.
-if grep -q 'dev-airlock-stands' "$go_calls1"; then
-  fail "instance 1, run without --project-access, built dev-airlock-stands: $(cat "$go_calls1")"
+if grep -q 'dev-proxy-stands' "$go_calls1"; then
+  fail "instance 1, run without --project-access, built the stands (cmd/dev-proxy-stands): $(cat "$go_calls1")"
 fi
 declare -A port1=()
 for name in "${!process_port[@]}"; do port1["$name"]="${process_port[$name]}"; done
@@ -943,16 +943,25 @@ printf 'PASS: a run with no database URL names --database-url, LEGION_TEST_PG_DS
 # directory holds the eight binaries the header and the usage name, as one built to them does:
 # dev-airlock-stands is --project-access's alone, (s) below.
 prebuilt="${temporary_dir}/prebuilt"
-# One list of the stack's packages; the binary names the copy check reads come from it.
-prebuilt_packages=(./cmd/broker ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener
-  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd ./cmd/natsprobe)
+# One list of the stack's binaries and their packages; the binary names the copy check reads come
+# from it. The builds farm names each binary as dev-stack.sh does, so a package whose directory is
+# not its binary's name is renamed after the fake build.
+prebuilt_entries=(broker=./cmd/cipherd dev-oidc-issuer=./cmd/dev-oidc-issuer dispatch=./cmd/dispatch
+  listener=./cmd/listener agent-secrets=./cmd/cipher agent-secrets-helper=./cmd/cipher-helper
+  natsd=./internal/testnats/cmd/natsd natsprobe=./cmd/natsprobe)
+prebuilt_packages=("${prebuilt_entries[@]#*=}")
+prebuilt_binaries=("${prebuilt_entries[@]%%=*}")
 env -u DEV_STACK_TEST_BROKER_FAILS -u DEV_STACK_TEST_GO_CALL_FILE "${fake_bin_dir}/go" build -o "${prebuilt}/" \
   "${prebuilt_packages[@]}"
+for entry in "${prebuilt_entries[@]}"; do
+  built="${entry#*=}"
+  [[ "${built##*/}" == "${entry%%=*}" ]] || mv "${prebuilt}/${built##*/}" "${prebuilt}/${entry%%=*}"
+done
 go_calls_prebuilt="${temporary_dir}/go-calls-prebuilt"
 DEV_STACK_TEST_GO_CALL_FILE="$go_calls_prebuilt" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --binaries "$prebuilt"
 assert_instance_ready 'the --binaries run' "$log1" "$psql_calls1" "$curl_calls1"
 [[ ! -s "$go_calls_prebuilt" ]] || fail "the --binaries run called go: $(cat "$go_calls_prebuilt")"
-for binary in "${prebuilt_packages[@]##*/}"; do
+for binary in "${prebuilt_binaries[@]}"; do
   [[ -f "${work_dir}/bin/${binary}" && -x "${work_dir}/bin/${binary}" ]] ||
     fail "the --binaries run put no executable $binary in its own bin directory"
   cmp -s "${prebuilt}/${binary}" "${work_dir}/bin/${binary}" ||

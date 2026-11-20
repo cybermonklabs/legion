@@ -335,11 +335,12 @@ func TestAnEmptyPlanReasonIsAReasonNamed(t *testing.T) {
 	}
 }
 
-// A planReason that holds a NUL character (a JSON body carries it as \u0000) is a reason nothing
-// can store: PostgreSQL's jsonb, where the daemon's outbox row holds the rating, and its text,
-// where Dispatch's record holds it, both refuse it. The decoder of the body refuses it before the
-// route reads it, as it refuses a NUL in any string of any body (decodeJSON): 400 naming planReason
-// and where in it the NUL stands, with nothing recorded, so the agent sends it again corrected.
+// A planReason that holds a NUL character (a JSON body carries it as \u0000) is a reason
+// PostgreSQL cannot hold: its jsonb, where the daemon's outbox row holds the rating, and its text,
+// where Dispatch's record holds it, both refuse it, and the daemon's store would keep U+FFFD in its
+// place unseen by the agent. The decoder of the body refuses it before the route reads it, as it
+// refuses a NUL in any string of any body (decodeJSON): 400 naming planReason and where in it the
+// NUL stands, with nothing recorded, so the agent sends it again corrected.
 func TestARatingReasonWithANULIsRefusedAsInput(t *testing.T) {
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
@@ -347,7 +348,7 @@ func TestARatingReasonWithANULIsRefusedAsInput(t *testing.T) {
 
 	wantRefusal(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee",
 		PlanRating: new(4), PlanReason: new("The plan fit\x00 the work.")}), http.StatusBadRequest,
-		"invalid request body: planReason holds a NUL character (U+0000) at character 13, which the daemon cannot store")
+		"invalid request body: "+nulError("planReason", 13))
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("facts after the refusal = %#v, want none applied", got)
 	}
@@ -401,20 +402,18 @@ func TestANewPluginMustRate(t *testing.T) {
 	}
 }
 
-// "PlanRatingContract or later" holds for a plugin after the contract too, which
-// TestANewPluginMustRate's claim cannot reach: every claim the harness registers declares this
-// daemon's own contract (DaemonAPIVersion). The claim here records the contract after
-// PlanRatingContract and the daemon still serves it, a claim in its turn (staleClaim): one above
-// this daemon's own, as after a later release rolled back to this daemon while its worker was in
-// the retro's turn, or one below it, a pod's plugin of an earlier release. Its retro's completion
-// with no rating is refused PLAN_RATING_REQUIRED with nothing recorded, and the same completion
-// with a rating is taken (mustRate).
+// "PlanRatingContract or later" holds above the contract too, where TestANewPluginMustRate's claim
+// cannot reach: every claim the harness registers declares this daemon's own contract. The claim
+// here records a later one and the daemon still serves it, a claim in its turn (staleClaim), as
+// after a later release rolled back to this daemon while its worker was in the retro's turn. Its
+// retro's completion with no rating is refused PLAN_RATING_REQUIRED with nothing recorded, and
+// the same completion with a rating is taken (mustRate).
 func TestAPluginAboveTheRatingContractMustRateToo(t *testing.T) {
 	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	grants := []string{implementer.grant(t), implementer.grant(t)}
-	later := PlanRatingContract + 1
+	later := DaemonAPIVersion + 1
 	h.makeStale(t, implementer.token, implementer.session, implementer.secret, later)
 	if c := h.stored(implementer.token); c.State != supervise.StateWorking || c.UpdateRound != "" || c.PluginContract != later {
 		t.Fatalf("the claim is %s in round %q at contract %d, want working in no round at %d: this case proves nothing",
@@ -437,9 +436,7 @@ func TestAPluginAtTheRatingContractMustRate(t *testing.T) {
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	grants := []string{implementer.grant(t), implementer.grant(t)}
-	if PlanRatingContract != DaemonAPIVersion {
-		h.makeStale(t, implementer.token, implementer.session, implementer.secret, PlanRatingContract)
-	}
+	h.makeStale(t, implementer.token, implementer.session, implementer.secret, PlanRatingContract)
 	if c := h.stored(implementer.token); c.State != supervise.StateWorking || c.UpdateRound != "" || c.PluginContract != PlanRatingContract {
 		t.Fatalf("the claim is %s in round %q at contract %d, want working in no round at %d: this case proves nothing",
 			c.State, c.UpdateRound, c.PluginContract, PlanRatingContract)

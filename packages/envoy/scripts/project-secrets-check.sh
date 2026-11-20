@@ -8,7 +8,7 @@
 # stands), makes PRIV private with carol as its owner and bob on its access list, writes PRIV_KEY
 # (tagged dispatch-project=PRIV, shared, agent tier) and PUB_KEY (untagged), and then drives one
 # caller at a time. For each it runs `agent-secrets request PRIV_KEY` and `agent-secrets request
-# PUB_KEY` and one trade (packages/broker-client/scripts/print-trade.ts, which prints the
+# PUB_KEY` and one trade (packages/cipher-client/scripts/print-trade.ts, which prints the
 # introspection's project_scope and projects), and prints one PASS or FAIL line per answer, naming
 # the caller and the secret:
 #   * PRIV's pod, the production path: the pod of legion-priv-worker, whose exchange entry maps it
@@ -60,7 +60,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-PRINT_TRADE="$REPO_ROOT/packages/broker-client/scripts/print-trade.ts"
+PRINT_TRADE="$REPO_ROOT/packages/cipher-client/scripts/print-trade.ts"
 
 # The two people of the rows besides PRIV's owner: bob, on PRIV's access list, and alice, who
 # cannot see PRIV. Both are in the stack's sign-in domain (BROKER_SIGNIN_DOMAIN, example.com).
@@ -68,7 +68,7 @@ BOB="bob@example.com"
 ALICE="alice@example.com"
 PUB_SECRET="PUB_KEY"
 # How long the airlock row waits after taking carol off PRIV: the broker keeps each K3 answer for
-# projectaccess.CacheTTL (30 s, internal/broker/projectaccess/projectaccess.go), so a refusal
+# projectaccess.CacheTTL (30 s, internal/cipher/projectaccess/projectaccess.go), so a refusal
 # before then would read a cached answer. Five seconds over it.
 K3_CACHE_WAIT=35
 # How long a person's session waits for its helper to enrol it.

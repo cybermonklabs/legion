@@ -31,7 +31,7 @@
 # Four things this stack measured shape how the checks below are driven, and each is said
 # again in the result block of the check it touches:
 #
-#   - The broker reads BROKER_AIRLOCK_RULES_FILE once, at boot (cmd/broker/main.go: "The file is
+#   - The broker reads BROKER_AIRLOCK_RULES_FILE once, at boot (cmd/cipherd/main.go: "The file is
 #     read once; a change to it rolls the pods"). A check that needs other rules - k10d's judge
 #     300, and its control's judge 900 - therefore starts one more broker on the stack's own
 #     database, stand-ins and certificate authority with a rules file of its own, and points the
@@ -1098,7 +1098,7 @@ check_k10b() {
 	expect "the negative control, a scratch copy of the package that also imports github.com/anthropics/anthropic-sdk-go, lists it among its direct imports, which the check reports as a failure"
 
 	local imports
-	imports="$(cd "$ENVOY_DIR" && go list -f '{{join .Imports "\n"}}' ./internal/broker/judge)"
+	imports="$(cd "$ENVOY_DIR" && go list -f '{{join .Imports "\n"}}' ./internal/cipher/judge)"
 	printf '%s\n' "$imports" >"$WORK_DIR/imports.txt"
 	# Every provider SDK a model call could be made with directly, so "no provider SDK" is a
 	# list and not one name: a package that swapped anthropic-sdk-go for one of the others
@@ -1114,11 +1114,11 @@ check_k10b() {
 	# (model.go) is checked for itself, since a provider call made with the standard library
 	# would import no SDK at all.
 	local http_files model_http=""
-	http_files="$(cd "$ENVOY_DIR/internal/broker/judge" && grep -l '"net/http"' ./*.go | grep -v '_test\.go$' | tr '\n' ' ')"
+	http_files="$(cd "$ENVOY_DIR/internal/cipher/judge" && grep -l '"net/http"' ./*.go | grep -v '_test\.go$' | tr '\n' ' ')"
 	contains "model.go" "$http_files" && model_http="model.go"
 
-	observe "go list -f '{{join .Imports \"\\n\"}}' ./internal/broker/judge: $(tr '\n' ' ' <"$WORK_DIR/imports.txt")"
-	observe "its net/http is in [$http_files] alone, the judge's Dispatch read; model.go, the file that calls the model, imports $(cd "$ENVOY_DIR/internal/broker/judge" && sed -n '/^import (/,/^)/p' model.go | tr -d '\t"' | tr '\n' ' ')"
+	observe "go list -f '{{join .Imports \"\\n\"}}' ./internal/cipher/judge: $(tr '\n' ' ' <"$WORK_DIR/imports.txt")"
+	observe "its net/http is in [$http_files] alone, the judge's Dispatch read; model.go, the file that calls the model, imports $(cd "$ENVOY_DIR/internal/cipher/judge" && sed -n '/^import (/,/^)/p' model.go | tr -d '\t"' | tr '\n' ' ')"
 	assert "$([ "$has_agentloop" = 0 ] && [ -z "$found" ] && [ -z "$model_http" ] && echo 0 || echo 1)" \
 		"the judge package imports agentloop and no provider SDK directly, and makes no HTTP call to a model provider of its own" \
 		"its direct imports hold github.com/sjawhar/envoy/agentloop and none of [$sdks]${found:+ (found:$found)}; the file that asks the model, model.go, imports no net/http, so the one HTTP client in the package is the Dispatch read in [$http_files]"
@@ -1126,7 +1126,7 @@ check_k10b() {
 	# --- The negative control: the same package with one import added. ---
 	local scratch="$WORK_DIR/scratch"
 	mkdir -p "$scratch/judge"
-	cp "$ENVOY_DIR"/internal/broker/judge/*.go "$scratch/judge/"
+	cp "$ENVOY_DIR"/internal/cipher/judge/*.go "$scratch/judge/"
 	rm -f "$scratch/judge"/*_test.go
 	printf 'module github.com/sjawhar/envoy\n\ngo 1.25.0\n' >"$scratch/go.mod"
 	printf 'package judge\n\nimport _ "github.com/anthropics/anthropic-sdk-go"\n' >"$scratch/judge/scratch_provider.go"
@@ -1295,7 +1295,7 @@ check_k10c() {
 ###############################################################################################
 
 # k10d_rules writes a copy of the stack's rules file with one entry's judge seconds changed,
-# which is the one way to give a broker other rules: cmd/broker/main.go reads
+# which is the one way to give a broker other rules: cmd/cipherd/main.go reads
 # BROKER_AIRLOCK_RULES_FILE once, at boot.
 k10d_rules() { # <path> <seconds>
 	jq --arg n "$AIRLOCK_JUDGED_SECRET" --argjson s "$2" \
@@ -1409,7 +1409,7 @@ check_k10e() {
 	local version_before version_after
 	version_before="$(psql_stack -c "select rules_version from requests where id='$main_id'")"
 
-	# The policy version moves. The rules file is not what moves it: cmd/broker/main.go reads
+	# The policy version moves. The rules file is not what moves it: cmd/cipherd/main.go reads
 	# that file once at boot, and no running broker rereads it, so an unrelated entry of the
 	# *store* is what a live broker rereads - here one unrelated secret's tags, which
 	# policy.Set's version digest folds in.
@@ -1542,7 +1542,7 @@ check_k10f() {
 # (Runner.checks), and the guard currentPolicyAdmits makes for the judge inside the decision
 # transaction. The copy leaves out
 # the two large build products at the module root (out/ and the dispatch-e2e binary), which no
-# build of cmd/broker reads, and GOWORK=off below builds it as the module it is rather than
+# build of cmd/cipherd reads, and GOWORK=off below builds it as the module it is rather than
 # through the repository's workspace, so nothing of this run touches go.work.sum.
 #
 # Each edit is checked after it is made. A patch that silently matched nothing would build the
@@ -1556,17 +1556,17 @@ k10g_control_tree() { # <directory>
 	# always passes and the model is asked about an administrator's secret.
 	perl -0777 -pi -e 's/\tnow, withheld, admin, err :=/\tnow, withheld, _, err :=/;
 		s/\n\t\tif admin && adminOK \{\n\t\t\tadminOK, adminDetail = false, decidedByAPerson\(name\)\n\t\t\}\n/\n/' \
-		"$dir/internal/broker/judge/judge.go"
+		"$dir/internal/cipher/judge/judge.go"
 	# The transaction's guard, beside the withheld one at the head of currentPolicyAdmits.
 	perl -0777 -pi -e 's/\n\t\t\tif set\.Secrets\[g\.name\]\.Admin \{\n\t\t\t\treturn fmt\.Errorf\("%w: %s is an administrator.s secret, and a person approves every release of one", record\.ErrNotApprover, g\.name\)\n\t\t\t\}\n/\n/' \
-		"$dir/internal/broker/requests/machine_state.go"
+		"$dir/internal/cipher/requests/machine_state.go"
 	# Create's choice of who decides (Machine.judgeKey): without the tag's test an
 	# administrator's key with a judge entry is a judge key, written pending for the judge.
-	perl -0777 -pi -e 's/ \|\| set\.Secrets\[name\]\.Admin \{/ {/' "$dir/internal/broker/requests/machine_state.go"
+	perl -0777 -pi -e 's/ \|\| set\.Secrets\[name\]\.Admin \{/ {/' "$dir/internal/cipher/requests/machine_state.go"
 	local in_judge in_transaction in_create
-	in_judge="$(grep -c 'if admin && adminOK' "$dir/internal/broker/judge/judge.go")"
-	in_transaction="$(grep -c 'set.Secrets\[g.name\].Admin' "$dir/internal/broker/requests/machine_state.go")"
-	in_create="$(grep -c 'set.Secrets\[name\].Admin' "$dir/internal/broker/requests/machine_state.go")"
+	in_judge="$(grep -c 'if admin && adminOK' "$dir/internal/cipher/judge/judge.go")"
+	in_transaction="$(grep -c 'set.Secrets\[g.name\].Admin' "$dir/internal/cipher/requests/machine_state.go")"
+	in_create="$(grep -c 'set.Secrets\[name\].Admin' "$dir/internal/cipher/requests/machine_state.go")"
 	if [ "$in_judge" != 0 ] || [ "$in_transaction" != 0 ] || [ "$in_create" != 0 ]; then
 		echo "judge-check: the control patch left the admin refusal in the tree ($in_judge in the judge's checks, $in_transaction in the decision transaction, $in_create in Create); a control built from it would prove nothing" >&2
 		exit 1
@@ -1624,7 +1624,7 @@ check_k10g() {
 	local tree="$WORK_DIR/control-src" binary="$WORK_DIR/broker-no-admin-refusal"
 	k10g_control_tree "$tree"
 	local built=0
-	(cd "$tree" && GOWORK=off go build -o "$binary" ./cmd/broker) >"$WORK_DIR/control-build.log" 2>&1 || built=1
+	(cd "$tree" && GOWORK=off go build -o "$binary" ./cmd/cipherd) >"$WORK_DIR/control-build.log" 2>&1 || built=1
 	if [ "$built" != 0 ]; then
 		control "the control broker could not be built from $tree: $(tail -n 3 "$WORK_DIR/control-build.log" | tr '\n' ' ')"
 		fail "negative control: with the admin refusal taken out of all three places, the same request is granted by judge:<model id> — the control broker did not build, so the control was not run"

@@ -69,7 +69,7 @@ project_access_run_cases() {
   go_calls_access="${temporary_dir}/go-calls-project-access"
   DEV_STACK_TEST_GO_CALL_FILE="$go_calls_access" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --project-access
   assert_instance_ready 'the --project-access run' "$log1" "$psql_calls1" "$curl_calls1"
-  grep -q '^go build -o .* \./cmd/dev-airlock-stands' "$go_calls_access" ||
+  grep -q '^go build -o .* \./cmd/dev-proxy-stands' "$go_calls_access" ||
     fail "the --project-access run did not build dev-airlock-stands: $(cat "$go_calls_access")"
   assert_project_access 'the --project-access run' "$log1" true
   kill -INT "${instance_pid[1]}"
@@ -108,12 +108,15 @@ project_access_binaries_cases() {
   # nine and starting the stands: the control that the refusal above was that binary's alone.
   with_stands="${temporary_dir}/prebuilt-with-stands"
   cp -R "$prebuilt" "$with_stands"
-  env -u DEV_STACK_TEST_BROKER_FAILS -u DEV_STACK_TEST_GO_CALL_FILE "${fake_bin_dir}/go" build -o "${with_stands}/" ./cmd/dev-airlock-stands
+  # The stands' package is cmd/dev-proxy-stands and their binary dev-airlock-stands, so the fake
+  # build is renamed as dev-stack.sh renames the real one.
+  env -u DEV_STACK_TEST_BROKER_FAILS -u DEV_STACK_TEST_GO_CALL_FILE "${fake_bin_dir}/go" build -o "${with_stands}/" ./cmd/dev-proxy-stands
+  mv "${with_stands}/dev-proxy-stands" "${with_stands}/dev-airlock-stands"
   DEV_STACK_TEST_GO_CALL_FILE="$go_calls_prebuilt" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --binaries "$with_stands" --project-access
   assert_instance_ready 'the --project-access --binaries run' "$log1" "$psql_calls1" "$curl_calls1"
   assert_project_access 'the --project-access --binaries run' "$log1" true
   [[ ! -s "$go_calls_prebuilt" ]] || fail "the --project-access --binaries run called go: $(cat "$go_calls_prebuilt")"
-  for binary in "${prebuilt_packages[@]##*/}" dev-airlock-stands; do
+  for binary in "${prebuilt_binaries[@]}" dev-airlock-stands; do
     cmp -s "${with_stands}/${binary}" "${work_dir}/bin/${binary}" ||
       fail "the --project-access --binaries run's own $binary is not the prebuilt one it was given"
   done

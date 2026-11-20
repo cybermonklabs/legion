@@ -100,16 +100,20 @@ async function openTallRows(
 interface ViewRead {
   /** How many rows stood in view, uncut, in the task of the jump: rows no batch had measured. */
   readonly uncutInView: number;
-  /** The words under the middle of the view in the task of the jump, and after 60 frames. */
+  /** The words at the point read at the middle of the view (`jumpAndWatch` says which) in the
+   *  task of the jump, and after 60 frames. */
   readonly before: string | null;
   readonly after: string | null;
-  /** The most the top of the element under the middle of the view moved in those frames. */
+  /** The most the top of the element at that point moved in those frames. */
   readonly moved: number;
 }
 
 /** Jumps the page, as a fast drag of the scrollbar does, either so the middle of row `row`
  *  stands at the middle of the view or to `share` of the page's height, and reads in the same
- *  task, then for 60 frames, what stands at the middle of the view. */
+ *  task, then for 60 frames, the words the reader reads at the middle of the view. Where the
+ *  middle falls depends on the page's height, which the cuts of earlier batches still change, so
+ *  it can fall on a row's byline or between two rows: the point read is the middle of the line
+ *  of words that spans the view's middle, or of the line in view nearest it. */
 function jumpAndWatch(page: Page, to: { row: string } | { share: number }): Promise<ViewRead> {
   return page.evaluate(async (target): Promise<ViewRead> => {
     if ("row" in target) {
@@ -124,12 +128,36 @@ function jumpAndWatch(page: Page, to: { row: string } | { share: number }): Prom
       const box = row.getBoundingClientRect();
       return box.bottom > 0 && box.top < window.innerHeight;
     });
+    const middle = window.innerHeight / 2;
+    // How far a box stands from the middle of the view: 0 when it spans it.
+    const distance = (box: DOMRect): number =>
+      box.top > middle ? box.top - middle : box.bottom <= middle ? middle - box.bottom : 0;
+    // The words box that spans the view's middle, else the one in view nearest it.
     const words = inView
       .map((row) => row.querySelector("[data-node-words]"))
-      .find((found) => found != null);
-    const wordsBox = words?.getBoundingClientRect();
-    const x = wordsBox == null ? window.innerWidth / 2 : wordsBox.left + wordsBox.width / 2;
-    const y = window.innerHeight / 2;
+      .filter((found) => found != null)
+      .map((element) => ({ box: element.getBoundingClientRect(), element }))
+      .sort((a, b) => distance(a.box) - distance(b.box))[0];
+    // Its line that spans the middle, else its line nearest it, among the lines drawn inside both
+    // the box, which clips a cut row's words, and the view.
+    let line: DOMRect | undefined;
+    if (words !== undefined) {
+      const walker = document.createTreeWalker(words.element, NodeFilter.SHOW_TEXT);
+      const range = document.createRange();
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+        if ((node.textContent ?? "").trim() === "") continue;
+        range.selectNodeContents(node);
+        for (const rect of range.getClientRects()) {
+          const inside =
+            rect.width > 0 &&
+            rect.top >= Math.max(words.box.top, 0) &&
+            rect.bottom <= Math.min(words.box.bottom, window.innerHeight);
+          if (inside && (line === undefined || distance(rect) < distance(line))) line = rect;
+        }
+      }
+    }
+    const x = line === undefined ? window.innerWidth / 2 : line.left + line.width / 2;
+    const y = line === undefined ? middle : line.top + line.height / 2;
     const caretDocument = document as Document & {
       caretPositionFromPoint?: (
         x: number,

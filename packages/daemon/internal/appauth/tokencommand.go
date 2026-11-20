@@ -374,12 +374,12 @@ func parseRelease(output []byte, field string, now time.Time) (map[string]releas
 }
 
 // brokerNoInstallation is the secrets broker's refusal of a release for an account the App has no
-// installation on (packages/envoy/internal/broker/secrets/githubapp.go, GitHubApp.Mint), which
+// installation on (packages/envoy/internal/cipher/secrets/githubapp.go, GitHubApp.Mint), which
 // `agent-secrets` prints on stderr and runTokenCommand's error carries.
 const brokerNoInstallation = "has no installation on"
 
 // brokerNarrowingRefused is the secrets broker's refusal of a narrowing GitHub answered 422
-// (packages/envoy/internal/broker/secrets/minterr.go, ErrMintNarrowingRefused), carried the same
+// (packages/envoy/internal/cipher/secrets/minterr.go, ErrMintNarrowingRefused), carried the same
 // way: a permission of the read-only release the installation is not granted, which is the key
 // mode's ErrNarrowingRefused by another road. The command is told no repository, so none is among
 // what the broker refuses. The broker's text never quotes GitHub's own and never a token.
@@ -510,7 +510,7 @@ func (m *Manager) viewerLogin(ctx context.Context, role AppRole, token string) (
 		return "", &TransientError{Err: fmt.Errorf("read %s: %w", what, err)}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return "", transient(response, refusalBody(response), fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
+		return "", m.transient(response, refusalBody(response), fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
 	}
 	body, err := readBody(response, "read "+what, responseBound)
 	if err != nil {
@@ -542,7 +542,7 @@ func (m *Manager) checkAppID(ctx context.Context, role AppRole, slug, appID, tok
 		return &TransientError{Err: fmt.Errorf("read %s: %w", what, err)}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return transient(response, refusalBody(response), fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
+		return m.transient(response, refusalBody(response), fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
 	}
 	body, err := readBody(response, "read "+what, responseBound)
 	if err != nil {
@@ -620,11 +620,10 @@ func (m *Manager) listInstallation(ctx context.Context, role AppRole, repo ghrep
 			return false, false, &TransientError{Err: fmt.Errorf("%s: %w", what, err)}
 		}
 		if response.StatusCode == http.StatusUnauthorized {
-			refusalBody(response)
-			return false, true, fmt.Errorf("%s failed (401)", what)
+			return false, true, m.answered(response, refusalBody(response), fmt.Errorf("%s failed (401)", what))
 		}
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-			return false, false, transient(response, refusalBody(response), fmt.Errorf("%s failed (%d)", what, response.StatusCode))
+			return false, false, m.transient(response, refusalBody(response), fmt.Errorf("%s failed (%d)", what, response.StatusCode))
 		}
 		body, err := readBody(response, what, responseBound)
 		if err != nil {

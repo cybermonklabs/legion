@@ -9,13 +9,13 @@
 # brokers behind two fronts, six kinds of secret and the model judge.
 #
 # A bound host listens on port 443. That is not a choice: the proxy compares a request's Host
-# header against its CONNECT target, and airlockproxy.hostHeaderOf trims ":443" alone, so a bound
+# header against its CONNECT target, and proxy.hostHeaderOf trims ":443" alone, so a bound
 # host on any other port is refused "host header mismatch" before anything else it could prove.
 # No unprivileged process binds port 443 on a machine whose
 # /proc/sys/net/ipv4/ip_unprivileged_port_start is above it, or whose 443 another listener holds,
 # so the stands run in a container, which has a port 443 of its own.
 
-# airlock_stands_start starts cmd/dev-airlock-stands in a container and sets, for the caller:
+# airlock_stands_start starts cmd/dev-proxy-stands in a container and sets, for the caller:
 #   AIRLOCK_STANDS_CONTAINER  the container to stop, set once docker has started it
 #   AIRLOCK_CA_CERT_FILE      the authority the proxy decrypts with
 #   AIRLOCK_CA_KEY_FILE       its key

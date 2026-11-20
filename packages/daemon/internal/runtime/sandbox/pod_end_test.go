@@ -6,6 +6,7 @@ package sandbox
 // container has a terminated state and the one where it has none (INFRA-2009).
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -97,5 +98,46 @@ func TestThePodEndIsBoundedAndEmptyWithoutAReason(t *testing.T) {
 	if runes := []rune(long); len(runes) != runtime.PodEndRunes || runes[len(runes)-1] != '…' {
 		t.Fatalf("a message past the bound carries %d runes ending %q, want %d ending in an ellipsis",
 			len(runes), string(runes[len(runes)-1]), runtime.PodEndRunes)
+	}
+}
+
+// The URL rule reads the reason and message whole, before the cut at the bound: a URL with a user
+// name and a planted query, placed across the cut, leaves neither on the field wherever in the URL
+// the cut falls, and its host is there. A cut made before the rule ended inside the user name,
+// whose start the rule the claim keeps the field under (storetext.FarSideText) then reads as the
+// URL's host, or inside the query, which the field then carried as it was.
+func TestAURLAcrossThePodEndsBoundLeavesNoUserNameOrQuery(t *testing.T) {
+	for n, tc := range []struct {
+		name string
+		// after is the part of the URL the bound falls just after.
+		after string
+	}{
+		{"inside its user name", "https://planted-user"},
+		{"inside its query", "?token=planted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			url := fmt.Sprintf("https://planted-user-%d@example.com/path?token=planted-query-token-%d", n+1, n+1)
+			const reason = "Evicted"
+			// A cut before the rule keeps PodEndRunes-1 runes: the URL starts where the last of
+			// them are its own runes up to the end of after.
+			start := runtime.PodEndRunes - 1 - (strings.Index(url, tc.after) + len(tc.after))
+			message := strings.Repeat("w", start-len(reason+": ")-1) + " " + url + " " + strings.Repeat("z", runtime.PodEndRunes)
+			if joined := reason + ": " + message; !strings.HasSuffix(joined[:runtime.PodEndRunes-1], tc.after) {
+				t.Fatalf("the bound falls after %q, not after %q", joined[runtime.PodEndRunes-1-len(tc.after):runtime.PodEndRunes-1], tc.after)
+			}
+			got := runtime.PodEnd(reason, message)
+			if strings.Contains(got, "planted-user") {
+				t.Fatalf("the pod end ends %q, which holds the URL's user name", got[strings.Index(got, "https://"):])
+			}
+			if strings.Contains(got, "token=") {
+				t.Fatalf("the pod end ends %q, which holds the URL's query", got[strings.Index(got, "https://"):])
+			}
+			if !strings.Contains(got, "https://example.com/") {
+				t.Fatalf("the pod end ends %q, want the URL's host", got[max(0, len(got)-40):])
+			}
+			if runes := []rune(got); len(runes) != runtime.PodEndRunes || runes[len(runes)-1] != '…' {
+				t.Fatalf("the pod end is %d runes ending %q, want %d ending in an ellipsis", len(runes), string(runes[len(runes)-1]), runtime.PodEndRunes)
+			}
+		})
 	}
 }

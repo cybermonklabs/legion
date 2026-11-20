@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
@@ -42,14 +43,14 @@ import (
 const controllerSecretVariable = "LEGION_CONTROLLER_SECRET"
 
 // controllerPersonTradeVar is the TypeScript broker client's setting that turns its person trade
-// off (PERSON_TRADE_VAR, packages/broker-client/src/signins.ts), which controllerEnvironment sets
+// off (PERSON_TRADE_VAR, packages/cipher-client/src/signins.ts), which controllerEnvironment sets
 // to "off" under every configuration. That client trades the controller's own Dispatch credential
 // under `dispatch_token_broker`, and its Envoy credential wherever no bearer names one, and on a
 // machine where the operator ran `agent-secrets login` it would trade that person's sign-in, which
 // the controller finds under the operator's HOME, the HOME it keeps: the controller would write
 // Dispatch and speak on Envoy in its operator's name. agent-secrets neither reads this variable
 // nor strips it (its name lies outside the AGENT_SECRETS_ prefix that the exec form drops from
-// its child: sessionIdentityVars and buildChildEnv, packages/envoy/cmd/agent-secrets/main.go), so
+// its child: sessionIdentityVars and buildChildEnv, packages/envoy/cmd/cipher/main.go), so
 // the controller's own agent-secrets reads are signed exactly as they are without it, and a
 // `dispatch` command it runs under `agent-secrets NAME --` keeps the setting.
 const controllerPersonTradeVar = "PERSON_SIGNIN_TRADE"
@@ -255,7 +256,7 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 		omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation), controllerDir)
 	secret, designSteps, err := probeAndMint(ctx, cfg.DaemonURL, daemon.ControllerProbe{
 		Omp: invocation, Prefix: cfg.OmpLaunchPrefix, Env: env, WorkDir: controllerDir, Stdin: os.Stdin, Stderr: stderr,
-		Contract: api.DaemonAPIVersion, Log: slog.New(slog.NewTextHandler(stderr, nil)),
+		Contract: api.DaemonAPIVersion, Log: slog.New(slog.NewTextHandler(stderr, redact.HandlerOptions(nil))),
 	}, operatorToken)
 	if err != nil {
 		removeDirs(created)

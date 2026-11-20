@@ -16,10 +16,7 @@ body: |-
   nothing from the pod; a grant the policy gave the pod without asking is listed, as a service's
   pod's is, to every signed-in person who may see it and reads "Ends with its machine login", and a
   grant of a private project they are not on is hidden from them as from anyone outside it and is
-  on the pages of that project's people. An operator's revoke of an automatic grant withholds its
-  names from every live enrollment of the grant's session, and an enrolment of the session waits
-  for such a revoke in flight (a lock both take), so the withhold reaches the box the session runs
-  on even where the grant stayed on a box the session left holding nothing live. A
+  on the pages of that project's people. A
   record signed for another broker address now answers such a person `404` from the dismissal and
   the approval page too, where the dismissal answered `500` and the page `503`. While Dispatch
   cannot say whether the person may see the record or grant, the decide routes, the dismissal and

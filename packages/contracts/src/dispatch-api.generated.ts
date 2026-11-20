@@ -957,7 +957,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Revoke a credential grant as the caller: its approver, or the person its enrollment acts for, ends it whatever project it touches. A grant revoked by someone it does not name is 404 when it belongs to a private project the caller may not see, as an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; of the grants they may see, they end one whose approver is anyone, and any other is 403 NOT_APPROVER. */
+    /** @description Revoke a credential grant as the caller: its approver, or the person its enrollment acts for, ends it whatever project it touches. A grant revoked by someone it does not name is 404 when it belongs to a private project the caller may not see, as an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; of the grants they may see, they end one whose approver is anyone, and any other is 403 NOT_APPROVER. A grant the broker saw move to another session each time it read it, three times in a row, is 409 GRANT_MOVING, revoking nothing; the same revoke succeeds once it stays put. */
     post: operations["postApiV1CredentialGrantsByIdRevoke"];
     delete?: never;
     options?: never;

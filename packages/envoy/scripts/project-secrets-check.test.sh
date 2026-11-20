@@ -44,9 +44,9 @@ readonly driver="$repo/packages/envoy/scripts/project-secrets-check.sh"
 real_sleep="$(command -v sleep)"
 readonly real_sleep
 readonly admin_url='postgres://tester:not-a-secret@127.0.0.1:5999/postgres?sslmode=disable'
-mkdir -p "$state" "$fakes" "$stackbin" "$repo/packages/envoy/scripts" "$repo/packages/broker-client/scripts"
+mkdir -p "$state" "$fakes" "$stackbin" "$repo/packages/envoy/scripts" "$repo/packages/cipher-client/scripts"
 cp "$real_driver" "$driver"
-: >"$repo/packages/broker-client/scripts/print-trade.ts"
+: >"$repo/packages/cipher-client/scripts/print-trade.ts"
 
 # fake writes an executable whose first lines name this run's state, the real sleep and the
 # scripts directory, and whose body is the quoted text on standard input.

@@ -34,8 +34,10 @@ function grantedBy(grant: ApproverGrantResp): string {
  * broker allows the grant's approver or the person its session acts for, and refuses a grant that
  * names neither — one the policy gave without asking, on a session that acts for nobody — to every
  * signed-in person, `NOT_APPROVER`. Such a grant is listed to everyone who may see it, so that
- * what a pod took is on somebody's page, and it ends when the service's machine login that
- * enrolled that session is revoked, which ends every session under it, or when it expires.
+ * what a pod took is on somebody's page, and it ends when the machine login that enrolled that
+ * session is revoked, which ends every session under it, or when it expires: anyone signed in may
+ * revoke a service's login, and only the person `BROKER_POD_OPERATORS` now maps a pod's account
+ * to may revoke that pod's login.
  *
  * `enrollment.operator` is the person the session acts for as the broker decides it
  * (`operatorOf`), not the enrollment's record. A person's pod that the broker's
