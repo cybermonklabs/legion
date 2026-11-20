@@ -4,7 +4,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -19,7 +18,9 @@ import (
 // versionedHelper listens at a socket of the test's own and answers each connection by the op of
 // the line it reads: `sign` with signAnswer, `version` with versionAnswer, both written as the
 // JSON line the helper writes. The answers are raw JSON, the wire itself, so a test states what a
-// helper of any release says without this client's own types.
+// helper of any release says without this client's own types. Each connection is served on a
+// goroutine of its own, its request read within identityDeadline, the wait its clients (identity's
+// probe and its version question) give one call (serveFakeHelper).
 func versionedHelper(t *testing.T, signAnswer, versionAnswer string) string {
 	t.Helper()
 	sock := filepath.Join(shortTempDir(t), "h.sock")
@@ -27,29 +28,20 @@ func versionedHelper(t *testing.T, signAnswer, versionAnswer string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { ln.Close() })
-	go func() {
-		for {
-			conn, err := ln.AcceptUnix()
-			if err != nil {
-				return
-			}
-			line, _ := bufio.NewReader(conn).ReadBytes('\n')
-			var req struct {
-				Op string `json:"op"`
-			}
-			_ = json.Unmarshal(line, &req)
-			answer := `{"code":"BAD_REQUEST","error":"unknown op ` + req.Op + `"}`
-			switch req.Op {
-			case "sign":
-				answer = signAnswer
-			case "version":
-				answer = versionAnswer
-			}
-			_, _ = conn.Write([]byte(answer + "\n"))
-			conn.Close()
+	serveFakeHelper(t, ln, identityDeadline, func(_ int, _ *net.UnixConn, line []byte) []byte {
+		var req struct {
+			Op string `json:"op"`
 		}
-	}()
+		_ = json.Unmarshal(line, &req)
+		answer := `{"code":"BAD_REQUEST","error":"unknown op ` + req.Op + `"}`
+		switch req.Op {
+		case "sign":
+			answer = signAnswer
+		case "version":
+			answer = versionAnswer
+		}
+		return []byte(answer)
+	})
 	return sock
 }
 

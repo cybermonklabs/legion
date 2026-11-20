@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"net"
 	"path/filepath"
@@ -14,32 +13,26 @@ import (
 )
 
 // drainingHelper listens at a fresh socket and answers register DRAINING for its first drains
-// calls, then enrolled; it counts the calls.
+// calls, then enrolled; it counts the calls. Each connection is served on a goroutine of its own,
+// its request read within the longer of the waits its clients give one call: helper.BrokerCallWait
+// for enroll --helper, and registerCallWait for register --wait 5, the longest --wait a test gives
+// register against it (serveFakeHelper).
 func drainingHelper(t *testing.T, drains int32) (string, *atomic.Int32) {
 	t.Helper()
 	sock := filepath.Join(shortTempDir(t), "h.sock")
-	ln, err := net.Listen("unix", sock)
+	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { ln.Close() })
 	var calls atomic.Int32
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			_, _ = bufio.NewReader(conn).ReadBytes('\n')
-			resp := helper.Response{Code: helper.CodeDraining, Error: "the helper is restarting; retry"}
-			if calls.Add(1) > drains {
-				resp = helper.Response{OK: true, State: "enrolled", RuntimeID: "rt", EnrollmentID: "e"}
-			}
-			data, _ := json.Marshal(resp)
-			_, _ = conn.Write(append(data, '\n'))
-			_ = conn.Close()
+	serveFakeHelper(t, ln, max(helper.BrokerCallWait, registerCallWait(5)), func(int, *net.UnixConn, []byte) []byte {
+		resp := helper.Response{Code: helper.CodeDraining, Error: "the helper is restarting; retry"}
+		if calls.Add(1) > drains {
+			resp = helper.Response{OK: true, State: "enrolled", RuntimeID: "rt", EnrollmentID: "e"}
 		}
-	}()
+		data, _ := json.Marshal(resp)
+		return data
+	})
 	return sock, &calls
 }
 

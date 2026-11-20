@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"net"
 	"os"
@@ -15,7 +14,8 @@ import (
 
 // fakeHelperByOp answers each connection with the response its op names, or, for an op it has no
 // answer for, the line every helper answers an op it does not know, and returns every request it
-// received.
+// received. Each connection is served on a goroutine of its own, its request read within
+// anyHelperCallWait, since its tests ask it every kind of op (serveFakeHelper).
 func fakeHelperByOp(t *testing.T, answers map[string]helper.Response) (string, <-chan helper.Request) {
 	t.Helper()
 	sock := filepath.Join(shortTempDir(t), "h.sock")
@@ -23,27 +23,18 @@ func fakeHelperByOp(t *testing.T, answers map[string]helper.Response) (string, <
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { ln.Close() })
 	reqs := make(chan helper.Request, 8)
-	go func() {
-		for {
-			conn, err := ln.AcceptUnix()
-			if err != nil {
-				return
-			}
-			line, _ := bufio.NewReader(conn).ReadBytes('\n')
-			var req helper.Request
-			_ = json.Unmarshal(line, &req)
-			reqs <- req
-			resp, ok := answers[req.Op]
-			if !ok {
-				resp = helper.Response{Code: helper.CodeBadRequest, Error: "unknown op " + req.Op}
-			}
-			data, _ := json.Marshal(resp)
-			_, _ = conn.Write(append(data, '\n'))
-			conn.Close()
+	serveFakeHelper(t, ln, anyHelperCallWait, func(_ int, _ *net.UnixConn, line []byte) []byte {
+		var req helper.Request
+		_ = json.Unmarshal(line, &req)
+		reqs <- req
+		resp, ok := answers[req.Op]
+		if !ok {
+			resp = helper.Response{Code: helper.CodeBadRequest, Error: "unknown op " + req.Op}
 		}
-	}()
+		data, _ := json.Marshal(resp)
+		return data
+	})
 	return sock, reqs
 }
 

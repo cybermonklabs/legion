@@ -1475,7 +1475,10 @@ func fakeLoginHelper(t *testing.T, code string, states []string) string {
 	return fakeLoginHelperAt(t, code, "", states)
 }
 
-// fakeLoginHelperAt is fakeLoginHelper whose login answer names verificationURI.
+// fakeLoginHelperAt is fakeLoginHelper whose login answer names verificationURI. Each connection
+// is served on a goroutine of its own, its request read within the longer of the waits its client
+// (machine login) gives one call: helper.BrokerCallWait for login, loginStatusWait for
+// login-status (serveFakeHelper).
 func fakeLoginHelperAt(t *testing.T, code, verificationURI string, states []string) string {
 	t.Helper()
 	sock := filepath.Join(shortTempDir(t), "h.sock")
@@ -1483,34 +1486,25 @@ func fakeLoginHelperAt(t *testing.T, code, verificationURI string, states []stri
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { ln.Close() })
 	var calls int32
-	go func() {
-		for {
-			conn, err := ln.AcceptUnix()
-			if err != nil {
-				return
+	serveFakeHelper(t, ln, max(helper.BrokerCallWait, loginStatusWait), func(_ int, _ *net.UnixConn, line []byte) []byte {
+		var req helper.Request
+		_ = json.Unmarshal(line, &req)
+		var resp helper.Response
+		switch req.Op {
+		case "login":
+			resp = helper.Response{OK: true, Code: code, LoginState: "pending", VerificationURI: verificationURI}
+		case "login-status":
+			idx := int(atomic.AddInt32(&calls, 1)) - 1
+			state := states[len(states)-1]
+			if idx < len(states) {
+				state = states[idx]
 			}
-			line, _ := bufio.NewReader(conn).ReadBytes('\n')
-			var req helper.Request
-			_ = json.Unmarshal(line, &req)
-			var resp helper.Response
-			switch req.Op {
-			case "login":
-				resp = helper.Response{OK: true, Code: code, LoginState: "pending", VerificationURI: verificationURI}
-			case "login-status":
-				idx := int(atomic.AddInt32(&calls, 1)) - 1
-				state := states[len(states)-1]
-				if idx < len(states) {
-					state = states[idx]
-				}
-				resp = helper.Response{OK: true, Code: code, LoginState: state}
-			}
-			data, _ := json.Marshal(resp)
-			_, _ = conn.Write(append(data, '\n'))
-			conn.Close()
+			resp = helper.Response{OK: true, Code: code, LoginState: state}
 		}
-	}()
+		data, _ := json.Marshal(resp)
+		return data
+	})
 	return sock
 }
 

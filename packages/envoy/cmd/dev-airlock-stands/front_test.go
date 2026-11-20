@@ -17,7 +17,9 @@ import (
 )
 
 // answering is a TCP server that writes name to every connection and closes it, so a client
-// reads which backend it reached.
+// reads which backend it reached. Each connection is answered on a goroutine of its own, so one
+// whose write waits holds only itself, and its write is bounded by reachWait, the wait of its one
+// client (reached), so past it no client is still waiting for the name.
 func answering(t *testing.T, name string) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -31,22 +33,29 @@ func answering(t *testing.T, name string) string {
 			if err != nil {
 				return
 			}
-			_, _ = io.WriteString(conn, name+"\n")
-			_ = conn.Close()
+			go func() {
+				defer conn.Close()
+				_ = conn.SetDeadline(time.Now().Add(reachWait))
+				_, _ = io.WriteString(conn, name+"\n")
+			}()
 		}
 	}()
 	return listener.Addr().String()
 }
 
+// reachWait is how long reached waits for its dial of the front, and then for the backend's
+// answer through it.
+const reachWait = 5 * time.Second
+
 // reached is the name the backend behind the front answered one connection with.
 func reached(t *testing.T, front string) string {
 	t.Helper()
-	conn, err := net.DialTimeout("tcp", front, 5*time.Second)
+	conn, err := net.DialTimeout("tcp", front, reachWait)
 	if err != nil {
 		t.Fatalf("dial the front at %s: %v", front, err)
 	}
 	defer func() { _ = conn.Close() }()
-	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(reachWait)); err != nil {
 		t.Fatal(err)
 	}
 	line, err := bufio.NewReader(conn).ReadString('\n')

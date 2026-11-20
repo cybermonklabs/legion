@@ -98,6 +98,10 @@ type helperSigner struct {
 	sock string
 }
 
+// helperSignWait is how long helperSigner waits for the helper's answer to one sign or sign-request
+// call, the dial included (helper.Call).
+const helperSignWait = 5 * time.Second
+
 var errNoCredential = errors.New("this machine's agent-secrets-helper holds no credential at the secrets broker")
 
 type noCredentialError struct{ helper string }
@@ -177,7 +181,7 @@ func helperFailure(socket string, err error, refused bool) error {
 }
 
 func (h *helperSigner) Sign(method, url string) (string, error) {
-	resp, err := helper.Call(h.sock, helper.Request{Op: "sign", Method: method, URL: url}, 5*time.Second)
+	resp, err := helper.Call(h.sock, helper.Request{Op: "sign", Method: method, URL: url}, helperSignWait)
 	if err != nil {
 		return "", helperFailure(h.sock, err, false)
 	}
@@ -194,7 +198,7 @@ func (h *helperSigner) Sign(method, url string) (string, error) {
 // ignores the field and signs no lifetime; the broker's answer then names none, and the caller
 // that asked for one refuses it (grantedLifetime).
 func (h *helperSigner) SignRequestObject(audience brokeraddr.Address, names []string, reason string, lifetimeSeconds *int) (string, error) {
-	resp, err := helper.Call(h.sock, helper.Request{Op: "sign-request", Secrets: names, Reason: reason, LifetimeSeconds: lifetimeSeconds}, 5*time.Second)
+	resp, err := helper.Call(h.sock, helper.Request{Op: "sign-request", Secrets: names, Reason: reason, LifetimeSeconds: lifetimeSeconds}, helperSignWait)
 	if err != nil {
 		return "", helperFailure(h.sock, err, false)
 	}
@@ -224,8 +228,12 @@ type launcherSigner struct {
 	failure      brokerclient.Failure
 }
 
+// launcherSignWait is how long launcherSigner waits for the helper's answer to one sign-launcher
+// call, the dial included (helper.Call).
+const launcherSignWait = 5 * time.Second
+
 func (l *launcherSigner) Sign(method, url string) (string, error) {
-	resp, err := helper.Call(l.sock, helper.Request{Op: "sign-launcher", Method: method, URL: url}, 5*time.Second)
+	resp, err := helper.Call(l.sock, helper.Request{Op: "sign-launcher", Method: method, URL: url}, launcherSignWait)
 	if err != nil {
 		return "", fmt.Errorf("agent-secrets-helper at %s: %w", l.sock, err)
 	}

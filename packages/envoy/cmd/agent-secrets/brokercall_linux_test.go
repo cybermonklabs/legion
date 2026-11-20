@@ -8,7 +8,6 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -94,7 +93,9 @@ func TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown(t *testing.T)
 // hangUpHelper listens at a socket of its own and, for each connection, reads the request line
 // and hangs up with no answer, as a helper from before the broker-call bound did when the broker
 // answered after its 5 s deadline: its write of the answer failed, and it closed the connection
-// without one. silentHelperAt is another fake: it keeps the connection open.
+// without one. silentHelperAt is another fake: it keeps the connection open. Each connection is
+// served on a goroutine of its own, its request read within helper.BrokerCallWait, the wait its
+// clients (enroll --helper and unenroll --helper) give one call (serveFakeHelper).
 func hangUpHelper(t *testing.T) string {
 	t.Helper()
 	sock := filepath.Join(shortTempDir(t), "h.sock")
@@ -102,17 +103,7 @@ func hangUpHelper(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { ln.Close() })
-	go func() {
-		for {
-			conn, err := ln.AcceptUnix()
-			if err != nil {
-				return
-			}
-			_, _ = bufio.NewReader(conn).ReadBytes('\n')
-			conn.Close()
-		}
-	}()
+	serveFakeHelper(t, ln, helper.BrokerCallWait, func(int, *net.UnixConn, []byte) []byte { return nil })
 	return sock
 }
 

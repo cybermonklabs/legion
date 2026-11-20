@@ -170,7 +170,7 @@ func registerWithPatience(sock string, req helper.Request, patience time.Duratio
 	deadline := start.Add(patience)
 	drainDeadline := start.Add(max(patience, time.Duration(req.WaitSeconds)*time.Second))
 	for {
-		resp, err := helper.Call(sock, req, time.Duration(req.WaitSeconds+10)*time.Second)
+		resp, err := helper.Call(sock, req, registerCallWait(req.WaitSeconds))
 		if err == nil {
 			if !resp.OK {
 				if resp.Code == helper.CodeDraining && time.Now().Before(drainDeadline) {
@@ -186,4 +186,11 @@ func registerWithPatience(sock string, req helper.Request, patience time.Duratio
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
+}
+
+// registerCallWait is how long register waits for the helper's answer to one register call, the
+// dial included (helper.Call): the --wait seconds the helper may hold the answer for while it
+// enrolls the session, and 10 s more.
+func registerCallWait(waitSeconds int) time.Duration {
+	return time.Duration(waitSeconds+10) * time.Second
 }

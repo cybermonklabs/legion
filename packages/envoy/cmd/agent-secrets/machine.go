@@ -33,12 +33,17 @@ func refuseUnexpectedArgument(stderr io.Writer, form string) int {
 	return exitUsageError
 }
 
+// loginStatusWait is how long machine login and machine login-status wait for the helper's answer
+// to one login-status call, the dial included (helper.Call). login-status reads the helper's own
+// state and makes no broker call, so it needs less than helper.BrokerCallWait.
+const loginStatusWait = 10 * time.Second
+
 // cmdMachineLogin implements "machine login". It asks agent-secrets-helper to start a machine
 // login, prints the broker's confirmation code and where to type it — AGENT_SECRETS_APPROVE_URL's
 // /credentials/machine when that is set, else the broker's verification_uri the helper relays,
 // else the Dispatch credential page by name — then polls the helper until the login reaches a
 // terminal state. The login op waits helper.BrokerCallWait, because its answer is the outcome of
-// a broker call; each login-status poll reads the helper's own state and waits 10 s.
+// a broker call; each login-status poll reads the helper's own state and waits loginStatusWait.
 func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 	flagArgs, positional := splitArgs(args, nil)
 	if err := newFlagSet("machine login", stderr).Parse(flagArgs); err != nil {
@@ -76,7 +81,7 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 	}
 	backoff := 2 * time.Second
 	for {
-		resp, err := helper.Call(sock, helper.Request{Op: "login-status"}, 10*time.Second)
+		resp, err := helper.Call(sock, helper.Request{Op: "login-status"}, loginStatusWait)
 		if err != nil {
 			fmt.Fprintf(stderr, "agent-secrets machine login: %v\n", err)
 			return 1
@@ -129,7 +134,7 @@ func cmdMachineLoginStatus(args []string, stdout, stderr io.Writer) int {
 		return refuseUnexpectedArgument(stderr, "machine login-status")
 	}
 	sock, _ := helperSocket()
-	resp, err := helper.Call(sock, helper.Request{Op: "login-status"}, 10*time.Second)
+	resp, err := helper.Call(sock, helper.Request{Op: "login-status"}, loginStatusWait)
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets machine login-status: %v\n", err)
 		return 1

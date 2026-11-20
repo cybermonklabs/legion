@@ -234,7 +234,7 @@ WantedBy=default.target
 	if err != nil {
 		return err
 	}
-	running, err := helper.Call(cfg.Socket, helper.Request{Op: "sessions"}, 2*time.Second)
+	running, err := helper.Call(cfg.Socket, helper.Request{Op: "sessions"}, installCallWait)
 	wasRunning := err == nil
 	active := unitActive()
 	if wasRunning && !active {
@@ -328,7 +328,7 @@ WantedBy=default.target
 		}
 		return fmt.Errorf("systemctl --user restart %s answered success, but %s and %s, so install did not undrain the helper", helper.UnitName, notReplaced, queued)
 	}
-	if resp, uerr := helper.Call(cfg.Socket, helper.Request{Op: "undrain"}, 2*time.Second); uerr != nil || !resp.OK {
+	if resp, uerr := helper.Call(cfg.Socket, helper.Request{Op: "undrain"}, installCallWait); uerr != nil || !resp.OK {
 		fmt.Fprintf(stdout, "the helper may still be draining (refusing new sessions): undrain failed: %v %s; it ends the drain itself within %s of the drain\n", uerr, resp.Error, helper.DefaultDrainBound)
 	}
 	if restartErr != nil {
@@ -405,17 +405,21 @@ func unitActive() bool {
 	return err == nil && strings.TrimSpace(string(out)) == "active"
 }
 
+// installCallWait is how long install waits for the running helper's answer to one sessions,
+// drain or undrain call, the dial included (helper.Call).
+const installCallWait = 2 * time.Second
+
 // drainHelper asks the helper at sock to drain: it answers its sessions and, with none, refuses
 // every later register until it exits, so none can start between the answer and the restart; a
 // helper of this release also ends that drain itself once helper.DefaultDrainBound passes with it
 // still running. A helper older than the drain op answers it as an unknown op; drainHelper then
 // answers that helper's `sessions` and drained false.
 func drainHelper(sock string) (sessions []helper.SessionInfo, drained bool, err error) {
-	resp, err := helper.Call(sock, helper.Request{Op: "drain"}, 2*time.Second)
+	resp, err := helper.Call(sock, helper.Request{Op: "drain"}, installCallWait)
 	drained = true
 	if err == nil && resp.Code == helper.CodeBadRequest && strings.HasPrefix(resp.Error, "unknown op") {
 		drained = false
-		resp, err = helper.Call(sock, helper.Request{Op: "sessions"}, 2*time.Second)
+		resp, err = helper.Call(sock, helper.Request{Op: "sessions"}, installCallWait)
 	}
 	if err != nil {
 		return nil, false, fmt.Errorf("agent-secrets-helper stopped answering at %s: %w", sock, err)

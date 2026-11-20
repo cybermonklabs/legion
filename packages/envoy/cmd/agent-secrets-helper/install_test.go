@@ -174,7 +174,10 @@ func (r *installRig) fakeHelper(t *testing.T, sessions []helper.SessionInfo, kno
 }
 
 // scriptedHelper answers each op on the rig's socket with answer(op) and returns the ops it was
-// asked, in order.
+// asked, in order. Each connection is served on a goroutine of its own, as the real helper serves
+// them (helper.Server.Serve), so a connection that sends nothing holds only itself; its request is
+// read within installCallWait, the wait install gives one call, so past it install is no longer
+// waiting for the answer.
 func (r *installRig) scriptedHelper(t *testing.T, answer func(op string) helper.Response) *[]string {
 	t.Helper()
 	ln, err := net.Listen("unix", r.sock)
@@ -189,17 +192,40 @@ func (r *installRig) scriptedHelper(t *testing.T, answer func(op string) helper.
 			if err != nil {
 				return
 			}
-			line, _ := bufio.NewReader(conn).ReadBytes('\n')
-			var req helper.Request
-			_ = json.Unmarshal(line, &req)
-			// install reads each reply before its next call, so this append happens-before the test reads ops.
-			*ops = append(*ops, req.Op)
-			data, _ := json.Marshal(answer(req.Op))
-			_, _ = conn.Write(append(data, '\n'))
-			_ = conn.Close()
+			go func() {
+				defer conn.Close()
+				_ = conn.SetDeadline(time.Now().Add(installCallWait))
+				line, err := bufio.NewReader(conn).ReadBytes('\n')
+				if err != nil {
+					return
+				}
+				var req helper.Request
+				_ = json.Unmarshal(line, &req)
+				// install reads each reply before its next call, so this append happens-before the
+				// next connection's and the test's read of ops.
+				*ops = append(*ops, req.Op)
+				data, _ := json.Marshal(answer(req.Op))
+				_, _ = conn.Write(append(data, '\n'))
+			}()
 		}
 	}()
 	return ops
+}
+
+// TestScriptedHelperAnswersPastAConnectionThatSendsNothing pins scriptedHelper's own contract: a
+// connection that sends no request holds only itself, so the call install makes behind it, with
+// install's own wait (installCallWait), still gets the fake's answer.
+func TestScriptedHelperAnswersPastAConnectionThatSendsNothing(t *testing.T) {
+	r := newInstallRig(t)
+	r.fakeHelper(t, []helper.SessionInfo{{PID: 41, RuntimeID: "rt-behind"}})
+	silent, err := net.Dial("unix", r.sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer silent.Close()
+	if resp, err := helper.Call(r.sock, helper.Request{Op: "sessions"}, installCallWait); err != nil || len(resp.Sessions) != 1 || resp.Sessions[0].RuntimeID != "rt-behind" {
+		t.Fatalf("sessions behind a connection that sends nothing = %+v, %v; want the fake's answer", resp, err)
+	}
 }
 
 func TestInstallWritesTheUnitForThisBinary(t *testing.T) {

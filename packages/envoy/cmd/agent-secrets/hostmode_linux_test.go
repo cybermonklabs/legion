@@ -36,7 +36,9 @@ type peerRequest struct {
 }
 
 // fakeHelperWithPids answers one canned line per connection and records the peer pid and the
-// request line of each — the pidfd pin only Linux provides.
+// request line of each — the pidfd pin only Linux provides. Each connection is served on a
+// goroutine of its own, its request read within registerCallWait(0), the wait its one client
+// (register --exec with no --wait) gives one call (serveFakeHelper).
 func fakeHelperWithPids(t *testing.T, canned helper.Response) (string, <-chan peerRequest) {
 	t.Helper()
 	sock := filepath.Join(shortTempDir(t), "h.sock")
@@ -44,27 +46,18 @@ func fakeHelperWithPids(t *testing.T, canned helper.Response) (string, <-chan pe
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { ln.Close() })
 	seen := make(chan peerRequest, 8)
-	go func() {
-		for {
-			conn, err := ln.AcceptUnix()
-			if err != nil {
-				return
-			}
-			var got peerRequest
-			if peer, err := helper.PeerOf(conn); err == nil {
-				got.pid = peer.PID()
-				peer.Close()
-			}
-			line, _ := bufio.NewReader(conn).ReadBytes('\n')
-			got.line = string(line)
-			seen <- got
-			data, _ := json.Marshal(canned)
-			_, _ = conn.Write(append(data, '\n'))
-			conn.Close()
+	serveFakeHelper(t, ln, registerCallWait(0), func(_ int, conn *net.UnixConn, line []byte) []byte {
+		// The client is still connected, waiting for the answer, so its pid is still the peer's.
+		got := peerRequest{line: string(line)}
+		if peer, err := helper.PeerOf(conn); err == nil {
+			got.pid = peer.PID()
+			peer.Close()
 		}
-	}()
+		seen <- got
+		data, _ := json.Marshal(canned)
+		return data
+	})
 	return sock, seen
 }
 
