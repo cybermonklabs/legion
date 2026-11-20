@@ -1,62 +1,13 @@
-import {
-  type FocusEventHandler,
-  type ReactNode,
-  type Ref,
-  type RefObject,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { type ReactNode, type Ref, type RefObject, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 
 import { pageInkText, pageQuietText, pageRowBorder } from "../../theme/classes";
 import { IssueLine } from "./BlockedByControl";
 import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
-import type { FocusFallback } from "./focus-keeper";
 import { statusGlyph } from "./issue-status";
-import {
-  authorText,
-  freeze,
-  MARGIN_SECTION_NAMES,
-  type MarginSection,
-  pageChrome,
-} from "./page-structure";
+import { authorText, MARGIN_SECTION_NAMES, type MarginSection, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
-import { firstUsableIn } from "./usable-control";
 import type { MarginSections } from "./useMarginSections";
-
-/** The attribute that marks the box of each row of the panel, its name and its value both
- *  (`Row`, and Pinned's list, which is one row), so Details' focus keeper finds the row a lost
- *  control stood in (`firstControlOfRow`). */
-const ROW_BOX_ATTRIBUTE = "data-details-row-box";
-
-/** The mark of a row's box: `<div {...detailsRowBox}>`, so the attribute is spelled once. */
-export const detailsRowBox: Readonly<Record<string, string>> = freeze({ [ROW_BOX_ATTRIBUTE]: "" });
-
-/** The attribute that marks each section of the panel - its three property sections and Pinned -
- *  so Details' focus keeper finds the section a lost control stood in (`headingOfSection`). */
-const SECTION_ATTRIBUTE = "data-details-section";
-
-/** The attribute that marks each section's heading, the one element of it that no change made
- *  elsewhere takes away, where the keeper puts a focus no row has a place for. */
-const HEADING_ATTRIBUTE = "data-details-heading";
-
-/** The mark of a section of the panel: `<section {...detailsSection}>`. */
-export const detailsSection: Readonly<Record<string, string>> = freeze({ [SECTION_ATTRIBUTE]: "" });
-
-/** The mark of a section's heading, a property section's button or Pinned's `<h2>`. */
-export const detailsHeading: Readonly<Record<string, string>> = freeze({ [HEADING_ATTRIBUTE]: "" });
-
-/** Where Details' focus keeper puts a focus a change took away (`IssueMarginPanel`): the first
- *  control that takes a press (`firstUsableIn`) of the row the lost control stood in, found from
- *  where it stood (`FocusLoss.place`). A row the change took away whole gives none. */
-export const firstControlOfRow: FocusFallback = ({ place }) =>
-  firstUsableIn(place?.closest(`[${ROW_BOX_ATTRIBUTE}]`) ?? null);
-
-/** Where it puts that focus when the row gives none: the heading of the section the lost control
- *  stood in, found the same way. */
-export const headingOfSection: FocusFallback = ({ place }) =>
-  place?.closest(`[${SECTION_ATTRIBUTE}]`)?.querySelector<HTMLElement>(`[${HEADING_ATTRIBUTE}]`);
 
 /** How many entries a list of unbounded length draws before it folds behind a count that opens
  *  the rest. */
@@ -101,8 +52,9 @@ export function IssueList({
 /** The count a folded list is drawn behind, which opens the rest of it. `className` places it
  *  in the list that draws it, and `list` is that list, each of its children one entry. The
  *  count goes with its press, so the focus goes on to the link of the first entry it opened,
- *  the list's entry `FOLD_AFTER`, rather than falling to the page; Details' focus keeper finds
- *  it there and moves nothing, where its own rule would take the row's first link. */
+ *  the list's entry `FOLD_AFTER`, rather than falling to the page. A count a change made
+ *  elsewhere takes away, as the list falls to ten, hands nothing on: that loss is not the
+ *  reader's, and the focus stays on the page's body. */
 export function ShowAll({
   className,
   count,
@@ -143,8 +95,6 @@ export function PropertySection({
   drawerBox,
   headingRef,
   name,
-  onBlur,
-  onFocus,
   sections,
 }: {
   children: ReactNode;
@@ -153,12 +103,6 @@ export function PropertySection({
   /** Takes the section's heading, its own control, so a focus can be handed to it. */
   headingRef?: Ref<HTMLButtonElement>;
   name: MarginSection;
-  /** Hears each focus that leaves an element of the section, one its rows draw in a portal
-   *  included. */
-  onBlur?: FocusEventHandler<HTMLElement>;
-  /** Hears each focus that goes to an element of the section, one its rows draw in a portal
-   *  included. */
-  onFocus?: FocusEventHandler<HTMLElement>;
   sections: MarginSections;
 }): ReactNode {
   const open = sections.isOpen(name);
@@ -185,8 +129,7 @@ export function PropertySection({
     return () => drawerBox.removeEventListener(DETAILS_ROW_REQUEST_EVENT, openForRow);
   }, [drawerBox, name]);
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only read where the focus has gone and what it has left, so the section needs no role of its own.
-    <section data-margin-section={name} onBlur={onBlur} onFocus={onFocus} {...detailsSection}>
+    <section data-margin-section={name}>
       <h2>
         <button
           aria-expanded={open}
@@ -195,7 +138,6 @@ export function PropertySection({
           ref={headingRef}
           type="button"
           {...pageChrome}
-          {...detailsHeading}
         >
           <span>{MARGIN_SECTION_NAMES[name]}</span>
           <span aria-hidden="true">{open ? "−" : "+"}</span>
@@ -252,7 +194,6 @@ export function Row({
       } ${pageRowBorder}`}
       data-testid={testId}
       {...(row === undefined ? {} : { [DETAILS_ROW_ATTRIBUTE]: row })}
-      {...detailsRowBox}
     >
       {label === undefined ? null : (
         <div className={`flex min-w-0 items-start gap-[7px] ${pageQuietText}`}>

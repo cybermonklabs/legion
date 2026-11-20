@@ -1,6 +1,5 @@
 import { type RefObject, useEffect, useLayoutEffect, useRef } from "react";
 
-import { ANCHORED_PANEL_ATTRIBUTE } from "../../components/AnchoredPanel";
 import { focusOnDocument } from "../shell/roving";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 
@@ -74,9 +73,7 @@ const LOSSES: MutationObserverInit = {
 /** A layer a reader opens over the page and closes again: a dialog, or Details' drawer, which
  *  stands beside the page as an `aside` rather than as a dialog. No other `aside` is a layer:
  *  Details holds one of its own inside its drawer, and the Contents pane is one that stays. */
-const LAYER = `[role="dialog"], aside[${DETAILS_ATTRIBUTE}], [${ANCHORED_PANEL_ATTRIBUTE}]`;
-// A popover `AnchoredPanel` draws on the page's body is one too (`ANCHORED_PANEL_ATTRIBUTE`): it
-// stands outside every region, and a change can take its opener away while it is open.
+const LAYER = `[role="dialog"], aside[${DETAILS_ATTRIBUTE}]`;
 
 /** The outermost layer around `element`, or null where it stands in none. A dialog inside
  *  Details is a part of Details, which the reader is still in when that dialog closes. */

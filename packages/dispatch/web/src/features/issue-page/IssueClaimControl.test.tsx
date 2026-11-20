@@ -618,11 +618,10 @@ test("a release that fails on a claim drawn after the row was says so beside it"
 });
 
 // The reader released the claim by keyboard, so the row handed the focus to its None. Another
-// session then claimed the issue, and the row drew the new claim in None's place: the focus fell
-// to the page, and the reader's next Tab started again from the top of the page. A change made
-// elsewhere that takes away the element holding the focus hands it on in the row, as the row's
-// own release does, to the new claim's Release.
-test("a claim made elsewhere while the focus is on the row's None hands it to the new claim's Release", async () => {
+// session then claimed the issue, and the row drew the new claim in None's place. That claim is no
+// press of the reader's, so the focus stays on the page's body, as for every change the reader did
+// not make, and nothing in the row takes it.
+test("a claim made elsewhere while the focus is on the row's None leaves the focus on the page's body", async () => {
   const { release, restore, view } = twoSessionClaimRow();
   const stopBlurring = emulateChromiumFocusFixup();
   try {
@@ -638,12 +637,15 @@ test("a claim made elsewhere while the focus is on the row's None hands it to th
 
     view.drawClaim(reviewerClaim);
     const releaseNew = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
-    await waitFor(() =>
-      expect(
-        document.activeElement,
-        "another session claimed the issue while the focus was on the row's None, and the focus fell to the page rather than to the new claim's Release"
-      ).toBe(releaseNew)
-    );
+    // Past two frames and a task, by which any hand-off of the row would have moved the focus.
+    const settled = Promise.withResolvers<void>();
+    requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(settled.resolve, 0)));
+    await act(() => settled.promise);
+    expect(
+      document.activeElement,
+      "another session claimed the issue while the focus was on the row's None, and the focus did not stay on the page's body"
+    ).toBe(document.body);
+    expect(releaseNew, "the new claim's Release took the focus").not.toHaveFocus();
   } finally {
     stopBlurring();
     restore();

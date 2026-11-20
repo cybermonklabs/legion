@@ -1,12 +1,4 @@
-import {
-  type ReactNode,
-  type Ref,
-  type RefCallback,
-  useCallback,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { type ReactNode, type Ref, type RefObject, useEffect, useState } from "react";
 
 import { AGENT_LIST_REFILLING, isAgentListRefilling, type WriteMethod } from "../../api/client";
 import { pageFailedText, pageHeaderControl, pageQuietText } from "../../theme/classes";
@@ -32,6 +24,12 @@ export interface DetailsErrorLineProps {
   readonly refused?: boolean;
   /** Takes the Retry, so the row can hand its focus on when the line goes (`useFocusHandOff`). */
   readonly retryRef?: Ref<HTMLButtonElement>;
+  /** Notes the reader's press of Retry for the row's hand-off, which hands the focus on only once
+   *  the line goes after that press (`takePress`): set as Retry is pressed, and forgotten as the
+   *  line says a failure again, since the press then took nothing away. A line that goes on a
+   *  change the reader did not make - another read's answer, another session's write, a close -
+   *  leaves the focus on the page's body. */
+  readonly retried?: RefObject<boolean>;
   /** Whether the read Retry sent again is still out: Retry reads busy (`aria-busy`, and a
    *  quieter look) and still takes a press, which the caller joins to the read that is out. */
   readonly retrying?: boolean;
@@ -55,8 +53,14 @@ export function DetailsErrorLine({
   onRetry,
   refused = false,
   retryRef,
+  retried,
   retrying = false,
 }: DetailsErrorLineProps): ReactNode {
+  // A failure said again answers the press that was out: the line stayed, so the press took
+  // nothing away, and the line's going later is no press of the reader's.
+  useEffect(() => {
+    if (retried !== undefined && failure !== undefined) retried.current = false;
+  }, [failure, retried]);
   return (
     <div className="flex flex-wrap items-center gap-3 text-sm">
       {isAgentListRefilling(error) ? (
@@ -73,7 +77,10 @@ export function DetailsErrorLine({
           aria-busy={retrying || undefined}
           aria-disabled={refused || undefined}
           className={`${pageHeaderControl} aria-busy:opacity-50 refused:cursor-not-allowed refused:opacity-50`}
-          onClick={onRetry}
+          onClick={() => {
+            if (retried !== undefined) retried.current = true;
+            onRetry();
+          }}
           ref={retryRef}
           type="button"
           {...pageChrome}
@@ -173,38 +180,4 @@ export function useSaidFailure<Variables>(
   }
   if (next !== said) setSaid(next);
   return next;
-}
-
-/**
- * The ref of an element that may leave the page with the focus inside it. As React takes the
- * element off the page, the ref notes whether the focus is inside it; if it is, the hook's next
- * layout effect, which runs in each commit that renders the component calling the hook, focuses
- * what `to` returns, without scrolling. The commit that takes the element away need not render
- * that component - where another component draws the element, as the repository's control draws
- * the lines the Repository row hands it - so the ref then asks for a render of it, whose layout
- * effect hands the focus on. `to` is called only then, after that commit has changed the page,
- * so it can return an element the commit drew. Where it returns none, or an element that takes
- * no focus, the focus stays where the browser put it; a focus outside the element as it leaves
- * is not moved.
- */
-export function useFocusHandOff(
-  to: () => HTMLElement | null | undefined
-): RefCallback<HTMLElement> {
-  const left = useRef(false);
-  const [, render] = useState(0);
-  useLayoutEffect(() => {
-    if (!left.current) return;
-    left.current = false;
-    to()?.focus({ preventScroll: true });
-  });
-  return useCallback((element: HTMLElement | null) => {
-    if (element === null) return undefined;
-    // React runs this before it takes the element out of the page, so the focus is still where
-    // the reader left it.
-    return () => {
-      if (!element.contains(document.activeElement)) return;
-      left.current = true;
-      render((renders) => renders + 1);
-    };
-  }, []);
 }

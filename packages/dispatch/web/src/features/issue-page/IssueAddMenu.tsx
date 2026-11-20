@@ -17,12 +17,11 @@ import { repoControlName, repoTextControlName } from "../issue/RepoControl";
 import { addPriorityControlName } from "../priorities/IssuePriorityLine";
 import { roveFocus } from "../shell/roving";
 import { blockedByControlName } from "./details-names";
-import type { FocusFallback } from "./focus-keeper";
 import type { IssueField } from "./IssueFieldForms";
 import { useMarginDrawer } from "./margin-slot";
 import { PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
-import { firstUsable, USABLE_CONTROL_ATTRIBUTES, usableControl } from "./usable-control";
+import { USABLE_CONTROL_ATTRIBUTES, usableControl } from "./usable-control";
 
 /**
  * The one control that reaches a property this issue has no value for, in Details. Every
@@ -197,10 +196,11 @@ export function IssueAddMenu({
   // drawn open when the issue reopens or a property loses its value again, with the focus not in
   // it, since the effect above puts the focus on its first entry only as it opens, and its
   // listeners on the document would stay on meanwhile. A focus on Add or in its open menu goes
-  // with it to the page's body: the menu's own closes give the focus back to Add, but here Add
-  // itself goes. Details' focus keeper hands it on (`IssueMarginPanel`): Add stands in no row of
-  // Details, so to Development's heading. On a close the close keeper has put it there first
-  // (`useCloseFocusKeeper`).
+  // with it to the page's body, and stays there: Add goes only on a change the reader did not
+  // make - another session sets the last property it lists or closes the issue, or a read takes
+  // its last entry's control away - never at a press of theirs, since a press in its menu closes
+  // the menu with Add still drawn and the control it opens takes the focus. An entry a change
+  // made elsewhere takes out of the open menu leaves the focus on the body alike.
   const drawn = !isClosed && entries.length > 0;
   if (!drawn) {
     if (open) setOpen(false);
@@ -249,7 +249,6 @@ export function IssueAddMenu({
               role="menuitem"
               type="button"
               {...pageChrome}
-              {...{ [ENTRY_RANK_ATTRIBUTE]: field.rank }}
             >
               {field.label}
             </button>
@@ -305,116 +304,99 @@ export function IssueAddMenu({
       };
     };
     const fields: AddableField[] = [];
-    // Each property is counted whether it is listed now or not, so an entry's rank is its place
-    // among every property the menu can list, whichever others are listed beside it.
-    let rank = 0;
-    const list = (empty: boolean, field: () => Omit<AddableField, "rank">) => {
-      rank += 1;
-      if (empty) fields.push({ ...field(), rank });
-    };
-    list(details.parent === null, () => ({
-      label: PROPERTY_LABELS.parent,
-      open: () => onOpenField("parent"),
-      reachable: () => true,
-    }));
-    list(details.assignee === null, () => ({
-      label: PROPERTY_LABELS.assignee,
-      ...atControl(assigneeControlName(details.key)),
-    }));
-    // Listed only while the issue has no label, so the control is found by the name it has then:
-    // the words it draws and the issue's key ("Add a label to CORE-1"). A save in flight renames
-    // it ("Saving labels of CORE-1"), and the busy control is not reached, so the name is the one
-    // it has with no save in flight (`saving: false`).
-    list((details.labels ?? []).length === 0, () => ({
-      label: PROPERTY_LABELS.labels,
-      ...atControl(
-        labelsControlName(details.key, {
-          labels: [],
-          saving: false,
-          words: { ANSWER_LINES, CONTROL_LABELS },
-        })
-      ),
-    }));
-    list(details.route === null || details.route === "", () => ({
-      label: PROPERTY_LABELS.route,
-      open: () => onOpenField("route"),
-      reachable: () => true,
-    }));
-    list((details.blocked_by ?? []).length === 0, () => ({
-      label: PROPERTY_LABELS.blocked_by,
-      ...atControl(blockedByControlName(details.key, 0)),
-    }));
-    // Inside `NoTooltips` the row of an issue with no repository of its own draws text, whose
-    // press draws the repository's box with the focus in it: "None" while the issue resolves to no
-    // repository, else the repository it inherits. Outside it, and inside it while the box is open
-    // or holds a draft or a write that is out, the row draws the box itself. The text is tried
-    // first, so the entry presses it rather than finding no box.
-    list(details.repo === null, () => ({
-      label: PROPERTY_LABELS.repository,
-      ...atControl(
-        repoTextControlName(details.key, {
-          resolvedRepo: details.resolved_repo,
-          words: { CONTROL_LABELS },
-        }),
-        repoControlName(details.key)
-      ),
-    }));
-    // Listed only while the issue names no component, so the picker's trigger is found by the name
-    // it has then, from the attachment the components line draws: the words it draws and the
-    // issue's key ("Set components of CORE-1" on an issue not attached, or attached to none). A
-    // save in flight renames it, and the busy trigger is not reached, so the name is the one it
-    // has with no save in flight (`saving: false`).
-    list((details.components.ids ?? []).length === 0, () => ({
-      label: PROPERTY_LABELS.components,
-      ...atControl(
-        componentsControlName(details.key, {
-          components: details.components,
-          saving: false,
-          words: { ANSWER_LINES, CONTROL_LABELS },
-        })
-      ),
-    }));
-    list((details.advances ?? []).length === 0, () => ({
-      label: PROPERTY_LABELS.advances,
-      ...atControl(addPriorityControlName(details.key)),
-    }));
+    if (details.parent === null) {
+      fields.push({
+        label: PROPERTY_LABELS.parent,
+        open: () => onOpenField("parent"),
+        reachable: () => true,
+      });
+    }
+    if (details.assignee === null) {
+      fields.push({
+        label: PROPERTY_LABELS.assignee,
+        ...atControl(assigneeControlName(details.key)),
+      });
+    }
+    if ((details.labels ?? []).length === 0) {
+      // Listed only while the issue has no label, so the control is found by the name it has
+      // then: the words it draws and the issue's key ("Add a label to CORE-1"). A save in flight
+      // renames it ("Saving labels of CORE-1"), and the busy control is not reached, so the name
+      // is the one it has with no save in flight (`saving: false`).
+      fields.push({
+        label: PROPERTY_LABELS.labels,
+        ...atControl(
+          labelsControlName(details.key, {
+            labels: [],
+            saving: false,
+            words: { ANSWER_LINES, CONTROL_LABELS },
+          })
+        ),
+      });
+    }
+    if (details.route === null || details.route === "") {
+      fields.push({
+        label: PROPERTY_LABELS.route,
+        open: () => onOpenField("route"),
+        reachable: () => true,
+      });
+    }
+    if ((details.blocked_by ?? []).length === 0) {
+      fields.push({
+        label: PROPERTY_LABELS.blocked_by,
+        ...atControl(blockedByControlName(details.key, 0)),
+      });
+    }
+    if (details.repo === null) {
+      // Inside `NoTooltips` the row of an issue with no repository of its own draws text, whose
+      // press draws the repository's box with the focus in it: "None" while the issue resolves to
+      // no repository, else the repository it inherits. Outside it, and inside it while the box
+      // is open or holds a draft or a write that is out, the row draws the box itself. The text
+      // is tried first, so the entry presses it rather than finding no box.
+      fields.push({
+        label: PROPERTY_LABELS.repository,
+        ...atControl(
+          repoTextControlName(details.key, {
+            resolvedRepo: details.resolved_repo,
+            words: { CONTROL_LABELS },
+          }),
+          repoControlName(details.key)
+        ),
+      });
+    }
+    if ((details.components.ids ?? []).length === 0) {
+      // Listed only while the issue names no component, so the picker's trigger is found by the
+      // name it has then, from the attachment the components line draws: the words it draws
+      // and the issue's key ("Set components of CORE-1" on an issue not attached, or attached
+      // to none). A save in flight renames it, and the busy trigger is not reached, so the name
+      // is the one it has with no save in flight (`saving: false`).
+      fields.push({
+        label: PROPERTY_LABELS.components,
+        ...atControl(
+          componentsControlName(details.key, {
+            components: details.components,
+            saving: false,
+            words: { ANSWER_LINES, CONTROL_LABELS },
+          })
+        ),
+      });
+    }
+    if ((details.advances ?? []).length === 0) {
+      fields.push({
+        label: PROPERTY_LABELS.advances,
+        ...atControl(addPriorityControlName(details.key)),
+      });
+    }
     return fields;
   }
 }
 
-/** One property with no value: what it is called, whether its control takes a press, how to
- *  open it, and its place in the menu (`ENTRY_RANK_ATTRIBUTE`). */
+/** One property with no value: what it is called, whether its control takes a press, and how
+ *  to open it. */
 interface AddableField {
   readonly label: string;
   readonly open: () => void;
-  readonly rank: number;
   readonly reachable: () => boolean;
 }
-
-/** The attribute each entry of the open menu carries: its property's place among every property
- *  the menu can list (`emptyFields`). The place stays the same whichever others are listed, so
- *  the entry after one that left the page can still be found. */
-const ENTRY_RANK_ATTRIBUTE = "data-add-rank";
-
-/**
- * Where Details' focus keeper puts the focus (`IssueMarginPanel`) once a change made elsewhere
- * takes away the entry of Add's open menu that held it - its property set in another session,
- * or its control no longer taking a press - while the menu stays open: the next entry the menu
- * lists, else Add itself, so the reader stays in the menu they were walking. A focus lost on any
- * other control gets nothing here.
- */
-export const addEntryAfter: FocusFallback = ({ lost, place }) => {
-  const rank = lost.getAttribute(ENTRY_RANK_ATTRIBUTE);
-  const menu = place?.closest('[role="menu"]');
-  if (rank === null || menu == null) return undefined;
-  const after = [...menu.querySelectorAll<HTMLElement>(`[${ENTRY_RANK_ATTRIBUTE}]`)].filter(
-    (entry) => Number(entry.getAttribute(ENTRY_RANK_ATTRIBUTE)) > Number(rank)
-  );
-  return firstUsable(
-    ...after,
-    menu.parentElement?.querySelector<HTMLElement>('[aria-haspopup="menu"]')
-  );
-};
 
 /** The issue page's header, which draws the assignee's control. */
 const ISSUE_HEADER = "[data-issue-header]";

@@ -1,14 +1,6 @@
-import {
-  type KeyboardEvent,
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
+import { takePress, useFocusHandOff } from "../hooks/useFocusHandOff";
 import {
   borderDefault,
   borderStrong,
@@ -151,8 +143,8 @@ export function MultiSelect({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const wasOpen = useRef(false);
-  /** Whether this commit took an element of the popover off the page with the focus on it. */
-  const focusLeft = useRef(false);
+  /** Whether the reader has pressed Clear or the Create row, which the press then takes away. */
+  const leavingPress = useRef(false);
 
   const searchText = query.trim();
   const needle = fold(searchText);
@@ -200,27 +192,19 @@ export function MultiSelect({
     wasOpen.current = open;
   }, [open]);
 
-  // The rows, the Create row and Clear are buttons, so the focus can reach one - a screen reader's
-  // cursor puts it there - though every key of the popover's own leaves it in the search box. Each
-  // can then leave under that focus: Clear as the pick empties, the Create row as its value is
-  // made or the options come to hold it, a row as the options drop it. The browser would drop the
-  // focus to the body, where Escape no longer reaches the popover, so the search box takes it.
-  // React calls the ref's cleanup before it takes the element off the page, while the focus is
-  // still on it; the element is this component's own, so the commit that takes it away renders
-  // this component, and the layout effect below hands the focus on in that same commit.
-  const handOff = useCallback((element: HTMLElement | null) => {
-    if (element === null) return undefined;
-    return () => {
-      if (element.contains(document.activeElement)) focusLeft.current = true;
-    };
-  }, []);
-  useLayoutEffect(() => {
-    if (!focusLeft.current) return;
-    focusLeft.current = false;
-    // A popover that closed took the search box along, and the close above gives the focus back
-    // to the trigger instead.
-    inputRef.current?.focus({ preventScroll: true });
-  });
+  // The Create row and Clear are buttons, as the rows are, so the focus can reach one - a screen
+  // reader's cursor puts it there - though every key of the popover's own leaves it in the search
+  // box. A press of either takes it away under that focus: Clear as the pick empties, the Create
+  // row as its value is made and the search empties. The browser would drop the focus to the body,
+  // where Escape no longer reaches the popover, so the search box takes it. A row or a Create row
+  // the options take away - a read of them answering again without the row's value, or coming to
+  // name the value the Create row offers - is no press of the reader's, and its focus stays on the
+  // page's body, as for every change the reader did not make. A popover that closed took the
+  // search box along, and the close above gives the focus back to the trigger instead.
+  const handOff = useFocusHandOff(() => (takePress(leavingPress) ? inputRef.current : null));
+  const pressLeaving = () => {
+    leavingPress.current = true;
+  };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "ArrowDown" && rows.length > 0) {
@@ -322,7 +306,6 @@ export function MultiSelect({
                   key={option}
                   onClick={() => toggle(option)}
                   onMouseDown={(event) => event.preventDefault()}
-                  ref={handOff}
                   role="option"
                   type="button"
                 >
@@ -358,6 +341,7 @@ export function MultiSelect({
                 disabled={disabled}
                 id={optionId(createValue)}
                 onClick={() => create(createValue)}
+                onClickCapture={pressLeaving}
                 onMouseDown={(event) => event.preventDefault()}
                 ref={handOff}
                 role="option"
@@ -388,6 +372,7 @@ export function MultiSelect({
                 className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${tooltips ? `${surfaceMutedBg} ${textSecondaryOnSurface}` : ON_PAGE.clear}`}
                 disabled={disabled}
                 onClick={() => onChange([])}
+                onClickCapture={pressLeaving}
                 onMouseDown={(event) => event.preventDefault()}
                 ref={handOff}
                 type="button"

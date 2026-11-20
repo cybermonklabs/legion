@@ -256,6 +256,18 @@ function rowAt(row: DetailsRow): HTMLElement {
   return found;
 }
 
+/** Waits past two frames and a task, by which a hand-off or a keeper that waits for a frame or a
+ *  task would have moved the focus. */
+async function settleFocus(): Promise<void> {
+  await act(async () => {
+    await nextFrame();
+    await nextFrame();
+    const task = Promise.withResolvers<void>();
+    setTimeout(task.resolve, 0);
+    await task.promise;
+  });
+}
+
 /** How many times `getReferences` read what waits on `reference`, the Blocks row's read: the
  *  references of kind `blocked_by` that point at it. */
 function blocksReads(getReferences: Mock<typeof api.getReferences>, reference: string): number {
@@ -1796,6 +1808,44 @@ test("Blocks says a read that fails again in the same words again, while its Ret
   }
 });
 
+// Blocks' line goes once what waits on the issue answers. Read again as an event of an issue
+// that starts waiting on this one reads it, rather than by the reader's press of its Retry, that
+// answer is no press of the reader's, so the focus Retry held stays on the page's body, as for
+// every change the reader did not make, rather than going to the first issue the row draws.
+test("Blocks read again on an event, not by its Retry, leaves the focus its Retry held on the page's body", async () => {
+  const { restore } = stubIssueApi();
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences")
+    .mockResolvedValue({
+      edges: [waitingEdge("CORE-5", "Ship the release")],
+      node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+    })
+    .mockRejectedValueOnce(new ApiError(500, { code: "INTERNAL", error: "read failed" }));
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const blocksRow = () => within(detailsRow(PROPERTY_LABELS.blocks));
+
+  try {
+    const retry = await waitFor(() =>
+      blocksRow().getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    act(() => retry.focus());
+    await act(() =>
+      queryClient.refetchQueries({ queryKey: ["references", "to", reference, "blocked_by"] })
+    );
+    await blocksRow().findByRole("link", { name: "CORE-5" });
+    expect(retry, "Blocks answered, but its Retry is still drawn").not.toBeInTheDocument();
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "Blocks answered on an event, and the focus left the page's body though the reader pressed nothing"
+    ).toBe(document.body);
+  } finally {
+    unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
 // While the Blocked by editor is open the row draws no control of its own, so as the titles the
 // Retry sent answer, the focus it held goes to the first issue the row waits on rather than to
 // the page.
@@ -1896,9 +1946,10 @@ test("on a closed issue, the titles' Retry hands its focus to the first issue th
 });
 
 // While the Blocked by editor is open, another session's write can leave the issue waiting on
-// nothing: the titles' failure goes with the list, and the row then draws no control and no
-// issue, so the focus the line's Retry held goes to the editor's box rather than to the page.
-test("while the Blocked by editor is open, the titles' Retry hands its focus to the editor's box once the issue waits on nothing", async () => {
+// nothing: the titles' failure goes with the list, and its Retry with the focus. The reader pressed
+// nothing, so the focus stays on the page's body, as for every change the reader did not make,
+// rather than going to the editor's box.
+test("while the Blocked by editor is open, a write elsewhere that leaves the issue waiting on nothing leaves the titles' Retry's focus on the page's body", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
   getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
@@ -1918,7 +1969,7 @@ test("while the Blocked by editor is open, the titles' Retry hands its focus to 
       blockedBy().getByRole("button", { name: CONTROL_LABELS.retry })
     );
     await user.click(blockedBy().getByRole("button", { name: blockedByControlName("CORE-1", 1) }));
-    const box = await blockedBy().findByRole("textbox", { name: "Issues CORE-1 waits on" });
+    await blockedBy().findByRole("textbox", { name: "Issues CORE-1 waits on" });
     act(() => retry.focus());
 
     const read = queryClient.getQueryData<IssueDetails>(issueQuery("CORE-1").queryKey);
@@ -1930,10 +1981,66 @@ test("while the Blocked by editor is open, the titles' Retry hands its focus to 
         "the issue waits on nothing, but Blocked by still says its titles failed"
       ).toBeNull()
     );
+    await settleFocus();
     expect(
       document.activeElement,
-      "the issue waits on nothing with the editor open, and the focus fell to the page rather than to the editor's box"
-    ).toBe(box);
+      "the issue waits on nothing with the editor open, and the focus left the page's body though the reader pressed nothing"
+    ).toBe(document.body);
+  } finally {
+    unmount();
+    titles.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// A press of the titles' Retry whose read fails again took nothing away: the line stays, with
+// the focus on its Retry, and the press is answered. The titles answering later, read again as an
+// event of a blocker's rename reads them, are no press of the reader's, so the focus stays on the
+// page's body rather than going to the row's control.
+test("the titles' Retry whose read failed again leaves its focus on the page's body when the titles answer later on an event", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  const titles = spyOn(api, "getReferenceTargets")
+    .mockRejectedValueOnce(new ApiError(500, { code: "INTERNAL", error: "read failed" }))
+    .mockRejectedValueOnce(new ApiError(500, { code: "INTERNAL", error: "read failed" }));
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
+
+  try {
+    const retry = await waitFor(() =>
+      blockedBy().getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    const failed = blockedBy().getByRole("alert");
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(titles).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(
+        blockedBy().getByRole("alert"),
+        "the titles failed again, said in the same line"
+      ).not.toBe(failed)
+    );
+    expect(document.activeElement, "Retry lost the focus when its read failed again").toBe(retry);
+
+    await act(() => queryClient.refetchQueries({ queryKey: ["reference-targets"] }));
+    await waitFor(() =>
+      expect(
+        blockedBy().queryByRole("alert"),
+        "the titles answered, but Blocked by still says they failed"
+      ).toBeNull()
+    );
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "the titles answered on an event after Retry's read failed, and the focus left the page's body though the reader pressed nothing"
+    ).toBe(document.body);
   } finally {
     unmount();
     titles.mockRestore();
@@ -2418,43 +2525,6 @@ test("a value set elsewhere for Add's last entry shuts its open menu, so Add com
   }
 });
 
-// Another session sets the last property Add lists, and Add goes with the focus its open menu
-// held, which went to the page's body: the menu's own closes keep Add drawn, and the close keeper
-// acts on a close alone. It goes to Development's heading, as every other hand-off of the section
-// ends.
-test("a value set elsewhere for Add's last entry hands the focus in its open menu to Development's heading", async () => {
-  const user = userEvent.setup();
-  const { getIssue, restore } = stubIssueApi();
-  // The Advances row reads the priorities, to name the one the issue advances.
-  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
-  getIssue.mockResolvedValue(orphan);
-  const { queryClient, unmount } = renderDetails();
-
-  try {
-    await screen.findByRole("link", { name: "CORE-3" });
-    await waitFor(() => expect(priorities).toHaveBeenCalled());
-    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
-    const menu = await screen.findByRole("menu", { name: CONTROL_LABELS.add });
-    const entry = within(menu).getByRole("menuitem", { name: PROPERTY_LABELS.parent });
-    await waitFor(() =>
-      expect(document.activeElement, "Add's menu opened with the focus off its first entry").toBe(
-        entry
-      )
-    );
-
-    drawIssue(getIssue, queryClient, { ...orphan, parent: "CORE-2" });
-    await waitFor(() => expect(addMenuControl(), "the parent left Add on the page").toBeNull());
-    expect(
-      document.activeElement,
-      "Add went with the focus in its menu, and the focus did not go to Development's heading"
-    ).toBe(screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }));
-  } finally {
-    unmount();
-    priorities.mockRestore();
-    restore();
-  }
-});
-
 // Add is drawn while a property it lists has no value and its control is on the page. An issue
 // with a value for every other property loses its last label; while the save is out the labels'
 // control is named "Saving labels of CORE-1", and in the render where the save landed Add looked
@@ -2915,11 +2985,10 @@ test("removing the last priority hands the focus from its Remove to the add cont
   }
 });
 
-// On a closed issue the line's add controls are disabled. Another session's write that takes
-// away the last priority takes the Advances row away, and the focus on its priority went to the
-// disabled add control beside Add, which takes no focus, so it fell to the page's body. It goes
-// on to Development's heading, the button that opens and closes the section those rows are in.
-test("on a closed issue, the last priority taken away hands the focus from its link to Development's heading", async () => {
+// On a closed issue another session's write takes away the last priority, and the Advances row
+// with it, with the focus on its priority's link. The reader pressed nothing, so the focus stays on
+// the page's body, as for every change the reader did not make.
+test("on a closed issue, the last priority taken away elsewhere leaves the focus of its link on the page's body", async () => {
   const { getIssue, restore } = stubIssueApi();
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
   const closed: IssueDetails = {
@@ -2945,10 +3014,11 @@ test("on a closed issue, the last priority taken away hands the focus from its l
         "the issue advances nothing, and Details still draws the Advances row"
       ).toBeNull()
     );
+    await settleFocus();
     expect(
       document.activeElement,
-      "the Advances row went on a closed issue, and the focus did not go to Development's heading"
-    ).toBe(screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }));
+      "the Advances row went on a closed issue, and the focus left the page's body though the reader pressed nothing"
+    ).toBe(document.body);
   } finally {
     unmount();
     priorities.mockRestore();
@@ -2956,9 +3026,10 @@ test("on a closed issue, the last priority taken away hands the focus from its l
   }
 });
 
-// An Advances row at the cap draws no add control, so the focus the add control beside Add held
-// as the line moved into that row goes to the row's first priority rather than to the page.
-test("the line moved into an Advances row at the cap hands the focus from the add control beside Add to the row's first priority", async () => {
+// Another session's write moves the priority's line into an Advances row at the cap, which draws
+// no add control, with the focus on the add control beside Add. The reader pressed nothing, so the
+// focus stays on the page's body rather than going to the row's first priority.
+test("the line moved by a write elsewhere into an Advances row at the cap leaves the focus of the add control beside Add on the page's body", async () => {
   const { getIssue, restore } = stubIssueApi();
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
   getIssue.mockResolvedValue(advancesOnly);
@@ -2981,10 +3052,11 @@ test("the line moved into an Advances row at the cap hands the focus from the ad
       within(row).queryByRole("button", { name: addPriorityControlName("CORE-1") }),
       "the Advances row at the cap draws an add control"
     ).toBeNull();
+    await settleFocus();
     expect(
       document.activeElement,
-      "the line moved into the Advances row at the cap, and the focus did not go to its first priority"
-    ).toBe(within(row).getAllByRole("link")[0]);
+      "the line moved into the Advances row at the cap, and the focus left the page's body though the reader pressed nothing"
+    ).toBe(document.body);
   } finally {
     unmount();
     priorities.mockRestore();
@@ -3533,6 +3605,43 @@ test("the mappings' Retry keeps the focus while the read is out, and hands it to
     );
   } finally {
     stopBlurring();
+    unmount();
+    listRepoProjects.mockRestore();
+    restore();
+  }
+});
+
+// The mappings' line goes once they answer. Read again as the event of a mapping's write reads
+// them, rather than by the reader's press of the line's Retry, that answer is no press of the
+// reader's, so the focus Retry held stays on the page's body, as for every change the reader did
+// not make, rather than going to the row's control.
+test("the mappings read again on an event, not by their Retry, leave the focus their Retry held on the page's body", async () => {
+  const { restore } = stubIssueApi();
+  const listRepoProjects = spyOn(api, "listRepoProjects")
+    .mockRejectedValueOnce(new Error("the network dropped the read"))
+    .mockResolvedValue([]);
+  const { queryClient, unmount } = renderDetails();
+  const retryOfMappings = () =>
+    within(detailsRow(PROPERTY_LABELS.repository)).queryByRole("button", {
+      name: CONTROL_LABELS.retry,
+    });
+
+  try {
+    const row = await waitFor(() => detailsRow(PROPERTY_LABELS.repository));
+    await within(row).findByRole("alert");
+    const retry = retryOfMappings();
+    if (retry === null) throw new Error("the failed read of the mappings offers no Retry");
+    act(() => retry.focus());
+    await act(() => queryClient.refetchQueries({ queryKey: ["repo-projects"] }));
+    await waitFor(() =>
+      expect(retryOfMappings(), "the mappings answered, but the row still offers Retry").toBeNull()
+    );
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "the mappings answered on an event, and the focus left the page's body though the reader pressed nothing"
+    ).toBe(document.body);
+  } finally {
     unmount();
     listRepoProjects.mockRestore();
     restore();
@@ -4278,11 +4387,10 @@ test("on an issue with no component, the Add menu's Components reaches the picke
 
 // The components picker stands in Details only while the project has an architecture source, so
 // a read of the sources that answers with none takes the picker away while its popover is open:
-// the trigger and the popover go together, with the focus in the popover's search box. The
-// popover stands on the page's body, outside Details, and Details' keeper watches it as a layer
-// the focus left Details for, so the focus goes to Development's heading, as for a control of the
-// row the change took away, rather than to the page's body.
-test("a sources read that takes the open components picker away hands its focus to Development's heading", async () => {
+// the trigger and the popover go together, with the focus in the popover's search box. A read
+// that answers is no press of the reader's, so the focus stays on the page's body, as for every
+// change the reader did not make.
+test("a sources read that takes the open components picker away leaves its focus on the page's body", async () => {
   const user = userEvent.setup();
   const { restore } = stubIssueApi();
   const sources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([
@@ -4307,12 +4415,11 @@ test("a sources read that takes the open components picker away hands its focus 
     await act(() => queryClient.refetchQueries({ queryKey: ["architecture-sources"] }));
     expect(picker, "the sources read left the picker on the page").not.toBeInTheDocument();
     expect(screen.queryByRole("listbox"), "the picker left its popover open").toBeNull();
-    await waitFor(() =>
-      expect(
-        document.activeElement,
-        "the popover went with its trigger, and the focus did not go to Development's heading"
-      ).toBe(screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }))
-    );
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "the popover went with its trigger, and the focus left the page's body though the reader pressed nothing"
+    ).toBe(document.body);
   } finally {
     unmount();
     tree.mockRestore();
@@ -5030,13 +5137,12 @@ test("on a closed issue, leaving the parent's or the route's editor hands the fo
   }
 });
 
-// The refused route's Retry handed its focus to the row's control alone. A closed issue's route
-// control is disabled and takes no focus, so a Retry that went as the issue closed left the focus
-// on the page's body; and while the route's editor is open the row draws no such control, so a
-// Retry pressed there, whose route then landed, did the same. The focus goes on to the editor's
-// box while the editor is open, and to Development's heading where the row holds nothing to take
-// it.
-test("the refused route's Retry hands its focus to the editor's box while it is open, and on a closed issue to Development's heading", async () => {
+// While the route's editor is open the row draws no control of its own, so a Retry pressed there,
+// whose route then landed, left the focus on the page's body. The focus goes on to the editor's
+// box. A close made in another session takes away a Retry the reader did not press, since a closed
+// issue's line offers none: that is no press of the reader's, so the focus stays on the page's
+// body, as for every change the reader did not make.
+test("the refused route's Retry hands its focus to the editor's box while it is open, and a close made elsewhere that takes it away leaves its focus on the page's body", async () => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
   const route = "role:legion-controller-core";
@@ -5089,196 +5195,19 @@ test("the refused route's Retry hands its focus to the editor's box while it is 
       within(rowAt("route")).queryByRole("button", { name: CONTROL_LABELS.retry }),
       "the refusal of a route on a closed issue offers a Retry that sends nothing"
     ).toBeNull();
+    await settleFocus();
     expect(
       document.activeElement,
-      "the Retry went as the issue closed, and the focus did not go to Development's heading"
-    ).toBe(screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }));
-  } finally {
-    unmount();
-    restore();
-  }
-});
-
-// Another session's close disables the route's control, and the focus a reader had on it went to
-// the page's body (`emulateChromiumFocusFixup` moves it there, as Chromium does), since no hand-off
-// of the panel answers a control that turns disabled. It goes to Development's heading, the button
-// that opens and closes the section the row is in.
-test("a close made elsewhere hands the focus of the route's control it disables to Development's heading", async () => {
-  const { getIssue, restore } = stubIssueApi();
-  const { queryClient, unmount } = renderDetails();
-  const stopBlurring = emulateChromiumFocusFixup();
-
-  try {
-    const control = await screen.findByRole("button", { name: "Messages default to no route" });
-    act(() => control.focus());
-    drawIssue(getIssue, queryClient, closedIssue);
-    await waitFor(() =>
-      expect(control, "the close left the route's control enabled").toBeDisabled()
-    );
-    expect(
-      document.activeElement,
-      "the close disabled the route's control, and the focus did not go to Development's heading"
-    ).toBe(screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }));
-  } finally {
-    stopBlurring();
-    unmount();
-    restore();
-  }
-});
-
-// A press on Details' plain text moves the focus to the page's body and sends no `focusin`, so
-// the panel still kept the route's control the reader had left, and a close made elsewhere then
-// moved the focus to Development's heading although the reader was no longer in the section. A
-// control the reader leaves is forgotten, and the close moves nothing.
-test("a close made elsewhere leaves the focus on the body once the reader left the route's control", async () => {
-  const { getIssue, restore } = stubIssueApi();
-  const { queryClient, unmount } = renderDetails();
-  const stopBlurring = emulateChromiumFocusFixup();
-
-  try {
-    const control = await screen.findByRole("button", { name: "Messages default to no route" });
-    act(() => control.focus());
-    // A press on the row's label, plain text: its own task, its pointerdown first, then the blur
-    // that leaves the focus on the body.
-    const label = screen.getByText(PROPERTY_LABELS.route, { selector: "[data-page-chrome]" });
-    await act(async () => {
-      label.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
-      control.blur();
-    });
-    expect(document.activeElement, "the blur left the focus on the route's control").toBe(
-      document.body
-    );
-    drawIssue(getIssue, queryClient, closedIssue);
-    await waitFor(() =>
-      expect(control, "the close left the route's control enabled").toBeDisabled()
-    );
-    expect(
-      document.activeElement,
-      "the reader had left the route's control, and the close moved the focus to Development's heading"
+      "the Retry went as the issue closed elsewhere, and the focus left the page's body though the reader pressed nothing"
     ).toBe(document.body);
   } finally {
-    stopBlurring();
     unmount();
     restore();
   }
 });
 
-// A switch to another window or tab blurs the route's control while the document has no focus,
-// and the focus comes back to the control on return, so the panel still keeps it, and a close
-// made elsewhere meanwhile hands its focus to Development's heading as it would with the reader
-// still on the page.
-test("a window switch keeps the route's control noted, and a close made elsewhere then hands its focus to Development's heading", async () => {
-  const { getIssue, restore } = stubIssueApi();
-  const { queryClient, unmount } = renderDetails();
-  const stopBlurring = emulateChromiumFocusFixup();
-  // The page tells a window switch by whether the document has the focus, which happy-dom says
-  // it has whenever an element is active, so from the switch below the stub says it has none.
-  const hasFocus = spyOn(document, "hasFocus");
-
-  try {
-    const control = await screen.findByRole("button", { name: "Messages default to no route" });
-    act(() => control.focus());
-    // As a switch to another window does: the document loses the focus, and the control hears it
-    // leave (`focusout` is what React's `onBlur` listens to) and stays its active element.
-    hasFocus.mockReturnValue(false);
-    act(() => {
-      control.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
-    });
-    expect(
-      document.activeElement,
-      "the window switch moved the focus off the route's control"
-    ).toBe(control);
-    drawIssue(getIssue, queryClient, closedIssue);
-    await waitFor(() =>
-      expect(control, "the close left the route's control enabled").toBeDisabled()
-    );
-    expect(
-      document.activeElement,
-      "the reader only switched windows, and the close did not move the focus to Development's heading"
-    ).toBe(screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }));
-  } finally {
-    hasFocus.mockRestore();
-    stopBlurring();
-    unmount();
-    restore();
-  }
-});
-
-// A window switch keeps the route's control noted, and the focus the reader then puts on a
-// control outside Development forgets it (the keeper's `focusin` listener): the reader has left
-// the section. That control then lets the focus fall to the page's body with no `focusin`, as a
-// press on plain text does, and a close made elsewhere leaves the focus there. Had the note been
-// kept, the close would move the focus to Development's heading.
-test("a focus put outside Development after a window switch forgets the route's control, and a close made elsewhere then leaves the focus on the body", async () => {
-  const { getIssue, restore } = stubIssueApi();
-  const { queryClient, unmount } = renderDetails();
-  const stopBlurring = emulateChromiumFocusFixup();
-  // As in the window switch's case above: from the switch the stub says the document has no focus.
-  const hasFocus = spyOn(document, "hasFocus");
-
-  try {
-    const control = await screen.findByRole("button", { name: "Messages default to no route" });
-    act(() => control.focus());
-    hasFocus.mockReturnValue(false);
-    act(() => {
-      control.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
-    });
-    // happy-dom blurs the route's control again as People's heading takes the focus. The stub
-    // still says the document has no focus then, so that blur keeps the control noted as the
-    // switch's did, and only the `focusin` on the heading can forget it.
-    const people = screen.getByRole("button", { name: MARGIN_SECTION_NAMES.people });
-    act(() => people.focus());
-    hasFocus.mockRestore();
-    expect(document.activeElement, "the focus did not go to People's heading").toBe(people);
-    // As a press on plain text does: the focus leaves the heading for the body.
-    act(() => people.blur());
-    expect(document.activeElement, "the blur left the focus on People's heading").toBe(
-      document.body
-    );
-    drawIssue(getIssue, queryClient, closedIssue);
-    await waitFor(() =>
-      expect(control, "the close left the route's control enabled").toBeDisabled()
-    );
-    expect(
-      document.activeElement,
-      "the reader had left Development for People's heading, and the close moved the focus to Development's heading"
-    ).toBe(document.body);
-  } finally {
-    hasFocus.mockRestore();
-    stopBlurring();
-    unmount();
-    restore();
-  }
-});
-
-// A closed issue's Parent row draws no control, so another session's close takes Set parent issue
-// off the page, and the focus a reader had on it went to the page's body. It goes to Development's
-// heading, the button that opens and closes the section the row is in.
-test("a close made elsewhere hands the focus of Set parent issue it takes away to Development's heading", async () => {
-  const { getIssue, restore } = stubIssueApi();
-  const { queryClient, unmount } = renderDetails();
-  const stopBlurring = emulateChromiumFocusFixup();
-
-  try {
-    const control = await screen.findByRole("button", { name: CONTROL_LABELS.set_parent });
-    act(() => control.focus());
-    drawIssue(getIssue, queryClient, closedIssue);
-    await waitFor(() =>
-      expect(control, "the close left Set parent issue on the page").not.toBeInTheDocument()
-    );
-    expect(
-      document.activeElement,
-      "the close took Set parent issue away, and the focus did not go to Development's heading"
-    ).toBe(screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }));
-  } finally {
-    stopBlurring();
-    unmount();
-    restore();
-  }
-});
-
-// The parent's link takes a press on a closed issue too, so a close made elsewhere leaves the focus
-// a reader has on it where it is.
+// A close made elsewhere leaves the parent's link on the page, taking a press as before, so it
+// takes nothing from a reader's focus on it, and nothing moves that focus.
 test("a close made elsewhere leaves the focus on the parent's link, which still takes a press", async () => {
   const { getIssue, restore } = stubIssueApi();
   getIssue.mockResolvedValue({ ...issue, parent: "CORE-2" });
@@ -5305,9 +5234,7 @@ test("a close made elsewhere leaves the focus on the parent's link, which still 
 
 // A control busy with its own write refuses a press (`aria-disabled`) but keeps the focus, and a
 // close made elsewhere takes nothing from it: the blocked-by editor stays open on a closed issue
-// while its save is out, and the focus a reader had on its Save stays there. Read as a control
-// that takes no press (`usableControl`), the busy Save passed for one the close had disabled,
-// and the close moved its focus to Development's heading.
+// while its save is out, and the focus a reader had on its Save stays there.
 test("a close made elsewhere leaves the focus on the blocked-by editor's Save while its save is out", async () => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
@@ -5342,69 +5269,6 @@ test("a close made elsewhere leaves the focus on the blocked-by editor's Save wh
   } finally {
     stopBlurring();
     unmount();
-    restore();
-  }
-});
-
-// A busy control refuses a press (`aria-disabled`) but keeps the focus, and the reader can leave
-// it all the same: a press on Details' plain text moves the focus to the page's body and sends no
-// `focusin`. The labels' control is busy while its save is out, and another session's close then
-// disables it. The reader had left it, so the close moves nothing. While the panel forgot only a
-// control that still took a press as the focus left it, it kept the busy one, and the close moved
-// the focus to Development's heading.
-test("a close made elsewhere leaves the focus on the body once the reader left the labels' control while its save was out", async () => {
-  const user = userEvent.setup();
-  const { getIssue, patchIssue, restore } = stubIssueApi();
-  // The labels' popover reads the project's issues for the labels it offers.
-  const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
-  getIssue.mockResolvedValue({ ...issue, labels: ["bug"] });
-  // The save is held out for the whole case.
-  patchIssue.mockImplementationOnce(() => new Promise(() => undefined));
-  const { queryClient, unmount } = renderDetails();
-  const stopBlurring = emulateChromiumFocusFixup();
-
-  try {
-    await user.click(
-      await screen.findByRole("button", {
-        name: labelsControlName("CORE-1", {
-          labels: ["bug"],
-          saving: false,
-          words: CONTROL_NAME_WORDS,
-        }),
-      })
-    );
-    await user.click(await screen.findByRole("option", { name: "bug" }));
-    await user.keyboard("{Escape}");
-    const control = await within(rowAt("labels")).findByRole("button", {
-      name: labelsControlName("CORE-1", { labels: [], saving: true, words: CONTROL_NAME_WORDS }),
-    });
-    expect(control, "the labels' control takes a press while its save is out").toHaveAttribute(
-      "aria-disabled",
-      "true"
-    );
-    act(() => control.focus());
-    // A press on the row's label, plain text: its own task, its pointerdown first, then the blur
-    // that leaves the focus on the body.
-    const label = screen.getByText(PROPERTY_LABELS.labels, { selector: "[data-page-chrome]" });
-    await act(async () => {
-      label.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
-      control.blur();
-    });
-    expect(document.activeElement, "the blur left the focus on the labels' control").toBe(
-      document.body
-    );
-    drawIssue(getIssue, queryClient, { ...closedIssue, labels: ["bug"] });
-    await waitFor(() =>
-      expect(control, "the close left the labels' control enabled").toBeDisabled()
-    );
-    expect(
-      document.activeElement,
-      "the reader had left the busy labels' control, and the close moved the focus to Development's heading"
-    ).toBe(document.body);
-  } finally {
-    stopBlurring();
-    unmount();
-    listIssues.mockRestore();
     restore();
   }
 });
@@ -5731,13 +5595,12 @@ interface Held {
   readonly waiting?: readonly string[];
 }
 
-/** One case of the table below: what Dispatch holds before the change made elsewhere and what
- *  the change moves (`after`, over `before`); the element the reader's focus is on as it lands,
- *  which it takes off the page; and the element the focus goes on to, by its name. */
+/** One case of the table below: what Dispatch holds before the change made elsewhere and what the
+ *  change moves (`after`, over `before`), and the element the reader's focus is on as it lands,
+ *  which the change takes off the page or disables. */
 interface TakenAway {
   readonly after: Held;
   readonly before: Held;
-  readonly expected: { readonly find: () => HTMLElement; readonly name: string };
   readonly focused: (user: UserEvent) => Promise<HTMLElement>;
 }
 
@@ -5747,9 +5610,13 @@ async function drawnRow(name: string): Promise<HTMLElement> {
   return detailsRow(name);
 }
 
-/** Pinned, the section of the reader's pins. */
-function pinned(): HTMLElement {
-  return screen.getByRole("region", { name: CONTROL_LABELS.pinned });
+/** Details' panel, the element its sections and Pinned are drawn in. */
+function detailsPanel(): HTMLElement {
+  const panel = screen
+    .getByRole("button", { name: MARGIN_SECTION_NAMES.development })
+    .closest("section")?.parentElement;
+  if (!(panel instanceof HTMLElement)) throw new Error("Details draws no panel");
+  return panel;
 }
 
 /** The first pin's link, once Pinned has read its words. */
@@ -5758,15 +5625,18 @@ async function firstPinLink(): Promise<HTMLElement> {
   return within(section).findByRole("link", { name: PIN_WORDS[FIRST_PIN] });
 }
 
+/** Add, once it is drawn. */
+function drawnAdd(): Promise<HTMLElement> {
+  return waitFor(() => {
+    const control = addMenuControl();
+    if (!(control instanceof HTMLElement)) throw new Error("Add is not drawn");
+    return control;
+  });
+}
+
 /** Opens Add's menu, which puts the focus on its first entry, and answers the menu. */
 async function openAddMenu(user: UserEvent): Promise<HTMLElement> {
-  await user.click(
-    await waitFor(() => {
-      const control = addMenuControl();
-      if (!(control instanceof HTMLElement)) throw new Error("Add is not drawn");
-      return control;
-    })
-  );
+  await user.click(await drawnAdd());
   return screen.findByRole("menu", { name: CONTROL_LABELS.add });
 }
 
@@ -5777,27 +5647,21 @@ function addEntry(property: string): HTMLElement {
   });
 }
 
-/** The claim row's Release. */
-function release(): HTMLElement {
-  return within(detailsRow(PROPERTY_LABELS.claim)).getByRole("button", {
-    name: "Release the claim on CORE-1",
-  });
-}
-
 /** The route's control, drawn inside the agent's name or on its own. */
 function routeControl(): HTMLElement {
   return within(rowAt("route")).getByRole("button", { name: /^Messages default to / });
 }
 
+/** The fixture's issue advancing PRI-7, its own. */
+const advancingOne: IssueDetails = { ...issue, advances: [{ id: "PRI-7", inherited: false }] };
+
 /**
- * The elements of Details below, each of which a change made elsewhere takes off the page while
- * it holds the focus and one case can drive through the query cache: first those whose focus fell
- * to the page in a browser, then those nothing else hands on, then Add's two other ways out of its
- * open menu. Each goes where Details' rule puts it: inside Add's open menu to the entry after the
- * lost one, else to Add; else to the first control of its row that takes a press, else to the
- * heading of the row's section; and on a close, to Development's heading. The claim row's None is
- * the one row its own hand-off decides (`IssueClaimControl`): its first control is the holder's
- * link, and the row hands the focus to the new claim's Release.
+ * The elements of Details below, each of which a change made elsewhere takes off the page, or
+ * disables, while it holds the focus, and which one case can drive through the query cache: a
+ * pin, a blocker, a reference, a file or a priority taken away, a route or a claim moved, the
+ * lists that fold falling to ten, a value set for an entry of Add's open menu, the priority's line
+ * moved by another session's write, and the issue closed while the focus is on a control of
+ * Development. None of these is a press of the reader's.
  */
 const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
   [
@@ -5805,10 +5669,6 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     {
       after: { pins: [SECOND_PIN] },
       before: { pins: [FIRST_PIN, SECOND_PIN] },
-      expected: {
-        find: () => within(pinned()).getByRole("link", { name: "Second pin." }),
-        name: "the list's first pin left",
-      },
       focused: firstPinLink,
     },
   ],
@@ -5817,10 +5677,6 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     {
       after: { pins: [SECOND_PIN] },
       before: { pins: [FIRST_PIN, SECOND_PIN] },
-      expected: {
-        find: () => within(pinned()).getByRole("link", { name: "Second pin." }),
-        name: "the list's first pin left",
-      },
       focused: async () => {
         await firstPinLink();
         const row = document.querySelector(
@@ -5832,112 +5688,20 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     },
   ],
   [
-    "Blocks' None, another issue starting to wait on this one",
-    {
-      after: { waiting: ["CORE-5"] },
-      before: { waiting: [] },
-      expected: {
-        find: () =>
-          within(detailsRow(PROPERTY_LABELS.blocks)).getByRole("link", { name: "CORE-5" }),
-        name: "the issue that waits now",
-      },
-      focused: async () =>
-        within(await drawnRow(PROPERTY_LABELS.blocks)).findByText(CONTROL_LABELS.none),
-    },
-  ],
-  [
-    "Blocked by's link, that blocker taken away in another session",
-    {
-      after: { issue: { ...issue, blocked_by: ["CORE-3"] } },
-      before: { issue: { ...issue, blocked_by: ["CORE-2", "CORE-3"] } },
-      expected: {
-        find: () =>
-          within(detailsRow(PROPERTY_LABELS.blocked_by)).getByRole("link", { name: "CORE-3" }),
-        name: "the blocker left",
-      },
-      focused: async () =>
-        within(await drawnRow(PROPERTY_LABELS.blocked_by)).findByRole("link", { name: "CORE-2" }),
-    },
-  ],
-  [
-    "Referenced by's control, the last reference taken away",
-    {
-      after: { issue: { ...issue, referenced_by_count: 0 } },
-      before: { issue: { ...issue, referenced_by_count: 3 } },
-      expected: {
-        find: () => screen.getByRole("button", { name: MARGIN_SECTION_NAMES.references }),
-        name: "References' heading",
-      },
-      focused: () => screen.findByRole("button", { name: referencedByControlName(3) }),
-    },
-  ],
-  [
-    "the parent's link, the parent cleared in another session",
-    {
-      after: { issue: { ...issue, parent: null } },
-      before: { issue: { ...issue, parent: "CORE-2" } },
-      expected: {
-        find: () =>
-          within(rowAt("parent")).getByRole("button", { name: CONTROL_LABELS.set_parent }),
-        name: "Set parent issue",
-      },
-      focused: async () =>
-        within(await drawnRow(PROPERTY_LABELS.parent)).findByRole("link", { name: "CORE-2" }),
-    },
-  ],
-  [
-    "the route's control, the route moved into an agent's name in another session",
-    {
-      after: { issue: { ...issue, route: SESSION_ROUTE } },
-      before: { issue: { ...issue, route: null } },
-      expected: { find: routeControl, name: "the route's control drawn inside the agent's name" },
-      focused: () => screen.findByRole("button", { name: "Messages default to no route" }),
-    },
-  ],
-  [
-    "the route's control, the route moved out of an agent's name in another session",
-    {
-      after: { issue: { ...issue, route: ROLE_ROUTE } },
-      before: { issue: { ...issue, route: SESSION_ROUTE } },
-      expected: { find: routeControl, name: "the route's control drawn on its own" },
-      focused: async () => {
-        await drawnRow(PROPERTY_LABELS.route);
-        return routeControl();
-      },
-    },
-  ],
-  [
-    "Add's menu entry, its property set in another session",
-    {
-      after: { issue: { ...issue, parent: "CORE-2" } },
-      before: {},
-      expected: { find: () => addEntry(PROPERTY_LABELS.labels), name: "the menu's next entry" },
-      focused: async (user) => {
-        await openAddMenu(user);
-        return addEntry(PROPERTY_LABELS.parent);
-      },
-    },
-  ],
-  [
-    "the claim row's None, a claim made in another session",
-    {
-      after: { issue: { ...issue, claim: sessionClaim } },
-      before: {},
-      expected: { find: release, name: "the new claim's Release" },
-      focused: async () =>
-        within(await drawnRow(PROPERTY_LABELS.claim)).findByText(CONTROL_LABELS.none),
-    },
-  ],
-  [
     "Pinned's last link, its pin unpinned in another session",
     {
       after: { pins: [] },
       before: { pins: [FIRST_PIN] },
-      expected: {
-        find: () => within(pinned()).getByRole("heading", { name: CONTROL_LABELS.pinned }),
-        name: "Pinned's heading",
-      },
       focused: firstPinLink,
+    },
+  ],
+  [
+    "Blocks' None, another issue starting to wait on this one",
+    {
+      after: { waiting: ["CORE-5"] },
+      before: { waiting: [] },
+      focused: async () =>
+        within(await drawnRow(PROPERTY_LABELS.blocks)).findByText(CONTROL_LABELS.none),
     },
   ],
   [
@@ -5945,11 +5709,6 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     {
       after: { waiting: ["CORE-6"] },
       before: { waiting: ["CORE-5", "CORE-6"] },
-      expected: {
-        find: () =>
-          within(detailsRow(PROPERTY_LABELS.blocks)).getByRole("link", { name: "CORE-6" }),
-        name: "the issue that still waits",
-      },
       focused: async () =>
         within(await drawnRow(PROPERTY_LABELS.blocks)).findByRole("link", { name: "CORE-5" }),
     },
@@ -5959,11 +5718,6 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     {
       after: { waiting: keysFrom2(FOLD_AFTER) },
       before: { waiting: keysFrom2(FOLD_AFTER + 1) },
-      expected: {
-        find: () =>
-          within(detailsRow(PROPERTY_LABELS.blocks)).getByRole("link", { name: "CORE-2" }),
-        name: "the first issue that waits",
-      },
       focused: async () =>
         within(await drawnRow(PROPERTY_LABELS.blocks)).findByRole("button", {
           name: `${CONTROL_LABELS.show_all} ${FOLD_AFTER + 1}`,
@@ -5971,16 +5725,57 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     },
   ],
   [
+    "Blocked by's link, that blocker taken away in another session",
+    {
+      after: { issue: { ...issue, blocked_by: ["CORE-3"] } },
+      before: { issue: { ...issue, blocked_by: ["CORE-2", "CORE-3"] } },
+      focused: async () =>
+        within(await drawnRow(PROPERTY_LABELS.blocked_by)).findByRole("link", { name: "CORE-2" }),
+    },
+  ],
+  [
     "Blocked by's last link, that blocker taken away in another session",
     {
       after: { issue: { ...issue, blocked_by: [] } },
       before: { issue: { ...issue, blocked_by: ["CORE-2"] } },
-      expected: {
-        find: () => screen.getByRole("button", { name: blockedByControlName("CORE-1", 0) }),
-        name: "the row's control",
-      },
       focused: async () =>
         within(await drawnRow(PROPERTY_LABELS.blocked_by)).findByRole("link", { name: "CORE-2" }),
+    },
+  ],
+  [
+    "Referenced by's control, the last reference taken away",
+    {
+      after: { issue: { ...issue, referenced_by_count: 0 } },
+      before: { issue: { ...issue, referenced_by_count: 3 } },
+      focused: () => screen.findByRole("button", { name: referencedByControlName(3) }),
+    },
+  ],
+  [
+    "the parent's link, the parent cleared in another session",
+    {
+      after: { issue: { ...issue, parent: null } },
+      before: { issue: { ...issue, parent: "CORE-2" } },
+      focused: async () =>
+        within(await drawnRow(PROPERTY_LABELS.parent)).findByRole("link", { name: "CORE-2" }),
+    },
+  ],
+  [
+    "the route's control, the route moved into an agent's name in another session",
+    {
+      after: { issue: { ...issue, route: SESSION_ROUTE } },
+      before: { issue: { ...issue, route: null } },
+      focused: () => screen.findByRole("button", { name: "Messages default to no route" }),
+    },
+  ],
+  [
+    "the route's control, the route moved out of an agent's name in another session",
+    {
+      after: { issue: { ...issue, route: ROLE_ROUTE } },
+      before: { issue: { ...issue, route: SESSION_ROUTE } },
+      focused: async () => {
+        await drawnRow(PROPERTY_LABELS.route);
+        return routeControl();
+      },
     },
   ],
   [
@@ -5988,11 +5783,19 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     {
       after: { issue: { ...issue, route: ROLE_ROUTE } },
       before: { issue: { ...issue, route: SESSION_ROUTE } },
-      expected: { find: routeControl, name: "the route's control" },
       focused: async () =>
         within(await drawnRow(PROPERTY_LABELS.route)).findByRole("link", {
           name: /^Open live conversation with /,
         }),
+    },
+  ],
+  [
+    "the claim row's None, a claim made in another session",
+    {
+      after: { issue: { ...issue, claim: sessionClaim } },
+      before: {},
+      focused: async () =>
+        within(await drawnRow(PROPERTY_LABELS.claim)).findByText(CONTROL_LABELS.none),
     },
   ],
   [
@@ -6005,7 +5808,6 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
         },
       },
       before: { issue: { ...issue, claim: sessionClaim } },
-      expected: { find: release, name: "Release" },
       focused: async () => {
         const [holder] = await within(await drawnRow(PROPERTY_LABELS.claim)).findAllByRole("link");
         if (holder === undefined) throw new Error("the claim's row draws no link to its holder");
@@ -6018,11 +5820,6 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     {
       after: { issue: withNotes(1) },
       before: { issue: withNotes(2) },
-      expected: {
-        find: () =>
-          within(screen.getByTestId("issue-files")).getByRole("link", { name: /^spec\.md/ }),
-        name: "the row's first file",
-      },
       focused: async () =>
         within(await screen.findByTestId("issue-files")).findByRole("link", {
           name: /^notes-02\.md/,
@@ -6034,11 +5831,6 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     {
       after: { issue: withNotes(FOLD_AFTER - 1) },
       before: { issue: withNotes(FOLD_AFTER) },
-      expected: {
-        find: () =>
-          within(screen.getByTestId("issue-files")).getByRole("link", { name: /^spec\.md/ }),
-        name: "the row's first file",
-      },
       focused: () =>
         screen.findByRole("button", { name: `${CONTROL_LABELS.show_all} ${FOLD_AFTER + 1}` }),
     },
@@ -6056,24 +5848,45 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
           ],
         },
       },
-      expected: {
-        find: () =>
-          within(screen.getByTestId("issue-advances")).getByRole("link", { name: "PRI-8" }),
-        name: "the priority left",
-      },
       focused: async () =>
         within(await screen.findByTestId("issue-advances")).findByRole("link", { name: "PRI-7" }),
     },
   ],
   [
+    "the add control beside Add, the first priority added in another session",
+    {
+      after: { issue: advancingOne },
+      before: {},
+      focused: () => screen.findByRole("button", { name: addPriorityControlName("CORE-1") }),
+    },
+  ],
+  [
+    "the last priority's Remove, that priority taken away in another session",
+    {
+      after: { issue },
+      before: { issue: advancingOne },
+      focused: async () =>
+        within(await screen.findByTestId("issue-advances")).findByRole("button", {
+          name: /^Remove /,
+        }),
+    },
+  ],
+  [
+    "Add's menu entry, its property set in another session",
+    {
+      after: { issue: { ...issue, parent: "CORE-2" } },
+      before: {},
+      focused: async (user) => {
+        await openAddMenu(user);
+        return addEntry(PROPERTY_LABELS.parent);
+      },
+    },
+  ],
+  [
     "Add's last menu entry, its property set in another session",
     {
-      after: { issue: { ...issue, advances: [{ id: "PRI-7", inherited: false }] } },
+      after: { issue: advancingOne },
       before: {},
-      expected: {
-        find: () => addMenuControl() as HTMLElement,
-        name: "Add",
-      },
       focused: async (user) => {
         await openAddMenu(user);
         return addEntry(PROPERTY_LABELS.advances);
@@ -6085,26 +5898,80 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     {
       after: { issue: closedIssue },
       before: {},
-      expected: {
-        find: () => screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }),
-        name: "Development's heading",
-      },
       focused: async (user) => {
         await openAddMenu(user);
         return addEntry(PROPERTY_LABELS.parent);
       },
     },
   ],
+  [
+    "Add, the issue closed in another session",
+    {
+      after: { issue: closedIssue },
+      before: {},
+      focused: drawnAdd,
+    },
+  ],
+  [
+    "Set parent issue, the issue closed in another session",
+    {
+      after: { issue: closedIssue },
+      before: {},
+      focused: () => screen.findByRole("button", { name: CONTROL_LABELS.set_parent }),
+    },
+  ],
+  [
+    "Blocked by's control, the issue closed in another session",
+    {
+      after: { issue: closedIssue },
+      before: {},
+      focused: () => screen.findByRole("button", { name: blockedByControlName("CORE-1", 0) }),
+    },
+  ],
+  [
+    "the route's control, disabled by the issue closed in another session",
+    {
+      after: { issue: closedIssue },
+      before: {},
+      focused: () => screen.findByRole("button", { name: "Messages default to no route" }),
+    },
+  ],
+  [
+    "the labels' control, disabled by the issue closed in another session",
+    {
+      after: { issue: closedIssue },
+      before: {},
+      focused: () =>
+        screen.findByRole("button", {
+          name: labelsControlName("CORE-1", {
+            labels: [],
+            saving: false,
+            words: CONTROL_NAME_WORDS,
+          }),
+        }),
+    },
+  ],
+  [
+    "the add control beside Add, disabled by the issue closed in another session",
+    {
+      after: { issue: closedIssue },
+      before: {},
+      focused: () => screen.findByRole("button", { name: addPriorityControlName("CORE-1") }),
+    },
+  ],
 ];
 
-// A change made elsewhere - another session's write, the read it sets off - took away the element
-// of Details that held the focus, and the focus fell to the page's body, so the reader's next Tab
-// started again from the top of the page. Each change here comes through the query cache, as the
-// reads of such a change land.
-test.each(TAKEN_AWAY)("%s: the focus goes on in Details rather than to the page", async (_name, {
+// A change the reader did not make - another session's write, the read it sets off, a close made
+// elsewhere - takes away the element of Details that held the focus. Details keeps the rule of
+// every page of Dispatch: the focus stays on the page's body, where the browser put it, and no
+// element of Details takes it, then or two frames and a task later, as a keeper that waits would.
+// Each change here comes through the query cache, as the reads of such a change land; a control a
+// close disables drops its focus to the body as Chromium drops it (`emulateChromiumFocusFixup`).
+test.each(
+  TAKEN_AWAY
+)("%s: the focus stays on the page's body, and no element of Details takes it", async (_name, {
   after,
   before,
-  expected,
   focused,
 }) => {
   const user = userEvent.setup();
@@ -6145,6 +6012,7 @@ test.each(TAKEN_AWAY)("%s: the focus goes on in Details rather than to the page"
   };
   hold(before);
   const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const stopBlurring = emulateChromiumFocusFixup();
 
   try {
     const lost = await focused(user);
@@ -6153,14 +6021,26 @@ test.each(TAKEN_AWAY)("%s: the focus goes on in Details rather than to the page"
 
     hold({ ...before, ...after }, queryClient);
     await waitFor(() =>
-      expect(lost.isConnected, "the change left the focused element on the page").toBe(false)
+      expect(
+        lost.isConnected && !lost.matches(":disabled"),
+        "the change left the focused element on the page, taking a press"
+      ).toBe(false)
     );
-    await waitFor(() =>
-      expect(document.activeElement, `the focus did not go to ${expected.name}`).toBe(
-        expected.find()
-      )
-    );
+    expect(
+      document.activeElement,
+      "the element went, and the focus is not on the page's body"
+    ).toBe(document.body);
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "the focus left the page's body after the element went, though the reader pressed nothing"
+    ).toBe(document.body);
+    expect(
+      detailsPanel().contains(document.activeElement),
+      "an element of Details took the focus"
+    ).toBe(false);
   } finally {
+    stopBlurring();
     unmount();
     priorities.mockRestore();
     getReferences.mockRestore();

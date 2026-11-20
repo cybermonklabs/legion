@@ -298,38 +298,39 @@ test("a keyboard press of the Create row makes the value and the focus stays in 
 });
 
 // The host's options are a read that can answer again while the popover is open, as a project's
-// labels can come back without the one a row draws. That takes away the row the focus is on.
-test("a row that new options drop leaves the focus in the search box", async () => {
+// labels can come back without the one a row draws. That takes away the row the focus is on, which
+// is no press of the reader's, so the focus stays on the page's body, as for every change the
+// reader did not make.
+test("a row that new options drop leaves the focus on the page's body", async () => {
   const user = userEvent.setup();
   const view = render(<OpenHost options={["api", "docs"]} />);
   try {
-    const search = screen.getByRole("combobox", { name: "Search labels" });
     await user.tab();
     await user.tab();
     expect(screen.getByRole("option", { name: "docs" })).toHaveFocus();
     view.rerender(<OpenHost options={["api"]} />);
     expect(screen.queryByRole("option", { name: "docs" })).not.toBeInTheDocument();
-    expect(search).toHaveFocus();
+    expect(document.body).toHaveFocus();
   } finally {
     view.unmount();
   }
 });
 
 // Options that come to hold the value the Create row offers make that value an option's row, so
-// they take away the Create row the focus is on.
-test("a Create row that new options name leaves the focus in the search box", async () => {
+// they take away the Create row the focus is on. That is no press of the reader's, so the focus
+// stays on the page's body.
+test("a Create row that new options name leaves the focus on the page's body", async () => {
   const user = userEvent.setup();
   const view = render(<OpenHost onCreate={() => undefined} options={["api"]} />);
   try {
-    const search = screen.getByRole("combobox", { name: "Search labels" });
-    await user.click(search);
+    await user.click(screen.getByRole("combobox", { name: "Search labels" }));
     await user.paste("urgent");
     await user.tab();
     expect(screen.getByRole("option", { name: 'Create "urgent"' })).toHaveFocus();
     view.rerender(<OpenHost onCreate={() => undefined} options={["api", "urgent"]} />);
     expect(screen.queryByRole("option", { name: /Create/ })).not.toBeInTheDocument();
     expect(screen.getByRole("option", { name: "urgent" })).toBeTruthy();
-    expect(search).toHaveFocus();
+    expect(document.body).toHaveFocus();
   } finally {
     view.unmount();
   }
