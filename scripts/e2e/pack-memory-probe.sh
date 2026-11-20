@@ -21,13 +21,21 @@
 #      probe puts first on PATH: one RESULT line each, with its argv, peak and wall time.
 #   4. Under the role's own GIT_CONFIG block, which the harness put on this container, the four
 #      pack settings at command scope, with the clone's local value beside each.
-#   5. The git rows, in the workspace, each once with the role's settings and once with git's
-#      defaults forced (the block unset, GIT_CONFIG_NOSYSTEM=1 and four -c values):
-#      `git log --first-parent -- <walk file>`, `git status`, a push of a new commit, and a fetch
-#      of git/git's history, which the clone does not hold. A push and a fetch go to a `git
-#      daemon` started before any measured command and outside every measured tree; it serves a
-#      bare copy of the feed and a bare clone of git/git. A fetch whose pack is under 100 MiB
-#      marks its rows void.
+#   5. The git rows, each once with the role's settings and once with git's defaults forced (the
+#      block unset, GIT_CONFIG_NOSYSTEM=1 and four -c values): in the workspace, `git log
+#      --first-parent -- <walk file>`, `git status` and a push of a new commit to a `git daemon`
+#      started before any measured command and outside every measured tree, which serves a bare
+#      copy of the feed; and a fetch from GitHub of the newer commits of the clone's own default
+#      branch into a clone that lacks them. K is the smallest step of a fixed ladder, 4096, 6400,
+#      8192 and 12800 first-parent commits back from the branch's tip in the workspace's clone,
+#      for which `git rev-list --objects --no-object-names <tip>~K..<tip>` take 100 MiB on the
+#      clone's disk by `git cat-file --batch-check='%(objectsize:disk)'`; a bare repository then
+#      holds the branch at <tip>~K alone, fetched by id from GitHub in one pack, and must lack
+#      <tip> (a setup verdict), and each row fetches `+refs/heads/<branch>:refs/remotes/origin/
+#      <branch>` from GitHub into a fresh `git clone --local --no-checkout` of it. The log prints
+#      K, the estimate, and each new pack's bytes and objects. A row whose new pack is under
+#      100 MiB is void; when no step of the ladder reaches 100 MiB, both rows and the setup
+#      verdict are void, saying why, and the run goes on.
 #   6. The copies of the provisioning root, repos/ and workspaces/ both: one for jj 0.45.1 (R3 to
 #      R5's control), one for R10's control (jj 0.46.0 as sami's 28c47103 released it), and one for
 #      the released jj at each JJ_PACK_MAPPED_LIMIT budget of R10, 64m, 256m, 512m and 1g. `df` and
@@ -83,11 +91,12 @@
 # the largest sampled total of its process tree and, from that same sample, the pack mappings' Rss,
 # the anonymous memory and the mapping and file counts; over every sample, the largest pack Rss,
 # anonymous memory and other-file Rss, and the most mappings one sample held of each pack file;
-# and the pod's charge: the cgroup's memory charge read just before the command starts and at
-# every sample, its peak less that baseline, and the charge over the baseline at the sample of the
-# tree's largest total. Under gVisor a file two processes map is charged once, where the tree's
-# total counts it in each, so the charge differs from the total. A push or a fetch talks to the
-# git daemon, which runs in the pod outside the measured tree, so those rows also sample the
+# each process of the tree, with its .pack, .idx, other-file and anonymous memory at its own
+# largest total; and the pod's charge: the cgroup's memory charge read just before the command
+# starts and at every sample, its peak less that baseline, and the charge over the baseline at
+# the sample of the tree's largest total. Under gVisor a file two processes map is charged once,
+# where the tree's total counts it in each, so the charge differs from the total. A push talks to
+# the git daemon, which runs in the pod outside the measured tree, so its rows also sample the
 # daemon's tree and report its largest total. The sampler stops the measured tree (SIGSTOP, and
 # SIGCONT once read) while it reads each sample, the git daemon's tree aside: a jj that drops one
 # chunk and maps the next thousands of times a second, read running over the milliseconds one
@@ -95,25 +104,34 @@
 # the summed, median and longest time the tree was stopped, and how many samples held a process
 # that did not stop in time; the wall time includes the stops. Each verdict of a git or jj row
 # prints the stopped time beside the wall time, and the pod's charge after the row's figures,
-# with the daemon's total beside it for a row the daemon served; no verdict reads any of them.
+# with the daemon's total beside it for a row the daemon served.
 # Every verdict prints one `CHECK <name>: got [x] want [y]` line, followed by ` MISMATCH` when it
 # failed and ` VOID` when a control did not reach its bound; the last line is `JOB-RESULT pass`,
-# when no verdict failed, or `JOB-RESULT fail`. A row of the image's jj or of the role's settings
-# holds when it exits 0 and both GNU time's figure and the sampled total are under 2 GiB
-# (2,097,152 KiB). A control row must reach its bound, by either figure, or its line is VOID:
-# 2 GiB for a git row, and for a jj row the size of the pack, read from that copy's clone.
+# when no verdict failed, or `JOB-RESULT fail`.
 #
-# R10's rows are judged by their pack figure: the larger of the row's largest sampled pack Rss and
-# GNU time's figure less its largest sampled anonymous memory and other-file Rss, so a sample that
-# missed the pack cannot lower it. A released row holds when it exits 0, its pack figure is within
-# its budget plus one 8 MiB chunk for each object store plus 32 MiB, and its stdout equals the
-# control row's. The count of object stores is read from the control row of the same command: the
-# most mappings one sample held of its largest pack file, since that build maps a pack whole once
-# for each store. A control row is a control: its pack figure must reach the pack's size, or its
-# line is VOID. Each R10 RESULT line carries `r10` in place of a label: the command, the copy, the
+# A git row (c-git-rows) prints each process of its tree on a line of its own before its verdict.
+# With the role's settings, git log, git status and the fetch hold when they exit 0 and the pod's
+# charge is under 2 GiB (2,097,152 KiB), and the push when it exits 0 and its own process tree's
+# largest sampled total is, since its receiving daemon shares the pod. Each row with git's
+# defaults forced is a control that must reach 2 GiB by its settings row's figure, or its line is
+# VOID. A row of the image's jj (c-jj-snapshot-memory, c-handoff-head-read-memory,
+# c-shim-adoption-memory) holds when it exits 0 and both GNU time's figure and the sampled total
+# are under 2 GiB; its jj 0.45.1 control must reach the size of the pack, read from that copy's
+# clone, by either figure, or its line is VOID.
+#
+# R10's rows have two figures. The pack figure is the row's largest sampled pack Rss, read with
+# the tree stopped; the derived figure is GNU time's figure less its largest sampled anonymous
+# memory and less its largest sampled other-file Rss, which catches a mapping a sample missed. A
+# released row holds when it exits 0, its pack figure is within its budget plus one 8 MiB chunk
+# for each object store plus 32 MiB, its derived figure is within that bound plus 128 MiB, and its
+# stdout equals the control row's. The count of object stores is read from the control row of the
+# same command: the most mappings one sample held of its largest pack file, since that build maps
+# a pack whole once for each store. A control row's larger figure must reach 90% of the .pack
+# file's size, or its line is a MISMATCH: a control that reads no pack proves nothing about its
+# patched row. Each R10 RESULT line carries `r10` in place of a label: the command, the copy, the
 # budget, whether its stdout equals the control row's, its largest sampled pack, other-file and
-# anonymous memory, GNU time's figure, its wall time, the pod's charge, its pack figure, the store
-# count and the bound.
+# anonymous memory, GNU time's figure, its wall time and stopped time, the pod's charge, its pack
+# and derived figures, the store count and both bounds.
 #
 # It is no proof of its own and nothing runs it from a checkout: the harness beside it writes this
 # text and pack-memory-peak.py into the Job's command, and the Job writes both onto its volume and
@@ -142,7 +160,11 @@ walk_file=config/milestone.txt
 second_file=browser/config/version.txt
 
 bound_kib=2097152            # 2 GiB, the bound of every row of the image's jj and of the settings
-fetch_floor=104857600        # 100 MiB: a fetch row whose pack is smaller exercises nothing
+fetch_floor=104857600        # 100 MiB: a fetch row whose new pack is smaller exercises nothing
+# The fetch row's ladder: the first-parent steps K back from the default branch's tip, the smallest
+# of which whose <tip>~K..<tip> objects take fetch_floor on the clone's disk makes the clone that
+# lacks them.
+fetch_ladder=(4096 6400 8192 12800)
 row_timeout=7200             # seconds any one measured command may run
 
 # The four pack settings and their values (R1), and git's defaults as c-git-rows forces them.
@@ -165,7 +187,6 @@ r10_control_binary_sha256=3ac2d61600a732171179d3d94c432d98aa28233c0db206a96f9729
 r10_control_prints="jj 0.46.0-sami.20261008-234600-28c47103ae4e0ea8f8ab770de1422ad6f8a8c9ef"
 # R10's released jj: the image's own, the binary its jj wrapper (/opt/legion/bin/jj) runs.
 released_jj=/usr/local/bin/jj
-git_history_url=https://github.com/git/git
 
 issue=PACKMEM-1               # the issue key provisioning names the workspace after
 cache_listen=127.0.0.1:8418
@@ -179,12 +200,16 @@ adopter_email=adopter@example.invalid
 # those heads as origin's already.
 feed_remote=feed
 
-# R10: the four JJ_PACK_MAPPED_LIMIT budgets, each in KiB; one chunk of the chunked mapping; and
-# the 32 MiB its bound allows beyond the budget and the chunks.
+# R10: the four JJ_PACK_MAPPED_LIMIT budgets, each in KiB; one chunk of the chunked mapping; the
+# 32 MiB the pack figure's bound allows beyond the budget and the chunks; the 128 MiB the derived
+# figure's bound allows beyond that, for an other-file or Anonymous peak a sample missed; and the
+# share of the .pack file's size a control row's larger figure must reach, in percent.
 budgets=(64m 256m 512m 1g)
 declare -A budget_kib=([64m]=65536 [256m]=262144 [512m]=524288 [1g]=1048576)
 chunk_kib=8192
 slack_kib=32768
+derived_slack_kib=131072
+control_share=90
 # The copies of the provisioning root, each at $scratch/<copy>: jj 0.45.1's for R3 to R5, then
 # R10's, R10's control's and the released jj's at each budget, with the jj and the budget each runs
 # (copy_jj is filled once the binaries are read). R10's commands, by the names its labels and
@@ -227,9 +252,10 @@ expected+=(
 for key in "${setting_keys[@]}"; do
   expected+=("c-git-rows role scope $key" "c-git-rows clone local $key")
 done
-for row in log status push fetch; do
+for row in log status push; do
   expected+=("c-git-rows $row settings" "c-git-rows $row defaults")
 done
+expected+=("setup fetch lacking clone" "c-git-rows fetch settings" "c-git-rows fetch defaults")
 expected+=("setup room for the copies")
 for copy in "${copies[@]}"; do
   expected+=("setup $copy workspace's git common dir")
@@ -449,6 +475,67 @@ exits_zero() {
   fi
 }
 
+# print_processes <label>: each process of a row's tree on a line of its own, largest first: its
+# pid, the first three words of its cmdline and, at the sample where its own total was largest,
+# that total and its .pack, .idx, other file and anonymous memory.
+print_processes() {
+  jq -r --arg label "$1" 'select(.label == $label) | .processes // [] | .[] |
+    "  \($label) process \(.pid) [\(.name)]: largest total \(.total_kib) KiB at \(.at_s) s: .pack \(.pack_kib) KiB, .idx \(.idx_kib) KiB, other file \(.other_file_kib) KiB, anonymous \(.anon_kib) KiB"' \
+    "$results" 2> /dev/null | awk -v label="$1" 'BEGIN { n = 0 } { lines[n++] = $0 } END { if (n == 0) print "  " label ": no process was sampled"; for (i = 0; i < n; i++) print lines[i] }'
+}
+
+signed() { [[ $1 =~ ^-?[0-9]+$ ]]; }
+
+# git_holds <name> <label> <field> <what> [void reason]: a git row with the role's settings
+# (c-git-rows): it exits 0 and its figure, the result's field, is under 2 GiB. Its processes are
+# printed before its line. A reason makes the row void instead, whatever its figures.
+git_holds() {
+  local name=$1 label=$2 key=$3 what=$4 void=${5:-} value want
+  want="exit 0, $what under $(group "$bound_kib") KiB"
+  print_processes "$label"
+  if ! has_result "$label"; then
+    verdict "$name" fail "no result for $label" "$want" "the row did not run"
+    return
+  fi
+  value=$(field "$label" "$key")
+  if [ "$(field "$label" .exit)" != 0 ]; then
+    verdict "$name" fail "$(figures "$label")" "$want" "the command failed"
+  elif ! signed "$value"; then
+    verdict "$name" fail "$(figures "$label")" "$want" "$what could not be read: $value"
+  elif [ -n "$void" ]; then
+    verdict "$name" void "$(figures "$label")" "$want" "$void"
+  elif [ "$value" -lt "$bound_kib" ]; then
+    verdict "$name" pass "$(figures "$label")" "$want"
+  else
+    verdict "$name" fail "$(figures "$label")" "$want" "over the bound"
+  fi
+}
+
+# git_control <name> <label> <field> <what> [void reason]: a git row with git's defaults forced, the
+# control of the settings row judged by the same figure: that figure must reach 2 GiB, or the line
+# is VOID. A control that never ran, or whose figure cannot be read, is a MISMATCH.
+git_control() {
+  local name=$1 label=$2 key=$3 what=$4 void=${5:-} value want
+  want="$what at or over $(group "$bound_kib") KiB (2 GiB)"
+  print_processes "$label"
+  if ! has_result "$label"; then
+    verdict "$name" fail "no result for $label" "$want" "the control did not run"
+    return
+  fi
+  value=$(field "$label" "$key")
+  if [ -n "$void" ]; then
+    verdict "$name" void "$(figures "$label")" "$want" "$void"
+  elif [ "$(field "$label" .exit)" != 0 ]; then
+    verdict "$name" void "$(figures "$label")" "$want" "the control did not run to its end"
+  elif ! signed "$value"; then
+    verdict "$name" fail "$(figures "$label")" "$want" "$what could not be read: $value"
+  elif [ "$value" -ge "$bound_kib" ]; then
+    verdict "$name" pass "$(figures "$label")" "$want"
+  else
+    verdict "$name" void "$(figures "$label")" "$want" "the control stayed under its bound"
+  fi
+}
+
 measure() { # measure <label> [sampler options…] -- <command…>: one measured command, in this directory
   local label=$1
   shift
@@ -460,10 +547,15 @@ measure() { # measure <label> [sampler options…] -- <command…>: one measured
 # with the role's block left out, so no pin of the role's reaches a step that is not a row.
 setup_git() { env -u GIT_CONFIG_COUNT /usr/bin/git "$@"; }
 
-largest_pack_kib() { # largest_pack_kib <clone>: its largest pack's size, in KiB
+largest_pack_bytes() { # largest_pack_bytes <clone>: its largest pack's size, in bytes
   local bytes
   bytes=$(find "$1/.git/objects/pack" -maxdepth 1 -name '*.pack' -printf '%s\n' 2> /dev/null | sort -n | tail -n 1)
-  whole "$bytes" && echo $((bytes / 1024))
+  whole "$bytes" && echo "$bytes"
+}
+
+largest_pack_kib() { # largest_pack_kib <clone>: its largest pack's size, in KiB
+  local bytes
+  bytes=$(largest_pack_bytes "$1") && echo $((bytes / 1024))
 }
 
 common_dir() { # common_dir <workspace>: the git common dir git names for it, resolved
@@ -514,25 +606,25 @@ copy_root() {
   done
 }
 
-# pack_figure <label>: R10's pack figure of a row, in KiB: the larger of its largest sampled pack
-# Rss and GNU time's figure less its largest sampled anonymous memory and other-file Rss. Nothing
-# when a figure is missing.
-pack_figure() {
-  local pack maxrss anon other rest
-  pack=$(field "$1" .max_pack_kib)
+# R10's two figures of a row, in KiB. Its pack figure is its largest sampled pack Rss
+# (max_pack_kib), each sample read with the tree stopped. derived_figure <label> prints its
+# derived figure: GNU time's peak less its largest sampled Anonymous memory and less its largest
+# sampled Rss of other file mappings (the jj binary, git's index, GNU time's own), which can be
+# negative; nothing when a figure is missing. A sample can miss a mapping that comes and goes
+# between two reads, and the derived figure catches it.
+derived_figure() {
+  local maxrss anon other
   maxrss=$(field "$1" .maxrss_kib)
   anon=$(field "$1" .max_anon_kib)
   other=$(field "$1" .max_other_file_kib)
-  if ! whole "$pack" || ! whole "$maxrss" || ! whole "$anon" || ! whole "$other"; then
-    return 0
+  if whole "$maxrss" && whole "$anon" && whole "$other"; then
+    echo $((maxrss - anon - other))
   fi
-  rest=$((maxrss - anon - other))
-  if [ "$rest" -gt "$pack" ]; then echo "$rest"; else echo "$pack"; fi
 }
 
-r10_figures() { # r10_figures <label> <pack figure>: one line of an R10 row's figures, for a verdict's got
-  printf 'exit %s, pack figure %s KiB, the larger of sampled pack %s KiB and GNU time %s KiB less anonymous %s KiB and other file %s KiB; %s mappings of its largest pack file; wall %s s (%s); %s' \
-    "$(field "$1" .exit)" "$(group "${2:-unread}")" "$(group "$(field "$1" .max_pack_kib)")" \
+r10_figures() { # r10_figures <label> <derived figure>: one line of an R10 row's figures, for a verdict's got
+  printf 'exit %s, pack figure %s KiB (its largest sampled pack Rss), derived figure %s KiB (GNU time %s KiB less anonymous %s KiB and other file %s KiB); %s mappings of its largest pack file; wall %s s (%s); %s' \
+    "$(field "$1" .exit)" "$(group "$(field "$1" .max_pack_kib)")" "$(group "${2:-unread}")" \
     "$(group "$(field "$1" .maxrss_kib)")" "$(group "$(field "$1" .max_anon_kib)")" \
     "$(group "$(field "$1" .max_other_file_kib)")" "$(field "$1" .largest_pack_file_mappings)" "$(field "$1" .wall_s)" \
     "$(stops "$1")" "$(charge "$1")"
@@ -545,63 +637,84 @@ same_output() {
   cmp -s "$out/$1.out" "$out/$2.out"
 }
 
-# r10_result <command> <copy> <label> <outputs equal: true, false or null> <pack figure> <stores>
-# <bound>: R10's RESULT line for one command and budget, built from the row's own result.
+# r10_result <command> <copy> <label> <outputs equal: true, false or null> <derived figure> <stores>
+# <bound>: R10's RESULT line for one command and budget, built from the row's own result. A
+# released row's derived figure is bounded by its bound plus 128 MiB.
 r10_result() {
   local line
   line=$(jq -c --arg command "$1" --arg copy "$2" --arg label "$3" --argjson equal "$4" \
-    --arg budget "${copy_budget[$2]:-unset}" --arg figure "$5" --arg stores "$6" --arg bound "$7" \
+    --arg budget "${copy_budget[$2]:-unset}" --arg derived "$5" --arg stores "$6" --arg bound "$7" \
+    --argjson slack "$derived_slack_kib" \
     'select(.label == $label) | {r10: $command, copy: $copy, jj: .argv[0], budget: $budget, label,
       exit, outputs_equal: $equal, max_pack_kib, max_other_file_kib, max_anon_kib, maxrss_kib, wall_s,
-      stop_ms_total, cgroup_peak_less_baseline_kib,
-      pack_figure_kib: ($figure | tonumber? // null), stores: ($stores | tonumber? // null),
-      bound_kib: ($bound | tonumber? // null)}' "$results" 2> /dev/null | tail -n 1)
+      stop_ms_total, cgroup_peak_less_baseline_kib, pack_figure_kib: .max_pack_kib,
+      derived_figure_kib: ($derived | tonumber? // null), stores: ($stores | tonumber? // null),
+      bound_kib: ($bound | tonumber? // null),
+      derived_bound_kib: ($bound | tonumber? // null | if . == null then null else . + $slack end)}' \
+    "$results" 2> /dev/null | tail -n 1)
   [ -n "$line" ] || line="{\"r10\": \"$1\", \"copy\": \"$2\", \"label\": \"$3\", \"ran\": false}"
   echo "RESULT $line"
 }
 
-# r10_control <name> <label> <pack KiB> <pack figure>: a row of R10's control (r10-control). Its pack
-# figure must reach the pack's size, or its line is VOID; a control that never ran is a MISMATCH.
+# r10_control <name> <label> <pack bytes> <derived figure>: a row of R10's control (r10-control).
+# Its larger figure, the larger of its pack and derived figures, must reach 90% of the .pack file's
+# size, or the check fails: a control row that reads no pack proves nothing about its patched row.
 r10_control() {
-  local name=$1 label=$2 pack=$3 figure=$4 want
-  want="pack figure at or over $(group "${pack:-unread}") KiB, the pack's size"
+  local name=$1 label=$2 bytes=$3 derived=$4 pack least larger want
+  if whole "$bytes"; then
+    least=$(((bytes * control_share + 102399) / 102400))
+    want="larger figure at or over $(group "$least") KiB, $control_share% of the .pack file's $(group "$bytes") bytes"
+  else
+    want="larger figure at or over $control_share% of the .pack file's size"
+  fi
   if ! has_result "$label"; then
     verdict "$name" fail "no result for $label" "$want" "the control did not run"
     return
   fi
-  if ! whole "$pack"; then
-    verdict "$name" fail "$(r10_figures "$label" "$figure")" "$want" "the pack's size could not be read"
+  pack=$(field "$label" .max_pack_kib)
+  larger=$pack
+  if signed "$derived" && whole "$pack" && [ "$derived" -gt "$pack" ]; then
+    larger=$derived
+  fi
+  if ! whole "$bytes"; then
+    verdict "$name" fail "$(r10_figures "$label" "$derived")" "$want" "the .pack file's size could not be read"
   elif [ "$(field "$label" .exit)" != 0 ]; then
-    verdict "$name" void "$(r10_figures "$label" "$figure")" "$want" "the control did not run to its end"
-  elif ! whole "$figure"; then
-    verdict "$name" fail "$(r10_figures "$label" "$figure")" "$want" "a figure is missing"
-  elif [ "$figure" -ge "$pack" ]; then
-    verdict "$name" pass "$(r10_figures "$label" "$figure")" "$want"
+    verdict "$name" fail "$(r10_figures "$label" "$derived")" "$want" "the control did not run to its end"
+  elif ! whole "$pack" || ! signed "$derived"; then
+    verdict "$name" fail "$(r10_figures "$label" "$derived")" "$want" "a figure is missing"
+  elif [ "$larger" -ge "$least" ]; then
+    verdict "$name" pass "$(r10_figures "$label" "$derived"); larger figure $(group "$larger") KiB" "$want"
   else
-    verdict "$name" void "$(r10_figures "$label" "$figure")" "$want" "the control stayed under its bound"
+    verdict "$name" fail "$(r10_figures "$label" "$derived"); larger figure $(group "$larger") KiB" "$want" \
+      "the control read less than $control_share% of the pack, so it proves nothing about its patched row"
   fi
 }
 
-# r10_bound <name> <label> <budget> <stores> <bound KiB> <pack figure>: a released row at its
-# budget. It exits 0 and its pack figure is within the budget plus one chunk for each object store
-# plus 32 MiB.
+# r10_bound <name> <label> <budget> <stores> <bound KiB> <derived figure>: a released row at its
+# budget. It exits 0, its pack figure is within the budget plus one chunk for each object store
+# plus 32 MiB, and its derived figure within that bound plus 128 MiB, which covers a missed
+# other-file or Anonymous peak and not a pack mapped whole.
 r10_bound() {
-  local name=$1 label=$2 budget=$3 stores=$4 bound=$5 figure=$6 want
-  want="exit 0, pack figure within $(group "${bound:-unread}") KiB: $budget, ${stores:-unread} stores of one $chunk_kib KiB chunk, and $slack_kib KiB"
+  local name=$1 label=$2 budget=$3 stores=$4 bound=$5 derived=$6 pack want derived_bound=unread
+  whole "$bound" && derived_bound=$(group $((bound + derived_slack_kib)))
+  want="exit 0, pack figure within $(group "${bound:-unread}") KiB ($budget, ${stores:-unread} stores of one $chunk_kib KiB chunk, and $slack_kib KiB) and derived figure within $derived_bound KiB (that and $derived_slack_kib KiB)"
   if ! has_result "$label"; then
     verdict "$name" fail "no result for $label" "$want" "the row did not run"
     return
   fi
+  pack=$(field "$label" .max_pack_kib)
   if [ "$(field "$label" .exit)" != 0 ]; then
-    verdict "$name" fail "$(r10_figures "$label" "$figure")" "$want" "the command failed"
-  elif ! whole "$figure"; then
-    verdict "$name" fail "$(r10_figures "$label" "$figure")" "$want" "a figure is missing"
+    verdict "$name" fail "$(r10_figures "$label" "$derived")" "$want" "the command failed"
+  elif ! whole "$pack" || ! signed "$derived"; then
+    verdict "$name" fail "$(r10_figures "$label" "$derived")" "$want" "a figure is missing"
   elif ! whole "$bound"; then
-    verdict "$name" fail "$(r10_figures "$label" "$figure")" "$want" "the store count could not be read from the control row"
-  elif [ "$figure" -le "$bound" ]; then
-    verdict "$name" pass "$(r10_figures "$label" "$figure")" "$want"
+    verdict "$name" fail "$(r10_figures "$label" "$derived")" "$want" "the store count could not be read from the control row"
+  elif [ "$pack" -gt "$bound" ]; then
+    verdict "$name" fail "$(r10_figures "$label" "$derived")" "$want" "the pack figure is over its bound"
+  elif [ "$derived" -gt "$((bound + derived_slack_kib))" ]; then
+    verdict "$name" fail "$(r10_figures "$label" "$derived")" "$want" "the derived figure is over its bound"
   else
-    verdict "$name" fail "$(r10_figures "$label" "$figure")" "$want" "over the bound"
+    verdict "$name" pass "$(r10_figures "$label" "$derived")" "$want"
   fi
 }
 
@@ -839,23 +952,10 @@ else
 fi
 
 # --------------------------------------------------------------------------------------------
-# 3. git/git's history and the cache, fetch and provision of the image's own code.
+# 3. The cache, fetch and provision of the image's own code, and the git daemon the pushes go to.
 # --------------------------------------------------------------------------------------------
 daemon_dir=$scratch/daemon
-git_history_ok=0
-if going; then
-  echo
-  say "== git/git's history, a bare clone the git daemon serves to the fetch rows"
-  mkdir -p "$daemon_dir"
-  started=$SECONDS
-  if setup_git -c gc.auto=0 clone --bare --quiet "$git_history_url" "$daemon_dir/git.git" > "$scratch/logs/git-history.log" 2>&1; then
-    git_history_ok=1
-    echo "cloned in $((SECONDS - started)) s: $(du -sb "$daemon_dir/git.git" | cut -f1) bytes"
-  else
-    echo "the clone of $git_history_url failed:"
-    tail -n 20 "$scratch/logs/git-history.log"
-  fi
-fi
+github_url=https://github.com/$repo
 
 root=$scratch/legion
 feed=$scratch/feed
@@ -931,10 +1031,11 @@ fi
 
 if going; then
   echo
-  say "== the git daemon, outside every measured tree, serving git/git and a bare copy of the feed"
+  say "== the git daemon, outside every measured tree, serving a bare copy of the feed to the push rows"
   default_branch=$(setup_git --git-dir="$feed_repo" symbolic-ref --short HEAD 2>&1)
   echo "the default branch, as the feed's HEAD names it: $default_branch"
   daemon_ok=0
+  mkdir -p "$daemon_dir"
   if setup_git clone --bare --local --quiet "$feed_repo" "$daemon_dir/feed.git" > "$scratch/logs/feed-copy.log" 2>&1; then
     setsid env -u GIT_CONFIG_COUNT /usr/bin/git daemon --export-all --enable=receive-pack --informative-errors \
       --reuseaddr --listen=127.0.0.1 --port="$daemon_port" --base-path="$daemon_dir" \
@@ -952,9 +1053,6 @@ if going; then
     cat "$scratch/logs/feed-copy.log"
   fi
   served=$(setup_git ls-remote "git://127.0.0.1:$daemon_port/feed.git" HEAD 2>&1 | head -n 1)
-  if [ "$git_history_ok" -eq 1 ]; then
-    served="$served; git/git: $(setup_git ls-remote "git://127.0.0.1:$daemon_port/git.git" HEAD 2>&1 | head -n 1)"
-  fi
   if [ "$daemon_ok" -eq 1 ]; then
     verdict "setup git daemon" pass "serving the feed's HEAD: $served" "the daemon serves the feed's copy"
   else
@@ -1071,9 +1169,135 @@ if going; then
 fi
 
 # --------------------------------------------------------------------------------------------
-# 5. The git rows, on the original workspace alone.
+# 5. The git rows: git log, git status and the push on the original workspace, and the fetch into a
+# clone that lacks the newer commits of the default branch, each with the role's settings and with
+# git's defaults forced.
 # --------------------------------------------------------------------------------------------
 forced=(--unset GIT_CONFIG_COUNT --env GIT_CONFIG_NOSYSTEM=1)
+# The figure each git row is judged by: the pod's charge, but for the push, whose receiving daemon
+# shares the pod, its own process tree.
+charge_field=.cgroup_peak_less_baseline_kib
+charge_what="the pod's charge"
+tree_field=.sampled_total_kib
+tree_what="the push's own process tree (its largest sampled total)"
+
+# fetch_estimate <tip> <k>: <tip>~k, and the commits, the objects and the bytes on the clone's disk
+# of <tip>~k..<tip>, on one line; nothing when <tip>~k does not exist. git's defaults make it fast.
+fetch_estimate() {
+  local tip=$1 k=$2 base
+  base=$(setup_git --git-dir="$clone/.git" rev-parse --verify --quiet "$tip~$k^{commit}") || return 0
+  printf '%s %s %s\n' "$base" "$(setup_git --git-dir="$clone/.git" rev-list --count "$base..$tip")" \
+    "$(setup_git "${defaults[@]}" --git-dir="$clone/.git" rev-list --objects --no-object-names "$base..$tip" |
+      setup_git "${defaults[@]}" --git-dir="$clone/.git" cat-file --batch-check='%(objectsize:disk)' |
+      awk '/missing/ { next } { n++; s += $1 } END { print n + 0, s + 0 }')"
+}
+
+pack_objects() { # pack_objects <pack>: the object count its header holds (bytes 8 to 11)
+  od -An -tu1 -j8 -N4 "$1" | awk '{ print $1 * 16777216 + $2 * 65536 + $3 * 256 + $4 }'
+}
+
+# fetch_rows: c-git-rows' fetch rows. K is the smallest step of fetch_ladder for which the newer
+# objects of the default branch, <tip>~K..<tip> on the workspace's clone, take fetch_floor on its
+# disk. A bare repository holds that branch at <tip>~K alone, fetched by id from GitHub in one
+# pack, and lacks <tip>; each row fetches the branch from GitHub into a fresh `git clone --local
+# --no-checkout` of it. A row whose new pack is under fetch_floor is void, and so are both rows,
+# without running, when no step of the ladder reaches it.
+fetch_rows() {
+  local tip k line base="" commits objects bytes chosen="" lack=$scratch/lacking.git arm row
+  local before new pack status held absent got want reason void lack_pack branch=$default_branch
+  local -a tried=()
+  local -A received=() received_objects=()
+  echo
+  say "== the fetch rows: the newer commits of $branch from $github_url, into a clone that lacks them"
+  tip=$(setup_git --git-dir="$clone/.git" rev-parse --verify --quiet "refs/remotes/origin/$branch^{commit}")
+  want="a bare repository holding $branch at <tip>~K alone, fetched by id from GitHub, in one pack, <tip> absent"
+  if [ -z "$tip" ]; then
+    verdict "setup fetch lacking clone" fail "the workspace's clone has no refs/remotes/origin/$branch" "$want"
+    return
+  fi
+  echo "the default branch's tip in the workspace's clone: $tip"
+  for k in "${fetch_ladder[@]}"; do
+    line=$(fetch_estimate "$tip" "$k")
+    if [ -z "$line" ]; then
+      echo "K=$k: $tip~$k does not exist"
+      tried+=("K=$k: no such commit")
+      continue
+    fi
+    read -r base commits objects bytes <<< "$line"
+    echo "K=$k: $tip~$k is $base; $commits commits, $objects objects, $(group "$bytes") bytes on the clone's disk"
+    tried+=("K=$k: $(group "$bytes") bytes")
+    if [ "$bytes" -ge "$fetch_floor" ]; then
+      chosen=$k
+      break
+    fi
+  done
+  if [ -z "$chosen" ]; then
+    reason="no step of the ladder has newer objects taking $(group "$fetch_floor") bytes on the clone's disk ($(printf '%s; ' "${tried[@]}" | sed 's/; $//'))"
+    echo "$reason, so no fetch row runs"
+    verdict "setup fetch lacking clone" void "no repository was made" "$want" "$reason"
+    verdict "c-git-rows fetch settings" void "no fetch row ran" "exit 0, $charge_what under $(group "$bound_kib") KiB" "$reason"
+    verdict "c-git-rows fetch defaults" void "no fetch row ran" "$charge_what at or over $(group "$bound_kib") KiB (2 GiB)" "$reason"
+    return
+  fi
+  echo "K CHOSEN: $chosen; $tip~$chosen is $base; the estimate: $commits commits, $objects objects, $(group "$bytes") bytes"
+  rm -rf "$lack"
+  started=$SECONDS
+  setup_git init --bare --quiet "$lack" && setup_git --git-dir="$lack" symbolic-ref HEAD "refs/heads/$branch" &&
+    setup_git -c fetch.unpackLimit=1 --git-dir="$lack" fetch --no-tags --quiet "$github_url" "$base:refs/heads/$branch" \
+      > "$scratch/logs/lacking-fetch.log" 2>&1
+  status=$?
+  echo "git fetch --no-tags $github_url $base:refs/heads/$branch into a new bare repository: exit $status in $((SECONDS - started)) s"
+  tail -n 5 "$scratch/logs/lacking-fetch.log"
+  held=$(setup_git --git-dir="$lack" rev-parse --verify --quiet "refs/heads/$branch")
+  lack_pack=$(find "$lack/objects/pack" -maxdepth 1 -name '*.pack' 2> /dev/null)
+  absent=present
+  setup_git --git-dir="$lack" cat-file -e "$tip" 2> /dev/null || absent=absent
+  got="exit $status; $branch at ${held:-nothing}; $(grep -c . <<< "$lack_pack") packs; $tip $absent"
+  same "setup fetch lacking clone" "$got" "exit 0; $branch at $base; 1 packs; $tip absent"
+  if [ "$got" != "exit 0; $branch at $base; 1 packs; $tip absent" ]; then
+    rm -rf "$lack"
+    return
+  fi
+  echo "its pack: $(group "$(stat -c %s "$lack_pack")") bytes, $(group "$(pack_objects "$lack_pack")") objects"
+  for arm in settings defaults; do
+    row=$scratch/fetch-$arm
+    rm -rf "$row"
+    if ! setup_git clone --local --no-checkout --quiet "$lack" "$row" > "$scratch/logs/fetch-$arm-copy.log" 2>&1; then
+      cat "$scratch/logs/fetch-$arm-copy.log"
+      continue
+    fi
+    before=$(find "$row/.git/objects/pack" -maxdepth 1 -name '*.pack' | sort)
+    echo "the $arm row, GitHub's $branch now: $(setup_git ls-remote "$github_url" "refs/heads/$branch" 2>&1)"
+    if [ "$arm" = settings ]; then
+      (cd "$row" && measure git-fetch-settings -- git fetch --no-tags "$github_url" "+refs/heads/$branch:refs/remotes/origin/$branch")
+    else
+      (cd "$row" && measure git-fetch-defaults "${forced[@]}" -- git "${defaults[@]}" fetch --no-tags "$github_url" "+refs/heads/$branch:refs/remotes/origin/$branch")
+    fi
+    new=$(comm -13 <(echo "$before") <(find "$row/.git/objects/pack" -maxdepth 1 -name '*.pack' | sort))
+    received[$arm]=0
+    received_objects[$arm]=0
+    for pack in $new; do
+      received[$arm]=$((received[$arm] + $(stat -c %s "$pack")))
+      received_objects[$arm]=$((received_objects[$arm] + $(pack_objects "$pack")))
+    done
+    echo "the $arm fetch: K $chosen, estimate $(group "$bytes") bytes; its new pack $(group "${received[$arm]}") bytes, $(group "${received_objects[$arm]}") objects (${new:-no pack});" \
+      "$(setup_git --git-dir="$row/.git" rev-list --count "$base..refs/remotes/origin/$branch" 2>&1) commits it brought"
+    rm -rf "$row"
+  done
+  rm -rf "$lack"
+  for arm in settings defaults; do
+    void=""
+    if [ -n "${received[$arm]:-}" ] && [ "${received[$arm]}" -lt "$fetch_floor" ]; then
+      void="its new pack was $(group "${received[$arm]}") bytes, under the $(group "$fetch_floor") the row needs to exercise index-pack"
+    fi
+    if [ "$arm" = settings ]; then
+      git_holds "c-git-rows fetch settings" git-fetch-settings "$charge_field" "$charge_what" "$void"
+    else
+      git_control "c-git-rows fetch defaults" git-fetch-defaults "$charge_field" "$charge_what" "$void"
+    fi
+  done
+}
+
 if going; then
   echo
   say "== the git rows: each with the role's settings, then with git's defaults forced"
@@ -1082,13 +1306,13 @@ fi
 if going; then
   measure git-log-settings -- git log --first-parent -- "$walk_file"
   measure git-log-defaults "${forced[@]}" -- git "${defaults[@]}" log --first-parent -- "$walk_file"
-  under_bound "c-git-rows log settings" git-log-settings
-  reaches_bound "c-git-rows log defaults" git-log-defaults "$bound_kib" "2 GiB"
+  git_holds "c-git-rows log settings" git-log-settings "$charge_field" "$charge_what"
+  git_control "c-git-rows log defaults" git-log-defaults "$charge_field" "$charge_what"
 
   measure git-status-settings -- git status
   measure git-status-defaults "${forced[@]}" -- git "${defaults[@]}" status
-  under_bound "c-git-rows status settings" git-status-settings
-  reaches_bound "c-git-rows status defaults" git-status-defaults "$bound_kib" "2 GiB"
+  git_holds "c-git-rows status settings" git-status-settings "$charge_field" "$charge_what"
+  git_control "c-git-rows status defaults" git-status-defaults "$charge_field" "$charge_what"
 
   if [ "${daemon_ok:-0}" -eq 1 ]; then
     for arm in settings defaults; do
@@ -1100,45 +1324,12 @@ if going; then
         measure git-push-defaults "${daemon_tree[@]}" "${forced[@]}" -- git "${defaults[@]}" push origin "HEAD:refs/heads/pack-memory/push-defaults"
       fi
     done
-    under_bound "c-git-rows push settings" git-push-settings
-    reaches_bound "c-git-rows push defaults" git-push-defaults "$bound_kib" "2 GiB"
+    git_holds "c-git-rows push settings" git-push-settings "$tree_field" "$tree_what"
+    git_control "c-git-rows push defaults" git-push-defaults "$tree_field" "$tree_what"
   fi
 
-  if [ "${daemon_ok:-0}" -eq 1 ] && [ "$git_history_ok" -eq 1 ]; then
-    declare -A received=()
-    for arm in settings defaults; do
-      packs_before=$(find "$clone/.git/objects/pack" -maxdepth 1 -name '*.pack' | sort)
-      if [ "$arm" = settings ]; then
-        measure git-fetch-settings "${daemon_tree[@]}" -- git fetch --no-tags "git://127.0.0.1:$daemon_port/git.git" '+refs/heads/*:refs/remotes/probe/git/*'
-      else
-        measure git-fetch-defaults "${daemon_tree[@]}" "${forced[@]}" -- git "${defaults[@]}" fetch --no-tags "git://127.0.0.1:$daemon_port/git.git" '+refs/heads/*:refs/remotes/probe/git/*'
-      fi
-      new_packs=$(comm -13 <(echo "$packs_before") <(find "$clone/.git/objects/pack" -maxdepth 1 -name '*.pack' | sort))
-      bytes=0
-      for pack in $new_packs; do
-        bytes=$((bytes + $(stat -c %s "$pack")))
-      done
-      received[$arm]=$bytes
-      echo "the $arm fetch received $(group "$bytes") bytes of pack: ${new_packs:-no pack}"
-      # The history goes again, so the next fetch receives all of it and no jj command ever reads
-      # it: its refs and its packs, which hold nothing the clone held before.
-      setup_git -C "$ws" for-each-ref --format='delete %(refname)' refs/remotes/probe/ | setup_git -C "$ws" update-ref --stdin
-      for pack in $new_packs; do
-        rm -f "${pack%.pack}".{pack,idx,rev,keep,bitmap,promisor,mtimes}
-      done
-      rm -f "$(setup_git -C "$ws" rev-parse --path-format=absolute --git-path FETCH_HEAD)"
-    done
-    for arm in settings defaults; do
-      void=""
-      [ "${received[$arm]}" -ge "$fetch_floor" ] ||
-        void="its pack was $(group "${received[$arm]}") bytes, under the $(group "$fetch_floor") the row needs to exercise index-pack"
-      if [ "$arm" = settings ]; then
-        under_bound "c-git-rows fetch settings" git-fetch-settings "$void"
-      else
-        reaches_bound "c-git-rows fetch defaults" git-fetch-defaults "$bound_kib" "2 GiB" "$void"
-      fi
-    done
-  fi
+  fetch_rows
+  cd "$ws" || stop "cd $ws"
 fi
 
 # --------------------------------------------------------------------------------------------
@@ -1579,22 +1770,22 @@ fi
 if going; then
   echo
   say "== R10's verdicts"
-  r10_pack_kib=$(largest_pack_kib "$(copy_clone r10-control)")
-  echo "the pack's size, read from the r10-control copy's clone: $(group "${r10_pack_kib:-unread}") KiB"
+  r10_pack_bytes=$(largest_pack_bytes "$(copy_clone r10-control)")
+  echo "the .pack file's size, read from the r10-control copy's clone: $(group "${r10_pack_bytes:-unread}") bytes"
   for command in "${r10_role_commands[@]}" "${r10_provision_commands[@]}"; do
     suffix=${r10_label[$command]:-unrecorded-$command}
     control=r10-control-$suffix
     stores=$(field "$control" .largest_pack_file_mappings)
-    control_figure=$(pack_figure "$control")
-    r10_result "$command" r10-control "$control" null "$control_figure" "$stores" ""
-    r10_control "c-budget-under-gvisor $command control" "$control" "$r10_pack_kib" "$control_figure"
+    control_derived=$(derived_figure "$control")
+    r10_result "$command" r10-control "$control" null "$control_derived" "$stores" ""
+    r10_control "c-budget-under-gvisor $command control" "$control" "$r10_pack_bytes" "$control_derived"
     for budget in "${budgets[@]}"; do
       label=r10-$budget-$suffix
       bound=""
       if whole "$stores"; then
         bound=$((${budget_kib[$budget]} + stores * chunk_kib + slack_kib))
       fi
-      figure=$(pack_figure "$label")
+      derived=$(derived_figure "$label")
       same_output "$label" "$control"
       same=$?
       case $same in
@@ -1602,8 +1793,8 @@ if going; then
         1) equal=false ;;
         *) equal=null ;;
       esac
-      r10_result "$command" "r10-$budget" "$label" "$equal" "$figure" "$stores" "$bound"
-      r10_bound "c-budget-under-gvisor $command $budget" "$label" "$budget" "$stores" "$bound" "$figure"
+      r10_result "$command" "r10-$budget" "$label" "$equal" "$derived" "$stores" "$bound"
+      r10_bound "c-budget-under-gvisor $command $budget" "$label" "$budget" "$stores" "$bound" "$derived"
       r10_output "c-budget-under-gvisor $command $budget output" "$label" "$control" "$same"
     done
   done

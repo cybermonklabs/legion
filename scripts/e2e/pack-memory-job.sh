@@ -5,16 +5,17 @@
 # caller names by digest, under gVisor, makes a large repository's clone and jj workspace with
 # the image's own code (`legion workspace-init cache`, `fetch` and `provision`) on a disk volume,
 # as an issue pod's are made, and measures the memory of git and jj there: each git row with the
-# role's own git settings and with git's defaults forced, each jj row of R3 to R5 with the image's
-# jj and with jj 0.45.1-sami.20260910-043938, the control, and R10's rows with the released jj at
-# each JJ_PACK_MAPPED_LIMIT budget and with jj 0.46.0-sami.20261008-234600, their control, each
-# on a copy of its own. Each copy's describedArgs, the shim's, runs right after an unmeasured `git
-# fetch` of every branch head of the feed into that copy's shared clone, as remote-tracking refs it
-# does not hold, and an unmeasured `git commit` in its workspace, with both dates fixed, so
-# describedArgs imports new refs and a new HEAD, as a role's jj does once git has fetched new
-# branches into the shared clone and committed. It reads the image's `git config --system` and `jj
-# --version` too. The implementer runs it at the head it measures, and the tester runs it again at
-# the head it tests, so this recipe is the one both read.
+# role's own git settings and with git's defaults forced, its fetch from GitHub of the newer
+# commits of the default branch into a clone that lacks them, each jj row of R3 to R5 with the
+# image's jj and with jj 0.45.1-sami.20260910-043938, the control, and R10's rows with the
+# released jj at each JJ_PACK_MAPPED_LIMIT budget and with jj 0.46.0-sami.20261008-234600, their
+# control, each on a copy of its own. Each copy's describedArgs, the shim's, runs right after an
+# unmeasured `git fetch` of every branch head of the feed into that copy's shared clone, as
+# remote-tracking refs it does not hold, and an unmeasured `git commit` in its workspace, with
+# both dates fixed, so describedArgs imports new refs and a new HEAD, as a role's jj does once
+# git has fetched new branches into the shared clone and committed. It reads the image's `git
+# config --system` and `jj --version` too. The implementer runs it at the head it measures, and
+# the tester runs it again at the head it tests, so this recipe is the one both read.
 #
 # It is three files: this harness, which renders the Job, creates it and reads its verdict;
 # `pack-memory-probe.sh` beside it, the text the Job runs inside the image, whose header says what
@@ -62,8 +63,9 @@
 #   --memory <quantity>             its memory, request and limit (default 32Gi): the controls
 #                                   peaked near 13 GB on the largest repository measured.
 #   --disk <quantity>               the disk volume's size (default 300Gi): the original root,
-#                                   six copies of it whose packs are hardlinks of its own, and one
-#                                   fresh root of R10's at a time.
+#                                   six copies of it whose packs are hardlinks of its own, one
+#                                   fresh root of R10's at a time, and the fetch rows' clone that
+#                                   lacks the default branch's newer commits, while they run.
 #   --deadline <seconds>            activeDeadlineSeconds on the Job and on its pod template
 #                                   (default 28800; at most 43200, which docs/kubernetes.md allows).
 #   --prefix <generateName prefix>  the Job's metadata.generateName, ending in a hyphen (default
@@ -88,8 +90,10 @@
 #
 # Exit statuses:
 #
-#   0  the probe's every verdict held: its log ends `JOB-RESULT pass`. A control that did not
-#      reach its bound is a VOID line and no failure; read the log for each.
+#   0  the probe's every verdict held: its log ends `JOB-RESULT pass`. A git or R3 to R5 control
+#      that did not reach its bound is a VOID line and no failure, and so is a fetch row whose new
+#      pack is under 100 MiB; an R10 control that read under 90% of the pack is a MISMATCH. Read
+#      the log for each.
 #   1  the Job ran and a verdict did not hold: its log ends `JOB-RESULT fail`, and its `CHECK`
 #      lines say which.
 #   2  the harness could not run: a usage error, a missing input, a source line the probe copies

@@ -58,12 +58,16 @@ GNU time in a group of its own instead, whose orphans go to a reaper in another 
 
 Beside that sample it reports, over every sample, the largest pack Rss, anonymous memory and
 other-file Rss (max_pack_kib, max_anon_kib, max_other_file_kib), each its own largest and not one
-instant's, which R10's pack figure is made of; and, for each path under /objects/pack/, the most
-mappings of it one sample held, across every process of the tree (pack_file_mappings). The largest
-.pack file among them by size is named with its size and that count (largest_pack_file,
-largest_pack_file_bytes, largest_pack_file_mappings, 0 when no sample held a pack file): a build
-that maps a pack whole maps it once for each object store that opens it, so that count is the
-command's number of stores.
+instant's, which R10's pack and derived figures are made of; and, for each path under
+/objects/pack/, the most mappings of it one sample held, across every process of the tree
+(pack_file_mappings). The largest .pack file among them by size is named with its size and that
+count (largest_pack_file, largest_pack_file_bytes, largest_pack_file_mappings, 0 when no sample
+held a pack file): a build that maps a pack whole maps it once for each object store that opens
+it, so that count is the command's number of stores. It reports each process of the tree too
+(processes), largest first: its pid, the first three words of its cmdline when it was read (a
+process that execs is a second entry), and, at the sample where its own total was largest, that
+total and its split: the Rss of its mappings of files ending in .pack and in .idx, the Rss of
+every other file mapping, and its Anonymous pages.
 
 Beside the tree it reads the pod's cgroup memory charge, cgroup v1's
 /sys/fs/cgroup/memory/memory.usage_in_bytes or, where that does not read, cgroup v2's
@@ -287,24 +291,57 @@ def empty():
     return {"total": 0, "pack": 0, "anon": 0, "other": 0, "mappings": 0, "resident": 0, "files": 0}
 
 
+def split_of(path):
+    """The part of one process's split a mapping's Rss goes to: .pack, .idx, other file or none."""
+    clean = path.removesuffix(" (deleted)")
+    if clean.endswith(".pack"):
+        return "pack"
+    if clean.endswith(".idx"):
+        return "idx"
+    if clean and not clean.startswith("["):
+        return "other"
+    return None
+
+
+def name_of(pid):
+    """The first three words of the process's cmdline, or [comm] when it has none; None when gone."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            words = [w.decode("utf-8", "replace") for w in f.read().split(b"\0") if w]
+        if words:
+            return " ".join(words[:3])
+        with open(f"/proc/{pid}/stat") as f:
+            return "[" + f.read().split("(", 1)[1].rsplit(")", 1)[0] + "]"
+    except (OSError, IndexError):
+        return None
+
+
 def sample(pids):
-    """One instant of the processes pids: their totals, and the mappings of each pack path."""
+    """One instant of the processes pids: their totals, the mappings of each pack path, and each
+    process's own split (total, .pack, .idx, other file and anonymous), for those read whole."""
     totals = empty()
     per_file = {}
+    per_pid = {}
     for pid in pids:
+        own = {"total": 0, "pack": 0, "idx": 0, "other": 0, "anon": 0}
         try:
             with open(f"/proc/{pid}/smaps") as f:
                 path = ""
+                part = None
                 for line in f:
                     if MAPPING.match(line):
                         parts = line.split(None, 5)
                         path = parts[5].strip() if len(parts) > 5 else ""
+                        part = split_of(path)
                         if PACK in path:
                             totals["mappings"] += 1
                             per_file[path] = per_file.get(path, 0) + 1
                     elif line.startswith("Rss:"):
                         kib = int(line.split()[1])
                         totals["total"] += kib
+                        own["total"] += kib
+                        if part:
+                            own[part] += kib
                         if PACK in path:
                             totals["pack"] += kib
                             if kib:
@@ -312,12 +349,15 @@ def sample(pids):
                         elif path and not path.startswith("["):
                             totals["other"] += kib
                     elif line.startswith("Anonymous:"):
-                        totals["anon"] += int(line.split()[1])
+                        kib = int(line.split()[1])
+                        totals["anon"] += kib
+                        own["anon"] += kib
         except (OSError, IndexError, ValueError):
             # The process ended while it was read; what it held is gone from this instant.
             continue
+        per_pid[pid] = own
     totals["files"] = len(per_file)
-    return totals, per_file
+    return totals, per_file, per_pid
 
 
 def size(path):
@@ -434,12 +474,16 @@ def main():
     peaks = {"pack": 0, "anon": 0, "other": 0}
     file_mappings = {}
     file_sizes = {}
+    # Each process of the tree, by pid and the name its cmdline gave it then (an exec renames it),
+    # with its own split at the sample where its own total was largest.
+    processes = {}
     while proc.poll() is None:
         daemon_pids = [] if opts["daemon"] is None else tree(opts["daemon"])
         try:
             pids, late, first = stop_tree(proc.pid, never | set(daemon_pids))
-            now, per_file = sample(pids)
+            now, per_file, per_pid = sample(pids)
             now["charge"] = None if charged is None else charge(charged)
+            names = {pid: name_of(pid) for pid in per_pid}
         finally:
             resume()
         if first is not None:
@@ -460,6 +504,13 @@ def main():
             file_mappings[path] = max(file_mappings.get(path, 0), count)
             if path not in file_sizes:
                 file_sizes[path] = size(path)
+        at = round(time.monotonic() - started, 1)
+        for pid, own in per_pid.items():
+            key = (pid, names[pid])
+            if key not in processes or own["total"] > processes[key]["total_kib"]:
+                processes[key] = {"pid": pid, "name": names[pid], "at_s": at, "total_kib": own["total"],
+                                  "pack_kib": own["pack"], "idx_kib": own["idx"],
+                                  "other_file_kib": own["other"], "anon_kib": own["anon"]}
         if opts["timeout"] is not None and not timed_out and time.monotonic() - started > opts["timeout"]:
             timed_out = True
             kill_tree(proc.pid)
@@ -518,6 +569,7 @@ def main():
         "cgroup_peak_kib": charge_peak,
         "cgroup_peak_less_baseline_kib": less(charge_peak, baseline),
         "cgroup_at_largest_sample_kib": less(largest["charge"], baseline),
+        "processes": sorted(processes.values(), key=lambda p: (-p["total_kib"], p["pid"])),
     }
     if charged is None:
         result.update(dict.fromkeys(CGROUP_FIGURES, "unreadable"))
