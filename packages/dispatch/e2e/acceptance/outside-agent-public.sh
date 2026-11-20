@@ -319,6 +319,7 @@ else
     set +f
     "$@" "$code" >"$work/p2.approve" 2>&1 </dev/null
     approved=$?
+    p2_code=$code
     answer=$(tr '\n' ' ' <"$work/p2.approve")
     deadline=$(($(now) + 300))
     while [ ! -f "$work/p2.exit" ] && [ "$(now)" -lt "$deadline" ]; do sleep 1; done
@@ -744,6 +745,29 @@ else
     0) row P9 "$want9" "$last" PASS ;;
     1) row P9 "$want9" "$last" FAIL ;;
     *) row P9 "$want9" "exit $status: $last" UNKNOWN ;;
+  esac
+fi
+
+# --- revocations: before the window, while the person's cookie still reads their own list, the
+# workflow's OUTSIDE_REVOKE_COMMAND (a command line, split on blanks) revokes every device login
+# the run approved but P2's, which it is told as OUTSIDE_EDGE_REVOKE_KEEP. After the owner's removal
+# that cookie gets 401 (T5), so a revocation after the window could read nothing. P2's login stays
+# live into the window, where the removal stops it (T5); its key lives only in this leg's scratch
+# HOME, which the leg removes when it ends. ---
+want_revoke="every device login the run approved but P2's revoked before the T5 window"
+if [ -z "${OUTSIDE_REVOKE_COMMAND:-}" ]; then
+  row revocations "$want_revoke" "OUTSIDE_REVOKE_COMMAND is unset" UNKNOWN
+else
+  set -f
+  # shellcheck disable=SC2086 # a command line, split on blanks on purpose
+  set -- $OUTSIDE_REVOKE_COMMAND
+  set +f
+  OUTSIDE_EDGE_REVOKE_KEEP=${p2_code:-} "$@" >"$work/revoke.log" 2>&1 </dev/null
+  revoked=$?
+  case $revoked in
+    0) row revocations "$want_revoke" "the revoke command exited 0, keeping ${p2_code:-no code}: $(text_of "$work/revoke.log")" PASS ;;
+    1) row revocations "$want_revoke" "the revoke command failed: $(text_of "$work/revoke.log")" FAIL ;;
+    *) row revocations "$want_revoke" "the revoke command exited $revoked: $(text_of "$work/revoke.log")" UNKNOWN ;;
   esac
 fi
 
