@@ -333,19 +333,33 @@ wait
       Bun.spawnSync([tmux, "-L", "teardown", "kill-server"], { env });
     });
     expect(made.stderr.toString()).toBe("");
-    const panePid = Number(
-      Bun.spawnSync([tmux, "-L", "teardown", "display-message", "-p", "#{pane_pid}"], {
-        env,
-      }).stdout.toString()
-    );
+    const [server, panePid] = Bun.spawnSync(
+      [tmux, "-L", "teardown", "display-message", "-p", "#{pid} #{pane_pid}"],
+      { env }
+    )
+      .stdout.toString()
+      .split(" ")
+      .map(Number);
     await until("the stand-in broker to write broker.pid", () => existsSync(pidFile));
     const leader: number = JSON.parse(readFileSync(pidFile, "utf8")).pid;
     await until("the broker and its two members", () => familyOf(leader).length === 3);
     const members = familyOf(leader);
-    const proc = procRootOf(dir, [leader, ...members, bystander.pid, stranger.pid]);
+    // The row's proc root, which the code under test reads below: the tmux server and what runs
+    // under it, the broker and its members, the bystander and the stranger, each with every
+    // process the kernel lists under it, to the bottom. A process that has already ended is left
+    // out. Each process the code judges must be in it, or the code would pass the row by never
+    // seeing that process.
+    const proc = procRootOf(
+      dir,
+      [server, leader, bystander.pid, stranger.pid].flatMap((pid) => [
+        pid,
+        ...descendantsOf(pid, true),
+      ])
+    );
     procRoot = proc;
     expect(
       notInRoot(proc, [
+        ["the tmux pane", panePid],
         ...members.map((pid): [string, number] => ["a process of the broker's session", pid]),
         ["the bystander", bystander.pid],
         ["the stranger", stranger.pid],
