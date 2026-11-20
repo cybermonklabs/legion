@@ -62,9 +62,12 @@
 #     `some` (the default) a file matches when any pattern does, and a `!` pattern, which
 #     there matches every file outside it, is refused; under `some-with-excludes` a file
 #     matches when a pattern without `!` does and no `!` pattern does, so a `!` pattern
-#     excludes. Any other quantifier (`every` among them), a pattern holding a brace, which
-#     picomatch expands, and a filter whose name two paths-filter steps of one job define,
-#     are refused. One more term is admitted beside the filters, in a job's `if:` only: a
+#     excludes. Any other quantifier (`every` among them), and a pattern holding a brace, which
+#     picomatch expands, are refused. The filters are read where the action reads them: from
+#     the file a step's `filters` input names, which is .github/ci-filters.yaml for ci.yaml's
+#     changes job, once however many gates it decides, and a file that is absent, refuses the
+#     open, is not valid YAML or holds no mapping is refused, naming the file. One more term is
+#     admitted beside the filters, in a job's `if:` only: a
 #     CALL MODE, `inputs.<name> == ''`, exactly the empty literal, on a <name> the workflow's
 #     own `on.workflow_call.inputs` declares `type: string` with no `default` or `default:
 #     ""`, and that its `on.workflow_dispatch.inputs` leaves out or declares the same way. A
@@ -164,9 +167,11 @@
 #      checkout, buildx and registry steps, or a call of a workflow whose jobs pass that same
 #      test — and the
 #      job's gates admit a pull request event. There the event's paths AND the filters must
-#      match only files the builds read, or the workflows involved (the building one and the
-#      caller). A `push` or `merge_group` trigger, a filter that also decides a job doing more,
-#      and a workflow with other jobs are left alone: what they start reads more than an image.
+#      match only files the builds read, the workflows involved (the building one and the
+#      caller), or .github/ci-filters.yaml, the file a filter lives in, which decides whether
+#      the job runs and reaches no build input. A `push` or `merge_group` trigger, a filter
+#      that also decides a job doing more, and a workflow with other jobs are left alone: what
+#      they start reads more than an image.
 #      One test for a job wherever its steps are: ci.yaml's jobs each hold theirs in a called
 #      workflow of their own, so a job that builds an image and then runs a suite against it is
 #      a job doing more whether its steps are in ci.yaml or in the file ci.yaml calls.
@@ -192,9 +197,13 @@ import sys
 from pathlib import Path
 
 import yaml
-from workflow_paths import Filter, PathsFilter, events, glob_regex, unread_filter_patterns, unread_patterns, walk
+from workflow_paths import (Filter, PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns,
+                            unread_patterns, walk)
 
 WORKFLOWS = Path(".github/workflows")
+# Where ci.yaml's changes job keeps the filters it gates its jobs by: its one dorny/paths-filter
+# step hands the action this path rather than a filters string of its own.
+FILTERS_FILE = ".github/ci-filters.yaml"
 PATH_EVENTS = ("push", "pull_request", "pull_request_target", "merge_group")
 NEEDS_OUTPUT = re.compile(r"needs\.([\w-]+)\.outputs\.([\w-]+)")
 STEP_OUTPUT = re.compile(r"steps\.([\w-]+)\.outputs\.([\w-]+)")
@@ -223,7 +232,8 @@ EQUALS_TRUE = re.compile(r"needs\.([\w-]+)\.outputs\.([\w-]+)\s*==\s*'true'")
 # `github.run_attempt == '1'` is neutral in the same sense: a re-run attempt runs on the commit
 # attempt 1 ran on, so a term that admits attempt 1 alone narrows by attempt and never by path,
 # and every change still reaches the build on its first attempt. ci.yaml's merge-group runs carry
-# it (the comment above its `changes` job says why a re-run of a group must do nothing). Only
+# it (.github/ci-notes/ci.md#what-the-changes-job-selects-and-the-two-terms-every-job-carries says
+# why a re-run of a group must do nothing). Only
 # that one comparison is admitted: `github.run_attempt` against any other value, or against
 # nothing at all, can skip the first attempt of a change, so it stays refused.
 DRAFT = re.compile(r"!\s*github\.event\.pull_request\.draft", re.I)
@@ -550,10 +560,11 @@ PINNED_IMAGE_GATES: list[tuple[str, str, str, str]] = [
         "what the term reads: the filter names .github/docker/**, which is the context "
         "directory, and .github/workflows/browser-image.yaml, which holds the build step, its "
         "`labels:`, `outputs:`, `platforms:`, `provenance:` and build-args and the pins of the "
-        "action and of the BuildKit image it runs in. The filter's third path, "
-        ".github/workflows/ci.yaml, is the file the filter itself lives in: it decides whether "
-        "this job runs and hands it one input, ci-ok-changes, which reaches the ci-ok report "
-        "and nothing the build receives. What the trigger exists to guarantee, that a change "
+        "action and of the BuildKit image it runs in. Two more of its paths decide whether "
+        "this job runs and reach nothing the build receives: .github/workflows/ci.yaml, which "
+        "holds the job's `if:` and hands it one input, ci-ok-changes, which reaches the ci-ok "
+        "report, and .github/ci-filters.yaml, the file the filter itself lives in. What the "
+        "trigger exists to guarantee, that a change "
         "to a build input produces the image the row pins, is therefore already true wherever "
         "the build is skipped, and this gate cannot hide a changed input, because the hash of "
         "every input is the thing it reads. The other half of the argument is rule 10 of "
@@ -887,7 +898,7 @@ def parents(path: str) -> list[str]:
 
 def load(path: Path):
     try:
-        return yaml.safe_load(path.read_text())
+        return yaml.load(path.read_text(), Loader=UniqueKeyLoader)
     except yaml.YAMLError as error:
         problems.append(f"::error file={path}::{path} is not valid YAML: {' '.join(str(error).split())}; fix the "
         f"syntax so this check can read the workflow")
@@ -1149,15 +1160,6 @@ def gating_filters(
             f"nothing (no push:, and outputs: exporters that write no registry)"
         )
         name = reference[1]
-        # A filter of the same name in another paths-filter step of the job reads like the gate,
-        # while the output reads only one of them.
-        holders = [str(s.get("id", "")) for s in paths_filter_steps(upstream) if name in step_filters(s)]
-        if len(holders) > 1:
-            problems.append(
-                f"::error::jobs.{needed} defines filter {name} in two dorny/paths-filter steps "
-                f"({', '.join(holders)}); keep it in the one step its output reads"
-            )
-            continue
         options = step.get("with") or {}
         # dorny/paths-filter v4.0.3 (src/filter.ts:58-66,133-149): under the default, `some`, a
         # file matches a filter when any of its patterns matches it, and picomatch reads a `!`
@@ -1171,7 +1173,10 @@ def gating_filters(
                 f"some-with-excludes to exclude with `!` patterns"
             )
             continue
-        patterns = step_filters(step).get(name)
+        filters = step_filters(step)
+        if filters is None:
+            continue  # step_filters has refused the file the step names
+        patterns = filters.get(name)
         if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
             problems.append(
                 f"::error::jobs.{needed} filter {name} is not a list of globs, which this "
@@ -1265,10 +1270,58 @@ def paths_filter_steps(job: dict) -> list[dict]:
     ]
 
 
-def step_filters(step: dict) -> dict:
-    """A paths-filter step's filters, by name; empty when they are not inline YAML."""
-    filters = yaml.safe_load(str((step.get("with") or {}).get("filters", ""))) or {}
-    return filters if isinstance(filters, dict) else {}
+# Each filters file a paths-filter step names, by that path: read once however many gates it
+# decides, as its filters by name, or as None once it could not be read, its refusal recorded.
+FILTER_FILES: dict[str, dict | None] = {}
+
+
+def step_filters(step: dict) -> dict | None:
+    """A paths-filter step's filters, by name, read as dorny/paths-filter v4.0.3 reads its
+    `filters` input (src/main.ts, isPathInput): the path of a file when the text holds no newline
+    and no colon, and inline YAML otherwise. ci.yaml's changes job hands it .github/ci-filters.yaml
+    that way. Empty when inline filters are not a mapping. None when inline filters are not valid
+    YAML, a repeated key included, or when the file a step names is absent, refuses the open, is
+    not valid YAML or holds no mapping, each refused here naming the file and which, so the gate it
+    decides is refused rather than read as one with no filter."""
+    given = str((step.get("with") or {}).get("filters", "")).strip()
+    if not given or "\n" in given or ":" in given:
+        try:
+            filters = yaml.load(given, Loader=UniqueKeyLoader) or {}
+        except yaml.YAMLError as error:
+            problems.append(f"::error::a dorny/paths-filter step's inline filters are not "
+                            f"valid YAML: {' '.join(str(error).split())}, so no gate that step decides can be read")
+            return None
+        return filters if isinstance(filters, dict) else {}
+    if given not in FILTER_FILES:
+        FILTER_FILES[given] = filters_file(given)
+    return FILTER_FILES[given]
+
+
+def filters_file(path: str) -> dict | None:
+    """The filters of the file a paths-filter step names, or None with the refusal recorded."""
+    reads = "a dorny/paths-filter step reads its filters from it"
+    try:
+        text = Path(path).read_text()
+    except FileNotFoundError:
+        problems.append(f"::error file={path}::{path} is absent, and {reads}, so no gate that step decides "
+                        f"can be read; restore the file or point the step's filters input at the one that holds them")
+        return None
+    except (OSError, UnicodeError) as error:
+        why = error.strerror if isinstance(error, OSError) and error.strerror else str(error)
+        problems.append(f"::error file={path}::{path} is there and refuses the open ({type(error).__name__}: "
+                        f"{why}), and {reads}, so no gate that step decides can be read")
+        return None
+    try:
+        filters = yaml.load(text, Loader=UniqueKeyLoader)
+    except yaml.YAMLError as error:
+        problems.append(f"::error file={path}::{path} is not valid YAML: {' '.join(str(error).split())}, and "
+                        f"{reads}, so no gate that step decides can be read")
+        return None
+    if not isinstance(filters, dict):
+        problems.append(f"::error file={path}::{path} holds no mapping of filter name to patterns, and {reads}, "
+                        f"so no gate that step decides can be read")
+        return None
+    return filters
 
 
 documents = {
@@ -1975,10 +2028,17 @@ for label, (filters, origin, selectors, read) in started.items():
         continue
     if not selectors and not only_builds(origin):
         continue
+    # Two files a gating filter names that no build reads are passed over: the workflow whose
+    # trigger it is, and .github/ci-filters.yaml, the file the filter itself lives in now. That
+    # file decides whether the job runs, as a workflow's own `if:` does, and reaches no build
+    # input; any other file no build reads is still refused.
     extra = [
         path
         for path in FILES
-        if all(f.covers(path) for f in filters) and path not in read and path != str(origin)
+        if all(f.covers(path) for f in filters)
+        and path not in read
+        and path != str(origin)
+        and path != FILTERS_FILE
     ]
     if not extra:
         print(f"{label}: matches only files its image builds read")

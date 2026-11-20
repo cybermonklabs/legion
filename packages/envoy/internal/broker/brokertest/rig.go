@@ -10,6 +10,7 @@ package brokertest
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -19,6 +20,9 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
@@ -441,6 +445,65 @@ func (r *Rig) Req(t *testing.T, method, path string, headers map[string]string, 
 func (r *Rig) UI(t *testing.T, method, path string, body any) (int, []byte) {
 	t.Helper()
 	return r.Req(t, method, path, map[string]string{"Authorization": "Bearer " + r.UIToken}, body)
+}
+
+// NewSession inserts a live session enrollment of operator's, under a launcher credential of its
+// own, straight into the Rig's store (InsertSession), and answers it with its key: a session for a
+// row that needs a session's proof and not the enrollment route that makes one.
+func (r *Rig) NewSession(t *testing.T, operator string) (enrollmentID string, key *ecdsa.PrivateKey) {
+	t.Helper()
+	return InsertSession(t, r.Store.Pool, operator)
+}
+
+// Execer is what InsertSession writes through: a *pgxpool.Pool or a *pgx.Conn on a broker's own
+// database.
+type Execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// InsertSession writes a live session enrollment of operator's, under a launcher credential of its
+// own, through db, and answers it with its key: the one session insert for a row that needs a
+// session's proof, on a Rig (NewSession) or on a real broker binary's database, and not the
+// enrollment route that makes one.
+func InsertSession(t *testing.T, db Execer, operator string) (enrollmentID string, key *ecdsa.PrivateKey) {
+	t.Helper()
+	key = NewSigningKey(t)
+	thumbprint, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, credentialID := context.Background(), uuid.New()
+	enrollmentID = uuid.NewString()
+	if _, err := db.Exec(ctx, `insert into launcher_credentials (id, operator, host, key_thumbprint, public_jwk, expires_at)
+		values ($1,$2,'test-host',$3,'{}'::jsonb, now() + interval '30 days')`, credentialID, operator, thumbprint); err != nil {
+		t.Fatalf("insert launcher_credentials: %v", err)
+	}
+	if _, err := db.Exec(ctx, `insert into enrollments (id, kind, runtime_id, operator, thumbprint, launcher_credential_id, lease_expires_at)
+		values ($1,'session',$2,$3,$4,$5, now() + interval '1 hour')`, enrollmentID, "session-"+enrollmentID, operator, thumbprint, credentialID); err != nil {
+		t.Fatalf("insert enrollments: %v", err)
+	}
+	return enrollmentID, key
+}
+
+// RereaderOperator is the operator of a session a row makes only to read what a reread answers a
+// session: a login of its own, so that no row reading an approver's or an operator's sessions meets
+// one of them.
+const RereaderOperator = "rereader@example.com"
+
+// Reread asks the broker to reread name as a session of its own (NewSession), the caller the
+// reread route answers once the reread is done: whether the broker now serves the name, why not,
+// and as which type. A caller with no proof is answered 202 at once, before the reread reads the
+// store, so a row that reads what the broker serves, or goes on to ask for the secret, rereads
+// this way.
+func (r *Rig) Reread(t *testing.T, name string) (int, []byte) {
+	t.Helper()
+	enrollmentID, key := r.NewSession(t, RereaderOperator)
+	path := "/v1/secrets/" + name + "/reread"
+	signed, err := proof.Sign(key, enrollmentID, http.MethodPost, r.URL+path, time.Now())
+	if err != nil {
+		t.Fatalf("proof.Sign: %v", err)
+	}
+	return r.Req(t, http.MethodPost, path, map[string]string{"Proof": signed}, nil)
 }
 
 // uiCall is the UI-route caller a machine-login decision goes out through: Rig.UI or Client.UI,

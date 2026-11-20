@@ -658,7 +658,10 @@ func main() {
 	if discovered.GoogleIdentities != nil {
 		googleCallers = api.GoogleTokens{Verifier: discovered.GoogleIdentities}
 	}
-	api.Register(mux, api.Deps{PublicURL: cfg.PublicURL, RereadRate: rereadRate,
+	// detached counts the rereads the API runs after answering 202, which srv.Shutdown does not
+	// wait for; the stop sequence waits for them (brokerStop.WaitDetached).
+	detached := &api.Detached{}
+	api.Register(mux, api.Deps{PublicURL: cfg.PublicURL, RereadRate: rereadRate, Detached: detached,
 		APIAccounts: cfg.APIAccounts, AccountTokens: pod,
 		PodRegistrars: cfg.PodRegistrars, PodRegistrationTokens: discovered.PodRegistration,
 		GoogleAPIAccounts: cfg.GoogleAPIAccounts, GoogleAccountTokens: googleCallers,
@@ -807,7 +810,7 @@ func main() {
 	}
 	stop(context.Background(), brokerStop{
 		Drain: drain, DrainNow: drainNow, Draining: draining.Store,
-		Shutdown: srv.Shutdown, ShutdownAirlock: airlockShutdown, ShutdownMetrics: metricsServer.Shutdown,
+		Shutdown: srv.Shutdown, WaitDetached: detached.Wait, ShutdownAirlock: airlockShutdown, ShutdownMetrics: metricsServer.Shutdown,
 		EndServing: started.EndServing, CloseStore: st.Close,
 		Log: slog.Default(),
 	})

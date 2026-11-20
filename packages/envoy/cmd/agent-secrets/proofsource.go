@@ -184,6 +184,9 @@ func (h *helperSigner) Sign(method, url string) (string, error) {
 	if !resp.OK {
 		return "", helperFailure(h.sock, helperRefusal(resp), true)
 	}
+	if resp.Proof == "" {
+		return "", helperFailure(h.sock, errors.New("the helper returned no Proof header"), true)
+	}
 	return resp.Proof, nil
 }
 

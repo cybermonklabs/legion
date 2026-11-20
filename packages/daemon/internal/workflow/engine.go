@@ -157,6 +157,11 @@ type Engine struct {
 	store record.Store
 	cfg   Config
 	log   *slog.Logger
+	// droppedSettlements is the identities of the checks settlements whose drop checks has logged,
+	// the last intake.DroppedSettlementsKept of them (logDroppedSettlement). It is marked once a
+	// fact's transaction commits, and facts commit on each consumer's goroutine and the API's, so
+	// the set takes its own lock (intake.RecentKeys).
+	droppedSettlements *intake.RecentKeys[intake.SettlementIdentity]
 }
 
 var _ intake.Handler = (*Engine)(nil)
@@ -179,7 +184,7 @@ func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Engine{store: store, cfg: cfg, log: log}
+	return &Engine{store: store, cfg: cfg, log: log, droppedSettlements: intake.NewRecentKeys[intake.SettlementIdentity](intake.DroppedSettlementsKept)}
 }
 
 func (e *Engine) now() time.Time { return e.cfg.Clock().UTC() }
