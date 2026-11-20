@@ -899,10 +899,10 @@ func (s *supervision) noticeGroup(group []supervise.Claim) []supervise.Claim {
 // report is as old as that boot. The four activity fields are copied from the row onto the view
 // only where the row is of the view's own launch (Generation). A view of another launch — a
 // relaunch made after the row was read, or one still in flight — is a process the row's report
-// does not describe: its four fields are cleared, and R1's hold reads it as a claim with no
-// report (backgroundClaims). The store clears the four columns at each launch (putClaim) and
-// writes no report onto another launch than the one it names (PutClaimActivity), so this check
-// is for a row and a view read at two moments, which the store cannot see.
+// does not describe: its four fields are cleared, and the background hold (backgroundClaims)
+// reads it as a claim with no report. The store clears the four columns at each launch
+// (putClaim) and writes no report onto another launch than the one it names (PutClaimActivity),
+// so this check is for a row and a view read at two moments, which the store cannot see.
 //
 // A retired claim is weighed by no round: it runs nothing in any pod.
 //
@@ -1468,6 +1468,12 @@ func podOf(locator *runtime.Locator) string {
 	return locator.Sandbox.PodUID
 }
 
+// inRoundPod is whether c records a process in the round's own pod: the pod podProcess ends the
+// round through, and the only pod whose background work the round weighs (backgroundClaims).
+func inRoundPod(c supervise.Claim, round string) bool {
+	return c.Locator != nil && supervise.PodRound(podOf(c.Locator)) == round
+}
+
 // openPodRound is the pod round open over the group, and "" when none is. Every claim the sweep
 // groups is live (reconcilePodUpdates drops the retired ones), so the round read here is one a
 // claim of this issue is still in.
@@ -1669,11 +1675,11 @@ func workingClaims(group []supervise.Claim) []string {
 	return working
 }
 
-// backgroundHold is R1's hold over a round's pod replacement (dispatch://INFRA-4203 R1) as
-// backgroundClaims reads it: running is each role whose activity report names background work
-// that runs, with the kinds that report names, and unreported is each role that has sent no
-// report since its last turn started, in the group's order. It holds the replacement when it
-// names a role; the zero value names none.
+// backgroundHold is the background hold over a round's pod replacement
+// (dispatch://INFRA-4203 R1) as backgroundClaims reads it: running is each role whose activity
+// report names background work that runs, with the kinds that report names, and unreported is
+// each role that has sent no report since its last turn started, in the group's order. It holds
+// the replacement when it names a role; the zero value names none.
 type backgroundHold struct {
 	running    map[string][]string
 	unreported []string
@@ -1713,14 +1719,14 @@ func (h backgroundHold) refusal() string {
 	return strings.Join(named, "; ")
 }
 
-// backgroundClaims is R1's hold as group reads (dispatch://INFRA-4203 R1): every claim that can
-// still run work in the round's own pod whose activity report does not say that nothing of its
-// own runs. Such a claim is in no failed, retired or suspended state, none of which runs a
-// process, and its locator records a process in the round's pod, as podProcess reads it: a claim
-// whose process is in another pod runs nothing this round's replacement ends. A claim the round
-// does not ask is weighed too, since a role launched into the round's pod after the round opened,
-// or still launching there with no session, runs in the pod the replacement deletes all the
-// same.
+// backgroundClaims is the background hold as group reads it (dispatch://INFRA-4203 R1): every
+// claim that can still run work in the round's own pod whose activity report does not say that
+// nothing of its own runs. Such a claim is not gone (supervise.Claim.Gone): it is in no failed,
+// retired or suspended state, none of which runs a process. Its locator records a process in the
+// round's pod (inRoundPod), as podProcess reads it: a claim whose process is in another pod runs
+// nothing this round's replacement ends. A claim the round does not ask is weighed too, since a
+// role launched into the round's pod after the round opened, or still launching there with no
+// session, runs in the pod the replacement deletes all the same.
 //
 // The report is read by claim.ReadSessionWork against the claim's last turn start
 // (supervise.Claim.LastTurnStart), which every turn moves. A report that names running background
@@ -1730,11 +1736,10 @@ func (h backgroundHold) refusal() string {
 func backgroundClaims(group []supervise.Claim, round string) backgroundHold {
 	var hold backgroundHold
 	for _, c := range group {
-		switch c.State {
-		case supervise.StateFailed, supervise.StateRetired, supervise.StateSuspended:
+		if c.Gone() {
 			continue
 		}
-		if c.Locator == nil || supervise.PodRound(podOf(c.Locator)) != round {
+		if !inRoundPod(c, round) {
 			continue
 		}
 		switch claim.ReadSessionWork(c.ActivityAt, c.LastTurnStart, c.ActivityBackground) {
@@ -1759,7 +1764,7 @@ func backgroundClaims(group []supervise.Claim, round string) backgroundHold {
 // from nothing and which the round's own replacement has just built.
 func podProcess(group []supervise.Claim, round string) (runtime.Known, bool) {
 	for _, c := range group {
-		if c.Locator != nil && supervise.PodRound(podOf(c.Locator)) == round {
+		if inRoundPod(c, round) {
 			return runtime.Known{Claim: c.Token, Locator: c.Locator}, true
 		}
 	}

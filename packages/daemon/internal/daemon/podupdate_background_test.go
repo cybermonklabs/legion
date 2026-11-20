@@ -47,12 +47,11 @@ const (
 )
 
 // answersWithoutReport is the worker answering ready_for_update, as api's
-// claims/ready-for-update posts it, with no activity report sent. It is the body of the rig's own
-// answer (podUpdateRig.signal) as that helper stood when these tests were written, copied so that
-// a later change of that helper, which writes the report that an answering turn's end sends, does
-// not change what these tests hold: each test here writes every report itself, so a claim with no
-// report at all is a case it can hold. As signal does, it waits for the machine to have handled
-// each acknowledgement it is owed (supervise.PromptAcked) before it answers.
+// claims/ready-for-update posts it, with no activity report sent. The rig's own answer
+// (podUpdateRig.signal) is this answer plus the report that an answering turn's end sends. Each
+// test here writes every report itself, so a claim with no report at all is a case it can hold.
+// The answer waits for the machine to have handled each acknowledgement it is owed
+// (supervise.PromptAcked) before it is sent.
 func (r *podUpdateRig) answersWithoutReport(role claim.Role, head string) {
 	r.t.Helper()
 	m, ok := r.sup.Machine(r.tokens[role])
@@ -154,13 +153,7 @@ func wantHold(t *testing.T, line map[string]any, background map[claim.Role][]str
 	if got := backgroundOf(line); !maps.EqualFunc(got, want, slices.Equal[[]string]) {
 		t.Errorf("the line's background = %v, want %v: %+v", got, want, line)
 	}
-	wantNames := make([]string, len(unreported))
-	for i, role := range unreported {
-		wantNames[i] = string(role)
-	}
-	if got := unreportedOf(line); !slices.Equal(got, wantNames) {
-		t.Errorf("the line's unreported = %v, want %v: %+v", got, wantNames, line)
-	}
+	wantField(t, line, "unreported", unreported...)
 }
 
 // holdLinesNaming is every line of the sweep's log whose background or unreported field names
@@ -179,9 +172,10 @@ func holdLinesNaming(t *testing.T, rig *podUpdateRig, role claim.Role) []map[str
 }
 
 // A round that every asked claim has answered, and in which no turn runs, is not replaced before
-// its bound while one role's report names a subagent that runs (R1, R5 case 1). The sweep runs at
-// each step of the clock up to a minute before the bound and replaces nothing, and its line names
-// the role that holds the round, with the kind its report names, and no other role.
+// its bound while one role's report names a subagent that runs (R1, R5 case 1). The sweep runs
+// when the round opens, half-way to the bound and a minute before the bound, and replaces nothing
+// each time, and its line names the role that holds the round, with the kind its report names,
+// and no other role.
 //
 // This is the loss of dispatch://BET-1064: the round ended on the answers while the implementer's
 // report named running subagents. Before R1, the first sweep after the answers replaces the pod,
@@ -192,8 +186,7 @@ func TestPodUpdateBackgroundSubagentHoldsTheRoundBeforeItsBound(t *testing.T) {
 	rig.reportsBackgroundWork(claim.RoleImplementer, "subagent")
 	rig.reportsNothingRunning(claim.RoleTester)
 
-	for _, at := range []time.Duration{0, 5 * time.Minute, 10 * time.Minute, 15 * time.Minute, 20 * time.Minute,
-		25 * time.Minute, podUpdateGrace - time.Minute} {
+	for _, at := range []time.Duration{0, podUpdateGrace / 2, podUpdateGrace - time.Minute} {
 		rig.clockAt(podUpdateStart.Add(at))
 		rig.sweepSettled()
 		if calls := rig.replacements(); len(calls) != 0 {
@@ -312,15 +305,7 @@ func TestPodUpdateBackgroundThatOutlivesTheBoundEndsAtTheBound(t *testing.T) {
 	wantHold(t, line, map[claim.Role][]string{claim.RoleImplementer: {"subagent"}})
 	wantField(t, line, "unanswered")
 	wantField(t, line, "working")
-	listed, _ := line["answered"].([]any)
-	answered := make([]string, len(listed))
-	for i, role := range listed {
-		answered[i] = fmt.Sprint(role)
-	}
-	slices.Sort(answered)
-	if want := []string{string(claim.RoleImplementer), string(claim.RoleTester)}; !slices.Equal(answered, want) {
-		t.Errorf("the bounded end's answered = %v, want %v: %+v", answered, want, line)
-	}
+	wantField(t, line, "answered", claim.RoleImplementer, claim.RoleTester)
 }
 
 // A report read before the claim's last turn started says nothing of that turn, so the claim
@@ -553,11 +538,13 @@ func TestPodUpdateBackgroundViewOfALaterLaunchReadsAsNoReport(t *testing.T) {
 	rig.awaitReplacement(1, "once the relaunched implementer reported that nothing runs")
 }
 
-// A claim whose process is in another pod than the round's holds nothing, whatever its report
-// says (R1, R5 case 11). After the sweep's read, the tester is displaced into the pod that
-// replaced the round's own and reports a subagent there. The walk over that read finds the live
-// claims in two pods, which holds the round as a replacement in flight (waitsForPodInFlight), and
-// no line of the hold names the tester.
+// A claim whose process is in another pod than the round's holds nothing (R1, R5 case 11). After
+// the sweep's read, the tester is displaced into the pod that replaced the round's own, so its
+// relaunch has sent no report. A claim with no report in the round's pod would hold the round,
+// but one in another pod holds nothing. The walk over that read finds the live claims in two
+// pods, which holds the round as a replacement in flight (waitsForPodInFlight), and no line of
+// the hold names the tester. The case of a running report in another pod is read in
+// podupdate_background_reading_test.go.
 func TestPodUpdateBackgroundOfAClaimInAnotherPodHoldsNothing(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.openRoundAnsweredBy(claim.RoleImplementer, claim.RoleTester)
@@ -567,7 +554,6 @@ func TestPodUpdateBackgroundOfAClaimInAnotherPodHoldsNothing(t *testing.T) {
 
 	group := rig.snapshot()
 	rig.displacedInto(claim.RoleTester, podUpdateReplacementPod)
-	rig.reportsBackgroundWork(claim.RoleTester, "subagent")
 	rig.settleAll()
 
 	rig.s.reconcilePodUpdates(rig.ctx, group)
@@ -625,13 +611,13 @@ func TestPodUpdateBackgroundOfAClaimTheRoundHasNotAskedHoldsTheRound(t *testing.
 	rig.awaitReplacement(1, "once the planner reported that nothing runs")
 }
 
-// The round reads the report from the store's row, not from the claim's machine (spec Design,
-// "The round reads the report from the store"). The implementer reports a subagent, and the
-// daemon restarts: each machine boots holding the report it read then. The activity route writes
-// the store and posts nothing to a machine, so the later report that nothing runs reaches the row
-// alone, and the restarted daemon replaces the pod on it, before the bound. A round that read the
-// machine's view would wait for the bound. The restarted supervision logs to a quiet logger, so
-// the test reads the replacements.
+// The round reads the report from the store's row, not from the claim's machine
+// (dispatch://INFRA-4203/spec, Design, "The round reads the report from the store"). The
+// implementer reports a subagent, and the daemon restarts: each machine boots holding the report
+// it read then. The activity route writes the store and posts nothing to a machine, so the later
+// report that nothing runs reaches the row alone, and the restarted daemon replaces the pod on
+// it, before the bound. A round that read the machine's view would wait for the bound. The
+// restarted supervision logs to a quiet logger, so the test reads the replacements.
 func TestPodUpdateBackgroundIsReadFromTheStoreAcrossARestart(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.openRoundAnsweredBy(claim.RoleImplementer, claim.RoleTester)

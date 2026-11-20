@@ -497,7 +497,8 @@ func (r *podUpdateRig) awaitSwept(role claim.Role, what string, want func(superv
 	return r.claimOf(role)
 }
 
-// signal is the worker answering ready_for_update, as api's claims/ready-for-update posts it. The
+// signal is the worker answering ready_for_update, as api's claims/ready-for-update posts it
+// (answersWithoutReport), and then the activity report the answering turn's end sends. The
 // worker answers from inside the turn the round's ask started, after Oh My Pi acknowledged that
 // ask, so the answer waits for the machine to have handled each acknowledgement it is owed
 // (supervise.PromptAcked). Answered while one is still in flight, the machine decides that
@@ -512,17 +513,7 @@ func (r *podUpdateRig) awaitSwept(role claim.Role, what string, want func(superv
 // answers end early would hold to its bound.
 func (r *podUpdateRig) signal(role claim.Role, head string) {
 	r.t.Helper()
-	m, ok := r.sup.Machine(r.tokens[role])
-	if !ok {
-		r.t.Fatalf("%s is not supervised", role)
-	}
-	m.Wait()
-	c := r.claimOf(role)
-	if err := m.Handle(r.ctx, supervise.PodUpdateSignalled{
-		Claim: c.Token, Generation: c.Generation, Session: c.Session, Round: c.UpdateRound, Head: head,
-	}); err != nil {
-		r.t.Fatalf("%s answered the update round: %v", role, err)
-	}
+	r.answersWithoutReport(role, head)
 	r.reportsNothingRunning(role)
 }
 

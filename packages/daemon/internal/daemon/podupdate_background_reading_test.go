@@ -1,10 +1,10 @@
 package daemon
 
-// R1's hold read over claims built here (dispatch://INFRA-4203 R1, the plan's state-table row
-// 14): the round's end (readRoundEnd) and the walk's reading (readReplacement) over one group,
-// with no store, no machine and no runtime, so each row reads the rule and nothing else. The rig
-// tests of podupdate_background_test.go drive the same rule through the sweep, the store and the
-// claims' machines.
+// R1's hold read over claims built here (dispatch://INFRA-4203 R1): the round's end
+// (readRoundEnd) and the walk's reading (readReplacement) over one group, with no store, no
+// machine and no runtime, so each row reads the rule and nothing else. The rig tests of
+// podupdate_background_test.go drive the same rule through the sweep, the store and the claims'
+// machines.
 
 import (
 	"maps"

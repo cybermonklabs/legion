@@ -723,7 +723,7 @@ func TestPodUpdateARestartLeavesTheHeldTaskToNoTurnButItsOwn(t *testing.T) {
 // only the role's own push keeps its work, and that work not pushed before the pod goes is lost;
 // it names no check of the disk and no rescue branch. A role whose tool has no ready_for_update is
 // told to do the first three steps, because the round ends at that moment whatever it does: the
-// end of its turn is no answer. It no longer says that the round ends early once no role is in a
+// end of its turn is no answer. It does not say that the round ends early once no role is in a
 // turn, or that only the background jobs of the turn in progress go with the pod.
 func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 	endsAt := time.Date(2026, 11, 13, 14, 30, 0, 0, time.FixedZone("UTC+2", 2*60*60))
