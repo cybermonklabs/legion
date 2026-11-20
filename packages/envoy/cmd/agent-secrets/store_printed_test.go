@@ -168,6 +168,52 @@ func TestTheBrokersSettingsPrintOnlyAsItsAddressLetsThem(t *testing.T) {
 	}
 }
 
+// TestTheBrokersRereadAnswerPrintsOnlyAsItsAddressLetsIt: the reason a broker's reread refuses a
+// secret for, and the type it says it serves the secret as, are text of its answer, so beside an
+// AGENT_SECRETS_URL that carries a credential neither prints: the write's lines name them as
+// brokeraddr.WordsNotPrinted. Control: beside a clean address both print as the broker wrote them.
+func TestTheBrokersRereadAnswerPrintsOnlyAsItsAddressLetsIt(t *testing.T) {
+	planted := "hunter2pw-" + "reread-" + "7e5b"
+	for _, row := range []struct {
+		name   string
+		answer func(name string) Reread
+		says   []string
+	}{
+		{"a reason", func(name string) Reread { return Reread{Name: name, Reason: planted} }, []string{"(reason=%s)"}},
+		{"a type", func(name string) Reread { return Reread{Name: name, Served: true, Type: planted} }, []string{"(type %s)", "serves HELD_KEY as %s, not a stored secret"}},
+	} {
+		for _, clean := range []bool{false, true} {
+			name := row.name + ", beside a credentialed address"
+			shown := brokeraddr.WordsNotPrinted
+			if clean {
+				name, shown = "control: "+row.name+", beside a clean address", planted
+			}
+			t.Run(name, func(t *testing.T) {
+				local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+				startSecretBroker(t, row.answer)
+				if !clean {
+					t.Setenv("AGENT_SECRETS_URL", strings.Replace(brokerURLFromEnv(t), "http://", "http://demouser7q:demopass9z-not-a-secret@", 1))
+				}
+				useAWS(t, local, testAccount, adaSignIn)
+				useStdin(t, "v2")
+				stdout, stderr, code := runSecret("set", "HELD_KEY")
+				if code != 1 {
+					t.Fatalf("exit %d, stdout %q, stderr %q; want 1", code, stdout, stderr)
+				}
+				var want []string
+				for _, says := range row.says {
+					want = append(want, strings.ReplaceAll(says, "%s", shown))
+				}
+				forbidden := []string{"demopass9z"}
+				if !clean {
+					forbidden = append(forbidden, planted)
+				}
+				wantNamedNotPrinted(t, "the output", stdout+stderr, want, forbidden...)
+			})
+		}
+	}
+}
+
 // brokerURLFromEnv is the AGENT_SECRETS_URL startSecretBrokerWith set, which must be a plain
 // http URL the test can add a user and password to.
 func brokerURLFromEnv(t *testing.T) string {

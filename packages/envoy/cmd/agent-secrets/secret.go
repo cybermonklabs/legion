@@ -1011,7 +1011,7 @@ func rereadValue(s *secretSession, stdout, stderr io.Writer, form, name, secretT
 		releases = ", so every grant of it releases what it stores as it is"
 	}
 	fmt.Fprintf(stderr, "agent-secrets %s: the value of %s in %s stands, but %s serves %s as %s, not %s%s. Run `%s` to write the type again and ask it to reread %s, until that exits 0\n",
-		form, name, s.storeName(), s.src.brokerAt(), name, typeName(r.Type), typeName(secretType), releases,
+		form, name, s.storeName(), s.src.brokerAt(), name, servedTypeName(s, r.Type), typeName(secretType), releases,
 		pipeCommand(s.backend.signInPrefix(), "secret", "retag", name, "--type", retag), name)
 	return 1
 }
@@ -1039,17 +1039,17 @@ func reread(s *secretSession, stdout, stderr io.Writer, form, name, secretType s
 	default:
 		switch {
 		case r.Served && r.Type != "":
-			fmt.Fprintf(stdout, "broker: serving %s from %s (type %s)\n", name, s.storeName(), r.Type)
+			fmt.Fprintf(stdout, "broker: serving %s from %s (type %s)\n", name, s.storeName(), s.settings.words(r.Type))
 		case r.Served:
 			fmt.Fprintf(stdout, "broker: serving %s from %s\n", name, s.storeName())
 		case !wantServed && r.Reason == policy.ReasonAbsent:
 			fmt.Fprintf(stdout, "broker: %s is deleted in %s (restorable until %s)\n", name, s.storeName(), formatTime(restorable))
 		default:
-			fmt.Fprintf(stdout, "broker: refusing %s from %s (reason=%s)\n", name, s.storeName(), r.Reason)
+			fmt.Fprintf(stdout, "broker: refusing %s from %s (reason=%s)\n", name, s.storeName(), s.settings.words(r.Reason))
 		}
 		switch {
 		case wantServed && !r.Served:
-			fmt.Fprintf(stderr, "agent-secrets %s: %s refuses %s after the write to %s (reason=%s)\n", form, s.src.brokerAt(), name, s.storeName(), r.Reason)
+			fmt.Fprintf(stderr, "agent-secrets %s: %s refuses %s after the write to %s (reason=%s)\n", form, s.src.brokerAt(), name, s.storeName(), s.settings.words(r.Reason))
 			ok = false
 		case !wantServed && r.Served:
 			fmt.Fprintf(stderr, "agent-secrets %s: %s still serves %s after its delete in %s\n", form, s.src.brokerAt(), name, s.storeName())
