@@ -707,7 +707,9 @@ test("a refresher that met a Dispatch with no answers route hands the hook its n
   expect(carried).toMatchObject({ exitCode: 0, stdout: "", stderr: noRouteLine(dispatch.base) })
   expect(starting.exitCode).toBe(0)
   expect(starting.stdout).not.toContain("answers route")
-  await refreshersEnded()
+  // The refresher whose notice the waiting hook carried made this read before it wrote that
+  // outcome. The refresher the waiting hook then started decides nothing here: the case's scratch
+  // waits for its end.
   expect(dispatch.requests).toContain(`Bearer ${COMMAND_TOKEN} /api/v1/agents/${SESSION}/answers`)
 }, 60_000)
 
