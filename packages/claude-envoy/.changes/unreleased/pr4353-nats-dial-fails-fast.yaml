@@ -5,7 +5,9 @@ body: |-
   closed a dial whose CONNECT came late ended the start, and Claude Code does not start a channel
   server again. Each redial is warned of with the servers named by their setting, and each dial is
   bounded at 10 s. An Envoy tool called while the server dials is told the dial's last failure. A
-  session this server process told that it receives nothing is told once it receives again. When the channel server's NATS
+  session this server process told that it receives nothing is told once it receives again; the
+  outage is told and ended within one process, so a server Claude Code starts again does not tell
+  the end of an outage an earlier one told. When the channel server's NATS
   connection closes for good while its session runs (nats.js gives up on a repeated authorization
   refusal under an nkey seed or no credential), the server dials a new one, and dials again at each
   heartbeat after a dial that fails for good; on the new connection it opens the session's relay
