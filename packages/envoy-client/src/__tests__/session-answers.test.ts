@@ -828,21 +828,38 @@ describe("readSessionAnswers", () => {
   });
 
   // A password holding an unencoded '@' names no host, and the URL parser reads the password's
-  // tail as one. The runtime's own fetch (no stand-in) fails to resolve it and names it in its
-  // message; the line both plugins add to every model request names the failure by its class and
-  // the URL by its fixed phrase (#4140, B1). The read waits for that failure, not the 800 ms a
-  // model request waits: on a loaded machine the resolver's answer comes later than that, and a
-  // read that ran out first names no failure at all.
+  // tail as one. Resolving it fails, and the runtime's error names the host it was handed; the line
+  // both plugins add to every model request names the failure by its class and the URL by its
+  // fixed phrase (#4140, B1). The fetch is a stand-in that throws what Bun's own fetch throws for a
+  // name that does not resolve (measured on Bun 1.4.4: a TypeError `getaddrinfo ENOTFOUND <host>`,
+  // with that code and syscall), for the host the URL parser read, so the row asks no DNS server
+  // and does not wait on how fast the machine's DNS answers. The read waits 10 s, not the 800 ms a
+  // model request waits, so a loaded machine's slow turn of the event loop is not a read that ran
+  // out and names no failure at all.
   test("a failed read of a Dispatch whose password holds an '@' names no part of the password", async () => {
     const tail = `Tail${crypto.randomUUID().slice(0, 8)}`;
     const dispatch = { ...dispatchAt(), url: `https://user-7f2a:p@ssword${tail}.invalid` };
+    const asked: string[] = [];
+    const unresolved = (async (input: string | URL | Request): Promise<Response> => {
+      const { hostname } = new URL(input instanceof Request ? input.url : input);
+      asked.push(hostname);
+      throw Object.assign(new TypeError(`getaddrinfo ENOTFOUND ${hostname}`), {
+        code: "ENOTFOUND",
+        syscall: "getaddrinfo",
+        hostname,
+        errno: 4,
+      });
+    }) as typeof fetch;
     const read = await readSessionAnswers({
       session: newSession(),
       dispatch,
       env: envAt(stateDir()),
+      fetchImpl: unresolved,
       now: () => NOW,
       deadlineMs: 10_000,
     });
+    // The error the read was given named the password's tail, so the check below can fail.
+    expect(asked).toEqual([`ssword${tail}.invalid`.toLowerCase()]);
     expect(read.text).toContain(
       `Dispatch at the configured Dispatch URL ${URL_NOT_PRINTED} is unreachable: `
     );

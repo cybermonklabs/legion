@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { randomBytes, randomInt } from "node:crypto";
+import dns from "node:dns";
 import { connect, ErrorCode, NatsError, nkeys } from "nats";
 import { LoggableError, natsFailureReason } from "../errors";
 import { natsDialedAddress, natsDialFailure, natsServersForLog } from "../nats-connection";
@@ -16,14 +17,52 @@ const userinfo = (...parts: string[]) => `${parts.join(":")}@`;
 const canary = () => `canary${randomBytes(4).toString("hex")}`;
 const sixDigits = () => String(randomInt(100000, 1000000));
 
+/** The calls the stand-in resolver answered during the last {@link realFailure}, each as
+ *  `<syscall> <name>`. */
+let resolverAsked: string[] = [];
+
+/**
+ * A stand-in for node:dns's `syscall` call that answers every name as the system's resolver
+ * answers one it cannot find, and keeps what it was asked. nats.js asks `resolve4` and `resolve6`
+ * (`queryA`, `queryAaaa`) before its dial, and Bun's node:net asks `lookup` (`getaddrinfo`) for the
+ * dial itself. Measured on Bun 1.4.4, each real answer is a DNSException `<syscall> ENOTFOUND
+ * <name>`, with that code and syscall, so a stand-in's error names the server as a real one does.
+ */
+function unresolved(syscall: string) {
+  return (hostname: string, ...rest: unknown[]) => {
+    resolverAsked.push(`${syscall} ${hostname}`);
+    const callback = rest.at(-1);
+    if (typeof callback !== "function") throw new Error(`${syscall} was called with no callback`);
+    const error = Object.assign(new Error(`${syscall} ENOTFOUND ${hostname}`), {
+      name: "DNSException",
+      code: "ENOTFOUND",
+      syscall,
+      hostname,
+      errno: 4,
+    });
+    process.nextTick(() => callback(error));
+  };
+}
+
 /** What real nats.js throws when it fails to connect to `server`: no server runs, so each fails
- *  at the URL parser, the resolver or the socket, and the error is nats.js's own. */
+ *  at the URL parser, the resolver or the socket, and the error is nats.js's own. The resolver is
+ *  the stand-in {@link unresolved}, so no row asks a DNS server and none waits on how fast the
+ *  machine's DNS answers; an address is dialed for real. */
 async function realFailure(server: string, timeout = 5_000): Promise<unknown> {
+  const real = { lookup: dns.lookup, resolve4: dns.resolve4, resolve6: dns.resolve6 };
+  resolverAsked = [];
+  Object.assign(dns, {
+    lookup: unresolved("getaddrinfo"),
+    resolve4: unresolved("queryA"),
+    resolve6: unresolved("queryAaaa"),
+  });
   try {
     const connection = await connect({ servers: [server], reconnect: false, timeout });
     await connection.close();
   } catch (error) {
     return error;
+  } finally {
+    Object.assign(dns, real);
   }
   throw new Error(`${server} connected, which this row needs it not to`);
 }
@@ -241,8 +280,9 @@ describe("a failed dial's line says why it failed", () => {
   test("a name the resolver cannot find: getaddrinfo and its code, and not the name", async () => {
     const name = `${canary()}.invalid`;
     const error = await realFailure(`nats://${name}:4222`);
+    expect(resolverAsked).toContain(`getaddrinfo ${name}`);
     expect(carried(error)).toContain(name);
-    expect(natsFailureReason(error)).toMatch(/^getaddrinfo (?:ENOTFOUND|EAI_AGAIN|EAI_NONAME)$/);
+    expect(natsFailureReason(error)).toBe("getaddrinfo ENOTFOUND");
   }, 30_000);
 
   test("nats-server's own refusal: its fixed words", async () => {
