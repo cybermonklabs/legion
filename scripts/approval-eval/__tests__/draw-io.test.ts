@@ -294,10 +294,16 @@ describe("readDraw", () => {
   });
 
   test("reads a claim draw's run, its read's reference and that it applied no rule", async () => {
+    const claimRun = {
+      id: "start-1",
+      snapshotSha256: "a".repeat(64),
+      corpusSha256: "b".repeat(64),
+      treesSha256: "c".repeat(64),
+    };
     const claim = {
       ...draw({ backlogLegionRootsRead: null, backlogLegionRoots: null, rule: null }),
       neverDecideApplied: false,
-      claimRun: { id: "start-1", snapshotSha256: "a".repeat(64) },
+      claimRun,
       finalTest: { reference: "claim:test", trees: [] },
     };
     const text = `${JSON.stringify(claim)}\n`;
@@ -309,7 +315,7 @@ describe("readDraw", () => {
       finalTestTrees: [],
       finalTestReference: "claim:test",
       neverDecideApplied: false,
-      claimRun: { id: "start-1", snapshotSha256: "a".repeat(64) },
+      claimRun,
     });
     // The text a caller read itself gives the same facts, so its digest is of those bytes.
     expect(drawFactsOf(text, path)).toEqual(facts ?? {});
@@ -321,10 +327,18 @@ describe("readDraw", () => {
   });
 
   test("stops the reading where a claim draw's run or rule record is no such fact", async () => {
-    for (const claimRun of [{ id: "start-1" }, { id: "", snapshotSha256: "a".repeat(64) }, "x"]) {
+    const whole = {
+      id: "start-1",
+      snapshotSha256: "a".repeat(64),
+      corpusSha256: "b".repeat(64),
+      treesSha256: "c".repeat(64),
+    };
+    const { treesSha256, ...noTrees } = whole;
+    expect(treesSha256).toHaveLength(64);
+    for (const claimRun of [{ id: "start-1" }, { ...whole, id: "" }, noTrees, "x"]) {
       const path = await written({ ...draw(), claimRun });
       await expect(readDraw(path)).rejects.toThrow(
-        `${path} holds a claimRun that names no reply id and no sha256`
+        `${path} holds a claimRun that names no reply id, or no sha256 of each of the build's`
       );
     }
     const applied = await written({ ...draw(), neverDecideApplied: "no" });

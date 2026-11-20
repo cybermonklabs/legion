@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { CaseKind, CaseRow } from "./build-corpus";
@@ -24,6 +24,7 @@ import {
   type DrawnSlices,
   type DrawRecord,
   type DrawRule,
+  drawFactsOf,
   drawPath,
   type FinalTestDraw,
   type FinalTestTree,
@@ -78,7 +79,8 @@ import {
  * kinds held are printed and written. And a case whose answer from the rule could not be read
  * is left out as well, because a rule about what must not be decided may not decide by
  * accident; those are counted and named too. A draw under a registered read of the reserve
- * applies no never-decide rule, so the last two kinds do not arise in it (below).
+ * applies no never-decide rule, so the last two kinds do not arise in it, and leaves no case of
+ * an eligible tree out as either of the first two (below).
  *
  * An approval case whose answer names no option stops the whole draw instead: every approval
  * case of this corpus carries the option the person chose, so one that does not is the corpus
@@ -101,12 +103,17 @@ import {
  * each group with any, the parent changes made after its first ask opened, with the actor that
  * made each. The claim's draw applies no never-decide rule, which reads Dispatch as it stands at
  * the run (the claim's point 9): it reads no backlog roots and puts no case to the rule, so no
- * case is held and none is left out as `rule-unreadable`, every eligible tree goes to report
- * whole with every case it holds, and S10's fact check and judges decide never-decide, as they do
- * live; `draw.json` records that the rule was not applied (`neverDecideApplied`), and the claim
- * run and the sha256 of the build's `snapshot.json` it read (`claimRun`), so the next stage of the
- * run (`s10-inputs.ts`) takes only this draw of that build. A draw that reads no reserve groups by
- * issue as before, and `draw.json` records that its report slice is no final test.
+ * case is held and none is left out as `rule-unreadable`; no case of an eligible tree is left out
+ * as a question no arm can be scored on either, so every eligible tree goes to report whole with
+ * every case it holds, and S10's fact check and judges decide never-decide, as they do live.
+ * `draw.json` records that the rule was not applied (`neverDecideApplied`), and the claim run and
+ * the sha256 of each of the three files of the build it read, `snapshot.json`, `corpus.jsonl` and
+ * `trees.json` (`claimRun`), so the next stage of the run (`s10-inputs.ts`) takes only this draw
+ * of that build's bytes. Such a draw refuses an `--out` holding another draw's record, one of
+ * another claim run or another build, or files and no record (`claimOutRefusal`); into its own
+ * claim run's directory over the same build it writes the same files again, the draw being
+ * determined by the corpus and the seed. A draw that reads no reserve groups by issue as before,
+ * and `draw.json` records that its report slice is no final test.
  *
  * What is pinned and what is live. The cases are the corpus's, and each document is read at the
  * version the corpus pins, so those are the same bytes on every run. The one live reading is
@@ -148,6 +155,8 @@ Options:
                           training.
   --out <dir>             Required. Where slices.json, anchor-descriptors.json and draw.json
                           are written. An absolute path outside this repository's workspace.
+                          Under a read of the reserve, a directory holding another claim run's
+                          draw, a draw of another build, or files and no draw.json is refused.
   --seed <n>              The seed of the draw. With none, one is made and printed.
   --backlog-roots <file>  The roots carrying the legion label that stand on the backlog or in
                           icebox, read from this file rather than from Dispatch. The shape is
@@ -421,16 +430,17 @@ const DEVELOPMENT_ORDER: readonly SliceName[] = SLICES.filter((slice) => slice !
  * joined over near-duplicate evidence, and each carries its outcome under item 6, read over every
  * case of the corpus in it. A group whose outcome is `ask-before-cut` gives no case to any slice:
  * its cases are named in `finalTest.beforeCut`. No never-decide answer is read (the claim's point
- * 9): no case is held and none is left out as `rule-unreadable`, whatever its `hold` says, so only
- * a question no arm can be scored on leaves an eligible tree's draw. An `eligible` group goes to
- * report whole, whatever report's targets: the final test is every eligible tree, which item 8
- * lets only never-decide and the run's own (c) and (d) narrow, never-decide being S10's own to
- * decide in the claim, and the reserve is read once, so a tree sent elsewhere for want of room
- * would be lost to it. Every other group skips report. The reserved cases that went to another
- * slice are named in `finalTest.heldOutsideReport`, each group's parent changes after its first
- * ask opened in `finalTest.parentChanges`, each near-duplicate join in
- * `finalTest.nearDuplicates`, and every eligible tree, with each of its cases, in
- * `finalTest.trees`.
+ * 9): no case is held and none is left out as `rule-unreadable`, whatever its `hold` says, and no
+ * case of an eligible tree is left out as a question no arm can be scored on, so every case of
+ * an eligible tree is drawn. An `eligible` group goes to report whole, whatever report's targets:
+ * the final test is every eligible tree, which item 8 lets only never-decide and the run's own
+ * (c) and (d) narrow, never-decide being S10's own to decide in the claim, and the reserve is
+ * read once, so a tree sent elsewhere for want of room would be lost to it. Every other group
+ * skips report, and its questions no arm can be scored on are left out as outside a read. The
+ * reserved cases that went to another slice are named in `finalTest.heldOutsideReport`, each
+ * group's parent changes after its first ask opened in `finalTest.parentChanges`, each
+ * near-duplicate join in `finalTest.nearDuplicates`, and every eligible tree, with each of its
+ * cases, in `finalTest.trees`.
  *
  * It throws `DrawError` over an approval case whose answer names no option, which is the corpus
  * read wrongly rather than a case to leave out, and, outside a registered read, over a case that
@@ -461,7 +471,8 @@ export function drawSlices(
           "build cannot produce: the draw stops rather than passing over it"
       );
     }
-    if (finalTest !== null && outcomeOf(groupKeyOf(row, finalTest)) === "ask-before-cut") {
+    const outcome = finalTest === null ? null : outcomeOf(groupKeyOf(row, finalTest));
+    if (outcome === "ask-before-cut") {
       // Item 6 (a): an ask of the tree opened before the cut, so a scorer may have read the tree
       // before any of its cases came; it gives no case to any slice of the claim's draw.
       beforeCut.push(row.caseId);
@@ -492,6 +503,12 @@ export function drawSlices(
       // Neither held nor decided: a rule about what must not be decided may not decide by
       // accident, so the case leaves the draw and is named with what came back.
       leaveOut(row, "rule-unreadable", `the never-decide answer could not be read: ${hold.fault}`);
+      continue;
+    }
+    // Every eligible tree goes to report whole (the claim's point 9): a question no arm can be
+    // scored on is left out of every other group, and of every group outside a read, as before.
+    if (outcome === "eligible") {
+      drawable.push(drawCase);
       continue;
     }
     if (row.kind === "question" && row.options.length < LEAST_OPTIONS) {
@@ -597,8 +614,8 @@ export function drawSlices(
       const tree = finalTest.grouping.groups.get(key);
       const changes = tree === undefined ? [] : changesAfterAskOf(tree);
       if (changes.length > 0) parentChanges.push({ group: key, outcome, changes });
-      // Every case of the tree, the left-out ones too: a tree whose every case was a question no
-      // arm can be scored on went to no slice, and the claim's measure still counts it.
+      // Every case of the tree: a draw under a registered read draws each case of an eligible
+      // tree, so each such tree is in report, and the claim's measure counts it there.
       if (outcome === "eligible") {
         trees.push({
           group: key,
@@ -945,6 +962,42 @@ export function claimCutRefusal(cut: number): string | null {
   );
 }
 
+/**
+ * Why a draw under a registered read may not write into `directory`, and null where it may: a
+ * directory holding nothing, or one holding this claim run's own draw of the same build, whose
+ * files this draw writes again. A directory holding another draw's record, one of another claim
+ * run, of another build's bytes, or of no claim run, is another run's and is refused, and so is
+ * one holding files and no `draw.json`, which no run here can show are its own.
+ */
+export async function claimOutRefusal(
+  directory: string,
+  claimRun: DrawClaimRun
+): Promise<string | null> {
+  const entries = await readdir(directory).catch((): string[] => []);
+  if (entries.length === 0) return null;
+  const path = drawPath(directory);
+  const text = await readFile(path, "utf8").catch(() => null);
+  if (text === null) {
+    return `${directory} holds files and no draw.json, so no run here can show they are its own`;
+  }
+  const found = drawFactsOf(text, path).claimRun;
+  const wanted: Array<[string, string | undefined, string]> = [
+    ["claim run", found?.id, claimRun.id],
+    ["snapshot.json", found?.snapshotSha256, claimRun.snapshotSha256],
+    ["corpus.jsonl", found?.corpusSha256, claimRun.corpusSha256],
+    ["trees.json", found?.treesSha256, claimRun.treesSha256],
+  ];
+  for (const [what, was, is] of wanted) {
+    if (was === is) continue;
+    return (
+      `${directory} holds another run's draw: its ${what} is ${was ?? "of no record"}, and this ` +
+      `run's is ${is}. A draw that reads the reserve writes only into its own claim run's ` +
+      "directory, over the same build"
+    );
+  }
+  return null;
+}
+
 async function draw(flags: Flags): Promise<number> {
   const reading = Boolean(readReferenceOf(process.env[RESERVE_VARIABLE]));
   if (reading && flags.seed === undefined) {
@@ -989,19 +1042,35 @@ async function draw(flags: Flags): Promise<number> {
   // stops the draw first, and the cases of a group with an ask before the cut (item 6 a) are left
   // out before any of them is rendered: their held cases stay held until the reserve ends. Their
   // evidence is read only into shingles, which are numbers held in memory and never written. The
-  // draw records the claim run the build was and the sha256 of the `snapshot.json` it read, so
-  // the next stage of the run takes only this draw of that build.
+  // draw records the claim run the build was and the sha256 of each of the build's three files it
+  // read, so the next stage of the run takes only this draw of those bytes, and it refuses an
+  // `--out` of another draw before it reads anything more.
   let finalTest: FinalTestSource | null = null;
   let claimRun: DrawClaimRun | null = null;
   let toRender = post;
   if (corpus.reserve.readUnder !== null) {
-    const trees = await readTrees(corpus.directory);
+    const { trees, sha256: treesSha256 } = await readTrees(corpus.directory);
     if (trees.throughEventId !== corpus.snapshot.throughEventId) {
       throw new DrawError(
         `the corpus's trees were written through event ${trees.throughEventId} and its cases ` +
           `through ${corpus.snapshot.throughEventId}: they are not one build`
       );
     }
+    const id = corpus.snapshot.reserve?.claimRun;
+    if (id === undefined) {
+      throw new DrawError(
+        `${corpus.directory} records no claim run beside its read of the reserve, so no stage ` +
+          "after this draw could show it reads this build: build it again in the claim run"
+      );
+    }
+    claimRun = {
+      id,
+      snapshotSha256: corpus.snapshotSha256,
+      corpusSha256: corpus.corpusSha256,
+      treesSha256,
+    };
+    const taken = await claimOutRefusal(directory, claimRun);
+    if (taken !== null) throw new DrawError(taken);
     const holds = (row: CaseRow): boolean => reserveOf(row) === "held";
     const grouping = treeGroupingOf(
       corpus.rows,
@@ -1021,14 +1090,6 @@ async function draw(flags: Flags): Promise<number> {
     const left = new Set(beforeCut.map((row) => row.caseId));
     toRender = post.filter((row) => !left.has(row.caseId));
     finalTest = { reference: corpus.reserve.readUnder, holds, grouping, beforeCut };
-    const id = corpus.snapshot.reserve?.claimRun;
-    if (id === undefined) {
-      throw new DrawError(
-        `${corpus.directory} records no claim run beside its read of the reserve, so no stage ` +
-          "after this draw could show it reads this build: build it again in the claim run"
-      );
-    }
-    claimRun = { id, snapshotSha256: corpus.snapshotSha256 };
   }
   console.log(`corpus            ${corpus.directory}`);
   console.log(`cut               ${new Date(cut).toISOString()}`);

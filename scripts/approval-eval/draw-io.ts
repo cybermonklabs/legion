@@ -111,11 +111,11 @@ export interface DrawExcluded {
  * One tree item 6 leaves eligible, as a draw under a registered read records it: every case of
  * the corpus in it, and whether its drawable cases went to report. A draw under a registered read
  * puts every eligible tree in report whole, whatever report's targets, since item 8 lets only
- * never-decide and the run's own (c) and (d) narrow the final test; and it applies no
- * never-decide rule (`DrawRecord.neverDecideApplied`), since the claim leaves never-decide to
- * S10's fact check and judges, as they decide it live. The claim's measure is read over these
- * trees, and a tree in no slice counts there too: every case of it was left out as a question no
- * arm can be scored on, so the reviewer decided nothing in it.
+ * never-decide and the run's own (c) and (d) narrow the final test; it applies no never-decide
+ * rule (`DrawRecord.neverDecideApplied`), since the claim leaves never-decide to S10's fact check
+ * and judges, as they decide it live, and it leaves no case of such a tree out as a question no
+ * arm can be scored on. The claim's measure is read over these trees. A tree in no slice is one a
+ * draw written before that left every case of out, and it counts there too.
  */
 export interface FinalTestTree {
   /** The tree's group key, as `trees.ts` makes it. */
@@ -128,13 +128,16 @@ export interface FinalTestTree {
 
 /**
  * The claim run a draw under a registered read was made in, and the build it read, so the next
- * stage of that run (`s10-inputs.ts`) takes only this draw of this build: the reply that started
- * the run (`claimRunOf` in `reserve.ts`) as the build's `snapshot.json` records it, and the sha256
- * of the bytes of that `snapshot.json` (`Corpus.snapshotSha256` in `corpus-io.ts`).
+ * stage of that run (`s10-inputs.ts`) takes only this draw of this build's bytes: the reply that
+ * started the run (`claimRunOf` in `reserve.ts`) as the build's `snapshot.json` records it, and
+ * the sha256 of the bytes the draw read of each of the build's three files (`Corpus` in
+ * `corpus-io.ts`, `readTrees` in `trees.ts`).
  */
 export interface DrawClaimRun {
   id: string;
   snapshotSha256: string;
+  corpusSha256: string;
+  treesSha256: string;
 }
 
 /**
@@ -479,20 +482,28 @@ function finalTestReferenceAt(value: unknown, path: string): string | null {
 
 /**
  * The claim run a draw under a registered read records, and none where the draw recorded none.
- * One that is there and names no reply id, or no sha256 of a build's `snapshot.json`, is the file
- * being no draw: a stage after it reads the claim run's chain from it.
+ * One that is there and names no reply id, or no sha256 of each of the build's three files, is
+ * the file being no draw: a stage after it reads the claim run's chain from it.
  */
 function claimRunAt(value: unknown, path: string): DrawClaimRun | null {
   if (value === undefined || value === null) return null;
   const record = recordOf(value);
   const id = stringOf(record?.id);
-  const snapshotSha256 = stringOf(record?.snapshotSha256);
-  if (!id || snapshotSha256 === null || !/^[0-9a-f]{64}$/.test(snapshotSha256)) {
+  const [snapshotSha256, corpusSha256, treesSha256] = [
+    record?.snapshotSha256,
+    record?.corpusSha256,
+    record?.treesSha256,
+  ].map((one) => {
+    const sha256 = stringOf(one);
+    return sha256 !== null && /^[0-9a-f]{64}$/.test(sha256) ? sha256 : null;
+  });
+  if (!id || !snapshotSha256 || !corpusSha256 || !treesSha256) {
     throw new CorpusError(
-      `${path} holds a claimRun that names no reply id and no sha256 of the build's snapshot.json`
+      `${path} holds a claimRun that names no reply id, or no sha256 of each of the build's ` +
+        "snapshot.json, corpus.jsonl and trees.json"
     );
   }
-  return { id, snapshotSha256 };
+  return { id, snapshotSha256, corpusSha256, treesSha256 };
 }
 
 /**

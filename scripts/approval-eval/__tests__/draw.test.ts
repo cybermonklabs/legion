@@ -6,6 +6,7 @@ import type { CaseKind, CaseRow } from "../build-corpus";
 import { CorpusError, UsageError } from "../corpus-io";
 import {
   claimCutRefusal,
+  claimOutRefusal,
   type Draw,
   type DrawCase,
   DrawError,
@@ -16,7 +17,7 @@ import {
   renderingCheckOf,
   TARGETS,
 } from "../draw";
-import { drawPath, readDraw, rootFactsOf, SLICES } from "../draw-io";
+import { type DrawClaimRun, drawPath, readDraw, rootFactsOf, SLICES } from "../draw-io";
 import { type AskModel, type NeverDecideAnswer, neverDecide } from "../never-decide";
 import type { TreeOutcome } from "../trees";
 
@@ -542,17 +543,84 @@ describe("drawSlices under a read of the reserve", () => {
     expect(drawSlices(unruled, 7, source(unruled)).slices).toEqual(draw.slices);
   });
 
-  test("an eligible tree whose every case no arm can be scored on is recorded in no slice", () => {
-    const unscorable = [0, 1].map((at) => drawCase(caseRow(`r-1-${at}`, "question", "RES-1", 1)));
+  test("every case of an eligible tree reaches report, its questions no arm can be scored on too", () => {
+    const unscorable = [
+      drawCase(caseRow("r-1-0", "question", "RES-1", 1)),
+      drawCase(caseRow("r-1-1", "question", "RES-1", 2, [])),
+    ];
     const cases = [...corpus(), ...reserved(3).filter((one) => one.row.issueKey !== "RES-1")];
     cases.push(...unscorable);
     const draw = drawSlices(cases, 7, source(cases));
-    expect(draw.finalTest?.groups).toBe(2);
+    expect(draw.finalTest?.groups).toBe(3);
     expect(draw.finalTest?.trees).toEqual([
       { group: "tree:RES-0", slice: "report", cases: ["r-0-0", "r-0-1", "r-0-2"] },
-      { group: "tree:RES-1", slice: null, cases: ["r-1-0", "r-1-1"] },
+      { group: "tree:RES-1", slice: "report", cases: ["r-1-0", "r-1-1"] },
       { group: "tree:RES-2", slice: "report", cases: ["r-2-0", "r-2-1", "r-2-2"] },
     ]);
+    expect(draw.slices.report).toContain("r-1-0");
+    expect(draw.slices.report).toContain("r-1-1");
+    expect(draw.undrawable.map((one) => one.caseId)).not.toContain("r-1-0");
+    // Outside a read the same two questions are left out, as they always were.
+    const outside = drawSlices(cases, 7);
+    expect(outside.undrawableByKind["too-few-options"]).toBe(1);
+    expect(outside.undrawableByKind["no-option-chosen"]).toBe(1);
+  });
+
+  test("an eligible tree holding one answered one-option question goes to report with it", () => {
+    const question = drawCase(caseRow("r-9-0", "question", "RES-9", 1));
+    const cases = [...corpus(), question];
+    const draw = drawSlices(cases, 7, source(cases));
+    expect(draw.slices.report).toEqual(["r-9-0"]);
+    expect(draw.finalTest?.trees).toEqual([
+      { group: "tree:RES-9", slice: "report", cases: ["r-9-0"] },
+    ]);
+    expect(draw.undrawable).toEqual([]);
+  });
+
+  describe("the directory a claim draw writes to", () => {
+    const made: string[] = [];
+    afterEach(async () => {
+      for (const directory of made.splice(0)) await rm(directory, { recursive: true, force: true });
+    });
+    const run: DrawClaimRun = {
+      id: "start-1",
+      snapshotSha256: "a".repeat(64),
+      corpusSha256: "b".repeat(64),
+      treesSha256: "c".repeat(64),
+    };
+    /** A directory holding a draw.json of `claimRun`, and a slices.json beside it. */
+    async function drawn(claimRun: unknown): Promise<string> {
+      const directory = await mkdtemp(join(tmpdir(), "draw-out-"));
+      made.push(directory);
+      await writeFile(drawPath(directory), `${JSON.stringify({ cut: "x", claimRun })}\n`, "utf8");
+      await writeFile(join(directory, "slices.json"), "{}\n", "utf8");
+      return directory;
+    }
+
+    test("takes an empty directory, one not there yet, and its own claim run's over the same build", async () => {
+      const empty = await mkdtemp(join(tmpdir(), "draw-out-"));
+      made.push(empty);
+      expect(await claimOutRefusal(empty, run)).toBeNull();
+      expect(await claimOutRefusal(join(empty, "not-yet"), run)).toBeNull();
+      expect(await claimOutRefusal(await drawn(run), run)).toBeNull();
+    });
+
+    test("refuses another claim run's draw, a draw of another build's bytes, or files of no draw", async () => {
+      const others: Array<[unknown, string]> = [
+        [{ ...run, id: "start-2" }, "its claim run is start-2"],
+        [{ ...run, snapshotSha256: "d".repeat(64) }, "its snapshot.json is"],
+        [{ ...run, corpusSha256: "d".repeat(64) }, "its corpus.jsonl is"],
+        [{ ...run, treesSha256: "d".repeat(64) }, "its trees.json is"],
+        [null, "its claim run is of no record"],
+      ];
+      for (const [claimRun, words] of others) {
+        expect(await claimOutRefusal(await drawn(claimRun), run)).toContain(words);
+      }
+      const stray = await mkdtemp(join(tmpdir(), "draw-out-"));
+      made.push(stray);
+      await writeFile(join(stray, "slices.json"), "{}\n", "utf8");
+      expect(await claimOutRefusal(stray, run)).toContain("holds files and no draw.json");
+    });
   });
 
   test("with no eligible tree, report stays empty", () => {

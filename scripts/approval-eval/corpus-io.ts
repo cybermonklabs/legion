@@ -85,11 +85,12 @@ export interface Corpus {
   directory: string;
   snapshot: CorpusSnapshot;
   /**
-   * The sha256 of the bytes of `snapshot.json` this read parsed. A later stage of the claim run
-   * records it (`draw.ts`, `s10-inputs.ts`), so a stage reads only the build the stage before it
-   * read, and no other build can be put in its place between them.
+   * The sha256 of the bytes of `snapshot.json` and of `corpus.jsonl` this read parsed. A later
+   * stage of the claim run records them (`draw.ts`, `s10-inputs.ts`), so a stage reads only the
+   * build the stage before it read, and no other build can be put in its place between them.
    */
   snapshotSha256: string;
+  corpusSha256: string;
   /**
    * The cases in the order `corpus.jsonl` holds them, which is answer time. A case the reserve
    * holds (`reserve.ts`) is in neither this nor `byCaseId`, unless `claim.ts` registers this read.
@@ -318,7 +319,9 @@ export async function readCorpus(
         `which are development data since the reserve ended (${access.record}): build it again`
     );
   }
-  const lines = (await textOf(directory, "corpus.jsonl")).split("\n");
+  const corpusBytes = await bytesOf(directory, "corpus.jsonl");
+  const corpusSha256 = createHash("sha256").update(corpusBytes).digest("hex");
+  const lines = corpusBytes.toString("utf8").split("\n");
   const rows: CaseRow[] = [];
   const byCaseId = new Map<string, CaseRow>();
   const reservedIssues = new Set<string>();
@@ -371,6 +374,7 @@ export async function readCorpus(
     directory,
     snapshot,
     snapshotSha256,
+    corpusSha256,
     rows,
     byCaseId,
     reserve: { cases: held.cases, issues: held.issues, readUnder },
@@ -529,15 +533,6 @@ async function bytesOf(directory: string, name: string): Promise<Buffer> {
   const path = join(directory, name);
   try {
     return await readFile(path);
-  } catch {
-    throw new CorpusError(`${path} could not be read: --corpus takes a directory a build wrote`);
-  }
-}
-
-async function textOf(directory: string, name: string): Promise<string> {
-  const path = join(directory, name);
-  try {
-    return await readFile(path, "utf8");
   } catch {
     throw new CorpusError(`${path} could not be read: --corpus takes a directory a build wrote`);
   }

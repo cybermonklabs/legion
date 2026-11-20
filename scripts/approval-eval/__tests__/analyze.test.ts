@@ -210,6 +210,7 @@ function corpusOf(rows: readonly CaseRow[]): Corpus {
       reserve: null,
     },
     snapshotSha256: "0".repeat(64),
+    corpusSha256: "0".repeat(64),
     rows: [...rows],
     byCaseId: new Map(rows.map((row) => [row.caseId, row])),
     reserve: { cases: 0, issues: 0, readUnder: null },
