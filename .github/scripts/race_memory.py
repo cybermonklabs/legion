@@ -37,6 +37,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -88,49 +89,56 @@ def choose_peak(hwm_kb: int | None, rss_kb: int) -> tuple[int, str]:
     return rss_kb, "VmRSS"
 
 
+def children_listed(pid: int) -> bool:
+    """Whether this kernel lists a process's children (/proc/<pid>/task/<tid>/children), which
+    tree_statuses walks; a kernel built without CONFIG_PROC_CHILDREN gives no such file."""
+    return Path(f"/proc/{pid}/task/{pid}/children").exists()
+
+
 def tree_statuses(root_pid: int) -> list[str]:
     r"""The `/proc/<pid>/status` text of the command's own process and of every descendant of it.
 
-    One pass over /proc reads each process's status once: the text carries the parent pid the tree
-    is built from (`PPid:`) along with the sizes. A process that exits between the walk and the
-    read is skipped, which is the common case under `go test`: the compiler's children come and go
-    while the sampler walks. Its status is then gone before the open (FileNotFoundError) or gone
-    under it (ProcessLookupError), and both are OSErrors.
+    The tree is walked from root_pid breadth first, by the kernel's own lists of each thread's
+    children (/proc/<pid>/task/<tid>/children), as scripts/e2e/lib/process-tree.sh's
+    proc_children reads them, so only the files of the command's own processes are read: a walk of
+    every process on the machine reads every one of their files, and one that never answers its
+    reader (a FIFO mounted over a stranger's status) held the sampler, and the step, until the
+    job's own timeout. A process that exits between the list and the read is skipped, which is the
+    common case under `go test`: the compiler's children come and go while the sampler walks. Its
+    files are then gone before the open (FileNotFoundError) or gone under it
+    (ProcessLookupError), and both are OSErrors. Where the kernel lists no children
+    (children_listed), the walk reads the command's own process alone.
 
-    Every process on the machine is read, not the tree's alone, and a process's name is whatever
-    bytes it gave itself (prctl(PR_SET_NAME), /proc/self/comm, its executable's file name): the
-    kernel writes them as they are, escaping "\n" and "\\" only. So the text is decoded with
-    U+FFFD for a byte that is not UTF-8. A strict decode stopped a race run with a traceback on a
-    shared machine where a process's name began with the byte 0xff (dispatch://INFRA-3904).
+    A process's name is whatever bytes it gave itself (prctl(PR_SET_NAME), /proc/self/comm, its
+    executable's file name): the kernel writes them as they are, escaping "\n" and "\\" only. So
+    the text is decoded with U+FFFD for a byte that is not UTF-8. A strict decode stopped a race
+    run with a traceback on a shared machine where a process's name began with the byte 0xff
+    (dispatch://INFRA-3904).
     """
-    texts: dict[int, str] = {}
-    children: dict[int, list[int]] = {}
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
+    found: list[str] = []
+    seen: set[int] = set()
+    queue = deque([root_pid])
+    while queue:
+        pid = queue.popleft()
+        if pid in seen:
             continue
+        seen.add(pid)
+        entry = Path(f"/proc/{pid}")
         try:
             raw = (entry / "status").read_bytes()
         except OSError:
             continue
-        text = raw.decode("utf-8", errors="replace")
-        parent = status_field(text, "PPid")
-        if parent is None:
+        found.append(raw.decode("utf-8", errors="replace"))
+        try:
+            tasks = list((entry / "task").iterdir())
+        except OSError:
             continue
-        pid = int(entry.name)
-        texts[pid] = text
-        children.setdefault(int(parent), []).append(pid)
-
-    found: list[str] = []
-    seen: set[int] = set()
-    stack = [root_pid]
-    while stack:
-        pid = stack.pop()
-        if pid in seen:
-            continue
-        seen.add(pid)
-        if pid in texts:
-            found.append(texts[pid])
-        stack.extend(children.get(pid, ()))
+        for task in tasks:
+            try:
+                listed = (task / "children").read_text()
+            except OSError:
+                continue
+            queue.extend(int(child) for child in listed.split())
     return found
 
 
@@ -340,6 +348,12 @@ def main(argv: list[str]) -> int:
     peak_rss_kb = 0
     highest: Sample | None = None
     started = time.monotonic()
+    if not children_listed(process.pid):
+        log.line(
+            f"race memory: this kernel lists no process's children (/proc/{process.pid}/task/"
+            f"{process.pid}/children), so each sample reads the command's own process alone and "
+            "none of its descendants"
+        )
     while True:
         walked = tree_statuses(process.pid)
         sample = summarize(walked, time.monotonic() - started, tests.names())

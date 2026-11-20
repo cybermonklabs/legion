@@ -278,16 +278,54 @@ escape_bytes() {
   printf '%s' "$out"
 }
 
-# lock_holders FILE: "pid N (command)" of each process whose descriptor 9 is open on FILE, joined
-# with ", ", each command line through printable.
+# now_ms: the wall clock in milliseconds, from bash's own EPOCHREALTIME (its decimal separator is
+# the locale's).
+now_ms() { printf '%s\n' "$((${EPOCHREALTIME/[.,]/} / 1000))"; }
+
+# ms_seconds MS: MS milliseconds as seconds with three decimals, which timeout and sleep take.
+ms_seconds() { printf '%d.%03d' "$(($1 / 1000))" "$(($1 % 1000))"; }
+
+# LOCK_LOOK_SECONDS: the bound on the look for the lock's holders that lock_root's refusal names,
+# after its 3 s wait.
+LOCK_LOOK_SECONDS=3
+
+# bounded SECONDS FUNCTION ARGS...: FUNCTION ARGS, a function of this file with printable and
+# escape_bytes, run in a shell of its own under `timeout SECONDS`, its output passed on as it
+# comes. It fails with 3 when the bound ended FUNCTION first, and with FUNCTION's own status
+# otherwise. timeout signals its whole process group, so a program FUNCTION was waiting on ends
+# with it. The walks it bounds read a file of every process of the machine, and one such file can
+# answer slowly or never: a process's command line is whatever its process gave itself to read.
+bounded() {
+  local seconds=$1 status=0
+  shift
+  timeout -k 1 "$seconds" bash -c "$(declare -f printable escape_bytes "$1"); \"\$@\"" bounded "$@" || status=$?
+  case $status in
+    124 | 137) return 3 ;;
+  esac
+  return "$status"
+}
+
+# lock_holders FILE SECONDS: "pid N (command)" of each process whose descriptor 9 is open on FILE,
+# joined with ", ", each command line through printable. Finding them stats every process's
+# descriptor 9, so the walk is bounded to SECONDS (bounded): it prints the holders it found before
+# the bound and fails with 3 when the bound ended it.
 lock_holders() {
-  local file=$1 dir cmd out=""
+  local found status=0
+  found=$(bounded "$2" lock_holders_walk "$1") || status=$?
+  found=${found//$'\n'/, }
+  [ -z "$found" ] || printf '%s\n' "$found"
+  return "$status"
+}
+
+# lock_holders_walk FILE: one "pid N (command)" line for each process whose descriptor 9 is open on
+# FILE, printed as it is found.
+lock_holders_walk() {
+  local file=$1 dir cmd
   for dir in /proc/[0-9]*; do
     [ "$dir/fd/9" -ef "$file" ] 2>/dev/null || continue
     cmd=$(tr '\0' ' ' <"$dir/cmdline" 2>/dev/null) || continue
-    out+="${out:+, }pid ${dir#/proc/} ($(printable "${cmd% }"))"
+    printf 'pid %s (%s)\n' "${dir#/proc/}" "$(printable "${cmd% }")"
   done
-  [ -z "$out" ] || printf '%s\n' "$out"
 }
 
 # lock_take FILE: this process has just locked FILE on descriptor 9; write its record. The command
@@ -327,10 +365,13 @@ lock_root() {
   # which the holder writes just after it locks, and stop at a complete record whose pid runs in this
   # PID namespace. A complete record whose pid does not is a holder whose children still hold the
   # lock (stop when lock_holders names them), one that has just ended (the next try takes the lock),
-  # or one in another PID namespace, which this one never sees.
-  local record="" holders="" runs=false i
-  for ((i = 0; i < 30; i++)); do
-    ((i == 0)) || sleep 0.1
+  # or one in another PID namespace, which this one never sees. lock_holders walks every process of
+  # the machine, so a look inside the 3 s gets what is left of them, and one that ends there with
+  # no holder found only ends the wait sooner. A refusal that has found no holder looks once more,
+  # for at most LOCK_LOOK_SECONDS, and names that bound when its look ends there.
+  local record="" holders="" runs=false cut="" deadline left
+  deadline=$(($(now_ms) + 3000))
+  while :; do
     exec 8<>"$file"
     if flock -n 8; then
       # The duplicate shares the locked open file description, so descriptor 9 keeps the lock.
@@ -345,9 +386,13 @@ lock_root() {
         runs=true
         break
       fi
-      holders=$(lock_holders "$file")
+      left=$((deadline - $(now_ms)))
+      ((left > 0)) || break
+      holders=$(lock_holders "$file" "$(ms_seconds "$left")") || true
       [ -n "$holders" ] && break
     fi
+    (($(now_ms) + 100 < deadline)) || break
+    sleep 0.1
   done
   local me=${0##*/} pid ns run
   pid=$(lock_field pid "$record")
@@ -362,10 +407,12 @@ lock_root() {
   # Every field of the record, which another writer on a shared root can have written with any
   # byte, prints with its control characters escaped.
   run=$(printable_field "$run")
-  $runs || [ -n "$holders" ] || holders=$(lock_holders "$file")
+  if ! $runs && [ -z "$holders" ]; then
+    holders=$(lock_holders "$file" "$LOCK_LOOK_SECONDS") || cut=$LOCK_LOOK_SECONDS
+  fi
   if $runs; then
     printf '%s: LOADTEST_ROOT %s is in use by another run (%s)\n' "$me" "$root" "$run" >&2
-  elif [ -n "$holders" ]; then
+  elif [ -n "$holders" ] || [ -n "$cut" ]; then
     local taker="left no record in the lock file"
     if [ -n "$pid" ]; then
       case $ns in
@@ -374,8 +421,14 @@ lock_root() {
         *) taker="($run) wrote no PID namespace in its record, so its pid is not trusted" ;;
       esac
     fi
-    printf '%s: LOADTEST_ROOT %s is in use by another run: %s holds its lock; the run that took it %s\n' \
-      "$me" "$root" "$holders" "$taker" >&2
+    local held="$holders holds its lock"
+    if [ -n "$cut" ] && [ -n "$holders" ]; then
+      held+=" (the look for the processes with descriptor 9 on it stopped at its $cut s bound, so others may hold it too)"
+    elif [ -n "$cut" ]; then
+      held="the look for the processes with descriptor 9 on its lock stopped at its $cut s bound before it found one"
+    fi
+    printf '%s: LOADTEST_ROOT %s is in use by another run: %s; the run that took it %s\n' \
+      "$me" "$root" "$held" "$taker" >&2
   else
     # The lock is held, yet this PID namespace shows no holder: neither the record's pid nor a
     # process with descriptor 9 on the file.

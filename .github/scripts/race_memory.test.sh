@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Tests for `race_memory.py`: a command's status passes through, a peak over the limit fails the
 # step and names the tests that were running, a run within the limit ends with the peak, a
-# `go test -json` stream's output reaches the log, and neither a process's name nor a byte of
-# the command's stdout that is not UTF-8 stops a run before it gives its result.
+# `go test -json` stream's output reaches the log, the sampler reads the files of its command's
+# own processes alone, and neither a process's name nor a byte of the command's stdout that is not
+# UTF-8 stops a run before it gives its result.
 #
 # Each case runs the real script around a stand-in command — a shell or a Python program that
 # prints a -json stream and grows — so no Go, no race binary and no database are needed. The two
@@ -10,10 +11,9 @@
 # `decision_line` written from what they return, are called on their own over fixture
 # `/proc/<pid>/status` texts written here, because one of the rule's two branches cannot be
 # reached on a kernel that reports no `VmHWM` (gVisor) and the other cannot be reached on one
-# that does. The two name cases start a process beside the command's tree, through the real
-# /proc, because the sampler reads every process on the machine, and each first checks that the
-# kernel shows the name's bytes as they were written: a kernel that escaped them would leave the
-# case nothing to test, and it fails rather than passes.
+# that does. The name cases name the command's own process, which its samples read, and each
+# first checks that the kernel shows the name's bytes as they were written: a kernel that escaped
+# them would leave the case nothing to test, and it fails rather than passes.
 #
 # Run from anywhere: .github/scripts/race_memory.test.sh
 # CI runs it in ci.yaml's test job.
@@ -216,75 +216,54 @@ check "the --- FAIL line shows" "$(contains "$out" '^--- FAIL: TestA (0.00s)$')"
 check "the package's own line shows" "$(contains "$out" '^FAIL.*legion/internal/dispatch/docs')"
 check "the -json envelope does not" "$(is "$(contains "$out" '"Action"')" false)"
 
-# hold_named <name in hex>: starts a process beside the sampler's tree, not in it, that writes
-# the name to its own /proc/self/comm and lives until free_named closes its stdin. It returns once
-# the name is set, with the kernel's own Name line of that process, in hex, in $named, so the
-# sampler's first walk is sure to read that line.
-hold_named() {
-  coproc NAMED {
-    python3 -c '
+echo "case: the sampler reads the files of its command's own processes alone"
+# tree_statuses, called on this case's own Python and one child of it, with every file read under
+# /proc recorded. A walk of every process on the machine reads a status for each of them, and one
+# that never answers (a FIFO mounted over a stranger's status) held the sampler to the job's own
+# timeout; the walk of the tree by its children lists reads the two processes alone.
+walked=$(peak '
+import os, pathlib, subprocess, race_memory
+child = subprocess.Popen(["sleep", "60"])
+read = set()
+for name in ("read_bytes", "read_text"):
+    def recording(self, *args, _original=getattr(pathlib.Path, name), **kwargs):
+        read.add(str(self))
+        return _original(self, *args, **kwargs)
+    setattr(pathlib.Path, name, recording)
+try:
+    statuses = race_memory.tree_statuses(os.getpid())
+finally:
+    child.kill()
+    child.wait()
+tree = {str(os.getpid()), str(child.pid)}
+outside = {path.split("/")[2] for path in read if path.startswith("/proc/")} - tree
+print(len(statuses), len(outside))
+')
+check "reads the status of the command and of its child" "$(is "${walked% *}" 2)"
+check "reads no file of a process outside the tree" "$(is "${walked#* }" 0)"
+
+# named_command <name in hex> <the name as a sample prints it, as a glob>: runs the sampler around a
+# command that writes the name to its own /proc/self/comm and waits on its stdin, which the case
+# closes once a sample has named it. It leaves the kernel's own Name line of the command, in hex,
+# in $named. The walk whose line follows the command's "renamed" may have begun before the
+# rename, but the walk after it began after, so two samples past "renamed" with no name in them
+# is a failure rather than a wait without end.
+named_command() {
+  want=$2
+  stage=unnamed
+  samples_after=0
+  drive_run on_renamed_line env -u RACE_MEM_LIMIT_KB "$sampler" python3 -c '
 import sys
 with open("/proc/self/comm", "wb") as comm:
     comm.write(bytes.fromhex(sys.argv[1]))
 with open("/proc/self/status", "rb") as status:
-    print(status.readline().rstrip(b"\n").hex(), flush=True)
-sys.stdin.read()
-' "$1"
-  }
-  holder_pid=$NAMED_PID
-  to_holder=${NAMED[1]}
-  named=""
-  read -r named <&"${NAMED[0]}" || true
-}
-
-# free_named: ends the process hold_named started, and checks that it ended as it should.
-free_named() {
-  local held=0
-  exec {to_holder}>&-
-  wait "$holder_pid" || held=$?
-  check "the named process ends when its stdin closes" "$(is "$held" 0)"
-}
-
-echo "case: a process on the machine whose name is not UTF-8 leaves the run its result"
-# b"\xffnot-utf-8": a strict decode of its status raised UnicodeDecodeError at the name's 0xff.
-hold_named ff6e6f742d7574662d38
-check "the kernel shows the name's bytes as written" \
-  "$(is "$named" 4e616d653a09ff6e6f742d7574662d38)"
-run_sampler '' sh -c 'echo the command spoke'
-free_named
-check "exits 0" "$(is "$status" 0)"
-check "passes the command's own output through" "$(contains "$out" '^the command spoke$')"
-check "its last line gives the peak and the limit" \
-  "$(contains "${out##*$'\n'}" '^race memory: the peak was [0-9][0-9]* kB (Vm.*), the limit 8388608 kB$')"
-check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
-
-echo "case: a process whose name holds a line break other than a newline passes for no field"
-# b"a\x1ePPid:\tz": str.splitlines() broke the Name line at \x1e, and int("z") raised for the
-# PPid it seemed to give.
-hold_named 611e505069643a097a
-check "the kernel shows the name's bytes as written" \
-  "$(is "$named" 4e616d653a09611e505069643a097a)"
-run_sampler '' sh -c 'echo the command spoke'
-free_named
-check "exits 0" "$(is "$status" 0)"
-check "its last line gives the peak and the limit" \
-  "$(contains "${out##*$'\n'}" '^race memory: the peak was [0-9][0-9]* kB (Vm.*), the limit 8388608 kB$')"
-check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
-
-echo "case: the command's own process, named in bytes that are not UTF-8, is named in a sample"
-# b"\xff\xfeA3", set by the command on itself, so the name is the one its tree's sample names
-# rather than one beside the tree. The command waits on its stdin, which this case closes once a
-# sample has named it. The walk whose line follows the command's "renamed" may have begun before
-# the rename, but the walk after it began after, so two samples past "renamed" with no name in
-# them is a failure rather than a wait without end.
-renamed='
-import sys
-with open("/proc/self/comm", "wb") as comm:
-    comm.write(b"\xff\xfeA3")
+    print("named " + status.readline().rstrip(b"\n").hex(), flush=True)
 print("renamed", flush=True)
 sys.stdin.read()
 print("the renamed command spoke", flush=True)
-'
+' "$1"
+  named=$(sed -n 's/^named //p' <<<"$out")
+}
 # on_renamed_line: the first sample after the command's "renamed" that names it lets it go; two
 # such samples without its name let it go too, and the case fails.
 on_renamed_line() {
@@ -292,7 +271,8 @@ on_renamed_line() {
     stage=renamed
   elif [ "$stage" = renamed ] && [[ $line == 'race memory: at '* ]]; then
     samples_after=$((samples_after + 1))
-    if [[ $line == *$' in \xef\xbf\xbd\xef\xbf\xbdA3'[,\;]* ]]; then
+    # shellcheck disable=SC2053 # $want is a glob on purpose
+    if [[ $line == *" in "${want}[,\;]* ]]; then
       stage=named
       close_run
     elif [ "$samples_after" -ge 2 ]; then
@@ -301,12 +281,26 @@ on_renamed_line() {
     fi
   fi
 }
-stage=unnamed
-samples_after=0
-drive_run on_renamed_line env -u RACE_MEM_LIMIT_KB "$sampler" python3 -c "$renamed"
+
+echo "case: the command's own process, named in bytes that are not UTF-8, is named in a sample"
+# b"\xff\xfeA3": a strict decode of its status raised UnicodeDecodeError at the name's 0xff.
+named_command fffe4133 $'\xef\xbf\xbd\xef\xbf\xbdA3'
+check "the kernel shows the name's bytes as written" "$(is "$named" 4e616d653a09fffe4133)"
 check "a sample names the command with U+FFFD for each byte that is not UTF-8" "$(is "$stage" named)"
 check "exits 0" "$(is "$status" 0)"
 check "passes the command's own output through" "$(contains "$out" '^the renamed command spoke$')"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+echo "case: a process whose name holds a line break other than a newline passes for no field"
+# b"a\x1eVmRSS:\tz": str.splitlines() broke the Name line at \x1e, and int("z") raised for the
+# VmRSS it seemed to give. The sample prints the name escaped.
+named_command 611e566d5253533a097a 'a\\x1eVmRSS:\\tz'
+check "the kernel shows the name's bytes as written" "$(is "$named" 4e616d653a09611e566d5253533a097a)"
+check "a sample names the command" "$(is "$stage" named)"
+check "exits 0" "$(is "$status" 0)"
+last=${out%$'\n'}
+check "its last line gives the peak and the limit" \
+  "$(contains "${last##*$'\n'}" '^race memory: the peak was [0-9][0-9]* kB (Vm.*), the limit 8388608 kB$')"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
 echo "case: a byte of the command's stdout that is not UTF-8 is read as U+FFFD"

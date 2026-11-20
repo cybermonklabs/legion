@@ -378,14 +378,18 @@ stop_one() {
   set_pid "$name" 0
 }
 
-# port_holder PORT: "pid N (command)" of each process of this PID namespace that holds a socket
-# listening on PORT, joined with ", ", each command line through common.sh's printable. It reads
-# the listening sockets' inodes from <proc>/net/tcp and <proc>/net/tcp6 and looks for them among
-# the descriptors in <proc>/<pid>/fd, <proc> being ${proc_root:-/proc}: nothing here sets
-# proc_root, and common.test.sh gives it a root of the one process it reads, since the walk reads
-# every descriptor of every process on the machine. A listener of another PID namespace (another
-# Legion role of this pod, which shares the network namespace) has its socket in /proc/net/tcp and
-# no process here, so the result is empty.
+# port_holder PORT SECONDS: "pid N (command)" of each process of this PID namespace that holds a
+# socket listening on PORT, joined with ", ", each command line through common.sh's printable. It
+# reads the listening sockets' inodes from <proc>/net/tcp and <proc>/net/tcp6 and looks for them
+# among the descriptors in <proc>/<pid>/fd, <proc> being ${proc_root:-/proc}: nothing here sets
+# proc_root, and common.test.sh gives it a root of the one process it reads. A listener of another
+# PID namespace (another Legion role of this pod, which shares the network namespace) has its
+# socket in /proc/net/tcp and no process here, so the result is empty.
+#
+# Looking for an inode among the descriptors reads a link of every descriptor of every process on
+# the machine, so the look is one `find`, never a program per descriptor (a `readlink` per
+# descriptor took minutes on a shared machine), and it is bounded to SECONDS (common.sh's
+# bounded): port_holder prints the holders it found and fails with 3 when the bound ended it.
 #
 # Each table is read by one awk, front to back, as scripts/e2e/lib/rig.sh's listening_holders
 # reads it, never by bash's `read`: on a file it can seek, `read` takes a block and seeks back to
@@ -394,26 +398,44 @@ stop_one() {
 # sockets come and go the offset it seeks back to no longer starts a row, so a row can be cut or
 # missed.
 port_holder() {
-  local proc=${proc_root:-/proc} hex want=" " file inode dir fd target cmd out=""
+  local found status=0
+  found=$(bounded "$2" port_holder_walk "$1") || status=$?
+  found=${found//$'\n'/, }
+  [ -z "$found" ] || printf '%s\n' "$found"
+  return "$status"
+}
+
+# port_holder_walk PORT: one "pid N (command)" line for each process that holds a socket listening
+# on PORT, printed as it is found (port_holder).
+port_holder_walk() {
+  local proc=${proc_root:-/proc} hex file inode link pid cmd
+  local -a names=() inodes=()
   printf -v hex '%04X' "$1"
   for file in "$proc/net/tcp" "$proc/net/tcp6"; do
     [ -r "$file" ] || continue
-    want+=$(awk -v port=":$hex" -v ORS=' ' '$4 == "0A" && substr($2, length($2) - 4) == port { print $10 }' "$file")
-  done
-  [ "$want" = " " ] && return 0
-  for dir in "$proc"/[0-9]*; do
-    for fd in "$dir"/fd/*; do
-      target=$(readlink -- "$fd" 2>/dev/null) || continue
-      [[ $target == socket:\[*\] ]] || continue
-      inode=${target#socket:\[}
-      [[ $want == *" ${inode%\]} "* ]] || continue
-      cmd=$(tr '\0' ' ' <"$dir/cmdline" 2>/dev/null) || continue
-      out+="${out:+, }pid ${dir##*/} ($(printable "${cmd% }"))"
-      break
+    mapfile -t inodes < <(awk -v port=":$hex" '$4 == "0A" && substr($2, length($2) - 4) == port { print $10 }' "$file")
+    for inode in "${inodes[@]}"; do
+      names+=(${names[0]+-o} -lname "socket:\[$inode\]")
     done
   done
-  [ -z "$out" ] || printf '%s\n' "$out"
+  [ "${#names[@]}" -gt 0 ] || return 0
+  local -A seen=()
+  local -a links=()
+  mapfile -t links < <(find "$proc"/[0-9]*/fd -mindepth 1 -maxdepth 1 \( "${names[@]}" \) -print 2>/dev/null)
+  for link in "${links[@]}"; do
+    pid=${link#"$proc"/}
+    pid=${pid%%/*}
+    [ -z "${seen[$pid]:-}" ] || continue
+    seen[$pid]=1
+    cmd=$(tr '\0' ' ' <"$proc/$pid/cmdline" 2>/dev/null) || continue
+    printf 'pid %s (%s)\n' "$pid" "$(printable "${cmd% }")"
+  done
 }
+
+# PORT_HOLDER_SECONDS: check_port's bound on port_holder, the shortest wait any start gives its
+# service (wait_for 30, the proxies and NATS), so naming a port's holder never takes longer than
+# starting what will hold it.
+PORT_HOLDER_SECONDS=30
 
 # check_port NAME PORT_KEY: refuse a port another process holds, naming it when this PID namespace
 # can see it, and saying that it cannot when it cannot. A port this namespace cannot see is most
@@ -425,15 +447,17 @@ port_holder() {
 # first, whoever holds it, a port inside the machine's ephemeral range, which any outgoing
 # connection may take as its source port before this process binds it.
 check_port() {
-  local name=$1 key=$2 p holders block
+  local name=$1 key=$2 p holders block cut=""
   p=$(port "$key")
   if port_in_ephemeral "$p"; then
     die "port $p ($key, for $name) is inside this machine's ephemeral range $(ephemeral_range | tr ' ' '-') (ip_local_port_range), so any outgoing connection may take it as its source port before $name binds it; rerun stack.sh setup with no port variable set, which moves every recorded port inside that range to this root's block below it, or set ${PORT_VAR[$key]} to a port outside that range and rerun stack.sh setup with it set, then stack.sh start"
   fi
   port_open "$p" || return 0
-  holders=$(port_holder "$p")
+  holders=$(port_holder "$p" "$PORT_HOLDER_SECONDS") || cut=" (the look for the processes holding it stopped at its $PORT_HOLDER_SECONDS s bound, so others may hold it too)"
   [ -n "$holders" ] &&
-    die "port $p ($key, for $name) is already in use by $holders, which is not this stack's; stop it and rerun stack.sh start, or set ${PORT_VAR[$key]} to a port no one holds and rerun stack.sh setup with it set, then stack.sh start (start reads the ports stack.json records, so a port variable takes effect only through setup)"
+    die "port $p ($key, for $name) is already in use by $holders$cut, which is not this stack's; stop it and rerun stack.sh start, or set ${PORT_VAR[$key]} to a port no one holds and rerun stack.sh setup with it set, then stack.sh start (start reads the ports stack.json records, so a port variable takes effect only through setup)"
+  [ -z "$cut" ] ||
+    die "port $p ($key, for $name) is already in use, and the look for the process of this PID namespace that holds it stopped at its $PORT_HOLDER_SECONDS s bound before it found one; stop whatever holds it and rerun stack.sh start, or set ${PORT_VAR[$key]} to a port no one holds and rerun stack.sh setup with it set, then stack.sh start (start reads the ports stack.json records, so a port variable takes effect only through setup)"
   block=$(port_block "$LOADTEST_ROOT")
   [ "$p" = "$(default_port "$key" "$block")" ] ||
     die "port $p ($key, for $name) is already in use, and no process of this PID namespace holds it: another Legion role of this pod, or another PID namespace, may hold it, in the network namespace they share. This port is not the default of this root's port block $block (stack.json records it, or ${PORT_VAR[$key]} sets it). Stop whatever holds it and rerun stack.sh start, or set ${PORT_VAR[$key]} to a port no one holds and rerun stack.sh setup with it set, then stack.sh start (start reads the ports stack.json records, so a port variable takes effect only through setup)"
