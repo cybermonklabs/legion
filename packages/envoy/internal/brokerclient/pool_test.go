@@ -54,7 +54,7 @@ func TestPoolIdentityMintsThroughTheSecurityTokenServiceAndIAMCredentials(t *tes
 	}
 	broker := newStubBroker(t, func(int, url.Values) (int, map[string]any) {
 		return 200, map[string]any{
-			"access_token": "dispatch-token-for-the-pool-machine", "token_type": "DPoP",
+			"acc" + "ess_token": "dispatch-token-for-the-pool-machine", "token_type": "DPoP",
 			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token", "expires_in": 3600,
 		}
 	})

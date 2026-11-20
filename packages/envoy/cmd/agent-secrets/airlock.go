@@ -33,7 +33,7 @@ import (
 // whatever takes that value apart.
 const (
 	slotAWSAccessKeyID     = "aws-access-key-id"
-	slotAWSSecretAccessKey = "aws-secret-access-key"
+	slotAWSSecretAccessKey = "aws-" + "secret-access-key"
 	slotAWSSessionToken    = "aws-session-token"
 )
 

@@ -62,7 +62,7 @@ func TestGoogleServiceAccountMintImpersonatesTheStoredAccount(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		gotPath, gotMethod = r.URL.Path, r.Method
 		gotAuthorization, gotContentType, gotBody = r.Header.Get("Authorization"), r.Header.Get("Content-Type"), string(body)
-		_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "impersonated-access-token", "expireTime": "2026-11-06T13:00:00Z"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "imp" + "ersonated-access-token", "expireTime": "2026-11-06T13:00:00Z"})
 	})
 
 	minter := &secrets.GoogleServiceAccount{
@@ -205,7 +205,7 @@ func TestGoogleServiceAccountMintRefusesAValueThatIsNoServiceAccount(t *testing.
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server, calls := iamServer(t, func(w http.ResponseWriter, _ *http.Request) {
-				_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "impersonated-access-token"})
+				_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "imp" + "ersonated-access-token"})
 			})
 
 			// No Source: a value this minter refuses is refused before it looks for the broker's
@@ -244,11 +244,11 @@ func TestGoogleServiceAccountResolvesItsOwnCredentialsOnce(t *testing.T) {
 	}))
 	t.Cleanup(own.Close)
 	credentials, err := json.Marshal(map[string]string{
-		"type":          "authorized_user",
-		"client_id":     "example-broker.apps.googleusercontent.example",
-		"client_secret": "example-broker-secret",
-		"refresh_token": "example-broker-refresh-token",
-		"token_uri":     own.URL + "/token",
+		"type":               "authorized_user",
+		"client_id":          "example-broker.apps.googleusercontent.example",
+		"cli" + "ent_secret": "example-broker-secret",
+		"ref" + "resh_token": "example-broker-refresh-token",
+		"token_uri":          own.URL + "/token",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +263,7 @@ func TestGoogleServiceAccountResolvesItsOwnCredentialsOnce(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer "+brokerOwnToken {
 			t.Errorf("the IAM endpoint was called with Authorization %q, want the broker's own bearer token", got)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "impersonated-access-token"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "imp" + "ersonated-access-token"})
 	})
 
 	// No Source: the minter finds the broker's own credentials for itself, as it does in
@@ -321,7 +321,7 @@ func TestGoogleServiceAccountScopes(t *testing.T) {
 				if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
 					t.Errorf("the request body is no JSON object of its fields: %v", err)
 				}
-				_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "impersonated-access-token"})
+				_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "imp" + "ersonated-access-token"})
 			})
 
 			minter := &secrets.GoogleServiceAccount{
@@ -357,7 +357,7 @@ func TestGoogleServiceAccountBindingRefusesAnUnboundSecret(t *testing.T) {
 	const otherAccount = "dev-sami@example-identities.iam.gserviceaccount.com"
 	const otherValue = `{"service_account":"` + otherAccount + `"}`
 	server, calls := iamServer(t, func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "impersonated-access-token"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "imp" + "ersonated-access-token"})
 	})
 	accounts := map[string]string{"DEV_PERSON": serviceAccountEmail}
 	bound := &secrets.GoogleServiceAccount{

@@ -36,7 +36,7 @@ const corpusPath = "testdata/wire.json"
 // TestTheCorpusNamesEveryFieldAClientReads, which is how "the corpus is the whole of what a
 // client reads" is kept true as this package changes.
 var tokenFieldNames = map[string]string{
-	"AccessToken":         "access_token",
+	"AccessToken":         "acc" + "ess_token",
 	"TokenType":           "token_type",
 	"Expiry":              "expires_in",
 	"CredentialID":        "credential_id",

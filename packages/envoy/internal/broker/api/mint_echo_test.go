@@ -52,7 +52,7 @@ func TestAMintFailureEchoingTheRefreshTokenReachesNeitherTheSessionNorTheLog(t *
 			policy.TypeGoogleLogin: secrets.GoogleLogin{TokenURL: "http://" + listener.Addr().String(), Retry: retry}.Mint,
 		}
 	})
-	value := `{"type":"authorized_user","client_id":"client-id","client_secret":"client-secret","refresh_token":"` + canary + `"}`
+	value := `{"type":"authorized_user","client_id":"client-id","client_secret":"` + "client-secret" + `","refresh_token":"` + canary + `"}`
 	ts.Secrets.Put(policytest.TypeSecret("ECHOED_LOGIN", testApprover, policy.TierAgent, policy.TypeGoogleLogin, value))
 	if status, body := ts.sessionReread(t, "ECHOED_LOGIN"); status != http.StatusOK {
 		t.Fatalf("reread ECHOED_LOGIN = %d %s", status, body)

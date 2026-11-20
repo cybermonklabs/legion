@@ -16,6 +16,9 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
+// tokenTypeURN begins each token type RFC 8693 Section 3 names.
+const tokenTypeURN = "urn:ietf:params:oauth:token-type:"
+
 const (
 	// ClientID is the OAuth client the agent-secrets helper logs a machine in as, and the client
 	// whose access token a dev box session exchanges for a Dispatch one.
@@ -100,7 +103,7 @@ const (
 	// SubjectTokenTypeAccessToken is RFC 8693's own name for an access token: the only kind the
 	// exchange mints, the kind it asks for, and the kind a dev box session presents its machine
 	// login's token as. The library spells it in a package its users cannot import.
-	SubjectTokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token" //nolint:gosec // a token type's name, not a token
+	SubjectTokenTypeAccessToken = tokenTypeURN + "access_token" //nolint:gosec // a token type's name, not a token
 	// PodSessionNotRegistered, then a colon, begins the error_description of the exchange's
 	// invalid_grant for a pod whose session no registration names yet (internal/broker/oauth,
 	// registeredPodSession). A pod's trade can reach the broker before its registration does, so

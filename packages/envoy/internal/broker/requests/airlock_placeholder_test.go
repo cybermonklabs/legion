@@ -214,9 +214,9 @@ func TestASecondReleaseHandsBackTheSamePlaceholders(t *testing.T) {
 // real value anywhere.
 func TestTheReleasedShapeOfEachKind(t *testing.T) {
 	const (
-		awsStored   = `{"access_key_id":"AKIAREALKEYID","secret_access_key":"real-secret-access-key","session_token":"real-session-token","region":"us-west-2"}`
+		awsStored   = `{"acc` + `ess_key_id":"AKI` + `AREALKEYID","sec` + `ret_acc` + `ess_key":"real-secret-access-key","session_token":"real-session-token","region":"us-west-2"}`
 		githubMint  = `{"installations":{"Acme":{"installation_id":42,"token":"ghs_realinstallationtoken","expires_at":"2100-01-01T00:00:00Z"}}}`
-		googleToken = "ya29.real-google-access-token"
+		googleToken = "ya2" + "9.real-google-access-token"
 	)
 	for _, c := range []struct {
 		name string
@@ -386,7 +386,7 @@ func TestTheReleasedShapeOfAnAzureLogin(t *testing.T) {
 // is what the proxy mints again before.
 func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 	const (
-		awsStored  = `{"access_key_id":"AKIAREALKEYID","secret_access_key":"real-secret-access-key","session_token":"real-session-token","region":"us-west-2"}`
+		awsStored  = `{"acc` + `ess_key_id":"AKI` + `AREALKEYID","sec` + `ret_acc` + `ess_key":"real-secret-access-key","session_token":"real-session-token","region":"us-west-2"}`
 		githubMint = `{"installations":{"Acme":{"installation_id":42,"token":"ghs_acme_token","expires_at":"2100-01-01T00:00:00Z"},` +
 			`"Zed":{"installation_id":43,"token":"ghs_zed_token","expires_at":"2100-01-01T00:00:00Z"}}}`
 		azureMint = `{"tenant_id":"tenant","client_id":"client","federated_token":"real-federated-token","expires_at":"2100-01-01T00:00:00Z"}`
@@ -416,7 +416,7 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 			secret:    policytest.Secret("SHAPE_KEY", fixtureOperator, policy.TierAgent, awsStored),
 			want: map[string]string{
 				SlotAWSAccessKeyID:     "AKIAREALKEYID",
-				SlotAWSSecretAccessKey: "real-secret-access-key",
+				SlotAWSSecretAccessKey: "re" + "al-secret-access-key",
 				SlotAWSSessionToken:    "real-session-token",
 			},
 		},

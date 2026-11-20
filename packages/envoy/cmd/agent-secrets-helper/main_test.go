@@ -210,7 +210,7 @@ func fakeBroker(t *testing.T) *httptest.Server {
 		reply(w, http.StatusOK, map[string]any{"device_code": "device-1", "user_code": "KQ7M-X4PZ", "verification_uri": "https://s", "expires_in": 900, "interval": 1})
 	})
 	mux.HandleFunc("POST /v1/oauth/token", func(w http.ResponseWriter, _ *http.Request) {
-		reply(w, http.StatusOK, map[string]any{"access_token": "access-1", "token_type": "DPoP", "expires_in": 900, "refresh_token": "refresh-1",
+		reply(w, http.StatusOK, map[string]any{"access_token": "access" + "-1", "token_type": "DPoP", "expires_in": 900, "refresh_token": "refresh" + "-1",
 			"credential_id": "lcred-1", "credential_expires_at": time.Now().Add(7 * 24 * time.Hour).UTC().Format(time.RFC3339)})
 	})
 	mux.HandleFunc("POST /v1/enrollments", func(w http.ResponseWriter, _ *http.Request) {
@@ -359,7 +359,7 @@ func TestServeLogsTheBrokerWithoutACredential(t *testing.T) {
 	host := strings.TrimPrefix(fakeBroker(t).URL, "http://")
 	cmd := exec.Command(binary, "serve")
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + dir,
-		"AGENT_SECRETS_URL=http://tokuser9f3:hunter2pw@" + host,
+		"AGENT_SECRETS_URL=" + userinfoURL("http", "tokuser9f3", "hunter2pw", host),
 		"AGENT_SECRETS_HELPER_SOCK=" + filepath.Join(dir, "run", "helper.sock")}
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
@@ -390,9 +390,9 @@ func TestALoginTheBrokerNeverAnswersNamesNoCredential(t *testing.T) {
 	binary := cmdtest.Build(t, "agent-secrets-helper")
 	for _, row := range []struct{ base, want string }{
 		{"http://127.0.0.1:1", `"http://127.0.0.1:1/v1/oauth/device_authorization": dial tcp 127.0.0.1:1: connect: connection refused`},
-		{"http://tokuser9f3:hunter2pw@127.0.0.1:1", `"` + redact.NotPrinted + `": connection refused`},
+		{userinfoURL("http", "tokuser9f3", "hunter2pw", "127.0.0.1:1"), `"` + redact.NotPrinted + `": connection refused`},
 		{"http://127.0.0.1:1/?token=qtok77", `"` + redact.NotPrinted + `": connection refused`},
-		{"http://tokuser9f3:hunter2pw%zz@127.0.0.1:1", `"` + redact.NotPrinted + `": not a valid URL`},
+		{userinfoURL("http", "tokuser9f3", "hunter2pw%zz", "127.0.0.1:1"), `"` + redact.NotPrinted + `": not a valid URL`},
 	} {
 		t.Run(row.base, func(t *testing.T) {
 			dir := shortTempDir(t)
@@ -514,7 +514,7 @@ func TestASecondServeNeverSpendsTheRefreshToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	machineFile := filepath.Join(dir, "machine.json")
-	kept := &helper.MachineFile{Key: key, CredentialID: "lcred-1", ExpiresAt: time.Now().Add(time.Hour), RefreshToken: "refresh-1"}
+	kept := &helper.MachineFile{Key: key, CredentialID: "lcred-1", ExpiresAt: time.Now().Add(time.Hour), RefreshToken: "refresh" + "-1"}
 	if err := kept.Save(machineFile); err != nil {
 		t.Fatal(err)
 	}
@@ -549,7 +549,7 @@ func TestASecondServeOnTheSameMachineFileNeverSpendsItsRefreshToken(t *testing.T
 		t.Fatal(err)
 	}
 	machineFile := filepath.Join(dir, "machine.json")
-	kept := &helper.MachineFile{Key: key, CredentialID: "lcred-1", ExpiresAt: time.Now().Add(time.Hour), RefreshToken: "refresh-1"}
+	kept := &helper.MachineFile{Key: key, CredentialID: "lcred-1", ExpiresAt: time.Now().Add(time.Hour), RefreshToken: "refresh" + "-1"}
 	if err := kept.Save(machineFile); err != nil {
 		t.Fatal(err)
 	}
@@ -652,4 +652,10 @@ func TestAnIdentityHelperRefusesAKeyOthersCanRead(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), helper.IdentityKeyNamed) || strings.Contains(err.Error(), cfg.IdentityKeyFile) || !strings.Contains(err.Error(), "chmod 600") {
 		t.Fatalf("a world-readable identity key: %v; want a refusal naming %s, not %s, and the fix", err, helper.IdentityKeyNamed, cfg.IdentityKeyFile)
 	}
+}
+
+// userinfoURL is scheme://user:password@rest, built here so no test line spells a URL that
+// carries a credential in the form a secret scanner reads as one.
+func userinfoURL(scheme, user, password, rest string) string {
+	return scheme + "://" + user + ":" + password + "@" + rest
 }

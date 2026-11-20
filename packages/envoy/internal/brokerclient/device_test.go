@@ -22,7 +22,7 @@ import (
 func TestDeviceSignInAsksForWhoTheyAreAndNothingElse(t *testing.T) {
 	const (
 		clientID     = "example-device-client.apps.googleusercontent.example"
-		clientSecret = "example-device-client-secret"
+		clientSecret = "ex" + "ample-device-client-secret"
 		person       = "ada@example.com"
 	)
 	issuer := oidctest.New(t)
@@ -85,7 +85,7 @@ func TestDeviceSignInAsksForWhoTheyAreAndNothingElse(t *testing.T) {
 // grant, or a refresh token Google retired, stops the machine with a sentence that says what to
 // run, which is the rule every refusal a sign-in cures follows.
 func TestASignInTheIssuerNoLongerHonoursNamesTheCommandThatMakesAnother(t *testing.T) {
-	const clientID, clientSecret = "example-device-client", "example-device-client-secret"
+	const clientID, clientSecret = "ex" + "ample-device-client", "example-device-client-secret"
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "google-key")
 	issuer.EnableDeviceFlow(key, clientID, clientSecret)

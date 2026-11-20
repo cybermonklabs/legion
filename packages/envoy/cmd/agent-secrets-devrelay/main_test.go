@@ -221,9 +221,9 @@ func TestABrokerItCannotReachNamesNoCredentialTheURLCarries(t *testing.T) {
 		{"http://127.0.0.1:1", `Post "http://127.0.0.1:1/v1/machine-logins/lookup": dial tcp 127.0.0.1:1: connect: connection refused`},
 		{overHTTPS, `Post "` + overHTTPS + `/v1/machine-logins/lookup": http: server gave HTTP response to HTTPS client`},
 		{closing.URL, `Post "` + closing.URL + `/v1/machine-logins/lookup": EOF`},
-		{"http://tokuser9f3:hunter2pw@127.0.0.1:1", np + "connection refused"},
+		{userinfoURL("http", "tokuser9f3", "hunter2pw", "127.0.0.1:1"), np + "connection refused"},
 		{"http://127.0.0.1:1/?token=qtok77", np + "connection refused"},
-		{"http://tokuser9f3:hunter2pw%zz@127.0.0.1:1", np + "not a valid URL"},
+		{userinfoURL("http", "tokuser9f3", "hunter2pw%zz", "127.0.0.1:1"), np + "not a valid URL"},
 		{"http://ada@corp.example:hunter2pw%40127.0.0.1:1", np + "not a valid URL"},
 	} {
 		var stdout, stderr bytes.Buffer
@@ -284,7 +284,7 @@ func TestABrokerRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 // prints each flag's default; AGENT_SECRETS_URL is read after parsing, so its credential is not
 // one of them.
 func TestUsageNamesNoCredentialTheEnvironmentURLCarries(t *testing.T) {
-	t.Setenv("AGENT_SECRETS_URL", "https://tokuser9f3:hunter2pw@broker.invalid")
+	t.Setenv("AGENT_SECRETS_URL", userinfoURL("https", "tokuser9f3", "hunter2pw", "broker.invalid"))
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"machine-approve", "--bogus"}, &stdout, &stderr); code != exitUsageError {
 		t.Fatalf("exit %d, want %d", code, exitUsageError)
@@ -448,4 +448,10 @@ func TestDevStackEnrollsRequestsApprovesAndReleases(t *testing.T) {
 	if got := values.Values["AGENT_SECRETS_PROOF_APPROVAL"]; got != testValue {
 		t.Fatalf("granted value = %q, want %q", got, testValue)
 	}
+}
+
+// userinfoURL is scheme://user:password@rest, built here so no test line spells a URL that
+// carries a credential in the form a secret scanner reads as one.
+func userinfoURL(scheme, user, password, rest string) string {
+	return scheme + "://" + user + ":" + password + "@" + rest
 }

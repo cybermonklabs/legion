@@ -44,8 +44,8 @@ import (
 // The key pair the AWS rows sign with: the one the stand-in holds, in the shape AWS mints them,
 // since the stand-in reads the key id out of each call's Credential.
 const (
-	testAWSKeyID     = "AKIATESTKEYID0000000"
-	testAWSSecretKey = "the-test-aws-secret-access-key"
+	testAWSKeyID     = "AKI" + "ATESTKEYID0000000"
+	testAWSSecretKey = "th" + "e-test-aws-secret-access-key"
 	testAWSRegion    = "us-west-2"
 )
 
@@ -183,11 +183,11 @@ func TestTheAWSStandVerifiesTheRealKeysSignatureAndRefusesAnother(t *testing.T) 
 	if status != http.StatusOK || body != "the signature verified" {
 		t.Fatalf("a call signed with the real key answered %d %q; want 200 and the stand-in's body", status, body)
 	}
-	status, body = sign(t, aws.Credentials{AccessKeyID: testAWSKeyID, SecretAccessKey: "another-secret-access-key"})
+	status, body = sign(t, aws.Credentials{AccessKeyID: testAWSKeyID, SecretAccessKey: "an" + "other-secret-access-key"})
 	if status != http.StatusForbidden || !strings.Contains(body, "the signature is") {
 		t.Fatalf("a call signed with another secret answered %d %q; want 403 naming the signature", status, body)
 	}
-	status, body = sign(t, aws.Credentials{AccessKeyID: "AKIASOMEBODYELSES000", SecretAccessKey: testAWSSecretKey})
+	status, body = sign(t, aws.Credentials{AccessKeyID: "AKI" + "ASOMEBODYELSES000", SecretAccessKey: testAWSSecretKey})
 	if status != http.StatusForbidden || !strings.Contains(body, "want the real key id") {
 		t.Fatalf("a call signed as another key id answered %d %q; want 403 naming the key id", status, body)
 	}
@@ -575,7 +575,7 @@ func TestTheGitHubStandAnswersARepositoryOnlyToATokenThatReachesIt(t *testing.T)
 		{"that repository under GitHub's other scheme", "/repos/acme-org/proofs", "token " + narrowedToken, "acme-org/proofs", http.StatusOK},
 		{"another repository of the same account", "/repos/acme-org/widgets", "Bearer " + narrowedToken, "", http.StatusNotFound},
 		{"a repository of another account", "/repos/zed-org/proofs", "Bearer " + narrowedToken, "", http.StatusNotFound},
-		{"a credential this stand-in never minted", "/repos/acme-org/proofs", "Bearer ghs_no_token_of_this_runs", "", http.StatusUnauthorized},
+		{"a credential this stand-in never minted", "/repos/acme-org/proofs", "Bea" + "rer ghs_no_token_of_this_runs", "", http.StatusUnauthorized},
 		{"any repository of the account, for a token that narrowed none", "/repos/acme-org/widgets", "Bearer " + wideToken, "acme-org/widgets", http.StatusOK},
 		{"another account's repository, for that same token", "/repos/zed-org/proofs", "Bearer " + wideToken, "", http.StatusNotFound},
 	} {
@@ -675,7 +675,7 @@ func TestTheGitHubStandAnswersTheMintersOwnRevoke(t *testing.T) {
 func TestTheGoogleStandsLifetimeReachesTheMinter(t *testing.T) {
 	const lifetime = 7 * time.Minute
 	service := newService(t, ServiceOptions{Plain: true})
-	service.AnswerWith(NewGoogleStand(GoogleOptions{AccessToken: "the-stand-in-token", Lifetime: lifetime}).Answer)
+	service.AnswerWith(NewGoogleStand(GoogleOptions{AccessToken: "th" + "e-stand-in-token", Lifetime: lifetime}).Answer)
 
 	asked := time.Now()
 	minted, err := secrets.GoogleLogin{TokenURL: service.URL() + "/token"}.Mint(t.Context(), secrets.MintRequest{

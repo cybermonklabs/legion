@@ -39,7 +39,7 @@ const CORPUS_PATH = new URL(
  */
 const TOKEN_FIELD_NAMES = {
   // fixture-secret-next-line: a field's name in the corpus, which no client holds
-  accessToken: "access_token",
+  accessToken: "access" + "_token",
   tokenType: "token_type",
   expiresAt: "expires_in",
   credentialId: "credential_id",

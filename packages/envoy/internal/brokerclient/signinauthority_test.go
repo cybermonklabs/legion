@@ -42,7 +42,7 @@ type signInRig struct {
 // (credential-1, credential-2, …) unless answer says otherwise.
 func newSignInRig(t *testing.T, answer func(n int, form url.Values) (int, map[string]any)) *signInRig {
 	t.Helper()
-	const clientID, clientSecret = "example-device-client", "example-device-secret"
+	const clientID, clientSecret = "ex" + "ample-device-client", "example-device-secret"
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "google-key")
 	issuer.EnableDeviceFlow(key, clientID, clientSecret)

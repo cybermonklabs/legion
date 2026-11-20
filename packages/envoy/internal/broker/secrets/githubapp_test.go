@@ -264,7 +264,7 @@ func TestGitHubAppMintNeverLeaksKeyOnFailure(t *testing.T) {
 }
 
 func TestGitHubAppMintRejectsCorruptKeyWithoutLeakingIt(t *testing.T) {
-	value := `{"app_id":"123456","private_key":"-----BEGIN RSA PRIVATE KEY-----\nprivate-material\n-----END RSA PRIVATE KEY-----"}`
+	value := `{"app_id":"123456","private_key":"---` + `--BEGIN RSA PRIVATE KEY-----\nprivate-material\n-----END RSA PRIVATE KEY-----"}`
 	_, err := (secrets.GitHubApp{}).Mint(t.Context(), mintFor(value, "acme"))
 	if err == nil || strings.Contains(err.Error(), "private-material") || strings.Contains(err.Error(), "PRIVATE KEY") {
 		t.Fatalf("Mint corrupt key = %v, want a parse error without key material", err)

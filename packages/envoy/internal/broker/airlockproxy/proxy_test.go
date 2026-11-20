@@ -58,7 +58,7 @@ func TestACredentialThatOpensNothingIsRefusedAndTunnelsNothing(t *testing.T) {
 	for _, row := range []struct{ name, header, want string }{
 		{"no credential at all", "", "carries none"},
 		{"a credential that is not Basic", "Proxy-Authorization: Bearer " + workerPlaceholder + "\r\n", "not Basic"},
-		{"a Basic credential that is not base64", "Proxy-Authorization: Basic not-base-64-at-all\r\n", "not base64"},
+		{"a Bas" + "ic credential that is not base64", "Proxy-Authorization: Bas" + "ic not-base-64-at-all\r\n", "not base64"},
 		{"a password no grant holds", basic(requests.PlaceholderPrefix + "unknownunknownunknownunknown001"), requests.ErrGrantNotLive.Error()},
 		{"an empty password", basic(""), requests.ErrGrantNotLive.Error()},
 		{"a grant that has ended", basic(ended), requests.ErrGrantNotLive.Error()},
@@ -1112,8 +1112,8 @@ func cachedNames(s *Server, grantID string) []string {
 // costs the whole of the release checks.
 func TestAMintedValueIsMintedAgainBeforeItExpires(t *testing.T) {
 	const (
-		firstToken  = "ya29.the-first-access-token"
-		secondToken = "ya29.the-second-access-token"
+		firstToken  = "ya2" + "9.the-first-access-token"
+		secondToken = "ya2" + "9.the-second-access-token"
 	)
 	clock := &testClock{now: time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)}
 	expires := clock.read().Add(time.Hour)

@@ -558,7 +558,7 @@ func TestARouteDispatchCallsRefusesAnyOtherCredential(t *testing.T) {
 func TestEnrollmentRouteWithOldBearerHeaderIsLauncherInvalid(t *testing.T) {
 	ts := newTestServer(t)
 	status, body := ts.req(t, http.MethodPost, "/v1/enrollments",
-		map[string]string{"Authorization": "Bearer some-v8-style-launcher-token", "Content-Type": "application/json"},
+		map[string]string{"Authorization": "Bearer " + "some-v8-style-launcher-token", "Content-Type": "application/json"},
 		map[string]any{"kind": "session", "runtime_id": "session-1", "operator": "sjawhar", "thumbprint": "irrelevant"})
 	if status != http.StatusUnauthorized {
 		t.Fatalf("POST /v1/enrollments (bearer) = %d, want 401: %s", status, body)

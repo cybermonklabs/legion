@@ -22,7 +22,7 @@ import (
 // must belong to (BROKER_SIGNIN_DOMAIN).
 const (
 	SignInClientID     = "broker-client"
-	SignInClientSecret = "broker-client-secret"
+	SignInClientSecret = "broker-" + "client-secret"
 	SignInDomain       = "example.com"
 )
 

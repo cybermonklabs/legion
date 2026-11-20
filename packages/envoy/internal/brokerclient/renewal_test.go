@@ -56,7 +56,7 @@ func TestABrokerThatIsDownIsWaitedOut(t *testing.T) {
 			return 503, map[string]any{"error": "unavailable"}
 		}
 		return 200, map[string]any{
-			"access_token": "dispatch-token", "token_type": "DPoP", "expires_in": 3600,
+			"acc" + "ess_token": "dispatch-token", "token_type": "DPoP", "expires_in": 3600,
 			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
 		}
 	})

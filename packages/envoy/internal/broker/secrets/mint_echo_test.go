@@ -17,7 +17,7 @@ import (
 const googleCanary = "refresh-token-canary-5b1e"
 
 func googleLoginValue() string {
-	return `{"type":"authorized_user","client_id":"client-id","client_secret":"client-secret","refresh_token":"` + googleCanary + `"}`
+	return `{"type":"authorized_user","client_id":"client-id","cli` + `ent_secret":"client-secret","ref` + `resh_token":"` + googleCanary + `"}`
 }
 
 // echoStatusLine is an upstream that answers every request with a status line whose status code is

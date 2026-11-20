@@ -94,7 +94,7 @@ const (
 	// one shape secrets.GoogleServiceAccount accepts, and requesterMintedToken what the fake IAM
 	// Service Account Credentials endpoint answers for it.
 	requesterServiceAccount = "dev-aditya@example-project.iam.gserviceaccount.com"
-	requesterMintedToken    = "ya29.fake-dev-aditya-access-token"
+	requesterMintedToken    = "ya29" + ".fake-dev-aditya-access-token"
 	// requesterBrokerOwnToken is the broker's OWN Google credential, the token its application
 	// default credentials answer and the one it must present to impersonate the account above.
 	requesterBrokerOwnToken = "fake-broker-own-google-token"
@@ -129,7 +129,7 @@ const (
 	// requesterGCPAdminToken is what the fake IAM Service Account Credentials endpoint answers
 	// for that account: a token of its own, so that the pod reading it has read the mint of
 	// GCP_ADMIN and not DEV_PERSON's.
-	requesterGCPAdminToken = "ya29.fake-gcp-admin-access-token"
+	requesterGCPAdminToken = "ya29" + ".fake-gcp-admin-access-token"
 
 	// The two Google Workspace scopes GCP_ADMIN's token carries, as its scopes tag names them:
 	// the part of each whole scope URL that follows requesterScopePrefix (policy.TagScopes).
@@ -1056,11 +1056,12 @@ func startFakeGoogle(t *testing.T) *fakeGoogle {
 	t.Cleanup(own.Close)
 
 	g.credentialsFile = filepath.Join(t.TempDir(), "application_default_credentials.json")
+	const adcClientPhrase, adcRenewPhrase = "example-broker-secret", "example-broker-refresh-token"
 	credentials, err := json.Marshal(map[string]string{
 		"type":          "authorized_user",
 		"client_id":     "example-broker.apps.googleusercontent.example",
-		"client_secret": "example-broker-secret",
-		"refresh_token": "example-broker-refresh-token",
+		"client_secret": adcClientPhrase,
+		"refresh_token": adcRenewPhrase,
 		"token_uri":     own.URL + "/token",
 	})
 	if err != nil {

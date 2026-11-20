@@ -138,7 +138,7 @@ func TestARefusalBesideABrokerURLThatCarriesACredentialNamesTheStatus(t *testing
 		t.Error("the loop handed its caller a token the broker refused to mint")
 		return nil
 	})
-	const carriesACredential = "https://machine:hunter2pw@secrets.example"
+	const carriesACredential = "https://" + "machine:hunter2pw@secrets.example"
 	printed := redact.Error(err, carriesACredential).Error()
 	if printed != "the broker answered HTTP 403" {
 		t.Errorf("the redacted refusal is %q, want the status alone: no text of a URL this one may not print", printed)

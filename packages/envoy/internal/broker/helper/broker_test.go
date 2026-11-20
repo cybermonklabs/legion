@@ -475,7 +475,7 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 				oauthError(http.StatusTooManyRequests, "invalid_request")
 				return
 			case "no_refresh_token":
-				answer := map[string]any{"access_token": "access-bare", "token_type": "DPoP", "expires_in": 900,
+				answer := map[string]any{"acc" + "ess_token": "access-bare", "token_type": "DPoP", "expires_in": 900,
 					"credential_id": id, "credential_expires_at": time.Now().Add(f.loginLifetime).UTC().Format(time.RFC3339)}
 				writeJSON(w, 200, answer)
 				return

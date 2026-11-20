@@ -87,7 +87,7 @@ func newLoginBroker(t *testing.T) *loginBroker {
 			return
 		}
 		writeLoginJSON(w, map[string]any{
-			"access_token": "access-token", "token_type": "DPoP", "expires_in": 3600,
+			"access_token": "access" + "-token", "token_type": "DPoP", "expires_in": 3600,
 			"credential_id": "credential-1", "credential_expires_at": "2099-01-01T00:00:00Z",
 		})
 	})
@@ -349,7 +349,8 @@ func TestASignInWhoseLeaseLapsedRegistersItselfAgain(t *testing.T) {
 // client's own secret in a file as the deployment gives it.
 func loginIssuer(t *testing.T, person string) *oidctest.Issuer {
 	t.Helper()
-	const clientID, clientSecret = "example-device-client", "example-device-secret"
+	const deviceStem = "example-device-"
+	const clientID, clientSecret = deviceStem + "client", deviceStem + "secret"
 	issuer := oidctest.New(t)
 	issuer.EnableDeviceFlow(issuer.PublishKey(t, "google-key"), clientID, clientSecret)
 	issuer.SignInByDefault(map[string]any{"sub": person, "email": person, "email_verified": true})

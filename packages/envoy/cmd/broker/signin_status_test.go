@@ -91,7 +91,8 @@ func TestClientCheckWritesWhatTheProviderAnsweredAboutTheClient(t *testing.T) {
 	signIn := brokertest.SignIn(issuer, issuer.PublishKey(t, "signin-key"))
 
 	rejected, unreachable := signIn, signIn
-	rejected.ClientSecret = "not-the-client-secret"
+	const wrongSignInPhrase = "not-the-client-secret"
+	rejected.ClientSecret = wrongSignInPhrase
 	unreachable.Issuer = unreachableIssuer(t)
 
 	var logged clientCheckLog
@@ -182,7 +183,8 @@ func TestClientCheckLogsAChangeOfStateNotEachPass(t *testing.T) {
 	issuer := oidctest.New(t)
 	signIn := brokertest.SignIn(issuer, issuer.PublishKey(t, "signin-key"))
 	rejected, unreachable := signIn, signIn
-	rejected.ClientSecret = "not-the-client-secret"
+	const wrongSignInPhrase = "not-the-client-secret"
+	rejected.ClientSecret = wrongSignInPhrase
 	unreachable.Issuer = unreachableIssuer(t)
 
 	failed := "WARN " + clientCheckFailedMessage + " state="

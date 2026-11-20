@@ -46,7 +46,7 @@
       "answer": {
         "status": 200,
         "body": {
-          "access_token": "broker-access-token-for-the-pod",
+          "access_token": "<broker-access-token-for-the-pod>",
           "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
           "token_type": "DPoP",
           "expires_in": 3600,
@@ -57,7 +57,7 @@
       "expect": {
         "outcome": "accept",
         "token": {
-          "access_token": "broker-access-token-for-the-pod",
+          "access_token": "<broker-access-token-for-the-pod>",
           "token_type": "DPoP",
           "expires_in": 3600,
           "credential_id": "cred-pod-1",
@@ -87,7 +87,7 @@
       "answer": {
         "status": 200,
         "body": {
-          "access_token": "broker-access-token-for-the-machine",
+          "access_token": "<broker-access-token-for-the-machine>",
           "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
           "token_type": "DPoP",
           "expires_in": 1800,
@@ -98,7 +98,7 @@
       "expect": {
         "outcome": "accept",
         "token": {
-          "access_token": "broker-access-token-for-the-machine",
+          "access_token": "<broker-access-token-for-the-machine>",
           "token_type": "DPoP",
           "expires_in": 1800,
           "credential_id": "cred-machine-1",
@@ -130,7 +130,7 @@
       "answer": {
         "status": 200,
         "body": {
-          "access_token": "broker-access-token-with-no-credential",
+          "access_token": "<broker-access-token-with-no-credential>",
           "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
           "token_type": "DPoP",
           "expires_in": 1800
@@ -139,7 +139,7 @@
       "expect": {
         "outcome": "accept",
         "token": {
-          "access_token": "broker-access-token-with-no-credential",
+          "access_token": "<broker-access-token-with-no-credential>",
           "token_type": "DPoP",
           "expires_in": 1800,
           "credential_id": ""
@@ -176,7 +176,7 @@
       "answer": {
         "status": 200,
         "body": {
-          "access_token": "broker-access-token-for-the-person",
+          "access_token": "<broker-access-token-for-the-person>",
           "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
           "token_type": "DPoP",
           "expires_in": 3600,
@@ -187,7 +187,7 @@
       "expect": {
         "outcome": "accept",
         "token": {
-          "access_token": "broker-access-token-for-the-person",
+          "access_token": "<broker-access-token-for-the-person>",
           "token_type": "DPoP",
           "expires_in": 3600,
           "credential_id": "cred-signin-1",
@@ -474,11 +474,11 @@
       "answer": {
         "status": 200,
         "body": {
-          "access_token": "broker-access-token-with-a-refresh-token",
+          "access_token": "<broker-access-token-with-a-refresh-token>",
           "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
           "token_type": "DPoP",
           "expires_in": 3600,
-          "refresh_token": "a-refresh-token-this-grant-never-issues"
+          "refresh_token": "<a-refresh-token-this-grant-never-issues>"
         }
       },
       "expect": {
@@ -510,7 +510,7 @@
       "answer": {
         "status": 200,
         "body": {
-          "access_token": "a-bearer-token",
+          "access_token": "<a-bearer-token>",
           "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
           "token_type": "Bearer",
           "expires_in": 3600

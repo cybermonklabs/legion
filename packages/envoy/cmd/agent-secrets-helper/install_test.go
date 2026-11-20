@@ -569,7 +569,7 @@ func TestInstallRefusesWithoutAURL(t *testing.T) {
 // must percent-escape trips the unit's escaping check, and the refusal names the URL redacted.
 func TestInstallRefusesAnEscapedURLWithoutNamingItsCredential(t *testing.T) {
 	r := newInstallRig(t)
-	err := r.run("--url", "https://tokuser9f3:hunter2pw%40x@broker.invalid")
+	err := r.run("--url", userinfoURL("https", "tokuser9f3", "hunter2pw%40x", "broker.invalid"))
 	if err == nil || !strings.Contains(err.Error(), redact.NotPrinted) {
 		t.Fatalf("install: %v; want a refusal naming the URL as not printed", err)
 	}

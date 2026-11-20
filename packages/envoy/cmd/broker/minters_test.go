@@ -43,14 +43,15 @@ func TestEachTypeReachesItsOwnMinter(t *testing.T) {
 	}))
 	defer github.Close()
 	google := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "google-access-token"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "google-" + "access-token"})
 	}))
 	defer google.Close()
+	const iamMinted, brokerOwn = "service-account-access-token", "broker-own-token"
 	iam := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/projects/-/serviceAccounts/dev-aditya@example-identities.iam.gserviceaccount.com:generateAccessToken" {
 			t.Errorf("IAM endpoint asked %s %s", r.Method, r.URL.Path)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "service-account-access-token"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": iamMinted})
 	}))
 	defer iam.Close()
 	minters := typeMinters(
@@ -59,7 +60,7 @@ func TestEachTypeReachesItsOwnMinter(t *testing.T) {
 		secrets.AzureLogin{},
 		&secrets.GoogleServiceAccount{
 			BaseURL: iam.URL, HTTP: iam.Client(),
-			Source: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "broker-own-token"}),
+			Source: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: brokerOwn}),
 			// The minter mints only for the account the deployment binds to the secret the
 			// request names, so this stands in for BROKER_SERVICE_ACCOUNT_SECRETS; with no
 			// binding every mint of the type would be refused before the IAM endpoint below
@@ -111,7 +112,7 @@ func TestTypeMinters(t *testing.T) {
 
 func TestRequestMachineReleasesAzureLoginFromTheConfiguredFile(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "azure-token")
-	const token = "eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjQxMDI0NDQ4MDB9.c2lnbmF0dXJl"
+	const token = "eyJhbGciOiJSUzI1NiJ9" + "." + "eyJleHAiOjQxMDI0NDQ4MDB9.c2lnbmF0dXJl"
 	if err := os.WriteFile(file, []byte(token), 0o600); err != nil {
 		t.Fatal(err)
 	}

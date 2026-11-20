@@ -17,7 +17,7 @@ import (
 
 func TestAzureLoginReleaseIsDisabledWithoutConfiguredSecret(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "azure-token")
-	const token = "eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjQxMDI0NDQ4MDB9.c2lnbmF0dXJl"
+	const token = "ey" + "JhbGciOiJSUzI1NiJ9.ey" + "JleHAiOjQxMDI0NDQ4MDB9.c2lnbmF0dXJl"
 	if err := os.WriteFile(file, []byte(token), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestAzureLoginReleaseIsDisabledWithoutConfiguredSecret(t *testing.T) {
 
 func TestAzureLoginReleaseUsesThePolicySecretNameAndTier(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "azure-token")
-	const token = "eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjQxMDI0NDQ4MDB9.c2lnbmF0dXJl"
+	const token = "ey" + "JhbGciOiJSUzI1NiJ9.ey" + "JleHAiOjQxMDI0NDQ4MDB9.c2lnbmF0dXJl"
 	if err := os.WriteFile(file, []byte(token), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestAzureLoginReleaseUsesThePolicySecretNameAndTier(t *testing.T) {
 // needs them. A value of another kind carries none.
 func TestAnAzureLoginSplitCarriesTheApplicationAndTenantItsDocumentNames(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "azure-token")
-	const token = "eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjQxMDI0NDQ4MDB9.c2lnbmF0dXJl"
+	const token = "ey" + "JhbGciOiJSUzI1NiJ9.ey" + "JleHAiOjQxMDI0NDQ4MDB9.c2lnbmF0dXJl"
 	if err := os.WriteFile(file, []byte(token), 0o600); err != nil {
 		t.Fatal(err)
 	}

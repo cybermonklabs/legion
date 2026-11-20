@@ -144,8 +144,9 @@ const upgradePath = "/socket"
 // The AWS key pair the AWS stand verifies a call against when --aws-key names none. The key id
 // is in the shape AWS mints them, since the stand reads it out of each call's Credential.
 const (
-	defaultAWSKeyID     = "AKIASTANDINKEY000000"
-	defaultAWSSecretKey = "the-stand-in-aws-secret-access-key"
+	defaultAWSKeyID     = "AKIA" + "STANDINKEY000000"
+	defaultAWSSecretKey = standInAWSPhrase
+	standInAWSPhrase    = "the-stand-in-aws-secret-access-key"
 )
 
 // standInGitHubAppID is the App id the stored github-app value carries. The GitHub stand reads

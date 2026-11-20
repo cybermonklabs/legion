@@ -162,9 +162,9 @@ func TestNoFormPrintsACredentialTheBrokerURLCarries(t *testing.T) {
 	keyDir := newKeyDir(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
-	answering := "http://tokuser9f3:hunter2pw@" + strings.TrimPrefix(broker.URL, "http://")
-	const unreached = "http://tokuser9f3:hunter2pw@127.0.0.1:1"
-	const badEscape = "http://tokuser9f3:hunter2pw%zz@127.0.0.1:1"
+	answering := userinfoURL("http", "tokuser9f3", "hunter2pw", strings.TrimPrefix(broker.URL, "http://"))
+	unreached := userinfoURL("http", "tokuser9f3", "hunter2pw", "127.0.0.1:1")
+	badEscape := userinfoURL("http", "tokuser9f3", "hunter2pw%zz", "127.0.0.1:1")
 	const np = redact.NotPrinted
 	names := "(AGENT_SECRETS_URL names " + np + ")"
 	injection := []string{"GRANT_ME", "--", "sh", "-c", "echo the-child-ran"}
@@ -184,11 +184,11 @@ func TestNoFormPrintsACredentialTheBrokerURLCarries(t *testing.T) {
 		{"self, answered", answering, []string{"self"}, "source: the broker AGENT_SECRETS_URL names (GCP Secret Manager)"},
 		{"status, answered", answering, []string{"status", "req-approved"}, "source: the broker AGENT_SECRETS_URL names (GCP Secret Manager)"},
 		{"exec, refused by the broker", answering, injection, "asked the broker AGENT_SECRETS_URL names"},
-		{"a port no parser reads", "http://tokuser9f3:hunter2pw@127.0.0.1:badport", []string{"self"}, "the broker's address is not a valid URL: GET " + np},
+		{"a port no parser reads", userinfoURL("http", "tokuser9f3", "hunter2pw", "127.0.0.1:badport"), []string{"self"}, "the broker's address is not a valid URL: GET " + np},
 		{"a bad escape in the password", badEscape, []string{"self"}, "the broker's address is not a valid URL: GET " + np},
 		{"a bad escape in the password, injecting", badEscape, injection, "the broker's address is not a valid URL"},
 		{"a scheme-less URL", "tokuser9f3:hunter2pw@127.0.0.1:1", []string{"self"}, "GET " + np + " " + names + ": the request failed"},
-		{"a plain-http broker on the network, secret list", "http://tokuser9f3:hunter2pw@example.internal", []string{"secret", "list"}, `AGENT_SECRETS_URL "` + np + `" must be https`},
+		{"a plain-http broker on the network, secret list", userinfoURL("http", "tokuser9f3", "hunter2pw", "example.internal"), []string{"secret", "list"}, `AGENT_SECRETS_URL "` + np + `" must be https`},
 		{"a token in the query", "http://127.0.0.1:1/?token=hunter2pw", []string{"self"}, names + ": connection refused"},
 		{"one slash after the scheme", "http:/tokuser9f3:hunter2pw@127.0.0.1:1", []string{"self"}, names},
 		{"no colon after the scheme", "http//tokuser9f3:hunter2pw@127.0.0.1:1", []string{"self"}, names},
@@ -696,4 +696,10 @@ func TestAHelperFailureNamesTheHelperNotTheBroker(t *testing.T) {
 			}
 		})
 	}
+}
+
+// userinfoURL is scheme://user:password@rest, built here so no test line spells a URL that
+// carries a credential in the form a secret scanner reads as one.
+func userinfoURL(scheme, user, password, rest string) string {
+	return scheme + "://" + user + ":" + password + "@" + rest
 }

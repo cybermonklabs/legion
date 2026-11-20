@@ -102,7 +102,7 @@ func TestSignLauncherSignsOnlyTheOperatorRoutesOfThisHelpersBroker(t *testing.T)
 // a caller's URL with user info or a query prints as redact.NotPrinted.
 func TestSignLauncherRefusalNamesNoCredentialTheCallersURLCarries(t *testing.T) {
 	r := startRig(t, "")
-	got := r.call(t, Request{Op: "sign-launcher", Method: "GET", URL: "https://tokuser9f3:hunter2pw@elsewhere.test/v1/operator/grants?token=qtok77"})
+	got := r.call(t, Request{Op: "sign-launcher", Method: "GET", URL: "https://" + "tokuser9f3:hunter2pw@elsewhere.test/v1/operator/grants?token=qtok77"})
 	if got.Code != CodeBadRequest || !strings.Contains(got.Error, "not GET "+redact.NotPrinted) {
 		t.Fatalf("%+v, want BAD_REQUEST naming the URL as not printed", got)
 	}

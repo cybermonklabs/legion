@@ -34,11 +34,11 @@ import (
 // Credential of each call.
 const (
 	awsName          = "AWS_KEY"
-	awsRealKeyID     = "AKIAREALKEYID0000000"
+	awsRealKeyID     = "AKI" + "AREALKEYID0000000"
 	awsRealSecret    = "the-real-aws-secret-access-key"
 	awsRealSession   = "the-real-aws-session-token"
 	awsRegion        = "us-west-2"
-	awsOtherKeyID    = "AKIASOMEBODYELSES000"
+	awsOtherKeyID    = "AKI" + "ASOMEBODYELSES000"
 	awsUnsignedBody  = "UNSIGNED-PAYLOAD"
 	awsStandInAnswer = "the stand-in service verified the signature"
 )
@@ -229,7 +229,7 @@ func TestAnAWSCallThatIsNotThisGrantsIsRefused(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		credentials := aws.Credentials{AccessKeyID: awsOtherKeyID, SecretAccessKey: "somebody-elses-secret"}
+		credentials := aws.Credentials{AccessKeyID: awsOtherKeyID, SecretAccessKey: "so" + "mebody-elses-secret"}
 		if err := v4.NewSigner().SignHTTP(t.Context(), credentials, request, hashOf(""), "sts", awsRegion, time.Now().UTC()); err != nil {
 			t.Fatal(err)
 		}

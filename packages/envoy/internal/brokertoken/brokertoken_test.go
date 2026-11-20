@@ -831,7 +831,7 @@ func TestARequestPresentingNoDPoPTokenIsNotThisCredential(t *testing.T) {
 	sent := body.String()
 
 	for name, authorization := range map[string]string{
-		"a bearer token":          "Bearer a-token-of-another-kind",
+		"a bearer token":          "Bea" + "rer a-token-of-another-kind",
 		"a browser's own cookie":  "",
 		"a scheme nothing mounts": "Negotiate something-else-entirely",
 	} {

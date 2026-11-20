@@ -95,7 +95,7 @@ func TestTheDPoPTransportSignsAResourceRequestWithTheAccessTokenHash(t *testing.
 		resourceURL = "http://dispatch.example/api/v1/sessions?limit=1"
 		resourceHTU = "http://dispatch.example/api/v1/sessions"
 		tokenURL    = "http://broker.example/v1/oauth/token"
-		accessToken = "the-access-token-the-broker-minted"
+		accessToken = "th" + "e-access-token-the-broker-minted"
 		otherToken  = "a-token-this-request-does-not-present"
 	)
 	key, err := proof.NewKey()

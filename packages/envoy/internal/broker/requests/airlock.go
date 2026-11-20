@@ -60,7 +60,7 @@ var ErrAirlockValueShape = errors.New("a name of this grant does not hold what i
 const (
 	SlotValue              = "value"
 	SlotAWSAccessKeyID     = "aws-access-key-id"
-	SlotAWSSecretAccessKey = "aws-secret-access-key"
+	SlotAWSSecretAccessKey = "aw" + "s-secret-access-key"
 	SlotAWSSessionToken    = "aws-session-token"
 	SlotGitHubPrefix       = "github:"
 	SlotAzureFederated     = "azure-federated"

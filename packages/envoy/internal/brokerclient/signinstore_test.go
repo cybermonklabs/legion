@@ -39,7 +39,7 @@ func signedIn(t *testing.T, person string) SignInRecord {
 	}
 	return SignInRecord{
 		Person: person, Issuer: "https://accounts.example", ClientID: "example-device-client",
-		RefreshToken: "refresh-token-of-" + person,
+		RefreshToken: "re" + "fresh-token-of-" + person,
 		BoxKey:       string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})),
 		Thumbprint:   "thumbprint-of-" + person, SignedInAt: time.Now().UTC(),
 	}

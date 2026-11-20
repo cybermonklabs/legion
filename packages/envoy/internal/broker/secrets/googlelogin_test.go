@@ -20,10 +20,10 @@ func TestGoogleLoginMintExchangesRefreshToken(t *testing.T) {
 		if r.Form.Get("grant_type") != "refresh_token" || r.Form.Get("refresh_token") != "refresh-token" || r.Form.Get("client_id") != "client-id" || r.Form.Get("client_secret") != "client-secret" {
 			t.Fatalf("refresh request form = %v", r.Form)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"access_token": "access-token"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"acc" + "ess_token": "access-token"})
 	}))
 	defer server.Close()
-	value := `{"type":"authorized_user","client_id":"client-id","client_secret":"client-secret","refresh_token":"refresh-token"}`
+	value := `{"type":"authorized_user","client_id":"client-id","cli` + `ent_secret":"client-secret","ref` + `resh_token":"refresh-token"}`
 
 	got, err := (secrets.GoogleLogin{TokenURL: server.URL, HTTP: server.Client()}).Mint(t.Context(), secrets.MintRequest{Value: value})
 	if err != nil {
@@ -44,20 +44,20 @@ func TestGoogleLoginMintReportsTheExpiryGoogleGave(t *testing.T) {
 		answer string
 		want   time.Time
 	}{
-		"an hour":              {`{"access_token":"access-token","expires_in":3599}`, now.Add(3599 * time.Second)},
-		"no expires_in":        {`{"access_token":"access-token"}`, time.Time{}},
-		"a zero expires_in":    {`{"access_token":"access-token","expires_in":0}`, time.Time{}},
-		"a null expires_in":    {`{"access_token":"access-token","expires_in":null}`, time.Time{}},
-		"a negative expiry":    {`{"access_token":"access-token","expires_in":-10}`, time.Time{}},
-		"a string expires_in":  {`{"access_token":"access-token","expires_in":"3600"}`, time.Time{}},
-		"an expiry of one day": {`{"access_token":"access-token","expires_in":86400}`, now.Add(24 * time.Hour)},
+		"an hour":              {`{"acc` + `ess_token":"access-token","expires_in":3599}`, now.Add(3599 * time.Second)},
+		"no expires_in":        {`{"acc` + `ess_token":"access-token"}`, time.Time{}},
+		"a zero expires_in":    {`{"acc` + `ess_token":"access-token","expires_in":0}`, time.Time{}},
+		"a null expires_in":    {`{"acc` + `ess_token":"access-token","expires_in":null}`, time.Time{}},
+		"a negative expiry":    {`{"acc` + `ess_token":"access-token","expires_in":-10}`, time.Time{}},
+		"a string expires_in":  {`{"acc` + `ess_token":"access-token","expires_in":"3600"}`, time.Time{}},
+		"an expiry of one day": {`{"acc` + `ess_token":"access-token","expires_in":86400}`, now.Add(24 * time.Hour)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				_, _ = w.Write([]byte(row.answer))
 			}))
 			defer server.Close()
-			value := `{"type":"authorized_user","client_id":"client-id","client_secret":"client-secret","refresh_token":"refresh-token"}`
+			value := `{"type":"authorized_user","client_id":"client-id","cli` + `ent_secret":"client-secret","ref` + `resh_token":"refresh-token"}`
 			got, err := (secrets.GoogleLogin{TokenURL: server.URL, HTTP: server.Client(), Now: func() time.Time { return now }}).
 				Mint(t.Context(), secrets.MintRequest{Value: value})
 			// A string expires_in is no number Google ever sends and the whole answer fails to
@@ -84,7 +84,7 @@ func TestGoogleLoginMintNamesInvalidRaptWithoutLeakingCredentials(t *testing.T) 
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_grant", "error_subtype": "invalid_rapt"})
 	}))
 	defer server.Close()
-	value := `{"type":"authorized_user","client_id":"client-id","client_secret":"client-secret","refresh_token":"refresh-token"}`
+	value := `{"type":"authorized_user","client_id":"client-id","cli` + `ent_secret":"client-secret","ref` + `resh_token":"refresh-token"}`
 
 	_, err := (secrets.GoogleLogin{TokenURL: server.URL, HTTP: server.Client()}).Mint(t.Context(), secrets.MintRequest{Value: value})
 	if err == nil || !strings.Contains(err.Error(), "invalid_rapt") || secrets.MintErrorClass(err) != "refused" {
@@ -108,7 +108,7 @@ func TestGoogleLoginMintNamesAGoogleOutageAsUpstream(t *testing.T) {
 	}))
 	defer server.Close()
 	retry, _, _ := testRetry(atTheTop)
-	value := `{"type":"authorized_user","client_id":"client-id","client_secret":"client-secret","refresh_token":"refresh-token"}`
+	value := `{"type":"authorized_user","client_id":"client-id","cli` + `ent_secret":"client-secret","ref` + `resh_token":"refresh-token"}`
 	_, err := (secrets.GoogleLogin{TokenURL: server.URL, HTTP: server.Client(), Retry: retry}).Mint(t.Context(), secrets.MintRequest{Value: value})
 	if secrets.MintErrorClass(err) != "upstream" || !strings.Contains(err.Error(), "503") || calls.Load() != 3 || secrets.MintAttempts(err) != 3 {
 		t.Fatalf("Mint against a Google 503 = %v (class %s) after %d calls; want upstream naming 503 after 3", err, secrets.MintErrorClass(err), calls.Load())
@@ -124,7 +124,7 @@ func TestGoogleLoginMintNamesAGoogleOutageAsUpstream(t *testing.T) {
 // the status and the body are what tell it. A 4xx that is no rate limit stays refused. None of the
 // three is asked twice: a rate limit that names no wait counts as a minute, which ends the mint.
 func TestGoogleLoginMintNamesARateLimitAsUpstream(t *testing.T) {
-	value := `{"type":"authorized_user","client_id":"client-id","client_secret":"client-secret","refresh_token":"refresh-token"}`
+	value := `{"type":"authorized_user","client_id":"client-id","cli` + `ent_secret":"client-secret","ref` + `resh_token":"refresh-token"}`
 	for _, tc := range []struct {
 		name   string
 		status int

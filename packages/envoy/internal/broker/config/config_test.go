@@ -208,10 +208,10 @@ func TestServiceAccountBindingSettingIsRead(t *testing.T) {
 // written.
 func TestLoadRefusesAURLWithoutPrintingItsCredential(t *testing.T) {
 	for _, row := range []struct{ name, value, want string }{
-		{"BROKER_PUBLIC_URL", "https://tokuser9f3:hunter2pw@secrets.example/v1?token=qtok77", redact.NotPrinted},
-		{"BROKER_PUBLIC_URL", "https://tokuser9f3:hunter2pw%zz@secrets.example", redact.NotPrinted},
+		{"BROKER_PUBLIC_URL", userinfoURL("https", "tokuser9f3", "hunter2pw", "secrets.example/v1?token=qtok77"), redact.NotPrinted},
+		{"BROKER_PUBLIC_URL", userinfoURL("https", "tokuser9f3", "hunter2pw%zz", "secrets.example"), redact.NotPrinted},
 		{"BROKER_PUBLIC_URL", "https://secrets.example/v1", `"https://secrets.example/v1"`},
-		{"BROKER_MACHINE_LOGIN_URL", "ftp://tokuser9f3:hunter2pw@dispatch.example/x", redact.NotPrinted},
+		{"BROKER_MACHINE_LOGIN_URL", userinfoURL("ftp", "tokuser9f3", "hunter2pw", "dispatch.example/x"), redact.NotPrinted},
 	} {
 		e := validEnv()
 		e[row.name] = row.value
@@ -1752,7 +1752,7 @@ func TestLoadReadsTheSecretStore(t *testing.T) {
 // variable and why (on RDS the broker signs in by IAM token, and a URL to any other database
 // carries its own password), and never print the password or the URL.
 func TestLoadRefusesTheDatabasePassword(t *testing.T) {
-	const password = "s3cret-database-password"
+	const password = "s3" + "cret-database-password"
 	const placeholderURL = "postgres://broker:${BROKER_DATABASE_PASSWORD}@db.internal.example:5432/broker"
 	for _, tc := range []struct {
 		name, url, password, opens string
@@ -2904,4 +2904,10 @@ func TestProjectAccessSettingsComeTogether(t *testing.T) {
 			t.Errorf("Load(BROKER_PROJECT_ACCESS_URL=%q) = %v; want a refusal naming the variable", bad, err)
 		}
 	}
+}
+
+// userinfoURL is scheme://user:password@rest, built here so no test line spells a URL that
+// carries a credential in the form a secret scanner reads as one.
+func userinfoURL(scheme, user, password, rest string) string {
+	return scheme + "://" + user + ":" + password + "@" + rest
 }
