@@ -1,0 +1,5 @@
+kind: Changed
+body: The daemon API version is 169. Public spend-resource-attribute examples, comments and tests use neutral `acme.*` keys; operators still pass their own attributes through `OTEL_RESOURCE_ATTRIBUTES`.
+time: 2026-11-20T00:42:49.689621891Z
+custom:
+    Issue: pr4543
