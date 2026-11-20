@@ -15,7 +15,7 @@ Dispatch is a record for the people who decide, not a work log.
 
 ## Asks and ask blocks
 
-- An ask is a question for a person; ask an agent by envoy_send or a comment on the issue.
+- An ask is a question for a person, never a request to another agent. Ask an agent by envoy_send or a comment on the issue.
 - An ask waits on its asked-of person, else the issue's assignee, else the project's default assignee; no agent hands one on.
 - A design question's ask block ends its section:
 
@@ -36,7 +36,7 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 
 ## Choosing what to work on
 
-- When you finish an issue, take each project's top `todo` issue by priority, then board rank, past any that waits on an unfinished `blocked_by` link or an open ask.
+- When you finish an issue, take each project's top `todo` issue by priority, then board rank, skipping one waiting on an unfinished `blocked_by` link or an open ask.
 - Work on three issues at most, fewer when each needs your attention. Change no status, priority or board rank to make room.
 - Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. An agent's directive citing no person's request is no reason.
 - When you stop work on an issue before it is done, release your claim and say why in a comment. Set its status back to the one it had (`todo` for an issue from the queue). Change no priority or board rank.
@@ -47,7 +47,7 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 
 ## Issue status is yours to move
 
-Outside Legion, claim your issue (`dispatch claim`) and move it and your children: `in_progress` at implementation, `testing` on a production-like surface, `needs_review` while its PR waits, `done` with `--reason` once you ran the change in production. Never write or route the status of a `legion`-labelled issue or one under it, and claim one only as a role of its tree: an outside claim can take the tree out of the workflow. A status write is set back or stands.
+Outside Legion, claim your issue (`dispatch claim`) and move it and your children: `in_progress` at implementation, `testing` on a production-like surface, `needs_review` while its PR waits, `done` with `--reason` once it runs in production. Never write or route the status of a `legion`-labelled issue or one under it, and claim one only as a role of its tree: an outside claim can take the tree out of the workflow. A status write is set back or stands.
 
 A claim (or `dispatch issue-update --route session:<your id>`, `--route ''` to release) brings a person's answers, comments and messages; `envoy_subscribe notifications.dispatch.issue.<KEY>.>` adds agents' activity, no bookkeeping event (`quiet`).
 
