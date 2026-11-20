@@ -79,6 +79,20 @@ func TestNATSCalloutSettings(t *testing.T) {
 			t.Fatalf("read %+v, want %+v", cfg.NATS, want)
 		}
 	})
+	// BROKER_NATS_SERVICES alone runs no auth service, and is read for the edge listeners its
+	// entries name (GET /v1/project-repositories): with every entry an edge-listener one, it loads
+	// as it was given and the service stays off.
+	t.Run("only edge-listener services is no service", func(t *testing.T) {
+		e := validEnv()
+		e["BROKER_NATS_SERVICES"] = "edge-listener/edge-a/PRIV=system:serviceaccount:example-ns:example-edge-listener"
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.NATS.Enabled() || cfg.NATS.Services != e["BROKER_NATS_SERVICES"] || len(cfg.NATS.URLs) != 0 || cfg.NATS.SeedFile != "" {
+			t.Fatalf("an environment naming only edge-listener services configured %+v, want them read and no service", cfg.NATS)
+		}
+	})
 
 	refusals := []struct {
 		name  string
@@ -93,6 +107,18 @@ func TestNATSCalloutSettings(t *testing.T) {
 			for _, name := range []string{"BROKER_NATS_URLS", "BROKER_NATS_SEED_FILE", "BROKER_NATS_ISSUER_SEED_FILE", "BROKER_NATS_XKEY_SEED_FILE"} {
 				delete(e, name)
 			}
+		}, "BROKER_NATS_URLS"},
+		{"only the services, an edge listener among them", func(e map[string]string) {
+			for _, name := range []string{"BROKER_NATS_URLS", "BROKER_NATS_SEED_FILE", "BROKER_NATS_ISSUER_SEED_FILE", "BROKER_NATS_XKEY_SEED_FILE"} {
+				delete(e, name)
+			}
+			e["BROKER_NATS_SERVICES"] = "edge-listener/edge-a/PRIV=system:serviceaccount:example-ns:example-edge-listener " + e["BROKER_NATS_SERVICES"]
+		}, "BROKER_NATS_URLS"},
+		{"edge-listener services and a seed file", func(e map[string]string) {
+			for _, name := range []string{"BROKER_NATS_URLS", "BROKER_NATS_ISSUER_SEED_FILE", "BROKER_NATS_XKEY_SEED_FILE"} {
+				delete(e, name)
+			}
+			e["BROKER_NATS_SERVICES"] = "edge-listener/edge-a/PRIV=system:serviceaccount:example-ns:example-edge-listener"
 		}, "BROKER_NATS_URLS"},
 		{"a user seed in the issuer file", func(e map[string]string) { e["BROKER_NATS_ISSUER_SEED_FILE"] = user }, "BROKER_NATS_ISSUER_SEED_FILE"},
 		{"a user seed in the xkey file", func(e map[string]string) { e["BROKER_NATS_XKEY_SEED_FILE"] = user }, "BROKER_NATS_XKEY_SEED_FILE"},

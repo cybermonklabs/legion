@@ -14,11 +14,14 @@ import (
 // natsCalloutBoot is what the NATS auth service needs from the boot, for a deployment that runs
 // it (cfg.NATS): the services BROKER_NATS_SERVICES lists, each refused at start when its kind of
 // platform token has no NATS audience, and one verifier per audience set, on the key set the
-// broker already reads for that issuer. A deployment that runs no auth service gets nothing and
-// reads nothing.
+// broker already reads for that issuer. A deployment that runs no auth service gets the entries
+// BROKER_NATS_SERVICES lists alone, which config.Load holds to edge listeners' entries, read for
+// GET /v1/project-repositories and refused at start when one does not parse; it needs no NATS
+// audience and no key set, and reads none.
 func natsCalloutBoot(ctx context.Context, cfg config.Config, discovered verifiers, keysFor keysFunc) ([]natscallout.ServiceEntry, natscallout.PlatformTokens, error) {
 	if !cfg.NATS.Enabled() {
-		return nil, natscallout.PlatformTokens{}, nil
+		services, err := natscallout.ParseServices(cfg.NATS.Services)
+		return services, natscallout.PlatformTokens{}, err
 	}
 	services, err := natscallout.ParseServices(cfg.NATS.Services)
 	if err != nil {

@@ -168,8 +168,8 @@ type Deps struct {
 	// EdgeListeners is each edge listener's entry of BROKER_NATS_SERVICES
 	// (natscallout.EdgeListeners): GET /v1/project-repositories answers the account an entry
 	// names, presenting its own identity token as a listed caller does, about the projects that
-	// entry lists and no others, and refuses every other account. Nil lists none, as on a broker
-	// that runs no NATS auth service, where that route answers no caller.
+	// entry lists and no others, and refuses every other account. cmd/broker reads them whether or
+	// not it runs the NATS auth service. Nil lists none, where that route answers no caller.
 	EdgeListeners []EdgeListener
 	// ProjectRepositories reads Dispatch's answer for GET /v1/project-repositories, fresh on
 	// every call (projectrepos.Client, at BROKER_PROJECT_ACCESS_URL with the account token

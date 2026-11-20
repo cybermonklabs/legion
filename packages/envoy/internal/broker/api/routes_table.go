@@ -428,7 +428,10 @@ func routes() []apiRoute {
 		// get Dispatch's whole answer within 2 seconds (Dispatch's 503 or any other refusal, a
 		// stall, a body it cannot read, or no BROKER_PROJECT_ACCESS_URL at all) it is 503
 		// REPOSITORIES_UNKNOWN, never a list; and past 16 calls of one edge listener waiting on
-		// Dispatch at once on one broker process, 503 REPOSITORIES_BUSY.
+		// Dispatch at once on one broker process, 503 REPOSITORIES_BUSY. That bound is each
+		// process's, so N replicas let one edge listener hold 16 × N calls on Dispatch: a guard on
+		// Dispatch's load, not a security bound. The edge-listener entries are read whether or not
+		// the broker runs the NATS auth service.
 		{http.MethodGet, "/v1/project-repositories", edgeListenerAuth((*server).projectRepositories)},
 		// List the calling credential's operator's own logins, their machines' logins and the token
 		// logins of the accounts BROKER_POD_OPERATORS maps to them, as Dispatch's machine-logins

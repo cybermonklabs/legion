@@ -117,10 +117,17 @@ which the broker reads from Dispatch on every call and never keeps. Any other ac
 listener's included, is answered `403 NOT_AN_EDGE_LISTENER`, and a project the entry does not
 list `403 PROJECT_NOT_LISTED`, before Dispatch is asked. Whenever the broker cannot get
 Dispatch's whole answer within 2 seconds, or has no `BROKER_PROJECT_ACCESS_URL`, it answers
-`503 REPOSITORIES_UNKNOWN` and never a list; past 16 calls of one edge listener waiting on
-Dispatch at once on one broker process, `503 REPOSITORIES_BUSY`. `BROKER_NATS_SERVICES` is read
-only while the broker runs the NATS auth service (`BROKER_NATS_URLS`), and that service refuses
-an edge listener's own connection: this release holds no edge listener's NATS grant.
+`503 REPOSITORIES_UNKNOWN` and never a list. Past 16 calls of one edge listener waiting on
+Dispatch at once on one broker process it answers `503 REPOSITORIES_BUSY`. That bound is counted
+in each process, so a fleet of N replicas lets one edge listener hold 16 × N calls on Dispatch
+(32 on two replicas). It is a guard on Dispatch's load, not a security bound: the entry's
+projects are what hold an edge listener to its own answers. The broker reads the edge-listener
+entries of `BROKER_NATS_SERVICES` whether or not it runs the NATS auth service. Set alone, with
+every entry an edge listener's, `BROKER_NATS_SERVICES` starts no auth service and needs no NATS
+audience: the auth service starts only with `BROKER_NATS_URLS` and its three seed files, and any
+other kind of entry without them refuses the start. The boot's `NATS auth service state=on` or
+`state=off` line says which, with the number of edge listeners read. The auth service, where it
+runs, refuses an edge listener's own connection: this release holds no edge listener's NATS grant.
 
 Five settings turn the model judge on, which decides one narrow class of the requests that would
 otherwise wait for a person ([Concepts](/legion/broker/concepts/#the-model-judge)): the endpoint

@@ -359,9 +359,12 @@ func main() {
 	fatal(err)
 	pod := discovered.Pod
 	// The NATS auth service's list of services and the verifiers of their platform tokens, read
-	// at boot so an entry it could never admit refuses the start rather than every connection.
+	// at boot so an entry it could never admit refuses the start rather than every connection. A
+	// broker that runs no auth service still reads the edge listeners' entries of the list, for
+	// GET /v1/project-repositories.
 	natsServices, natsTokens, err := natsCalloutBoot(ctx, cfg, discovered, issuerKeys)
 	fatal(err)
+	edgeListeners := natscallout.EdgeListeners(natsServices)
 
 	// This process's own sender id, minted once at boot. Postgres delivers a notification to every
 	// session listening on the channel, this pod's own included, so without an id stamped on what
@@ -674,7 +677,7 @@ func main() {
 		APIAccounts: cfg.APIAccounts, AccountTokens: pod,
 		PodRegistrars: cfg.PodRegistrars, PodRegistrationTokens: discovered.PodRegistration,
 		GoogleAPIAccounts: cfg.GoogleAPIAccounts, GoogleAccountTokens: googleCallers,
-		EdgeListeners: natscallout.EdgeListeners(natsServices), ProjectRepositories: projectRepositories,
+		EdgeListeners: edgeListeners, ProjectRepositories: projectRepositories,
 		Enroll: enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
@@ -788,8 +791,10 @@ func main() {
 	}()
 	// The NATS auth service starts once the broker serves, so a connection it admits can trade
 	// and introspect against a broker that answers; it answers in the replicas' queue group until
-	// the drain begins.
+	// the drain begins. BROKER_NATS_SERVICES alone starts none (config.Load), and the record says
+	// which, with the edge listeners GET /v1/project-repositories answers either way.
 	if cfg.NATS.Enabled() {
+		slog.Info("NATS auth service", "state", "on", "services", len(natsServices), "edge_listeners", len(edgeListeners))
 		service, err := natscallout.Start(ctx, natscallout.Settings{
 			URLs: cfg.NATS.URLs, SeedFile: cfg.NATS.SeedFile, IssuerSeedFile: cfg.NATS.IssuerSeedFile,
 			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: natsServices,
@@ -804,6 +809,9 @@ func main() {
 				slog.Info("broker: the NATS auth service is answering", "servers", strings.Join(cfg.NATS.URLs, ","), "services", len(natsServices))
 			}
 		}()
+	} else {
+		slog.Info("NATS auth service", "state", "off", "edge_listeners", len(edgeListeners),
+			"detail", "BROKER_NATS_URLS is unset, so the broker answers no hub; GET /v1/project-repositories reads the edge-listener entries of BROKER_NATS_SERVICES")
 	}
 
 	<-ctx.Done()

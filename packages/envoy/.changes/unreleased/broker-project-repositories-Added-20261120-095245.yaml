@@ -11,9 +11,14 @@ body: |-
   `403 PROJECT_NOT_LISTED`, before Dispatch is asked. Dispatch's 503 or any other refusal, no
   answer within 2 seconds, a body the broker cannot read and an unset `BROKER_PROJECT_ACCESS_URL`
   are each `503 REPOSITORIES_UNKNOWN`, never a list; a 17th call of one edge listener waiting on
-  Dispatch at once is `503 REPOSITORIES_BUSY`. No Dispatch release serves that route yet, so until
-  one does every such call is `503 REPOSITORIES_UNKNOWN`. The NATS auth service refuses an edge
-  listener's own connection: this release holds no edge listener's NATS grant.
+  Dispatch at once on one broker process is `503 REPOSITORIES_BUSY`, a guard on Dispatch's load
+  counted in each process (16 × N on N replicas), not a security bound. No Dispatch release serves
+  that route yet, so until one does every such call is `503 REPOSITORIES_UNKNOWN`. The broker reads
+  the edge-listener entries whether or not it runs the NATS auth service: `BROKER_NATS_SERVICES`
+  set alone, with only edge-listener entries, starts no auth service and needs no NATS audience,
+  and the boot's `NATS auth service state=off` line counts them. Any other entry still needs
+  `BROKER_NATS_URLS` and the three seed files. The NATS auth service refuses an edge listener's
+  own connection: this release holds no edge listener's NATS grant.
 time: 2026-11-20T09:52:45Z
 custom:
     Issue: broker-project-repositories

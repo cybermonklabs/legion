@@ -10,8 +10,15 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
+// EdgeListenerKind is the kind of a BROKER_NATS_SERVICES entry that names an edge listener
+// (natscallout.KindEdgeListener). It is the one kind read with no NATS auth service running:
+// GET /v1/project-repositories answers the accounts these entries name.
+const EdgeListenerKind = "edge-listener"
+
 // loadNATSCallout reads the NATS auth service's settings (Config.NATS): none set is no service;
-// any set needs BROKER_NATS_URLS and the three seed files, each holding a seed of its own kind;
+// BROKER_NATS_SERVICES alone is no service either, when every entry of it is an edge listener's,
+// which the broker reads for GET /v1/project-repositories whether or not it answers a hub; any
+// other set needs BROKER_NATS_URLS and the three seed files, each holding a seed of its own kind;
 // BROKER_NATS_K8S_AUDIENCE needs k8sIssuer, BROKER_K8S_OIDC_ISSUER. A hub URL carrying user info,
 // or one that is no URL, is refused by its place in the list (hubURLRefusal). No refusal carries
 // a seed or a URL.
@@ -35,8 +42,16 @@ func loadNATSCallout(getenv func(string) string, k8sIssuer string) (NATSCallout,
 		settings.URLs = append(settings.URLs, entry)
 	}
 	if settings.URLs == nil && settings.SeedFile == "" && settings.IssuerSeedFile == "" && settings.XKeySeedFile == "" &&
-		settings.Services == "" && settings.K8sAudience == "" && settings.GoogleAudience == "" {
-		return NATSCallout{}, nil
+		settings.K8sAudience == "" && settings.GoogleAudience == "" {
+		// No service: only edge listeners' entries are read without one. Any other entry is
+		// the auth service's alone, which this broker would not run, so it is refused rather than
+		// silently admitting nothing.
+		for _, text := range strings.Fields(settings.Services) {
+			if head, _, _ := CutNATSServiceEntry(text); !strings.HasPrefix(head, EdgeListenerKind+"/") {
+				return NATSCallout{}, fmt.Errorf("BROKER_NATS_SERVICES entry %q is no %s entry, and only the NATS auth service reads one, which needs BROKER_NATS_URLS and the three seed files", text, EdgeListenerKind)
+			}
+		}
+		return NATSCallout{Services: settings.Services}, nil
 	}
 	if settings.URLs == nil {
 		return NATSCallout{}, errors.New("a BROKER_NATS_* setting is set, and BROKER_NATS_URLS is not: the NATS auth service needs the hub it answers")

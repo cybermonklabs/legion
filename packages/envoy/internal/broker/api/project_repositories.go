@@ -25,7 +25,9 @@ type ProjectRepositoriesReader interface {
 }
 
 // maxRepositoryCallsInFlight is how many calls of one edge listener may wait on Dispatch at once
-// on one broker process; the next is refused at once rather than queued behind them.
+// on one broker process; the next is refused at once rather than queued behind them. It is a
+// guard on Dispatch's load and not a security bound, and it is each process's: N replicas let one
+// edge listener hold 16 × N calls on Dispatch.
 const maxRepositoryCallsInFlight = 16
 
 // projectRepositoriesResponse is GET /v1/project-repositories's answer: Dispatch's, relayed as it

@@ -746,14 +746,18 @@ type Config struct {
 	// exchange entry lists), each account written as BROKER_API_ACCOUNTS writes one and read at
 	// start (natscallout.ParseServices). An edge listener's entry,
 	// edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>, lists in place of * or - the projects
-	// GET /v1/project-repositories answers that account about; the auth service refuses its
-	// connection, since this build holds no edge listener's grant. BROKER_NATS_K8S_AUDIENCE is
-	// the audience a service's projected Kubernetes token must carry, verified against
-	// BROKER_K8S_OIDC_ISSUER, which it needs; BROKER_NATS_GOOGLE_AUDIENCE the audience a
-	// service's Google identity token must carry, verified against BROKER_GOOGLE_OIDC_ISSUER; a
-	// service entry whose kind of token has no audience is refused at start naming it. A session
-	// presents its broker access token and needs neither. All unset, the broker runs no auth
-	// service; any set needs the URLs and the three seed files.
+	// GET /v1/project-repositories answers that account about, whether or not the broker runs the
+	// auth service: BROKER_NATS_SERVICES set alone, every entry an edge listener's, starts no auth
+	// service and needs no audience, and any other kind of entry needs the URLs and seeds. The auth
+	// service refuses an edge listener's connection, since this build holds no edge listener's
+	// grant. BROKER_NATS_K8S_AUDIENCE is the audience a service's projected Kubernetes token must
+	// carry, verified against BROKER_K8S_OIDC_ISSUER, which it needs; BROKER_NATS_GOOGLE_AUDIENCE
+	// the audience a service's Google identity token must carry, verified against
+	// BROKER_GOOGLE_OIDC_ISSUER; while the auth service runs, a service entry whose kind of token
+	// has no audience is refused at start naming it. A session presents its broker access token
+	// and needs neither. All unset, or BROKER_NATS_SERVICES alone holding only edge listeners'
+	// entries, the broker runs no auth service; any other set needs the URLs and the three seed
+	// files.
 	NATS NATSCallout
 	// BROKER_LEASE_SECONDS: an enrollment's lease. A session renews it while it runs; one whose
 	// lease runs out is no longer enrolled and its calls are refused. Time while no broker was

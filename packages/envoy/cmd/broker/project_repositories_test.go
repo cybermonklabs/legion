@@ -80,6 +80,63 @@ func TestTheBrokerBinaryRelaysAnEdgeListenersRepositories(t *testing.T) {
 	}
 }
 
+// TestTheBrokerBinaryAnswersAnEdgeListenerWithNoAuthService: a broker that runs no NATS auth
+// service (no BROKER_NATS_URLS, no seeds), as the first deployment's does, still reads the
+// edge-listener entries of BROKER_NATS_SERVICES, and answers the edge listener of PRIV its list.
+func TestTheBrokerBinaryAnswersAnEdgeListenerWithNoAuthService(t *testing.T) {
+	env, dispatch, cluster, clusterKey := edgeOnlyBrokerEnv(t)
+	live := newPlainBroker(startBroker(t, brokerOptions{Env: env}).Addr)
+	status, answer := live.callAs(t, http.MethodGet, "/v1/project-repositories?project=PRIV", accountToken(t, cluster, clusterKey, edgeListenerAccount), "", "")
+	repositories, _ := answer["repositories"].([]any)
+	if status != http.StatusOK || len(repositories) != 2 || repositories[0] != "acme/pub" || repositories[1] != "acme/two" {
+		t.Fatalf("a broker with no NATS auth service answered the edge listener of PRIV %d %v, want 200 with acme/pub and acme/two", status, answer)
+	}
+	if calls := dispatch.Calls(); calls != 1 {
+		t.Fatalf("Dispatch was asked %d times, want 1", calls)
+	}
+}
+
+// TestTheAuthServiceDoesNotStartFromItsServicesAlone: BROKER_NATS_SERVICES with no
+// BROKER_NATS_URLS and no seeds starts no NATS auth service: the boot records it off and counts
+// the edge listeners it read.
+func TestTheAuthServiceDoesNotStartFromItsServicesAlone(t *testing.T) {
+	env, _, _, _ := edgeOnlyBrokerEnv(t)
+	broker := startBroker(t, brokerOptions{Env: env})
+	record := broker.AwaitRecord(t, "NATS auth service", nil)
+	if record["state"] != "off" || record["edge_listeners"] != float64(1) {
+		t.Fatalf("the boot recorded the NATS auth service as %v, want state off with 1 edge listener", record)
+	}
+}
+
+// edgeOnlyBrokerEnv is a broker's environment with PRIV's edge listener in BROKER_NATS_SERVICES and
+// no other NATS setting, reading Dispatch's answers from a stand-in where PRIV's issues resolve to
+// acme/pub and acme/two, and the cluster issuer whose tokens it takes.
+func edgeOnlyBrokerEnv(t *testing.T) ([]string, *projectrepostest.Server, *oidctest.Issuer, *oidctest.Key) {
+	t.Helper()
+	cluster := oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "signing-key")
+	dispatch := projectrepostest.NewServer(t, map[string][]string{"PRIV": {"acme/pub", "acme/two"}})
+	dir := t.TempDir()
+	tokenFile := filepath.Join(dir, "dispatch-access-token")
+	fakeSecretsFile := filepath.Join(dir, "fake-secrets.json")
+	for path, body := range map[string]string{tokenFile: dispatch.Token + "\n", fakeSecretsFile: `{"secrets": []}`} {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return []string{
+		"BROKER_DATABASE_URL=" + storetest.URL(t),
+		"BROKER_LISTEN_ADDR=127.0.0.1:0",
+		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
+		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
+		"BROKER_K8S_OIDC_ISSUER=" + cluster.URL(),
+		"BROKER_K8S_OIDC_AUDIENCE=" + enrolmentAudience,
+		"BROKER_NATS_SERVICES=edge-listener/edge-a/PRIV=" + edgeListenerAccount,
+		"BROKER_PROJECT_ACCESS_URL=" + dispatch.URL,
+		"BROKER_PROJECT_ACCESS_TOKEN_FILE=" + tokenFile,
+	}, dispatch, cluster, clusterKey
+}
+
 // natsCalloutEnv is the NATS auth service's settings for a broker whose hub is not up: a URL
 // nothing listens on (the service connects in the background and retries), the three seeds, and
 // services as BROKER_NATS_SERVICES, for the cluster audience a service's NATS token carries.

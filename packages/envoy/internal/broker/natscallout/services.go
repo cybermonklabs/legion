@@ -20,14 +20,15 @@ type Kind string
 
 // The kinds of service the auth service admits, each answered with its grant of
 // natsgrant: Dispatch's, a listener's, a Legion daemon's and the measurement job's. An edge
-// listener's entry is read too, for the projects it serves (EdgeListeners), and its connection is
-// refused by name (scopeGrant): natsgrant holds no edge listener's grant yet.
+// listener's entry is read too, for the projects it serves (EdgeListeners), even by a broker that
+// runs no auth service (config.EdgeListenerKind), and its connection is refused by name
+// (scopeGrant): natsgrant holds no edge listener's grant yet.
 const (
 	KindDispatch     Kind = "dispatch"
 	KindListener     Kind = "listener"
 	KindDaemon       Kind = "daemon"
 	KindMeasure      Kind = "measure"
-	KindEdgeListener Kind = "edge-listener"
+	KindEdgeListener Kind = config.EdgeListenerKind
 )
 
 // ServiceEntry is one service the auth service admits by its platform identity.
