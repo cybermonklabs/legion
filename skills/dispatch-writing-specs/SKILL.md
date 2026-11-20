@@ -1,6 +1,6 @@
 ---
 name: dispatch-writing-specs
-description: "Use in a session with Dispatch before you write or change a spec, ask, comment or message a person reads. It replaces superpowers' brainstorming there."
+description: "Use when you write or change a spec, ask, comment or message a person reads, in a session with Dispatch. It replaces superpowers' brainstorming there."
 ---
 
 # Writing specs

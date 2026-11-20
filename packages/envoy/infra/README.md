@@ -3885,8 +3885,9 @@ credential-free session user holding `SessionPermissions`, are checked against r
 2.10 and 2.15.1 servers, the session user's refusal of the stream's stored-message get included,
 as are a
 session consumer the listener's user creates, pulls, acks, restarts and deletes, both of its role
-lane queue groups, and the session user's refusal of a consumer create; `AGENTS.md` in this
-directory says how.
+lane queue groups, and the session user's refusal of a consumer create, in
+`core/permissions_live_test.go` under the `natslive` tag; `AGENTS.md` in this directory gives the
+command that runs it.
 
 `ListenerHostPermissions(machineID)` is the grant of a listener's own NATS user, one no session
 shares: `ListenerPermissions(machineID)`, the session consumers' calls included, then a plain

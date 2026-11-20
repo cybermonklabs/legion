@@ -19,8 +19,8 @@ import { asUser } from "./users";
  * 100 ms while holding the main thread for less than 150 ms, the first load inside both of
  * those bounds of up to twenty taken - so the whole file runs in the
  * `chromium-alone` project, with the machine to itself (D14, `clockSpecNames` in
- * `e2e/configurations.ts` and `packages/dispatch/AGENTS.md`). That project is out of the default
- * selection, so a command names it: `bun run e2e -- --project=chromium-alone
+ * `e2e/configurations.ts` and `aloneProjects` in `e2e/playwright.config.ts`). That project is
+ * out of the default selection, so a command names it: `bun run e2e -- --project=chromium-alone
  * e2e/agent-workspace-timing.e2e.ts --workers=1`, which names the one worker these readings rest
  * on. Four workers put four browsers, four Dispatch servers and four Postgres servers on one
  * machine, and a second of wall clock there holds what the other three workers took as surely as
