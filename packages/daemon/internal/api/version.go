@@ -2419,4 +2419,21 @@ package api
 // #4485, #4493 and this change's own head before this merge, and nothing above 167. Read the
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
-const DaemonAPIVersion = 168
+//
+// 184: dispatch://INFRA-3178 -- the owning architect moves a child out of the workflow by its own
+// status write in Dispatch, and the operation that made that move through the daemon goes. The
+// daemon takes the owning architect's done, backlog, icebox or triage on a child of its tree as it
+// takes a person's move (workflow's sessionStatusWrite). The child route that operation called
+// stays in the route table only to refuse an older plugin's call (removedChildRoute): it reads no
+// body, applies no fact and answers 410 ROUTE_REMOVED with a reason that says which status to
+// write in Dispatch. The `legion` tool loses the operation, `@legion/pi-shared`'s
+// `LegionDaemonClient` loses its call, and `packages/contracts/fixtures/daemon-api` loses the
+// fixture of the route's answer. `api.ChildRequest` and contracts' `LegionChildRequest` stay,
+// because rerun_child takes them. A plugin below 184 still offers the operation to its agents. On
+// a daemon at 184 that call gets the refusal as its result, so the agent reads the status to
+// write. No shape of `GET /legion/v1/state` moves, so no caller is served a narrower one.
+// (This entry takes 184, the lowest number above main's 178 that no open pull request declared
+// at the reading `.github/scripts/check-daemon-api-contract.sh` made, which ended at
+// 2026-11-20T02:42:23Z: each of 179 to 183 was declared by an open pull request. Read the base's
+// own number and every open pull request again at the next merge rather than from this line.)
+const DaemonAPIVersion = 184

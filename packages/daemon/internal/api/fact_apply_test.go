@@ -108,12 +108,11 @@ type agentRoute struct {
 // Every route of the table is in this test's table, and each request of an agent whose fact names
 // an issue where the record names that agent the agent of a run that is not ended waits for the
 // agent's stream before its fact applies: the tester's completion, a phase worker's and the
-// architect's moves back, the architect's sign-off and its park of a child in accepting, each
-// ending its own step, and the architect's retry of an issue its own failure held in accepting
-// and its gate registration on a root in accepting. So the record of a step an agent's request
-// ends names the model whose answer its stream read ahead of the request. The routes are read
-// from the server's own table (routes), so a route added later fails here by name until it is
-// put in this one.
+// architect's moves back and the architect's sign-off, each ending its own step, and the
+// architect's retry of an issue its own failure held in accepting and its gate registration on a
+// root in accepting. So the record of a step an agent's request ends names the model whose answer
+// its stream read ahead of the request. The routes are read from the server's own table (routes),
+// so a route added later fails here by name until it is put in this one.
 func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *testing.T) {
 	noFact := "it applies no fact"
 	noRequester := "the operator's bearer redeems no grant, so no requester is noted and a fact it applies waits for nothing (TestAFactNoAgentRequestedWaitsForNothing)"
@@ -171,15 +170,7 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 				return r.h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil)
 			}}}
 		}},
-		"POST /legion/v1/children/park": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
-			seedTree(t, r.h, "LEGION-208", "LEGION-209")
-			setIssue(t, r.h, "LEGION-209", func(issue *record.Issue) { issue.Phase = phase.Accepting })
-			architect := newLiveClaim(t, r.h, "LEGION-208", claim.RoleArchitect)
-			r.runs(t, "LEGION-209", acceptingPlace, architect.token)
-			return []agentRequest{{architect.token, func() *httptest.ResponseRecorder {
-				return r.h.request(http.MethodPost, "/legion/v1/children/park", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-209"}, nil)
-			}}}
-		}},
+		"POST /legion/v1/children/park": {none: "a removed route's refusal; " + noFact},
 		"POST /legion/v1/phase/retry": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
 			// A failure of the architect's claim holds an issue in accepting, whose role is the
 			// architect's (workflow's claimFailed), and the held run is the step of the phase its

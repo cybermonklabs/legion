@@ -374,7 +374,6 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     readonly phaseBackward: (body: object) => Promise<unknown>;
     readonly phaseRetry: (body: object) => Promise<unknown>;
     readonly signOff: (body: object) => Promise<unknown>;
-    readonly childPark: (body: object) => Promise<unknown>;
     readonly childRerun: (body: object) => Promise<unknown>;
   };
   const calls: ReadonlyArray<readonly [keyof WorkflowClient, string, object, string]> = [
@@ -453,12 +452,6 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       "/legion/v1/signoff",
       { grantId: "grant-208", issue: "LEGION-208" },
       "signoff.json",
-    ],
-    [
-      "childPark",
-      "/legion/v1/children/park",
-      { grantId: "grant-208", issue: "LEGION-209" },
-      "child-park.json",
     ],
     [
       "childRerun",

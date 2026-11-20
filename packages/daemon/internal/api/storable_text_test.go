@@ -187,7 +187,7 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/phase/retry":                            reads("issue"),
 		"POST /legion/v1/signoff":                                reads("issue"),
 		"POST /legion/v1/roots/close":                            reads("reason"),
-		"POST /legion/v1/children/park":                          reads("issue"),
+		"POST /legion/v1/children/park":                          noBody,
 		"POST /legion/v1/children/rerun":                         reads("issue"),
 		"POST /legion/v1/operator/claims":                        reads("tree"),
 		"GET /legion/v1/operator/claims":                         noBody,

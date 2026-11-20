@@ -54,7 +54,6 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "retry_or_escalate",
     "sign_off",
     "close_root",
-    "park_child",
     "rerun_child",
     "read_record",
     "read_release_records",
@@ -78,7 +77,6 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   retry_or_escalate: ["issue", "decision", "reason"],
   sign_off: ["issue"],
   close_root: ["issue", "reason"],
-  park_child: ["issue"],
   rerun_child: ["issue"],
   read_state: ["issue", "issues", "phase", "settings"],
   set_status: ["issue", "status"],
@@ -272,17 +270,16 @@ function requiredString(
 }
 
 /** Refuses every field `operation` does not take, in the phase ops' wording
- * (`unknownFieldsRefusal`). A `reason` refused on park_child or rerun_child also says where its
- * why goes: agents send one there, and the daemon keeps no why for either. */
+ * (`unknownFieldsRefusal`). A `reason` refused on rerun_child also says where its why goes:
+ * agents send one there, and the daemon keeps no why for it. */
 function assertOperationInput(parameters: Record<string, unknown>, operation: string): void {
   const fields = OPERATION_FIELDS[operation];
   if (fields === undefined) throw new Error(`Unsupported legion operation: ${operation}`);
   const refused = Object.keys(parameters).filter((name) => name !== "op" && !fields.includes(name));
   if (refused.length === 0) return;
   const refusal = unknownFieldsRefusal(operation, refused, fields);
-  const childOperation = operation === "park_child" || operation === "rerun_child";
   throw new Error(
-    childOperation && refused.includes("reason")
+    operation === "rerun_child" && refused.includes("reason")
       ? `${refusal}. Say why in a dispatch comment on the child`
       : refusal
   );
@@ -585,13 +582,12 @@ export function createLegionTool(deps: {
             });
             return jsonSuccess({});
           }
-          case "park_child":
           case "rerun_child": {
             const grantId = await mintClaimGrant(client, active);
-            const request = { grantId, issue: requiredString(parameters, operation, "issue") };
-            await (operation === "park_child"
-              ? client.childPark(request)
-              : client.childRerun(request));
+            await client.childRerun({
+              grantId,
+              issue: requiredString(parameters, operation, "issue"),
+            });
             return jsonSuccess({});
           }
           default:
