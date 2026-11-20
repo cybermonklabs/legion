@@ -98,34 +98,36 @@ var brokerIDShape = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 // idWords is id, a request's, grant's, enrollment's or launcher credential's id the broker
 // answered, as a message prints it: as base lets the broker's words print
 // (brokeraddr.Address.Words), and beside an address that does not let them print, still whole where
-// it has the shape of an id the broker makes (brokerIDShape) and the address does not hold it
-// (addressHolds). Such an id is no credential, and a person needs it to follow the request
-// (statusHint) beside an address Clean refuses with no credential in it, such as a host with an
-// underscore. An id the address holds is the one value an answerer there could echo to have it
-// print - a password that is a UUID, as many API tokens are - so it prints as Words.
+// it has the shape of an id the broker makes (brokerIDShape), the address could carry no
+// credential (plainAddress) and it does not hold the id (addressHolds). Such an id is no
+// credential, and a person needs it to follow the request (statusHint) beside an address Clean
+// refuses only for its host, such as one with an underscore or a trailing dot. An id the address
+// holds is the one value an answerer there could echo to have it print - a password that is a
+// UUID, as many API tokens are - so it prints as Words.
 func idWords(base brokeraddr.Address, id string) string {
-	if !base.Clean() && brokerIDShape.MatchString(id) && !addressHolds(base, id) {
+	if !base.Clean() && brokerIDShape.MatchString(id) && plainAddress(base) && !addressHolds(base, id) {
 		return id
 	}
 	return base.Words(id)
 }
 
-// addressHolds reports whether id, a UUID, occurs in the address's own text (base.Raw: its user,
-// password, path and query), as written or percent-decoded, in any case, and with or without its
-// dashes: the forms in which an answerer there could echo the address's password as an id.
-func addressHolds(base brokeraddr.Address, id string) bool {
+// plainAddress reports whether base, as written, has no user info, no query, no fragment and no
+// percent sign: the places a credential goes, and the one escape that would let the text this
+// checks differ from what the client sends (url.Parse takes a malformed escape in a query, and
+// net/http sends the decoded user info). The hosts the id exception is for carry none of these.
+func plainAddress(base brokeraddr.Address) bool {
 	raw := base.Raw()
-	forms := []string{raw}
-	if decoded, err := url.PathUnescape(raw); err == nil {
-		forms = append(forms, decoded)
-	}
+	parsed, err := url.Parse(raw)
+	return err == nil && parsed.User == nil && parsed.RawQuery == "" && !parsed.ForceQuery &&
+		parsed.Fragment == "" && !strings.ContainsAny(raw, "%@?#")
+}
+
+// addressHolds reports whether id, a UUID, occurs in the address's own text (base.Raw, its path
+// among it), in any case and with or without its dashes: the forms in which an answerer there
+// could echo a part of the address as an id.
+func addressHolds(base brokeraddr.Address, id string) bool {
 	bare := strings.ReplaceAll(id, "-", "")
-	for _, form := range forms {
-		if strings.Contains(strings.ReplaceAll(strings.ToLower(form), "-", ""), bare) {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(strings.ReplaceAll(strings.ToLower(base.Raw()), "-", ""), bare)
 }
 
 // statusHint is the command that reads requestID's state again, as a person pastes it: agent-secrets
