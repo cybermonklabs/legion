@@ -258,11 +258,13 @@ and each command runs there.
   `.github/workflows/dispatch-unit-repeat.yaml` runs it weekly, each lane under three seeds.
 
 - A rerun of a file keeps every module the run before loaded, so a module-level store or cache
-  keeps what that run left in it. A row whose verdict reads such state starts from none: the module
-  exports a reset and the preload (`web/src/__tests__/setup.ts`) runs it in an `afterEach`, as it
-  runs `resetRowReferenceReadings` for the readings `row-references.ts` keeps. Without it, the two
-  rows of `row-references.test.ts` that count readings passed their first run and failed the 19
-  reruns after it, which found every text already read.
+  keeps what that run left in it. Where a row needs such state empty, the module exports a reset and
+  the preload (`web/src/__tests__/setup.ts`) runs it before and after each row, as it runs
+  `resetRowReferenceReadings` for the readings and key-list ids `row-references.ts` keeps. State a
+  module keeps across rows on purpose stays, such as the loaded Markdown engine
+  (`markdown-engine.ts`). Without that reset, the two rows of `row-references.test.ts` that count
+  readings passed their first run and failed the 19 reruns after it, each counting fewer reads than
+  it made.
 
 - `bun run test:web:cold` is `test:web` with `web/src/__tests__/hold-lazy-loads.ts` added last to
   its preloads. That file registers its plugin in its `beforeAll`, where the test file's rows

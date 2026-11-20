@@ -198,9 +198,13 @@ afterEach(resetReachability);
 // `<Timestamp>` would tick. `clearTimeout` clears a timer of either clock (measured on Bun 1.4.4),
 // so this reset needs no place relative to the clock restore below.
 afterEach(resetTimestampTick);
-// Each text a row reads is kept in one module-level cache (`row-references.ts`), which a rerun of
-// the file keeps with the module: a row that counts the readings it makes found its texts read by
-// the run before and counted none (19 of 20 reruns of one seed failed). Each row starts with none.
+// Each text a row reads is kept in one module-level cache (`row-references.ts`), and so is the id of
+// each list of keys it was read against. A rerun of the file keeps both with the module: a row that
+// counts the readings it makes found its texts read by the run before and counted fewer reads than
+// it made (19 of 20 reruns of one seed failed). Each row starts with neither. The reset runs before
+// each row as well as after it, because a file's own `afterEach` that throws skips every later
+// `afterEach` of that row, this preload's included (the hook order below).
+beforeEach(resetRowReferenceReadings);
 afterEach(resetRowReferenceReadings);
 
 // A fake clock a test installed is put back here as well as in that test's own `finally` or its

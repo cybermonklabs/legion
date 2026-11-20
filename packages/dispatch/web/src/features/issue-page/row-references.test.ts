@@ -220,3 +220,20 @@ test("a text's fifth list of keys evicts the slot asked longest ago, and keeps o
     reads.mockRestore();
   }
 });
+
+// The ids of the lists of keys are kept too: 64 sets of keys keep an id, and a 65th forgets them
+// all. A text read against one list, then another, then a new list of the first list's keys, is
+// read twice where few sets are kept. Where rows before it had left 63, it was read three times:
+// the second list forgot the first list's set, so the new list took a new id and was read anew.
+test("a new list of a kept list's keys finds that list's reading, whatever rows ran before", () => {
+  const reads = spyOn(textReferences, "readTextReferences");
+  try {
+    const text = "Kept list: see CORE-401 and CORE-402.";
+    rowReferences(text, ["CORE-401"]);
+    rowReferences(text, ["CORE-402"]);
+    rowReferences(text, ["CORE-401"]);
+    expect(reads, "a new list of a kept list's keys was read again").toHaveBeenCalledTimes(2);
+  } finally {
+    reads.mockRestore();
+  }
+});

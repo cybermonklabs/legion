@@ -71,24 +71,22 @@ interface Reading {
  *  stale link. */
 const readings = new Map<string, Map<number, Reading>>();
 
-/** Forgets every text's reading: the unit-test preload, between tests. A rerun of a file keeps
- *  this module loaded, so a row that counts the readings it makes would otherwise find its texts
- *  read by the run before. The ids of the lists of keys stay: they name a list and hold no
- *  reading, and a list a test still holds keeps its id in `listIds`, so numbering them anew could
- *  give a new list the id of a held one. */
-export function resetRowReferenceReadings(): void {
-  readings.clear();
-}
-
 /** The id of each list of issue keys a caller has passed, by the list itself, and by its keys
  *  for a new list of the same keys. `0` is no list. */
-const listIds = new WeakMap<readonly string[], number>();
+let listIds = new WeakMap<readonly string[], number>();
 const keySetIds = new Map<string, number>();
 let lastKeySetId = 0;
 
 /** How many distinct sets of keys are kept an id before they are forgotten: a set the batched
  *  read has moved on from is asked no more, and a new one takes a new id. */
 const KEY_SETS_KEPT = 64;
+
+/** Forgets every reading and every id of a list of keys: the unit-test preload, around each test. */
+export function resetRowReferenceReadings(): void {
+  readings.clear();
+  listIds = new WeakMap();
+  keySetIds.clear();
+}
 
 /** The small id of the list of keys `issues` holds: the same id for the same keys. */
 function keyListId(issues: readonly string[] | undefined): number {
