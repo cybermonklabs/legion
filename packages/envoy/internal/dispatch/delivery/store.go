@@ -637,11 +637,13 @@ func ScanRun(row pgx.Row) (DeliveryRun, error) {
 // PR-checks run is shown when its pull request, repo's row of its number, is (pullRequestShownSQL);
 // a deploy run that first shipped pull requests (shippingRunJoin) when one of them is; a PR-checks
 // run that names no number or one no row holds, a deploy run that shipped none and a run of any
-// other kind to an open viewer alone. A deploy run on main ships only with a shipping job
-// (shippingJobSQL), and the pull requests it first shipped are those ListPullRequestsWaitingAt
-// reads as of its first such job's finish whose shipping run it is, so only those are read.
+// other kind to an open viewer alone, and only when repo is not hidden from that viewer
+// (refs.RepositoryClause), as a pull request that names no issue is. A deploy run on main ships
+// only with a shipping job (shippingJobSQL), and the pull requests it first shipped are those
+// ListPullRequestsWaitingAt reads as of its first such job's finish whose shipping run it is, so
+// only those are read.
 func ReadRunShown(ctx context.Context, pool *store.Pool, repo string, runID int64, production Production, viewer any) (DeliveryRun, error) {
-	open := access.OpenClause("$5")
+	unnamed := `unnamed.shown`
 	return ScanRun(pool.QueryRow(ctx, `
 		select `+RunColumns+`
 		from delivery_runs asked
@@ -650,13 +652,16 @@ func ReadRunShown(ctx context.Context, pool *store.Pool, repo string, runID int6
 			from delivery_run_jobs j
 			where j.repo = asked.repo and j.run_id = asked.run_id and `+shippingJobSQL("$3", "$4")+` and j.completed_at is not null
 		) own
+		cross join lateral (
+			select `+access.OpenClause("$5")+` and `+refs.RepositoryClause("asked.repo", "$5")+` as shown
+		) unnamed
 		where asked.repo = $1 and asked.run_id = $2 and case
 			when asked.kind = 'pr_checks' then coalesce((
 				select `+pullRequestShownSQL("pr", "i", "$5")+`
 				from delivery_pull_requests pr
 				left join issues i on i.key = pr.issue_key
 				where pr.repo = asked.repo and pr.number = asked.pr_number
-			), `+open+`)
+			), `+unnamed+`)
 			when asked.kind = 'deploy' and asked.head_branch = 'main' and own.shipped_at is not null then coalesce((
 				select bool_or(`+pullRequestShownSQL("pr", "i", "$5")+`)
 				from delivery_pull_requests pr
@@ -665,8 +670,8 @@ func ReadRunShown(ctx context.Context, pool *store.Pool, repo string, runID int6
 				where pr.repo = asked.repo and pr.merged_at < own.shipped_at
 					and pr.merged_at >= coalesce((`+lastShippedCreationSQL("asked.repo", "$3", "$4", "own.shipped_at")+`), '-infinity')
 					and ship.run_id = asked.run_id
-			), `+open+`)
-			else `+open+`
+			), `+unnamed+`)
+			else `+unnamed+`
 		end
 	`, repo, runID, production.JobNames, production.ApplyStep, viewer))
 }
