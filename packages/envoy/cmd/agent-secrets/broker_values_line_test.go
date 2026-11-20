@@ -379,11 +379,15 @@ func TestTheExecFormNamesARequestItLeavesWaitingBesideAnUncleanAddress(t *testin
 // hint, where an id of the broker's shape prints beside an address Clean refuses for its host
 // alone; nor a 32-hex password it echoes with a UUID's dashes put in; nor a password written with
 // a percent-escape beside a query with a malformed one, which net/http still sends decoded; nor a
-// grant or machine table's id cell that is the password. Beside an address with a credential no
-// id prints by its shape at all, a UUID the address does not hold among them. Controls: each echo
-// reached the answer (the answerer saw the password as Basic auth); a UUID prints beside a clean
-// address, and in both tables beside an address Clean refuses for a trailing dot on its host,
-// where the tables print a grant's id by the same rule as self.
+// grant or machine table's id cell that is the password; nor a UUID in the path of an address a
+// '+' makes unclean with no credential in it, where an id of the broker's shape would otherwise
+// print, and only addressHolds keeps it out. Beside an address with a credential no id prints by
+// its shape at all, a UUID the address does not hold among them. Controls: each echo reached the
+// answer (the answerer saw the password as Basic auth, or none where the address has none); a
+// UUID the address does not hold prints beside the same '+' address and beside a clean one, and in
+// both tables beside the addresses the exception exists for, a host with a trailing dot and one
+// with an underscore, where the tables print a grant's id by the same rule as self; beside those
+// two, a UUID the address's path holds prints as Words in both tables.
 func TestAUUIDTheAddressHoldsIsNotPrinted(t *testing.T) {
 	uuidPassword := "3f1c9a2b" + "-7d4e-4a6b-9c21-" + "0e8f5d7a6b42"
 	hexPassword := "9b2e41c0" + "7d5f8a3e6b10" + "29c4d7e0f5a8"
@@ -413,6 +417,10 @@ func TestAUUIDTheAddressHoldsIsNotPrinted(t *testing.T) {
 		return strings.Replace(address, "http://", "http://tokuser:%"+fmt.Sprintf("%X", escPassword[0])+escPassword[1:]+"@", 1) + "/?x=%zz"
 	}
 	clean := func(address string) string { return address }
+	// pathed is the stand-in's address with path after it, and no credential in it.
+	pathed := func(path string) func(string) string {
+		return func(address string) string { return address + path }
+	}
 	for _, row := range []struct {
 		name, password string
 		echo           func(string) string
@@ -432,6 +440,10 @@ func TestAUUIDTheAddressHoldsIsNotPrinted(t *testing.T) {
 			[]string{"request_id: " + brokeraddr.WordsNotPrinted}},
 		{"the exec form, a UUID the address does not hold, beside an address with a credential", uuidPassword, func(string) string { return other }, credentialed(uuidPassword), exec,
 			[]string{"request " + brokeraddr.WordsNotPrinted, "Check it with agent-secrets status and the request's id, which is not printed"}},
+		{"the request form, a UUID in the path of an address a '+' makes unclean, echoed", "", func(string) string { return uuidPassword }, pathed("/b+x/" + uuidPassword), request,
+			[]string{"request_id: " + brokeraddr.WordsNotPrinted}},
+		{"control: the request form, a UUID the '+' address does not hold", "", func(string) string { return other }, pathed("/b+x"), request,
+			[]string{"request_id: " + other}},
 		{"control: the request form beside a clean address", "", nil, clean, request,
 			[]string{"request_id: " + other}},
 	} {
@@ -442,7 +454,7 @@ func TestAUUIDTheAddressHoldsIsNotPrinted(t *testing.T) {
 				// Any POST: an address with a query sends the request's path after it.
 				if r.Method == http.MethodPost {
 					id := other
-					if _, pw, ok := r.BasicAuth(); ok && row.echo != nil {
+					if _, pw, _ := r.BasicAuth(); row.echo != nil {
 						echoed.Store(pw == row.password)
 						id = row.echo(pw)
 					}
@@ -453,7 +465,11 @@ func TestAUUIDTheAddressHoldsIsNotPrinted(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]string{"code": "NOT_FOUND", "error": "not found"})
 			}))
 			t.Cleanup(srv.Close)
-			t.Setenv("AGENT_SECRETS_URL", row.address(srv.URL))
+			address := row.address(srv.URL)
+			if row.echo != nil && brokeraddr.New(address).Clean() {
+				t.Fatalf("control: %q is clean, so the row does not test an id beside an address Clean refuses", address)
+			}
+			t.Setenv("AGENT_SECRETS_URL", address)
 			t.Setenv("AGENT_SECRETS_KEY_DIR", newKeyDir(t))
 			t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
 			t.Setenv("AGENT_SECRETS_WAIT", "")
@@ -462,11 +478,17 @@ func TestAUUIDTheAddressHoldsIsNotPrinted(t *testing.T) {
 				t.Fatalf("exit %d, stderr %q; want %d", code, stderr.String(), exitPending)
 			}
 			if row.echo != nil && !echoed.Load() {
-				t.Fatal("control: the answerer did not receive the address's password as Basic auth, so the row is blind")
+				t.Fatal("control: the answerer did not receive the address's password (or none, for an address with none), so the row is blind")
 			}
+			// Every value the answerer echoed is hidden, but none: an address with no password, and
+			// a control's id, which the row says prints.
 			var hidden []string
 			if row.echo != nil {
-				hidden = []string{row.password, row.echo(row.password)}
+				for _, value := range []string{row.password, row.echo(row.password)} {
+					if value != "" && !strings.Contains(strings.Join(row.says, "\n"), value) {
+						hidden = append(hidden, value)
+					}
+				}
 			}
 			wantNamedNotPrinted(t, "the output", stdout.String()+stderr.String(), row.says, hidden...)
 		})
@@ -480,12 +502,20 @@ func TestAUUIDTheAddressHoldsIsNotPrinted(t *testing.T) {
 		}
 		withPassword := brokeraddr.New("http://tokuser:" + uuidPassword + "@broker.example")
 		wantNamedNotPrinted(t, "the id cells of the password", cells(withPassword, uuidPassword), []string{brokeraddr.WordsNotPrinted + "|" + brokeraddr.WordsNotPrinted}, uuidPassword)
-		hostOnly := brokeraddr.New("http://broker.example.")
-		if hostOnly.Clean() {
-			t.Fatal("control: http://broker.example. is clean; the row needs an address Clean refuses for its host alone")
-		}
-		if got := cells(hostOnly, other); got != other+"|"+other {
-			t.Errorf("control: beside an address Clean refuses for its host alone, the id cells of a UUID are %q, want it whole in both, as self prints a grant's id", got)
+		// The hosts the id exception exists for, a trailing dot and an underscore, each refused by
+		// Clean for its host alone: a UUID the address does not hold prints whole, and one its path
+		// holds, which only addressHolds keeps out, prints as Words.
+		for _, host := range []string{"http://broker.example.", "http://broker_x.example"} {
+			plain := brokeraddr.New(host)
+			if plain.Clean() {
+				t.Fatalf("control: %s is clean; the row needs an address Clean refuses for its host alone", host)
+			}
+			if got := cells(plain, other); got != other+"|"+other {
+				t.Errorf("control: beside %s, the id cells of a UUID it does not hold are %q, want it whole in both, as self prints a grant's id", host, got)
+			}
+			pathed := brokeraddr.New(host + "/" + uuidPassword)
+			wantNamedNotPrinted(t, "the id cells of a UUID "+host+"'s path holds", cells(pathed, uuidPassword),
+				[]string{brokeraddr.WordsNotPrinted + "|" + brokeraddr.WordsNotPrinted}, uuidPassword)
 		}
 	})
 }
