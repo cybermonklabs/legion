@@ -1,0 +1,4 @@
+kind: Changed
+custom:
+  Issue: pr4581
+body: Speaks daemon API contract 188, in which a pod's role launcher can resume a session named by its id alone.

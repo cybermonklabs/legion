@@ -2455,7 +2455,7 @@ package api
 // between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
 // and none declaring 178.)
 //
-// 187: a pod's launcher resumes a session named by its id alone (dispatch://INFRA-4108). A claim
+// 188: a pod's launcher resumes a session named by its id alone (dispatch://INFRA-4108). A claim
 // can record a session and no file of it: the issue close of every release from `legion-v18.0.1`
 // up to, and not including, `legion-v20.5.0` cleared the file and kept the id
 // (`clearIssueResumePath`), and a launch of such a claim spawned a fresh agent, which the
@@ -2488,11 +2488,12 @@ package api
 // own kind. The way back of this change's migration
 // (`store/migrations/20261120042902_claim_agent_resume_generation.up.sql`) deletes those rows
 // before a rollback. No shape of `GET /legion/v1/state` moves.
-// (This entry takes 187, the lowest number above main's 178 that no open pull request declared
-// when the merge of 2026-11-20 brought main in at 28b2ea9e4e0f: a reading of `const
-// DaemonAPIVersion` at refs/pull/<n>/head, made between 2026-11-20T05:02:48Z and 05:05:08Z, for
-// each of the 108 open pull requests, of 251, whose file list names this file or is longer than
-// one read lists, found each of 179 to 186 declared by another open pull request and nothing
-// above 186. Read the base's own number and every open pull request again at the next merge
-// rather than from this line.)
-const DaemonAPIVersion = 187
+// (This entry takes 188, the lowest number above main's 178 that no open pull request declared
+// when the merge of 2026-11-20 brought main in at e4584fae753a: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head, made between 2026-11-20T05:56:19Z and 06:00:55Z, for
+// each of the 107 open pull requests, of 251, whose file list names this file or is longer than
+// one read lists, found each of 179 to 186 declared by another open pull request, and 187 by
+// #4543 as well as by this change's own head, which took it at 05:52Z when an earlier reading
+// found it free, and nothing above 187. Read the base's own number and every open pull request
+// again at the next merge rather than from this line.)
+const DaemonAPIVersion = 188
