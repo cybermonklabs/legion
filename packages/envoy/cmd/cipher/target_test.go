@@ -2,11 +2,14 @@
 //
 // The exec form's --target: the GitHub target that narrows the run's one profile, which the
 // client checks and signs into the request object as its one detail's locations
-// (record.TargetLocations). Every refusal exits 2 before the broker is asked anything.
+// (record.TargetLocations). Every refusal of a target exits 2 before the broker is asked anything,
+// and a release that does not answer that target as its locations exits 2 and runs nothing.
 package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -79,6 +82,47 @@ func requireNothingAsked(t *testing.T, b *commandBroker, args []string, stdout, 
 	}
 	if calls, _, _ := b.takeRequests(); calls != 0 {
 		t.Fatalf("%q: the broker received %d calls, want none", args, calls)
+	}
+}
+
+// TestATargetTheBrokerDoesNotConfirmRunsNothing: a release of a targeted run must answer the
+// target the request signed as its locations. A broker from before the target answers none, and
+// releases the whole profile; a release that answers other locations is no release of this
+// target either. Each exits 2 with the one line that says so, and the command never runs. A
+// release that answers the target the request signed runs it.
+func TestATargetTheBrokerDoesNotConfirmRunsNothing(t *testing.T) {
+	binary := buildAgentSecrets(t)
+	keyDir := newKeyDir(t)
+	const line = "agent-secrets: the broker AGENT_SECRETS_URL names released APP without its --target, as a broker from before --target does; nothing was run: the broker is too old for --target\n"
+	for _, tc := range []struct {
+		name      string
+		confirmed []string // what the release answers as its locations, nil for none
+		echoes    bool     // the release answers the target the request signed
+	}{
+		{name: "no locations", confirmed: nil},
+		{name: "other locations", confirmed: []string{"https://github.com/acme-org/widgets"}},
+		{name: "the signed locations", echoes: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newCommandBroker(t, knowsEveryField)
+			if !tc.echoes {
+				b.confirmsTarget(tc.confirmed)
+			}
+			marker := filepath.Join(t.TempDir(), "ran")
+			stdout, stderr, exit := runAgentSecrets(t, binary, b.srv.URL, keyDir, noSessionEnv,
+				"APP", "--target", "Acme-Org/proofs", "--", "touch", marker)
+			_, statErr := os.Stat(marker)
+			ran := statErr == nil
+			if tc.echoes {
+				if exit != 0 || !ran {
+					t.Fatalf("exit %d, stdout %q, stderr %q, child ran %v; want exit 0 and the child run", exit, stdout, stderr, ran)
+				}
+				return
+			}
+			if exit != 2 || stdout != "" || stderr != line || ran {
+				t.Fatalf("exit %d, stdout %q, stderr %q, child ran %v; want exit 2, stderr %q, and the child not run", exit, stdout, stderr, ran, line)
+			}
+		})
 	}
 }
 

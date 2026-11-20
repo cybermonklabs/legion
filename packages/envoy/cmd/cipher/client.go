@@ -500,15 +500,18 @@ func (c *client) CancelRequest(ctx context.Context, signer Signer, id string) er
 
 // --- POST /v1/grants/{id}/values, POST /v1/grants/{id}/revoke ---
 
-// GrantValues is POST /v1/grants/{id}/values's exact response shape. GitHubLeftOut names, for
-// each GitHub profile and each account of its release, every entry of the profile's permissions
-// the installation on that account does not hold, which its token leaves out: "<permission>" or
+// GrantValues is POST /v1/grants/{id}/values's exact response shape. Locations is the grant's
+// target as its request signed it, the locations record.TargetLocations made, nil for a grant with
+// no target and from a broker from before the target. GitHubLeftOut names, for each GitHub profile
+// and each account of its release, every entry of the profile's permissions the installation on
+// that account does not hold, which its token leaves out: "<permission>" or
 // "<permission>:<level>"; nil when nothing was left out. Airlock is how to reach the values this
 // release did not hand over, nil when every granted name was handed over — which is every
 // release of a broker with no rules file.
 type GrantValues struct {
 	Values        map[string]string              `json:"values"`
 	ExpiresAt     *time.Time                     `json:"expires_at"`
+	Locations     []string                       `json:"locations"`
 	GitHubLeftOut map[string]map[string][]string `json:"github_left_out"`
 	Airlock       *AirlockRelease                `json:"airlock"`
 }
