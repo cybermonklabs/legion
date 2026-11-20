@@ -392,6 +392,116 @@ func TestAPodNotNewerThanTheSaveSpendsTheAttemptAndClosesTheBundleToEveryLaterPo
 	}
 }
 
+// A pod whose Sandbox owns the issue's kept volume, and whose Sandbox was made before the save,
+// mounts the volume the work was taken off: the release kept that Sandbox and its volume
+// (runtime.IssueReleaser). That pod takes no saved work. The store drops the bundle in one
+// statement that reads none of the body, and it answers the release and the time of the bundle it
+// dropped, so the runtime can name them. The row is then gone, so the bundle no longer holds the
+// issue's pod (workflow.IdleHoldBundleUnrestored).
+//
+// The drop keeps the take's three rules. The pod the work came off drops nothing: the attempt
+// stays for the pod that replaces it. A bundle whose one attempt is spent is not dropped: its row
+// is the record of that attempt. A bundle of an issue that the asking project does not record is
+// not dropped: another project's daemon saved it for that daemon's own pod
+// (TestARestoreTakesNoBundleOfAnIssueAnotherProjectRecords). A kept Sandbox made after the save
+// holds a new volume, which a reset made, so its bundle stays for the take. A Sandbox's
+// creationTimestamp has one-second resolution, so the save is read to its own second, and a
+// Sandbox made in that second keeps the bundle too: a drop deletes the only copy of the work, and
+// a restore the launcher refuses costs a notice.
+func TestABundleAKeptVolumeHoldsIsDroppedWithoutItsBody(t *testing.T) {
+	ctx := context.Background()
+	s := bundleStore(t)
+	at := time.Date(2026, 11, 2, 9, 30, 0, 750_000_000, time.UTC)
+	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the released work"), Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: at, PodUID: releasedPodUID}
+	if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 11, saved); err != nil {
+		t.Fatal(err)
+	}
+	// Kept Sandboxes made after the save and in the save's own second: each holds a new volume.
+	for _, created := range []time.Time{at.Add(time.Hour), at.Truncate(time.Second)} {
+		if held, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, "INFRA-945", "pod-of-a-new-volume", created); err != nil || dropped {
+			t.Fatalf("a pod of a kept Sandbox made %s, against the save at %s, dropped release %d (%t, %v); want the bundle kept for its take",
+				created, at, held.Release, dropped, err)
+		}
+	}
+	// The pod the work came off, a role relaunched in the pod being released, on the volume the
+	// save was taken from.
+	if held, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, "INFRA-945", releasedPodUID, at.Add(-time.Hour)); err != nil || dropped {
+		t.Fatalf("the pod the work came off dropped release %d (%t, %v); want the bundle left for the pod that replaces it", held.Release, dropped, err)
+	}
+	// A pod of another project's daemon, of a kept Sandbox made before the save: INFRA-945 is a
+	// record of INFRA's, so the bundle is not legion's to drop.
+	if held, dropped, err := s.DropHeldWorkspaceBundle(ctx, "legion", "INFRA-945", "pod-of-legions-spawn", at.Add(-time.Hour)); err != nil || dropped {
+		t.Fatalf("legion's pod of INFRA-945 dropped release %d (%t, %v); want nothing: the bundle is INFRA's", held.Release, dropped, err)
+	}
+	// A drop that names no project, no pod, or no creation of the pod's Sandbox, has nothing to
+	// read the rule by and is refused: a zero creation would read as older than every save.
+	if _, dropped, err := s.DropHeldWorkspaceBundle(ctx, "", "INFRA-945", "pod-after-the-release", at.Add(-time.Hour)); err == nil || dropped {
+		t.Fatalf("a drop that named no project was answered %t, %v; want it refused", dropped, err)
+	}
+	if _, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, "INFRA-945", "", at.Add(-time.Hour)); err == nil || dropped {
+		t.Fatalf("a drop that named no pod was answered %t, %v; want it refused", dropped, err)
+	}
+	if _, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, "INFRA-945", "pod-after-the-release", time.Time{}); err == nil || dropped {
+		t.Fatalf("a drop that named no creation of the Sandbox was answered %t, %v; want it refused", dropped, err)
+	}
+	if size, held, err := s.WorkspaceBundleSize(ctx, "INFRA-945"); err != nil || !held || size != len(saved.Bundle) {
+		t.Fatalf("after the drops that held nothing the store holds %d bytes (held=%t, %v), want the %d saved", size, held, err, len(saved.Bundle))
+	}
+
+	// The next pod of the kept Sandbox, made in the second before the save's own. None of the
+	// asks above spent the attempt, or this drop would find no row.
+	held, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, "INFRA-945", "pod-after-the-release", at.Truncate(time.Second).Add(-time.Second))
+	if err != nil || !dropped {
+		t.Fatalf("a pod of a kept Sandbox made before the save dropped nothing (%v); want the bundle its volume holds dropped", err)
+	}
+	if held.Release != 11 || !held.At.Equal(at) {
+		t.Fatalf("the drop answered release %d saved at %s, want release 11 saved at %s", held.Release, held.At, at)
+	}
+	if len(held.Bundle) != 0 {
+		t.Fatalf("the drop read %d bytes of the bundle, want none", len(held.Bundle))
+	}
+	if _, held, err := s.WorkspaceBundleSize(ctx, "INFRA-945"); err != nil || held {
+		t.Fatalf("after the drop the store holds the bundle = %t (%v), want it deleted", held, err)
+	}
+	if again, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, "INFRA-945", "pod-after-the-release", at.Add(-time.Hour)); err != nil || dropped {
+		t.Fatalf("a second drop answered release %d (%t, %v); want nothing to drop", again.Release, dropped, err)
+	}
+
+	// A bundle whose one attempt is spent stays, whatever volume the next pod mounts.
+	if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 12, saved); err != nil {
+		t.Fatal(err)
+	}
+	if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, bundleProject, "INFRA-945", "pod-of-a-reset", at.Add(time.Minute)); err != nil || take != runtime.WorkspaceBundleSend {
+		t.Fatalf("the pod of a reset was answered %v (%v), want the saved work", take, err)
+	}
+	if spent, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, "INFRA-945", "pod-after-the-reset", at.Add(-time.Hour)); err != nil || dropped {
+		t.Fatalf("a bundle whose attempt was spent was dropped as release %d (%t, %v); want it kept", spent.Release, dropped, err)
+	}
+	if size, held, err := s.WorkspaceBundleSize(ctx, "INFRA-945"); err != nil || !held || size != len(saved.Bundle) {
+		t.Fatalf("after the spent attempt the store holds %d bytes (held=%t, %v), want the %d saved kept", size, held, err, len(saved.Bundle))
+	}
+
+	// A bundle of an issue another project records, and one of an issue no project records: the
+	// pod of this project's kept Sandbox, made before each save, drops neither, and each row stays
+	// for the pod of the daemon that saved it.
+	if _, err := s.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+		values ('OTHER-8', 'OTHER-8', 'OTHER', 'root', 'implementing', 1, 'in_progress', 'A', 1)`); err != nil {
+		t.Fatalf("record OTHER-8 as OTHER's issue: %v", err)
+	}
+	for _, issue := range []string{"OTHER-8", "NOBODY-3"} {
+		others := runtime.WorkspaceBundle{Bundle: []byte("PACK of another daemon's pod"), Head: saved.Head, At: at, PodUID: "pod-other-released"}
+		if err := s.PutWorkspaceBundle(ctx, issue, 21, others); err != nil {
+			t.Fatalf("save the bundle of %s: %v", issue, err)
+		}
+		if held, dropped, err := s.DropHeldWorkspaceBundle(ctx, bundleProject, issue, "pod-of-infras-spawn", at.Add(-time.Hour)); err != nil || dropped {
+			t.Fatalf("INFRA's pod of %s dropped release %d (%t, %v); want nothing: INFRA does not record %s", issue, held.Release, dropped, err, issue)
+		}
+		if size, held, err := s.WorkspaceBundleSize(ctx, issue); err != nil || !held || size != len(others.Bundle) {
+			t.Fatalf("after INFRA's drop the store holds %d bytes of %s (held=%t, %v), want the %d saved kept", size, issue, held, err, len(others.Bundle))
+		}
+	}
+}
+
 // The idle rule releases no pod of an issue whose stored bundle no pod has restored, and the row's
 // own presence is that record: it is there from the save until a launcher's report deletes it.
 func TestAStoredBundleReadsAsUnrestoredUntilItsConfirmation(t *testing.T) {

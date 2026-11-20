@@ -33,9 +33,10 @@ const releasedPodUID = "pod-being-released"
 
 // releaseRuntime is the fake runtime with the two things an idle release asks of a Kubernetes
 // one: the bundle of the issue workspace's unpushed work, taken from a launcher of the pod, and
-// the issue-level teardown that deletes the pod, its disk and its Sandbox. It also answers what
-// the daemon reads of the pod outside the transaction (issuePods): whether it runs the
-// configured image, and whether the runtime still holds the issue's Sandbox.
+// the issue-level teardown that takes the pod down — the release's (ReleaseIssue), and the
+// close's (SuspendIssue), which a test reaches through the same lane. It also answers what the
+// daemon reads of the pod outside the transaction (issuePods): whether it runs the configured
+// image, and whether the runtime still holds the issue's Sandbox.
 type releaseRuntime struct {
 	*fake.Runtime
 	mu        sync.Mutex
@@ -45,13 +46,17 @@ type releaseRuntime struct {
 	bundled   []claim.Role
 	suspended int
 	refused   int
+	// teardowns are the issue-level teardowns the daemon asked for, by method and in order,
+	// whatever the store answered under the pod lock: ReleaseIssue for a release, SuspendIssue
+	// for a close. A release that asked the close's teardown would delete a kept volume.
+	teardowns []string
 	// sandboxName is the name the runtime answers the issue's Sandbox under, as the rig derives
 	// it from the issue's claim token (sandbox.SandboxName), and sandboxGone makes it answer that
 	// it holds no Sandbox at all — the pod the runtime has already taken down, which a test sets
 	// before the pass it wants to read that answer.
 	sandboxName string
 	sandboxGone bool
-	// beforeAuthorize runs inside SuspendIssue, before it asks the store: the pod lock is held
+	// beforeAuthorize runs inside each teardown, before it asks the store: the pod lock is held
 	// and the teardown's own read has already answered, which is where production's second
 	// answer can differ from its first. A test sets it before the drain.
 	beforeAuthorize func()
@@ -94,7 +99,18 @@ func (r *releaseRuntime) BundleWorkspace(_ context.Context, _ string, role claim
 }
 
 func (r *releaseRuntime) SuspendIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) error {
+	return r.teardown(ctx, "SuspendIssue", authorize)
+}
+
+func (r *releaseRuntime) ReleaseIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) error {
+	return r.teardown(ctx, "ReleaseIssue", authorize)
+}
+
+// teardown is both teardowns, method naming which: it records the call, runs beforeAuthorize,
+// asks the store and counts the pod it took down, or the store's refusal.
+func (r *releaseRuntime) teardown(ctx context.Context, method string, authorize func(context.Context) (bool, error)) error {
 	r.mu.Lock()
+	r.teardowns = append(r.teardowns, method)
 	hook := r.beforeAuthorize
 	r.mu.Unlock()
 	if hook != nil {
@@ -112,6 +128,13 @@ func (r *releaseRuntime) SuspendIssue(ctx context.Context, _, _ string, authoriz
 		r.refused++
 	}
 	return nil
+}
+
+// teardownsAsked is every issue-level teardown the daemon asked for, by method and in order.
+func (r *releaseRuntime) teardownsAsked() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.teardowns)
 }
 
 func (r *releaseRuntime) reads() (bundled []claim.Role, suspended int) {
@@ -639,6 +662,9 @@ func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testi
 	if suspended != 1 {
 		t.Fatalf("Sandbox teardowns = %d, want one", suspended)
 	}
+	if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"ReleaseIssue"}) {
+		t.Fatalf("teardowns asked = %v, want the release's alone: the issue stays in the workflow", asked)
+	}
 	if !rig.bundled(t) {
 		t.Fatal("the release deleted the pod with no bundle saved")
 	}
@@ -926,6 +952,9 @@ func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *test
 	}
 	if _, suspended := rig.rt.reads(); suspended != 1 {
 		t.Fatalf("Sandbox teardowns = %d, want the close's one: its role Secrets go with the Sandbox", suspended)
+	}
+	if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"ReleaseIssue", "SuspendIssue"}) {
+		t.Fatalf("teardowns asked = %v, want the release's, which the store refused, and then the close's", asked)
 	}
 	if rig.marked(t) {
 		t.Fatal("the cancelled release left its mark behind")
