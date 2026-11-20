@@ -13,6 +13,7 @@ package supervise
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -305,6 +306,12 @@ func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Durati
 // and the runtime's sweep observes the process throughout. TimerSuspend is kept: a suspension
 // held over this claim is still bounded by the deadline its arrival set (holdSuspension), which
 // the wake's turn does not run.
+//
+// A launching write the store refuses because a release is deleting the claim's issue pod
+// (PodTakenLaunchError) parks nothing: the wake is taken off the machine with the timer its gate
+// armed, the state the gate found is put back, as dropWakeFor puts it back, and the wait goes to
+// whoever asked for the launch, whose retry raises it again once the release ends. It is met only
+// by a launch that passed the lifecycle check just before the release's teardown took the pod.
 func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
 	m.wake = waiting
 	if m.claim.Locator != nil {
@@ -314,7 +321,19 @@ func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
 		return nil
 	}
 	m.claim.State = StateLaunching
-	return m.persist(ctx)
+	err := m.persist(ctx)
+	var taken *PodTakenLaunchError
+	if errors.As(err, &taken) {
+		m.log.Info("supervise: the store would not write the parked launch: a release is deleting the claim's issue pod, so the wake is dropped and the claim left as it was",
+			"release", taken.Release, "sandbox", taken.Sandbox, "kind", waiting.kind)
+		m.claim.State, m.wake = waiting.state, nil
+		m.disarm(TimerWake)
+		if waiting.pause != 0 {
+			m.disarm(TimerPause)
+		}
+		m.publish()
+	}
+	return err
 }
 
 // wakeNow is the wake's turn (TimerWake): the launch the gate held runs now, and takes no second

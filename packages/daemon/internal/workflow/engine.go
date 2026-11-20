@@ -1823,8 +1823,13 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 // first, as the architect's retry does. One whose phase another role works, or that has left the
 // workflow, is refused, since starting that phase under this claim's name would run the wrong
 // role. A restart that asks for a new session (`--fresh-session`) says so on the start it
-// queues, so the claim forgets its recorded session in the retry that start makes and no refusal
-// above can leave a session discarded for a restart that never happened.
+// queues, so the start spawns a new session rather than resume one the claim still records. The
+// claim's record of its session is gone before this runs all the same: both callers that ask for
+// a new session, the operator's retry and the controller's fresh_session, forget it before they
+// apply this fact (api's freshSession), so a refusal above leaves the failed or retired claim
+// with no recorded session. The session itself stays in the session database, and the claim
+// keeps its state and its task for the next retry (api's
+// TestTheOperatorsRefusedFreshSessionRetryHasAlreadyForgottenTheSession).
 func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.RestartPhase) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {

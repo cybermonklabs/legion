@@ -762,8 +762,14 @@ type Store interface {
 	// in that same short transaction. A cleanup reservation refuses before runnable work exists.
 	AdmitClaim(ctx context.Context, c Claim) (Claim, error)
 	// CheckLaunch rechecks the bound lifecycle before a claim persists StateLaunching or calls the
-	// runtime; it returns the named cleanup wait without charging a launch failure.
+	// runtime; it returns the named cleanup wait without charging a launch failure, and the named
+	// wait *PodTakenLaunchError while a release is deleting the claim's issue pod.
 	CheckLaunch(ctx context.Context, c Claim) error
+	// PutClaim, like every write of a claim, refuses two writes, writing nothing, while the
+	// release of the claim's issue pod has taken that pod (past the teardown's last read): one
+	// that makes the claim the operator's suspension, unless it is already, with a *PodTakenError,
+	// since such a suspension keeps no pod; and one that starts the claim's launch, with the wait
+	// *PodTakenLaunchError, since the claim would stand live in a pod that is going.
 	PutClaim(ctx context.Context, c Claim) error
 	PutDelivery(ctx context.Context, token claim.Token, d Delivery) error
 	// PutClaimAndDelivery writes both in one transaction: a confirmation records the claim and
@@ -2650,12 +2656,21 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool, cause s
 // activity report (letGo, recordEnd, the store's putClaim). The retries this launch arms — a
 // failed write's here, a session store's that could not answer (startWaitsForStore) — launch a
 // claim that records no process any more, so they pass noEnd.
+//
+// A first write the store refuses because a release is deleting the claim's issue pod
+// (PodTakenLaunchError) is no failed write: it is the wait the lifecycle check gives first,
+// met by a launch that passed that check just before the release's teardown took the pod. The
+// claim is put back as this launch found it and the wait goes back to whoever asked, as the
+// lifecycle check's own refusal leaves a claim that records no process (relaunchRefused), and
+// that caller's retry launches it once the release ends. Only a claim that records no process
+// meets it, since no claim of that issue holds one while its pod is taken, so nothing was let go.
 func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause string) error {
 	// The intent is read before it is committed rather than taken, because committing takes it
 	// off the machine (commitPluginRelaunch, takePluginRelaunch) and the retry a failed write
 	// arms must put that same one back where it runs. Reading it without taking it is what the
 	// wake gate does for the kind it reads off it (reserveWake).
 	intent := m.pluginRelaunch
+	found := m.claim
 	m.commitPluginRelaunch()
 	m.letGo(ctx, cause)
 	starting, started := m.startable(ctx)
@@ -2670,6 +2685,14 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 		// end that stopped the process before it (Claim.PodEnd).
 		m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt, m.claim.PodEnd = "", "", time.Time{}, ""
 		if err := m.persist(starting); err != nil {
+			var taken *PodTakenLaunchError
+			if errors.As(err, &taken) && found.Locator == nil {
+				m.claim = found
+				m.publish()
+				m.log.Info("supervise: the store would not start the launch: a release is deleting the claim's issue pod, so the claim is left as it was",
+					"release", taken.Release, "sandbox", taken.Sandbox)
+				return err
+			}
 			err = errors.Join(err, m.stopPrevious(starting))
 			if starting.Err() != nil {
 				return err

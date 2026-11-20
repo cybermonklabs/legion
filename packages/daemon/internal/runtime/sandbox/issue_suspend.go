@@ -67,6 +67,12 @@ func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authoriz
 // reset mark in its place, or of the mark alone for a Sandbox already Suspended that does not
 // carry it. A release that keeps the Sandbox sends one merge patch more once it has deleted the
 // Secrets, which records that delete (annotate, secretsReleasedAnnotation) and changes no mode.
+//
+// A failure after authorize answered that the pod goes and before that write — the Sandbox's
+// read, its decode, or its labels — is a runtime.PodUntouchedError: nothing of the pod or its
+// Sandbox has changed, and the release that authorize answered for ends its record of the take
+// (the daemon's releaseIssue). A failure from that write on is not one, since the write may have
+// been applied.
 func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error), keep bool) error {
 	act := "suspend"
 	if keep {
@@ -90,14 +96,14 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("%s issue %s: read Sandbox: %w", act, issue, err)
+		return &runtime.PodUntouchedError{Err: fmt.Errorf("%s issue %s: read Sandbox: %w", act, issue, err)}
 	}
 	s, err := decodeSandbox(object)
 	if err != nil {
-		return err
+		return &runtime.PodUntouchedError{Err: fmt.Errorf("%s issue %s: %w", act, issue, err)}
 	}
 	if s.Labels[labelProject] != r.project || s.Labels[labelIssue] != labelValue(issue) || s.Labels[labelTree] != labelValue(tree) {
-		return fmt.Errorf("%s issue %s: Sandbox %s does not belong to this issue and tree", act, issue, s.Name)
+		return &runtime.PodUntouchedError{Err: fmt.Errorf("%s issue %s: Sandbox %s does not belong to this issue and tree", act, issue, s.Name)}
 	}
 	// The pod as it stands before the suspension takes it down: the issue's next launch reads no
 	// pod, so a release marks a kept volume that the pod shows failed for the launch to reset. A

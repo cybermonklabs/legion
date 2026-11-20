@@ -64,7 +64,10 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 // the store through AdmitClaim, which binds it to its tree's open lifecycle first; PutClaim alone
 // writes historical state in migrations and test fixtures. A write that can queue a role-holder
 // publication is one transaction with the publication it queues (putClaim); a write that can queue
-// none (queuesRoleHolders) is one statement on the pool, with no transaction around it.
+// none (queuesRoleHolders) is one statement on the pool, with no transaction around it. Every
+// statement that writes a claim meets the database's refusal of a write past a release's take of
+// the claim's issue pod (the trigger claims_refused_past_a_release_take), which upsertClaim answers
+// by name (takeRefusal).
 func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
 	if !s.queuesRoleHolders(c) {
 		return upsertClaim(ctx, s.pool, c)
@@ -513,6 +516,9 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
 	)
 	if err != nil {
+		if refused := takeRefusal(err, c); refused != nil {
+			return refused
+		}
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
 	}
 	return nil

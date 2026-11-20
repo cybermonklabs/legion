@@ -412,8 +412,10 @@ func (r *outbox) recordPodRelease(ctx context.Context, issue string, generation 
 // log line carries. The cause is the store's answer and not the row's, so a pod taken up again
 // is one reason in the records wherever the release read it: at a role stop, where the start or
 // the delivery arrives, and at the teardown, where the same read runs again. The store names a
-// cause on every cancel it decides, and those three are all it names: the pod was given work, the
-// store no longer authorizes the release, or the project was paused before the release saved its
+// cause on every cancel it decides, and these four are all it names: the pod was given work, the
+// store no longer authorizes the release, an operator's suspension holds a claim of a pod no role
+// can use (store.ReleaseCauseOperatorSuspended, which only the teardown of a release that
+// suspends no role reads), or the project was paused before the release saved its
 // workspace (store.ReleaseCausePaused, decision 12 of dispatch://INFRA-3759).
 func releaseHold(cause store.ReleaseCause) (workflow.IdleHold, string) {
 	switch cause {
@@ -421,6 +423,8 @@ func releaseHold(cause store.ReleaseCause) (workflow.IdleHold, string) {
 		return workflow.IdleHoldOvertaken, "the pod was given work after its release was marked"
 	case store.ReleaseCausePaused:
 		return workflow.IdleHoldPaused, "the project was paused before the release saved its workspace"
+	case store.ReleaseCauseOperatorSuspended:
+		return workflow.IdleHoldUnownedOperatorSuspended, "an operator's suspension holds a claim of the pod"
 	}
 	return workflow.IdleHoldUnauthorized, "the store no longer authorizes it"
 }

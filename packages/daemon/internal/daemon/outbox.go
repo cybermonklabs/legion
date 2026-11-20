@@ -183,10 +183,11 @@ type outbox struct {
 }
 
 // outboxTrees is the store's tree barrier (store.Store) as the outbox runs it: an issue close's
-// suspension, an idle release's own two decisions and the bundle it saves, a stop's wait for a
-// stored claim's machine, a workflow tree close's cleanup, a delivery wake and the open resume
-// that refuses one, a project pause's stop of a role and which pause stopped a role, and the end
-// of a pause's hold of a pod a deletion took.
+// suspension, an idle release's own two decisions, the bundle it saves and the end of its
+// teardown's take of a pod it did not touch, a stop's wait for a stored claim's machine, a
+// workflow tree close's cleanup, a delivery wake and the open resume that refuses one, a project
+// pause's stop of a role and which pause stopped a role, and the end of a pause's hold of a pod a
+// deletion took.
 type outboxTrees interface {
 	IssueSuspension(ctx context.Context, project string, closing store.IssueClose, outOfWorkflow func(status string) bool) (bool, error)
 	IssueRelease(ctx context.Context, project string, release store.IssueReleased, outOfWorkflow func(status string) bool) (store.ReleaseDecision, error)
@@ -196,6 +197,7 @@ type outboxTrees interface {
 	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool,
 		paused store.ReleaseCancelPause) (store.ReleaseCancelled, error)
 	ClearIssueRelease(ctx context.Context, project, issue string) error
+	ClearIssuePodTakeTx(ctx context.Context, tx pgx.Tx, project, issue string, release int64) error
 	PutWorkspaceBundle(ctx context.Context, issue string, release int64, bundle runtime.WorkspaceBundle) error
 	WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, error)
 	DeleteWorkspaceBundle(ctx context.Context, issue string) error
@@ -735,15 +737,37 @@ func (r *outbox) retry(ctx context.Context, row record.OutboxRow, cause error) e
 // keeps cause's text as record.Store.RetryOutbox stores it (storetext.FarSideError). The whole
 // text is logged where the failed attempt is settled (settle), not here: a deferral behind
 // another row's GitHub rate limit, the one other caller (outbox_lanes.go), made no attempt, and
-// the error its cause wraps is the limited row's own, which that row's settle logged.
+// the error its cause wraps is the limited row's own, which that row's settle logged. A cause
+// that carries a write of row's own failed run (retryWrite) is written in the same transaction.
 func (r *outbox) retryAt(ctx context.Context, row record.OutboxRow, nextAt time.Time, cause error) error {
+	var also *retryWrite
+	if !errors.As(cause, &also) || also.row != row.ID {
+		also = nil
+	}
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		if also != nil {
+			if err := also.write(ctx, tx); err != nil {
+				return err
+			}
+		}
 		return r.records.RetryOutbox(ctx, tx, row.ID, row.LeaseToken, nextAt, cause.Error())
 	}); err != nil {
 		return fmt.Errorf("retry outbox row %d: %w", row.ID, err)
 	}
 	return nil
 }
+
+// retryWrite is the failure of a row's run that carries a write of its own, which the
+// transaction that returns the row to the outbox makes with the row's retry (retryAt): what the
+// failed run must undo is undone exactly when the row is due again, and never apart from it. row
+// is the row whose run failed, so a deferral of another row behind it makes none.
+type retryWrite struct {
+	error
+	row   int64
+	write func(context.Context, pgx.Tx) error
+}
+
+func (f *retryWrite) Unwrap() error { return f.error }
 
 // rateLimit is a GitHub rate limit a row met: the row, its error, and when the limit ends.
 type rateLimit struct {
@@ -2583,9 +2607,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				r.log.Info("outbox boot rule-resume finished: its claim spent the launch budget", "row", row.ID, "issue", issue.Key, "role", payload.Role)
 				return nil
 			}
-			// A start that asks for a new session has the retry forget the recorded one, inside
-			// that one decision: the operator's `legion claims retry --fresh-session`, which is
-			// refused by whatever refuses this row rather than having discarded the session first.
+			// A start that asks for a new session has the retry forget whatever session the claim
+			// still records, inside that one decision. The operator's `legion claims retry
+			// --fresh-session` and the controller's fresh_session ask for it, and both have
+			// already forgotten the recorded session before they applied the fact that queued
+			// this row (api's freshSession), so a refusal of this row finds it gone.
 			if err := machine.Handle(ctx, supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession}); err != nil {
 				return fmt.Errorf("retry claim %s: %w", token, err)
 			}
@@ -3168,14 +3194,23 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 // naming the Sandbox it released and the state every claim of the issue stood in; each of those
 // is explained where it is done.
 //
-// A release the store no longer authorizes — one whose issue has left the workflow since, or one
-// whose pod has been given work again — is cancelled: the pod stays, the claims the release
-// suspended are resumed and the bundle the save stored goes with it. The authorization the
-// teardown acts on is the one the runtime took under its pod lock, not the one this row read
-// before it: a notice or a hook prompt runs on a lane of its own, and the wake it makes
-// can resume a role between the two reads. So the inner answer is what is carried out — a
-// cancel there cancels, and a release that is over by then does nothing — and a pod that still
-// stands is never recorded as released, nor given a backstop, nor stripped of its backstops.
+// A release the store no longer authorizes — one whose issue has left the workflow since, one
+// whose pod has been given work again, or a release that suspends no role a claim of which an
+// operator has suspended since (store.ReleaseCauseOperatorSuspended) — is cancelled: the pod
+// stays, the claims the release suspended are resumed and the bundle the save stored goes with
+// it. The authorization the teardown acts on is the one the runtime took under its pod lock, not
+// the one this row read before it: a notice or a hook prompt runs on a lane of its own, and the
+// wake it makes can resume a role between the two reads, as an operator's suspension can be
+// made. So the inner answer is what is carried out — a cancel there cancels, and a release that
+// is over by then does nothing — and a pod that still stands is never recorded as released, nor
+// given a backstop, nor stripped of its backstops. The inner read is the last, and records the
+// take of the pod when it answers that the pod goes: from then until the release ends, an
+// operator's suspension of a claim of the issue is refused, rather than landing on a claim whose
+// pod is going, and the launch of a claim of the issue waits for the release to end, then builds
+// a new pod (the database's refusal, store.Store.CheckLaunch). A teardown that fails after
+// that read and before the runtime touched the pod (runtime.PodUntouchedError) ends the take in
+// the transaction that records the row's failure (retryWrite): the pod stands as it stood and no
+// teardown holds it, so those writes land again, and the row's next run reads every claim again.
 //
 // A teardown of a release that is over acts on nothing and undoes nothing: a role stop that
 // cancelled this release has already resumed what it suspended, and a release that finished
@@ -3207,10 +3242,16 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	// The runtime reads the store again under its pod lock, which is what orders the teardown
 	// against a physical start, and that read is the one the pod is taken on: it is kept here
 	// and acted on below. A runtime that takes the pod without asking leaves this read's answer
-	// standing, which is the same release.
+	// standing, which is the same release. The runtime reads the store no more after it, so that
+	// read records the take, naming the Sandbox, and an operator's suspension or a launch of a
+	// claim of the issue is refused from then until the release ends (store.Store.PutClaim's
+	// guard): a suspension that late would land on a claim whose pod is going, and a launch would
+	// stand live in it.
 	decision := first
+	taking := releasing
+	taking.Takes, taking.Sandbox = true, r.issueSandboxName(row.Issue)
 	authorize := func(ctx context.Context) (bool, error) {
-		inner, err := r.trees.IssueRelease(ctx, r.project, releasing, record.OutOfWorkflow)
+		inner, err := r.trees.IssueRelease(ctx, r.project, taking, record.OutOfWorkflow)
 		if err != nil {
 			return false, err
 		}
@@ -3226,10 +3267,8 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	// about to release, and the state of every claim of the issue — and reads both before the
 	// teardown, because the pod and its claims are exactly what the teardown changes.
 	var savedBytes int
-	var sandboxName string
 	var claims store.ClaimStates
 	if decision.SuspendsNoRole {
-		sandboxName = r.issueSandboxName(row.Issue)
 		if claims, err = r.trees.ClaimStatesIn(ctx, r.project, row.Issue); err != nil {
 			return err
 		}
@@ -3237,6 +3276,13 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		return err
 	}
 	if err := releaser.ReleaseIssue(ctx, row.Issue, payload.Tree, authorize); err != nil {
+		var untouched *runtime.PodUntouchedError
+		if errors.As(err, &untouched) && decision.Act == store.ReleaseActs {
+			release := decision.Release
+			return &retryWrite{error: err, row: row.ID, write: func(ctx context.Context, tx pgx.Tx) error {
+				return r.trees.ClearIssuePodTakeTx(ctx, tx, r.project, row.Issue, release)
+			}}
+		}
 		return err
 	}
 	switch decision.Act {
@@ -3256,7 +3302,7 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	if decision.SuspendsNoRole {
 		r.log.Info("outbox: released the pod of an issue no role can use; the release suspended no role, so no session is waiting for a wake",
 			"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation,
-			"sandbox", sandboxName, "claims", claims)
+			"sandbox", taking.Sandbox, "claims", claims)
 		// No role was suspended and no bundle was saved, so the record carries neither. No
 		// backstop is armed either, which is the one act of the idle release this one must not
 		// make: armBackstops cancels the issue's open backstops before arming at most one of

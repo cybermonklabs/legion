@@ -1,0 +1,5 @@
+kind: Fixed
+body: The release of an issue pod whose claims have all stopped no longer deletes the pod when an operator suspends one of its claims after the release is queued and before the teardown's last read, which the runtime takes under its pod lock. The teardown reads the operator's suspension again, keeps the pod, and records the hold as `unowned_operator_suspended`. A suspension that comes after that last read could keep nothing, since the pod is being deleted, so `legion claims suspend` now answers it with a 409 that names the release and the pod, and leaves the claim as it was, and a start of a claim of that issue waits for the release to end rather than stand live in the pod that is going; the database holds both rules for every write of a claim. A teardown that fails before it touches the pod, or a daemon that stops there, no longer refuses anything once the pod is known to stand. The same holds for an idle release.
+time: 2026-11-20T06:49:45.642039305Z
+custom:
+    Issue: pr4589

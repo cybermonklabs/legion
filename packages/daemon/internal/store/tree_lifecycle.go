@@ -94,6 +94,13 @@ func (s *Store) AdmitClaim(ctx context.Context, c supervise.Claim) (supervise.Cl
 // the tree lifecycle reserved cleanup. The machine returns this named error directly, so outbox
 // retry preserves its claim and launch budget. The project controller's claim, on no tree, has no
 // cleanup to meet.
+//
+// It rejects too, with the named wait *supervise.PodTakenLaunchError, a launch of a claim of an
+// issue whose pod a release has taken: that release's teardown's last read answered that the pod
+// goes, and the runtime is deleting it (IssueRelease, issue_releases.taken_pod). The launch runs
+// once the release ends, in a new pod, and no claim of the issue goes live in between, so none is
+// there for an operator to suspend. The database refuses the same launch's first write where the
+// take came after this check (takeRefusal), since both read the take under the shared serializer.
 func (s *Store) CheckLaunch(ctx context.Context, c supervise.Claim) error {
 	if claim.IsController(c.Role, c.Issue, c.Tree) {
 		return nil
@@ -101,6 +108,13 @@ func (s *Store) CheckLaunch(ctx context.Context, c supervise.Claim) error {
 	return s.Tx(ctx, func(tx pgx.Tx) error {
 		if err := treelifecycle.CheckWork(ctx, tx, c.Project, c.Tree, c.TreeEpoch); err != nil {
 			return fmt.Errorf("launch claim %s: %w", c.Token, err)
+		}
+		release, sandbox, taken, err := readTake(ctx, tx, c.Project, c.Issue)
+		if err != nil {
+			return fmt.Errorf("launch claim %s: read the take of its issue's pod: %w", c.Token, err)
+		}
+		if taken {
+			return &supervise.PodTakenLaunchError{Issue: c.Issue, Release: release, Sandbox: sandbox}
 		}
 		return nil
 	})

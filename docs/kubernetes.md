@@ -3010,6 +3010,7 @@ The migrations recorded above this one are these.
 20261117200337_update_ask_marks_at_delivery, of cybermonklabs/legion#4337, clears `claims.update_tasked_at` on each claim whose update ask of the round it records still waits in the outbox, and touches none of the six either, so the block holds over it; it alters no table and has no down file, so it leaves nothing for the block to reverse.
 20261119003157_conflict_reads_and_merge_forward, of cybermonklabs/legion#4464, writes the outbox's kind check again with `conflict_confirm` and `merge_forward` added to the plan record's list, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that merges a conflicting head forward in its phase](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase).
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
+20261120084333_issue_release_taken_pod, of cybermonklabs/legion#4589, adds `issue_releases.taken_pod`, which is null with no default, and the trigger `claims_refused_past_a_release_take` on `claims`, which refuses nothing while that column is null, and touches none of the six, so the block holds over it and leaves both standing, which the earlier release names in no statement; a rollback past it needs no step of its own, and its header carries a way back that removes both ([Rolling back idle release](#rolling-back-idle-release)).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
@@ -6678,6 +6679,20 @@ Nothing takes a released issue out of the list the pass decides, because this re
 A pass line whose `held` counts are mostly `unowned_sandbox_gone` is the ordinary state of a deployment that has released pods, and the two numbers to read beside it are `decided` and `released`.
 An operator's suspension holds the pod because it is the one suspension the daemon never ends by itself.
 The operator ends that pod by resuming the claim, which starts the role in the pod that is still there, or by stopping it, which retires the claim and leaves the issue to this rule.
+The pass reads that suspension when it queues the release, and the teardown reads it again, the last time under the runtime's pod lock (`store.IssueRelease`).
+So an operator who suspends a claim of the issue after the release is queued, and before that last read, still keeps the pod: the teardown cancels the release and records the hold as `unowned_operator_suspended`.
+The runtime ends the pod on that last read and reads the store no more, so a suspension made after it could keep the pod no longer.
+The daemon refuses that suspension instead: `legion claims suspend` answers `409 Conflict` with a sentence that names the release and the pod's Sandbox, and the claim is left as it was (the trigger `claims_refused_past_a_release_take`, which every statement that writes a claim meets, and `takeRefusal` in `internal/store/issue_release.go`, which names its refusal).
+No claim of the issue starts in that window either: a start or a resume of one waits for the release to end, named as the launch's wait (`supervise.PodTakenLaunchError`), and changes nothing of the claim, so every claim of the issue stays stopped and every operator's suspension of one is refused.
+So in that window a suspension is refused, not lost, and once the release has ended the same command suspends the claim.
+An idle release takes its pod on the same last read, and refuses an operator's suspension and holds a start back after it in the same way.
+A teardown that fails after that last read and before the runtime touched the pod, its read of the Sandbox among them, ends the refusal with the row's failure: the pod stands and no teardown holds it, so a suspension made then is taken, and the row's next run reads it and keeps the pod.
+A teardown that fails after the runtime touched the pod leaves the refusal standing until the row's next run ends the release, since the pod is going.
+A daemon that stops between that last read and the runtime's first call leaves the refusal standing too, until the row's next run, once its lease has lapsed, deletes the pod or fails before touching it and ends the refusal.
+A role start or resume after the queue cancels the release and records `overtaken` when the teardown reads the start row, the wake that resumed the role, or the role still starting or in a turn.
+A resumed role that is already ready or idle when the teardown reads makes the teardown wait for its process instead, and nothing is recorded.
+A start after the last read waits for the release to end, as above, and then starts the role in a new pod.
+A pause after the queue does not cancel it ([Pausing a project](#pausing-a-project)).
 
 A release is three acts, in this order, and the daemon gives it an id (`issue_releases.id`) that its mark, its bundle and the restore report of the pod that puts that bundle back all carry:
 
@@ -6879,6 +6894,11 @@ It prints `DELETE <n>`, and `DELETE 0` once every such release has finished.
 The teardown row of a mark this deletes finds no mark and finishes without acting, which costs nothing: that release suspends no claim and saves no bundle, so the pod it would have taken stands, and the earlier release has no rule that releases a pod no claim owns.
 An issue whose pod this rule has already released stands with no Sandbox and no pod, which the earlier release builds again at the next start of a claim of that issue.
 
+The column that records a teardown's last read on a release's mark, `issue_releases.taken_pod`, and the trigger on `claims` that reads it, `claims_refused_past_a_release_take`, both of `20261120084333_issue_release_taken_pod.up.sql`, need no step of a rollback.
+The column is nullable, and no earlier build reads or writes it, so the earlier daemon reads and writes the table as before; the trigger refuses nothing while no mark records a take, which no earlier build writes, and a take standing at the rollback ends with its release.
+The earlier daemon refuses no operator's suspension made after a teardown's last read: such a suspension is taken again, and keeps no pod.
+The migration's header carries a way back that drops the trigger, its function and the column and deletes the migration's version row, for an operator who wants none of them left; run it with the daemon stopped.
+
 ### Pausing a project
 
 A project can be paused and resumed as a whole.
@@ -6987,6 +7007,7 @@ These rules pass over it:
 An idle release that was under way when the pause began is decided at its save step (`store.IssueReleaseSave`).
 A release that had not saved its workspace by then is cancelled and keeps its pod, whatever had reached its roles first.
 A release that saved before the pause finishes as it does while the project runs, and its pod goes.
+The release of a pod no claim owns has no save step, so a pause never cancels it: a release queued before the pause finishes as it does while the project runs, and its pod goes.
 A wake that cancels a release while the project is paused queues no resume: the daemon records each role that the release had stopped as stopped by the pause.
 
 A hold ends in one of three ways, and its record says which (`project_pause_pod_holds.ended_why`):
