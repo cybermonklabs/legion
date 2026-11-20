@@ -5,6 +5,7 @@
  *  any spec against this instance — and empties its database and its fake Envoy, so restart it
  *  to reseed. */
 import { fileURLToPath } from "node:url";
+import { exitProcess } from "@legion/envoy-client/process-exit";
 
 import { harnessVariables } from "./harness-ports";
 import { harnessProcessCount } from "./harness-processes";
@@ -205,4 +206,6 @@ try {
 }
 await harness?.stop();
 await supervisor.stop();
-process.exit(exitCode);
+// The harness copies each server's output to this process's stderr as it comes; the exit waits
+// for the last of it to reach the reader, which `process.exit` alone would drop.
+await exitProcess(exitCode);

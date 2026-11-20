@@ -4,7 +4,7 @@ import { mkdir, readFile, rename, utimes, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import { z } from "zod"
-import { processExists } from "../session-identity"
+import { processExists } from "../process-exists"
 import { pruneStateDirectory } from "../session-state"
 
 /**

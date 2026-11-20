@@ -1,16 +1,18 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test"
-import { mkdirSync, readdirSync } from "node:fs"
+import { mkdirSync, readdirSync, renameSync } from "node:fs"
 import { join } from "node:path"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { type CodexDelivery, createCodexDelivery } from "../src/codex/codex-delivery"
 import * as codexInbox from "../src/codex/codex-inbox"
 import {
   type CodexInboxItem,
+  claimInbox,
   codexInboxDirectory,
   discardWaiting,
   HOOK_CONTEXT_MAX_BYTES,
   inboxContext,
   putInbox,
+  releaseClaims,
   takeInbox,
   takenBy,
 } from "../src/codex/codex-inbox"
@@ -52,18 +54,38 @@ async function untilWaiting(directory: string): Promise<void> {
   }
 }
 
+/** What the hook does with the lines it takes when its output reaches Codex whole: claims them,
+ *  then settles the claim as delivered, which moves them into `taken/`. */
+async function hookTakes(
+  directory: string,
+  maxContextBytes?: number,
+): Promise<readonly { readonly name: string; readonly item: CodexInboxItem }[]> {
+  const claim = await claimInbox(directory, maxContextBytes)
+  await claim.settle(true)
+  return claim.taken
+}
+
+/** The `.json` files of `directory`'s `sub`, none when it does not exist. */
+function filesIn(directory: string, sub: string): string[] {
+  try {
+    return readdirSync(join(directory, sub)).filter((name) => name.endsWith(".json"))
+  } catch {
+    return []
+  }
+}
+
 describe("the Codex inbox", () => {
   test("a message is taken once, by whichever taker renames it first, oldest first", async () => {
     const directory = inbox()
     const first = await putInbox(directory, { content: "one" })
     const second = await putInbox(directory, { content: "two", eventId: "ev-2" })
     expect(await takenBy(directory, first)).toBeUndefined()
-    const hook = await takeInbox(directory, "hook")
+    const hook = await hookTakes(directory)
     expect(hook.map(({ item }) => item)).toEqual([
       { content: "one" },
       { content: "two", eventId: "ev-2" },
     ])
-    expect(await takeInbox(directory, "server")).toEqual([])
+    expect(await takeInbox(directory)).toEqual([])
     expect(await takenBy(directory, first)).toBe("hook")
     expect(await takenBy(directory, second)).toBe("hook")
   })
@@ -73,7 +95,7 @@ describe("the Codex inbox", () => {
     await putInbox(directory, { content: "short one" })
     const long = await putInbox(directory, { content: "x".repeat(HOOK_CONTEXT_MAX_BYTES) })
     const after = await putInbox(directory, { content: "short two" })
-    const hook = await takeInbox(directory, "hook", HOOK_CONTEXT_MAX_BYTES)
+    const hook = await hookTakes(directory, HOOK_CONTEXT_MAX_BYTES)
     expect(hook.map(({ item }) => item.content)).toEqual(["short one"])
     expect(Buffer.byteLength(inboxContext(hook.map(({ item }) => item)))).toBeLessThanOrEqual(
       HOOK_CONTEXT_MAX_BYTES,
@@ -81,7 +103,7 @@ describe("the Codex inbox", () => {
     // The long message and the one behind it stay for `codex queue`, which takes any length.
     expect(await takenBy(directory, long)).toBeUndefined()
     expect(await takenBy(directory, after)).toBeUndefined()
-    const server = await takeInbox(directory, "server")
+    const server = await takeInbox(directory)
     expect(server.map(({ item }) => item.content)).toEqual([
       "x".repeat(HOOK_CONTEXT_MAX_BYTES),
       "short two",
@@ -93,7 +115,7 @@ describe("the Codex inbox", () => {
     const left = await putInbox(directory, { content: "left behind" })
     const mine = await putInbox(directory, { content: "this process's" })
     expect(await discardWaiting(directory, (name) => name === mine)).toBe(1)
-    expect((await takeInbox(directory, "hook")).map(({ name }) => name)).toEqual([mine])
+    expect((await hookTakes(directory)).map(({ name }) => name)).toEqual([mine])
     expect(await takenBy(directory, left)).toBeUndefined()
     expect(await discardWaiting(join(root, "missing"))).toBe(0)
   })
@@ -103,7 +125,45 @@ describe("the Codex inbox", () => {
   })
 
   test("an empty or missing inbox yields nothing", async () => {
-    expect(await takeInbox(join(root, "missing"), "hook")).toEqual([])
+    expect(await hookTakes(join(root, "missing"))).toEqual([])
+    expect(await takeInbox(join(root, "missing"))).toEqual([])
+  })
+
+  test("a hook's claim holds its lines from every taker until it settles, and settles where its output went", async () => {
+    const directory = inbox()
+    const first = await putInbox(directory, { content: "one" })
+    const second = await putInbox(directory, { content: "two" })
+    const claim = await claimInbox(directory)
+    expect(claim.taken.map(({ name }) => name)).toEqual([first, second])
+    // Held: neither waiting for the server nor delivered.
+    expect(await takeInbox(directory)).toEqual([])
+    expect(await takenBy(directory, first)).toBeUndefined()
+    expect(filesIn(directory, `claimed/${process.pid}`).sort()).toEqual([first, second])
+    // Output that did not reach Codex puts them back to wait, in order.
+    await claim.settle(false)
+    expect(filesIn(directory, "waiting").sort()).toEqual([first, second])
+    expect(readdirSync(join(directory, "claimed"))).toEqual([])
+    // Output that did moves them into taken/, where the server finds them delivered.
+    await (await claimInbox(directory)).settle(true)
+    expect(await takenBy(directory, first)).toBe("hook")
+    expect(await takenBy(directory, second)).toBe("hook")
+    expect(filesIn(directory, "waiting")).toEqual([])
+  })
+
+  test("what a hook that is gone held waits again, and what a running hook holds stays", async () => {
+    const directory = inbox()
+    const name = await putInbox(directory, { content: "held by a hook Codex killed" })
+    const gone = Bun.spawnSync(["true"]).pid
+    mkdirSync(join(directory, "claimed", String(gone)), { recursive: true })
+    renameSync(join(directory, "waiting", name), join(directory, "claimed", String(gone), name))
+    const kept = await putInbox(directory, { content: "held by this process" })
+    const live = await claimInbox(directory)
+    // The claim put back the gone hook's line first, and so took it too.
+    expect(live.taken.map(({ name: taken }) => taken)).toEqual([name, kept])
+    await releaseClaims(directory)
+    expect(filesIn(directory, `claimed/${process.pid}`).sort()).toEqual([name, kept].sort())
+    await live.settle(true)
+    expect(await takenBy(directory, name)).toBe("hook")
   })
 
   test("the hook's context quotes every message whole, in order", () => {
@@ -186,9 +246,7 @@ describe("createCodexDelivery", () => {
     })
     await untilWaiting(directory)
     expect(done).toBe(false)
-    expect((await takeInbox(directory, "hook")).map(({ item }) => item.content)).toEqual([
-      "mid-turn",
-    ])
+    expect((await hookTakes(directory)).map(({ item }) => item.content)).toEqual(["mid-turn"])
     await written
     expect(taken).toEqual([{ content: "mid-turn", dispatchMessageId: "m1" }])
     await delivery.turnEnded()
@@ -208,6 +266,67 @@ describe("createCodexDelivery", () => {
     expect(queued).toEqual(["late"])
     expect(taken).toEqual([])
     delivery.stop()
+  })
+
+  test("a line a hook holds settles only once the hook settles it, delivered or put back", async () => {
+    const directory = inbox()
+    const { delivery, queued, taken } = harness(directory)
+    let held = false
+    const looked = Promise.withResolvers<void>()
+    spyOn(codexInbox, "takenBy").mockImplementation(async (...args) => {
+      const by = await realTakenBy(...args)
+      if (held && by === undefined) looked.resolve()
+      return by
+    })
+    delivery.turnStarted()
+    let done = false
+    const written = delivery.deliver({ content: "held" }).then(() => {
+      done = true
+    })
+    await untilWaiting(directory)
+    const claim = await claimInbox(directory)
+    held = true
+    expect(claim.taken.map(({ item }) => item.content)).toEqual(["held"])
+    // The poll looked at the held line, found it neither waiting nor taken, and let the write wait.
+    await looked.promise
+    expect(done).toBe(false)
+    // The hook's output did not reach Codex: the line waits again, and the turn's end queues it.
+    await claim.settle(false)
+    await delivery.turnEnded()
+    await written
+    expect(queued).toEqual(["held"])
+    expect(taken).toEqual([])
+    delivery.stop()
+  })
+
+  test("a line a killed hook held is queued when the turn ends", async () => {
+    const directory = inbox()
+    const { delivery, queued } = harness(directory)
+    delivery.turnStarted()
+    const written = delivery.deliver({ content: "the hook was killed" })
+    await untilWaiting(directory)
+    const gone = Bun.spawnSync(["true"]).pid
+    const [name] = filesIn(directory, "waiting")
+    if (name === undefined) throw new Error("no line waited")
+    mkdirSync(join(directory, "claimed", String(gone)), { recursive: true })
+    renameSync(join(directory, "waiting", name), join(directory, "claimed", String(gone), name))
+    await delivery.turnEnded()
+    await written
+    expect(queued).toEqual(["the hook was killed"])
+    delivery.stop()
+  })
+
+  test("stopping refuses a line a hook still holds, so Envoy sends it again", async () => {
+    const directory = inbox()
+    const { delivery } = harness(directory)
+    delivery.turnStarted()
+    const written = delivery.deliver({ content: "held at the stop" })
+    written.catch(() => undefined)
+    await untilWaiting(directory)
+    const claim = await claimInbox(directory)
+    await delivery.stop()
+    await expect(written).rejects.toThrow("stopped before the message was taken")
+    await claim.settle(true)
   })
 
   test("a codex queue failure rejects the write, so the frame is sent again", async () => {
@@ -315,7 +434,7 @@ describe("createCodexDelivery", () => {
       await Bun.sleep(10)
     }
     expect(readdirSync(join(directory, "waiting"))).toEqual([])
-    expect(await takeInbox(directory, "hook")).toEqual([])
+    expect(await hookTakes(directory)).toEqual([])
   })
 
   test("a turn that ends while a line lands settles its write, so the next frame goes out", async () => {
@@ -395,7 +514,7 @@ describe("createCodexDelivery", () => {
     // stop() comes once the turn's sweep has taken the line, before the sweep calls codex queue.
     spyOn(codexInbox, "takeInbox").mockImplementation(async (...args) => {
       const taken = await realTakeInbox(...args)
-      if (args[1] === "server" && taken.length > 0) stopping ??= delivery.stop()
+      if (taken.length > 0) stopping ??= delivery.stop()
       return taken
     })
     const outcomes: string[] = []
@@ -424,7 +543,7 @@ describe("createCodexDelivery", () => {
     // finds taken, and answer its write by a codex queue stop() never waited for.
     const sweptAfterStop: string[] = []
     spyOn(codexInbox, "takeInbox").mockImplementation(async (...args) => {
-      if (stopping !== undefined && args[1] === "server") sweptAfterStop.push(args[0])
+      if (stopping !== undefined) sweptAfterStop.push(args[0])
       return realTakeInbox(...args)
     })
     const ran = duringPut(false, async () => {
@@ -471,7 +590,7 @@ describe("createCodexDelivery", () => {
     delivery.turnStarted()
     const swept: string[] = []
     spyOn(codexInbox, "takeInbox").mockImplementation(async (...args) => {
-      if (args[1] === "server") swept.push(args[0])
+      swept.push(args[0])
       return realTakeInbox(...args)
     })
     const ran = duringPut(true, () => delivery.sessionEnded())
@@ -511,7 +630,7 @@ describe("createCodexDelivery", () => {
     })
     const written = delivery.deliver({ content: "kept" })
     await untilWaiting(directory)
-    const [line] = await realTakeInbox(directory, "hook")
+    const [line] = await hookTakes(directory)
     if (line === undefined) throw new Error("the hook found no line to take")
     await written
     expect(taken).toEqual([{ content: "kept" }])

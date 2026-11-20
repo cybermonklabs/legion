@@ -17,6 +17,7 @@ import { rm } from "node:fs/promises"
 import { formatOpenAsksSummary } from "@legion/envoy-client/dispatch-execute"
 import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { messageFor } from "@legion/envoy-client/errors"
+import { exitProcess } from "@legion/envoy-client/process-exit"
 import { sessionConfigFile, sessionDispatchSettings } from "@legion/envoy-client/session-settings"
 import { z } from "zod"
 import { configuredValue } from "../src/claude-session"
@@ -164,5 +165,8 @@ if (import.meta.main) {
   } catch (error) {
     process.stderr.write(`envoy: codex-hook: ${messageFor(error)}\n`)
   }
-  process.exit(0)
+  // Exits rather than returns, so a handle the open-asks read left cannot hold the process; but
+  // once what it wrote has reached Codex's pipe, since `process.exit` drops what a full pipe has
+  // not taken, and the open-asks summary can run past a page.
+  await exitProcess(0)
 }

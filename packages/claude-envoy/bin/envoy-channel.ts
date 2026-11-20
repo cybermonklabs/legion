@@ -1,7 +1,7 @@
 import { scrubProcessStreams } from "@legion/contracts/held-secrets"
+import { exitProcess } from "@legion/envoy-client/process-exit"
 import { runCodexEnvoyServer } from "../src/codex/codex-server"
 import { runEnvoyChannelServer } from "../src/envoy-channel-server"
-import { exitProcess } from "../src/process-exit"
 
 // `codex/.codex-plugin/plugin.json` starts this bundle with `--host codex`; Claude Code's
 // `.mcp.json` starts it with no argument.

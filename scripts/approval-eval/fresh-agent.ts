@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { appendFile, copyFile, cp, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { parseArgs } from "node:util";
+import { exitProcess } from "../../packages/envoy-client/src/process-exit";
 import { labelKey, type ArmReading as RoundArm, readRound } from "./analyze";
 import type { CaseRow } from "./build-corpus";
 import {
@@ -1444,5 +1445,6 @@ async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
-// Only when run: a test that imports `runFresh` must not run a command.
-if (import.meta.main) process.exit(await main(Bun.argv.slice(2)));
+// Only when run: a test that imports `runFresh` must not run a command. The exit waits for the
+// progress lines on stderr to reach the reader, which `process.exit` alone would drop.
+if (import.meta.main) await exitProcess(await main(Bun.argv.slice(2)));

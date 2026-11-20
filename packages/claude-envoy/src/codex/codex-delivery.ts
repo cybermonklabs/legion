@@ -3,6 +3,7 @@ import {
   type CodexInboxItem,
   inboxItemName,
   putInbox,
+  releaseClaims,
   takeInbox,
   takenBy,
   withdrawWaiting,
@@ -100,7 +101,9 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
     const directories = new Set([options.inboxDirectory(options.sessionId())])
     for (const waiter of waiting.values()) directories.add(waiter.directory)
     for (const directory of directories) {
-      for (const { name, item } of await takeInbox(directory, "server")) {
+      // What a hook that is gone held waits again first, so this sweep queues it.
+      await releaseClaims(directory)
+      for (const { name, item } of await takeInbox(directory)) {
         const waiter = waiting.get(name)
         waiting.delete(name)
         try {
@@ -210,8 +213,11 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
       clearInterval(timer)
       // A refused write leaves its Envoy frame unanswered, so Envoy sends it again. Each line is
       // withdrawn before its write is refused, so the hook cannot deliver it as well; a line the
-      // hook took first was delivered, and its write resolves. A sweep that already started
-      // settles the writes of the lines it takes, so stop() takes what is left only once it ends.
+      // hook handed Codex was delivered, and its write resolves. A line a hook still holds, writing
+      // it to Codex (`claimed/`), is refused too: Envoy's copy is then the one that reaches the
+      // session if that write fails, and a second one if it does not, since nothing waits here for
+      // the hook to say which. A sweep that already started settles the writes of the lines it
+      // takes, so stop() takes what is left only once it ends.
       return sweeping
         .then(() => {
           const left = [...waiting]
@@ -220,12 +226,15 @@ export function createCodexDelivery(options: CodexDeliveryOptions): CodexDeliver
             left.map(async ([name, waiter]) => {
               // A write whose line never landed rejects with its own failure.
               if (!(await waiter.landed)) return
-              if (await withdrawWaiting(waiter.directory, name)) {
+              const by = (await withdrawWaiting(waiter.directory, name))
+                ? undefined
+                : await takenBy(waiter.directory, name)
+              if (by === undefined) {
                 waiter.reject(
                   new Error("the Codex session's delivery stopped before the message was taken"),
                 )
               } else {
-                if ((await takenBy(waiter.directory, name)) === "hook") options.taken?.(waiter.item)
+                if (by === "hook") options.taken?.(waiter.item)
                 waiter.resolve()
               }
             }),

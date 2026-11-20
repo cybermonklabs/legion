@@ -99,6 +99,7 @@ import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory, writeAtomically } from "@legion/envoy-client/dispatch-session-directory"
 import { offWithError } from "@legion/envoy-client/envoy-config"
 import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors"
+import { exitProcess } from "@legion/envoy-client/process-exit"
 import {
   readSessionAnswers,
   SESSION_ANSWERS_DEADLINE_MS,
@@ -184,9 +185,13 @@ const RefreshOutcome = z.object({
 })
 /** Tests only: the file the answers hook writes its own timing to, `{ began, printed, ended }` in
  *  ms after its process started (when its code began, when it printed or found nothing to print,
- *  and when it exits), so a test can hold the hook to its deadline rather than to bun's start-up.
- *  Unset, as Claude Code runs it, the hook writes nothing. */
+ *  and when it exits), so a test can hold the hook to its deadline rather than to bun's start-up,
+ *  and `refresher`, the pid of the refresher it started (null: none), so a test can wait on that
+ *  one process rather than read the machine's (docs/testing.md, "A test that looks for a process
+ *  it started"). Unset, as Claude Code runs it, the hook writes nothing. */
 const ANSWERS_TIMING_FILE = "ENVOY_ANSWERS_TIMING_FILE"
+/** The pid of the refresher this hook started, for `ANSWERS_TIMING_FILE` alone. */
+let startedRefresher: number | null = null
 
 const DISPATCH_HOST_LINE = "export DISPATCH_HOST=claude"
 /** What an overlay export line starts with: the one line of the env file this hook replaces
@@ -452,12 +457,12 @@ async function refreshedAnswers(
   }
   const lock = join(directory, REFRESH_LOCK)
   if (!refreshLockHeld(lock)) {
-    Bun.spawn([process.execPath, Bun.main, "answers-refresh", session, cwd, "--host", HOST], {
-      stdin: "ignore",
-      stdout: "ignore",
-      stderr: "ignore",
-      detached: true,
-    }).unref()
+    const refresher = Bun.spawn(
+      [process.execPath, Bun.main, "answers-refresh", session, cwd, "--host", HOST],
+      { stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true },
+    )
+    startedRefresher = refresher.pid
+    refresher.unref()
   }
   const file = join(directory, REFRESH_OUTCOME)
   for (;;) {
@@ -549,8 +554,12 @@ async function answers(text: string): Promise<never> {
     // Never to the model: a Dispatch with no answers route is the operator's to know of.
     if (notice !== undefined) process.stderr.write(`envoy: ${notice}\n`)
     if (message !== undefined) {
-      await Bun.write(
-        Bun.stdout,
+      // Through the stream, never `Bun.write(Bun.stdout, ...)`: the scrub above read
+      // `process.stdout`, which leaves the pipe non-blocking, and on such a pipe that a late
+      // reader has not drained Bun.write writes its first page twice (204,096 bytes reached a
+      // one-page pipe read 3 s late for 200,000 written, 3 runs of 3). The exit below waits for
+      // the stream to drain.
+      process.stdout.write(
         JSON.stringify({
           hookSpecificOutput: {
             hookEventName: input.hook_event_name,
@@ -570,13 +579,17 @@ async function answers(text: string): Promise<never> {
   const timingFile = process.env[ANSWERS_TIMING_FILE]
   if (timingFile !== undefined) {
     try {
-      writeFileSync(timingFile, JSON.stringify({ began, printed, ended: performance.now() }))
+      writeFileSync(
+        timingFile,
+        JSON.stringify({ began, printed, ended: performance.now(), refresher: startedRefresher }),
+      )
     } catch {
       // The tests' seam only: a path it cannot write never changes what the hook printed or its exit.
     }
   }
-  // Exits rather than returns: a read still running would hold the process open.
-  process.exit(0)
+  // Exits rather than ending by itself: a read still running would hold the process open. The exit
+  // waits first for what it wrote to reach the pipe, which `process.exit` alone would drop.
+  return exitProcess(0)
 }
 
 /** The answers-refresh mode, which the answers hook starts detached with the session id and the

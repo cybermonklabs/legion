@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  The Codex `PostToolUse` hook no longer loses the Envoy messages it takes when Codex reads its
+  output late. It held the messages in `taken/` before it wrote them and then called
+  `process.exit`, which drops what a full pipe has not taken: a one-page pipe read 2 s late got
+  4,096 of 7,974 bytes, the JSON did not parse, and the messages were gone. The hook now holds
+  what it takes in `claimed/<pid>/`, moves it into `taken/` only once Codex has every byte, puts
+  it back to wait when the write fails, and ends by itself. What a hook Codex killed held waits
+  again at the next hook or sweep, and a server that stops refuses a message a hook still holds,
+  so Envoy sends it again. The Codex `SessionStart` hook and the Claude Code answers hook wait for
+  their output to reach the pipe before they exit; the answers hook writes through the stream,
+  since `Bun.write(Bun.stdout, ...)` on the pipe its secret scrub left non-blocking wrote the first
+  page twice.
+time: 2026-11-20T10:21:19Z
+custom:
+  Issue: pr4593

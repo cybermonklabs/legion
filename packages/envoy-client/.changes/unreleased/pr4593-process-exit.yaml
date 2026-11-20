@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  `@legion/envoy-client/process-exit`: `exitProcess(code)` ends a process once what it wrote to
+  stdout and stderr before the call has reached the pipe, and refuses a write made during that
+  wait (its callback gets `ERR_STREAM_WRITE_AFTER_END`) so that it cannot cut what came before;
+  `writeOut(stream, text)` answers whether the reader took every byte. Bun drops what a full pipe
+  has not taken when a program calls `process.exit`; these are the ways a program of this
+  repository ends without losing it.
+time: 2026-11-20T10:21:19Z
+custom:
+  Issue: pr4593

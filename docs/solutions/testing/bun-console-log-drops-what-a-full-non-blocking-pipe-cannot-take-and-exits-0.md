@@ -1,5 +1,5 @@
 ---
-title: "Bun's console.log drops what a full non-blocking pipe cannot take and still exits 0: a Bun script hands its result back in a file the caller names, not on stdout"
+title: "At Bun 1.3.14, console.log dropped what a full non-blocking pipe could not take and still exited 0 (Bun 1.4.4 waits): a Bun script hands its result back in a file the caller names, not on stdout"
 category: testing
 tags:
   - bun
@@ -20,7 +20,31 @@ applies_when:
   - You are about to reach for Bun.write(Bun.stdout, ...) to "flush" a script's output
 ---
 
-# Bun's console.log Drops What a Full Non-Blocking Pipe Cannot Take
+# Bun's console.log Drops What a Full Non-Blocking Pipe Cannot Take (Bun 1.3.14)
+
+## Which Bun this holds for
+
+The loss below is Bun 1.3.14's, where it was found. The Bun this repository pins
+(`.bun-version`, 1.4.4) no longer drops `console.log`; it still drops what a stream write queued
+when the script calls `process.exit`, and `Bun.write(Bun.stdout, ...)` is still wrong there, in
+another way. Measured on 2026-11-20 with both binaries on the same machine: each case wrote about
+200,000 bytes into a real one-page pipe whose reader started 2 s late, 3 runs of 3 each, and read
+fd 1's flags from `/proc/self/fdinfo/1` before and after its first read of `process.stdout`:
+
+| Case | Bun 1.3.14 | Bun 1.4.4 |
+| --- | --- | --- |
+| `process.stdout.isTTY`, then `console.log` of 200,000 bytes, a natural end | 4,096 bytes, exit 0 | 200,000 |
+| the same, then `process.exit(0)` | 4,096, exit 0 | 200,000 |
+| 5,000 `console.log` lines of 47 bytes, then `process.exit(0)` | 4,089 of 235,000, exit 0 | 235,000 |
+| `bun -e 'process.stdout.isTTY'; bun -e 'console.log(...)'` on one pipe | 4,096, exit 0 | 200,000 |
+| `process.stdout.isTTY`, then `await Bun.write(Bun.stdout, ...)` | 4,096, and it never settled: killed at 20 s | 204,096: the first page twice, exit 0 |
+| `process.stdout.write`, then `process.exit(0)` (the control) | 4,096, exit 0 | 4,096, exit 0 |
+
+At both versions the first read of `process.stdout` changed fd 1's flags from `01` to `04001`
+(`O_NONBLOCK`), as mechanism 1 says. So at Bun 1.4.4 mechanism 2 no longer holds, and the fix
+below still does: a script that hands back its result in a file loses nothing at either version,
+and one that ends through `process.exit` after a stream write loses what the pipe had not taken
+at both.
 
 ## Symptom
 
@@ -76,11 +100,12 @@ run and `empty-items-holding-the-next-line` on the next: lost output, not bad da
    child's output hands it a fresh socket, each `$(...)` that runs Bun holds one Bun process, and
    a Go program started on a non-blocking pipe waits rather than drops (the deep review's census,
    https://github.com/cybermonklabs/legion/pull/1622#issuecomment-5919556239).
-2. **console.log on a full non-blocking pipe loses the rest.** It writes what the pipe has room
-   for, gets `EAGAIN` for the remainder, drops it, and the script exits 0. strace of a 20,000-byte
-   `console.log` into a one-page pipe: `write(1, …, 20000) = 4096`, `write(1, …, 15904) = -1
-   EAGAIN`, `write(1, "\n", 1) = -1 EAGAIN`, `exit_group(0)`. On a blocking stdout the same
-   `console.log` waits for the reader, which is why a plain scratch script never reproduces it.
+2. **At Bun 1.3.14, console.log on a full non-blocking pipe loses the rest.** It writes what the
+   pipe has room for, gets `EAGAIN` for the remainder, drops it, and the script exits 0. strace of
+   a 20,000-byte `console.log` into a one-page pipe: `write(1, …, 20000) = 4096`,
+   `write(1, …, 15904) = -1 EAGAIN`, `write(1, "\n", 1) = -1 EAGAIN`, `exit_group(0)`. On a
+   blocking stdout the same `console.log` waits for the reader, which is why a plain scratch
+   script never reproduces it.
    `console.error` loses output on fd 2 the same way: after a read of `process.stderr`, a slow
    reader got 65,536 of 200,001 bytes and the exit status was 0. The gen scripts' stderr is read
    only to show a failure, so there it can shorten a failure message but not change a verdict.
@@ -95,12 +120,13 @@ run and `empty-items-holding-the-next-line` on the next: lost output, not bad da
 
 ## Bun.write(Bun.stdout, ...) is not the fix
 
-On the same non-blocking pipe, `await Bun.write(Bun.stdout, text)` writes 4096 bytes, gets
-`EAGAIN`, then another thread writes the whole text again from its first byte (strace:
+At Bun 1.3.14, on the same non-blocking pipe, `await Bun.write(Bun.stdout, text)` writes 4096
+bytes, gets `EAGAIN`, then another thread writes the whole text again from its first byte (strace:
 `write(1, …, 20001) = 4096`, `write(1, …, 15905) = -1 EAGAIN`, then from a second thread
 `write(1, …, 20001) = -1 EAGAIN`) and the promise never settles: the script hung for as long as it
-was watched with its reader draining the pipe. Had that second write succeeded, the reader would have
-received the first 4096 bytes twice.
+was watched with its reader draining the pipe. Had that second write succeeded, the reader would
+have received the first 4096 bytes twice. At Bun 1.4.4 it does: the call settles, and a one-page
+pipe read 2 s late got 204,096 bytes for 200,000 written, the first page twice (the table above).
 
 ## Fix: hand the result back in a file
 

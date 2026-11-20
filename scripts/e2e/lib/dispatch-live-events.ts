@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "../../../packages/contracts/src/dispatch-api";
 import { bodyForText } from "../../../packages/envoy-client/src/excerpt";
+import { exitProcess } from "../../../packages/envoy-client/src/process-exit";
 
 const USAGE =
   "usage: bun scripts/e2e/lib/dispatch-live-events.ts --url <dispatch> [--bearer-file <file> | --cookie-file <file> | --user <email>] [--since <id> | --from-whoami [--subscribe-after <s>]] [--until <substring>] [--timeout <s>]";
@@ -417,4 +418,6 @@ async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
-process.exit(await main(Bun.argv.slice(2)));
+// Each event is a line on stdout, written as it arrives, and a reader that falls behind leaves
+// the last of them queued: the exit waits for them, which `process.exit` alone would drop.
+await exitProcess(await main(Bun.argv.slice(2)));

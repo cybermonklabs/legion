@@ -22,6 +22,7 @@
 // file's entries) and session-settings-common.ts (the rig, the transcript and the waits).
 import { cpSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { agentStreamControlSubject } from "../../../packages/contracts/src/agent-stream";
+import { exitProcess } from "../../../packages/envoy-client/src/process-exit";
 import { Browser, type Header, headerText } from "./session-settings-browser";
 import {
   begin,
@@ -1237,7 +1238,8 @@ if (command === "run") {
   if (args[0] === undefined) refuse("usage: run <rig.json>");
   await run(args[0]);
   // A request's or a stop's deadline timer would otherwise hold the process for minutes after the
-  // last check.
-  process.exit(process.exitCode ?? 0);
+  // last check. The exit waits first for the checks' lines and a failure's stack to reach the
+  // reader, which `process.exit` alone would drop when they pass what its pipe holds.
+  await exitProcess(Number(process.exitCode ?? 0));
 } else if (command === "free-port") freePort();
 else refuse(`unknown command ${command ?? "(none)"}: run or free-port`);

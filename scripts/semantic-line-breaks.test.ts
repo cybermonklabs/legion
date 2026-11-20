@@ -2,6 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { readThroughLatePipe } from "@legion/test-fixtures/late-pipe";
 
 const SCRIPT = resolve(import.meta.dir, "semantic-line-breaks.ts");
 const REPO_ROOT = resolve(import.meta.dir, "..");
@@ -713,3 +715,27 @@ test("--write adds no byte order mark to a file whose first character shares its
   expect(result.text).toBe("\uFF01Some words.\nMore words.\n");
   expect(result.exitCode).toBe(0);
 });
+
+// The script's own reader, a shell pipe or a `$(...)` on a loaded machine, can come late, and Bun
+// drops what a full pipe has not taken when a program calls process.exit. `run` cannot show this:
+// Bun.spawnSync hands the script a socket of 212,992 bytes, not a pipe. This reads the findings
+// through a one-page pipe whose reader starts 2 s late, and holds them to what `run` got.
+test.skipIf(skipWithout("python3"))(
+  "every finding past a pipe page reaches a one-page pipe read late, as it reaches run",
+  async () => {
+    const lines = Array.from(
+      { length: 1_500 },
+      (_, index) =>
+        `This is sentence number ${index} of the document. It continues on the same line, which breaks the rule.`
+    );
+    const path = await markdownFile(`${lines.join("\n")}\n`);
+    const whole = run([path]);
+    expect(whole.stdout).toContain(`${path}:1500: R1:`);
+    expect(whole.stdout.length).toBeGreaterThan(64 * 1024);
+    const late = await readThroughLatePipe([process.execPath, SCRIPT, path], { cwd: REPO_ROOT });
+    expect(late.pipeBytes).toBe(4_096);
+    expect(late.exitCode).toBe(1);
+    expect(new TextDecoder().decode(late.stdout)).toBe(whole.stdout);
+  },
+  30_000
+);

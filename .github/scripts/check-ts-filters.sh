@@ -55,6 +55,23 @@
 # `<scratch>`, in the command and in what Bun or the metafile's read said, so it names no path
 # that is gone by the time anyone reads it.
 #
+# THE WHOLE OUTPUT. Each command writes its output to a regular file of this run's own, which
+# the check reads after the command exits; it never reads a command through a pipe. Where no
+# node is on PATH, bunx runs tsc on Bun's own runtime, and Bun - every `bun build` too - writes
+# to a pipe without blocking, keeps what a full pipe refuses in a queue, and drops that queue
+# when the program exits. tsc exits with process.exit, so a reader the machine runs late gets
+# the list cut at any byte, after an exit of 0. Measured with Bun 1.4.4, no node on PATH and a
+# check that read through a pipe held to one CPU, so its reader ran late: one run passed holding
+# 131 of the 230 files pi-envoy's program compiles, and another named a cut line as a file no
+# filter selects, as a run on a machine at a load of about 550 named 'pa' and 'node_modul'. A
+# write to a regular file waits until it is done, so the file holds every byte. Over that, a
+# list is held whole: a program's output that is empty, or whose last line has no newline, is a
+# refusal naming that line, and so is any line of a program's list or of a metafile's `inputs`
+# that names no file this check can find, inside the repository or outside it, an empty line
+# among them, since tsc lists only files it read and Bun only modules it loaded; and so is a
+# program's list that keeps no file of the program's own directory, since a program holds at least
+# its own sources. Each leaves its source unknown, as a command that fails does.
+#
 # Files a test reads by relative path - the JSON fixtures and corpora a test of one package
 # reads out of another package's directory - are part of no tsc program, so they stay hand-kept
 # too: the list of them is the tester's case in .github/scripts/check-ci-filters.test.sh, "every
@@ -176,17 +193,23 @@ ALL = {"program": ("tsc programs", "compile"), "bundle": ("bundles", "load")}
 problems: list[engine.Annotation] = []
 
 
-def kept(paths) -> list:
-    """The paths inside the repository and outside node_modules, repository-relative and sorted.
-    A relative path is read against the repository root, which is where both commands run and
-    what each prints a relative path against."""
-    files = set()
-    for line in paths:
-        if not line.strip():
-            continue
+def kept(source: str, shown: str, lines: list, what: str, holds: str) -> list | None:
+    """The files `lines` name inside the repository and outside node_modules, repository-relative
+    and sorted. A relative path is read against the repository root, which is where both commands
+    run and what each prints a relative path against. Every line must name a file this check can
+    find, inside the repository or outside it: tsc lists only files it read and Bun's metafile
+    only modules it loaded, so a line that names none is a cut line or no path at all, and read as
+    a file it would hold a filter to a name no change can touch. Each such line is refused by
+    name, and the source is then unknown: None. `what` counts the lines in the refusal, its `{}`
+    taking their number (`printed {} line(s)`)."""
+    files, nameless = set(), []
+    for line in lines:
         path = Path(line.strip())
         if not path.is_absolute():
             path = engine.REPO / path
+        if not line.strip() or not path.is_file():
+            nameless.append(line)
+            continue
         try:
             relative = path.resolve().relative_to(engine.REPO)
         except ValueError:  # tsc's own lib files and anything else outside this repository
@@ -194,7 +217,26 @@ def kept(paths) -> list:
         if "node_modules" in relative.parts:
             continue
         files.add(relative.as_posix())
+    if nameless:
+        named = ", ".join(repr(line) for line in nameless[:engine.SHOWN])
+        more = f" and {len(nameless) - engine.SHOWN} more" if len(nameless) > engine.SHOWN else ""
+        problems.append(engine.error(source, f"`{shown}` exited 0 and {what.format(len(nameless))} that name no file "
+                                             f"this check can find: {named}{more}, so the list is cut or holds a name "
+                                             f"that is no path, and the files its {holds} are unknown"))
+        return None
     return sorted(files)
+
+
+def run_whole(command: list) -> subprocess.CompletedProcess:
+    """`command`'s exit and its whole output, run at the repository root: each stream goes to a
+    regular file of this run's own, read once the command has exited, never to a pipe, for the
+    reason THE WHOLE OUTPUT at the head of this file gives. The text is read as `text=True` reads
+    it, in the locale's encoding with universal newlines."""
+    with tempfile.TemporaryFile("w+") as out, tempfile.TemporaryFile("w+") as err:
+        returncode = subprocess.run(command, cwd=engine.REPO, stdout=out, stderr=err).returncode
+        out.seek(0)
+        err.seek(0)
+        return subprocess.CompletedProcess(command, returncode, out.read(), err.read())
 
 
 def failed(path: str, command: str, result, holds: str, scratch: str = "") -> None:
@@ -219,13 +261,38 @@ def scrubbed(text: str, scratch: str) -> str:
 
 def program_files(project: str) -> list | None:
     """Every file of the project's tsc program that is inside the repository and outside
-    node_modules, repository-relative. None when the command fails."""
+    node_modules, repository-relative. None when the command fails, or when its list is not
+    whole: empty, ended by a line with no newline, holding a line that names no file (kept), or
+    keeping no file of the program's own directory - the project itself, or the directory of the
+    tsconfig file it names. A program holds at least its own sources, so a list cut at a line end
+    after TypeScript's own library files, which no other guard sees, is refused by name rather
+    than read as a program of no files, which every filter covers."""
     command = ["bunx", "tsc", "-p", project, "--noEmit", "--listFilesOnly"]
-    result = subprocess.run(command, cwd=engine.REPO, capture_output=True, text=True)
+    shown = " ".join(command)
+    result = run_whole(command)
     if result.returncode != 0:
-        failed(project, " ".join(command), result, "program holds")
+        failed(project, shown, result, "program holds")
         return None
-    return kept(result.stdout.splitlines())
+    if not result.stdout:
+        problems.append(engine.error(project, f"`{shown}` exited 0 and printed nothing, so the files its program holds "
+                                              f"are unknown: a program holds at least TypeScript's own library files"))
+        return None
+    if not result.stdout.endswith("\n"):
+        last = result.stdout.rsplit("\n", 1)[-1]
+        problems.append(engine.error(project, f"`{shown}` exited 0 and its last line, {last!r}, has no newline at its "
+                                              f"end, so its output is cut and the files its program holds are unknown"))
+        return None
+    files = kept(project, shown, result.stdout.splitlines(), "printed {} line(s)", "program holds")
+    if files is None:
+        return None
+    own = (Path(project).parent if project.endswith(".json") else Path(project)).as_posix()
+    if not any(file.startswith(f"{own}/") for file in files):
+        problems.append(engine.error(project, f"`{shown}` exited 0 and its list keeps {len(files)} file(s) of this "
+                                              f"repository, none of them under {own}, the program's own directory, so "
+                                              f"the list is cut or is another program's, and the files its program "
+                                              f"holds are unknown: a program holds at least its own sources"))
+        return None
+    return files
 
 
 def bundle_files(entry: str) -> list | None:
@@ -234,14 +301,15 @@ def bundle_files(entry: str) -> list | None:
     node_modules, repository-relative. The bundle and the metafile go to a scratch directory of
     this run's own, removed with them, and a refusal shows that directory as `<scratch>` - in the
     command, in what Bun printed and in the error a metafile it cannot read raised - so it reads
-    the same on every run. None when the build fails, leaves no metafile to read, or leaves one
-    whose `inputs` name no such module: a bundle loads at least its entry, so that metafile is no
+    the same on every run. None when the build fails, leaves no metafile to read, leaves one whose
+    `inputs` hold a line that names no file (kept), or leaves one whose `inputs` name no module of
+    the repository outside node_modules: a bundle loads at least its entry, so that metafile is no
     answer, and the empty set read from it would be one every filter covers and every listed
     block it gives would be written empty from."""
     with tempfile.TemporaryDirectory(prefix="check-ts-filters.") as scratch:
         command = ["bun", "build", entry, "--target", "bun", "--outdir", scratch, f"--metafile={scratch}/meta.json"]
         shown = scrubbed(" ".join(command), scratch)
-        result = subprocess.run(command, cwd=engine.REPO, capture_output=True, text=True)
+        result = run_whole(command)
         if result.returncode != 0:
             failed(entry, shown, result, "bundle loads", scratch)
             return None
@@ -252,7 +320,9 @@ def bundle_files(entry: str) -> list | None:
                                                 f"can read ({type(exc).__name__}: {scrubbed(str(exc), scratch)}), so "
                                                 f"the files its bundle loads are unknown"))
             return None
-    files = kept(inputs)
+    files = kept(entry, shown, inputs, "the `inputs` of its metafile hold {} module(s)", "bundle loads")
+    if files is None:
+        return None
     if not files:
         problems.append(engine.error(entry, f"`{shown}` exited 0 and the `inputs` of its metafile name {len(inputs)} "
                                             f"module(s), none of them a file of this repository outside node_modules, "

@@ -87,12 +87,17 @@ if (prPatch && input !== undefined) {
 }
 const joined = `${as} ${args.join(" ")}`;
 const route = routes.find((candidate) => new RegExp(candidate.match, "s").test(joined));
-/** Records the call with the status it exits with, then exits. */
-function exit(status: number): never {
+/** Records the call with the status it ends with. */
+function record(status: number): void {
   appendFileSync(
     `${run}/calls.jsonl`,
     `${JSON.stringify({ at, as, argv: args, files, stdin, route: route?.match ?? null, body: kept, exit: status })}\n`
   );
+}
+/** Records the call and exits at once: for a call that wrote one short line or nothing, which a
+ *  pipe takes whole before the exit. */
+function exit(status: number): never {
+  record(status);
   process.exit(status);
 }
 if (!route) {
@@ -130,4 +135,8 @@ if (filter !== undefined) {
 }
 if (text !== "") process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
 if (route.stderr) process.stderr.write(route.stderr);
-exit(route.exit ?? 0);
+// A route's answer can be longer than a pipe holds, and the agent under test reads it through one
+// (`$(gh ...)`, `gh ... | jq`): `process.exit` would drop what the pipe has not taken, so the
+// stand-in ends by itself, which writes every byte first.
+record(route.exit ?? 0);
+process.exitCode = route.exit ?? 0;

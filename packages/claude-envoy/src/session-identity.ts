@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises"
 import { basename, join } from "node:path"
 import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors"
 import { z } from "zod"
+import { processExists } from "./process-exists"
 import { pruneStateDirectory, writeAtomicStateFile, writtenLongAgo } from "./session-state"
 
 /**
@@ -128,15 +129,6 @@ export async function readSessionHandoff(file: string): Promise<string | undefin
   } catch (error) {
     if (hasErrnoCode(error, "ENOENT")) return undefined
     throw error
-  }
-}
-
-export function processExists(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    return hasErrnoCode(error, "EPERM")
   }
 }
 

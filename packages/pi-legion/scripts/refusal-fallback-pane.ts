@@ -38,6 +38,7 @@
 // status is 1 when any failed, naming the first, and 2 when the run could not be made at all.
 import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
+import { exitProcess } from "@legion/envoy-client/process-exit";
 import {
   type FallbackCooldownState,
   LEGION_FALLBACK_ENTRY,
@@ -722,7 +723,7 @@ try {
 } catch (error) {
   process.stderr.write(`FAIL drive: ${error instanceof Error ? error.message : String(error)}\n`);
   for (const step of cleanup.splice(0).reverse()) await step();
-  process.exit(2);
+  await exitProcess(2);
 }
 for (const step of cleanup.splice(0).reverse()) await step();
 
@@ -746,6 +747,8 @@ if (firstFailure !== undefined) {
   process.stderr.write(
     `refusal fallback: ${failed.length} expectation(s) failed, the first ${firstFailure}\n`
   );
-  process.exit(1);
+  // After the lines above, which a reader that falls behind leaves queued: the exit waits for
+  // them, which `process.exit` alone would drop.
+  await exitProcess(1);
 }
 say(`refusal fallback: every expectation held, transcripts in ${evidence}`);

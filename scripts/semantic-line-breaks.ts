@@ -1258,5 +1258,11 @@ if (import.meta.main) {
     process.stderr.write(USAGE);
     process.exit(2);
   }
-  process.exit(write ? await writeFiles(paths) : await checkFiles(paths));
+  // process.exitCode, not process.exit: Bun drops the stdout writes a full pipe has not taken
+  // when a program calls process.exit, so a pipe reader that comes late - a shell pipe or a
+  // `$(...)` on a loaded machine - would get the findings cut. Ending without it writes them all.
+  // Bun.spawnSync, which the tests run the script with, hands it a socket of 212,992 bytes
+  // instead, which their few findings never fill; the test that reads the findings late makes a
+  // real pipe for them (`scripts/semantic-line-breaks.test.ts`).
+  process.exitCode = write ? await writeFiles(paths) : await checkFiles(paths);
 }

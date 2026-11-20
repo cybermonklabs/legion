@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto"
-import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { mkdir, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises"
 import { join } from "node:path"
+import { processExists } from "../process-exists"
 
 /**
  * The Codex plugin's inbox: messages waiting for the running turn of one session.
@@ -14,7 +15,12 @@ import { join } from "node:path"
  * tree is atomic, and the second rename of the same file fails.
  *
  * Layout under the session's directory: `waiting/<order>-<random>.json` is a message nobody took,
- * `taken/` holds what the hook took and `queued/` what the server handed to `codex queue`.
+ * `taken/` holds what the hook handed Codex and `queued/` what the server handed to `codex queue`.
+ * `claimed/<pid>/` holds what the hook process `pid` took and is still writing to Codex: the hook
+ * moves each message there on into `taken/` only once Codex has every byte of its output, and back
+ * into `waiting/` when the write failed, so output that never reached Codex loses no message. What
+ * a hook that is gone held (Codex kills a hook at its timeout, and with the turn it interrupts) goes
+ * back into `waiting/` at the next hook or sweep (`releaseClaims`).
  */
 export interface CodexInboxItem {
   /** The text the model is to read. */
@@ -28,6 +34,7 @@ export interface CodexInboxItem {
 export type CodexInboxTaker = "hook" | "server"
 
 const TAKEN_DIRECTORY: Record<CodexInboxTaker, string> = { hook: "taken", server: "queued" }
+const CLAIMED_DIRECTORY = "claimed"
 
 /** The inbox directory of one session, under the plugin's state directory. */
 export function codexInboxDirectory(stateDirectory: string, sessionId: string): string {
@@ -129,17 +136,109 @@ export async function discardWaiting(
 export const HOOK_CONTEXT_MAX_BYTES = 8_000
 
 /**
- * Takes waiting messages for `taker`, oldest first, and answers them. A message another taker
- * renamed first is skipped, as is one whose file cannot be read once taken (it is left in the
- * taker's directory, where nothing reads it again).
+ * Takes waiting messages for the server, oldest first, and answers them: they are its to hand to
+ * `codex queue`. A message another taker renamed first is skipped, as is one whose file cannot be
+ * read once taken (it is left in `queued/`, where nothing reads it again).
+ */
+export async function takeInbox(
+  directory: string,
+): Promise<{ readonly name: string; readonly item: CodexInboxItem }[]> {
+  return moveWaiting(directory, join(directory, TAKEN_DIRECTORY.server))
+}
+
+/** What a `PostToolUse` hook took: its messages, and the step that moves them on. */
+export interface CodexInboxClaim {
+  readonly taken: readonly { readonly name: string; readonly item: CodexInboxItem }[]
+  /**
+   * Moves every message of the claim on: into `taken/`, where the server finds it delivered, when
+   * `delivered` says Codex has every byte of the hook's output; back into `waiting/` when it does
+   * not. A file the claim could not read goes into `taken/` either way, where nothing reads it
+   * again.
+   */
+  settle(delivered: boolean): Promise<void>
+}
+
+/**
+ * Takes waiting messages for this process, a `PostToolUse` hook, into `claimed/<pid>/`, oldest
+ * first, after putting back what a hook that is gone held (`releaseClaims`). A message another
+ * taker renamed first is skipped. They stay there, delivered to nobody, until the claim is settled.
  *
  * With `maxContextBytes`, it stops at the first message that would take `inboxContext`'s text past
  * that many bytes, and leaves it and every later one waiting, in order, for `codex queue` at the
  * turn's end, which takes a message of any length.
  */
-export async function takeInbox(
+export async function claimInbox(
   directory: string,
-  taker: CodexInboxTaker,
+  maxContextBytes?: number,
+): Promise<CodexInboxClaim> {
+  await releaseClaims(directory)
+  const held = join(directory, CLAIMED_DIRECTORY, String(process.pid))
+  const taken = await moveWaiting(directory, held, maxContextBytes)
+  return {
+    taken,
+    async settle(delivered) {
+      if (taken.length === 0) return
+      const to = join(directory, delivered ? TAKEN_DIRECTORY.hook : "waiting")
+      await mkdir(to, { recursive: true, mode: 0o700 })
+      for (const { name } of taken) {
+        try {
+          await rename(join(held, name), join(to, name))
+        } catch {
+          // Put back meanwhile by a sweep that found this process gone: it waits again.
+        }
+      }
+      await moveAll(held, join(directory, TAKEN_DIRECTORY.hook))
+    },
+  }
+}
+
+/**
+ * Puts back into `waiting/` every message a hook process that no longer runs held in
+ * `claimed/<pid>/`: Codex killed it at its timeout, or with the turn it interrupted, before it
+ * settled its claim, so Codex has none of its output. What a hook that still runs holds stays.
+ */
+export async function releaseClaims(directory: string): Promise<void> {
+  const claimed = join(directory, CLAIMED_DIRECTORY)
+  let holders: string[]
+  try {
+    holders = await readdir(claimed)
+  } catch {
+    return
+  }
+  for (const holder of holders) {
+    if (!/^\d+$/.test(holder) || processExists(Number(holder))) continue
+    await moveAll(join(claimed, holder), join(directory, "waiting"))
+  }
+}
+
+/** Moves every file of `from` into `to`, then removes `from`. */
+async function moveAll(from: string, to: string): Promise<void> {
+  let names: string[]
+  try {
+    names = await readdir(from)
+  } catch {
+    return
+  }
+  if (names.length > 0) await mkdir(to, { recursive: true, mode: 0o700 })
+  for (const name of names) {
+    try {
+      await rename(join(from, name), join(to, name))
+    } catch {
+      // Moved meanwhile by the claim's own settle, or by another sweep.
+    }
+  }
+  await rmdir(from).catch(() => undefined)
+}
+
+/**
+ * Moves waiting messages into `destination`, oldest first, and answers them. A message another
+ * taker renamed first is skipped, as is one whose file cannot be read once moved (it is left in
+ * `destination`). With `maxContextBytes`, it stops at the first message that would take
+ * `inboxContext`'s text past that many bytes.
+ */
+async function moveWaiting(
+  directory: string,
+  destination: string,
   maxContextBytes?: number,
 ): Promise<{ readonly name: string; readonly item: CodexInboxItem }[]> {
   const waiting = join(directory, "waiting")
@@ -150,7 +249,6 @@ export async function takeInbox(
     return []
   }
   if (names.length === 0) return []
-  const destination = join(directory, TAKEN_DIRECTORY[taker])
   await mkdir(destination, { recursive: true, mode: 0o700 })
   const taken: { name: string; item: CodexInboxItem }[] = []
   for (const name of names) {
